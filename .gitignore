@@ -1,3 +1,6 @@
 target
 data
 .env
+
+# Local OSM tile/building cache
+/cache/

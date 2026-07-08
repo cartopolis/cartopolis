@@ -10,7 +10,10 @@
 //! (relative to the anchor region tile); heights use the interim quad-to-metre
 //! scale until the real-metre frame (ADR-019) lands.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -20,11 +23,21 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::Region;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
+use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
-/// One OSM building: an outer-ring footprint in (lat, lng) plus a height in metres.
+/// Fixed grid zoom at which building data is fetched + cached. Independent of the
+/// requested patch size, so changing the patch radius never invalidates the cache
+/// (each cell is `cache/buildings/{CACHE_ZOOM}/{x}/{y}.json`). Kept coarse (few,
+/// large cells) so a patch is a handful of Overpass queries, not dozens.
+const CACHE_ZOOM: u32 = 14;
+/// Throttle between live Overpass queries so we don't trip its rate limit (429).
+const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
+
+/// One OSM building: its OSM way id (for cross-cell dedup), an outer-ring footprint
+/// in (lat, lng), and a height in metres.
 #[derive(Clone, Debug)]
 struct Building {
+    id: i64,
     ring: Vec<(f64, f64)>,
     height_m: f32,
 }
@@ -122,16 +135,15 @@ pub fn update_buildings(
     };
     if need && !osm.in_flight {
         let r = BUILDING_PATCH_RADIUS;
+        // Patch bounding box (in the base zoom's tiles); the fetch assembles it
+        // from fixed CACHE_ZOOM cells so the cache is independent of `r`.
         let (north, west) = tile_to_lat_lng(center.0 - r, center.1 - r, z);
         let (south, east) = tile_to_lat_lng(center.0 + r + 1, center.1 + r + 1, z);
-        let query = format!(
-            "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
-        );
         osm.in_flight = true;
         osm.last_center = Some(center);
         let slot = osm.fetch.clone();
         std::thread::spawn(move || {
-            let result = fetch_buildings(&query);
+            let result = fetch_patch(south, west, north, east);
             if let Ok(mut g) = slot.lock() {
                 *g = Some(result);
             }
@@ -288,13 +300,85 @@ fn build_building_mesh(ring_in: &[Vec2], height: f32) -> Option<Mesh> {
 
 // --- Overpass fetch + parse (runs on the background thread) ---
 
-fn fetch_buildings(query: &str) -> Result<Vec<Building>, String> {
-    let resp = ureq::post("https://overpass-api.de/api/interpreter")
-        .send_form(&[("data", query)])
-        .map_err(|e| e.to_string())?;
-    let text = resp.into_string().map_err(|e| e.to_string())?;
-    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+/// On-disk cache path for a fixed CACHE_ZOOM cell (independent of patch size, so
+/// changing the patch radius never invalidates the cache).
+fn cell_cache_path(cx: i64, cy: i64, zoom: u32) -> PathBuf {
+    PathBuf::from("cache")
+        .join("buildings")
+        .join(zoom.to_string())
+        .join(cx.to_string())
+        .join(format!("{}.json", cy))
+}
 
+/// Assemble a patch's buildings from the fixed CACHE_ZOOM cells covering its bbox:
+/// each cell is served from disk cache or fetched once, then deduped by OSM way id
+/// (a building straddling a cell edge is returned by both cells).
+fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Building>, String> {
+    // NW corner → min tile (x,y); SE corner → max tile (y grows southward).
+    let (cx0, cy0) = lat_lng_to_tile(north, west, CACHE_ZOOM);
+    let (cx1, cy1) = lat_lng_to_tile(south, east, CACHE_ZOOM);
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for cy in cy0..=cy1 {
+        for cx in cx0..=cx1 {
+            match fetch_cell(cx, cy, CACHE_ZOOM) {
+                Ok(cell) => {
+                    for b in cell {
+                        if seen.insert(b.id) {
+                            out.push(b);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(cx, cy, error = %e, "building cell fetch failed"),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One fixed cell's buildings, from disk cache or a single Overpass query (cached).
+/// Cache hits skip the network (and the throttle) entirely.
+fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+    let path = cell_cache_path(cx, cy, zoom);
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        return parse_buildings(&cached);
+    }
+
+    let (north, west) = tile_to_lat_lng(cx, cy, zoom);
+    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, zoom);
+    let query = format!(
+        "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
+    );
+    let fetched = overpass_query(&query)?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &fetched);
+    // Space out live queries so a multi-cell patch doesn't burst-trip the limit.
+    std::thread::sleep(OVERPASS_THROTTLE);
+    parse_buildings(&fetched)
+}
+
+/// POST an Overpass query, retrying a couple of times with backoff on failure
+/// (429/504 are common under load).
+fn overpass_query(query: &str) -> Result<String, String> {
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        match ureq::post("https://overpass-api.de/api/interpreter").send_form(&[("data", query)]) {
+            Ok(resp) => return resp.into_string().map_err(|e| e.to_string()),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    Err(last_err)
+}
+
+/// Parse an Overpass `out geom` response into buildings.
+fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
+    let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let elements = json
         .get("elements")
         .and_then(|e| e.as_array())
@@ -310,15 +394,14 @@ fn fetch_buildings(query: &str) -> Result<Vec<Building>, String> {
         };
         let ring: Vec<(f64, f64)> = geom
             .iter()
-            .filter_map(|pt| {
-                Some((pt.get("lat")?.as_f64()?, pt.get("lon")?.as_f64()?))
-            })
+            .filter_map(|pt| Some((pt.get("lat")?.as_f64()?, pt.get("lon")?.as_f64()?)))
             .collect();
         if ring.len() < 3 {
             continue;
         }
+        let id = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let height_m = parse_height(el.get("tags"));
-        out.push(Building { ring, height_m });
+        out.push(Building { id, ring, height_m });
     }
     Ok(out)
 }

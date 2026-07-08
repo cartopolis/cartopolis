@@ -4,8 +4,12 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy_image::{Image, ImageSampler};
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 pub use vibe_core::TileKey;
+
+/// Identifying User-Agent — OSM's tile policy blocks requests without a real one.
+const TILE_USER_AGENT: &str = "viberfox/0.1 (OSM map client; https://github.com/garage44/viberfox)";
 
 /// Resource for managing OSM tile loading and caching
 #[derive(Resource)]
@@ -48,15 +52,42 @@ pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
         .replace("{y}", &key.y.to_string())
 }
 
-/// Load a single OSM tile image
+/// On-disk cache path for a tile, under the app's `cache/` folder (persists across
+/// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
+fn tile_cache_path(key: &TileKey) -> PathBuf {
+    PathBuf::from("cache")
+        .join("tiles")
+        .join(key.z.to_string())
+        .join(key.x.to_string())
+        .join(format!("{}.png", key.y))
+}
+
+/// Load a single OSM tile image, using the on-disk cache first and falling back
+/// to a network fetch (which is then cached).
 pub fn load_tile_image(
     key: &TileKey,
     template: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let path = tile_cache_path(key);
+    if let Ok(bytes) = std::fs::read(&path) {
+        if !bytes.is_empty() {
+            return Ok(bytes);
+        }
+    }
+
     let url = format_osm_tile_url(template, key);
-    let response = ureq::get(&url).call()?;
+    let response = ureq::get(&url)
+        .set("User-Agent", TILE_USER_AGENT)
+        .call()?;
     let mut bytes = Vec::new();
     response.into_reader().read_to_end(&mut bytes)?;
+
+    // Best-effort write-through to the cache.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &bytes);
+
     Ok(bytes)
 }
 
