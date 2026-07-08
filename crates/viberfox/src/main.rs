@@ -1,7 +1,10 @@
 use bevy::asset::AssetPlugin;
 use bevy::log::LogPlugin;
 use bevy::pbr::light_consts::lux::AMBIENT_DAYLIGHT;
-use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
+use bevy::pbr::{
+    CascadeShadowConfigBuilder, DirectionalLightShadowMap, Material, MaterialPipeline,
+    MaterialPipelineKey, MaterialPlugin,
+};
 use bevy::prelude::*;
 use bevy::render::mesh::MeshVertexBufferLayoutRef;
 use bevy::render::render_resource::{
@@ -98,7 +101,8 @@ fn main() {
     .init_resource::<AiAssistantState>()
     .init_resource::<DevPanelState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
-    .init_resource::<systems::map_stream::MapStream>();
+    .init_resource::<systems::map_stream::MapStream>()
+    .insert_resource(DirectionalLightShadowMap { size: 4096 });
 
     if let Some(addr) = cli.connect {
         app.insert_resource(ConnectAddr(addr));
@@ -213,6 +217,7 @@ fn main() {
             systems::ui::render_dev_panel,
             advance_day_cycle.before(apply_day_night_cycle),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
+            update_window_glow,
             // Track the camera after it has been positioned this frame.
             update_star_sky.after(systems::free_camera::camera_controls),
             systems::ai_assistant::render_ai_panel,
@@ -283,8 +288,18 @@ fn setup_sky(
     commands.spawn((
         DirectionalLight {
             illuminance: AMBIENT_DAYLIGHT * day,
+            shadows_enabled: true,
             ..default()
         },
+        // Cascades sized to cover the visible city while keeping crisp near shadows.
+        CascadeShadowConfigBuilder {
+            num_cascades: 4,
+            minimum_distance: 2.0,
+            maximum_distance: 3000.0,
+            first_cascade_far_bound: 60.0,
+            overlap_proportion: 0.2,
+        }
+        .build(),
         Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y),
     ));
 
@@ -406,6 +421,28 @@ fn apply_day_night_cycle(
 
 /// Spawns the star-map night sky: a box centred on the viewer whose custom material
 /// samples the equirectangular star map by view direction (no UV-sphere poles or seams).
+/// Fade the emissive building windows in as the sun drops below the horizon, so the
+/// city lights up at night (and windows read as dark glass by day).
+fn update_window_glow(
+    dev: Res<DevPanelState>,
+    windows: Query<(
+        &systems::osm_buildings::WindowGlow,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let elevation = sun_direction(dev.time_of_day).y;
+    // Begin glowing as the sun lowers in the evening (elevation ~0.18), reaching
+    // full a little after dusk — a gentle ramp, not an on/off at full dark.
+    let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
+    for (bucket, mat) in windows.iter() {
+        if let Some(m) = materials.get_mut(&mat.0) {
+            let e = 1.2 * glow * bucket.0; // subtle, warm; per-bucket brightness
+            m.emissive = LinearRgba::rgb(e, 0.72 * e, 0.34 * e);
+        }
+    }
+}
+
 /// `update_star_sky` keeps it on the camera and fades it with the night factor.
 fn setup_stars(
     mut commands: Commands,
