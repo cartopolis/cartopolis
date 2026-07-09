@@ -1,20 +1,26 @@
 //! OSM 3D buildings (ADR-020/022) — a camera-following building patch.
 //!
 //! Fetches OSM building footprints around the camera from the Overpass API and
-//! extrudes each footprint to its `height` / `building:levels` tag — both on a
-//! background thread, so the main thread only turns the prepared vertex buffers
-//! into assets/entities. Two rings: full detail (windows, roof shapes) near the
-//! camera, and a plain-extrusion LOD ring out to `FAR_PATCH_RADIUS` so buildings
-//! continue toward the horizon. As the camera roams, the patch is re-fetched and
-//! the previous set despawned, so buildings follow the streamed ground
-//! (`map_stream`).
+//! extrudes each footprint to its `height` / `building:levels` tag — both on
+//! background threads, so the main thread only turns prepared vertex buffers
+//! into assets/entities. Two layers:
+//!
+//! - **Detail patch** (windows, roof shapes) around the camera, re-fetched and
+//!   swapped as the camera drifts.
+//! - **Far LOD cells**: simplified extrusions streamed per CACHE_ZOOM cell out
+//!   to `FAR_CELL_RADIUS` (like map tiles — fetched once, kept while in range),
+//!   covering the detail area too so patch refreshes never flicker; LOD volumes
+//!   nest inside their detailed twins to avoid z-fighting.
+//!
+//! Buildings follow the streamed ground (`map_stream`).
 //!
 //! Placement maps each vertex through the same Web Mercator math as the tiles
 //! (relative to the anchor region tile); heights use the interim quad-to-metre
 //! scale until the real-metre frame (ADR-019) lands.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -65,20 +71,11 @@ struct Building {
     roof_across: bool,
 }
 
-/// Which stage of the two-stage patch build a worker result belongs to. The
-/// detail patch is a handful of Overpass cells and lands within seconds; the far
-/// ring is many more cells (throttled) and follows behind, reusing the detail
-/// stage's disk-cached cells.
-enum PatchStage {
-    Detail,
-    Far,
-}
-
-/// A patch fully prepared on the background thread — fetched footprints *and*
-/// built meshes — so the main thread only creates assets and entities (no
+/// A detail patch fully prepared on the background thread — fetched footprints
+/// *and* built meshes — so the main thread only creates assets and entities (no
 /// frame hitch from extruding thousands of buildings).
 struct BuiltPatch {
-    /// Footprints (detail + far), retained for hit-testing / prim conversion.
+    /// Footprints, retained for hit-testing / prim conversion.
     buildings: Vec<Building>,
     /// BigSpace cell the mesh vertices are relative to.
     patch_cell: GridCell,
@@ -86,8 +83,6 @@ struct BuiltPatch {
     detail: Option<Mesh>,
     /// Window quads per glow bucket (indexes `WINDOW_GLOW_MULT`).
     windows: [Option<Mesh>; 4],
-    /// Simplified far-ring buildings out to `FAR_PATCH_RADIUS`.
-    far: Option<Mesh>,
 }
 
 /// Camera-following building patch: re-fetched from Overpass when the camera
@@ -100,12 +95,24 @@ pub struct OsmBuildings {
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
     in_flight: bool,
-    /// Completed fetch+build stages, consumed in order on the main thread.
-    fetch: Arc<Mutex<Vec<(PatchStage, Result<BuiltPatch, String>)>>>,
+    /// Latest completed detail fetch+build, consumed on the main thread.
+    fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
     /// Detail-ring mesh entities (buildings + windows), despawned on re-fetch.
     detail_entities: Vec<Entity>,
-    /// Far LOD ring mesh entity, despawned when its replacement arrives.
-    far_entities: Vec<Entity>,
+    /// Far LOD cell worker: job queue of CACHE_ZOOM cell coords.
+    far_jobs: Option<Sender<(i64, i64)>>,
+    /// Completed far cells from the worker: mesh + its BigSpace cell (None for
+    /// cells with no buildings).
+    #[allow(clippy::type_complexity)]
+    far_results: Arc<Mutex<Vec<((i64, i64), Result<Option<(GridCell, Mesh)>, String>)>>>,
+    /// Far cells ever queued (kept so completed/empty cells aren't re-queried).
+    far_requested: HashSet<(i64, i64)>,
+    /// Failed far-cell fetch attempts (bounded retry).
+    far_failed: HashMap<(i64, i64), u32>,
+    /// Spawned far-cell mesh entities, despawned when out of range.
+    far_cells: HashMap<(i64, i64), Entity>,
+    /// Shared material for all far-cell meshes.
+    far_material: Option<Handle<StandardMaterial>>,
     /// Per-building data for the current patch, retained so an individual building
     /// can later be hit-tested and converted to an editable prim (ADR-020/021).
     buildings: Vec<Building>,
@@ -138,11 +145,13 @@ const WINDOW_GLOW_MULT: [f32; 4] = [0.0, 0.5, 0.9, 1.35];
 /// Tiles out from the camera covered by the full-detail building patch
 /// (windows, roof shapes).
 const BUILDING_PATCH_RADIUS: i64 = 3;
-/// Tiles out from the camera covered by the far LOD mesh: simplified extrusions
-/// with flat caps (no windows, no roof shapes), all merged into one extra draw
-/// call, so buildings continue toward the horizon at little cost. Covers the
-/// detail area too as a flicker-free fallback during patch refreshes.
-const FAR_PATCH_RADIUS: i64 = 16;
+/// CACHE_ZOOM cells out from the camera covered by far-LOD building cells
+/// (radius 3 → 7×7 cells ≈ ±5 km). Each cell streams in independently (fetched
+/// once, meshed on the worker, kept while in range), so this radius costs
+/// nothing on camera drift — unlike the old monolithic far patch, which was
+/// re-fetched and rebuilt wholesale. Covers the detail area too, as a
+/// flicker-free fallback while a detail refresh is in flight.
+const FAR_CELL_RADIUS: i64 = 3;
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
 /// patch trailing the camera a bit further before refreshing.
@@ -180,13 +189,28 @@ pub fn update_buildings(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
 ) {
-    // Establish the region anchor once.
+    // Establish the region anchor once, and start the far-cell worker: it
+    // streams one CACHE_ZOOM cell at a time (disk-cached Overpass fetch + LOD
+    // mesh build), entirely off the main thread.
     if osm.anchor.is_none() {
         let Some(region) = regions.iter().next() else {
             return;
         };
         let z = region.tile_z.clamp(0, u32::MAX as i64) as u32;
-        osm.anchor = Some((region.tile_x, region.tile_y, z, region.latitude));
+        let (ax, ay, lat) = (region.tile_x, region.tile_y, region.latitude);
+        osm.anchor = Some((ax, ay, z, lat));
+
+        let (tx, rx) = std::sync::mpsc::channel::<(i64, i64)>();
+        osm.far_jobs = Some(tx);
+        let results = osm.far_results.clone();
+        std::thread::spawn(move || {
+            while let Ok((cx, cy)) = rx.recv() {
+                let built = build_far_cell(cx, cy, ax, ay, z, lat);
+                if let Ok(mut g) = results.lock() {
+                    g.push(((cx, cy), built));
+                }
+            }
+        });
     }
     let (ax, ay, z, lat) = osm.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -212,54 +236,33 @@ pub fn update_buildings(
         osm.last_center = Some(center);
         let slot = osm.fetch.clone();
 
-        // Bounding boxes for the two stages; each fetch assembles its box from
-        // fixed CACHE_ZOOM cells, so the far stage reuses the detail stage's
-        // freshly-cached cells and only pays for the outer ring.
+        // Detail bounding box; the fetch assembles it from fixed CACHE_ZOOM
+        // cells shared with the far-cell worker's disk cache.
         let rd = BUILDING_PATCH_RADIUS;
         let (d_north, d_west) = tile_to_lat_lng(center.0 - rd, center.1 - rd, z);
         let (d_south, d_east) = tile_to_lat_lng(center.0 + rd + 1, center.1 + rd + 1, z);
-        let rf = FAR_PATCH_RADIUS;
-        let (f_north, f_west) = tile_to_lat_lng(center.0 - rf, center.1 - rf, z);
-        let (f_south, f_east) = tile_to_lat_lng(center.0 + rf + 1, center.1 + rf + 1, z);
 
-        // Everything below runs on the worker: the Overpass fetches AND the mesh
+        // Everything below runs on the worker: the Overpass fetch AND the mesh
         // building (merging thousands of extrusions into shared vertex buffers
         // used to hitch the main thread for a frame). Vertices are relative to
         // the patch's BigSpace cell so f32 stays precise at any range.
         let (patch_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
-        let detail_half = (BUILDING_PATCH_RADIUS as f32 + 0.5) * tile_m;
         std::thread::spawn(move || {
             let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
             let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-            // Footprint → (cell-local ring, camera-relative Chebyshev distance).
-            let local_ring = |b: &Building| {
-                let world_ring: Vec<Vec2> = b
-                    .ring
-                    .iter()
-                    .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
-                    .collect();
-                let centroid =
-                    world_ring.iter().copied().sum::<Vec2>() / world_ring.len().max(1) as f32;
-                let ring: Vec<Vec2> = world_ring
-                    .iter()
-                    .map(|w| Vec2::new(w.x - cell_ox, w.y - cell_oz))
-                    .collect();
-                let dist = (centroid.x - world_x)
-                    .abs()
-                    .max((centroid.y - world_z).abs());
-                (ring, dist)
-            };
-
-            // Stage 1: the small detail patch — lands within seconds.
-            let detail = fetch_patch(d_south, d_west, d_north, d_east).map(|buildings| {
+            let result = fetch_patch(d_south, d_west, d_north, d_east).map(|buildings| {
                 let mut bld = MeshData::default();
                 let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
                 for b in &buildings {
-                    let (ring, dist) = local_ring(b);
-                    if dist > detail_half {
-                        continue;
-                    }
+                    let ring: Vec<Vec2> = b
+                        .ring
+                        .iter()
+                        .map(|&(la, lo)| {
+                            let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                            Vec2::new(w.x - cell_ox, w.y - cell_oz)
+                        })
+                        .collect();
                     push_building(
                         &mut bld,
                         &mut wins,
@@ -279,128 +282,195 @@ pub fn update_buildings(
                     patch_cell,
                     detail: bld.into_mesh(),
                     windows: wins.map(MeshData::into_mesh),
-                    far: None,
                 }
             });
             if let Ok(mut g) = slot.lock() {
-                g.push((PatchStage::Detail, detail));
-            }
-
-            // Stage 2: the far LOD mesh. It covers the WHOLE box including the
-            // detail area — LOD volumes nest inside their detailed twins (see
-            // push_building_lod), so there's no hole to flicker through while a
-            // later patch refresh replaces the detail ring around a new centre.
-            let far = fetch_patch(f_south, f_west, f_north, f_east).map(|buildings| {
-                let mut farm = MeshData::default();
-                for b in &buildings {
-                    let (ring, dist) = local_ring(b);
-                    // Sheds and garages are invisible from afar; skipping them
-                    // keeps the big ring's vertex budget in check.
-                    if dist > 1_200.0 && polygon_area(&ring) < 35.0 {
-                        continue;
-                    }
-                    // Approximate total height when only eaves height is known.
-                    let h = if b.height_is_eaves {
-                        b.height_m + 2.0
-                    } else {
-                        b.height_m
-                    };
-                    push_building_lod(&mut farm, &ring, h, b.wall_color, b.roof_color);
-                }
-                BuiltPatch {
-                    buildings,
-                    patch_cell,
-                    detail: None,
-                    windows: std::array::from_fn(|_| None),
-                    far: farm.into_mesh(),
-                }
-            });
-            if let Ok(mut g) = slot.lock() {
-                g.push((PatchStage::Far, far));
+                *g = Some(result);
             }
         });
     }
 
-    // Apply completed stages in order, each replacing only its own entities, so
-    // near buildings appear as soon as stage 1 lands.
-    let ready: Vec<(PatchStage, Result<BuiltPatch, String>)> = osm
-        .fetch
-        .lock()
-        .map(|mut g| g.drain(..).collect())
-        .unwrap_or_default();
-    if ready.is_empty() {
-        return;
-    }
     let Ok(root) = bigspace.single() else {
         return;
     };
 
-    for (stage, result) in ready {
-        // The far stage is always posted last; its arrival ends the fetch cycle.
-        if matches!(stage, PatchStage::Far) {
-            osm.in_flight = false;
-        }
-        let patch = match result {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(error = %e, "OSM buildings fetch failed");
-                continue;
-            }
-        };
-        let patch_cell = patch.patch_cell;
-        let count = patch.buildings.len();
-        // Keep the widest footprint set for hit-testing / prim conversion.
-        osm.buildings = patch.buildings;
+    // --- Far LOD cells: stream one CACHE_ZOOM cell at a time (like map tiles) ---
+    if let Some(jobs) = osm.far_jobs.clone() {
+        // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
+        let shift = z.saturating_sub(CACHE_ZOOM);
+        let (ccx, ccy) = (
+            center.0.div_euclid(1i64 << shift),
+            center.1.div_euclid(1i64 << shift),
+        );
 
-        match stage {
-            PatchStage::Detail => {
-                for entity in osm.detail_entities.drain(..) {
-                    commands.entity(entity).despawn();
+        // Queue missing cells, nearest first so the surroundings fill outward.
+        let mut to_request: Vec<(i64, i64)> = Vec::new();
+        for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+            for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+                let cell = (ccx + dx, ccy + dy);
+                if !osm.far_requested.contains(&cell)
+                    && *osm.far_failed.get(&cell).unwrap_or(&0) < 3
+                {
+                    to_request.push(cell);
                 }
-                spawn_detail_patch(
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    &mut osm,
-                    root,
-                    patch_cell,
-                    patch.detail,
-                    patch.windows,
-                );
             }
-            PatchStage::Far => {
-                for entity in osm.far_entities.drain(..) {
-                    commands.entity(entity).despawn();
-                }
-                // Far LOD ring: one merged mesh of plain extrusions.
-                if let Some(mesh) = patch.far {
-                    let material = materials.add(StandardMaterial {
-                        base_color: Color::WHITE,
-                        perceptual_roughness: 0.95,
-                        double_sided: true,
-                        cull_mode: None,
-                        ..default()
-                    });
+        }
+        to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+        for cell in to_request {
+            osm.far_requested.insert(cell);
+            let _ = jobs.send(cell);
+        }
+
+        // Apply completed cells.
+        let done: Vec<((i64, i64), Result<Option<(GridCell, Mesh)>, String>)> = osm
+            .far_results
+            .lock()
+            .map(|mut g| g.drain(..).collect())
+            .unwrap_or_default();
+        for (cell, built) in done {
+            match built {
+                Ok(Some((grid_cell, mesh))) => {
+                    let material = osm
+                        .far_material
+                        .get_or_insert_with(|| {
+                            materials.add(StandardMaterial {
+                                base_color: Color::WHITE,
+                                perceptual_roughness: 0.95,
+                                double_sided: true,
+                                cull_mode: None,
+                                ..default()
+                            })
+                        })
+                        .clone();
                     let entity = commands
                         .spawn((
                             Mesh3d(meshes.add(mesh)),
                             MeshMaterial3d(material),
                             Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                            patch_cell,
+                            grid_cell,
                             ChildOf(root),
                             OsmBuildingMesh,
                         ))
                         .id();
-                    osm.far_entities.push(entity);
+                    osm.far_cells.insert(cell, entity);
+                }
+                Ok(None) => {} // empty cell; stays in far_requested so it isn't re-queried
+                Err(e) => {
+                    tracing::warn!(cell = ?cell, error = %e, "far building cell failed");
+                    *osm.far_failed.entry(cell).or_insert(0) += 1;
+                    // Allow a bounded re-queue on a later frame.
+                    osm.far_requested.remove(&cell);
                 }
             }
         }
-        tracing::info!(count, "buildings updated");
+
+        // Despawn cells out of range (with one cell of hysteresis); re-entry
+        // re-requests them, served from the disk cache.
+        let stale: Vec<(i64, i64)> = osm
+            .far_cells
+            .keys()
+            .filter(|(cx2, cy2)| {
+                (cx2 - ccx).abs().max((cy2 - ccy).abs()) > FAR_CELL_RADIUS + 1
+            })
+            .copied()
+            .collect();
+        for cell in stale {
+            if let Some(entity) = osm.far_cells.remove(&cell) {
+                commands.entity(entity).despawn();
+            }
+            osm.far_requested.remove(&cell);
+        }
     }
+
+    // --- Detail patch: apply a completed fetch+build ---
+    let ready = osm.fetch.lock().ok().and_then(|mut g| g.take());
+    let Some(result) = ready else {
+        return;
+    };
+    osm.in_flight = false;
+    let patch = match result {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "OSM buildings fetch failed");
+            return;
+        }
+    };
+    for entity in osm.detail_entities.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    let patch_cell = patch.patch_cell;
+    let count = patch.buildings.len();
+    osm.buildings = patch.buildings; // retain footprints for future per-building conversion
+    spawn_detail_patch(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &mut osm,
+        root,
+        patch_cell,
+        patch.detail,
+        patch.windows,
+    );
+    tracing::info!(count, "buildings updated");
 }
 
-/// Spawn the detail-ring meshes (buildings + per-bucket windows) for a stage-1
-/// patch, tracking the entities for despawn on the next refresh.
+/// Fetch one CACHE_ZOOM cell (disk-cached Overpass) and build its far-LOD mesh,
+/// anchored to the cell's own BigSpace grid cell for f32 precision. Runs on the
+/// far-cell worker thread. Returns `None` for cells with no buildings.
+fn build_far_cell(
+    cx: i64,
+    cy: i64,
+    ax: i64,
+    ay: i64,
+    z: u32,
+    lat: f64,
+) -> Result<Option<(GridCell, Mesh)>, String> {
+    let buildings = fetch_cell(cx, cy, CACHE_ZOOM)?;
+    let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
+    let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
+    let tile_m = tile_to_meters(z, lat) as f32;
+
+    // Anchor vertices to the BigSpace cell at the cell's centre.
+    let c_world = lat_lng_to_local((north + south) / 2.0, (west + east) / 2.0, ax, ay, z, tile_m);
+    let (grid_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+        .translation_to_grid(Vec3::new(c_world.x, 0.0, c_world.y).as_dvec3());
+    let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
+    let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
+
+    let mut buf = MeshData::default();
+    for b in &buildings {
+        // A building straddling a cell edge is returned by both cells; only the
+        // cell owning its first vertex renders it.
+        let (blat, blng) = b.ring[0];
+        if blat < south || blat > north || blng < west || blng > east {
+            continue;
+        }
+        let ring: Vec<Vec2> = b
+            .ring
+            .iter()
+            .map(|&(la, lo)| {
+                let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                Vec2::new(w.x - ox, w.y - oz)
+            })
+            .collect();
+        // Sheds and garages read as noise from afar; the detail ring shows them
+        // up close, and skipping them keeps the vertex budget in check.
+        if polygon_area(&ring) < 30.0 {
+            continue;
+        }
+        // Approximate total height when only eaves height is known.
+        let h = if b.height_is_eaves {
+            b.height_m + 2.0
+        } else {
+            b.height_m
+        };
+        push_building_lod(&mut buf, &ring, h, b.wall_color, b.roof_color);
+    }
+    Ok(buf.into_mesh().map(|m| (grid_cell, m)))
+}
+
+/// Spawn the detail-ring meshes (buildings + per-bucket windows) for a completed
+/// detail patch, tracking the entities for despawn on the next refresh.
 #[allow(clippy::too_many_arguments)]
 fn spawn_detail_patch(
     commands: &mut Commands,

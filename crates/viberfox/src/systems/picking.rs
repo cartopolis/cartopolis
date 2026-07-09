@@ -149,17 +149,12 @@ pub fn prim_picking(
         } else {
             context_menu.hit_prim_id = None;
 
-            let mut found_region = false;
-            for (_, region, region_transform) in region_query.iter() {
+            if let Some((_, region, region_transform)) = region_query.iter().next() {
                 let region_y = region_transform.translation().y;
                 context_menu.hit_region_id = Some(region.id);
                 context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, region_y)
                     .unwrap_or_else(|| ray_origin + ray_dir * 20.0);
-                found_region = true;
-                break;
-            }
-
-            if !found_region {
+            } else {
                 context_menu.visible = false;
             }
             tracing::debug!("context menu for region");
