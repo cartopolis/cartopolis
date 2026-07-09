@@ -29,6 +29,7 @@ use resources::{
 use big_space::prelude::{BigSpace, GridCell};
 use systems::egui_manager::EguiPlugin;
 use systems::*;
+use utils::sun::sun_direction;
 
 #[derive(Parser, Debug)]
 #[command(name = "viberfox")]
@@ -79,6 +80,7 @@ fn main() {
     .add_plugins(EguiPlugin)
     .add_plugins(AtmospherePlugin)
     .add_plugins(MaterialPlugin::<StarSkyMaterial>::default())
+    .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
     .insert_resource(AtmosphereModel::default())
     .init_resource::<GameState>()
     .init_resource::<AvatarState>()
@@ -118,6 +120,7 @@ fn main() {
             spawn_avatar_entity,
             setup_sky,
             setup_stars,
+            setup_horizon_haze,
         ),
     )
     .add_systems(
@@ -217,9 +220,12 @@ fn main() {
             systems::ui::render_dev_panel,
             advance_day_cycle.before(apply_day_night_cycle),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
+            apply_distance_fog.after(systems::ui::render_dev_panel),
             update_window_glow,
             // Track the camera after it has been positioned this frame.
             update_star_sky.after(systems::free_camera::camera_controls),
+            update_horizon_haze.after(systems::free_camera::camera_controls),
+            track_atmosphere_altitude.after(systems::free_camera::camera_controls),
             systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
                 .after(systems::ai_assistant::render_ai_panel),
@@ -283,11 +289,15 @@ fn setup_sky(
     // (apply_day_night_cycle keeps them in sync afterwards).
     let sun_dir = sun_direction(dev.time_of_day);
     atmosphere.sun_position = sun_dir;
+    // The Nishita default puts the viewer 1 km above the surface, which drops the
+    // sky's horizon ~1° below the city skyline and exposes a dark under-horizon
+    // wedge (short, in-scatter-starved rays). Park it at rooftop altitude instead.
+    atmosphere.ray_origin = Vec3::new(0.0, atmosphere.planet_radius + 60.0, 0.0);
     let day = sun_dir.y.max(0.0);
 
     commands.spawn((
         DirectionalLight {
-            illuminance: AMBIENT_DAYLIGHT * day,
+            illuminance: AMBIENT_DAYLIGHT * day * SUN_SCALE,
             shadows_enabled: true,
             ..default()
         },
@@ -305,10 +315,16 @@ fn setup_sky(
 
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
-        brightness: 10.0 + 3000.0 * day,
+        brightness: 10.0 + AMBIENT_DAY_BRIGHTNESS * day,
         affects_lightmapped_meshes: true,
     });
 }
+
+/// Global trim on the sun's illuminance: without tonemapping, full daylight on the
+/// near-white OSM basemap clips to solid white and reads oversaturated.
+const SUN_SCALE: f32 = 0.8;
+/// Peak added ambient brightness at noon (same clipping consideration).
+const AMBIENT_DAY_BRIGHTNESS: f32 = 2400.0;
 
 /// Marker for the world-aligned night-sky (star map) sphere.
 #[derive(Component)]
@@ -374,17 +390,49 @@ impl Material for StarSkyMaterial {
     }
 }
 
-/// Sun-arc angle for a time of day (0–24 h): 0 = sunrise (east), π/2 = noon (up),
-/// π = sunset (west), −π/2 = midnight (below).
-fn day_angle(hours: f32) -> f32 {
-    let t = (hours / 24.0).rem_euclid(1.0);
-    (t - 0.25) * std::f32::consts::TAU
+/// Marker for the fog-colored horizon-haze shell (see `shaders/horizonhaze.wgsl`).
+#[derive(Component)]
+struct HorizonHaze;
+
+/// Alpha-blended band of fog color around the horizon, bridging the fogged ground
+/// and the atmosphere sky (whose single-scattering model darkens at grazing angles).
+/// Colored from the camera's `DistanceFog` each frame (see `update_horizon_haze`).
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct HorizonHazeMaterial {
+    #[uniform(0)]
+    color: LinearRgba,
+    /// x: elevation where the haze fades out fully, y: peak alpha,
+    /// z: directional-light exponent (w unused).
+    #[uniform(1)]
+    params: Vec4,
+    /// `DistanceFog::directional_light_color` — rgb tint, alpha = strength.
+    #[uniform(2)]
+    dir_light_color: LinearRgba,
 }
 
-/// Unit direction toward the sun for a time of day.
-fn sun_direction(hours: f32) -> Vec3 {
-    let a = day_angle(hours);
-    Vec3::new(a.cos(), a.sin(), 0.2).normalize()
+impl Material for HorizonHazeMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/horizonhaze.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline<Self>,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Camera is inside the shell; render its interior, and don't occlude
+        // anything behind it (depth test still lets world geometry cover it).
+        descriptor.primitive.cull_mode = None;
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = false;
+        }
+        Ok(())
+    }
 }
 
 /// When the dev panel's "Quick cycle" toggle is on, advances the time of day smoothly,
@@ -412,11 +460,54 @@ fn apply_day_night_cycle(
     atmosphere.sun_position = sun_dir;
 
     let day = sun_dir.y.max(0.0); // 0 at/below the horizon, → 1 overhead
+    // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
+    let sun_through_fog = 1.0 - 0.75 * dev.fog_density;
     for (mut tf, mut light) in sun.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y);
-        light.illuminance = AMBIENT_DAYLIGHT * day;
+        light.illuminance = AMBIENT_DAYLIGHT * day * SUN_SCALE * sun_through_fog;
     }
-    ambient.brightness = 10.0 + 3000.0 * day;
+    ambient.brightness = 10.0 + AMBIENT_DAY_BRIGHTNESS * day;
+}
+
+/// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider
+/// and the time of day (fog darkens at night). Also couples the sky to the fog:
+/// fog is Mie scattering, so raising the atmosphere's Mie coefficient with density
+/// turns the sky itself milky and whites out the horizon instead of leaving crisp
+/// blue sky above the fog wall. Runs only when the dev panel changes.
+fn apply_distance_fog(
+    dev: Res<DevPanelState>,
+    mut fog: Query<&mut DistanceFog, With<systems::free_camera::FreeCamera>>,
+) {
+    if !dev.is_changed() {
+        return;
+    }
+    // The atmosphere itself stays a clear sky: boosting Nishita's Mie scattering
+    // with density was tried and abandoned — single scattering *darkens* the low
+    // sky instead of whitening it. The horizon-haze shell fogs the sky instead
+    // (see update_horizon_haze), veiling the whole dome as density rises.
+    let elevation = sun_direction(dev.time_of_day).y;
+    for mut f in fog.iter_mut() {
+        *f = systems::free_camera::distance_fog(dev.fog_density, elevation);
+    }
+}
+
+/// Keeps the Nishita atmosphere's viewpoint at the camera's actual altitude so the
+/// sky's horizon line stays correct when flying up. Quantized (25 m) because every
+/// model change re-renders the sky cubemap.
+fn track_atmosphere_altitude(
+    camera: Query<(&GridCell, &Transform), With<systems::free_camera::FreeCamera>>,
+    mut atmosphere: AtmosphereMut<Nishita>,
+    mut last_altitude: Local<f32>,
+) {
+    let Ok((cell, tf)) = camera.single() else {
+        return;
+    };
+    let altitude =
+        (cell.y as f32 * systems::free_camera::WORLD_CELL_EDGE + tf.translation.y).max(10.0);
+    if *last_altitude == 0.0 || (altitude - *last_altitude).abs() > 25.0 {
+        *last_altitude = altitude;
+        atmosphere.ray_origin.y = atmosphere.planet_radius + altitude;
+    }
 }
 
 /// Spawns the star-map night sky: a box centred on the viewer whose custom material
@@ -459,11 +550,12 @@ fn setup_stars(
             s.sampler = crate::systems::rendering::repeat_linear_sampler();
         },
     );
-    // A box just inside the atmosphere's skybox cube (faces ~705 at far=1000) — a smaller
-    // concentric cube is uniformly in front of it in every direction, so no part pokes
-    // through. The shader samples by view direction, so the box shape is irrelevant to the
-    // mapping; this is just a cheap 12-triangle shell to enclose the camera.
-    let mesh = meshes.add(Cuboid::from_length(1300.0).mesh());
+    // A box just inside the atmosphere's skybox cube (faces at ~0.707 × SKYBOX_MESH_FAR,
+    // i.e. ~212 km) — a smaller concentric cube is uniformly in front of it in every
+    // direction, so no part pokes through, while staying beyond all world geometry so
+    // stars never draw over distant buildings. The shader samples by view direction, so
+    // the box shape is irrelevant to the mapping; it's just a cheap 12-triangle shell.
+    let mesh = meshes.add(Cuboid::from_length(400_000.0).mesh());
     let material = materials.add(StarSkyMaterial {
         brightness: 0.0, // set each frame from the night factor; starts invisible (day)
         texture,
@@ -476,6 +568,62 @@ fn setup_stars(
         bevy::pbr::NotShadowReceiver,
         StarSky,
     ));
+}
+
+/// Spawns the fog-colored horizon-haze shell: a slightly smaller sibling of the star
+/// box whose shader paints a band of fog color at the horizon (see horizonhaze.wgsl).
+fn setup_horizon_haze(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<HorizonHazeMaterial>>,
+) {
+    let mesh = meshes.add(Cuboid::from_length(360_000.0).mesh());
+    let material = materials.add(HorizonHazeMaterial {
+        color: LinearRgba::WHITE,
+        params: Vec4::ZERO, // set each frame from the distance fog
+        dir_light_color: LinearRgba::NONE,
+    });
+    commands.spawn((
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::default(),
+        bevy::pbr::NotShadowCaster,
+        bevy::pbr::NotShadowReceiver,
+        HorizonHaze,
+    ));
+}
+
+/// Keeps the horizon-haze shell on the camera and matches its color and strength to
+/// the camera's `DistanceFog`, so fogged ground and sky meet seamlessly at the horizon.
+fn update_horizon_haze(
+    dev: Res<DevPanelState>,
+    camera: Query<(&GlobalTransform, &DistanceFog), With<Camera3d>>,
+    mut haze: Query<(&mut Transform, &MeshMaterial3d<HorizonHazeMaterial>), With<HorizonHaze>>,
+    mut materials: ResMut<Assets<HorizonHazeMaterial>>,
+) {
+    let Ok((cam, fog)) = camera.single() else {
+        return;
+    };
+    let Ok((mut tf, mat_handle)) = haze.single_mut() else {
+        return;
+    };
+    tf.translation = cam.translation();
+
+    if let Some(mat) = materials.get_mut(&mat_handle.0) {
+        let d = dev.fog_density;
+        mat.color = fog.color.to_linear();
+        // The band rises and strengthens with fog density; a small base keeps the
+        // sky's single-scattering horizon artifact covered even with the fog off.
+        // The zenith floor (w) grows quadratically so light haze leaves the sky
+        // blue while dense fog closes over the whole dome.
+        mat.params = Vec4::new(
+            0.03 + 0.25 * d,
+            (0.35 + 1.2 * d).min(1.0),
+            fog.directional_light_exponent,
+            d * d,
+        );
+        mat.dir_light_color = fog.directional_light_color.to_linear();
+    }
 }
 
 /// Keeps the star box centred on the camera (so it reads as infinitely far) and fades

@@ -121,6 +121,13 @@ pub fn render_dev_panel(
                 }
             });
             ui.separator();
+            ui.label("Distance fog");
+            ui.add(
+                egui::Slider::new(&mut dev.fog_density, 0.0..=1.0)
+                    .text("density")
+                    .step_by(0.01),
+            );
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.checkbox(&mut dev.auto_cycle, "Quick cycle");
                 ui.add(

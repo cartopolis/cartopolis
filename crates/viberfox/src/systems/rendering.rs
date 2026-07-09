@@ -138,9 +138,12 @@ pub fn spawn_regions(
             tile_m,
         ));
 
-        // Create simple untextured material
+        // Create simple untextured material. Fully matte: default reflectance puts
+        // a grazing-angle Fresnel sheen on ground planes, bleaching them at distance.
         let default_material = materials.add(StandardMaterial {
             base_color: Color::srgb(0.7, 0.7, 0.7), // Light gray
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
             ..default()
         });
 
@@ -192,9 +195,11 @@ pub fn update_region_materials(
 ) {
     for (mut material, tile_texture) in region_query.iter_mut() {
         if images.get(&tile_texture.handle).is_some() {
-            // Create new material with tile texture
+            // Create new material with tile texture (matte, like the untextured one).
             let new_material = materials.add(StandardMaterial {
                 base_color_texture: Some(tile_texture.handle.clone()),
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
                 ..default()
             });
             *material = MeshMaterial3d(new_material);

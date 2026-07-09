@@ -54,7 +54,7 @@ pub struct Database {
 }
 
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
-/// exposes a day/night slider that drives the sun for testing the lighting.
+/// exposes a day/night slider that drives the sun, and a distance-fog slider.
 #[derive(Resource)]
 pub struct DevPanelState {
     pub open: bool,
@@ -64,6 +64,9 @@ pub struct DevPanelState {
     pub auto_cycle: bool,
     /// Real seconds for one full day/night loop when `auto_cycle` is on.
     pub cycle_seconds: f32,
+    /// Atmospheric distance-fog density, 0.0–1.0: higher pulls the visibility
+    /// distance in (see `free_camera::distance_fog`). 0.0 = off.
+    pub fog_density: f32,
 }
 
 impl Default for DevPanelState {
@@ -73,6 +76,7 @@ impl Default for DevPanelState {
             time_of_day: 12.0,
             auto_cycle: false,
             cycle_seconds: 10.0,
+            fog_density: 0.15,
         }
     }
 }

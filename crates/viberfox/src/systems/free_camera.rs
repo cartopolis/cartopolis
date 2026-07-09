@@ -13,14 +13,49 @@ use crate::systems::rendering::RegionMesh;
 #[derive(Component)]
 pub struct FreeCamera;
 
+/// Builds the camera's [`DistanceFog`] for a dev-panel density in 0.0–1.0 and the
+/// sun's elevation (`sun_direction().y`). The falloff is exponential-squared so the
+/// near field stays clear and geometry vanishes into a fog "wall"; the fog color
+/// tracks day/night so it reads as bright haze by day and near-black murk at night.
+pub fn distance_fog(density: f32, sun_elevation: f32) -> DistanceFog {
+    let day = (sun_elevation / 0.2).clamp(0.0, 1.0);
+    let night_color = Vec3::new(0.015, 0.02, 0.035);
+    // Slightly desaturated toward white so the fog wall meets the Mie-hazed sky.
+    let day_color = Vec3::new(0.71, 0.75, 0.83);
+    let c = night_color.lerp(day_color, day);
+
+    // Map density to a visibility distance on an exponential curve:
+    // 0.15 → ~7 km haze, 0.5 → ~1.2 km fog, 1.0 → ~90 m pea soup.
+    let falloff = if density > 0.001 {
+        FogFalloff::from_visibility_squared(15_000.0 * 0.006_f32.powf(density))
+    } else {
+        FogFalloff::Linear {
+            start: f32::MAX,
+            end: f32::MAX,
+        }
+    };
+
+    DistanceFog {
+        color: Color::srgb(c.x, c.y, c.z),
+        // Warm sun-side glow in the fog; fades out with the sun.
+        directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.5 * day),
+        directional_light_exponent: 30.0,
+        falloff,
+    }
+}
+
 // Simple constants
 const FREE_CAMERA_SPEED: f32 = 45.0;
 const FREE_CAMERA_SPEED_FAST: f32 = 180.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
 const MIN_CAMERA_HEIGHT: f32 = 0.5;
 
-/// Match [`bevy_atmosphere::settings::SkyboxCreationMode`] fallback when projection far is unavailable.
-const SKYBOX_MESH_FAR: f32 = 1000.0;
+/// Size parameter for the manually-spawned atmosphere skybox mesh (the `detection`
+/// feature is off — see CLAUDE.md). The cube's faces sit at ~0.707× this value and
+/// the mesh **writes depth**, so it occludes everything farther away; it must be
+/// sized beyond the whole world (tile pyramid ~20 km, ground disc 150 km). The sky
+/// shader samples by view direction, so the size is visually irrelevant.
+const SKYBOX_MESH_FAR: f32 = 300_000.0;
 
 /// Grid cell edge for the world `BigSpace` (ADR-019/021). Large enough that local
 /// play rarely recenters; small enough to keep within-cell f32 precise.
@@ -36,6 +71,8 @@ pub fn setup_camera(
     mut camera_state: ResMut<CameraState>,
     sky_material: Res<AtmosphereSkyBoxMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    dev: Res<crate::resources::DevPanelState>,
 ) {
     camera_state.mode = CameraMode::Avatar;
     camera_state.distance = 5.0;
@@ -48,12 +85,28 @@ pub fn setup_camera(
     commands.spawn_big_space(
         Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD),
         |root| {
+            // The root must carry Visibility: renderable children inherit it, and a
+            // missing parent Visibility triggers Bevy's B0004 warning per child.
+            root.insert(Visibility::default());
             root.spawn_spatial((
                 Camera3d::default(),
+                // Bevy's default far plane (1 km) clips the streamed tile pyramid
+                // and the horizon ground disc; reversed-z depth keeps precision
+                // fine at this range.
+                Projection::Perspective(PerspectiveProjection {
+                    far: 200_000.0,
+                    ..default()
+                }),
                 Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
                 AtmosphereCamera::default(),
                 FreeCamera,
                 FloatingOrigin,
+                // Atmospheric distance fog: distant buildings fade into haze, with a
+                // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
+                distance_fog(
+                    dev.fog_density,
+                    crate::utils::sun::sun_direction(dev.time_of_day).y,
+                ),
             ))
             .with_child((
                 Mesh3d(skybox_mesh),
@@ -61,6 +114,25 @@ pub fn setup_camera(
                 AtmosphereSkyBox,
                 NotShadowCaster,
                 NotShadowReceiver,
+            ));
+
+            // A ground disc out to the horizon, in the OSM basemap's paper tone.
+            // Without it, the world ends at the loaded tiles and the void below
+            // the horizon reads as a black gulf; with it, DistanceFog fades the
+            // ground into the haze so fog and sky meet seamlessly at any altitude.
+            root.spawn_spatial((
+                Mesh3d(meshes.add(Circle::new(150_000.0))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.83, 0.83, 0.80),
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                })),
+                // Well below the whole tile pyramid (whose coarsest rings sit a few
+                // metres down — see update_map_stream) so it never covers a tile.
+                Transform::from_xyz(0.0, -5.0, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                NotShadowCaster,
             ));
         },
     );
