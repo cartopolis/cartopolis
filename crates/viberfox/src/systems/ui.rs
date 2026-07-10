@@ -128,6 +128,18 @@ pub fn render_dev_panel(
                     .step_by(0.01),
             );
             ui.separator();
+            ui.label("Moon");
+            ui.add(
+                egui::Slider::new(
+                    &mut dev.moon_age_days,
+                    0.0..=crate::utils::sun::LUNAR_CYCLE_DAYS,
+                )
+                .text("age (days)")
+                .step_by(0.1),
+            );
+            let lit = crate::utils::sun::moon_illuminated_fraction(dev.moon_age_days);
+            ui.label(format!("{:.0}% lit (0 = new, ~14.8 = full)", lit * 100.0));
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.checkbox(&mut dev.auto_cycle, "Quick cycle");
                 ui.add(

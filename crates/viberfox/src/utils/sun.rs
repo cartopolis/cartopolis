@@ -2,7 +2,7 @@
 //! fog systems. The photometry follows the same extinction physics the Nishita sky
 //! shader integrates, so lights lit from these curves match what the sky shows.
 
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec3};
 
 /// Sun-arc angle for a time of day (0–24 h): 0 = sunrise (east), π/2 = noon (up),
 /// π = sunset (west), −π/2 = midnight (below).
@@ -81,6 +81,63 @@ pub fn daylight(hours: f32) -> f32 {
 pub fn horizon_proximity(hours: f32) -> f32 {
     let y = sun_direction(hours).y;
     (-(y / 0.16) * (y / 0.16)).exp()
+}
+
+/// Observer latitude (degrees north): sets the celestial pole's elevation above
+/// the north horizon. Fixed for the current NL-centric world; planet-scale
+/// streaming (ADR-019) can derive it from the region later.
+const OBSERVER_LATITUDE_DEG: f32 = 52.0;
+
+/// Diurnal rotation of the celestial sphere for a time of day: maps equatorial
+/// directions (+Y at the north celestial pole) into world space. The pole is
+/// tilted (90° − latitude) from the zenith toward the north horizon (−Z), and
+/// the dome turns at the sun's angular rate in the direction that makes stars
+/// rise in the east and set in the west. Everything pinned to the celestial
+/// sphere (star field, moon) moves through this one rotation.
+pub fn celestial_rotation(hours: f32) -> Quat {
+    Quat::from_rotation_x(OBSERVER_LATITUDE_DEG.to_radians() - std::f32::consts::FRAC_PI_2)
+        * Quat::from_rotation_y(-day_angle(hours))
+}
+
+/// One synodic month — the full new → full → new phase cycle, in days.
+pub const LUNAR_CYCLE_DAYS: f32 = 29.53;
+
+/// Phase angle for a lunar age in days: 0 = new (moon beside the sun), π = full.
+fn moon_phase_angle(age_days: f32) -> f32 {
+    age_days.rem_euclid(LUNAR_CYCLE_DAYS) / LUNAR_CYCLE_DAYS * std::f32::consts::TAU
+}
+
+/// Moon direction for a time of day and lunar age. The moon sits on the
+/// celestial sphere at declination +18°, and its right ascension advances
+/// ~12° per day of age — which *is* the phase mechanism, exactly as in the
+/// real sky: at age 0 it travels beside the sun (up by day, dark side toward
+/// us), at ~14.8 days it rises at sunset opposite the sun and is up all
+/// night, full; moonrise drifts later each day in between.
+pub fn moon_direction(hours: f32, age_days: f32) -> Vec3 {
+    let dec = 18f32.to_radians();
+    // RA 0 culminates at noon beside the sun, so age 0 lines up as new moon.
+    let ra = moon_phase_angle(age_days);
+    let equatorial = Vec3::new(dec.cos() * ra.cos(), dec.sin(), -(dec.cos() * ra.sin()));
+    celestial_rotation(hours) * equatorial
+}
+
+/// Illuminated fraction of the lunar disc (0 new → 1 full) for a lunar age.
+pub fn moon_illuminated_fraction(age_days: f32) -> f32 {
+    (1.0 - moon_phase_angle(age_days).cos()) * 0.5
+}
+
+/// Direction of the sunlight falling on the moon: exactly the phase angle away
+/// from the moon's direction, tipped toward the real sun's side of the sky so
+/// the terminator faces the way you'd expect. (The disc can't be lit by the raw
+/// sun direction: our sun rides its own arc rather than the celestial sphere,
+/// so at full-moon age the raw geometry would never quite reach a full disc.)
+pub fn moon_sunlight_direction(hours: f32, age_days: f32) -> Vec3 {
+    let moon = moon_direction(hours, age_days);
+    let axis = moon
+        .cross(sun_direction(hours))
+        .try_normalize()
+        .unwrap_or_else(|| moon.any_orthonormal_vector());
+    Quat::from_axis_angle(axis, moon_phase_angle(age_days)) * moon
 }
 
 /// Ambient sky color (linear RGB, unit scale): deep-blue skyglow at night, warm

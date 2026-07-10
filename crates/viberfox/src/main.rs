@@ -79,7 +79,8 @@ fn main() {
     .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
     .add_plugins(EguiPlugin)
     .add_plugins(AtmospherePlugin)
-    .add_plugins(MaterialPlugin::<StarSkyMaterial>::default())
+    .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
+    .add_plugins(MaterialPlugin::<MoonMaterial>::default())
     .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
     .insert_resource(AtmosphereModel::default())
     .init_resource::<GameState>()
@@ -120,6 +121,7 @@ fn main() {
             spawn_avatar_entity,
             setup_sky,
             setup_stars,
+            setup_moon,
             setup_horizon_haze,
         ),
     )
@@ -224,6 +226,7 @@ fn main() {
             update_window_glow,
             // Track the camera after it has been positioned this frame.
             update_star_sky.after(systems::free_camera::camera_controls),
+            update_moon.after(systems::free_camera::camera_controls),
             update_horizon_haze.after(systems::free_camera::camera_controls),
             track_atmosphere_altitude.after(systems::free_camera::camera_controls),
             systems::ai_assistant::render_ai_panel,
@@ -312,9 +315,34 @@ fn setup_sky(
         }
         .build(),
         Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y),
+        SunLight,
     ));
 
-    commands.insert_resource(ambient_light(dev.time_of_day));
+    // Moonlight: a second, faint directional light (kept in sync with the moon
+    // disc by apply_day_night_cycle). Perceptually blue-gray, with a shorter
+    // shadow range than the sun — moon shadows only need to read up close.
+    let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
+    commands.spawn((
+        DirectionalLight {
+            color: Color::linear_rgb(0.55, 0.72, 1.0),
+            illuminance: MOONLIGHT_ILLUMINANCE
+                * moonlight_factor(dev.time_of_day, dev.moon_age_days),
+            shadows_enabled: true,
+            ..default()
+        },
+        CascadeShadowConfigBuilder {
+            num_cascades: 2,
+            minimum_distance: 2.0,
+            maximum_distance: 1200.0,
+            first_cascade_far_bound: 80.0,
+            overlap_proportion: 0.2,
+        }
+        .build(),
+        Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y),
+        MoonLight,
+    ));
+
+    commands.insert_resource(ambient_light(dev.time_of_day, dev.moon_age_days));
 }
 
 /// Global trim on the sun's illuminance: the OSM basemap is near-white, so full
@@ -327,6 +355,31 @@ const AMBIENT_DAY_BRIGHTNESS: f32 = 1800.0;
 /// Ambient floor at night — faint blue city skyglow so the world stays legible
 /// instead of vanishing into black between the lit windows.
 const AMBIENT_NIGHT_BRIGHTNESS: f32 = 80.0;
+/// Peak moonlight illuminance (full moon at the zenith), on the same trimmed
+/// scale as the sun. Deliberately well above the night ambient floor: for the
+/// directional shaping to *read* — lit roofs and moon-facing facades standing
+/// out, soft shadows behind buildings — moonlight must dominate the ambient,
+/// which is also how a real moonlit night looks (the full moon is ~2500× any
+/// other natural night-sky light).
+const MOONLIGHT_ILLUMINANCE: f32 = 180.0;
+/// Peak added ambient from a full moon overhead — the sky-scattered part.
+const MOON_AMBIENT_BRIGHTNESS: f32 = 80.0;
+
+/// Marker for the sun's directional light.
+#[derive(Component)]
+struct SunLight;
+
+/// Marker for the moon's directional light.
+#[derive(Component)]
+struct MoonLight;
+
+/// Moonlight strength 0–1: moon elevation × illuminated fraction, faded out by
+/// day (moonlight is negligible next to any amount of daylight).
+fn moonlight_factor(hours: f32, moon_age_days: f32) -> f32 {
+    let up = utils::sun::moon_direction(hours, moon_age_days).y.max(0.0);
+    up * utils::sun::moon_illuminated_fraction(moon_age_days)
+        * (1.0 - utils::sun::daylight(hours))
+}
 
 /// Sun light color and illuminance for a time of day. The hue and magnitude both
 /// come from the atmosphere's transmittance toward the sun (see `utils::sun`), so
@@ -347,38 +400,40 @@ fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
 /// Ambient light for a time of day: brightness follows the sky through twilight
 /// (the sky lights the city before sunrise and after sunset), color follows the
 /// sky's hue — blue night, warm dawn/dusk, cool-white day.
-fn ambient_light(hours: f32) -> AmbientLight {
+fn ambient_light(hours: f32, moon_age_days: f32) -> AmbientLight {
     let c = utils::sun::ambient_sky_color(hours);
     AmbientLight {
         color: Color::linear_rgb(c.x, c.y, c.z),
-        brightness: AMBIENT_NIGHT_BRIGHTNESS + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours),
+        brightness: AMBIENT_NIGHT_BRIGHTNESS
+            + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours)
+            + MOON_AMBIENT_BRIGHTNESS * moonlight_factor(hours, moon_age_days),
         affects_lightmapped_meshes: true,
     }
 }
 
-/// Marker for the world-aligned night-sky (star map) sphere.
+/// Marker for the catalog star field (spun around the celestial pole).
 #[derive(Component)]
 struct StarSky;
 
-/// Brightness multiplier for the star map so stars/Milky Way read clearly (the
-/// shader's contrast grading dims the source photo's haze — see starsky.wgsl).
-const STAR_BRIGHTNESS: f32 = 2.0;
+/// Global brightness multiplier for the star field.
+const STAR_BRIGHTNESS: f32 = 3.5;
 
-/// Material that maps an equirectangular star map onto the surrounding sphere by view
-/// direction (see `shaders/starsky.wgsl`) — no UV-sphere poles or seams. Additive, with
-/// `brightness` driven by the night factor.
+/// Star-shell radius: beyond all world geometry (so buildings and the ground
+/// occlude stars) but inside the far plane and the atmosphere skybox faces.
+const STAR_SHELL_RADIUS: f32 = 150_000.0;
+
+/// Material for the catalog star field (see `shaders/starfield.wgsl`): additive
+/// gaussian points, with per-star tint and twinkle seed in the vertex colors.
+/// `params.x` = overall brightness (night factor × fog veil), `.y` = twinkle clock.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
-struct StarSkyMaterial {
+struct StarFieldMaterial {
     #[uniform(0)]
-    brightness: f32,
-    #[texture(1)]
-    #[sampler(2)]
-    texture: Handle<Image>,
+    params: Vec4,
 }
 
-impl Material for StarSkyMaterial {
+impl Material for StarFieldMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/starsky.wgsl".into()
+        "shaders/starfield.wgsl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -394,7 +449,7 @@ impl Material for StarSkyMaterial {
         use bevy::render::render_resource::{
             BlendComponent, BlendFactor, BlendOperation, BlendState,
         };
-        // Camera is inside the sphere; render its interior.
+        // Quad winding depends on each star's tangent basis; draw both faces.
         descriptor.primitive.cull_mode = None;
         // Don't write depth — it must not occlude the atmosphere or anything else.
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
@@ -418,6 +473,129 @@ impl Material for StarSkyMaterial {
             }
         }
         Ok(())
+    }
+}
+
+/// Marker for the moon disc quad.
+#[derive(Component)]
+struct Moon;
+
+/// Angular radius of the moon *quad* in radians. The disc proper fills the inner
+/// ~42% of it (`DISC_R` in moon.wgsl) — ~0.7°, ~2.5× the real moon, which is how
+/// cameras exaggerate it too; the rest of the quad carries the radiant glow halo.
+const MOON_ANGULAR_RADIUS: f32 = 0.028;
+/// Moon shell distance: inside the star shell so the disc occludes stars behind it.
+const MOON_DISTANCE: f32 = 140_000.0;
+
+/// Material for the moon disc (see `shaders/moon.wgsl`): a sphere-shaded quad lit
+/// by the sun direction expressed in the quad's local frame (xyz), so the lunar
+/// phase and the terminator's orientation emerge from the real sun–moon geometry.
+/// `sun_local.w` = overall brightness; alpha-blended so the disc covers stars.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct MoonMaterial {
+    #[uniform(0)]
+    sun_local: Vec4,
+}
+
+impl Material for MoonMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/moon.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline<Self>,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        // Don't write depth — it must not occlude the atmosphere or the stars' pass.
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = false;
+        }
+        Ok(())
+    }
+}
+
+/// Spawns the moon disc: a single quad in its local XY plane with UVs spanning
+/// [-1, 1]²; `update_moon` points it at the camera and shades it via the material.
+fn setup_moon(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<MoonMaterial>>,
+) {
+    let s = MOON_DISTANCE * MOON_ANGULAR_RADIUS;
+    let mut mesh = Mesh::new(
+        bevy::render::mesh::PrimitiveTopology::TriangleList,
+        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    let corners = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        corners
+            .iter()
+            .map(|&(u, v)| [u * s, v * s, 0.0])
+            .collect::<Vec<_>>(),
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        vec![[0.0, 0.0, 1.0]; 4],
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        corners.iter().map(|&(u, v)| [u, v]).collect::<Vec<_>>(),
+    );
+    mesh.insert_indices(bevy::render::mesh::Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+
+    commands.spawn((
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(MoonMaterial {
+            sun_local: Vec4::ZERO, // set each frame; starts invisible
+        })),
+        Transform::default(),
+        bevy::pbr::NotShadowCaster,
+        bevy::pbr::NotShadowReceiver,
+        Moon,
+    ));
+}
+
+/// Places the moon disc on the sky shell around the camera and feeds the material
+/// the sun direction in the quad's local frame (phase shading) plus the overall
+/// brightness: fading in through dusk, veiled by fog, extinguished near the horizon.
+fn update_moon(
+    dev: Res<DevPanelState>,
+    camera: Query<&GlobalTransform, With<Camera3d>>,
+    mut moon: Query<(&mut Transform, &MeshMaterial3d<MoonMaterial>), With<Moon>>,
+    mut materials: ResMut<Assets<MoonMaterial>>,
+) {
+    let Ok(cam) = camera.single() else {
+        return;
+    };
+    let Ok((mut tf, mat_handle)) = moon.single_mut() else {
+        return;
+    };
+    let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
+    let rotation = Quat::from_rotation_arc(Vec3::Z, -moon_dir);
+    tf.translation = cam.translation() + moon_dir * MOON_DISTANCE;
+    tf.rotation = rotation;
+
+    // Visible from twilight on (the moon shows before full dark), dimmed by fog
+    // and by atmospheric extinction as it nears the horizon.
+    let sun_elev = sun_direction(dev.time_of_day).y;
+    let dusk = ((0.05 - sun_elev) / 0.15).clamp(0.0, 1.0);
+    let fog_veil = (-3.0 * dev.fog_density).exp();
+    let extinction = 0.3 + 0.7 * utils::sun::smoothstep(0.0, 0.25, moon_dir.y);
+    let brightness = dusk * fog_veil * extinction;
+
+    if let Some(mat) = materials.get_mut(&mat_handle.0) {
+        // Phase-consistent sunlight (not the raw sun direction — see sun.rs).
+        let sun_local = rotation.inverse()
+            * utils::sun::moon_sunlight_direction(dev.time_of_day, dev.moon_age_days);
+        mat.sun_local = sun_local.extend(brightness);
     }
 }
 
@@ -473,7 +651,12 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
         return;
     }
     let speed = 24.0 / dev.cycle_seconds.max(0.1); // hours per real second
-    dev.time_of_day = (dev.time_of_day + time.delta_secs() * speed).rem_euclid(24.0);
+    let dh = time.delta_secs() * speed;
+    dev.time_of_day = (dev.time_of_day + dh).rem_euclid(24.0);
+    // The moon ages with the cycling days, so moonrise drifts ~50 min later per
+    // day and the phase creeps through the month, just like the real moon.
+    dev.moon_age_days =
+        (dev.moon_age_days + dh / 24.0).rem_euclid(utils::sun::LUNAR_CYCLE_DAYS);
 }
 
 /// Drives the sun direction, sun light intensity, and ambient brightness from the dev
@@ -481,7 +664,8 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 fn apply_day_night_cycle(
     dev: Res<DevPanelState>,
     mut atmosphere: AtmosphereMut<Nishita>,
-    mut sun: Query<(&mut Transform, &mut DirectionalLight)>,
+    mut sun: Query<(&mut Transform, &mut DirectionalLight), (With<SunLight>, Without<MoonLight>)>,
+    mut moon: Query<(&mut Transform, &mut DirectionalLight), With<MoonLight>>,
     mut ambient: ResMut<AmbientLight>,
 ) {
     if !dev.is_changed() {
@@ -496,7 +680,20 @@ fn apply_day_night_cycle(
         light.color = sun_color;
         light.illuminance = illuminance;
     }
-    *ambient = ambient_light(dev.time_of_day);
+
+    // Moonlight tracks the moon disc; fog diffuses it like it does the sun.
+    let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
+    let moonlight = MOONLIGHT_ILLUMINANCE
+        * moonlight_factor(dev.time_of_day, dev.moon_age_days)
+        * (1.0 - 0.75 * dev.fog_density);
+    for (mut tf, mut light) in moon.iter_mut() {
+        *tf = Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y);
+        light.illuminance = moonlight;
+        // Shadow passes aren't free — only run them while moonlight is visible.
+        light.shadows_enabled = moonlight > 1.0;
+    }
+
+    *ambient = ambient_light(dev.time_of_day, dev.moon_age_days);
 }
 
 /// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider
@@ -563,40 +760,103 @@ fn update_window_glow(
     }
 }
 
-/// `update_star_sky` keeps it on the camera and fades it with the night factor.
+/// Builds the star field from the embedded bright-star catalog (~9k naked-eye
+/// stars, HYG database — see `tools/gen_stars.py`): one tiny sphere-tangent quad
+/// per star at its real equatorial position, weighted by magnitude and tinted by
+/// B−V color temperature, with a per-star twinkle seed in the vertex alpha. The
+/// whole sky is one mesh and one draw call; `update_star_sky` spins it around the
+/// celestial pole, fades it with the night, and drives the twinkle clock.
 fn setup_stars(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StarSkyMaterial>>,
-    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StarFieldMaterial>>,
 ) {
-    // Repeat addressing so the longitude seam (where the sampled U wraps 1→0 behind the
-    // viewer) is continuous. The mesh UVs are unused — the shader samples by direction —
-    // so a low-poly sphere is fine; it only needs to enclose the camera.
-    let texture = asset_server.load_with_settings(
-        "sky/stars_milky_way_8k.jpg",
-        |s: &mut bevy::image::ImageLoaderSettings| {
-            s.sampler = crate::systems::rendering::repeat_linear_sampler();
-        },
+    static CATALOG: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/sky/bright_stars.bin"
+    ));
+    let n = CATALOG.len() / 16;
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * 4);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(n * 4);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(n * 4);
+    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(n * 4);
+    let mut indices: Vec<u32> = Vec::with_capacity(n * 6);
+
+    for (i, rec) in CATALOG.chunks_exact(16).enumerate() {
+        let f = |k: usize| f32::from_le_bytes(rec[4 * k..4 * k + 4].try_into().unwrap());
+        let (ra, dec, mag, bv) = (f(0), f(1), f(2), f(3));
+
+        // Equatorial frame with +Y at the north celestial pole. RA winds so that a
+        // larger right ascension culminates *later* under the westward diurnal spin,
+        // which keeps constellations un-mirrored for a ground observer.
+        let dir = Vec3::new(dec.cos() * ra.cos(), dec.sin(), -(dec.cos() * ra.sin()));
+        // Tangent basis for the quad (X fallback for stars at the poles).
+        let up = if dir.y.abs() > 0.99 { Vec3::X } else { Vec3::Y };
+        let t1 = up.cross(dir).normalize();
+        let t2 = dir.cross(t1);
+
+        // Compressed magnitude scale: real flux spans ~1500:1 from Sirius to the
+        // naked-eye limit, far more than additive blending can usefully show.
+        let lum = 10f32.powf(-0.24 * mag).min(2.5);
+        // Bright stars also get a slightly larger quad (their glow bleeds wider).
+        let half_angle = 0.0010 + 0.0009 * ((2.5 - mag) / 4.0).clamp(0.0, 1.0);
+        let tint = star_color(bv) * lum;
+        let seed = (i as f32 * 0.618_034).fract(); // per-star twinkle phase
+
+        let base = positions.len() as u32;
+        for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let p = (dir + (t1 * su + t2 * sv) * half_angle) * STAR_SHELL_RADIUS;
+            positions.push([p.x, p.y, p.z]);
+            normals.push([dir.x, dir.y, dir.z]);
+            uvs.push([su, sv]);
+            colors.push([tint.x, tint.y, tint.z, seed]);
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    let mut mesh = Mesh::new(
+        bevy::render::mesh::PrimitiveTopology::TriangleList,
+        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
     );
-    // A box just inside the atmosphere's skybox cube (faces at ~0.707 × SKYBOX_MESH_FAR,
-    // i.e. ~212 km) — a smaller concentric cube is uniformly in front of it in every
-    // direction, so no part pokes through, while staying beyond all world geometry so
-    // stars never draw over distant buildings. The shader samples by view direction, so
-    // the box shape is irrelevant to the mapping; it's just a cheap 12-triangle shell.
-    let mesh = meshes.add(Cuboid::from_length(400_000.0).mesh());
-    let material = materials.add(StarSkyMaterial {
-        brightness: 0.0, // set each frame from the night factor; starts invisible (day)
-        texture,
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
+
+    let material = materials.add(StarFieldMaterial {
+        params: Vec4::ZERO, // brightness set each frame; starts invisible (day)
     });
     commands.spawn((
-        Mesh3d(mesh),
+        Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(material),
         Transform::default(),
         bevy::pbr::NotShadowCaster,
         bevy::pbr::NotShadowReceiver,
         StarSky,
     ));
+}
+
+/// Approximate display tint for a stellar B−V color index: blue-white for hot
+/// stars (Rigel, −0.3) through white and yellow to orange-red for cool ones
+/// (Betelgeuse, ~1.85). Piecewise-linear over perceptual anchor stops.
+fn star_color(bv: f32) -> Vec3 {
+    const STOPS: [(f32, Vec3); 6] = [
+        (-0.3, Vec3::new(0.62, 0.72, 1.0)),
+        (0.0, Vec3::new(0.79, 0.86, 1.0)),
+        (0.4, Vec3::new(1.0, 0.98, 0.92)),
+        (0.8, Vec3::new(1.0, 0.90, 0.76)),
+        (1.5, Vec3::new(1.0, 0.80, 0.60)),
+        (2.0, Vec3::new(1.0, 0.70, 0.46)),
+    ];
+    let bv = bv.clamp(STOPS[0].0, STOPS[STOPS.len() - 1].0);
+    for w in STOPS.windows(2) {
+        let ((a, ca), (b, cb)) = (w[0], w[1]);
+        if bv <= b {
+            return ca.lerp(cb, (bv - a) / (b - a));
+        }
+    }
+    STOPS[STOPS.len() - 1].1
 }
 
 /// Spawns the fog-colored horizon-haze shell: a slightly smaller sibling of the star
@@ -655,13 +915,15 @@ fn update_horizon_haze(
     }
 }
 
-/// Keeps the star box centred on the camera (so it reads as infinitely far) and fades
-/// it in after sunset by driving the material's `brightness` from the night factor.
+/// Keeps the star field centred on the camera (so it reads as infinitely far),
+/// spins it around the celestial pole with the time of day, and drives the
+/// material's brightness (night factor, veiled by fog) and twinkle clock.
 fn update_star_sky(
     dev: Res<DevPanelState>,
+    time: Res<Time>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
-    mut star: Query<(&mut Transform, &MeshMaterial3d<StarSkyMaterial>), With<StarSky>>,
-    mut materials: ResMut<Assets<StarSkyMaterial>>,
+    mut star: Query<(&mut Transform, &MeshMaterial3d<StarFieldMaterial>), With<StarSky>>,
+    mut materials: ResMut<Assets<StarFieldMaterial>>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
@@ -670,14 +932,22 @@ fn update_star_sky(
         return;
     };
     tf.translation = cam.translation();
+    // Diurnal rotation of the celestial sphere (shared with the moon, so they
+    // move together). Quick-cycle mode becomes a star-trail time-lapse.
+    tf.rotation = utils::sun::celestial_rotation(dev.time_of_day);
 
     // Fade in once the sun is below the horizon; full when it's well below (dark sky).
     let elevation = sun_direction(dev.time_of_day).y;
     let night = ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0);
     // Fog is opaque to starlight long before it swallows the city: veil the star
-    // map with density so a foggy night reads as murk, not crisp stars over murk.
+    // field with density so a foggy night reads as murk, not crisp stars over murk.
     let fog_veil = (-3.0 * dev.fog_density).exp();
     if let Some(mat) = materials.get_mut(&mat_handle.0) {
-        mat.brightness = night * STAR_BRIGHTNESS * fog_veil;
+        mat.params = Vec4::new(
+            night * STAR_BRIGHTNESS * fog_veil,
+            time.elapsed_secs(),
+            0.0,
+            0.0,
+        );
     }
 }

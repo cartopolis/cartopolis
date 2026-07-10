@@ -67,6 +67,9 @@ pub struct DevPanelState {
     /// Atmospheric distance-fog density, 0.0–1.0: higher pulls the visibility
     /// distance in (see `free_camera::distance_fog`). 0.0 = off.
     pub fog_density: f32,
+    /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
+    /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
+    pub moon_age_days: f32,
 }
 
 impl Default for DevPanelState {
@@ -77,6 +80,7 @@ impl Default for DevPanelState {
             auto_cycle: false,
             cycle_seconds: 10.0,
             fog_density: 0.15,
+            moon_age_days: 14.8, // full moon
         }
     }
 }
