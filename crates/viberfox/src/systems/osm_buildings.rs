@@ -7,10 +7,11 @@
 //!
 //! - **Detail patch** (windows, roof shapes) around the camera, re-fetched and
 //!   swapped as the camera drifts.
-//! - **Far LOD cells**: simplified extrusions streamed per CACHE_ZOOM cell out
-//!   to `FAR_CELL_RADIUS` (like map tiles — fetched once, kept while in range),
-//!   covering the detail area too so patch refreshes never flicker; LOD volumes
-//!   nest inside their detailed twins to avoid z-fighting.
+//! - **Far LOD cells**: simplified extrusions plus a sparse lit-window mesh,
+//!   streamed per CACHE_ZOOM cell out to `FAR_CELL_RADIUS` (like map tiles —
+//!   fetched once, kept while in range), covering the detail area too so patch
+//!   refreshes never flicker; LOD volumes nest inside their detailed twins to
+//!   avoid z-fighting.
 //!
 //! Buildings follow the streamed ground (`map_stream`).
 //!
@@ -101,18 +102,22 @@ pub struct OsmBuildings {
     detail_entities: Vec<Entity>,
     /// Far LOD cell worker: job queue of CACHE_ZOOM cell coords.
     far_jobs: Option<Sender<(i64, i64)>>,
-    /// Completed far cells from the worker: mesh + its BigSpace cell (None for
-    /// cells with no buildings).
+    /// Completed far cells from the worker: meshes + their BigSpace cell (None
+    /// for cells with no buildings).
     #[allow(clippy::type_complexity)]
-    far_results: Arc<Mutex<Vec<((i64, i64), Result<Option<(GridCell, Mesh)>, String>)>>>,
+    far_results: Arc<Mutex<Vec<((i64, i64), Result<Option<FarCellBuild>, String>)>>>,
     /// Far cells ever queued (kept so completed/empty cells aren't re-queried).
     far_requested: HashSet<(i64, i64)>,
     /// Failed far-cell fetch attempts (bounded retry).
     far_failed: HashMap<(i64, i64), u32>,
-    /// Spawned far-cell mesh entities, despawned when out of range.
-    far_cells: HashMap<(i64, i64), Entity>,
-    /// Shared material for all far-cell meshes.
+    /// Spawned far-cell mesh entities (buildings + windows), despawned when out
+    /// of range.
+    far_cells: HashMap<(i64, i64), Vec<Entity>>,
+    /// Shared material for all far-cell building meshes.
     far_material: Option<Handle<StandardMaterial>>,
+    /// Per-bucket window materials shared by all far cells; their emissive is
+    /// driven by `update_window_glow` through the cells' `WindowGlow` entities.
+    far_window_materials: Option<[Handle<StandardMaterial>; 4]>,
     /// Per-building data for the current patch, retained so an individual building
     /// can later be hit-tested and converted to an editable prim (ADR-020/021).
     buildings: Vec<Building>,
@@ -132,15 +137,49 @@ const STOREY_HEIGHT: f32 = 3.0;
 
 /// Only buildings with eaves at least this tall get windows (skips houses/sheds).
 const WINDOW_MIN_HEIGHT: f32 = 8.0;
-/// Window grid: column pitch, size, floor spacing, first-floor sill (metres).
-const WINDOW_PITCH: f32 = 2.6;
-const WINDOW_W: f32 = 1.3;
-const WINDOW_H: f32 = 1.5;
-const WINDOW_FLOOR: f32 = 3.0;
-const WINDOW_SILL: f32 = 1.2;
 /// Per-window brightness buckets: bucket 0 stays dark, the rest glow at these
 /// multipliers — so at night some windows are off, some dim, some bright.
 const WINDOW_GLOW_MULT: [f32; 4] = [0.0, 0.5, 0.9, 1.35];
+
+/// Window-grid parameters for one LOD tier (all lengths in metres).
+struct WindowGrid {
+    /// Column pitch along the wall.
+    pitch: f32,
+    /// Quad width and height.
+    w: f32,
+    h: f32,
+    /// Vertical floor spacing and first-floor sill height.
+    floor: f32,
+    sill: f32,
+    /// Offset proud of the wall (avoids z-fighting the facade).
+    proud: f32,
+    /// Skip the never-lit bucket entirely (pointless to emit at range).
+    skip_dark: bool,
+}
+
+/// Full-detail grid: real window sizes on real floor spacing.
+const DETAIL_WINDOWS: WindowGrid = WindowGrid {
+    pitch: 2.6,
+    w: 1.3,
+    h: 1.5,
+    floor: 3.0,
+    sill: 1.2,
+    proud: 0.06,
+    skip_dark: false,
+};
+
+/// Far-LOD grid: sparse, oversized quads — from kilometres away this reads as the
+/// same lit-window pattern at roughly a fifth of the vertex count, and real windows
+/// would be sub-pixel shimmer at that range anyway. Dark windows are never emitted.
+const FAR_WINDOWS: WindowGrid = WindowGrid {
+    pitch: 7.0,
+    w: 2.8,
+    h: 2.2,
+    floor: 6.0,
+    sill: 1.6,
+    proud: 0.15,
+    skip_dark: true,
+};
 
 /// Tiles out from the camera covered by the full-detail building patch
 /// (windows, roof shapes).
@@ -322,14 +361,14 @@ pub fn update_buildings(
         }
 
         // Apply completed cells.
-        let done: Vec<((i64, i64), Result<Option<(GridCell, Mesh)>, String>)> = osm
+        let done: Vec<((i64, i64), Result<Option<FarCellBuild>, String>)> = osm
             .far_results
             .lock()
             .map(|mut g| g.drain(..).collect())
             .unwrap_or_default();
         for (cell, built) in done {
             match built {
-                Ok(Some((grid_cell, mesh))) => {
+                Ok(Some((grid_cell, mesh, windows))) => {
                     let material = osm
                         .far_material
                         .get_or_insert_with(|| {
@@ -342,17 +381,53 @@ pub fn update_buildings(
                             })
                         })
                         .clone();
-                    let entity = commands
-                        .spawn((
-                            Mesh3d(meshes.add(mesh)),
-                            MeshMaterial3d(material),
-                            Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                            grid_cell,
-                            ChildOf(root),
-                            OsmBuildingMesh,
-                        ))
-                        .id();
-                    osm.far_cells.insert(cell, entity);
+                    let mut entities = vec![
+                        commands
+                            .spawn((
+                                Mesh3d(meshes.add(mesh)),
+                                MeshMaterial3d(material),
+                                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                                grid_cell,
+                                ChildOf(root),
+                                OsmBuildingMesh,
+                            ))
+                            .id(),
+                    ];
+                    // Window meshes: same recipe as the detail patch, but the four
+                    // bucket materials are shared across every far cell.
+                    let win_mats = osm
+                        .far_window_materials
+                        .get_or_insert_with(|| {
+                            std::array::from_fn(|_| {
+                                materials.add(StandardMaterial {
+                                    base_color: Color::srgb(0.07, 0.09, 0.13),
+                                    emissive: LinearRgba::BLACK,
+                                    perceptual_roughness: 0.25,
+                                    double_sided: true,
+                                    cull_mode: None,
+                                    ..default()
+                                })
+                            })
+                        })
+                        .clone();
+                    for (i, w) in windows.into_iter().enumerate() {
+                        let Some(mesh) = w else {
+                            continue;
+                        };
+                        entities.push(
+                            commands
+                                .spawn((
+                                    Mesh3d(meshes.add(mesh)),
+                                    MeshMaterial3d(win_mats[i].clone()),
+                                    Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                                    grid_cell,
+                                    ChildOf(root),
+                                    WindowGlow(WINDOW_GLOW_MULT[i]),
+                                ))
+                                .id(),
+                        );
+                    }
+                    osm.far_cells.insert(cell, entities);
                 }
                 Ok(None) => {} // empty cell; stays in far_requested so it isn't re-queried
                 Err(e) => {
@@ -375,7 +450,7 @@ pub fn update_buildings(
             .copied()
             .collect();
         for cell in stale {
-            if let Some(entity) = osm.far_cells.remove(&cell) {
+            for entity in osm.far_cells.remove(&cell).unwrap_or_default() {
                 commands.entity(entity).despawn();
             }
             osm.far_requested.remove(&cell);
@@ -414,9 +489,14 @@ pub fn update_buildings(
     tracing::info!(count, "buildings updated");
 }
 
-/// Fetch one CACHE_ZOOM cell (disk-cached Overpass) and build its far-LOD mesh,
-/// anchored to the cell's own BigSpace grid cell for f32 precision. Runs on the
-/// far-cell worker thread. Returns `None` for cells with no buildings.
+/// A far cell's built output: its BigSpace grid cell, the merged building mesh,
+/// and the sparse lit-window mesh per glow bucket.
+type FarCellBuild = (GridCell, Mesh, [Option<Mesh>; 4]);
+
+/// Fetch one CACHE_ZOOM cell (disk-cached Overpass) and build its far-LOD meshes
+/// (buildings + windows), anchored to the cell's own BigSpace grid cell for f32
+/// precision. Runs on the far-cell worker thread. Returns `None` for cells with
+/// no buildings.
 fn build_far_cell(
     cx: i64,
     cy: i64,
@@ -424,7 +504,7 @@ fn build_far_cell(
     ay: i64,
     z: u32,
     lat: f64,
-) -> Result<Option<(GridCell, Mesh)>, String> {
+) -> Result<Option<FarCellBuild>, String> {
     let buildings = fetch_cell(cx, cy, CACHE_ZOOM)?;
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
@@ -438,6 +518,7 @@ fn build_far_cell(
     let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
 
     let mut buf = MeshData::default();
+    let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
     for b in &buildings {
         // A building straddling a cell edge is returned by both cells; only the
         // cell owning its first vertex renders it.
@@ -464,9 +545,11 @@ fn build_far_cell(
         } else {
             b.height_m
         };
-        push_building_lod(&mut buf, &ring, h, b.wall_color, b.roof_color);
+        push_building_lod(&mut buf, &mut wins, b.id as u64, &ring, h, b.wall_color, b.roof_color);
     }
-    Ok(buf.into_mesh().map(|m| (grid_cell, m)))
+    Ok(buf
+        .into_mesh()
+        .map(|m| (grid_cell, m, wins.map(MeshData::into_mesh))))
 }
 
 /// Spawn the detail-ring meshes (buildings + per-bucket windows) for a completed
@@ -673,14 +756,17 @@ fn simplify_ring(ring: &[Vec2], tol: f32) -> Vec<Vec2> {
     if out.len() >= 3 { out } else { ring.to_vec() }
 }
 
-/// Far-LOD building: a simplified plain extrusion with a flat cap — no windows,
-/// no roof shapes — merged into a single mesh for the whole far ring. The
-/// footprint is inset toward the centroid and the cap kept slightly low, so the
-/// LOD volume nests strictly *inside* the detailed version of the same building:
-/// the far mesh covers the detail area too (as a fallback while a patch refresh
-/// is in flight) without ever z-fighting it.
+/// Far-LOD building: a simplified plain extrusion with a flat cap and a sparse
+/// grid of lit-window quads (`FAR_WINDOWS`) — no roof shapes. Merged into per-cell
+/// meshes for the whole far ring. The footprint is inset toward the centroid and
+/// the cap kept slightly low, so the LOD volume nests strictly *inside* the
+/// detailed version of the same building: the far mesh covers the detail area too
+/// (as a fallback while a patch refresh is in flight) without ever z-fighting it —
+/// and its windows sit behind the detail walls, so lights never double up.
 fn push_building_lod(
     bld: &mut MeshData,
+    wins: &mut [MeshData; 4],
+    seed: u64,
     ring_in: &[Vec2],
     height: f32,
     wall_color: [f32; 3],
@@ -729,6 +815,14 @@ fn push_building_lod(
         }
         bld.indices
             .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+
+        // Sparse lit windows so the night city keeps glowing past the detail ring.
+        // Capped below the eaves estimate (total height minus a roof allowance) so
+        // they never poke through a shaped roof on the detailed twin.
+        let eaves = height - 2.5;
+        if eaves >= WINDOW_MIN_HEIGHT {
+            push_wall_windows(wins, seed, a, b, perp, eaves, &FAR_WINDOWS);
+        }
     }
     flat_cap(bld, &ring, height, roof);
 }
@@ -807,7 +901,7 @@ fn push_building(
         // Windows only on the walls of tall enough buildings (skips houses/sheds
         // and all roof/gable surfaces).
         if wall_h >= WINDOW_MIN_HEIGHT {
-            push_wall_windows(wins, seed, a, b, perp, wall_h);
+            push_wall_windows(wins, seed, a, b, perp, wall_h, &DETAIL_WINDOWS);
         }
     }
 
@@ -849,39 +943,52 @@ fn push_building(
 }
 
 /// Emit a grid of window quads on one wall face (proud of the wall), routing each
-/// window into a brightness bucket so the lit pattern varies per building.
-fn push_wall_windows(wins: &mut [MeshData; 4], seed: u64, a: Vec2, b: Vec2, out: Vec2, wall_h: f32) {
+/// window into a brightness bucket so the lit pattern varies per building. The
+/// grid config picks the LOD tier: dense real-size windows for the detail patch,
+/// sparse oversized ones for far cells.
+fn push_wall_windows(
+    wins: &mut [MeshData; 4],
+    seed: u64,
+    a: Vec2,
+    b: Vec2,
+    out: Vec2,
+    wall_h: f32,
+    g: &WindowGrid,
+) {
     let along = b - a;
     let len = along.length();
-    if len < WINDOW_PITCH {
+    if len < g.pitch {
         return;
     }
     let dir = along / len;
-    let proud = out * 0.06;
-    let ncols = (len / WINDOW_PITCH).floor() as i32;
+    let proud = out * g.proud;
+    let ncols = (len / g.pitch).floor() as i32;
     if ncols < 1 {
         return;
     }
-    let start = (len - (ncols as f32 - 1.0) * WINDOW_PITCH) * 0.5;
+    let start = (len - (ncols as f32 - 1.0) * g.pitch) * 0.5;
     let color = [1.0, 1.0, 1.0, 1.0];
     let mut row = 0i32;
-    let mut wy = WINDOW_SILL;
-    while wy + WINDOW_H <= wall_h - 0.4 {
+    let mut wy = g.sill;
+    while wy + g.h <= wall_h - 0.4 {
         for c in 0..ncols {
-            let cx = start + c as f32 * WINDOW_PITCH;
-            let center = a + dir * cx;
-            let half = dir * (WINDOW_W * 0.5);
-            let (bl, br) = (center - half, center + half);
             let bucket = window_bucket(seed, row, c);
+            if bucket == 0 && g.skip_dark {
+                continue;
+            }
+            let cx = start + c as f32 * g.pitch;
+            let center = a + dir * cx;
+            let half = dir * (g.w * 0.5);
+            let (bl, br) = (center - half, center + half);
             wins[bucket].quad(
                 Vec3::new(bl.x + proud.x, wy, bl.y + proud.y),
                 Vec3::new(br.x + proud.x, wy, br.y + proud.y),
-                Vec3::new(br.x + proud.x, wy + WINDOW_H, br.y + proud.y),
-                Vec3::new(bl.x + proud.x, wy + WINDOW_H, bl.y + proud.y),
+                Vec3::new(br.x + proud.x, wy + g.h, br.y + proud.y),
+                Vec3::new(bl.x + proud.x, wy + g.h, bl.y + proud.y),
                 color,
             );
         }
-        wy += WINDOW_FLOOR;
+        wy += g.floor;
         row += 1;
     }
 }

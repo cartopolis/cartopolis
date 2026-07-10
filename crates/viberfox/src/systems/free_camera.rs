@@ -13,16 +13,24 @@ use crate::systems::rendering::RegionMesh;
 #[derive(Component)]
 pub struct FreeCamera;
 
-/// Builds the camera's [`DistanceFog`] for a dev-panel density in 0.0–1.0 and the
-/// sun's elevation (`sun_direction().y`). The falloff is exponential-squared so the
-/// near field stays clear and geometry vanishes into a fog "wall"; the fog color
-/// tracks day/night so it reads as bright haze by day and near-black murk at night.
-pub fn distance_fog(density: f32, sun_elevation: f32) -> DistanceFog {
-    let day = (sun_elevation / 0.2).clamp(0.0, 1.0);
+/// Builds the camera's [`DistanceFog`] for a dev-panel density in 0.0–1.0 and a
+/// time of day. The falloff is exponential-squared so the near field stays clear
+/// and geometry vanishes into a fog "wall"; the fog color follows the sky — bright
+/// haze by day, warm-tinted through sunrise/sunset (fog is lit by the same
+/// extinction-reddened sun the sky shows), near-black murk at night.
+pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
+    use crate::utils::sun;
+
+    let day = sun::daylight(hours); // smooth through twilight, not a hard ramp
     let night_color = Vec3::new(0.015, 0.02, 0.035);
     // Slightly desaturated toward white so the fog wall meets the Mie-hazed sky.
     let day_color = Vec3::new(0.71, 0.75, 0.83);
-    let c = night_color.lerp(day_color, day);
+    // Tint by the sun's transmittance color while it sits near the horizon, so
+    // dawn/dusk haze glows warm with the sky instead of snapping grey→black.
+    let t = sun::sun_transmittance(hours);
+    let tint = t / t.max_element().max(1e-4);
+    let warm = 0.65 * sun::horizon_proximity(hours);
+    let c = night_color.lerp(day_color, day) * Vec3::ONE.lerp(tint, warm);
 
     // Map density to a visibility distance on an exponential curve:
     // 0.15 → ~7 km haze, 0.5 → ~1.2 km fog, 1.0 → ~90 m pea soup.
@@ -37,8 +45,14 @@ pub fn distance_fog(density: f32, sun_elevation: f32) -> DistanceFog {
 
     DistanceFog {
         color: Color::srgb(c.x, c.y, c.z),
-        // Warm sun-side glow in the fog; fades out with the sun.
-        directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.5 * day),
+        // Sun-side glow in the fog, colored like the sun itself (white by day,
+        // orange-red as it sets); fades out through early twilight.
+        directional_light_color: Color::srgba(
+            tint.x,
+            tint.y,
+            tint.z,
+            0.55 * sun::smoothstep(-0.08, 0.02, sun::sun_direction(hours).y),
+        ),
         directional_light_exponent: 30.0,
         falloff,
     }
@@ -103,10 +117,7 @@ pub fn setup_camera(
                 FloatingOrigin,
                 // Atmospheric distance fog: distant buildings fade into haze, with a
                 // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
-                distance_fog(
-                    dev.fog_density,
-                    crate::utils::sun::sun_direction(dev.time_of_day).y,
-                ),
+                distance_fog(dev.fog_density, dev.time_of_day),
             ))
             .with_child((
                 Mesh3d(skybox_mesh),

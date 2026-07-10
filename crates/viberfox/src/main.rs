@@ -293,11 +293,12 @@ fn setup_sky(
     // sky's horizon ~1° below the city skyline and exposes a dark under-horizon
     // wedge (short, in-scatter-starved rays). Park it at rooftop altitude instead.
     atmosphere.ray_origin = Vec3::new(0.0, atmosphere.planet_radius + 60.0, 0.0);
-    let day = sun_dir.y.max(0.0);
+    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
 
     commands.spawn((
         DirectionalLight {
-            illuminance: AMBIENT_DAYLIGHT * day * SUN_SCALE,
+            color: sun_color,
+            illuminance,
             shadows_enabled: true,
             ..default()
         },
@@ -313,25 +314,55 @@ fn setup_sky(
         Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y),
     ));
 
-    commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 10.0 + AMBIENT_DAY_BRIGHTNESS * day,
-        affects_lightmapped_meshes: true,
-    });
+    commands.insert_resource(ambient_light(dev.time_of_day));
 }
 
-/// Global trim on the sun's illuminance: without tonemapping, full daylight on the
-/// near-white OSM basemap clips to solid white and reads oversaturated.
-const SUN_SCALE: f32 = 0.8;
-/// Peak added ambient brightness at noon (same clipping consideration).
-const AMBIENT_DAY_BRIGHTNESS: f32 = 2400.0;
+/// Global trim on the sun's illuminance: the OSM basemap is near-white, so full
+/// physical daylight drives most of the frame into the tonemapper's shoulder
+/// (Bevy's default TonyMcMapface) and everything reads flat and washed out.
+const SUN_SCALE: f32 = 0.75;
+/// Peak added ambient brightness at noon (same washout consideration — and darker
+/// ambient keeps midday shadows readable, which is where the depth comes from).
+const AMBIENT_DAY_BRIGHTNESS: f32 = 1800.0;
+/// Ambient floor at night — faint blue city skyglow so the world stays legible
+/// instead of vanishing into black between the lit windows.
+const AMBIENT_NIGHT_BRIGHTNESS: f32 = 80.0;
+
+/// Sun light color and illuminance for a time of day. The hue and magnitude both
+/// come from the atmosphere's transmittance toward the sun (see `utils::sun`), so
+/// the light warms and dims exactly as the sky it hangs in: warm white at noon,
+/// gold in the morning/evening, deep red and faint as the disc grazes the horizon.
+fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
+    let t = utils::sun::sun_transmittance(hours);
+    let peak = t.max_element().max(1e-4);
+    // Hue in the color (peak-normalized), magnitude in the illuminance.
+    let color = Color::linear_rgb(t.x / peak, t.y / peak, t.z / peak);
+    // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
+    let sun_through_fog = 1.0 - 0.75 * fog_density;
+    let illuminance =
+        AMBIENT_DAYLIGHT * SUN_SCALE * peak * utils::sun::sun_disc(hours) * sun_through_fog;
+    (color, illuminance)
+}
+
+/// Ambient light for a time of day: brightness follows the sky through twilight
+/// (the sky lights the city before sunrise and after sunset), color follows the
+/// sky's hue — blue night, warm dawn/dusk, cool-white day.
+fn ambient_light(hours: f32) -> AmbientLight {
+    let c = utils::sun::ambient_sky_color(hours);
+    AmbientLight {
+        color: Color::linear_rgb(c.x, c.y, c.z),
+        brightness: AMBIENT_NIGHT_BRIGHTNESS + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours),
+        affects_lightmapped_meshes: true,
+    }
+}
 
 /// Marker for the world-aligned night-sky (star map) sphere.
 #[derive(Component)]
 struct StarSky;
 
-/// Brightness multiplier for the (fairly dim) star map so stars/Milky Way read clearly.
-const STAR_BRIGHTNESS: f32 = 3.0;
+/// Brightness multiplier for the star map so stars/Milky Way read clearly (the
+/// shader's contrast grading dims the source photo's haze — see starsky.wgsl).
+const STAR_BRIGHTNESS: f32 = 2.0;
 
 /// Material that maps an equirectangular star map onto the surrounding sphere by view
 /// direction (see `shaders/starsky.wgsl`) — no UV-sphere poles or seams. Additive, with
@@ -459,14 +490,13 @@ fn apply_day_night_cycle(
     let sun_dir = sun_direction(dev.time_of_day);
     atmosphere.sun_position = sun_dir;
 
-    let day = sun_dir.y.max(0.0); // 0 at/below the horizon, → 1 overhead
-    // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
-    let sun_through_fog = 1.0 - 0.75 * dev.fog_density;
+    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
     for (mut tf, mut light) in sun.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y);
-        light.illuminance = AMBIENT_DAYLIGHT * day * SUN_SCALE * sun_through_fog;
+        light.color = sun_color;
+        light.illuminance = illuminance;
     }
-    ambient.brightness = 10.0 + AMBIENT_DAY_BRIGHTNESS * day;
+    *ambient = ambient_light(dev.time_of_day);
 }
 
 /// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider
@@ -485,9 +515,8 @@ fn apply_distance_fog(
     // with density was tried and abandoned — single scattering *darkens* the low
     // sky instead of whitening it. The horizon-haze shell fogs the sky instead
     // (see update_horizon_haze), veiling the whole dome as density rises.
-    let elevation = sun_direction(dev.time_of_day).y;
     for mut f in fog.iter_mut() {
-        *f = systems::free_camera::distance_fog(dev.fog_density, elevation);
+        *f = systems::free_camera::distance_fog(dev.fog_density, dev.time_of_day);
     }
 }
 
@@ -645,7 +674,10 @@ fn update_star_sky(
     // Fade in once the sun is below the horizon; full when it's well below (dark sky).
     let elevation = sun_direction(dev.time_of_day).y;
     let night = ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0);
+    // Fog is opaque to starlight long before it swallows the city: veil the star
+    // map with density so a foggy night reads as murk, not crisp stars over murk.
+    let fog_veil = (-3.0 * dev.fog_density).exp();
     if let Some(mat) = materials.get_mut(&mat_handle.0) {
-        mat.brightness = night * STAR_BRIGHTNESS;
+        mat.brightness = night * STAR_BRIGHTNESS * fog_veil;
     }
 }

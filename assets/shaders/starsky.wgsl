@@ -18,5 +18,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let u = atan2(dir.z, dir.x) * (0.5 / PI) + 0.5;
     let v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
     let stars = textureSample(star_texture, star_sampler, vec2<f32>(u, v)).rgb;
-    return vec4<f32>(stars * brightness, 1.0);
+    // The source is a long-exposure photo: its lifted sky glow and saturated-blue
+    // Milky Way haze read as wallpaper, not a night sky. Desaturate slightly and
+    // apply a power curve — the haze drops toward black while bright star cores
+    // keep their punch, which is how the naked eye actually sees it.
+    let lum = dot(stars, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let graded = pow(mix(vec3<f32>(lum), stars, 0.75), vec3<f32>(1.8));
+    return vec4<f32>(graded * brightness, 1.0);
 }
