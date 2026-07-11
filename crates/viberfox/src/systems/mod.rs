@@ -1,10 +1,12 @@
 pub mod ai_assistant;
 pub mod avatar;
+pub mod bookmarks;
 pub mod data_layers;
 pub mod database;
 pub mod debug;
 pub mod egui_manager;
 pub mod free_camera;
+pub mod geo_nav;
 pub mod map_stream;
 pub mod gizmo;
 pub mod hud;
@@ -16,3 +18,4 @@ pub mod rendering;
 pub mod tile_loader;
 pub mod transit_live;
 pub mod ui;
+pub mod user_store;

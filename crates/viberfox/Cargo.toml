@@ -10,6 +10,7 @@ fast-dev = ["bevy/dynamic_linking"]
 
 [dependencies]
 anyhow.workspace = true
+arboard.workspace = true
 bevy.workspace = true
 bevy_atmosphere.workspace = true
 bevy_image.workspace = true

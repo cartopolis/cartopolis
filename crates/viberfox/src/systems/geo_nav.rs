@@ -1,10 +1,11 @@
-//! Geo navigation: a browser-style search bar in the top bar, plus a
-//! bottom-right geo-location + compass overlay.
+//! Geo navigation: a browser-style search bar in the top bar.
 //!
 //! Type a place name ("Groningen") to get OpenStreetMap Nominatim suggestions
-//! and click one to teleport the avatar/camera there; or paste a raw
-//! "lat, lng" pair (the format the overlay's copy button produces) to jump
-//! directly without a lookup.
+//! and click one to teleport the avatar/camera there; or paste raw
+//! coordinates — "lat, lng" or "lat, lng, altitude" (the format the HUD's
+//! copy button produces) — to jump directly without a lookup. Teleports keep
+//! the current camera mode; bookmark jumps and the last-location restore
+//! (`user_store`) go through the same [`GeoNavState::pending_teleport`] path.
 //!
 //! Nominatim usage policy (https://operations.osmfoundation.org/policies/nominatim/):
 //! requests are debounced behind a typing pause, serialized (one in flight,
@@ -16,10 +17,10 @@ use std::time::{Duration, Instant};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::{Grid, GridCell};
+use serde::{Deserialize, Serialize};
 
 use crate::components::Avatar;
 use crate::resources::{AvatarState, CameraMode, CameraState};
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use vibe_core::world::tile_to_meters;
@@ -69,9 +70,73 @@ pub struct GeoNavState {
     /// Enter re-submits a query even if it equals the last sent one.
     force_search: bool,
     results: Arc<Mutex<Option<GeocodeReply>>>,
-    /// Target picked from a suggestion or pasted coordinates; consumed by
-    /// `apply_teleport` (kept until the world anchor exists).
-    pub pending_teleport: Option<(f64, f64)>,
+    /// Target picked from a suggestion, pasted coordinates, a bookmark, or the
+    /// startup restore. Consumed by `apply_teleport` (kept until the world
+    /// anchor exists).
+    pub pending_teleport: Option<Teleport>,
+}
+
+/// A pending teleport target consumed by [`apply_teleport`].
+#[derive(Clone, Default)]
+pub struct Teleport {
+    pub lat: f64,
+    pub lng: f64,
+    /// Free-camera altitude to arrive at; `None` keeps the current altitude.
+    pub altitude: Option<f64>,
+    /// Camera orientation to restore; `None` keeps the current camera.
+    pub pose: Option<CameraPose>,
+}
+
+impl Teleport {
+    /// A plain geo jump that keeps the current camera orientation.
+    pub fn geo(lat: f64, lng: f64, altitude: Option<f64>) -> Self {
+        Self { lat, lng, altitude, pose: None }
+    }
+}
+
+/// A camera orientation snapshot, persisted with saved locations and bookmarks
+/// (see `user_store`) so a jump restores the exact view, not just the spot.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct CameraPose {
+    /// "free" or "avatar" (empty = unspecified: keep the current camera).
+    pub mode: String,
+    /// Free-camera look (pitch, yaw) — `CameraState::free_camera_rotation`.
+    pub free_rotation: [f32; 2],
+    /// Orbit-camera parameters (avatar mode).
+    pub azimuth: f32,
+    pub pitch: f32,
+    pub distance: f32,
+}
+
+impl CameraPose {
+    /// Capture the current camera orientation.
+    pub fn capture(cs: &CameraState) -> Self {
+        Self {
+            mode: match cs.mode {
+                CameraMode::Free => "free",
+                CameraMode::Avatar => "avatar",
+            }
+            .to_string(),
+            free_rotation: [cs.free_camera_rotation.x, cs.free_camera_rotation.y],
+            azimuth: cs.azimuth,
+            pitch: cs.pitch,
+            distance: cs.distance,
+        }
+    }
+
+    /// Apply to the camera state (no-op if `mode` is empty, e.g. an old
+    /// bookmark saved before poses existed — then the current view is kept).
+    pub fn apply(&self, cs: &mut CameraState) {
+        cs.mode = match self.mode.as_str() {
+            "free" => CameraMode::Free,
+            "avatar" => CameraMode::Avatar,
+            _ => return,
+        };
+        cs.free_camera_rotation = Vec2::new(self.free_rotation[0], self.free_rotation[1]);
+        cs.azimuth = self.azimuth;
+        cs.pitch = self.pitch;
+        cs.distance = self.distance;
+    }
 }
 
 impl Default for GeoNavState {
@@ -154,6 +219,18 @@ pub fn parse_lat_lng(input: &str) -> Option<(f64, f64)> {
         .then_some((lat, lng))
 }
 
+/// Like [`parse_lat_lng`], but also accepts a third altitude component
+/// ("53.2194, 6.5665, 120" or "… 120m"), as produced by the HUD copy button.
+pub fn parse_location(input: &str) -> Option<(f64, f64, Option<f64>)> {
+    if let Some((lat, lng)) = parse_lat_lng(input) {
+        return Some((lat, lng, None));
+    }
+    let (coords, alt) = input.trim().rsplit_once([',', ';'])?;
+    let alt: f64 = alt.trim().trim_end_matches(['m', 'M']).trim().parse().ok()?;
+    let (lat, lng) = parse_lat_lng(coords)?;
+    Some((lat, lng, Some(alt.clamp(1.0, 100_000.0))))
+}
+
 // ─── Nominatim lookup (background thread) ────────────────────────────────────
 
 /// Percent-encode a URL query component (RFC 3986 unreserved set kept).
@@ -221,7 +298,7 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
                     if nav.teleport_on_result {
                         nav.teleport_on_result = false;
                         if let Some(first) = list.first() {
-                            nav.pending_teleport = Some((first.lat, first.lng));
+                            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
                             nav.query = first.label.clone();
                             nav.show_suggestions = false;
                         } else {
@@ -255,7 +332,7 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
         && (debounced || nav.force_search)
         && fresh
         && query.len() >= MIN_QUERY_LEN
-        && parse_lat_lng(&query).is_none()
+        && parse_location(&query).is_none()
     {
         nav.in_flight = true;
         nav.force_search = false;
@@ -274,6 +351,8 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
     let field = ui.add(
         egui::TextEdit::singleline(&mut nav.query)
             .desired_width(340.0)
+            // Vertical padding so the field matches the taller menu bar.
+            .margin(egui::Margin::symmetric(8, 6))
             .hint_text("Search place, or paste \"lat, lng\"…"),
     );
     if nav.in_flight {
@@ -286,19 +365,31 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
         nav.error = None;
         nav.show_suggestions = true;
     }
-    if field.gained_focus() && !nav.suggestions.is_empty() {
-        nav.show_suggestions = true;
+    if field.gained_focus() {
+        // Browser UX: select the whole query on focus so typing replaces it
+        // (and Enter re-submits the shown address without clearing it first).
+        let len = nav.query.chars().count();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(len),
+            )));
+            state.store(ui.ctx(), field.id);
+        }
+        if !nav.suggestions.is_empty() {
+            nav.show_suggestions = true;
+        }
     }
 
     let submitted =
         field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
-        if let Some(target) = parse_lat_lng(&nav.query) {
-            nav.pending_teleport = Some(target);
+        if let Some((lat, lng, alt)) = parse_location(&nav.query) {
+            nav.pending_teleport = Some(Teleport::geo(lat, lng, alt));
             nav.show_suggestions = false;
         } else if nav.query.trim() == nav.last_sent && !nav.suggestions.is_empty() {
             let first = nav.suggestions[0].clone();
-            nav.pending_teleport = Some((first.lat, first.lng));
+            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
             nav.query = first.label;
             nav.show_suggestions = false;
         } else {
@@ -313,8 +404,12 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
 
     // Suggestion dropdown under the field. Pasted coordinates get a single
     // direct "Go to" entry instead of a lookup.
-    let coord_entry = parse_lat_lng(&nav.query).map(|(lat, lng)| GeoSuggestion {
-        label: format!("Go to {:.5}, {:.5}", lat, lng),
+    let coord_alt = parse_location(&nav.query);
+    let coord_entry = coord_alt.map(|(lat, lng, alt)| GeoSuggestion {
+        label: match alt {
+            Some(a) => format!("Go to {:.5}, {:.5} at {:.0} m", lat, lng, a),
+            None => format!("Go to {:.5}, {:.5}", lat, lng),
+        },
         lat,
         lng,
     });
@@ -359,7 +454,11 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
         });
 
     if let Some(s) = picked {
-        nav.pending_teleport = Some((s.lat, s.lng));
+        // The direct coordinate entry keeps its pasted altitude.
+        let alt = coord_alt
+            .filter(|(lat, lng, _)| *lat == s.lat && *lng == s.lng)
+            .and_then(|(_, _, a)| a);
+        nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, alt));
         nav.query = s.label;
         nav.show_suggestions = false;
         nav.teleport_on_result = false;
@@ -378,7 +477,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
 pub fn apply_teleport(
     mut nav: ResMut<GeoNavState>,
     stream: Res<MapStream>,
-    camera_state: Res<CameraState>,
+    mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
     mut cameras: Query<
         (&mut GridCell, &mut Transform),
@@ -389,13 +488,17 @@ pub fn apply_teleport(
         (With<Avatar>, Without<FreeCamera>),
     >,
 ) {
-    let Some((lat, lng)) = nav.pending_teleport else {
-        return;
-    };
-    let Some(anchor) = stream.geo_anchor() else {
-        return; // world not initialized yet; keep the target pending
-    };
-    nav.pending_teleport = None;
+    if stream.geo_anchor().is_none() || nav.pending_teleport.is_none() {
+        return; // nothing to do, or world not initialized yet (stay pending)
+    }
+    let anchor = stream.geo_anchor().unwrap();
+    let tp = nav.pending_teleport.take().unwrap();
+    let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
+    // Restore the saved camera orientation first, so the placement below and
+    // camera_controls (which runs after) use the intended mode and angle.
+    if let Some(pose) = &tp.pose {
+        pose.apply(&mut camera_state);
+    }
 
     let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
@@ -425,10 +528,14 @@ pub fn apply_teleport(
                 tf.translation = avatar_local + offset;
                 tf.look_at(avatar_local + Vec3::Y * 1.5, Vec3::Y);
             }
-            // Keep the current altitude (with a floor) over the new spot.
+            // Use the target's altitude when it carries one (copied locations,
+            // bookmarks, the startup restore); otherwise keep the current
+            // altitude (with a floor) over the new spot.
             CameraMode::Free => {
-                let altitude = (cell.y as f64 * WORLD_CELL_EDGE as f64
-                    + tf.translation.y as f64)
+                let altitude = target_alt
+                    .unwrap_or_else(|| {
+                        cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64
+                    })
                     .max(MIN_TELEPORT_ALTITUDE);
                 let (new_cell, local) =
                     grid.translation_to_grid(DVec3::new(wx, altitude, wz));
@@ -441,103 +548,58 @@ pub fn apply_teleport(
     tracing::info!(lat, lng, "teleported to geo target");
 }
 
-// ─── Geo-location + compass overlay (bottom-right) ───────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn render_geo_overlay(
-    mut egui: ResMut<EguiManager>,
-    stream: Res<MapStream>,
-    cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    mut copied_at: Local<Option<Instant>>,
-) {
-    let Some(anchor) = stream.geo_anchor() else {
-        return;
-    };
-    let Ok((cell, tf)) = cameras.single() else {
-        return;
-    };
-    let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
-    let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
-    let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
+    #[test]
+    fn parse_location_variants() {
+        assert_eq!(parse_location("53.2194, 6.5665"), Some((53.2194, 6.5665, None)));
+        assert_eq!(
+            parse_location("53.21940, 6.56650, 120"),
+            Some((53.2194, 6.5665, Some(120.0)))
+        );
+        assert_eq!(
+            parse_location("53.2194, 6.5665, 120m"),
+            Some((53.2194, 6.5665, Some(120.0)))
+        );
+        assert_eq!(parse_location("53.2194N 6.5665E"), Some((53.2194, 6.5665, None)));
+        assert_eq!(parse_location("Groningen"), None);
+        assert_eq!(parse_location("300, 4"), None); // latitude out of range
+        assert_eq!(parse_location("1, 2, 3, 4"), None);
+    }
 
-    // Compass heading of the view direction: 0° = north (−z), 90° = east (+x).
-    let forward = tf.rotation * Vec3::NEG_Z;
-    let heading = f32::atan2(forward.x, -forward.z);
+    #[test]
+    fn camera_pose_round_trips() {
+        let cs = CameraState {
+            mode: CameraMode::Free,
+            free_camera_rotation: Vec2::new(0.3, -1.2),
+            azimuth: 1.1,
+            pitch: 0.4,
+            distance: 42.0,
+            ..Default::default()
+        };
+        let pose = CameraPose::capture(&cs);
+        let mut restored = CameraState::default();
+        pose.apply(&mut restored);
+        assert!(matches!(restored.mode, CameraMode::Free));
+        assert_eq!(restored.free_camera_rotation, Vec2::new(0.3, -1.2));
+        assert_eq!(restored.azimuth, 1.1);
+        assert_eq!(restored.pitch, 0.4);
+        assert_eq!(restored.distance, 42.0);
+    }
 
-    let ctx = egui.ctx_mut();
-    egui::Area::new(egui::Id::new("geo_overlay"))
-        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    compass(ui, heading);
-                    let text = format!("{:.5}, {:.5}", lat, lng);
-                    ui.label(egui::RichText::new(&text).monospace());
-                    let copied =
-                        copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
-                    let button = ui
-                        .add(egui::Button::new(if copied { "✔" } else { "⧉" }).frame(false))
-                        .on_hover_text("Copy location (paste it in the search bar to return here)");
-                    if button.clicked() {
-                        crate::utils::clipboard::set_text(&text);
-                        *copied_at = Some(Instant::now());
-                    }
-                });
-            });
-        });
-}
-
-/// A small compass rose: red needle points to world north, grey tail south,
-/// with the "N" riding the rim. Hover shows the numeric heading.
-fn compass(ui: &mut egui::Ui, heading: f32) {
-    let size = 30.0;
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    resp.on_hover_text(format!(
-        "Heading {:.0}°",
-        heading.to_degrees().rem_euclid(360.0)
-    ));
-    let painter = ui.painter_at(rect);
-    let center = rect.center();
-    let radius = size * 0.5 - 1.0;
-
-    painter.circle(
-        center,
-        radius,
-        egui::Color32::from_black_alpha(110),
-        egui::Stroke::new(1.0, egui::Color32::from_gray(140)),
-    );
-
-    // Screen direction of world north: straight up when facing north.
-    let a = -heading;
-    let north = egui::vec2(a.sin(), -a.cos());
-    let perp = egui::vec2(-north.y, north.x);
-    let needle = radius - 8.0;
-    let half_width = 3.0;
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            center + north * needle,
-            center + perp * half_width,
-            center - perp * half_width,
-        ],
-        egui::Color32::from_rgb(225, 70, 55),
-        egui::Stroke::NONE,
-    ));
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            center - north * needle,
-            center - perp * half_width,
-            center + perp * half_width,
-        ],
-        egui::Color32::from_gray(150),
-        egui::Stroke::NONE,
-    ));
-    painter.circle_filled(center, 1.5, egui::Color32::WHITE);
-    painter.text(
-        center + north * (radius - 4.0),
-        egui::Align2::CENTER_CENTER,
-        "N",
-        egui::FontId::proportional(8.0),
-        egui::Color32::WHITE,
-    );
+    #[test]
+    fn empty_pose_keeps_current_view() {
+        // Old bookmarks (saved before poses) deserialize to an empty mode and
+        // must not disturb the current camera.
+        let mut cs = CameraState {
+            mode: CameraMode::Avatar,
+            azimuth: 0.7,
+            ..Default::default()
+        };
+        CameraPose::default().apply(&mut cs);
+        assert!(matches!(cs.mode, CameraMode::Avatar));
+        assert_eq!(cs.azimuth, 0.7);
+    }
 }

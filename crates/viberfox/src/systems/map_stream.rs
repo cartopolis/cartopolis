@@ -28,7 +28,7 @@ use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
 use vibe_core::TileKey;
 
 /// Fractional Web Mercator tile coordinate (no flooring) of a lat/lng at a zoom.
-fn lat_lng_to_tile_frac(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
+pub fn lat_lng_to_tile_frac(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
     let n = 2.0_f64.powi(zoom as i32);
     let x = (lng + 180.0) / 360.0 * n;
     let lat_rad = lat.to_radians();
@@ -95,6 +95,14 @@ pub struct MapStream {
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
     placeholder: Option<Handle<StandardMaterial>>,
+}
+
+impl MapStream {
+    /// The fixed geo anchor (lat, lng of the region-tile centre + base zoom),
+    /// once a region exists — the geo↔world mapping other systems build on.
+    pub fn geo_anchor(&self) -> Option<(f64, f64, u32)> {
+        self.anchor
+    }
 }
 
 impl Default for MapStream {

@@ -10,6 +10,7 @@ edition = "2021"
 [workspace.dependencies]
 anyhow = "1.0"
 approx = "0.5"
+arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 # Slimmer than `default`: drops UI, 2D sprite stack, audio, gamepads, gizmos, picking — less LLVM work per build.
 bevy = { version = "0.16", default-features = false, features = [
     "animation",

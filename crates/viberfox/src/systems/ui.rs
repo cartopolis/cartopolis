@@ -14,17 +14,30 @@ use egui::Window;
 use crate::resources::AiAssistantState;
 use vibe_core::NetMessage;
 
-/// Top menu bar: `File ▸ Exit`, `View ▸ AI Panel / Dev Panel`, and `Layers`
-/// (a top-level toggle for the Layers side panel).
+/// Top menu bar: `File ▸ Exit`, `View ▸ AI Panel / Dev Panel`, `Layers` and
+/// `Bookmarks` (top-level panel toggles), plus the geo search bar.
+#[allow(clippy::too_many_arguments)]
 pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
     mut ai_state: ResMut<AiAssistantState>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
+    mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
+    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut app_exit: EventWriter<AppExit>,
 ) {
     let ctx = egui.ctx_mut();
-    egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+    // Symmetric top/bottom margin makes the panel size to its content with equal
+    // padding above and below, so the row is vertically centred (unlike
+    // `exact_height`, which top-aligns the content).
+    let frame = egui::Frame::side_top_panel(&ctx.style())
+        .inner_margin(egui::Margin::symmetric(10, 8));
+    egui::TopBottomPanel::top("menu_bar").frame(frame).show(ctx, |ui| {
+        // `menu::bar` uses this as the row height and centres items within it
+        // (its layout is `Align::Center`); bumping it gives the buttons and the
+        // taller search field a common, roomier height that lines up.
+        ui.style_mut().spacing.interact_size.y = 26.0;
+        ui.style_mut().spacing.item_spacing.x = 8.0;
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Exit").clicked() {
@@ -52,10 +65,17 @@ pub fn render_menu_bar(
                     ui.close_menu();
                 }
             });
-            // Top-level toggle, like a browser's sidebar button.
+            // Top-level toggles, like a browser's sidebar buttons.
             if ui.button("Layers").clicked() {
                 layers.panel_open = !layers.panel_open;
             }
+            if ui.button("Bookmarks").clicked() {
+                bookmarks.panel_open = !bookmarks.panel_open;
+            }
+            ui.separator();
+            // Browser-style geo search: place names via Nominatim, or pasted
+            // "lat, lng(, altitude)" coordinates.
+            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav);
         });
     });
 }

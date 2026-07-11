@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use big_space::prelude::{BigSpace, GridCell};
@@ -56,9 +57,13 @@ const BOARD_TTL: Duration = Duration::from_secs(300);
 /// Rows shown per board.
 const MAX_ROWS: usize = 4;
 
-/// Board texture size in pixels (2:1, matching the quad's aspect).
+/// Board texture size in pixels. The display panel uses the left
+/// [`PANEL_PX`] columns; the strip to the right carries the counterweight
+/// box's face (operator branding) plus a solid-colour column for its sides.
 const BOARD_PX_W: usize = 512;
 const BOARD_PX_H: usize = 256;
+/// Panel width in texels (quad aspect = PANEL_PX : BOARD_PX_H).
+const PANEL_PX: usize = 432;
 
 /// Real-world wall clock, updated every frame. `now_unix` is seconds since the
 /// Unix epoch; `local_offset_secs` is the UTC offset of the *transit region*
@@ -95,6 +100,8 @@ pub struct Departure {
     pub line: String,
     pub destination: String,
     pub transport: String,
+    /// OVapi `OperatorCode` (QBUZZ, ARR, …) — shown on the counterweight box.
+    pub operator: String,
     pub target_unix: i64,
     pub expected_unix: i64,
     pub cancelled: bool,
@@ -137,20 +144,6 @@ pub struct TransitLive {
 /// Marker for in-world departure-board quads.
 #[derive(Component)]
 pub struct BoardQuad;
-
-/// Camera-relative position of a POI anchor, exact under the floating origin:
-/// grid rebasing is a pure translation, so (poi − camera) computed from grid
-/// cells + local translations equals the render-space delta.
-fn poi_delta(poi: &PoiInstance, cam_cell: &GridCell, cam_tf: &Transform) -> Vec3 {
-    Vec3::new(
-        (poi.cell.x - cam_cell.x) as f32 * WORLD_CELL_EDGE + poi.anchor.x
-            - cam_tf.translation.x,
-        (poi.cell.y - cam_cell.y) as f32 * WORLD_CELL_EDGE + poi.anchor.y
-            - cam_tf.translation.y,
-        (poi.cell.z - cam_cell.z) as f32 * WORLD_CELL_EDGE + poi.anchor.z
-            - cam_tf.translation.z,
-    )
-}
 
 /// Poll OVapi for the live-capable stops around the camera: one batched
 /// request per interval on a worker thread, results folded into `boards`.
@@ -209,7 +202,7 @@ pub fn poll_transit_live(
         let Some(code) = &poi.live_id else {
             continue;
         };
-        let d = poi_delta(poi, cam_cell, cam_tf);
+        let d = poi.delta(cam_cell, cam_tf);
         let dist = Vec2::new(d.x, d.z).length();
         if dist <= FETCH_RANGE && seen.insert(code.clone()) {
             any_unfetched |= !live.boards.contains_key(code);
@@ -266,7 +259,7 @@ pub fn update_transit_boards(
             if !live.boards.contains_key(code) || !seen.insert(code) {
                 continue;
             }
-            let d = poi_delta(poi, cam_cell, cam_tf);
+            let d = poi.delta(cam_cell, cam_tf);
             let dist = Vec2::new(d.x, d.z).length();
             if dist <= SHOW_RANGE {
                 nearby.push((dist, code, poi));
@@ -341,16 +334,16 @@ pub fn update_transit_boards(
                 unlit: true,
                 ..default()
             });
-            // Board size scales with the pin (bus ≈ 11×5.5 m, rail ≈ 22×11 m).
+            // Real display proportions (bus ≈ 1.6×0.95 m), panel snug against
+            // the pole with the operator counterweight box on the far side.
+            // The mesh origin is on the pole axis at the display's top, so
+            // billboarding swings the whole assembly around the pole.
             let style = &LAYER_DEFS[TRANSIT_LAYER].categories[poi.category].1;
-            let w = style.pole_height * 0.55;
-            let h = w * 0.5;
-            let mesh = meshes.add(Rectangle::new(w, h));
-            let translation = Vec3::new(
-                poi.anchor.x,
-                style.pole_height - 0.2 - h * 0.5,
-                poi.anchor.z,
-            );
+            let w = style.board_width;
+            let h = w * (BOARD_PX_H as f32 / PANEL_PX as f32);
+            let mesh = meshes.add(board_mesh(w, h));
+            let mount_y = style.pole_height - 0.15;
+            let translation = Vec3::new(poi.anchor.x, mount_y, poi.anchor.z);
             let entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
@@ -378,8 +371,8 @@ pub fn update_transit_boards(
         }
     }
 
-    // Yaw-billboard every board toward the camera (upright, like a sign that
-    // happens to always face you).
+    // Billboard every board toward the camera — yaw plus pitch, since at real
+    // display size a yaw-only panel is unreadably foreshortened from the air.
     for entry in live.entries.values() {
         let Ok(mut tf) = quads.get_mut(entry.entity) else {
             continue;
@@ -387,11 +380,75 @@ pub fn update_transit_boards(
         let dx = (cam_cell.x - entry.cell.x) as f32 * WORLD_CELL_EDGE
             + cam_tf.translation.x
             - tf.translation.x;
+        let dy = (cam_cell.y - entry.cell.y) as f32 * WORLD_CELL_EDGE
+            + cam_tf.translation.y
+            - tf.translation.y;
         let dz = (cam_cell.z - entry.cell.z) as f32 * WORLD_CELL_EDGE
             + cam_tf.translation.z
             - tf.translation.z;
-        tf.rotation = Quat::from_rotation_y(dx.atan2(dz));
+        let pitch = dy.atan2((dx * dx + dz * dz).sqrt());
+        tf.rotation = Quat::from_rotation_y(dx.atan2(dz)) * Quat::from_rotation_x(-pitch);
     }
+}
+
+/// The sign assembly, R-NET style: the display panel snug against one side of
+/// the pole, and a slim branded counterweight box on the other. The mesh
+/// origin sits on the pole axis at the display's top edge, so billboarding
+/// swings the assembly around the pole. One texture serves everything: the
+/// panel samples the left [`PANEL_PX`] columns, the box front the branding
+/// strip, and the box's other faces a solid-colour column.
+fn board_mesh(w: f32, h: f32) -> Mesh {
+    /// Pole clearance: half the pole section plus a whisker.
+    const GAP: f32 = 0.11;
+    /// UV landmarks (texel / texture width), inset to avoid sampling bleed.
+    const PANEL_U1: f32 = 430.0 / 512.0;
+    const BOX_U0: f32 = 437.0 / 512.0;
+    const BOX_U1: f32 = 508.0 / 512.0;
+    const SOLID_U: f32 = 510.5 / 512.0;
+    let solid: [[f32; 2]; 4] = [[SOLID_U, 0.5]; 4];
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut quad = |v: [[f32; 3]; 4], t: [[f32; 2]; 4]| {
+        let base = positions.len() as u32;
+        positions.extend(v);
+        uvs.extend(t);
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+
+    // Display panel at z=0 (vertices BL, BR, TR, TL — CCW toward +Z).
+    quad(
+        [[GAP, -h, 0.0], [GAP + w, -h, 0.0], [GAP + w, 0.0, 0.0], [GAP, 0.0, 0.0]],
+        [[0.0, 1.0], [PANEL_U1, 1.0], [PANEL_U1, 0.0], [0.0, 0.0]],
+    );
+
+    // Counterweight box on the opposite side of the pole.
+    let (x0, x1) = (-GAP - 0.30, -GAP + 0.02);
+    let (y0, y1) = (-h + 0.03, -0.03);
+    let (z0, z1) = (-0.12, 0.12);
+    // Front: operator branding strip.
+    quad(
+        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+        [[BOX_U0, 1.0], [BOX_U1, 1.0], [BOX_U1, 0.0], [BOX_U0, 0.0]],
+    );
+    // Back, sides, top, bottom: solid casing colour.
+    quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], solid);
+    quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], solid);
+    quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], solid);
+    quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], solid);
+    quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], solid);
+
+    let normals = vec![[0.0, 0.0, 1.0]; positions.len()];
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
 }
 
 /// Wrap painted pixels in a GPU-only texture asset (repaints replace the whole
@@ -488,8 +545,10 @@ fn fill_rect(px: &mut [u8], x0: usize, y0: usize, x1: usize, y1: usize, c: [u8; 
     }
 }
 
-/// Paint one board texture: header band with the stop name and wall clock,
-/// then up to [`MAX_ROWS`] departures (line, destination, minutes-to-go).
+/// Paint one board texture. Left [`PANEL_PX`] columns: the display panel —
+/// header band with the stop name and wall clock, then up to [`MAX_ROWS`]
+/// departures. Right strip: the counterweight box's face with the operator
+/// code stacked vertically, plus a solid column for the box's other sides.
 fn paint_board(
     painter: &BoardPainter,
     poi: &PoiInstance,
@@ -497,15 +556,32 @@ fn paint_board(
     now: i64,
     (hh, mm, _): (u32, u32, u32),
 ) -> Vec<u8> {
-    let (w, h) = (BOARD_PX_W, BOARD_PX_H);
-    let mut px = vec![0u8; w * h * 4];
+    let (w, h) = (PANEL_PX, BOARD_PX_H);
+    let mut px = vec![0u8; BOARD_PX_W * h * 4];
     fill_rect(&mut px, 0, 0, w, h, BORDER);
     fill_rect(&mut px, 3, 3, w - 3, h - 3, BG);
     fill_rect(&mut px, 3, 3, w - 3, 50, HEADER_BAND);
 
+    // Counterweight strip: framed casing-blue face with the operator code
+    // stacked down it, and a solid column (509..512) for the box sides.
+    fill_rect(&mut px, 436, 0, BOARD_PX_W, h, BORDER);
+    fill_rect(&mut px, 439, 3, 509, h - 3, HEADER_BAND);
+    fill_rect(&mut px, 509, 0, BOARD_PX_W, h, HEADER_BAND);
+    let operator = board
+        .departures
+        .iter()
+        .map(|d| d.operator.as_str())
+        .find(|o| !o.is_empty())
+        .unwrap_or("");
+    for (i, ch) in operator.chars().take(6).enumerate() {
+        let glyph = ch.to_string();
+        let gw = painter.measure(30.0, &glyph);
+        painter.text(&mut px, 474.0 - gw / 2.0, 48.0 + i as f32 * 36.0, 30.0, HEADER_TEXT, &glyph);
+    }
+
     // Header: stop name left, clock right.
     let name = poi.name.as_deref().unwrap_or("Halte");
-    painter.text(&mut px, 16.0, 37.0, 26.0, HEADER_TEXT, &fit(painter, name, 26.0, 360.0));
+    painter.text(&mut px, 16.0, 37.0, 26.0, HEADER_TEXT, &fit(painter, name, 26.0, 300.0));
     let clock = format!("{hh:02}:{mm:02}");
     let cw = painter.measure(22.0, &clock);
     painter.text(&mut px, w as f32 - 16.0 - cw, 36.0, 22.0, CLOCK_TEXT, &clock);
@@ -539,7 +615,7 @@ fn paint_board(
         painter.text(&mut px, 70.0 - lw, baseline, 27.0, line_color, &dep.line);
 
         // Destination (struck through when cancelled).
-        let dest = fit(painter, &dep.destination, 27.0, 300.0);
+        let dest = fit(painter, &dep.destination, 27.0, 215.0);
         let end = painter.text(&mut px, 86.0, baseline, 27.0, AMBER, &dest);
         if dep.cancelled {
             fill_rect(
@@ -632,6 +708,7 @@ fn parse_departures(text: &str) -> FetchResult {
                 line: s("LinePublicNumber").unwrap_or("?").to_string(),
                 destination: s("DestinationName50").unwrap_or("").to_string(),
                 transport: s("TransportType").unwrap_or("BUS").to_string(),
+                operator: s("OperatorCode").unwrap_or("").to_string(),
                 target_unix: t - off,
                 expected_unix: e - off,
                 cancelled: matches!(status, "CANCEL" | "CANCELLED"),
@@ -704,12 +781,16 @@ mod tests {
             name: Some("UMCG Hoofdingang".to_string()),
             live_id: Some("10006090".to_string()),
             category: 2,
+            osm_id: 427558737,
+            website: None,
+            addr: None,
         };
         let now = 1_800_000_000i64;
         let dep = |line: &str, dest: &str, transport: &str, rel: i64, delay: i64, cancelled: bool| Departure {
             line: line.to_string(),
             destination: dest.to_string(),
             transport: transport.to_string(),
+            operator: "QBUZZ".to_string(),
             target_unix: now + rel - delay,
             expected_unix: now + rel,
             cancelled,

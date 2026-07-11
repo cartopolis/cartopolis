@@ -107,6 +107,9 @@ fn main() {
     .init_resource::<systems::data_layers::DataLayers>()
     .init_resource::<systems::transit_live::TransitLive>()
     .init_resource::<systems::transit_live::WorldClock>()
+    .init_resource::<systems::geo_nav::GeoNavState>()
+    .init_resource::<systems::bookmarks::BookmarksState>()
+    .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
     .insert_resource(DirectionalLightShadowMap { size: 4096 });
 
@@ -160,12 +163,33 @@ fn main() {
             rendering::update_region_materials,
             systems::osm_buildings::update_buildings.after(rendering::spawn_regions),
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
+            systems::data_layers::animate_stop_rings
+                .after(systems::data_layers::update_data_layers),
+            // After the spawners, so new entities get this frame's toggle state.
+            systems::data_layers::apply_feature_toggles
+                .after(systems::osm_buildings::update_buildings)
+                .after(systems::map_stream::update_map_stream)
+                .after(rendering::spawn_regions),
+            systems::data_layers::handle_poi_click
+                .after(systems::data_layers::update_data_layers),
             systems::transit_live::update_world_clock,
             systems::transit_live::poll_transit_live
                 .after(systems::data_layers::update_data_layers)
                 .after(systems::transit_live::update_world_clock),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             systems::map_stream::update_map_stream.after(systems::map_stream::init_map_stream),
+            systems::geo_nav::drive_geocode,
+            // Restore feeds pending_teleport, so it must run before the
+            // teleport applies; teleports move the camera, so apply before
+            // camera_controls reads it this frame.
+            systems::user_store::restore_last_location
+                .after(systems::map_stream::init_map_stream),
+            systems::geo_nav::apply_teleport
+                .after(systems::geo_nav::drive_geocode)
+                .after(systems::user_store::restore_last_location)
+                .before(systems::free_camera::camera_controls),
+            systems::user_store::autosave_user_store,
+            systems::bookmarks::poll_bookmark_addresses,
             systems::map_stream::apply_stream_textures.after(systems::map_stream::update_map_stream),
             attach_avatar_to_bigspace,
         ),
@@ -231,6 +255,11 @@ fn main() {
             systems::data_layers::render_data_layers_panel
                 .after(systems::ui::render_menu_bar),
             systems::hud::render_hud.after(systems::ui::render_menu_bar),
+            systems::bookmarks::render_bookmarks_panel
+                .after(systems::ui::render_menu_bar),
+            systems::data_layers::render_poi_popup
+                .after(systems::ui::render_menu_bar)
+                .after(systems::free_camera::camera_controls),
             // Boards billboard toward the camera, so run after it has moved.
             systems::transit_live::update_transit_boards
                 .after(systems::transit_live::poll_transit_live)

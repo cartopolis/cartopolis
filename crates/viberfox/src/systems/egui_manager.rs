@@ -139,6 +139,7 @@ pub fn begin_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     windows: Query<&Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut mouse_wheel: EventReader<MouseWheel>,
     mut cursor_moved: EventReader<CursorMoved>,
     mut keyboard_input: EventReader<KeyboardInput>,
@@ -211,9 +212,38 @@ pub fn begin_egui_frame(
         }
     }
 
-    // Keyboard: text input for text fields + special keys
+    // Keyboard: text input for text fields + special keys. Ctrl+C/V/X become
+    // explicit clipboard events bridged to the system clipboard (this custom
+    // integration has no winit clipboard plumbing of its own).
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let modifiers = egui::Modifiers {
+        ctrl,
+        shift,
+        command: ctrl,
+        ..Default::default()
+    };
     for ev in keyboard_input.read() {
-        if ev.state == ButtonState::Pressed {
+        if ev.state == ButtonState::Pressed && ctrl {
+            match ev.key_code {
+                KeyCode::KeyC => {
+                    events.push(egui::Event::Copy);
+                    continue;
+                }
+                KeyCode::KeyX => {
+                    events.push(egui::Event::Cut);
+                    continue;
+                }
+                KeyCode::KeyV => {
+                    if let Some(text) = crate::utils::clipboard::get_text() {
+                        events.push(egui::Event::Paste(text));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if ev.state == ButtonState::Pressed && !ctrl {
             if let Some(ref text) = ev.text {
                 let s = text.as_str();
                 if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
@@ -227,7 +257,7 @@ pub fn begin_egui_frame(
                 physical_key: None,
                 pressed: ev.state == ButtonState::Pressed,
                 repeat: ev.repeat,
-                modifiers: egui::Modifiers::default(),
+                modifiers,
             });
         }
     }
@@ -287,6 +317,12 @@ pub fn end_egui_frame(
     };
 
     let full_output = egui_manager.ctx.end_pass();
+    // Bridge egui-side copies (Ctrl+C in a text field) to the system clipboard.
+    for command in &full_output.platform_output.commands {
+        if let egui::OutputCommand::CopyText(text) = command {
+            crate::utils::clipboard::set_text(text);
+        }
+    }
     let pixels_per_point = full_output.pixels_per_point;
     let clipped_primitives = egui_manager
         .ctx
