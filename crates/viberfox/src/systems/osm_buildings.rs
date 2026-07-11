@@ -40,7 +40,13 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 /// large cells) so a patch is a handful of Overpass queries, not dozens.
 const CACHE_ZOOM: u32 = 14;
 /// Throttle between live Overpass queries so we don't trip its rate limit (429).
-const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
+pub(crate) const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
+
+/// Identifying User-Agent — Overpass is a free shared service and its usage
+/// policy asks callers to identify themselves; anonymous clients get throttled
+/// or refused first when the service is under load.
+const OVERPASS_USER_AGENT: &str =
+    "viberfox/0.1 (map data; https://github.com/garage44/viberfox)";
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -617,7 +623,14 @@ fn spawn_detail_patch(
 
 /// Web Mercator (lat,lng) → world metres relative to the anchor tile centre.
 /// `tile_m` is the real ground edge of a tile; East is `+X`, South is `+Z`.
-fn lat_lng_to_local(lat: f64, lng: f64, tile_x: i64, tile_y: i64, z: u32, tile_m: f32) -> Vec2 {
+pub(crate) fn lat_lng_to_local(
+    lat: f64,
+    lng: f64,
+    tile_x: i64,
+    tile_y: i64,
+    z: u32,
+    tile_m: f32,
+) -> Vec2 {
     let n = 2.0_f64.powi(z as i32);
     let x = (lng + 180.0) / 360.0 * n;
     let lat_rad = lat.to_radians();
@@ -630,7 +643,7 @@ fn lat_lng_to_local(lat: f64, lng: f64, tile_x: i64, tile_y: i64, z: u32, tile_m
 
 /// An accumulating triangle-mesh buffer.
 #[derive(Default)]
-struct MeshData {
+pub(crate) struct MeshData {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     colors: Vec<[f32; 4]>,
@@ -639,7 +652,7 @@ struct MeshData {
 
 impl MeshData {
     /// Push a triangle with a flat computed normal.
-    fn tri(&mut self, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4]) {
+    pub(crate) fn tri(&mut self, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4]) {
         let n = (b - a).cross(c - a).normalize_or_zero();
         let base = self.positions.len() as u32;
         for v in [a, b, c] {
@@ -651,13 +664,13 @@ impl MeshData {
     }
 
     /// Push a quad (a→b→c→d) as two triangles.
-    fn quad(&mut self, a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: [f32; 4]) {
+    pub(crate) fn quad(&mut self, a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: [f32; 4]) {
         self.tri(a, b, c, color);
         self.tri(a, c, d, color);
     }
 
     /// Finalise into a `Mesh` (or `None` if empty).
-    fn into_mesh(self) -> Option<Mesh> {
+    pub(crate) fn into_mesh(self) -> Option<Mesh> {
         if self.indices.is_empty() {
             return None;
         }
@@ -1181,13 +1194,16 @@ fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
 
 /// POST an Overpass query, retrying a couple of times with backoff on failure
 /// (429/504 are common under load).
-fn overpass_query(query: &str) -> Result<String, String> {
+pub(crate) fn overpass_query(query: &str) -> Result<String, String> {
     let mut last_err = String::new();
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(Duration::from_secs(3));
         }
-        match ureq::post("https://overpass-api.de/api/interpreter").send_form(&[("data", query)]) {
+        match ureq::post("https://overpass-api.de/api/interpreter")
+            .set("User-Agent", OVERPASS_USER_AGENT)
+            .send_form(&[("data", query)])
+        {
             Ok(resp) => return resp.into_string().map_err(|e| e.to_string()),
             Err(e) => last_err = e.to_string(),
         }

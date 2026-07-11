@@ -16,6 +16,7 @@ bevy_image.workspace = true
 big_space.workspace = true
 clap.workspace = true
 earcutr.workspace = true
+fontdue.workspace = true
 glam.workspace = true
 image.workspace = true
 postcard.workspace = true

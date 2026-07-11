@@ -276,7 +276,7 @@ pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>)
     let rect = egui::Rect::from_min_max(min, max);
 
     let fill = egui::Color32::from_rgba_premultiplied(100, 160, 255, 25);
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(140, 190, 255, 200));
+    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(140, 190, 255, 200));
     painter.rect(rect, egui::CornerRadius::default(), fill, stroke, egui::StrokeKind::Outside);
 }
 

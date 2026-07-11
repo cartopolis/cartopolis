@@ -14,11 +14,13 @@ use egui::Window;
 use crate::resources::AiAssistantState;
 use vibe_core::NetMessage;
 
-/// Top menu bar: `File ▸ Exit` and `View ▸ AI Panel / Dev Panel`.
+/// Top menu bar: `File ▸ Exit`, `View ▸ AI Panel / Dev Panel`, and `Layers`
+/// (a top-level toggle for the Layers side panel).
 pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
     mut ai_state: ResMut<AiAssistantState>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
+    mut layers: ResMut<crate::systems::data_layers::DataLayers>,
     mut app_exit: EventWriter<AppExit>,
 ) {
     let ctx = egui.ctx_mut();
@@ -50,6 +52,10 @@ pub fn render_menu_bar(
                     ui.close_menu();
                 }
             });
+            // Top-level toggle, like a browser's sidebar button.
+            if ui.button("Layers").clicked() {
+                layers.panel_open = !layers.panel_open;
+            }
         });
     });
 }
@@ -845,7 +851,7 @@ pub fn render_edit_dialog(
                                                     resp.rect,
                                                     2.0,
                                                     egui::Stroke::new(
-                                                        2.5,
+                                                        2.5_f32,
                                                         ui.visuals().selection.bg_fill,
                                                     ),
                                                     egui::StrokeKind::Outside,

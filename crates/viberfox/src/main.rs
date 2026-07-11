@@ -62,7 +62,7 @@ fn main() {
         .set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Viberfox".into(),
-                resolution: (1280.0, 720.0).into(),
+                resolution: (1280.0_f32, 720.0_f32).into(),
                 ..default()
             }),
             ..default()
@@ -104,6 +104,9 @@ fn main() {
     .init_resource::<AiAssistantState>()
     .init_resource::<DevPanelState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
+    .init_resource::<systems::data_layers::DataLayers>()
+    .init_resource::<systems::transit_live::TransitLive>()
+    .init_resource::<systems::transit_live::WorldClock>()
     .init_resource::<systems::map_stream::MapStream>()
     .insert_resource(DirectionalLightShadowMap { size: 4096 });
 
@@ -156,6 +159,11 @@ fn main() {
             systems::tile_loader::load_region_tiles,
             rendering::update_region_materials,
             systems::osm_buildings::update_buildings.after(rendering::spawn_regions),
+            systems::data_layers::update_data_layers.after(rendering::spawn_regions),
+            systems::transit_live::update_world_clock,
+            systems::transit_live::poll_transit_live
+                .after(systems::data_layers::update_data_layers)
+                .after(systems::transit_live::update_world_clock),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             systems::map_stream::update_map_stream.after(systems::map_stream::init_map_stream),
             systems::map_stream::apply_stream_textures.after(systems::map_stream::update_map_stream),
@@ -220,6 +228,13 @@ fn main() {
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
             systems::ui::render_dev_panel,
+            systems::data_layers::render_data_layers_panel
+                .after(systems::ui::render_menu_bar),
+            systems::hud::render_hud.after(systems::ui::render_menu_bar),
+            // Boards billboard toward the camera, so run after it has moved.
+            systems::transit_live::update_transit_boards
+                .after(systems::transit_live::poll_transit_live)
+                .after(systems::free_camera::camera_controls),
             advance_day_cycle.before(apply_day_night_cycle),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
             apply_distance_fog.after(systems::ui::render_dev_panel),
