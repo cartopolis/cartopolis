@@ -6,6 +6,11 @@ Product intent, planning, and architecture decisions for vibe-rs live under **`d
 |------|----------|
 | **[abstract/](abstract/)** | Vision (`G-*`), principles (`P-*`), roadmap, **ADR resolution** guide, capability map, glossary, discipline |
 | **[adr/](adr/)** | Architecture Decision Records (numbered files + `index.md`, `template.md`) |
+| **[guides/](guides/)** | Operational how-tos (self-hosting services, deployment) |
+
+## Guides
+
+- [Self-hosted Overpass API (Netherlands)](guides/self-hosted-overpass.md) — run a local Overpass instance on Arch and point the client at it via `VIBE_OVERPASS_URL`
 
 ## Read order
 
