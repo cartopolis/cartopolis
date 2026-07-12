@@ -79,6 +79,7 @@ fn main() {
     .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
     .add_plugins(EguiPlugin)
     .add_plugins(AtmospherePlugin)
+    .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
     .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
     .add_plugins(MaterialPlugin::<MoonMaterial>::default())
     .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())

@@ -22,7 +22,14 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+};
 use bevy::prelude::*;
+use bevy::render::mesh::MeshVertexBufferLayoutRef;
+use bevy::render::render_resource::{
+    AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::Region;
@@ -32,6 +39,34 @@ use crate::systems::osm_buildings::{
     lat_lng_to_local, overpass_query, MeshData, OVERPASS_THROTTLE,
 };
 use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
+
+/// Material for the floating shop-pin heads: a plain `StandardMaterial` (unlit,
+/// per-vertex hue) whose depth test is forced to always pass, so the gem heads
+/// draw over the buildings like real map POI markers. The stems and ground
+/// discs stay on the ordinary depth-tested marker material and still occlude
+/// behind walls, so an occluded pin reads as a gem hovering above its roof
+/// rather than a needle poking through it. The base uses `AlphaMode::Blend` so
+/// heads render in the transparent phase, after all opaque geometry — nothing
+/// painted earlier can then hide them.
+pub type PinHeadMaterial = ExtendedMaterial<StandardMaterial, DepthAlways>;
+
+/// Pipeline tweak for [`PinHeadMaterial`]: pass the depth test unconditionally.
+#[derive(Asset, AsBindGroup, Reflect, Clone, Default)]
+pub struct DepthAlways {}
+
+impl MaterialExtension for DepthAlways {
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_compare = CompareFunction::Always;
+        }
+        Ok(())
+    }
+}
 
 /// Fixed grid zoom at which layer data is fetched + cached (same scheme as the
 /// building cells: coarse cells, one Overpass query each, cache never
@@ -45,27 +80,31 @@ const MAX_CELL_ATTEMPTS: u32 = 5;
 /// Index of the public-transport layer in [`LAYER_DEFS`] (see `transit_live`).
 pub const TRANSIT_LAYER: usize = 0;
 
-/// How one POI category is drawn, at real street-furniture scale: a
-/// rectangular anthracite pole (like the R-NET stop hardware). The category
-/// colour appears in the ground ring and the panel legend; live departure
-/// displays mount near the pole top (`transit_live`).
-pub struct MarkerStyle {
-    /// Category colour (ground ring, pole cap, legend).
-    pub color: [f32; 3],
-    /// Pole height in metres.
-    pub pole_height: f32,
-    /// Width of the live display board mounted on this pole, metres.
-    pub board_width: f32,
-    /// Half-extent of a coloured cap box on the pole top (0 = none) — the
-    /// category marker for layers that don't pulse ground rings.
-    pub cap_half: f32,
+/// How a layer's POIs are shaped in the world (all categories share a shape).
+#[derive(Clone, Copy, PartialEq)]
+pub enum MarkerShape {
+    /// A tall anthracite street-furniture pole (R-NET style), with an optional
+    /// live departure board near the top and a pulsing ground ring. Right for
+    /// sparse layers like transit stops.
+    Pole,
+    /// A colour-coded gem head floating above the location on a slim stem, with
+    /// a small disc marking the exact spot on the ground — a recognisable,
+    /// clickable map pin that stands clear of the shopfronts. Right for dense
+    /// layers like shops, where poles would disappear into the streetscape.
+    Pin,
 }
 
-impl MarkerStyle {
-    /// Height of the anchor point above ground, just clear of the sign plate.
-    fn anchor_height(&self) -> f32 {
-        self.pole_height + 0.5
-    }
+/// How one POI category is drawn. `pole_height` is the height of the marker's
+/// business end — the pole top for [`MarkerShape::Pole`] (where the sign board
+/// and anchor sit) or the floating gem-head centre for [`MarkerShape::Pin`].
+pub struct MarkerStyle {
+    /// Category colour (pole cap / pin head, ground ring, panel legend).
+    pub color: [f32; 3],
+    /// Height in metres of the pole top / the floating pin head.
+    pub pole_height: f32,
+    /// Width of the live display board mounted on this pole, metres (poles
+    /// only; 0 = none).
+    pub board_width: f32,
 }
 
 /// A declarative data layer: what to fetch from Overpass and how to draw it.
@@ -83,6 +122,8 @@ pub struct LayerDef {
     pub classify: fn(Option<&serde_json::Value>) -> Option<usize>,
     /// Extract the key this POI is known by in a live-data feed, if any.
     pub live_id: Option<fn(Option<&serde_json::Value>) -> Option<String>>,
+    /// How each POI is drawn in the world (pole vs floating pin).
+    pub shape: MarkerShape,
     /// Whether this layer's POIs pulse a radiating ground ring. Right for
     /// sparse layers (stops); overwhelming for dense ones (shops).
     pub rings: bool,
@@ -97,34 +138,20 @@ pub const LAYER_DEFS: &[LayerDef] = &[
         categories: &[
             (
                 "Rail station",
-                MarkerStyle {
-                    color: [0.15, 0.40, 0.85],
-                    pole_height: 7.0,
-                    board_width: 3.2,
-                    cap_half: 0.0,
-                },
+                MarkerStyle { color: [0.15, 0.40, 0.85], pole_height: 7.0, board_width: 3.2 },
             ),
             (
                 "Tram stop",
-                MarkerStyle {
-                    color: [0.16, 0.60, 0.30],
-                    pole_height: 5.0,
-                    board_width: 1.8,
-                    cap_half: 0.0,
-                },
+                MarkerStyle { color: [0.16, 0.60, 0.30], pole_height: 5.0, board_width: 1.8 },
             ),
             (
                 "Bus stop",
-                MarkerStyle {
-                    color: [0.95, 0.66, 0.12],
-                    pole_height: 4.6,
-                    board_width: 1.6,
-                    cap_half: 0.0,
-                },
+                MarkerStyle { color: [0.95, 0.66, 0.12], pole_height: 4.6, board_width: 1.6 },
             ),
         ],
         classify: classify_transit,
         live_id: Some(transit_live_id),
+        shape: MarkerShape::Pole,
         rings: true,
     },
     LayerDef {
@@ -134,34 +161,20 @@ pub const LAYER_DEFS: &[LayerDef] = &[
         categories: &[
             (
                 "Food & groceries",
-                MarkerStyle {
-                    color: [0.25, 0.70, 0.35],
-                    pole_height: 3.0,
-                    board_width: 0.0,
-                    cap_half: 0.22,
-                },
+                MarkerStyle { color: [0.25, 0.70, 0.35], pole_height: 8.0, board_width: 0.0 },
             ),
             (
                 "Fashion & accessories",
-                MarkerStyle {
-                    color: [0.85, 0.35, 0.60],
-                    pole_height: 3.0,
-                    board_width: 0.0,
-                    cap_half: 0.22,
-                },
+                MarkerStyle { color: [0.85, 0.35, 0.60], pole_height: 8.0, board_width: 0.0 },
             ),
             (
                 "Other shops",
-                MarkerStyle {
-                    color: [0.62, 0.44, 0.86],
-                    pole_height: 3.0,
-                    board_width: 0.0,
-                    cap_half: 0.22,
-                },
+                MarkerStyle { color: [0.62, 0.44, 0.86], pole_height: 8.0, board_width: 0.0 },
             ),
         ],
         classify: classify_shops,
         live_id: None,
+        shape: MarkerShape::Pin,
         rings: false,
     },
 ];
@@ -256,7 +269,10 @@ pub struct LayerRuntime {
 /// A cell built on the worker: its anchor cell, merged marker mesh, and POIs.
 pub struct CellBuild {
     cell: GridCell,
+    /// Depth-tested geometry: poles, or pin stems + ground discs.
     mesh: Mesh,
+    /// Always-on-top geometry: the floating pin heads (`None` for pole layers).
+    heads: Option<Mesh>,
     pois: Vec<PoiInstance>,
 }
 
@@ -280,8 +296,11 @@ pub struct DataLayers {
     /// Worker job queue: (layer index, cell x, cell y).
     jobs: Option<Sender<(usize, i64, i64)>>,
     results: Arc<Mutex<Vec<CellResult>>>,
-    /// One unlit material shared by all markers (hue is per-vertex).
+    /// One unlit material shared by all depth-tested marker geometry (hue is
+    /// per-vertex): poles, pin stems, pin ground discs.
     material: Option<Handle<StandardMaterial>>,
+    /// Shared always-on-top material for the floating pin heads.
+    head_material: Option<Handle<PinHeadMaterial>>,
     /// Shared unit annulus for the ground rings (scaled per frame).
     ring_mesh: Option<Handle<Mesh>>,
     /// One translucent ring material per (layer, category); their shared
@@ -301,6 +320,7 @@ impl Default for DataLayers {
             jobs: None,
             results: Arc::default(),
             material: None,
+            head_material: None,
             ring_mesh: None,
             ring_materials: HashMap::new(),
             layers: LAYER_DEFS
@@ -338,6 +358,7 @@ pub fn update_data_layers(
     mut dl: ResMut<DataLayers>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut head_materials: ResMut<Assets<PinHeadMaterial>>,
     regions: Query<&Region>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
@@ -447,6 +468,41 @@ pub fn update_data_layers(
                         DataLayerMarkers,
                     ))
                     .id()];
+                // Floating pin heads render always-on-top, on their own material,
+                // so buildings never hide them (see PinHeadMaterial).
+                if let Some(head_mesh) = build.heads {
+                    let head_material = dl
+                        .head_material
+                        .get_or_insert_with(|| {
+                            head_materials.add(PinHeadMaterial {
+                                base: StandardMaterial {
+                                    base_color: Color::WHITE,
+                                    unlit: true,
+                                    double_sided: true,
+                                    cull_mode: None,
+                                    alpha_mode: AlphaMode::Blend,
+                                    ..default()
+                                },
+                                extension: DepthAlways {},
+                            })
+                        })
+                        .clone();
+                    entities.push(
+                        commands
+                            .spawn((
+                                Mesh3d(meshes.add(head_mesh)),
+                                MeshMaterial3d(head_material),
+                                Transform::from_translation(Vec3::new(0.0, 0.1, 0.0)),
+                                build.cell,
+                                ChildOf(root),
+                                visibility,
+                                DataLayerMarkers,
+                                bevy::pbr::NotShadowCaster,
+                                bevy::pbr::NotShadowReceiver,
+                            ))
+                            .id(),
+                    );
+                }
                 // One radiating ground ring per POI (shared mesh; one material
                 // per category, pulsed by animate_stop_rings) — only for
                 // layers that opted in.
@@ -549,10 +605,12 @@ pub fn update_data_layers(
     }
 }
 
-/// Left-click on a POI pole: open (or move) its info card. Clicking empty
-/// world closes it. Hit test = smallest angular distance from the click ray
-/// to each POI's pole, so clicking the shopfront right where the marker
-/// stands works from any range.
+/// Left-click on a POI marker: open (or move) its info card. Clicking empty
+/// world closes it. Hit test is done in screen space — each POI's head is
+/// projected to the viewport and the one nearest the cursor within a forgiving
+/// pixel radius wins. That matches what the user actually clicks (the visible
+/// pin), and is reliable even where markers are dense and overlapping, unlike a
+/// world-space ray against thin, short poles.
 pub fn handle_poi_click(
     mouse: Res<ButtonInput<MouseButton>>,
     mut egui: ResMut<EguiManager>,
@@ -573,30 +631,43 @@ pub fn handle_poi_click(
     let Ok((cam, cam_gt, cam_cell, cam_tf)) = camera.single() else {
         return;
     };
-    let Ok(ray) = cam.viewport_to_world(cam_gt, cursor) else {
-        return;
-    };
 
-    let mut best: Option<(f32, PoiPopup, usize, usize)> = None;
+    /// Cursor-to-head pixel radius that still counts as a click on the marker.
+    const HIT_RADIUS_PX: f32 = 22.0;
+    /// Markers past this range aren't deliberate click targets.
+    const MAX_RANGE_M: f32 = 500.0;
+    // Best candidate: (pixel distance, camera distance, popup, layer, category).
+    let mut best: Option<(f32, f32, PoiPopup, usize, usize)> = None;
     for (li, rt) in dl.layers.iter().enumerate() {
         if !rt.enabled {
             continue;
         }
         for poi in rt.pois.values().flatten() {
-            // Aim point: mid-pole, where the sign hardware is.
-            let style = &LAYER_DEFS[li].categories[poi.category].1;
-            let mut target = cam_gt.translation() + poi.delta(cam_cell, cam_tf);
-            target.y += style.pole_height * 0.55 - poi.anchor.y;
-            let to = target - ray.origin;
-            let t = to.dot(*ray.direction);
-            if t <= 0.0 || t > 400.0 {
-                continue; // behind the camera or too far to be a deliberate click
+            let world = cam_gt.translation() + poi.delta(cam_cell, cam_tf);
+            let dist = world.distance(cam_gt.translation());
+            if dist > MAX_RANGE_M {
+                continue;
             }
-            let miss = (to - *ray.direction * t).length();
-            // Generous near, ~0.7° at range.
-            if miss < (t * 0.012).clamp(1.0, 5.0) && best.as_ref().is_none_or(|b| t < b.0) {
+            let Ok(screen) = cam.world_to_viewport(cam_gt, world) else {
+                continue; // behind the camera
+            };
+            let px = screen.distance(cursor);
+            if px > HIT_RADIUS_PX {
+                continue;
+            }
+            // Nearest to the cursor wins; on a near-tie the closer marker wins,
+            // so a foreground pin beats a distant one projecting behind it.
+            let better = best.as_ref().is_none_or(|(bpx, bdist, ..)| {
+                if (px - bpx).abs() < 6.0 {
+                    dist < *bdist
+                } else {
+                    px < *bpx
+                }
+            });
+            if better {
                 best = Some((
-                    t,
+                    px,
+                    dist,
                     PoiPopup {
                         cell: poi.cell,
                         anchor: poi.anchor,
@@ -614,7 +685,7 @@ pub fn handle_poi_click(
             }
         }
     }
-    dl.popup = best.map(|(_, mut popup, li, cat)| {
+    dl.popup = best.map(|(_, _, mut popup, li, cat)| {
         let category = LAYER_DEFS[li].categories[cat].0;
         popup.subtitle = match dl
             .layers[li]
@@ -923,15 +994,22 @@ fn build_layer_cell(
     let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
 
     let mut buf = MeshData::default();
+    let mut heads = MeshData::default();
     let mut instances = Vec::with_capacity(pois.len());
     for poi in &pois {
         let w = lat_lng_to_local(poi.lat, poi.lng, ax, ay, z, tile_m);
         let local = Vec2::new(w.x - ox, w.y - oz);
         let style = &def.categories[poi.category].1;
-        push_marker(&mut buf, local, style);
+        push_marker(&mut buf, &mut heads, local, def.shape, style);
+        // Anchor (click target + popup + board mount): just clear of the pole's
+        // sign plate, or the gem-head centre for a pin.
+        let anchor_y = match def.shape {
+            MarkerShape::Pole => style.pole_height + 0.5,
+            MarkerShape::Pin => style.pole_height,
+        };
         instances.push(PoiInstance {
             cell: grid_cell,
-            anchor: Vec3::new(local.x, style.anchor_height(), local.y),
+            anchor: Vec3::new(local.x, anchor_y, local.y),
             name: poi.name.clone(),
             live_id: poi.live_id.clone(),
             category: poi.category,
@@ -943,6 +1021,7 @@ fn build_layer_cell(
     Ok(buf.into_mesh().map(|mesh| CellBuild {
         cell: grid_cell,
         mesh,
+        heads: heads.into_mesh(),
         pois: instances,
     }))
 }
@@ -1029,13 +1108,29 @@ fn parse_pois(def: &LayerDef, text: &str) -> Result<Vec<Poi>, String> {
     Ok(out)
 }
 
-/// Anthracite pole tone, like real Dutch street furniture.
+/// Anthracite pole / stem tone, like real Dutch street furniture.
 const POLE_COLOR: [f32; 4] = [0.13, 0.14, 0.15, 1.0];
 
+/// Append one marker at ground point `p`, per the layer's [`MarkerShape`].
+/// Depth-tested geometry (poles, pin stems + discs) goes to `base`; the floating
+/// pin head — which draws always-on-top — goes to `heads`. Cull is off on both
+/// marker materials, so triangle winding is irrelevant.
+fn push_marker(
+    base: &mut MeshData,
+    heads: &mut MeshData,
+    p: Vec2,
+    shape: MarkerShape,
+    style: &MarkerStyle,
+) {
+    match shape {
+        MarkerShape::Pole => push_pole(base, p, style),
+        MarkerShape::Pin => push_pin(base, heads, p, style),
+    }
+}
+
 /// Append one stop pole at `p`: a rectangular anthracite column (0.18×0.12 m
-/// section) with a top cap — the R-NET-style mast the live display mounts on.
-/// Cull is off on the shared marker material, so winding is irrelevant.
-fn push_marker(buf: &mut MeshData, p: Vec2, style: &MarkerStyle) {
+/// section) — the R-NET-style mast the live display mounts on.
+fn push_pole(buf: &mut MeshData, p: Vec2, style: &MarkerStyle) {
     let h = style.pole_height;
     let (hx, hz) = (0.09, 0.06);
     let (x0, x1) = (p.x - hx, p.x + hx);
@@ -1047,18 +1142,63 @@ fn push_marker(buf: &mut MeshData, p: Vec2, style: &MarkerStyle) {
     buf.quad(v(x0, 0.0, z0), v(x0, 0.0, z1), v(x0, h, z1), v(x0, h, z0), POLE_COLOR);
     buf.quad(v(x1, 0.0, z0), v(x1, 0.0, z1), v(x1, h, z1), v(x1, h, z0), POLE_COLOR);
     buf.quad(v(x0, h, z0), v(x1, h, z0), v(x1, h, z1), v(x0, h, z1), POLE_COLOR);
+}
 
-    // Coloured cap box on top: the category marker for ring-less layers.
-    if style.cap_half > 0.0 {
-        let r = style.cap_half;
-        let c = [style.color[0], style.color[1], style.color[2], 1.0];
-        let (cx0, cx1) = (p.x - r, p.x + r);
-        let (cz0, cz1) = (p.y - r, p.y + r);
-        let (y0, y1) = (h, h + 2.0 * r);
-        buf.quad(v(cx0, y0, cz1), v(cx1, y0, cz1), v(cx1, y1, cz1), v(cx0, y1, cz1), c);
-        buf.quad(v(cx0, y0, cz0), v(cx1, y0, cz0), v(cx1, y1, cz0), v(cx0, y1, cz0), c);
-        buf.quad(v(cx0, y0, cz0), v(cx0, y0, cz1), v(cx0, y1, cz1), v(cx0, y1, cz0), c);
-        buf.quad(v(cx1, y0, cz0), v(cx1, y0, cz1), v(cx1, y1, cz1), v(cx1, y1, cz0), c);
-        buf.quad(v(cx0, y1, cz0), v(cx1, y1, cz0), v(cx1, y1, cz1), v(cx0, y1, cz1), c);
+/// Append one floating map pin at ground point `p`: a small colour disc on the
+/// pavement and a slim dark stem (into `base`, depth-tested), plus a colour-coded
+/// gem head (hexagonal bipyramid, point down) hovering at `style.pole_height`
+/// (into `heads`, always-on-top). The head is shaded bright on top and base-hue
+/// below so it reads as 3D under the unlit marker material — a recognisable,
+/// clickable pin that stays visible above the shopfronts.
+fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerStyle) {
+    let v = Vec3::new;
+    let hue = [style.color[0], style.color[1], style.color[2], 1.0];
+    // Upper facets: category hue lifted toward white for a lit-from-above look.
+    let light = [
+        style.color[0] * 0.55 + 0.45,
+        style.color[1] * 0.55 + 0.45,
+        style.color[2] * 0.55 + 0.45,
+        1.0,
+    ];
+
+    const SEG: usize = 6; // hexagonal head + ground disc
+    const R: f32 = 0.85; // head horizontal radius
+    let hc = style.pole_height; // head centre height
+    let top = hc + R; // rounded crown
+    let tip = hc - R * 1.9; // elongated point, aimed down at the spot
+
+    // Gem head (always-on-top): equator ring fanned to a top crown and bottom tip.
+    let ring: [Vec3; SEG] = std::array::from_fn(|i| {
+        let a = std::f32::consts::TAU * i as f32 / SEG as f32;
+        v(p.x + R * a.cos(), hc, p.y + R * a.sin())
+    });
+    let crown = v(p.x, top, p.y);
+    let point = v(p.x, tip, p.y);
+    for i in 0..SEG {
+        let (a, b) = (ring[i], ring[(i + 1) % SEG]);
+        heads.tri(a, b, crown, light); // upper facet
+        heads.tri(b, a, point, hue); // lower facet
+    }
+
+    // Slim dark stem from just above the ground disc up to the head's tip.
+    let s = 0.05;
+    let (x0, x1) = (p.x - s, p.x + s);
+    let (z0, z1) = (p.y - s, p.y + s);
+    let (y0, y1) = (0.05, tip);
+    base.quad(v(x0, y0, z1), v(x1, y0, z1), v(x1, y1, z1), v(x0, y1, z1), POLE_COLOR);
+    base.quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y1, z0), v(x0, y1, z0), POLE_COLOR);
+    base.quad(v(x0, y0, z0), v(x0, y0, z1), v(x0, y1, z1), v(x0, y1, z0), POLE_COLOR);
+    base.quad(v(x1, y0, z0), v(x1, y0, z1), v(x1, y1, z1), v(x1, y1, z0), POLE_COLOR);
+
+    // Ground disc marking the exact footprint (category hue, hexagonal fan).
+    const DR: f32 = 0.6;
+    let dy = 0.03;
+    let centre = v(p.x, dy, p.y);
+    let disc: [Vec3; SEG] = std::array::from_fn(|i| {
+        let a = std::f32::consts::TAU * i as f32 / SEG as f32;
+        v(p.x + DR * a.cos(), dy, p.y + DR * a.sin())
+    });
+    for i in 0..SEG {
+        base.tri(centre, disc[i], disc[(i + 1) % SEG], hue);
     }
 }

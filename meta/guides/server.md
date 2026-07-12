@@ -79,19 +79,56 @@ sudo apt-get update && sudo apt-get upgrade -y
 Named volumes (`overpass_db`, `nominatim_data`, `nominatim_flatnode`,
 `caddy_data`, `caddy_config`) all resolve under `/data/docker/volumes`.
 
+## Executing the steps
+
+Run steps 1–5 in order over SSH as the `ubuntu` user (which has passwordless
+`sudo`). After each step, confirm its **✓ check** before moving on. Re-running a
+step is safe (idempotent) **except** the `mkfs` in step 1, which erases the volume.
+
+**Fill in these values first and substitute them everywhere below — including
+inside the `docker-compose.yml` and `Caddyfile`:**
+
+| Placeholder | Meaning | Where to get it |
+|-------------|---------|-----------------|
+| `<VPS_IPV4>` / `<VPS_IPV6>` | the VPS public IPs | delivery email / `OVH Manager → …→ VPS` |
+| `example.com` | your domain (apex + `www`, `overpass` subdomains) | your registrar |
+| `you@example.com` | ACME contact for Let's Encrypt | your email |
+| region extract | Geofabrik `.osm.pbf` + `…-updates/` URL | [download.geofabrik.de](https://download.geofabrik.de) (here: `europe/netherlands`) |
+
+Two things are **not** pure SSH commands and act as gates:
+
+- **Step 3 (DNS)** is done in the OVH panel (or via the OVH API) by a human. It is
+  a hard gate: do not start Caddy (step 5) until the names resolve, or Let's
+  Encrypt fails.
+- **The imports (step 5)** take time — Overpass ~20–60 min, Nominatim ~1–3 h. Wait
+  for the container to report `healthy` before using the endpoint; the wait
+  command is in step 5.
+
 ## 1. Extra volume → `/data`
 
-The 200 GB volume ships blank. Format once and mount it by UUID (with `nofail`
-so a missing volume never blocks boot):
+The 200 GB volume ships blank. **First confirm the target device** — the extra
+volume is the one with no filesystem and no mountpoint (here `/dev/sdb`; it may
+differ). `mkfs` **erases** whatever it points at, so never run it against the
+system disk (`/dev/sda*`, mounted at `/`):
 
 ```bash
-sudo mkfs.ext4 -L geodata /dev/sdb
-UUID=$(sudo blkid -s UUID -o value /dev/sdb)
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT   # pick the blank disk: no FSTYPE, no MOUNTPOINT
+DEV=/dev/sdb                            # <-- set to the confirmed device
+```
+
+Then format and mount it by UUID (with `nofail` so a missing volume never blocks
+boot):
+
+```bash
+sudo mkfs.ext4 -L geodata "$DEV"
+UUID=$(sudo blkid -s UUID -o value "$DEV")
 sudo mkdir -p /data
 echo "UUID=$UUID /data ext4 defaults,discard,nofail 0 2" | sudo tee -a /etc/fstab
 sudo mount -a
 df -h /data
 ```
+
+**✓ check:** `df -h /data` shows the ~200 GB volume mounted at `/data`.
 
 ## 2. Docker (data-root on `/data`)
 
@@ -108,15 +145,20 @@ sudo mkdir -p /data/docker
 echo '{ "data-root": "/data/docker" }' | sudo tee /etc/docker/daemon.json
 sudo systemctl start docker
 
-sudo usermod -aG docker ubuntu   # re-login for group to take effect
-docker info | grep 'Docker Root Dir'   # -> /data/docker
+sudo usermod -aG docker ubuntu
+sudo docker info | grep 'Docker Root Dir'   # -> /data/docker
 ```
+
+The group membership only applies to a **new** login shell. Open a fresh SSH
+session before the later `docker` commands, or prefix them with `sudo` in this one.
+
+**✓ check:** `Docker Root Dir` prints `/data/docker`.
 
 ## 3. DNS
 
-In the OVH DNS zone (`Web Cloud → Domain names → example.com → DNS Zone`), point
-the names at the VPS. `@` and `www` replace OVH's parking records; `overpass` is
-new:
+**Manual step (OVH panel or API).** In the OVH DNS zone (`Web Cloud → Domain
+names → example.com → DNS Zone`), point the names at the VPS. `@` and `www`
+replace OVH's parking records; `overpass` is new:
 
 | Subdomain | Type | Target |
 |-----------|------|--------|
@@ -128,8 +170,11 @@ new:
 Verify before starting Caddy (Let's Encrypt needs the names to resolve):
 
 ```bash
-dig +short overpass.example.com     # <VPS_IPV4>
+dig +short overpass.example.com     # must print <VPS_IPV4> before continuing
 ```
+
+**✓ check (hard gate):** `dig` returns your `<VPS_IPV4>` for `overpass`, apex and
+`www`. Do not start Caddy until it does.
 
 > Nominatim's subdomain is **not** created yet — see step 6.
 
@@ -246,6 +291,28 @@ Overpass API : https://overpass.example.com/api/interpreter
 }
 ```
 
+### Write the two files
+
+Save the two blocks above to `/data/stack/`, **substituting your domain and email
+first**. Use a **quoted** heredoc (`<<'EOF'`) so `${NOMINATIM_PASSWORD}`, the
+quotes, and the `&&` in the preprocess command are written literally instead of
+being expanded by the shell:
+
+```bash
+cat > /data/stack/docker-compose.yml <<'EOF'
+# ...paste the docker-compose.yml block above, verbatim...
+EOF
+
+cat > /data/stack/Caddyfile <<'EOF'
+# ...paste the Caddyfile block above, with your domain + email...
+EOF
+
+cd /data/stack && docker compose config --quiet && echo "compose OK"
+```
+
+**✓ check:** `docker compose config` reports no errors (`compose OK`), and
+`ls /data/stack` shows `.env`, `docker-compose.yml`, `Caddyfile`.
+
 ## 5. Start it — long imports in `screen`
 
 The two imports run far longer than an SSH session (Overpass ~20–60 min,
@@ -278,16 +345,29 @@ docker compose ps          # container + health status
 ```
 
 While importing, `https://overpass.example.com/api/interpreter` returns **502**
-(backend not ready) — this clears when the container reports healthy. Verify:
+(backend not ready). Block until the container's health flips to `healthy`:
+
+```bash
+# waits until Overpass has finished importing:
+until [ "$(sudo docker inspect -f '{{.State.Health.Status}}' overpass)" = healthy ]; do
+  sleep 30; echo 'overpass still importing…'
+done
+echo 'overpass ready'
+```
+
+Nominatim has no healthcheck; it is ready when a local query returns results (the
+smoke test in step 6). Then verify end-to-end:
 
 ```bash
 # apex landing page (works as soon as Caddy has its cert)
 curl -s https://example.com
 
-# Overpass, once import is done:
+# Overpass through the public TLS endpoint:
 curl 'https://overpass.example.com/api/interpreter' \
   --data 'data=[out:json][timeout:25];way["building"](52.09,5.11,52.10,5.12);out geom;'
 ```
+
+**✓ check:** the Overpass query returns JSON containing `elements` (no 502).
 
 ## 6. Enable Nominatim publicly (after import)
 
