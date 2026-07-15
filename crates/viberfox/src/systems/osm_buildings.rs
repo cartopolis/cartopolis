@@ -30,7 +30,6 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::components::Region;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
@@ -47,6 +46,18 @@ pub(crate) const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
 /// or refused first when the service is under load.
 const OVERPASS_USER_AGENT: &str =
     "viberfox/0.1 (map data; https://github.com/garage44/viberfox)";
+
+/// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
+/// the Netherlands extract, so it doesn't rate-limit under the client's streaming
+/// load — see `meta/guides/server.md`). Override with `VIBE_OVERPASS_URL`, e.g.
+/// the public `https://overpass-api.de/api/interpreter`.
+const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter";
+
+/// Resolve the Overpass endpoint from `VIBE_OVERPASS_URL`, falling back to the
+/// self-hosted default.
+fn overpass_url() -> String {
+    std::env::var("VIBE_OVERPASS_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.to_string())
+}
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,8 +108,12 @@ struct BuiltPatch {
 /// so buildings stay aligned with the streamed ground.
 #[derive(Resource, Default)]
 pub struct OsmBuildings {
-    /// Region anchor: tile_x, tile_y, zoom, latitude.
+    /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
+    /// (`MapStream`), so buildings follow re-anchors to any location (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
+    /// The `MapStream::anchor_generation` this patch is built for; a change resets
+    /// it and re-establishes the anchor at the new origin.
+    synced_gen: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
     in_flight: bool,
@@ -230,19 +245,46 @@ pub fn update_buildings(
     mut osm: ResMut<OsmBuildings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    regions: Query<&Region>,
+    stream: Res<crate::systems::map_stream::MapStream>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
+    globe: Res<crate::systems::globe::GlobeState>,
 ) {
-    // Establish the region anchor once, and start the far-cell worker: it
-    // streams one CACHE_ZOOM cell at a time (disk-cached Overpass fetch + LOD
-    // mesh build), entirely off the main thread.
+    let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
+        return;
+    };
+
+    // Re-anchor (ADR-025): when the map origin moves, tear down this patch and
+    // re-establish it at the new location. Dropping `far_jobs` ends the old
+    // worker (its `recv` errors), and a fresh `far_results` orphans any in-flight
+    // result it still pushes, so nothing from the old origin leaks through.
+    if osm.synced_gen != stream.anchor_generation {
+        osm.synced_gen = stream.anchor_generation;
+        for e in osm.detail_entities.drain(..) {
+            commands.entity(e).despawn();
+        }
+        for (_, ents) in osm.far_cells.drain() {
+            for e in ents {
+                commands.entity(e).despawn();
+            }
+        }
+        osm.far_requested.clear();
+        osm.far_failed.clear();
+        osm.buildings.clear();
+        osm.last_center = None;
+        osm.in_flight = false;
+        osm.far_jobs = None;
+        osm.far_results = Arc::new(Mutex::new(Vec::new()));
+        osm.anchor = None;
+    }
+
+    // Establish the anchor (from the map origin) and start the far-cell worker: it
+    // streams one CACHE_ZOOM cell at a time (disk-cached Overpass fetch + LOD mesh
+    // build), entirely off the main thread.
     if osm.anchor.is_none() {
-        let Some(region) = regions.iter().next() else {
-            return;
-        };
-        let z = region.tile_z.clamp(0, u32::MAX as i64) as u32;
-        let (ax, ay, lat) = (region.tile_x, region.tile_y, region.latitude);
+        let z = base_zoom;
+        let (ax, ay) = lat_lng_to_tile(clat, clng, z);
+        let lat = clat;
         osm.anchor = Some((ax, ay, z, lat));
 
         let (tx, rx) = std::sync::mpsc::channel::<(i64, i64)>();
@@ -264,6 +306,15 @@ pub fn update_buildings(
     let Ok((cell, tf)) = camera.single() else {
         return;
     };
+    // Freeze the building patch from orbit (ADR-025), same as map streaming:
+    // otherwise flying to space drags the fetch centre far from the anchor,
+    // despawning every local building and re-fetching an empty area — so
+    // buildings would flicker out and back on each space trip. Geocentric
+    // altitude, not local y (wrong on the far side of the globe).
+    let cam_altitude = globe.altitude_m(cell, tf) as f32;
+    if cam_altitude > crate::systems::globe::GLOBE_SHOW_ALT {
+        return;
+    }
     let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
     let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
     let center = (
@@ -396,6 +447,9 @@ pub fn update_buildings(
                                 grid_cell,
                                 ChildOf(root),
                                 OsmBuildingMesh,
+                                // From orbit the patch reads as a grey blob over
+                                // the anchor; hidden with the tiles (ADR-025).
+                                crate::systems::globe::HideInSpace,
                             ))
                             .id(),
                     ];
@@ -429,6 +483,7 @@ pub fn update_buildings(
                                     grid_cell,
                                     ChildOf(root),
                                     WindowGlow(WINDOW_GLOW_MULT[i]),
+                                    crate::systems::globe::HideInSpace,
                                 ))
                                 .id(),
                         );
@@ -588,6 +643,7 @@ fn spawn_detail_patch(
                 patch_cell,
                 ChildOf(root),
                 OsmBuildingMesh,
+                crate::systems::globe::HideInSpace,
             ))
             .id();
         osm.detail_entities.push(entity);
@@ -615,6 +671,7 @@ fn spawn_detail_patch(
                 patch_cell,
                 ChildOf(root),
                 WindowGlow(WINDOW_GLOW_MULT[i]),
+                crate::systems::globe::HideInSpace,
             ))
             .id();
         osm.detail_entities.push(entity);
@@ -1195,12 +1252,13 @@ fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
 /// POST an Overpass query, retrying a couple of times with backoff on failure
 /// (429/504 are common under load).
 pub(crate) fn overpass_query(query: &str) -> Result<String, String> {
+    let url = overpass_url();
     let mut last_err = String::new();
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(Duration::from_secs(3));
         }
-        match ureq::post("https://overpass-api.de/api/interpreter")
+        match ureq::post(&url)
             .set("User-Agent", OVERPASS_USER_AGENT)
             .send_form(&[("data", query)])
         {

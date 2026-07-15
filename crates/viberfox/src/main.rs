@@ -112,6 +112,10 @@ fn main() {
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
+    .init_resource::<systems::globe::GlobeState>()
+    // Space background: the atmosphere skybox covers this everywhere in the local
+    // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
+    .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(DirectionalLightShadowMap { size: 4096 });
 
     if let Some(addr) = cli.connect {
@@ -178,7 +182,14 @@ fn main() {
                 .after(systems::data_layers::update_data_layers)
                 .after(systems::transit_live::update_world_clock),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
-            systems::map_stream::update_map_stream.after(systems::map_stream::init_map_stream),
+            // Re-anchor requests (from teleports / globe descent) drop the old
+            // tiles before streaming resumes at the new origin (ADR-025).
+            systems::map_stream::apply_reanchor
+                .after(systems::geo_nav::apply_teleport)
+                .before(systems::map_stream::update_map_stream),
+            systems::map_stream::update_map_stream
+                .after(systems::map_stream::init_map_stream)
+                .after(systems::map_stream::apply_reanchor),
             systems::geo_nav::drive_geocode,
             // Restore feeds pending_teleport, so it must run before the
             // teleport applies; teleports move the camera, so apply before
@@ -192,6 +203,20 @@ fn main() {
             systems::user_store::autosave_user_store,
             systems::bookmarks::poll_bookmark_addresses,
             systems::map_stream::apply_stream_textures.after(systems::map_stream::update_map_stream),
+            // Globe / space tier (ADR-025): (re)build when the anchor moves, then
+            // bake its OSM skin in the background. Nested to stay under the
+            // per-tuple system limit.
+            (
+                systems::globe::setup_globe
+                    .after(systems::map_stream::init_map_stream)
+                    .after(systems::map_stream::apply_reanchor),
+                systems::globe::apply_globe_skin.after(systems::globe::setup_globe),
+                // Mid-zoom detail caps around the camera sub-point (ADR-025).
+                systems::globe::update_globe_caps.after(systems::globe::setup_globe),
+                // Globe-descent re-anchor → teleport (must precede the teleport).
+                systems::geo_nav::apply_camera_reanchor
+                    .before(systems::geo_nav::apply_teleport),
+            ),
             attach_avatar_to_bigspace,
         ),
     )
@@ -210,6 +235,8 @@ fn main() {
                 .after(network::apply_network_snapshot)
                 .after(avatar::handle_avatar_movement),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
+            systems::globe::update_globe_visibility
+                .after(systems::free_camera::camera_controls),
             avatar::spawn_avatar,
             avatar::update_fox_animation.after(avatar::handle_avatar_movement),
             avatar::update_remote_fox_animation.after(avatar::tick_remote_avatar_motion_hint),
@@ -741,25 +768,29 @@ fn apply_day_night_cycle(
     *ambient = ambient_light(dev.time_of_day, dev.moon_age_days);
 }
 
-/// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider
-/// and the time of day (fog darkens at night). Also couples the sky to the fog:
-/// fog is Mie scattering, so raising the atmosphere's Mie coefficient with density
-/// turns the sky itself milky and whites out the horizon instead of leaving crisp
-/// blue sky above the fog wall. Runs only when the dev panel changes.
+/// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider,
+/// the time of day (fog darkens at night), and the camera altitude — the fog thins
+/// as you climb (see `fog_altitude_factor`) so a high-flight or orbit view looks
+/// down through clear air rather than a grey wall. Runs each frame because the
+/// altitude term is continuous.
 fn apply_distance_fog(
     dev: Res<DevPanelState>,
-    mut fog: Query<&mut DistanceFog, With<systems::free_camera::FreeCamera>>,
+    globe: Res<systems::globe::GlobeState>,
+    mut camera: Query<
+        (&GridCell, &Transform, &mut DistanceFog),
+        With<systems::free_camera::FreeCamera>,
+    >,
 ) {
-    if !dev.is_changed() {
+    let Ok((cell, tf, mut fog)) = camera.single_mut() else {
         return;
-    }
+    };
     // The atmosphere itself stays a clear sky: boosting Nishita's Mie scattering
     // with density was tried and abandoned — single scattering *darkens* the low
     // sky instead of whitening it. The horizon-haze shell fogs the sky instead
     // (see update_horizon_haze), veiling the whole dome as density rises.
-    for mut f in fog.iter_mut() {
-        *f = systems::free_camera::distance_fog(dev.fog_density, dev.time_of_day);
-    }
+    let altitude = globe.altitude_m(cell, tf) as f32;
+    let density = dev.fog_density * systems::free_camera::fog_altitude_factor(altitude);
+    *fog = systems::free_camera::distance_fog(density, dev.time_of_day);
 }
 
 /// Keeps the Nishita atmosphere's viewpoint at the camera's actual altitude so the
@@ -767,14 +798,16 @@ fn apply_distance_fog(
 /// model change re-renders the sky cubemap.
 fn track_atmosphere_altitude(
     camera: Query<(&GridCell, &Transform), With<systems::free_camera::FreeCamera>>,
+    globe: Res<systems::globe::GlobeState>,
     mut atmosphere: AtmosphereMut<Nishita>,
     mut last_altitude: Local<f32>,
 ) {
     let Ok((cell, tf)) = camera.single() else {
         return;
     };
-    let altitude =
-        (cell.y as f32 * systems::free_camera::WORLD_CELL_EDGE + tf.translation.y).max(10.0);
+    // Geocentric altitude, clamped to the band where the Nishita model is
+    // meaningful (the skybox is hidden in space anyway, see globe visibility).
+    let altitude = (globe.altitude_m(cell, tf) as f32).clamp(10.0, 80_000.0);
     if *last_altitude == 0.0 || (altitude - *last_altitude).abs() > 25.0 {
         *last_altitude = altitude;
         atmosphere.ray_origin.y = atmosphere.planet_radius + altitude;
@@ -931,11 +964,15 @@ fn setup_horizon_haze(
 /// the camera's `DistanceFog`, so fogged ground and sky meet seamlessly at the horizon.
 fn update_horizon_haze(
     dev: Res<DevPanelState>,
-    camera: Query<(&GlobalTransform, &DistanceFog), With<Camera3d>>,
+    globe: Res<systems::globe::GlobeState>,
+    camera: Query<
+        (&GridCell, &GlobalTransform, &Transform, &DistanceFog),
+        (With<Camera3d>, Without<HorizonHaze>),
+    >,
     mut haze: Query<(&mut Transform, &MeshMaterial3d<HorizonHazeMaterial>), With<HorizonHaze>>,
     mut materials: ResMut<Assets<HorizonHazeMaterial>>,
 ) {
-    let Ok((cam, fog)) = camera.single() else {
+    let Ok((cell, cam, cam_local, fog)) = camera.single() else {
         return;
     };
     let Ok((mut tf, mat_handle)) = haze.single_mut() else {
@@ -944,15 +981,20 @@ fn update_horizon_haze(
     tf.translation = cam.translation();
 
     if let Some(mat) = materials.get_mut(&mat_handle.0) {
-        let d = dev.fog_density;
+        // The haze thins with altitude alongside the ground fog, so an orbit view
+        // sees the map through clear air instead of a grey band at the horizon.
+        let altitude = globe.altitude_m(cell, cam_local) as f32;
+        let alt = systems::free_camera::fog_altitude_factor(altitude);
+        let d = dev.fog_density * alt;
         mat.color = fog.color.to_linear();
         // The band rises and strengthens with fog density; a small base keeps the
-        // sky's single-scattering horizon artifact covered even with the fog off.
+        // sky's single-scattering horizon artifact covered even with the fog off —
+        // that base is faded out with altitude too, so it vanishes high up.
         // The zenith floor (w) grows quadratically so light haze leaves the sky
         // blue while dense fog closes over the whole dome.
         mat.params = Vec4::new(
             0.03 + 0.25 * d,
-            (0.35 + 1.2 * d).min(1.0),
+            (0.35 * alt + 1.2 * d).min(1.0),
             fog.directional_light_exponent,
             d * d,
         );

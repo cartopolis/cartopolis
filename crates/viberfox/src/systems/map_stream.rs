@@ -10,6 +10,7 @@
 //! tile, via an mpsc queue) so roaming never blocks the frame.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -24,8 +25,20 @@ use crate::components::Region;
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::tile_loader::load_tile_image;
-use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
+use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 use vibe_core::TileKey;
+
+/// Snap a (lat, lng) to the **centre of its base-zoom tile** — the anchor
+/// convention every placement consumer assumes (`osm_buildings` and the data
+/// layers position vertices relative to the anchor *tile centre* via
+/// `lat_lng_to_local`). Re-anchoring to a raw point instead of a tile centre
+/// shifted buildings/pins off the map imagery by up to half a tile.
+pub fn snap_anchor(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
+    let (tx, ty) = lat_lng_to_tile(lat, lng, zoom);
+    let (n_lat, w_lng) = tile_to_lat_lng(tx, ty, zoom);
+    let (s_lat, e_lng) = tile_to_lat_lng(tx + 1, ty + 1, zoom);
+    ((n_lat + s_lat) / 2.0, (w_lng + e_lng) / 2.0)
+}
 
 /// Fractional Web Mercator tile coordinate (no flooring) of a lat/lng at a zoom.
 pub fn lat_lng_to_tile_frac(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
@@ -78,10 +91,16 @@ pub struct StreamTileReady;
 
 #[derive(Resource)]
 pub struct MapStream {
-    /// Fixed world origin: the *centre* of the region tile at base zoom (lat, lng),
-    /// plus the base zoom. Every zoom's tiles are placed relative to this one point,
-    /// so changing zoom never shifts the map.
+    /// World origin: a (lat, lng) plus base zoom. Every zoom's tiles are placed
+    /// relative to this one point, so changing zoom never shifts the map. No longer
+    /// fixed to a "region" — re-anchoring moves it anywhere on the globe so detail
+    /// can stream wherever the camera goes (ADR-025, anchor-less direction).
     anchor: Option<(f64, f64, u32)>,
+    /// Bumped whenever the anchor changes (init or re-anchor). Other systems (the
+    /// globe, buildings) compare against this to rebuild/reset for the new origin.
+    pub anchor_generation: u32,
+    /// A requested re-anchor target, applied by `apply_reanchor` next frame.
+    pending_reanchor: Option<(f64, f64)>,
     /// Finest displayed zoom (driven by camera altitude for LOD); coarser clipmap
     /// levels are derived from it down to `MIN_ZOOM`.
     current_zoom: u32,
@@ -91,30 +110,88 @@ pub struct MapStream {
     /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
     failed: HashMap<TileKey, (u32, std::time::Instant)>,
     results: Arc<Mutex<HashMap<TileKey, Option<Vec<u8>>>>>,
-    jobs: Option<Sender<TileKey>>,
+    /// Fetch jobs, tagged with the anchor generation they were queued for so the
+    /// workers can drop jobs from a previous anchor instead of grinding through
+    /// hundreds of stale fetches before the new anchor's tiles get a turn.
+    jobs: Option<Sender<(TileKey, u32)>>,
+    /// The live generation the workers compare against (main thread stores,
+    /// workers load).
+    gen_shared: Arc<AtomicU32>,
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
     placeholder: Option<Handle<StandardMaterial>>,
 }
 
 impl MapStream {
-    /// The fixed geo anchor (lat, lng of the region-tile centre + base zoom),
-    /// once a region exists — the geo↔world mapping other systems build on.
+    /// The geo anchor (lat, lng of the world origin + base zoom) — the geo↔world
+    /// mapping other systems build on.
     pub fn geo_anchor(&self) -> Option<(f64, f64, u32)> {
         self.anchor
     }
+
+    /// Request a re-anchor to a new (lat, lng); applied by `apply_reanchor`, which
+    /// drops the loaded tiles so they re-stream around the camera at the new origin.
+    pub fn request_reanchor(&mut self, lat: f64, lng: f64) {
+        self.pending_reanchor = Some((lat, lng));
+    }
+}
+
+/// Apply a pending re-anchor: despawn every loaded tile (its world position is
+/// relative to the old origin), move the anchor, and bump the generation so the
+/// globe and buildings rebuild for the new origin. `update_map_stream` re-streams
+/// tiles around the camera next frame; the on-disk tile cache keeps it cheap.
+pub fn apply_reanchor(
+    mut commands: Commands,
+    mut stream: ResMut<MapStream>,
+    tiles: Query<Entity, With<StreamTile>>,
+) {
+    let Some((lat, lng)) = stream.pending_reanchor.take() else {
+        return;
+    };
+    let base_zoom = stream
+        .anchor
+        .map(|(_, _, z)| z)
+        .unwrap_or(vibe_core::world::REGION_ZOOM_LEVEL);
+    for e in tiles.iter() {
+        commands.entity(e).despawn();
+    }
+    stream.loaded.clear();
+    // Clear the fetch bookkeeping so the re-streamed tiles request again (served
+    // from the on-disk cache when already fetched); the anchor is unchanged tiles
+    // would otherwise be treated as still-in-flight and never re-textured.
+    stream.requested.clear();
+    stream.failed.clear();
+    // Quad meshes are sized by tile metres *at the anchor latitude*; stale sizes
+    // at a new latitude would leave gaps or overlaps between tiles.
+    stream.quads.clear();
+    // Anchor on the containing tile's centre (see `snap_anchor`) so tiles,
+    // buildings and pins keep sharing one placement convention.
+    let (lat, lng) = snap_anchor(lat, lng, base_zoom);
+    stream.anchor = Some((lat, lng, base_zoom));
+    stream.current_zoom = base_zoom;
+    stream.anchor_generation = stream.anchor_generation.wrapping_add(1);
+    // Retire queued fetches from the old anchor: the workers drop any job whose
+    // generation doesn't match, so the new anchor's tiles aren't stuck behind
+    // hundreds of stale fetches.
+    stream
+        .gen_shared
+        .store(stream.anchor_generation, Ordering::Relaxed);
+    tracing::info!(lat, lng, "map re-anchored");
 }
 
 impl Default for MapStream {
     fn default() -> Self {
         Self {
             anchor: None,
+            anchor_generation: 0,
+            pending_reanchor: None,
             current_zoom: 0,
             loaded: HashMap::new(),
             requested: HashSet::new(),
             failed: HashMap::new(),
             results: Arc::new(Mutex::new(HashMap::new())),
             jobs: None,
+            gen_shared: Arc::new(AtomicU32::new(0)),
             quads: HashMap::new(),
             placeholder: None,
         }
@@ -142,6 +219,10 @@ pub fn init_map_stream(
     let clng = (w_lng + e_lng) / 2.0;
     stream.anchor = Some((clat, clng, z));
     stream.current_zoom = z;
+    stream.anchor_generation = stream.anchor_generation.wrapping_add(1);
+    stream
+        .gen_shared
+        .store(stream.anchor_generation, Ordering::Relaxed);
     stream.placeholder = Some(materials.add(StandardMaterial {
         base_color: Color::srgb(0.6, 0.6, 0.6),
         // Fully matte: default reflectance puts a grazing-angle Fresnel sheen on
@@ -151,7 +232,7 @@ pub fn init_map_stream(
         ..default()
     }));
 
-    let (tx, rx) = std::sync::mpsc::channel::<TileKey>();
+    let (tx, rx) = std::sync::mpsc::channel::<(TileKey, u32)>();
     stream.jobs = Some(tx);
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
     // A few parallel fetchers: the initial pyramid is ~400 tiles, which takes
@@ -161,13 +242,19 @@ pub fn init_map_stream(
         let rx = rx.clone();
         let template = template.clone();
         let results = stream.results.clone();
+        let live_gen = stream.gen_shared.clone();
         std::thread::spawn(move || loop {
-            let Ok(key) = ({
+            let Ok((key, gen)) = ({
                 let Ok(guard) = rx.lock() else { break };
                 guard.recv()
             }) else {
                 break;
             };
+            // Skip jobs queued for a previous anchor (re-anchor happened while
+            // this was waiting) so the fresh anchor's tiles load immediately.
+            if gen != live_gen.load(Ordering::Relaxed) {
+                continue;
+            }
             let bytes = match load_tile_image(&key, &template) {
                 Ok(b) => Some(b),
                 Err(e) => {
@@ -190,6 +277,7 @@ pub fn update_map_stream(
     mut meshes: ResMut<Assets<Mesh>>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
+    globe: Res<crate::systems::globe::GlobeState>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.anchor else {
         return;
@@ -204,9 +292,20 @@ pub fn update_map_stream(
         return;
     };
 
+    // Freeze streaming from orbit (ADR-025): above the globe-show altitude the
+    // detailed tiles are hidden anyway (globe::HideInSpace), so keep the pyramid
+    // loaded instead of despawning it — returning to the surface is then instant,
+    // and the space camera doesn't spam tile requests for wherever it roams.
+    // Geocentric altitude, NOT local y: orbiting to the far side of the globe
+    // drives local y negative, which would unfreeze streaming and fetch tiles
+    // for nonsense coordinates (real bug: it hammered the tile server).
+    let altitude = globe.altitude_m(cell, tf) as f32;
+    if altitude > crate::systems::globe::GLOBE_SHOW_ALT {
+        return;
+    }
+
     // LOD: choose zoom from camera altitude; rebuild the patch when it changes.
     // Hysteresis: the boundary must be crossed by a margin so hovering can't thrash.
-    let altitude = cell.y as f32 * WORLD_CELL_EDGE + tf.translation.y;
     let cur = stream.current_zoom;
     let desired = zoom_for_altitude(altitude, base_zoom);
     let confirmed = if desired < cur {
@@ -233,12 +332,20 @@ pub fn update_map_stream(
     // A tile (tx,ty) centre sits at world ((tx+0.5 - fcx)*gs, (ty+0.5 - fcy)*gs)
     // relative to the fixed anchor, so the map never shifts across zoom changes.
     let mut wanted: HashMap<TileKey, f32> = HashMap::new();
-    for (level, zoom) in (MIN_ZOOM..=stream.current_zoom).rev().enumerate() {
+    // Spawn/fetch order: coarsest zoom first, so a fresh anchor (teleport or
+    // globe descent) gets full — if blurry — ground coverage after a handful of
+    // fetches, refined by the finer rings as they land.
+    let mut spawn_order: Vec<TileKey> = Vec::new();
+    for zoom in MIN_ZOOM..=stream.current_zoom {
         let gs = tile_to_meters(zoom, clat) as f32;
         let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
         let ctx = (world_x as f64 / gs as f64 + fcx - 0.5).round() as i64;
         let cty = (world_z as f64 / gs as f64 + fcy - 0.5).round() as i64;
-        let radius = if level == 0 { LOAD_RADIUS } else { COARSE_RADIUS };
+        let radius = if zoom == stream.current_zoom {
+            LOAD_RADIUS
+        } else {
+            COARSE_RADIUS
+        };
         // Height is a fixed function of the *zoom*, not the pyramid level: level
         // indices shift when altitude changes the finest zoom, and cached tiles
         // keep their spawn height — zoom-keyed heights mean a given tile is
@@ -250,13 +357,17 @@ pub fn update_map_stream(
             .or_insert_with(|| meshes.add(Cuboid::new(gs, 0.04, gs)));
         for b in -radius..=radius {
             for a in -radius..=radius {
-                wanted.insert(TileKey::new(ctx + a, cty + b, zoom), y);
+                let key = TileKey::new(ctx + a, cty + b, zoom);
+                wanted.insert(key.clone(), y);
+                spawn_order.push(key);
             }
         }
     }
 
-    // Spawn newly-needed tiles.
-    for (key, &y) in &wanted {
+    // Spawn newly-needed tiles (coarse-first, see spawn_order above).
+    let gen = stream.anchor_generation;
+    for key in &spawn_order {
+        let y = wanted[key];
         if stream.loaded.contains_key(key) {
             continue;
         }
@@ -281,11 +392,13 @@ pub fn update_map_stream(
                 // Flat tiles + big_space rebasing confuse frustum culling; opt out.
                 NoFrustumCulling,
                 StreamTile { key: key.clone() },
+                // Hidden from orbit alongside the ground disc (ADR-025).
+                crate::systems::globe::HideInSpace,
             ))
             .id();
         stream.loaded.insert(key.clone(), entity);
         if stream.requested.insert(key.clone()) {
-            let _ = jobs.send(key.clone());
+            let _ = jobs.send((key.clone(), gen));
         }
     }
 
@@ -306,7 +419,7 @@ pub fn update_map_stream(
         if let Some((_, last)) = stream.failed.get_mut(&key) {
             *last = now;
         }
-        let _ = jobs.send(key);
+        let _ = jobs.send((key, gen));
     }
 
     // Despawn tiles that drifted out of range or left the pyramid after a LOD

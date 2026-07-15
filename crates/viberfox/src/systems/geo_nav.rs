@@ -98,7 +98,7 @@ impl Teleport {
 /// (see `user_store`) so a jump restores the exact view, not just the spot.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct CameraPose {
-    /// "free" or "avatar" (empty = unspecified: keep the current camera).
+    /// "free", "avatar", or "earth" (empty = unspecified: keep the current camera).
     pub mode: String,
     /// Free-camera look (pitch, yaw) — `CameraState::free_camera_rotation`.
     pub free_rotation: [f32; 2],
@@ -106,6 +106,14 @@ pub struct CameraPose {
     pub azimuth: f32,
     pub pitch: f32,
     pub distance: f32,
+    /// Earth (orbit) mode parameters; the focus itself comes from the jump's
+    /// lat/lng, so only the view angles and altitude are stored.
+    #[serde(default)]
+    pub orbit_distance: f64,
+    #[serde(default)]
+    pub orbit_yaw: f32,
+    #[serde(default)]
+    pub orbit_pitch: f32,
 }
 
 impl CameraPose {
@@ -115,12 +123,16 @@ impl CameraPose {
             mode: match cs.mode {
                 CameraMode::Free => "free",
                 CameraMode::Avatar => "avatar",
+                CameraMode::Orbit => "earth",
             }
             .to_string(),
             free_rotation: [cs.free_camera_rotation.x, cs.free_camera_rotation.y],
             azimuth: cs.azimuth,
             pitch: cs.pitch,
             distance: cs.distance,
+            orbit_distance: cs.orbit_distance,
+            orbit_yaw: cs.orbit_yaw,
+            orbit_pitch: cs.orbit_pitch,
         }
     }
 
@@ -130,12 +142,27 @@ impl CameraPose {
         cs.mode = match self.mode.as_str() {
             "free" => CameraMode::Free,
             "avatar" => CameraMode::Avatar,
+            "earth" => CameraMode::Orbit,
             _ => return,
         };
         cs.free_camera_rotation = Vec2::new(self.free_rotation[0], self.free_rotation[1]);
         cs.azimuth = self.azimuth;
         cs.pitch = self.pitch;
         cs.distance = self.distance;
+        if matches!(cs.mode, CameraMode::Orbit) {
+            // Restore the saved view angles; the focus is set from the jump
+            // target in `apply_teleport`. Guard against a zero distance from an
+            // old pose saved before Earth mode existed.
+            cs.orbit_distance = if self.orbit_distance > 0.0 {
+                self.orbit_distance
+            } else {
+                1500.0
+            };
+            cs.orbit_distance_target = cs.orbit_distance;
+            cs.orbit_yaw = self.orbit_yaw;
+            cs.orbit_pitch = self.orbit_pitch;
+            cs.orbit_initialized = true;
+        }
     }
 }
 
@@ -467,6 +494,34 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
     }
 }
 
+// ─── Globe-descent re-anchor ─────────────────────────────────────────────────
+
+/// Turn a globe-descent re-anchor request (set by `camera_controls` when the
+/// space camera drops onto a spot far from the current anchor) into a
+/// re-anchoring teleport: arrive in Earth mode, near top-down, over the
+/// sub-point, so detail streams there (ADR-025).
+pub fn apply_camera_reanchor(
+    mut camera_state: ResMut<CameraState>,
+    mut nav: ResMut<GeoNavState>,
+) {
+    let Some((lat, lng, alt)) = camera_state.reanchor_request.take() else {
+        return;
+    };
+    let pose = CameraPose {
+        mode: "earth".to_string(),
+        orbit_pitch: 1.4, // near top-down
+        orbit_yaw: 0.0,
+        orbit_distance: 0.0, // apply_teleport recomputes from the altitude
+        ..Default::default()
+    };
+    nav.pending_teleport = Some(Teleport {
+        lat,
+        lng,
+        altitude: Some(alt),
+        pose: Some(pose),
+    });
+}
+
 // ─── Teleport ────────────────────────────────────────────────────────────────
 
 /// Move the avatar and camera to a picked geo target. Runs once the world
@@ -476,7 +531,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
 /// Online, the sim still owns the avatar, so the server may pull it back.
 pub fn apply_teleport(
     mut nav: ResMut<GeoNavState>,
-    stream: Res<MapStream>,
+    mut stream: ResMut<MapStream>,
     mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
     mut cameras: Query<
@@ -491,7 +546,6 @@ pub fn apply_teleport(
     if stream.geo_anchor().is_none() || nav.pending_teleport.is_none() {
         return; // nothing to do, or world not initialized yet (stay pending)
     }
-    let anchor = stream.geo_anchor().unwrap();
     let tp = nav.pending_teleport.take().unwrap();
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
     // Restore the saved camera orientation first, so the placement below and
@@ -500,7 +554,18 @@ pub fn apply_teleport(
         pose.apply(&mut camera_state);
     }
 
-    let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
+    // Re-anchor the map/globe/buildings to the destination so detail streams
+    // there and the camera stays near the origin, where the flat frame is exact
+    // (the anchor-less model — no fixed region). The anchor snaps to the
+    // destination's tile centre (the convention all placement math assumes), so
+    // the arrival point is the destination's small offset within that frame.
+    stream.request_reanchor(lat, lng);
+    let base_zoom = stream
+        .geo_anchor()
+        .map(|(_, _, z)| z)
+        .unwrap_or(vibe_core::world::REGION_ZOOM_LEVEL);
+    let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
+    let (wx, wz) = lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
     let (avatar_cell, avatar_local) =
@@ -541,6 +606,42 @@ pub fn apply_teleport(
                     grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;
                 tf.translation = local;
+            }
+            // Earth mode: recenter the orbit on the target. The view angles are
+            // already restored (pose) or kept; a carried altitude sets how far
+            // back to sit. camera_controls repositions from these next.
+            CameraMode::Orbit => {
+                // Always arrive in the surface (ground-focus) tier — a jump made
+                // from space would otherwise carry an orbit-radius distance.
+                camera_state.orbit_space = false;
+                camera_state.orbit_focus = DVec3::new(wx, 0.0, wz);
+                camera_state.orbit_pitch = camera_state.orbit_pitch.clamp(0.12, 1.55);
+                if let Some(alt) = target_alt {
+                    // distance from the focus that puts the camera at `alt` given
+                    // the current tilt (altitude = distance · sin(pitch)).
+                    let sp = (camera_state.orbit_pitch.sin() as f64).max(0.05);
+                    camera_state.orbit_distance = (alt / sp).clamp(15.0, 250_000.0);
+                } else {
+                    // No altitude given: keep a close regional framing.
+                    camera_state.orbit_distance = camera_state.orbit_distance.clamp(15.0, 5_000.0);
+                }
+                camera_state.orbit_distance_target = camera_state.orbit_distance;
+                camera_state.orbit_initialized = true;
+
+                let pitch = camera_state.orbit_pitch;
+                let yaw = camera_state.orbit_yaw;
+                let (cp, sp) = (pitch.cos() as f64, pitch.sin() as f64);
+                let (sy, cy) = (yaw.sin() as f64, yaw.cos() as f64);
+                let offset = DVec3::new(sy * cp, sp, cy * cp) * camera_state.orbit_distance;
+                let cam_world = camera_state.orbit_focus + offset;
+                let (new_cell, local) = grid.translation_to_grid(cam_world);
+                *cell = new_cell;
+                tf.translation = local;
+                let cell_origin =
+                    DVec3::new(new_cell.x as f64, new_cell.y as f64, new_cell.z as f64)
+                        * WORLD_CELL_EDGE as f64;
+                let focus_local = (camera_state.orbit_focus - cell_origin).as_vec3();
+                tf.look_at(focus_local, Vec3::Y);
             }
         }
     }
@@ -587,6 +688,27 @@ mod tests {
         assert_eq!(restored.azimuth, 1.1);
         assert_eq!(restored.pitch, 0.4);
         assert_eq!(restored.distance, 42.0);
+    }
+
+    #[test]
+    fn earth_pose_round_trips() {
+        let cs = CameraState {
+            mode: CameraMode::Orbit,
+            orbit_distance: 8200.0,
+            orbit_yaw: 1.3,
+            orbit_pitch: 0.9,
+            ..Default::default()
+        };
+        let pose = CameraPose::capture(&cs);
+        let mut restored = CameraState::default();
+        pose.apply(&mut restored);
+        assert!(matches!(restored.mode, CameraMode::Orbit));
+        assert_eq!(restored.orbit_distance, 8200.0);
+        assert_eq!(restored.orbit_yaw, 1.3);
+        assert_eq!(restored.orbit_pitch, 0.9);
+        // The focus is re-derived from the jump target, so the pose leaves it for
+        // apply_teleport to set; entering marks the state seeded.
+        assert!(restored.orbit_initialized);
     }
 
     #[test]

@@ -24,6 +24,9 @@ pub fn render_menu_bar(
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
+    mut camera_state: ResMut<crate::resources::CameraState>,
+    camera: Query<&Transform, With<crate::systems::free_camera::FreeCamera>>,
+    globe: Res<crate::systems::globe::GlobeState>,
     mut app_exit: EventWriter<AppExit>,
 ) {
     let ctx = egui.ctx_mut();
@@ -65,6 +68,70 @@ pub fn render_menu_bar(
                     ui.close_menu();
                 }
             });
+            // Camera mode picker (also cyclable with Tab).
+            {
+                use crate::resources::CameraMode;
+                let label = match camera_state.mode {
+                    CameraMode::Avatar => "Camera: Follow",
+                    CameraMode::Free => "Camera: Fly",
+                    CameraMode::Orbit => "Camera: Earth",
+                };
+                ui.menu_button(label, |ui| {
+                    let mut pick: Option<CameraMode> = None;
+                    for (mode, name) in [
+                        (CameraMode::Avatar, "Follow (third-person)"),
+                        (CameraMode::Free, "Fly (free camera)"),
+                        (CameraMode::Orbit, "Earth (orbit the globe)"),
+                    ] {
+                        if ui.selectable_label(camera_state.mode == mode, name).clicked() {
+                            pick = Some(mode);
+                        }
+                    }
+                    // One-click jump to an orbit that frames the whole planet.
+                    let mut whole_earth = false;
+                    if globe.ready {
+                        ui.separator();
+                        if ui.button("🌍 View Whole Earth").clicked() {
+                            whole_earth = true;
+                        }
+                    }
+                    ui.separator();
+                    ui.weak("Tab cycles modes · scroll to zoom");
+
+                    if let Some(mode) = pick {
+                        match mode {
+                            // Seed fly rotation from the live view, as Tab does.
+                            CameraMode::Free => {
+                                if let Ok(tf) = camera.single() {
+                                    let e = tf.rotation.to_euler(EulerRot::YXZ);
+                                    camera_state.free_camera_rotation = Vec2::new(e.1, e.0);
+                                }
+                            }
+                            // Re-seed the orbit focus from the current view.
+                            CameraMode::Orbit => camera_state.orbit_initialized = false,
+                            CameraMode::Avatar => {}
+                        }
+                        camera_state.mode = mode;
+                        ui.close_menu();
+                    }
+                    if whole_earth {
+                        use bevy::math::DVec3;
+                        let cs = &mut *camera_state;
+                        cs.mode = CameraMode::Orbit;
+                        cs.orbit_initialized = true;
+                        cs.orbit_space = true;
+                        cs.orbit_focus = DVec3::ZERO;
+                        cs.orbit_distance = globe.radius as f64 * 3.0;
+                        cs.orbit_distance_target = cs.orbit_distance;
+                        // Arcball pose: over the anchor, slightly north-east tilted,
+                        // up orthogonalized against the view direction.
+                        cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
+                        cs.orbit_up =
+                            (DVec3::Y - cs.orbit_dir * cs.orbit_dir.y).normalize();
+                        ui.close_menu();
+                    }
+                });
+            }
             // Top-level toggles, like a browser's sidebar buttons.
             if ui.button("Layers").clicked() {
                 layers.panel_open = !layers.panel_open;

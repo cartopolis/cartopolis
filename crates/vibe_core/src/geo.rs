@@ -29,6 +29,25 @@ pub fn geodetic_to_ecef(lat_deg: f64, lng_deg: f64, height_m: f64) -> DVec3 {
     )
 }
 
+/// ECEF metres → WGS84 geodetic (°lat, °lng, m height). Bowring's closed-form
+/// solution — accurate to well under a metre for near-surface points, which is
+/// all the globe's sub-point lookup needs.
+#[must_use]
+pub fn ecef_to_geodetic(ecef: DVec3) -> (f64, f64, f64) {
+    let (x, y, z) = (ecef.x, ecef.y, ecef.z);
+    let b = WGS84_A * (1.0 - WGS84_F); // semi-minor axis
+    let ep2 = (WGS84_A * WGS84_A - b * b) / (b * b); // second eccentricity²
+    let p = (x * x + y * y).sqrt();
+    let lng = y.atan2(x);
+    let theta = (z * WGS84_A).atan2(p * b);
+    let (st, ct) = theta.sin_cos();
+    let lat = (z + ep2 * b * st * st * st).atan2(p - WGS84_E2 * WGS84_A * ct * ct * ct);
+    let (sin_lat, cos_lat) = lat.sin_cos();
+    let n = WGS84_A / (1.0 - WGS84_E2 * sin_lat * sin_lat).sqrt();
+    let height = p / cos_lat - n;
+    (lat.to_degrees(), lng.to_degrees(), height)
+}
+
 /// A local East-North-Up tangent frame pinned to the ellipsoid at an anchor —
 /// how a flat sim cluster/region attaches to the globe (ADR-020/021).
 #[derive(Clone, Copy, Debug)]
@@ -115,6 +134,24 @@ mod tests {
         let p = geodetic_to_ecef(0.0, 0.0, 0.0);
         assert_relative_eq!(p.length(), WGS84_A, epsilon = 1e-6);
         assert_relative_eq!(p.x, WGS84_A, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn geodetic_ecef_round_trips() {
+        // A spread of latitudes/longitudes/heights round-trips through ECEF and
+        // back — this backs the globe's sub-point lookup (ADR-025).
+        for &(lat, lng, h) in &[
+            (LAT, LNG, 0.0),
+            (0.0, 0.0, 0.0),
+            (-33.87, 151.21, 120.0), // Sydney
+            (-51.65, 18.03, 0.0),    // Southern Ocean
+            (78.22, 15.65, 500.0),   // Svalbard
+        ] {
+            let (rlat, rlng, rh) = ecef_to_geodetic(geodetic_to_ecef(lat, lng, h));
+            assert_relative_eq!(rlat, lat, epsilon = 1e-7);
+            assert_relative_eq!(rlng, lng, epsilon = 1e-7);
+            assert_relative_eq!(rh, h, epsilon = 1e-3);
+        }
     }
 
     #[test]

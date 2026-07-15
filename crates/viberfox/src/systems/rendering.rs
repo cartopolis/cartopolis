@@ -166,6 +166,8 @@ pub fn spawn_regions(
             ChildOf(root),
             Visibility::Visible,
             RegionMesh,
+            // Hidden from orbit with the other ground props (ADR-025).
+            crate::systems::globe::HideInSpace,
             RegionTile {
                 tile_key,
                 lod_level: 1, // Start with medium quality

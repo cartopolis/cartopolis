@@ -522,7 +522,7 @@ pub fn send_network_intent(
     let Some(sess) = online else {
         return;
     };
-    if camera_state.mode == crate::resources::CameraMode::Free {
+    if camera_state.mode != crate::resources::CameraMode::Avatar {
         return;
     }
 
@@ -565,7 +565,7 @@ pub fn send_observer_update(
     let Some(sess) = online else {
         return;
     };
-    if camera_state.mode == crate::resources::CameraMode::Free {
+    if camera_state.mode != crate::resources::CameraMode::Avatar {
         return;
     }
     let _ = sess.intent_tx.send(NetMessage::ObserverUpdate {

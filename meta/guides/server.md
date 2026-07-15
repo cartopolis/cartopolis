@@ -321,19 +321,27 @@ Docker daemon, so it survives disconnects); we just watch the logs from a
 [`screen`](https://www.gnu.org/software/screen/) session so progress is easy to
 follow and reattach to.
 
+> **Run the two imports one at a time, not concurrently.** Both write to the same
+> `/data` volume; run together they saturate the disk and each crawls (Overpass's
+> bzip2 passes and Nominatim's `osm2pgsql` compete for I/O). Import Overpass to
+> `healthy` **first**, then start Nominatim.
+
 ```bash
 cd /data/stack
 
-# Overpass: start + follow
+# Caddy first — obtains Let's Encrypt certs (needs step 3 DNS to resolve):
+docker compose up -d caddy
+
+# Overpass import — run it ALONE:
 docker compose up -d overpass
 screen -dmS overpass bash -c 'cd /data/stack && docker compose logs -f overpass'
+```
 
-# Nominatim: start + follow
+Wait for Overpass to go `healthy` (the loop below), **then** start Nominatim:
+
+```bash
 docker compose up -d nominatim
 screen -dmS nominatim bash -c 'cd /data/stack && docker compose logs -f nominatim'
-
-# Caddy: obtains Let's Encrypt certs immediately (independent of the imports)
-docker compose up -d caddy
 ```
 
 Follow / detach:
@@ -354,6 +362,16 @@ until [ "$(sudo docker inspect -f '{{.State.Health.Status}}' overpass)" = health
 done
 echo 'overpass ready'
 ```
+
+> **If Overpass stays `unhealthy` after the import** and every query returns an
+> HTML page with `open64: 13 Permission denied /db/db/osm3s_osm_base`, the `/db`
+> volume directory is `drwx------` (owner-only) so the web process (`www-data`)
+> can't traverse to the dispatcher socket. Fix once — it persists on the volume,
+> and a restart won't re-import (init is skipped once `/db/init_done` exists):
+> ```bash
+> docker exec -u root overpass chmod o+rx /db
+> docker restart overpass
+> ```
 
 Nominatim has no healthcheck; it is ready when a local query returns results (the
 smoke test in step 6). Then verify end-to-end:
@@ -391,8 +409,18 @@ curl 'http://127.0.0.1:8080/reverse?lat=52.373&lon=4.892&format=jsonv2'
 
 ## 7. Point the client at it
 
+The client (`overpass_query` in `crates/viberfox/src/systems/osm_buildings.rs`)
+**defaults** to the self-hosted endpoint (`DEFAULT_OVERPASS_URL`), so a plain run
+already uses it:
+
 ```bash
-VIBE_OVERPASS_URL=https://overpass.example.com/api/interpreter cargo run -p viberfox
+cargo run -p viberfox
+```
+
+Override with `VIBE_OVERPASS_URL` to point elsewhere — e.g. back to the public API:
+
+```bash
+VIBE_OVERPASS_URL=https://overpass-api.de/api/interpreter cargo run -p viberfox
 ```
 
 Against a dedicated instance you can also lower `OVERPASS_THROTTLE`
@@ -433,6 +461,10 @@ Isolate the layer:
 - **`docker compose ps` shows a container restarting / unhealthy** →
   `docker compose logs <svc>`. Overpass init failing usually means the
   pbf→bz2 preprocess or the download failed (check the Geofabrik URL resolves).
+- **Every Overpass query returns an HTML `open64: … Permission denied
+  /db/db/osm3s_osm_base` page (and the container is `unhealthy`)** → the `/db`
+  volume dir isn't traversable by the `www-data` web process; `docker exec -u root
+  overpass chmod o+rx /db` (see step 5).
 - **Local query works but the public URL 502s** → backend still importing, or
   Caddy can't reach the service name. `docker compose logs caddy`; confirm both
   are on the `geonet` network (`docker network inspect geo_geonet`).
@@ -441,6 +473,13 @@ Isolate the layer:
   automatically; watch `docker compose logs -f caddy`.
 - **Disk filling during a Nominatim re-import** → it's on `/data` (`df -h /data`),
   isolated from `/`.
+- **Both imports started at once and each crawls** → they starve each other on the
+  shared disk. Freeze one so the other finishes, then resume:
+  `docker pause nominatim` … (wait for Overpass `healthy`) … `docker unpause nominatim`.
+  `pause` is a safe cgroup freeze — no data loss.
+- **Overpass sits on `osmium fileinfo` / init for a long time** → normal: it fully
+  decompresses the ~2 GB `.bz2` (twice — once for the timestamp, once to build the
+  DB). It clears on its own; running it alone (above) is much faster.
 
 ## Security notes
 

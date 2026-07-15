@@ -276,8 +276,9 @@ pub fn handle_avatar_movement(
     egui_manager: Res<crate::systems::egui_manager::EguiManager>,
     edit_dialog: Res<crate::resources::EditDialogState>,
 ) {
-    // Don't move avatar if in free camera mode (camera handles movement)
-    if camera_state.mode == crate::resources::CameraMode::Free {
+    // Don't move avatar unless the follow camera is active (Free and Earth
+    // modes decouple the camera from the avatar).
+    if camera_state.mode != crate::resources::CameraMode::Avatar {
         avatar_state.is_walking = false;
         return;
     }

@@ -17,6 +17,7 @@ pub use world::{
     REGION_SIZE_METERS, REGION_ZOOM_LEVEL,
 };
 pub use geo::{
-    geodetic_to_ecef, region_index, region_origin, regions_adjacent, TangentFrame, REGION_SIZE,
+    ecef_to_geodetic, geodetic_to_ecef, region_index, region_origin, regions_adjacent,
+    TangentFrame, REGION_SIZE,
 };
 pub use yaw::{snap_yaw_continuation, wrap_angle_pi};

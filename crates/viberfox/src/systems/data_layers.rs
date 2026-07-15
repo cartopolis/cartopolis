@@ -32,7 +32,6 @@ use bevy::render::render_resource::{
 };
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::components::Region;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{
@@ -72,6 +71,11 @@ impl MaterialExtension for DepthAlways {
 /// building cells: coarse cells, one Overpass query each, cache never
 /// invalidated by radius changes).
 const LAYER_ZOOM: u32 = 14;
+
+/// Streaming ceiling for these *surface* layers (POI pins, transit stops):
+/// above this camera altitude no new cells are fetched. Distinct from the
+/// space-tier props: pins are irrelevant long before the globe appears.
+const SURFACE_LAYER_MAX_ALT: f64 = 20_000.0;
 /// LAYER_ZOOM cells out from the camera kept loaded per enabled layer.
 const LAYER_CELL_RADIUS: i64 = 3;
 /// Give up on a cell after this many failed fetch rounds.
@@ -291,8 +295,12 @@ pub struct DataLayers {
     pub map_enabled: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
-    /// Region anchor: tile_x, tile_y, zoom, latitude (same as the buildings).
+    /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
+    /// (`MapStream`), so pins follow re-anchors like the buildings (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
+    /// The `MapStream::anchor_generation` the loaded cells belong to; a change
+    /// resets them for the new origin.
+    synced_gen: u32,
     /// Worker job queue: (layer index, cell x, cell y).
     jobs: Option<Sender<(usize, i64, i64)>>,
     results: Arc<Mutex<Vec<CellResult>>>,
@@ -317,6 +325,7 @@ impl Default for DataLayers {
             map_enabled: true,
             popup: None,
             anchor: None,
+            synced_gen: 0,
             jobs: None,
             results: Arc::default(),
             material: None,
@@ -359,17 +368,42 @@ pub fn update_data_layers(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut head_materials: ResMut<Assets<PinHeadMaterial>>,
-    regions: Query<&Region>,
+    stream: Res<crate::systems::map_stream::MapStream>,
+    globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
 ) {
-    // Establish the region anchor once and start the cell worker thread.
+    let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
+        return;
+    };
+
+    // Re-anchor (ADR-025): when the map origin moves, drop every loaded cell and
+    // re-establish at the new location, exactly like the buildings. Dropping
+    // `jobs` retires the old worker; a fresh `results` orphans in-flight builds.
+    if dl.synced_gen != stream.anchor_generation {
+        dl.synced_gen = stream.anchor_generation;
+        for layer in dl.layers.iter_mut() {
+            for (_, ents) in layer.cells.drain() {
+                for e in ents {
+                    commands.entity(e).despawn();
+                }
+            }
+            layer.pois.clear();
+            layer.requested.clear();
+            layer.failed.clear();
+            layer.retry_at.clear();
+        }
+        dl.popup = None;
+        dl.jobs = None;
+        dl.results = Arc::default();
+        dl.anchor = None;
+    }
+
+    // Establish the anchor (from the map origin) and start the cell worker.
     if dl.anchor.is_none() {
-        let Some(region) = regions.iter().next() else {
-            return;
-        };
-        let z = region.tile_z.clamp(0, u32::MAX as i64) as u32;
-        let (ax, ay, lat) = (region.tile_x, region.tile_y, region.latitude);
+        let z = base_zoom;
+        let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
+        let lat = clat;
         dl.anchor = Some((ax, ay, z, lat));
 
         let (tx, rx) = std::sync::mpsc::channel::<(usize, i64, i64)>();
@@ -393,6 +427,14 @@ pub fn update_data_layers(
     let Ok(root) = bigspace.single() else {
         return;
     };
+
+    // These are *surface* layers — sub-100 m POI markers, meaningless from
+    // altitude. Freeze streaming when the camera is high (and certainly from
+    // orbit, where the flat-frame position sweeps across the planet and every
+    // "nearby" cell would be a wasted Overpass query — this was hammering it).
+    if globe.altitude_m(cell, tf) > SURFACE_LAYER_MAX_ALT {
+        return;
+    }
 
     // Camera's LAYER_ZOOM cell from its base-zoom tile coords.
     let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
@@ -814,6 +856,8 @@ fn open_url(url: &str) {
 /// changed and newly streamed-in entities pick up the current toggle state.
 pub fn apply_feature_toggles(
     dl: Res<DataLayers>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut buildings: Query<
         &mut Visibility,
         Or<(
@@ -833,7 +877,14 @@ pub fn apply_feature_toggles(
         ),
     >,
 ) {
-    let want = if dl.buildings_enabled {
+    // Sole visibility writer for these entities: the panel toggle AND the space
+    // tier (from orbit the flat patch floats over the globe, parallax-shifted —
+    // ADR-025). Folding both in here avoids racing another writer.
+    let in_space = camera
+        .single()
+        .map(|(cell, tf)| globe.in_space(cell, tf))
+        .unwrap_or(false);
+    let want = if dl.buildings_enabled && !in_space {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -843,7 +894,7 @@ pub fn apply_feature_toggles(
             *vis = want;
         }
     }
-    let want = if dl.map_enabled {
+    let want = if dl.map_enabled && !in_space {
         Visibility::Inherited
     } else {
         Visibility::Hidden

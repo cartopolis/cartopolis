@@ -160,6 +160,7 @@ pub fn render_hud(
     clock: Res<WorldClock>,
     stream: Res<MapStream>,
     camera_state: Res<CameraState>,
+    globe: Res<crate::systems::globe::GlobeState>,
     mut store: ResMut<UserStore>,
     mut bookmarks: ResMut<BookmarksState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -167,6 +168,10 @@ pub fn render_hud(
 ) {
     let ((h, m, s), is_local) = clock.hms();
     let cam = camera.single().ok();
+    // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
+    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
+    let in_space = altitude
+        .is_some_and(|a| a as f32 > crate::systems::globe::GLOBE_SHOW_ALT && globe.ready);
     let data = HudData {
         time: if is_local {
             format!("{h:02}:{m:02}:{s:02}")
@@ -174,12 +179,26 @@ pub fn render_hud(
             format!("{h:02}:{m:02}:{s:02} UTC")
         },
         geo: cam.zip(stream.geo_anchor()).map(|((cell, tf), anchor)| {
-            let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
-            let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
-            world_to_lat_lng(anchor, wx, wz)
+            if in_space {
+                // Over the globe: the flat-frame mapping is meaningless far from
+                // the anchor — show the geographic sub-point instead.
+                let edge = WORLD_CELL_EDGE as f64;
+                let cam_w = bevy::math::DVec3::new(
+                    cell.x as f64 * edge + tf.translation.x as f64,
+                    cell.y as f64 * edge + tf.translation.y as f64,
+                    cell.z as f64 * edge + tf.translation.z as f64,
+                );
+                let dir = (cam_w - globe.center_local.as_dvec3())
+                    .normalize_or_zero()
+                    .as_vec3();
+                crate::systems::globe::sub_point(globe.anchor_lat, globe.anchor_lng, dir)
+            } else {
+                let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
+                let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
+                world_to_lat_lng(anchor, wx, wz)
+            }
         }),
-        altitude: cam
-            .map(|(cell, tf)| cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64),
+        altitude,
         heading: cam.and_then(|(_, tf)| camera_heading(tf)),
         copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
     };

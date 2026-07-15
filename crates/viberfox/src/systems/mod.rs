@@ -7,6 +7,7 @@ pub mod debug;
 pub mod egui_manager;
 pub mod free_camera;
 pub mod geo_nav;
+pub mod globe;
 pub mod map_stream;
 pub mod gizmo;
 pub mod hud;

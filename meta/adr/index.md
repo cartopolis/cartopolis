@@ -26,3 +26,4 @@
 | [022](./022-osm-building-import.md) | OSM 3D Building Import (Overpass → Extruded Footprints) | Proposed | osm, buildings, rendering, import, dependency |
 | [023](./023-data-layers.md) | Data Layers (Togglable OSM Point-of-Interest Overlays) | Proposed | osm, data-layers, rendering, ui, import |
 | [024](./024-transit-live-boards.md) | Live Transit Departure Boards (OVapi) | Proposed | data-layers, transit, live-data, ui, dependency |
+| [025](./025-planetary-globe-and-space-tier.md) | Planetary Globe and Space Tier | Proposed | rendering, coordinates, globe, osm, large-world, camera |

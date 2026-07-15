@@ -301,6 +301,37 @@ pub struct CameraState {
     pub pitch: f32,
     pub pan_offset: Option<Vec2>, // Last mouse position for delta calculation
     pub free_camera_rotation: Vec2, // pitch, yaw
+    // ── Earth (orbit) mode ──────────────────────────────────────────────────
+    /// Ground point the orbit camera pivots around, in absolute world metres
+    /// (the anchored Web Mercator frame `map_stream` uses). y ≈ 0 (the ground).
+    pub orbit_focus: bevy::math::DVec3,
+    /// Distance from the focus to the camera (metres). The wheel moves
+    /// `orbit_distance_target`; this glides toward it each frame, so zoom is a
+    /// smooth camera-fly rather than a per-notch jump.
+    pub orbit_distance: f64,
+    pub orbit_distance_target: f64,
+    /// Space tier: free-arcball orientation — the unit direction from the
+    /// Earth's centre to the camera plus the camera's up vector, rotated by
+    /// quaternions. No yaw/pitch parameterization, so there is no pole clamp:
+    /// the globe spins without locks in any direction.
+    pub orbit_dir: bevy::math::DVec3,
+    pub orbit_up: bevy::math::DVec3,
+    /// Azimuth around the focus (radians); horizontal drag spins it.
+    pub orbit_yaw: f32,
+    /// Elevation angle above the ground plane (radians): 0 = grazing the
+    /// horizon, π/2 = straight down. Vertical drag tilts it.
+    pub orbit_pitch: f32,
+    /// Cleared on entering the mode so the first frame seeds the focus/distance
+    /// from wherever the camera was looking.
+    pub orbit_initialized: bool,
+    /// True once zoomed far enough out that the orbit pivots the Earth's centre
+    /// (space tier, ADR-025) instead of a ground focus. Reconstruction is the
+    /// same spherical offset; only the pivot and the zoom clamps differ.
+    pub orbit_space: bool,
+    /// Set by `camera_controls` when the globe descent lands far from the current
+    /// anchor: (lat, lng, altitude) to re-anchor the world to. Consumed by
+    /// `apply_camera_reanchor`, which turns it into a re-anchoring teleport.
+    pub reanchor_request: Option<(f64, f64, f64)>,
 }
 
 #[derive(Resource, Default)]
@@ -315,6 +346,7 @@ pub struct MouseState {
 pub enum CameraMode {
     Avatar, // Default: camera follows avatar
     Free,   // Free camera mode (FPS-style)
+    Orbit,  // "Earth": Google-Earth-style orbit around a ground focus point
 }
 
 impl Default for CameraMode {
@@ -332,6 +364,16 @@ impl Default for CameraState {
             pitch: std::f32::consts::PI / 6.0,
             pan_offset: None,
             free_camera_rotation: Vec2::new(0.0, 0.0),
+            orbit_focus: bevy::math::DVec3::ZERO,
+            orbit_distance: 1500.0,
+            orbit_distance_target: 1500.0,
+            orbit_dir: bevy::math::DVec3::Z,
+            orbit_up: bevy::math::DVec3::Y,
+            orbit_yaw: 0.0,
+            orbit_pitch: std::f32::consts::FRAC_PI_2 * 0.85,
+            orbit_initialized: false,
+            orbit_space: false,
+            reanchor_request: None,
         }
     }
 }
