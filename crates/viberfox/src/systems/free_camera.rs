@@ -605,10 +605,18 @@ pub fn camera_controls(
             };
             // The wheel moves a *target*; the camera glides toward it below, so
             // zoom reads as a smooth fly instead of a per-notch height jump.
+            // In space the factor applies to the *altitude*, not the distance
+            // from the Earth's centre — otherwise one notch near the surface is
+            // 10% of ~6,400 km (a violent 640 km plunge) instead of 10% of the
+            // height above the ground.
             for event in mouse_wheel_events.read() {
                 let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
-                camera_state.orbit_distance_target =
-                    (camera_state.orbit_distance_target * factor).clamp(min_d, max_d);
+                camera_state.orbit_distance_target = if space {
+                    let alt = (camera_state.orbit_distance_target - radius).max(500.0);
+                    (radius + alt * factor).clamp(min_d, max_d)
+                } else {
+                    (camera_state.orbit_distance_target * factor).clamp(min_d, max_d)
+                };
             }
             let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
             let old_d = camera_state.orbit_distance;
@@ -716,20 +724,24 @@ pub fn camera_controls(
             let (yaw, pitch) = (camera_state.orbit_yaw, camera_state.orbit_pitch);
             let offset = spherical_offset(yaw, pitch, camera_state.orbit_distance);
 
-            // Pan (surface only): grab-and-drag the ground. Move the focus in the
-            // camera's horizontal screen plane, scaled so the ground tracks the
-            // cursor. Uses the view's right/forward after any rotation above.
+            // Pan (surface only): grab-and-drag the ground — the map follows the
+            // cursor on BOTH axes. The basis comes straight from the orbit yaw
+            // (exact even at near-nadir tilt, where a flattened camera-forward
+            // degenerates): `fwd_flat` is the horizontal camera→focus direction,
+            // i.e. "screen-up on the ground".
             if pan_delta != Vec2::ZERO {
-                let dir_to_focus = (-offset).normalize_or_zero().as_vec3();
-                let orient = Transform::from_translation(Vec3::ZERO)
-                    .looking_to(dir_to_focus, Vec3::Y);
-                let cam_right = *orient.right();
-                let mut cam_forward = *orient.forward();
-                cam_forward.y = 0.0;
-                let cam_forward = cam_forward.normalize_or_zero();
+                let (sy, cy) = (camera_state.orbit_yaw.sin(), camera_state.orbit_yaw.cos());
+                let fwd_flat = Vec3::new(-sy, 0.0, -cy);
+                let right = Vec3::new(cy, 0.0, -sy);
                 let scale = (camera_state.orbit_distance * ORBIT_PAN_FACTOR) as f32;
-                let shift = cam_right * (pan_delta.x * scale) + cam_forward * (pan_delta.y * scale);
-                camera_state.orbit_focus -= shift.as_dvec3();
+                // Drag right → rig moves left → content follows the cursor right;
+                // drag down → rig moves screen-up on the ground → content slides
+                // down. (The vertical axis used to move the rig the other way —
+                // grab horizontally but inverted vertically, which is why panning
+                // felt "vice versa" up close while the space globe felt right.)
+                let shift =
+                    right * (-pan_delta.x * scale) + fwd_flat * (pan_delta.y * scale);
+                camera_state.orbit_focus += shift.as_dvec3();
                 camera_state.orbit_focus.y = 0.0;
             }
 

@@ -210,9 +210,8 @@ fn main() {
                 systems::globe::setup_globe
                     .after(systems::map_stream::init_map_stream)
                     .after(systems::map_stream::apply_reanchor),
-                systems::globe::apply_globe_skin.after(systems::globe::setup_globe),
-                // Mid-zoom detail caps around the camera sub-point (ADR-025).
-                systems::globe::update_globe_caps.after(systems::globe::setup_globe),
+                // Whole-globe quadtree tile streaming (ADR-025).
+                systems::globe::update_globe_tiles.after(systems::globe::setup_globe),
                 // Globe-descent re-anchor → teleport (must precede the teleport).
                 systems::geo_nav::apply_camera_reanchor
                     .before(systems::geo_nav::apply_teleport),

@@ -366,6 +366,7 @@ pub fn update_map_stream(
 
     // Spawn newly-needed tiles (coarse-first, see spawn_order above).
     let gen = stream.anchor_generation;
+    let mut queued = 0u32;
     for key in &spawn_order {
         let y = wanted[key];
         if stream.loaded.contains_key(key) {
@@ -399,7 +400,13 @@ pub fn update_map_stream(
         stream.loaded.insert(key.clone(), entity);
         if stream.requested.insert(key.clone()) {
             let _ = jobs.send((key.clone(), gen));
+            queued += 1;
         }
+    }
+    // Terse fetch accounting: one line per burst, not per tile (served from the
+    // on-disk cache when already seen; only new tiles hit the network).
+    if queued > 0 {
+        tracing::info!(queued, finest_zoom = stream.current_zoom, "tile fetches queued");
     }
 
     // Re-queue failed fetches after a short backoff (bounded attempts, so a

@@ -43,9 +43,15 @@ Add a **space tier**: a single true-scale WGS84 globe mesh placed under the worl
   anchor lands at the local origin on the sphere surface, and Earth's centre sits at
   ≈ `(0, −R, 0)`. The mesh is one entity at grid cell 0; `big_space` rebases it for
   render precision at any camera distance.
-- **Skin.** An equirectangular texture is baked on a background thread from
-  low-zoom OSM tiles (same source/style as the streamed map), reprojected
-  Web-Mercator → equirectangular. Until it lands, the globe shows a plain ocean tone.
+- **Imagery: whole-globe quadtree LOD.** Every visible OSM tile is draped on the
+  ellipsoid as a small sphere-patch mesh; tiles split into their four children
+  whenever they would exceed a screen-size threshold (z2 root → z12, where the
+  flat detail tier takes over below the space altitude). Far-side tiles are
+  culled, off-screen tiles aren't refined, a parent stays until its children are
+  loaded (no holes), and fetches are generation-tagged and disk-cached like all
+  tile traffic. A plain ocean-toned base sphere backstops unloaded tiles and the
+  polar caps beyond Web-Mercator's ±85°. (Supersedes the interim baked-skin +
+  regional-caps approach, which read as a patch on a flat-toned ball.)
 - **Camera.** The Earth orbit camera keeps its `focus / distance / yaw / pitch`
   parameters. Above a space-entry altitude the pivot switches from the ground focus
   to the Earth centre; the switch reparameterises `distance/yaw/pitch` from the
