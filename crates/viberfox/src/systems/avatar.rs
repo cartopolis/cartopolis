@@ -2,7 +2,7 @@ use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNode
 use bevy::ecs::query::Or;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
-use bevy::scene::SceneInstanceReady;
+use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
 use vibe_core::wrap_angle_pi;
@@ -99,7 +99,7 @@ pub fn spawn_avatar(
         ]);
         let graph_handle = graphs.add(graph);
 
-        let mesh_scene = SceneRoot(
+        let mesh_scene = WorldAssetRoot(
             asset_server.load(GltfAssetLabel::Scene(0).from_asset(FOX_GLB)),
         );
 
@@ -116,14 +116,14 @@ pub fn spawn_avatar(
 }
 
 fn play_fox_animation_when_ready(
-    trigger: Trigger<SceneInstanceReady>,
+    trigger: On<WorldInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
     animations_to_play: Query<&FoxAnimationToPlay>,
     mut players: Query<&mut AnimationPlayer>,
 ) {
-    if let Ok(animation_to_play) = animations_to_play.get(trigger.target()) {
-        for child in children.iter_descendants(trigger.target()) {
+    if let Ok(animation_to_play) = animations_to_play.get(trigger.event_target()) {
+        for child in children.iter_descendants(trigger.event_target()) {
             if let Ok(mut player) = players.get_mut(child) {
                 // Start with idle; update_fox_animation will switch based on movement
                 player.play(animation_to_play.idle_index).repeat().set_speed(1.5);

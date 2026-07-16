@@ -33,7 +33,7 @@ pub fn prim_picking(
     gizmo_state: Res<crate::systems::gizmo::GizmoState>,
 ) {
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
-    if egui_manager.ctx.wants_pointer_input() {
+    if egui_manager.ctx.egui_wants_pointer_input() {
         return;
     }
 
@@ -176,7 +176,7 @@ pub fn update_marquee(
     selected_query: Query<Entity, With<Selected>>,
     egui_manager: Res<EguiManager>,
 ) {
-    if egui_manager.ctx.wants_pointer_input() {
+    if egui_manager.ctx.egui_wants_pointer_input() {
         marquee.press_pos = None;
         marquee.active = false;
         return;
@@ -290,7 +290,7 @@ pub fn handle_delete_key(
     egui_manager: Res<EguiManager>,
     selected_query: Query<&Prim, With<Selected>>,
 ) {
-    if egui_manager.ctx.wants_keyboard_input() {
+    if egui_manager.ctx.egui_wants_keyboard_input() {
         return;
     }
 
@@ -317,11 +317,11 @@ pub fn highlight_selected_prim(
     >,
 ) {
     for (prim, material_handle) in selected_query.iter() {
-        if let Some(material) = materials.get_mut(&material_handle.0) {
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
             // Keep the real surface (color/texture/alpha/glow/uv) and add only a subtle
             // highlight, so the texture stays visible while the prim is selected.
-            crate::systems::rendering::apply_surface(material, prim.color, &prim.surface);
-            crate::systems::rendering::apply_selection_highlight(material);
+            crate::systems::rendering::apply_surface(&mut material, prim.color, &prim.surface);
+            crate::systems::rendering::apply_selection_highlight(&mut material);
         }
     }
 }
@@ -336,9 +336,9 @@ pub fn unhighlight_deselected_prim(
 ) {
     for entity in deselected.read() {
         if let Ok((prim, material_handle)) = query.get(entity) {
-            if let Some(material) = materials.get_mut(&material_handle.0) {
+            if let Some(mut material) = materials.get_mut(&material_handle.0) {
                 // Restore the full surface (alpha/glow/full-bright/uv), not just RGB.
-                crate::systems::rendering::apply_surface(material, prim.color, &prim.surface);
+                crate::systems::rendering::apply_surface(&mut material, prim.color, &prim.surface);
             }
         }
     }

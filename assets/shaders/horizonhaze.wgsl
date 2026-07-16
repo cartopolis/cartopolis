@@ -11,15 +11,15 @@
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::{view, lights}
 
-@group(2) @binding(0) var<uniform> color: vec4<f32>;
+@group(3) @binding(0) var<uniform> color: vec4<f32>;
 // params.x: falloff scale — elevation (view-dir y) over which the haze decays by 1/e.
 // params.y: peak alpha at/below the horizon.
 // params.z: directional-light exponent (DistanceFog::directional_light_exponent).
 // params.w: zenith floor (0–1) — fraction of peak alpha covering the whole sky,
 //           so dense fog veils the entire dome like a real foggy day.
-@group(2) @binding(1) var<uniform> params: vec4<f32>;
+@group(3) @binding(1) var<uniform> params: vec4<f32>;
 // DistanceFog::directional_light_color — rgb tint, alpha = strength.
-@group(2) @binding(2) var<uniform> dir_light_color: vec4<f32>;
+@group(3) @binding(2) var<uniform> dir_light_color: vec4<f32>;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {

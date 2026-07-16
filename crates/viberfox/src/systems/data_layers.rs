@@ -61,7 +61,7 @@ impl MaterialExtension for DepthAlways {
         _key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_compare = CompareFunction::Always;
+            depth.depth_compare = Some(CompareFunction::Always);
         }
         Ok(())
     }
@@ -539,8 +539,8 @@ pub fn update_data_layers(
                                 ChildOf(root),
                                 visibility,
                                 DataLayerMarkers,
-                                bevy::pbr::NotShadowCaster,
-                                bevy::pbr::NotShadowReceiver,
+                                bevy::light::NotShadowCaster,
+                                bevy::light::NotShadowReceiver,
                             ))
                             .id(),
                     );
@@ -584,8 +584,8 @@ pub fn update_data_layers(
                                 ChildOf(root),
                                 visibility,
                                 StopRing,
-                                bevy::pbr::NotShadowCaster,
-                                bevy::pbr::NotShadowReceiver,
+                                bevy::light::NotShadowCaster,
+                                bevy::light::NotShadowReceiver,
                             ))
                             .id(),
                     );
@@ -664,7 +664,7 @@ pub fn handle_poi_click(
         return;
     }
     // Clicks on the UI (panels, the popup itself) are egui's, not the world's.
-    if egui.ctx_mut().wants_pointer_input() {
+    if egui.ctx_mut().egui_wants_pointer_input() {
         return;
     }
     let Some(cursor) = windows.iter().next().and_then(|w| w.cursor_position()) else {
@@ -925,7 +925,7 @@ pub fn animate_stop_rings(
     // Quadratic fade-out keeps it subtle: strongest just as the pulse starts.
     let alpha = 0.25 * (1.0 - phase) * (1.0 - phase);
     for handle in dl.ring_materials.values() {
-        if let Some(mat) = materials.get_mut(handle) {
+        if let Some(mut mat) = materials.get_mut(handle) {
             mat.base_color = mat.base_color.with_alpha(alpha);
         }
     }
@@ -938,12 +938,11 @@ pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<Da
     if !dl.panel_open {
         return;
     }
-    let ctx = egui.ctx_mut();
     let mut close = false;
-    egui::SidePanel::right("layers_panel")
+    egui::Panel::right("layers_panel")
         .resizable(true)
-        .default_width(260.0)
-        .show(ctx, |ui| {
+        .default_size(260.0)
+        .show(egui.ui_mut(), |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Layers");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vibe_core", "crates/vibe_sim", "crates/viberfox"]
+members = ["crates/vibe_core", "crates/vibe_sim", "crates/viberfox", "crates/big_space"]
 default-members = ["crates/viberfox"]
 
 [workspace.package]
@@ -12,8 +12,12 @@ anyhow = "1.0"
 approx = "0.5"
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 # Slimmer than `default`: drops UI, 2D sprite stack, audio, gamepads, gizmos, picking — less LLVM work per build.
-bevy = { version = "0.16", default-features = false, features = [
-    "animation",
+bevy = { version = "0.19", default-features = false, features = [
+    # Auto-registers all `#[derive(Reflect)]` types (inventory-based). Required so
+    # bevy_world_serialization can reflect-spawn glTF scenes (the avatar fox) —
+    # without it, spawning panics on the first unregistered component type.
+    "reflect_auto_register",
+    "bevy_animation",
     "async_executor",
     "bevy_asset",
     "bevy_core_pipeline",
@@ -38,21 +42,19 @@ bevy = { version = "0.16", default-features = false, features = [
     "wayland",
     "x11",
 ] }
-bevy_atmosphere = { version = "0.13", default-features = false, features = [
-    "nishita",
-    "procedural",
-] }
-bevy_image = "0.16"
-big_space = "0.10"
+# bevy_atmosphere removed in the 0.19 migration — replaced by Bevy's built-in
+# bevy_pbr atmosphere (Atmosphere/AtmosphereSettings on the camera).
+bevy_image = { version = "0.19", features = ["zstd_rust"] }
+big_space = { path = "crates/big_space" }
 bytes = "1.9"
-egui = "0.31"
-egui-wgpu = { version = "0.31", default-features = false }
+egui = "0.35"
+egui-wgpu = { version = "0.35", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
 earcutr = "0.4"
 figment = { version = "0.10", features = ["toml", "env"] }
 fontdue = "0.9"
-glam = { version = "0.29", features = ["serde"] }
-image = "0.24"
+glam = { version = "0.32", features = ["serde"] }
+image = "0.25"
 postcard = { version = "1.1", features = ["alloc"] }
 refinery = { version = "0.8", features = ["rusqlite-bundled"] }
 rusqlite = { version = "0.30", features = ["bundled"] }

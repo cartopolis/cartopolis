@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::sync::Mutex;
 use crate::components::{Region, Prim, PrimShape};
@@ -269,7 +269,7 @@ pub fn load_local_textures(
                         let pixels: Vec<egui::Color32> = raw.chunks_exact(4)
                             .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                             .collect();
-                        let color_image = egui::ColorImage { size: [w as usize, h as usize], pixels };
+                        let color_image = egui::ColorImage::new([w as usize, h as usize], pixels);
                         let egui_handle = egui_manager.ctx.load_texture(
                             &id,
                             color_image,

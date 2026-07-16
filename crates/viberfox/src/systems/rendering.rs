@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine2;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use vibe_core::world::tile_to_meters;
 use vibe_core::PrimSurface;
 
@@ -265,7 +265,7 @@ pub fn refresh_prim_textures(
     cache: Res<PrimTextureCache>,
 ) {
     for (entity, prim, mat_handle) in query.iter() {
-        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+        if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
             mat.base_color_texture = prim
                 .texture_id
                 .as_ref()
@@ -273,7 +273,7 @@ pub fn refresh_prim_textures(
                 .cloned();
             // Also re-apply the surface so a PrimUpsert that changed transparency/glow/
             // repeats/etc. (not just the texture) is reflected.
-            apply_surface(mat, prim.color, &prim.surface);
+            apply_surface(&mut mat, prim.color, &prim.surface);
         }
         commands.entity(entity).remove::<NeedsTextureRefresh>();
     }

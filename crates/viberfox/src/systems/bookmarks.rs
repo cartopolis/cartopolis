@@ -119,17 +119,17 @@ pub fn render_bookmarks_panel(
         },
     );
 
-    let ctx = egui.ctx_mut();
+    let ui_root = egui.ui_mut();
     let mut close = false;
     let mut delete: Option<u64> = None;
     let mut update: Option<u64> = None;
     let mut teleport: Option<Teleport> = None;
     let mut commit_rename: Option<(u64, String)> = None;
 
-    egui::SidePanel::right("bookmarks_panel")
+    egui::Panel::right("bookmarks_panel")
         .resizable(true)
-        .default_width(280.0)
-        .show(ctx, |ui| {
+        .default_size(280.0)
+        .show(ui_root, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Bookmarks");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

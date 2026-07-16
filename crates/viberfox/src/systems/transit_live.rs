@@ -27,10 +27,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use big_space::prelude::{BigSpace, GridCell};
 
@@ -318,7 +318,7 @@ pub fn update_transit_boards(
                 entry.drawn_fetch = board.fetched;
                 entry.drawn_minute = minute;
                 let image = images.add(board_image(paint_board(painter, poi, board, now, hm)));
-                if let Some(mat) = materials.get_mut(&entry.material) {
+                if let Some(mut mat) = materials.get_mut(&entry.material) {
                     mat.base_color_texture = Some(image.clone());
                 }
                 images.remove(&entry.image);

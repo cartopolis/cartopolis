@@ -12,7 +12,6 @@ fast-dev = ["bevy/dynamic_linking"]
 anyhow.workspace = true
 arboard.workspace = true
 bevy.workspace = true
-bevy_atmosphere.workspace = true
 bevy_image.workspace = true
 big_space.workspace = true
 clap.workspace = true

@@ -1,19 +1,24 @@
-//! Egui integration for Bevy 0.16.
+//! Egui integration for Bevy 0.19.
 //!
 //! Manual integration using egui-wgpu as the rendering backend,
 //! inspired by https://github.com/vladbat00/bevy_egui.
 //!
 //! Architecture:
-//!   - `EguiManager` lives in the main world and holds the egui context.
-//!   - `begin_egui_frame` (PreUpdate) collects Bevy input and starts the egui frame.
-//!   - UI systems run in Update, calling `egui_manager.ctx_mut()` to build the UI.
-//!   - `end_egui_frame` (PostUpdate) tessellates the output into `EguiRenderOutput`.
+//!   - `EguiManager` lives in the main world and holds the egui context plus a
+//!     per-frame root `Ui` (egui 0.35 shows panels inside a `Ui`, not the `Context`).
+//!   - `begin_egui_frame` (PreUpdate) collects Bevy input, starts the egui frame,
+//!     and builds the shared root `Ui`.
+//!   - UI systems run in Update: `egui_manager.ui_mut()` for panels,
+//!     `egui_manager.ctx_mut()` for floating windows/areas.
+//!   - `end_egui_frame` (PostUpdate) finalizes the root `Ui` and tessellates the
+//!     output into `EguiRenderOutput`.
 //!   - `ExtractResourcePlugin` copies `EguiRenderOutput` to the render world.
-//!   - `EguiNode` (render graph) draws egui after `EndMainPassPostProcessing`.
+//!   - `egui_pass` is a system in the `Core3d` render schedule (Bevy 0.19's
+//!     schedule-based render graph), ordered after `Core3dSystems::PostProcess`
+//!     (tonemapping) and before `upscaling`.
 
 use bevy::{
-    core_pipeline::core_3d::graph::{Core3d, Node3d},
-    ecs::query::QueryItem,
+    core_pipeline::{upscaling::upscaling, Core3d},
     input::{
         keyboard::KeyboardInput,
         mouse::{MouseScrollUnit, MouseWheel},
@@ -22,13 +27,9 @@ use bevy::{
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        render_graph::{
-            NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel, ViewNode,
-            ViewNodeRunner,
-        },
-        render_resource::RenderPassDescriptor,
-        renderer::{RenderContext, RenderDevice, RenderQueue},
-        view::{Msaa, ViewTarget},
+        render_resource::{RenderPassDescriptor, TextureFormat},
+        renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
+        view::ViewTarget,
         RenderApp,
     },
 };
@@ -41,6 +42,10 @@ use std::sync::Mutex;
 #[derive(Resource)]
 pub struct EguiManager {
     pub ctx: egui::Context,
+    /// Full-viewport background `Ui` rebuilt each frame in `begin_egui_frame`.
+    /// egui 0.35 shows panels inside a `Ui`; sharing one across all UI systems
+    /// keeps the cooperative panel layout the old ctx-based panels had.
+    root_ui: Option<egui::Ui>,
     elapsed_time: f64,
 }
 
@@ -48,6 +53,7 @@ impl Default for EguiManager {
     fn default() -> Self {
         Self {
             ctx: egui::Context::default(),
+            root_ui: None,
             elapsed_time: 0.0,
         }
     }
@@ -55,9 +61,18 @@ impl Default for EguiManager {
 
 impl EguiManager {
     /// Borrow the egui context mutably. Only valid between `begin_egui_frame`
-    /// and `end_egui_frame` (i.e. during the Update schedule).
+    /// and `end_egui_frame` (i.e. during the Update schedule). Use for floating
+    /// windows/areas (`egui::Window`, `egui::Area`), which still take `&Context`.
     pub fn ctx_mut(&mut self) -> &mut egui::Context {
         &mut self.ctx
+    }
+
+    /// Borrow this frame's shared root `Ui`, for showing panels
+    /// (`egui::Panel`, `egui::CentralPanel`). Only valid during Update.
+    pub fn ui_mut(&mut self) -> &mut egui::Ui {
+        self.root_ui
+            .as_mut()
+            .expect("ui_mut() called outside an egui frame")
     }
 
     /// True when keyboard input belongs to the UI and the game (avatar movement,
@@ -70,7 +85,7 @@ impl EguiManager {
         edit_dialog_open: bool,
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
-        self.ctx.wants_keyboard_input()
+        self.ctx.egui_wants_keyboard_input()
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)
@@ -95,7 +110,7 @@ pub struct EguiRenderOutput {
 /// Stores the renderer alongside the sample count it was compiled for so we
 /// can detect and handle MSAA changes (e.g. camera settings changed).
 #[derive(Resource, Default)]
-pub struct EguiWgpuRenderer(pub Mutex<Option<(egui_wgpu::Renderer, u32)>>);
+pub struct EguiWgpuRenderer(pub Mutex<Option<(egui_wgpu::Renderer, TextureFormat, u32)>>);
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -113,24 +128,15 @@ impl Plugin for EguiPlugin {
             return;
         };
 
-        render_app
-            .init_resource::<EguiWgpuRenderer>()
-            .add_render_graph_node::<ViewNodeRunner<EguiNode>>(Core3d, EguiNodeLabel)
-            .add_render_graph_edges(
-                Core3d,
-                (
-                    Node3d::EndMainPassPostProcessing,
-                    EguiNodeLabel,
-                    Node3d::Upscaling,
-                ),
-            );
+        render_app.init_resource::<EguiWgpuRenderer>().add_systems(
+            Core3d,
+            // Draw egui AFTER upscaling, onto the final presented output — a stable,
+            // single-sampled, sRGB swapchain texture. Drawing before upscaling (on the
+            // ping-ponged HDR main texture) made the UI flicker and read too bright.
+            egui_pass.after(upscaling),
+        );
     }
 }
-
-// ─── Render graph label ───────────────────────────────────────────────────────
-
-#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
-pub struct EguiNodeLabel;
 
 // ─── Systems ──────────────────────────────────────────────────────────────────
 
@@ -140,9 +146,9 @@ pub fn begin_egui_frame(
     windows: Query<&Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut mouse_wheel: EventReader<MouseWheel>,
-    mut cursor_moved: EventReader<CursorMoved>,
-    mut keyboard_input: EventReader<KeyboardInput>,
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    mut cursor_moved: MessageReader<CursorMoved>,
+    mut keyboard_input: MessageReader<KeyboardInput>,
     time: Res<Time>,
 ) {
     let window = match windows.iter().next() {
@@ -181,6 +187,8 @@ pub fn begin_egui_frame(
         events.push(egui::Event::MouseWheel {
             unit,
             delta,
+            // We don't distinguish trackpad scroll phases; "unknown" maps to Move.
+            phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::default(),
         });
     }
@@ -283,6 +291,18 @@ pub fn begin_egui_frame(
         .insert(egui::ViewportId::ROOT, viewport_info);
 
     egui_manager.ctx.begin_pass(raw_input);
+
+    // egui 0.35 shows panels inside a root `Ui` (not the `Context`). Build a
+    // full-viewport background `Ui` that every UI system shares this frame, so
+    // panels cooperate on layout exactly as the old ctx-based panels did.
+    let root_ui = egui::Ui::new(
+        egui_manager.ctx.clone(),
+        egui::Id::new((egui_manager.ctx.viewport_id(), "__viberfox_root_ui")),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(egui_manager.ctx.viewport_rect()),
+    );
+    egui_manager.root_ui = Some(root_ui);
 }
 
 fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
@@ -307,7 +327,7 @@ fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
 
 /// Tessellate the egui frame and store the output for the render world (runs in PostUpdate).
 pub fn end_egui_frame(
-    egui_manager: ResMut<EguiManager>,
+    mut egui_manager: ResMut<EguiManager>,
     mut render_output: ResMut<EguiRenderOutput>,
     windows: Query<&Window>,
 ) {
@@ -315,6 +335,9 @@ pub fn end_egui_frame(
         Some(w) => w,
         None => return,
     };
+
+    // Drop the shared root `Ui`, finalizing its panel layers, before ending the pass.
+    egui_manager.root_ui = None;
 
     let full_output = egui_manager.ctx.end_pass();
     // Bridge egui-side copies (Ctrl+C in a text field) to the system clipboard.
@@ -336,114 +359,115 @@ pub fn end_egui_frame(
     };
 }
 
-// ─── Render graph node ────────────────────────────────────────────────────────
+// ─── Render pass system ────────────────────────────────────────────────────────
 
-#[derive(Default)]
-pub struct EguiNode;
+/// Draws the tessellated egui output onto the view target. Runs per view in the
+/// `Core3d` render schedule (Bevy 0.19's schedule-based render graph).
+pub fn egui_pass(
+    view: ViewQuery<&'static ViewTarget>,
+    render_data: Res<EguiRenderOutput>,
+    egui_renderer_res: Res<EguiWgpuRenderer>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mut render_context: RenderContext,
+) {
+    if render_data.clipped_primitives.is_empty() && render_data.textures_delta.is_empty() {
+        return;
+    }
 
-impl ViewNode for EguiNode {
-    type ViewQuery = (&'static ViewTarget, &'static Msaa);
+    let view_target = view.into_inner();
+    let render_queue = render_queue.into_inner();
+    let mut guard = egui_renderer_res.0.lock().unwrap();
 
-    fn run<'w>(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext<'w>,
-        (view_target, msaa): QueryItem<'w, Self::ViewQuery>,
-        world: &'w World,
-    ) -> Result<(), NodeRunError> {
-        let render_data = world.resource::<EguiRenderOutput>();
+    // Draw onto the final presented output when there's a separate output texture
+    // (HDR / upscaling), otherwise the main texture already is the swapchain. Either
+    // way this is a single-sampled sRGB target, so egui reads correctly and stably.
+    let has_out = view_target.out_texture().is_some();
+    let texture_format = view_target
+        .out_texture_view_format()
+        .unwrap_or_else(|| view_target.main_texture_format());
+    let sample_count = 1u32;
 
-        if render_data.clipped_primitives.is_empty() && render_data.textures_delta.is_empty() {
-            return Ok(());
-        }
+    // (Re-)create the wgpu renderer when the output format or sample count changes.
+    let needs_recreate = guard
+        .as_ref()
+        .map(|(_, fmt, s)| *fmt != texture_format || *s != sample_count)
+        .unwrap_or(true);
 
-        let render_device = world.resource::<RenderDevice>();
-        let render_queue = world.resource::<RenderQueue>();
-        let egui_renderer_res = world.resource::<EguiWgpuRenderer>();
-        let mut guard = egui_renderer_res.0.lock().unwrap();
-
-        let texture_format = view_target.main_texture_format();
-        let sample_count = msaa.samples();
-
-        // (Re-)create the wgpu renderer when format or MSAA sample count changes.
-        let needs_recreate = guard
-            .as_ref()
-            .map(|(_, s)| *s != sample_count)
-            .unwrap_or(true);
-
-        if needs_recreate {
-            *guard = Some((
-                egui_wgpu::Renderer::new(
-                    render_device.wgpu_device(),
-                    texture_format,
-                    None,        // no depth buffer
-                    sample_count,
-                    false,       // no dithering
-                ),
-                sample_count,
-            ));
-        }
-
-        let (renderer, _) = guard.as_mut().unwrap();
-
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: render_data.size_in_pixels,
-            pixels_per_point: render_data.pixels_per_point,
-        };
-
-        // Upload new / changed textures (font atlas, custom images).
-        for (id, delta) in &render_data.textures_delta.set {
-            renderer.update_texture(
+    if needs_recreate {
+        *guard = Some((
+            egui_wgpu::Renderer::new(
                 render_device.wgpu_device(),
-                render_queue,
-                *id,
-                delta,
-            );
-        }
+                texture_format,
+                egui_wgpu::RendererOptions {
+                    depth_stencil_format: None, // no depth buffer
+                    msaa_samples: sample_count,
+                    dithering: false,
+                    ..Default::default()
+                },
+            ),
+            texture_format,
+            sample_count,
+        ));
+    }
 
-        // Upload vertex/index buffers; collect any extra staging command buffers.
-        let extra_cmd_bufs = {
-            let encoder = render_context.command_encoder();
-            renderer.update_buffers(
-                render_device.wgpu_device(),
-                render_queue,
-                encoder,
-                &render_data.clipped_primitives,
-                &screen_descriptor,
-            )
+    let (renderer, _, _) = guard.as_mut().unwrap();
+
+    let screen_descriptor = egui_wgpu::ScreenDescriptor {
+        size_in_pixels: render_data.size_in_pixels,
+        pixels_per_point: render_data.pixels_per_point,
+    };
+
+    // Upload new / changed textures (font atlas, custom images).
+    for (id, delta) in &render_data.textures_delta.set {
+        renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
+    }
+
+    // Upload vertex/index buffers; collect any extra staging command buffers.
+    let extra_cmd_bufs = {
+        let encoder = render_context.command_encoder();
+        renderer.update_buffers(
+            render_device.wgpu_device(),
+            render_queue,
+            encoder,
+            &render_data.clipped_primitives,
+            &screen_descriptor,
+        )
+    };
+
+    // Draw egui on top of the presented frame.
+    {
+        let encoder = render_context.command_encoder();
+        let color_attachment = if has_out {
+            view_target.out_texture_color_attachment(None).unwrap()
+        } else {
+            view_target.get_color_attachment()
         };
+        let mut render_pass = encoder
+            .begin_render_pass(&RenderPassDescriptor {
+                label: Some("egui_render_pass"),
+                color_attachments: &[Some(color_attachment)],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
 
-        // Draw egui on top of the current frame contents.
-        {
-            let encoder = render_context.command_encoder();
-            let color_attachment = view_target.get_color_attachment();
-            let mut render_pass = encoder
-                .begin_render_pass(&RenderPassDescriptor {
-                    label: Some("egui_render_pass"),
-                    color_attachments: &[Some(color_attachment)],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                })
-                .forget_lifetime();
+        renderer.render(
+            &mut render_pass,
+            &render_data.clipped_primitives,
+            &screen_descriptor,
+        );
+    }
 
-            renderer.render(
-                &mut render_pass,
-                &render_data.clipped_primitives,
-                &screen_descriptor,
-            );
-        }
+    // Submit extra command buffers produced by paint callbacks.
+    for cb in extra_cmd_bufs {
+        render_context.add_command_buffer(cb);
+    }
 
-        // Submit extra command buffers produced by paint callbacks.
-        for cb in extra_cmd_bufs {
-            render_context.add_command_buffer(cb);
-        }
-
-        // Release GPU resources for textures egui no longer needs.
-        for id in &render_data.textures_delta.free {
-            renderer.free_texture(id);
-        }
-
-        Ok(())
+    // Release GPU resources for textures egui no longer needs.
+    for id in &render_data.textures_delta.free {
+        renderer.free_texture(id);
     }
 }

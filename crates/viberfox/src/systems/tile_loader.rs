@@ -1,6 +1,6 @@
 use crate::resources::OsmTileUrlTemplate;
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy_image::{Image, ImageSampler};
 use std::collections::HashMap;
 use std::io::Read;

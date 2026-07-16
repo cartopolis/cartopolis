@@ -1,16 +1,15 @@
 use bevy::asset::AssetPlugin;
 use bevy::log::LogPlugin;
-use bevy::pbr::light_consts::lux::AMBIENT_DAYLIGHT;
-use bevy::pbr::{
-    CascadeShadowConfigBuilder, DirectionalLightShadowMap, Material, MaterialPipeline,
-    MaterialPipelineKey, MaterialPlugin,
-};
+use bevy::light::light_consts::lux::RAW_SUNLIGHT;
+use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::mesh::MeshVertexBufferLayoutRef;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderRef, SpecializedMeshPipelineError,
+    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
-use bevy_atmosphere::prelude::*;
+use bevy::shader::ShaderRef;
+use bevy::window::WindowResolution;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -62,7 +61,7 @@ fn main() {
         .set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Viberfox".into(),
-                resolution: (1280.0_f32, 720.0_f32).into(),
+                resolution: WindowResolution::new(1280, 720),
                 ..default()
             }),
             ..default()
@@ -78,12 +77,12 @@ fn main() {
     app.add_plugins(default_plugins)
     .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
     .add_plugins(EguiPlugin)
-    .add_plugins(AtmospherePlugin)
+    // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
+    // PbrPlugin); it's attached as a component to the camera in setup_camera.
     .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
     .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
     .add_plugins(MaterialPlugin::<MoonMaterial>::default())
     .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
-    .insert_resource(AtmosphereModel::default())
     .init_resource::<GameState>()
     .init_resource::<AvatarState>()
     .init_resource::<LocalAvatarSimId>()
@@ -279,11 +278,17 @@ fn main() {
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
             systems::ui::render_dev_panel,
+            // The right-hand panels draw into the shared root `Ui`, so their call
+            // order fixes their right-to-left placement. Chain them (AI → Layers →
+            // Bookmarks) so the order is deterministic — otherwise Bevy runs these
+            // systems in a varying order each frame and the panels swap/flicker.
             systems::data_layers::render_data_layers_panel
-                .after(systems::ui::render_menu_bar),
+                .after(systems::ui::render_menu_bar)
+                .after(systems::ai_assistant::render_ai_panel),
             systems::hud::render_hud.after(systems::ui::render_menu_bar),
             systems::bookmarks::render_bookmarks_panel
-                .after(systems::ui::render_menu_bar),
+                .after(systems::ui::render_menu_bar)
+                .after(systems::data_layers::render_data_layers_panel),
             systems::data_layers::render_poi_popup
                 .after(systems::ui::render_menu_bar)
                 .after(systems::free_camera::camera_controls),
@@ -299,7 +304,6 @@ fn main() {
             update_star_sky.after(systems::free_camera::camera_controls),
             update_moon.after(systems::free_camera::camera_controls),
             update_horizon_haze.after(systems::free_camera::camera_controls),
-            track_atmosphere_altitude.after(systems::free_camera::camera_controls),
             systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
                 .after(systems::ai_assistant::render_ai_panel),
@@ -354,26 +358,19 @@ fn attach_avatar_to_bigspace(
     }
 }
 
-fn setup_sky(
-    mut commands: Commands,
-    mut atmosphere: AtmosphereMut<Nishita>,
-    dev: Res<DevPanelState>,
-) {
-    // Start from the dev panel's time of day so the sky/sun match it from frame one
-    // (apply_day_night_cycle keeps them in sync afterwards).
+fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
+    // The built-in atmosphere derives the sky from the sun's `DirectionalLight`
+    // direction and the camera position, so there's no atmosphere model to poke
+    // here — we just spawn the sun/moon lights. `AmbientLight` is a per-camera
+    // component now (set in setup_camera, driven by apply_day_night_cycle).
     let sun_dir = sun_direction(dev.time_of_day);
-    atmosphere.sun_position = sun_dir;
-    // The Nishita default puts the viewer 1 km above the surface, which drops the
-    // sky's horizon ~1° below the city skyline and exposes a dark under-horizon
-    // wedge (short, in-scatter-starved rays). Park it at rooftop altitude instead.
-    atmosphere.ray_origin = Vec3::new(0.0, atmosphere.planet_radius + 60.0, 0.0);
     let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
 
     commands.spawn((
         DirectionalLight {
             color: sun_color,
             illuminance,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
@@ -398,11 +395,14 @@ fn setup_sky(
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance: MOONLIGHT_ILLUMINANCE
                 * moonlight_factor(dev.time_of_day, dev.moon_age_days),
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
+        // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
+        // (cascade-visibility index out of bounds) when two directional lights in
+        // the scene have *different* numbers of shadow cascades.
         CascadeShadowConfigBuilder {
-            num_cascades: 2,
+            num_cascades: 4,
             minimum_distance: 2.0,
             maximum_distance: 1200.0,
             first_cascade_far_bound: 80.0,
@@ -412,8 +412,6 @@ fn setup_sky(
         Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y),
         MoonLight,
     ));
-
-    commands.insert_resource(ambient_light(dev.time_of_day, dev.moon_age_days));
 }
 
 /// Global trim on the sun's illuminance: the OSM basemap is near-white, so full
@@ -463,8 +461,12 @@ fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
     let color = Color::linear_rgb(t.x / peak, t.y / peak, t.z / peak);
     // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
     let sun_through_fog = 1.0 - 0.75 * fog_density;
+    // Physical sunlight (RAW_SUNLIGHT ≈ 130k lux, unfiltered) so the built-in
+    // atmosphere is lit correctly — its sky brightness/colour scale with the sun's
+    // illuminance. The camera's Exposure (see setup_camera) brings this back to a
+    // sensible scene brightness; tune `ATMOSPHERE_EXPOSURE_EV100` to taste.
     let illuminance =
-        AMBIENT_DAYLIGHT * SUN_SCALE * peak * utils::sun::sun_disc(hours) * sun_through_fog;
+        RAW_SUNLIGHT * SUN_SCALE * peak * utils::sun::sun_disc(hours) * sun_through_fog;
     (color, illuminance)
 }
 
@@ -512,7 +514,7 @@ impl Material for StarFieldMaterial {
     }
 
     fn specialize(
-        _pipeline: &MaterialPipeline<Self>,
+        _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
@@ -524,7 +526,7 @@ impl Material for StarFieldMaterial {
         descriptor.primitive.cull_mode = None;
         // Don't write depth — it must not occlude the atmosphere or anything else.
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = false;
+            depth.depth_write_enabled = Some(false);
         }
         // Force pure additive blending (src + dst): black gaps add nothing, stars add light.
         if let Some(fragment) = descriptor.fragment.as_mut() {
@@ -578,7 +580,7 @@ impl Material for MoonMaterial {
     }
 
     fn specialize(
-        _pipeline: &MaterialPipeline<Self>,
+        _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
@@ -586,7 +588,7 @@ impl Material for MoonMaterial {
         descriptor.primitive.cull_mode = None;
         // Don't write depth — it must not occlude the atmosphere or the stars' pass.
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = false;
+            depth.depth_write_enabled = Some(false);
         }
         Ok(())
     }
@@ -602,7 +604,7 @@ fn setup_moon(
     let s = MOON_DISTANCE * MOON_ANGULAR_RADIUS;
     let mut mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
-        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
     let corners = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
     mesh.insert_attribute(
@@ -628,8 +630,8 @@ fn setup_moon(
             sun_local: Vec4::ZERO, // set each frame; starts invisible
         })),
         Transform::default(),
-        bevy::pbr::NotShadowCaster,
-        bevy::pbr::NotShadowReceiver,
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
         Moon,
     ));
 }
@@ -662,7 +664,7 @@ fn update_moon(
     let extinction = 0.3 + 0.7 * utils::sun::smoothstep(0.0, 0.25, moon_dir.y);
     let brightness = dusk * fog_veil * extinction;
 
-    if let Some(mat) = materials.get_mut(&mat_handle.0) {
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         // Phase-consistent sunlight (not the raw sun direction — see sun.rs).
         let sun_local = rotation.inverse()
             * utils::sun::moon_sunlight_direction(dev.time_of_day, dev.moon_age_days);
@@ -700,7 +702,7 @@ impl Material for HorizonHazeMaterial {
     }
 
     fn specialize(
-        _pipeline: &MaterialPipeline<Self>,
+        _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
@@ -709,7 +711,7 @@ impl Material for HorizonHazeMaterial {
         // anything behind it (depth test still lets world geometry cover it).
         descriptor.primitive.cull_mode = None;
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = false;
+            depth.depth_write_enabled = Some(false);
         }
         Ok(())
     }
@@ -734,16 +736,15 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 /// panel's time-of-day slider (Ctrl+Shift+D). Runs only when the value changes.
 fn apply_day_night_cycle(
     dev: Res<DevPanelState>,
-    mut atmosphere: AtmosphereMut<Nishita>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), (With<SunLight>, Without<MoonLight>)>,
     mut moon: Query<(&mut Transform, &mut DirectionalLight), With<MoonLight>>,
-    mut ambient: ResMut<AmbientLight>,
+    // AmbientLight is a per-camera component in Bevy 0.19 (attached in setup_camera).
+    mut ambient: Query<&mut AmbientLight>,
 ) {
     if !dev.is_changed() {
         return;
     }
     let sun_dir = sun_direction(dev.time_of_day);
-    atmosphere.sun_position = sun_dir;
 
     let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
     for (mut tf, mut light) in sun.iter_mut() {
@@ -760,11 +761,15 @@ fn apply_day_night_cycle(
     for (mut tf, mut light) in moon.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y);
         light.illuminance = moonlight;
-        // Shadow passes aren't free — only run them while moonlight is visible.
-        light.shadows_enabled = moonlight > 1.0;
+        // NB: don't toggle `shadow_maps_enabled` at runtime — Bevy 0.19's bevy_light
+        // panics (cascade-visibility index out of bounds) when a directional light's
+        // shadows are switched on/off after spawn. Moon shadows stay enabled; the
+        // near-zero daytime illuminance makes them invisible anyway.
     }
 
-    *ambient = ambient_light(dev.time_of_day, dev.moon_age_days);
+    if let Ok(mut a) = ambient.single_mut() {
+        *a = ambient_light(dev.time_of_day, dev.moon_age_days);
+    }
 }
 
 /// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider,
@@ -792,27 +797,6 @@ fn apply_distance_fog(
     *fog = systems::free_camera::distance_fog(density, dev.time_of_day);
 }
 
-/// Keeps the Nishita atmosphere's viewpoint at the camera's actual altitude so the
-/// sky's horizon line stays correct when flying up. Quantized (25 m) because every
-/// model change re-renders the sky cubemap.
-fn track_atmosphere_altitude(
-    camera: Query<(&GridCell, &Transform), With<systems::free_camera::FreeCamera>>,
-    globe: Res<systems::globe::GlobeState>,
-    mut atmosphere: AtmosphereMut<Nishita>,
-    mut last_altitude: Local<f32>,
-) {
-    let Ok((cell, tf)) = camera.single() else {
-        return;
-    };
-    // Geocentric altitude, clamped to the band where the Nishita model is
-    // meaningful (the skybox is hidden in space anyway, see globe visibility).
-    let altitude = (globe.altitude_m(cell, tf) as f32).clamp(10.0, 80_000.0);
-    if *last_altitude == 0.0 || (altitude - *last_altitude).abs() > 25.0 {
-        *last_altitude = altitude;
-        atmosphere.ray_origin.y = atmosphere.planet_radius + altitude;
-    }
-}
-
 /// Spawns the star-map night sky: a box centred on the viewer whose custom material
 /// samples the equirectangular star map by view direction (no UV-sphere poles or seams).
 /// Fade the emissive building windows in as the sun drops below the horizon, so the
@@ -830,7 +814,7 @@ fn update_window_glow(
     // full a little after dusk — a gentle ramp, not an on/off at full dark.
     let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
     for (bucket, mat) in windows.iter() {
-        if let Some(m) = materials.get_mut(&mat.0) {
+        if let Some(mut m) = materials.get_mut(&mat.0) {
             let e = 1.2 * glow * bucket.0; // subtle, warm; per-bucket brightness
             m.emissive = LinearRgba::rgb(e, 0.72 * e, 0.34 * e);
         }
@@ -893,7 +877,7 @@ fn setup_stars(
 
     let mut mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
-        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
@@ -908,8 +892,8 @@ fn setup_stars(
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(material),
         Transform::default(),
-        bevy::pbr::NotShadowCaster,
-        bevy::pbr::NotShadowReceiver,
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
         StarSky,
     ));
 }
@@ -953,8 +937,8 @@ fn setup_horizon_haze(
         Mesh3d(mesh),
         MeshMaterial3d(material),
         Transform::default(),
-        bevy::pbr::NotShadowCaster,
-        bevy::pbr::NotShadowReceiver,
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
         HorizonHaze,
     ));
 }
@@ -979,7 +963,7 @@ fn update_horizon_haze(
     };
     tf.translation = cam.translation();
 
-    if let Some(mat) = materials.get_mut(&mat_handle.0) {
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         // The haze thins with altitude alongside the ground fog, so an orbit view
         // sees the map through clear air instead of a grey band at the horizon.
         let altitude = globe.altitude_m(cell, cam_local) as f32;
@@ -1028,7 +1012,7 @@ fn update_star_sky(
     // Fog is opaque to starlight long before it swallows the city: veil the star
     // field with density so a foggy night reads as murk, not crisp stars over murk.
     let fog_veil = (-3.0 * dev.fog_density).exp();
-    if let Some(mat) = materials.get_mut(&mat_handle.0) {
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params = Vec4::new(
             night * STAR_BRIGHTNESS * fog_veil,
             time.elapsed_secs(),

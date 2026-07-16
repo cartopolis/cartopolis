@@ -27,25 +27,25 @@ pub fn render_menu_bar(
     mut camera_state: ResMut<crate::resources::CameraState>,
     camera: Query<&Transform, With<crate::systems::free_camera::FreeCamera>>,
     globe: Res<crate::systems::globe::GlobeState>,
-    mut app_exit: EventWriter<AppExit>,
+    mut app_exit: MessageWriter<AppExit>,
 ) {
-    let ctx = egui.ctx_mut();
+    let ui_root = egui.ui_mut();
     // Symmetric top/bottom margin makes the panel size to its content with equal
     // padding above and below, so the row is vertically centred (unlike
     // `exact_height`, which top-aligns the content).
-    let frame = egui::Frame::side_top_panel(&ctx.style())
+    let frame = egui::Frame::side_top_panel(ui_root.style())
         .inner_margin(egui::Margin::symmetric(10, 8));
-    egui::TopBottomPanel::top("menu_bar").frame(frame).show(ctx, |ui| {
-        // `menu::bar` uses this as the row height and centres items within it
+    egui::Panel::top("menu_bar").frame(frame).show(ui_root, |ui| {
+        // `MenuBar` uses this as the row height and centres items within it
         // (its layout is `Align::Center`); bumping it gives the buttons and the
         // taller search field a common, roomier height that lines up.
         ui.style_mut().spacing.interact_size.y = 26.0;
         ui.style_mut().spacing.item_spacing.x = 8.0;
-        egui::menu::bar(ui, |ui| {
+        egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Exit").clicked() {
                     app_exit.write(AppExit::Success);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             ui.menu_button("View", |ui| {
@@ -56,7 +56,7 @@ pub fn render_menu_bar(
                 };
                 if ui.button(ai_label).clicked() {
                     ai_state.open = !ai_state.open;
-                    ui.close_menu();
+                    ui.close();
                 }
                 let dev_label = if dev_state.open {
                     "Hide Dev Panel"
@@ -65,7 +65,7 @@ pub fn render_menu_bar(
                 };
                 if ui.button(dev_label).clicked() {
                     dev_state.open = !dev_state.open;
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             // Camera mode picker (also cyclable with Tab).
@@ -112,7 +112,7 @@ pub fn render_menu_bar(
                             CameraMode::Avatar => {}
                         }
                         camera_state.mode = mode;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if whole_earth {
                         use bevy::math::DVec3;
@@ -128,7 +128,7 @@ pub fn render_menu_bar(
                         cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
                         cs.orbit_up =
                             (DVec3::Y - cs.orbit_dir * cs.orbit_dir.y).normalize();
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -949,7 +949,7 @@ pub fn render_edit_dialog(
                                             // Fallback text tile while egui handle is pending.
                                             ui.add_sized(
                                                 [72.0, 72.0],
-                                                egui::SelectableLabel::new(selected, &entry.name),
+                                                egui::Button::new(&entry.name).selected(selected),
                                             )
                                             .clicked()
                                         };
@@ -1049,11 +1049,11 @@ pub fn apply_live_prim_edits(
         // Update material directly — Selected doesn't change during editing so
         // highlight_selected_prim won't fire on its own.
         if let Some(handle) = mat_handle {
-            if let Some(mat) = materials.get_mut(&handle.0) {
+            if let Some(mut mat) = materials.get_mut(&handle.0) {
                 // Live preview of the texture surface (transparency / glow / full-bright / UV),
                 // then a subtle selection highlight on top so the surface stays visible.
-                crate::systems::rendering::apply_surface(mat, new_color, &edit_dialog.surface);
-                crate::systems::rendering::apply_selection_highlight(mat);
+                crate::systems::rendering::apply_surface(&mut mat, new_color, &edit_dialog.surface);
+                crate::systems::rendering::apply_selection_highlight(&mut mat);
             }
         }
         break;
@@ -1472,7 +1472,7 @@ fn apply_texture_to_material(
     let Some(mat_handle) = mat_handle_opt else {
         return;
     };
-    let Some(mat) = materials.get_mut(&mat_handle.0) else {
+    let Some(mut mat) = materials.get_mut(&mat_handle.0) else {
         return;
     };
     mat.base_color_texture = texture_id
@@ -1492,10 +1492,10 @@ fn apply_surface_to_material(
     let Some(mat_handle) = mat_handle_opt else {
         return;
     };
-    let Some(mat) = materials.get_mut(&mat_handle.0) else {
+    let Some(mut mat) = materials.get_mut(&mat_handle.0) else {
         return;
     };
-    crate::systems::rendering::apply_surface(mat, color, surface);
+    crate::systems::rendering::apply_surface(&mut mat, color, surface);
 }
 
 // ---------------------------------------------------------------------------

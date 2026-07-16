@@ -1,9 +1,9 @@
 use bevy::math::{DQuat, DVec3};
-use bevy::pbr::{NotShadowCaster, NotShadowReceiver};
+use bevy::light::atmosphere::ScatteringMedium;
+use bevy::camera::Exposure;
+use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
+use bevy::pbr::AtmosphereSettings;
 use bevy::prelude::*;
-use bevy_atmosphere::plugin::AtmosphereSkyBox;
-use bevy_atmosphere::prelude::*;
-use bevy_atmosphere::skybox::{self, AtmosphereSkyBoxMaterial};
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 
 use crate::resources::{AvatarState, CameraState, CameraMode};
@@ -143,12 +143,15 @@ fn set_projection(projection: &mut Projection, near: f32, far: f32) {
     }
 }
 
-/// Size parameter for the manually-spawned atmosphere skybox mesh (the `detection`
-/// feature is off — see CLAUDE.md). The cube's faces sit at ~0.707× this value and
-/// the mesh **writes depth**, so it occludes everything farther away; it must be
-/// sized beyond the whole world (tile pyramid ~20 km, ground disc 150 km). The sky
-/// shader samples by view direction, so the size is visually irrelevant.
-const SKYBOX_MESH_FAR: f32 = 300_000.0;
+/// Camera exposure (EV100) paired with the physical `RAW_SUNLIGHT` sun. Bevy's
+/// atmosphere demo uses 13.0; higher = darker overall. This is the main knob for
+/// balancing scene brightness against the (now physical) sky.
+const ATMOSPHERE_EXPOSURE_EV100: f32 = 13.0;
+
+/// Earth inner radius used by `Atmosphere::earth` (metres). The planet-centre
+/// entity sits this far below the local ground so the atmosphere's surface aligns
+/// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
+const EARTH_ATMOSPHERE_INNER_RADIUS: f32 = 6_360_000.0;
 
 /// Grid cell edge for the world `BigSpace` (ADR-019/021). Large enough that local
 /// play rarely recenters; small enough to keep within-cell f32 precise.
@@ -162,7 +165,7 @@ pub const WORLD_SWITCH_THRESHOLD: f32 = 100.0;
 pub fn setup_camera(
     mut commands: Commands,
     mut camera_state: ResMut<CameraState>,
-    sky_material: Res<AtmosphereSkyBoxMaterial>,
+    mut scattering_media: ResMut<Assets<ScatteringMedium>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     dev: Res<crate::resources::DevPanelState>,
@@ -172,8 +175,8 @@ pub fn setup_camera(
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
 
-    let skybox_mesh = meshes.add(skybox::mesh(SKYBOX_MESH_FAR));
-    let sky_handle = sky_material.0.clone();
+    // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19).
+    let medium = scattering_media.add(ScatteringMedium::default());
 
     commands.spawn_big_space(
         Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD),
@@ -191,19 +194,24 @@ pub fn setup_camera(
                     ..default()
                 }),
                 Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-                AtmosphereCamera::default(),
+                // Bevy 0.19 built-in atmosphere: the camera carries only the render
+                // settings; the sky is derived from the sun DirectionalLight direction
+                // and the camera's altitude above the planet entity spawned below.
+                // AmbientLight is per-camera now; apply_day_night_cycle drives its
+                // color/brightness from utils::sun.
+                AtmosphereSettings::default(),
+                // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
+                // scene isn't blown out while the sky is lit correctly.
+                Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
+                // Sky-driven image-based lighting: surfaces are lit by and reflect
+                // the actual atmosphere — the big realism win in Bevy's demo.
+                AtmosphereEnvironmentMapLight::default(),
+                AmbientLight::default(),
                 FreeCamera,
                 FloatingOrigin,
                 // Atmospheric distance fog: distant buildings fade into haze, with a
                 // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
                 distance_fog(dev.fog_density, dev.time_of_day),
-            ))
-            .with_child((
-                Mesh3d(skybox_mesh),
-                MeshMaterial3d(sky_handle),
-                AtmosphereSkyBox,
-                NotShadowCaster,
-                NotShadowReceiver,
             ));
 
             // A ground disc out to the horizon, in the OSM basemap's paper tone.
@@ -229,6 +237,17 @@ pub fn setup_camera(
             ));
         },
     );
+
+    // The built-in atmosphere is planetary-scale; its origin and radius come from
+    // this entity's transform. Placed one Earth radius straight down so the surface
+    // (`Atmosphere::earth` inner_radius) sits at the local ground plane (y = 0), so
+    // the camera reads at its true altitude above it. A plain entity (not under the
+    // BigSpace): the camera is the floating origin and stays near y = 0, so the sky's
+    // altitude stays effectively constant — correct for the flat local world.
+    commands.spawn((
+        Atmosphere::earth(medium),
+        Transform::from_xyz(0.0, -EARTH_ATMOSPHERE_INNER_RADIUS, 0.0),
+    ));
 }
 
 pub fn camera_mode_toggle(
@@ -261,8 +280,8 @@ pub fn camera_mode_toggle(
 pub fn camera_controls(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
-    mut cursor_moved_events: EventReader<CursorMoved>,
-    mut mouse_wheel_events: EventReader<bevy::input::mouse::MouseWheel>,
+    mut cursor_moved_events: MessageReader<CursorMoved>,
+    mut mouse_wheel_events: MessageReader<bevy::input::mouse::MouseWheel>,
     mut camera_query: Query<(&mut GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
     mut camera_state: ResMut<CameraState>,
     avatar_state: Res<AvatarState>,
@@ -305,7 +324,7 @@ pub fn camera_controls(
             let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
                 || keyboard_input.pressed(KeyCode::ControlRight);
             if gizmo_state.active_axis.is_some()
-                || egui_manager.ctx.wants_pointer_input()
+                || egui_manager.ctx.egui_wants_pointer_input()
                 || ctrl
             {
                 camera_state.pan_offset = None;
@@ -359,7 +378,7 @@ pub fn camera_controls(
             let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
                 || keyboard_input.pressed(KeyCode::ControlRight);
             if gizmo_state.active_axis.is_some()
-                || egui_manager.ctx.wants_pointer_input()
+                || egui_manager.ctx.egui_wants_pointer_input()
                 || ctrl
             {
                 camera_state.pan_offset = None;
@@ -566,7 +585,7 @@ pub fn camera_controls(
             // middle button or Ctrl+left. Suppressed while egui/gizmo owns pointer.
             let mut rot_delta = Vec2::ZERO;
             let mut pan_delta = Vec2::ZERO;
-            if gizmo_state.active_axis.is_some() || egui_manager.ctx.wants_pointer_input() {
+            if gizmo_state.active_axis.is_some() || egui_manager.ctx.egui_wants_pointer_input() {
                 camera_state.pan_offset = None;
                 cursor_moved_events.clear();
             } else {
@@ -631,7 +650,7 @@ pub fn camera_controls(
             // pull the pivot direction toward the hit by the zoom fraction. This
             // is how you dive back to a specific spot on the globe (centre-locked
             // zoom made re-finding a place nearly impossible).
-            if space && zoom_factor < 0.999 && !egui_manager.ctx.wants_pointer_input() {
+            if space && zoom_factor < 0.999 && !egui_manager.ctx.egui_wants_pointer_input() {
                 let cursor_hit = windows
                     .iter()
                     .next()

@@ -161,7 +161,7 @@ pub fn restore_last_location(
 pub fn autosave_user_store(
     time: Res<Time>,
     mut next_at: Local<f32>,
-    mut exits: EventReader<AppExit>,
+    mut exits: MessageReader<AppExit>,
     mut store: ResMut<UserStore>,
     stream: Res<MapStream>,
     camera_state: Res<CameraState>,

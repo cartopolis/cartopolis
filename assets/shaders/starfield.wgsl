@@ -7,7 +7,7 @@
 #import bevy_pbr::mesh_view_bindings::view
 
 // x: brightness (night factor × fog veil), y: twinkle clock in seconds (z, w unused).
-@group(2) @binding(0) var<uniform> params: vec4<f32>;
+@group(3) @binding(0) var<uniform> params: vec4<f32>;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {

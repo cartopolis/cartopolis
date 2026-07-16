@@ -251,7 +251,7 @@ pub fn handle_gizmo_interaction(
     };
 
     // ── On press: hit-test axis handles (skip if egui is consuming the click) ─
-    if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.wants_pointer_input() {
+    if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.egui_wants_pointer_input() {
         // Read prim position without a mutable borrow.
         let (prim_pos, arm, start_tr) = {
             let Ok((tr, _)) = selected_query.single() else { return; };

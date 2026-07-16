@@ -25,10 +25,9 @@ use std::time::{Duration, Instant};
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::render::view::NoFrustumCulling;
-use bevy_atmosphere::plugin::AtmosphereSkyBox;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
 
@@ -302,8 +301,8 @@ pub fn setup_globe(
             // One huge mesh straddling the origin; big_space rebasing confuses
             // frustum culling for it, as with the map tiles.
             NoFrustumCulling,
-            bevy::pbr::NotShadowCaster,
-            bevy::pbr::NotShadowReceiver,
+            bevy::light::NotShadowCaster,
+            bevy::light::NotShadowReceiver,
             Visibility::Hidden, // shown by update_globe_visibility only in space
             GlobeMesh,
         ))
@@ -390,11 +389,7 @@ pub fn update_globe_visibility(
     camera: Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
     mut globe_vis: Query<
         &mut Visibility,
-        (With<GlobeMesh>, Without<AtmosphereSkyBox>, Without<HideInSpace>),
-    >,
-    mut sky_vis: Query<
-        &mut Visibility,
-        (With<AtmosphereSkyBox>, Without<GlobeMesh>, Without<HideInSpace>),
+        (With<GlobeMesh>, Without<HideInSpace>),
     >,
     // Only the ground props NOT owned by the Layers toggles (i.e. the horizon
     // disc): tiles, region quads, buildings and windows are excluded because
@@ -407,7 +402,6 @@ pub fn update_globe_visibility(
         (
             With<HideInSpace>,
             Without<GlobeMesh>,
-            Without<AtmosphereSkyBox>,
             Without<crate::systems::map_stream::StreamTile>,
             Without<crate::systems::rendering::RegionMesh>,
             Without<crate::systems::osm_buildings::OsmBuildingMesh>,
@@ -433,11 +427,6 @@ pub fn update_globe_visibility(
     // sky reads as black space and no bright disc floats over the anchor); show
     // them again on the way back down.
     let want_local = if show_globe { Visibility::Hidden } else { Visibility::Inherited };
-    for mut v in sky_vis.iter_mut() {
-        if *v != want_local {
-            *v = want_local;
-        }
-    }
     for mut v in hide_vis.iter_mut() {
         if *v != want_local {
             *v = want_local;
@@ -583,8 +572,8 @@ pub fn update_globe_tiles(
                 GridCell::default(),
                 ChildOf(root),
                 NoFrustumCulling,
-                bevy::pbr::NotShadowCaster,
-                bevy::pbr::NotShadowReceiver,
+                bevy::light::NotShadowCaster,
+                bevy::light::NotShadowReceiver,
                 Visibility::Hidden, // update_globe_visibility shows it in space
                 GlobeMesh,
             ))

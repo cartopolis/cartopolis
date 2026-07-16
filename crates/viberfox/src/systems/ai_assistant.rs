@@ -263,17 +263,15 @@ pub fn render_ai_panel(
     mut state: ResMut<AiAssistantState>,
     config: Res<AiConfig>,
 ) {
-    let ctx = egui.ctx_mut();
-
     if !state.open {
         // Opened via the View menu (View ▸ Show AI Panel) or Ctrl+Shift+A.
         return;
     }
 
-    egui::SidePanel::right("ai_panel")
+    egui::Panel::right("ai_panel")
         .resizable(true)
-        .default_width(320.0)
-        .show(ctx, |ui| {
+        .default_size(320.0)
+        .show(egui.ui_mut(), |ui| {
             // Header
             ui.horizontal(|ui| {
                 ui.heading("AI Assistant");

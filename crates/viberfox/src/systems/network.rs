@@ -7,7 +7,7 @@ use crate::resources::{
 };
 use crate::systems::avatar::{fox_facing_yaw_from_camera, wish_dir_camera_relative};
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -506,7 +506,7 @@ pub fn create_egui_texture_handles(
             .chunks_exact(4)
             .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
             .collect();
-        let color_image = egui::ColorImage { size: [w as usize, h as usize], pixels };
+        let color_image = egui::ColorImage::new([w as usize, h as usize], pixels);
         let handle = egui_manager.ctx.load_texture(&id, color_image, egui::TextureOptions::LINEAR);
         texture_lib.egui_handles.insert(id, handle);
     }

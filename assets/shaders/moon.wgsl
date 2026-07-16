@@ -8,7 +8,7 @@
 // the stars behind it, and the halo gently veils them.
 #import bevy_pbr::forward_io::VertexOutput
 
-@group(2) @binding(0) var<uniform> sun_local: vec4<f32>;
+@group(3) @binding(0) var<uniform> sun_local: vec4<f32>;
 
 const DISC_R: f32 = 0.42;
 

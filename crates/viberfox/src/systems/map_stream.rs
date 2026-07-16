@@ -15,9 +15,9 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::render::view::NoFrustumCulling;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
