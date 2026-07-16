@@ -15,7 +15,9 @@ use big_space::prelude::GridCell;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
-use crate::systems::geo_nav::{world_to_lat_lng, CameraPose, GeoNavState, Teleport};
+use crate::systems::geo_nav::{
+    nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
+};
 use crate::systems::map_stream::MapStream;
 use crate::systems::user_store::UserStore;
 
@@ -38,7 +40,8 @@ impl BookmarksState {
         let resolved = self.resolved.clone();
         std::thread::spawn(move || {
             let url = format!(
-                "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lng}"
+                "{}/reverse?format=jsonv2&lat={lat}&lon={lng}",
+                nominatim_base_url()
             );
             let name = ureq::get(&url)
                 .set("User-Agent", NAV_USER_AGENT)

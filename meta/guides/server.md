@@ -394,10 +394,13 @@ Nominatim listens on `127.0.0.1:8080` only. To expose it:
 1. Add DNS records `nominatim` → `<VPS_IPV4>` / `<VPS_IPV6>`
    (same as `overpass`).
 2. Uncomment the `nominatim.example.com` block in the `Caddyfile`.
-3. Reload Caddy — it fetches the cert on demand:
+3. Apply it by **recreating** Caddy — not `caddy reload`. The `Caddyfile` is
+   bind-mounted as a single file; an editor or `sed -i` writes a *new inode*, which
+   the running container doesn't see, so `reload` reports "config is unchanged".
+   Recreating re-reads the file and fetches the cert:
 
 ```bash
-docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+docker compose up -d --force-recreate caddy
 ```
 
 Local smoke test meanwhile:
@@ -425,6 +428,11 @@ VIBE_OVERPASS_URL=https://overpass-api.de/api/interpreter cargo run -p viberfox
 
 Against a dedicated instance you can also lower `OVERPASS_THROTTLE`
 (`osm_buildings.rs`, the 800 ms politeness delay) for faster streaming.
+
+**Nominatim** is wired the same way: geo-search (`geo_nav.rs`) and bookmark
+reverse-geocoding (`bookmarks.rs`) both use `nominatim_base_url()`, which defaults
+to `DEFAULT_NOMINATIM_URL` and is overridable with `VIBE_NOMINATIM_URL` (e.g.
+`https://nominatim.openstreetmap.org`).
 
 ## Maintenance
 

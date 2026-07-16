@@ -70,8 +70,9 @@ const QT_FETCH_BUDGET: usize = 24;
 const QT_BASE_Z: u32 = 3;
 /// Re-run quadtree selection at this interval (fetch harvest runs every frame).
 const QT_SELECT_INTERVAL: f32 = 0.25;
-/// Upper bound on concurrently desired tiles (backstop against runaway splits).
-const QT_MAX_TILES: usize = 400;
+/// Upper bound on desired *leaf* tiles (backstop against runaway splits); the
+/// ancestor chains add on top, so total entities run ~40% higher.
+const QT_MAX_TILES: usize = 320;
 /// Per-zoom outward lift (m): finer tiles sit slightly above coarser ones, so
 /// parents showing through while children load never z-fight.
 const QT_LIFT_PER_Z: f32 = 4.0;
@@ -666,12 +667,31 @@ pub fn update_globe_tiles(
         }
     }
 
-    // Permanent coarse floor: every z2/z3 tile stays desired (and loaded) at
-    // all times — 80 disk-cached tiles — so a missing mid-zoom region degrades
-    // to blurry-but-real imagery instead of raw backstop. (Ascents used to
-    // desire freshly-visible rings directly at mid zoom with no ancestor ever
-    // loaded there: whole altitude bands rendered blue while fetches lagged.)
-    let mut desired_set: HashSet<TileKey> = desired.into_iter().collect();
+    // Expand each leaf with its FULL ancestor chain (leaf → parent → … → z2).
+    // Rendered stacked, coarsest first, so while an uncached fine tile loads the
+    // view degrades one level at a time (z10 → z9 → … → z6) instead of jumping
+    // straight to the coarse floor. The mid-zoom ancestors (z5–z8) are cheap and
+    // usually already on disk, and being coarser they load FIRST under the
+    // coarse-first queue — so a sharp-ish fallback appears almost immediately
+    // even when the leaf level is uncached and the tile server is throttling.
+    // This is the fix for the "fuzzy at 120–170 km" band: there the leaf zoom is
+    // ~z9–z10 (partly uncached), and previously the only fallback was the very
+    // blurry z3 floor.
+    let mut desired_set: HashSet<TileKey> = HashSet::new();
+    for leaf in &desired {
+        let mut k = leaf.clone();
+        loop {
+            if !desired_set.insert(k.clone()) {
+                break; // this tile — and hence all its ancestors — already added
+            }
+            if k.z <= QT_MIN_Z {
+                break;
+            }
+            k = TileKey::new(k.x >> 1, k.y >> 1, k.z - 1);
+        }
+    }
+    // Permanent whole-planet floor (z2/z3), for regions outside the current view
+    // (the limb) that have no leaf and thus no ancestor chain.
     for z in QT_MIN_Z..=QT_BASE_Z {
         let n = 1i64 << z;
         for y in 0..n {

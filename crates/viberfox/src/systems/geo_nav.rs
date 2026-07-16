@@ -7,11 +7,13 @@
 //! the current camera mode; bookmark jumps and the last-location restore
 //! (`user_store`) go through the same [`GeoNavState::pending_teleport`] path.
 //!
-//! Nominatim usage policy (https://operations.osmfoundation.org/policies/nominatim/):
-//! requests are debounced behind a typing pause, serialized (one in flight,
-//! ≥1 s apart) and sent with an identifying User-Agent.
+//! Requests are debounced behind a short typing pause, serialized (one in
+//! flight), rate-limited to the endpoint's policy — near-live against the
+//! self-hosted instance, ≥1 s against the public API
+//! (https://operations.osmfoundation.org/policies/nominatim/) — and sent with an
+//! identifying User-Agent.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use bevy::math::DVec3;
@@ -28,10 +30,32 @@ use vibe_core::world::tile_to_meters;
 /// Identifying User-Agent — Nominatim's policy blocks requests without one.
 const NAV_USER_AGENT: &str =
     "viberfox/0.1 (geocoding; https://github.com/garage44/viberfox)";
-/// Typing pause before a query is sent.
-const DEBOUNCE: Duration = Duration::from_millis(450);
-/// Nominatim allows at most one request per second.
-const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
+/// the Netherlands extract — see `meta/guides/server.md`). Override with
+/// `VIBE_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
+const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.garage44.eu";
+
+/// Resolve the Nominatim base URL (no trailing slash) from `VIBE_NOMINATIM_URL`,
+/// falling back to the self-hosted default. Callers append `/search`, `/reverse`, …
+pub(crate) fn nominatim_base_url() -> String {
+    std::env::var("VIBE_NOMINATIM_URL")
+        .unwrap_or_else(|_| DEFAULT_NOMINATIM_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+/// Typing pause before a query is sent — short so suggestions feel near-live.
+const DEBOUNCE: Duration = Duration::from_millis(120);
+/// Minimum spacing between requests. The self-hosted instance has no rate policy
+/// (near-live); the public API allows at most one request per second, so stay
+/// polite when `VIBE_NOMINATIM_URL` points back at `nominatim.openstreetmap.org`.
+static MIN_REQUEST_INTERVAL: LazyLock<Duration> = LazyLock::new(|| {
+    if nominatim_base_url().contains("openstreetmap.org") {
+        Duration::from_secs(1)
+    } else {
+        Duration::from_millis(150)
+    }
+});
 const MIN_QUERY_LEN: usize = 2;
 const MAX_SUGGESTIONS: usize = 8;
 /// Avatar rest height after a teleport (ground top + half fox height; offline
@@ -277,7 +301,8 @@ fn percent_encode(s: &str) -> String {
 fn spawn_geocode(query: String, results: Arc<Mutex<Option<GeocodeReply>>>) {
     std::thread::spawn(move || {
         let url = format!(
-            "https://nominatim.openstreetmap.org/search?format=jsonv2&limit={}&q={}",
+            "{}/search?format=jsonv2&limit={}&q={}",
+            nominatim_base_url(),
             MAX_SUGGESTIONS,
             percent_encode(&query)
         );
@@ -352,7 +377,7 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
         .is_some_and(|t| t.elapsed() >= DEBOUNCE);
     let throttled = nav
         .last_sent_at
-        .is_some_and(|t| t.elapsed() < MIN_REQUEST_INTERVAL);
+        .is_some_and(|t| t.elapsed() < *MIN_REQUEST_INTERVAL);
     let fresh = query != nav.last_sent || nav.force_search;
     if !nav.in_flight
         && !throttled
