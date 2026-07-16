@@ -995,6 +995,7 @@ pub fn apply_live_prim_edits(
         &mut Prim,
         &mut Transform,
         Option<&MeshMaterial3d<StandardMaterial>>,
+        Has<crate::systems::rendering::OwnedMaterial>,
     )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -1004,7 +1005,7 @@ pub fn apply_live_prim_edits(
     let Some(prim_id) = game_state.editing_prim_id else {
         return;
     };
-    for (entity, mut prim, mut transform, mat_handle) in prim_query.iter_mut() {
+    for (entity, mut prim, mut transform, mat_handle, owned) in prim_query.iter_mut() {
         if prim.id != prim_id {
             continue;
         }
@@ -1047,9 +1048,16 @@ pub fn apply_live_prim_edits(
         }
 
         // Update material directly — Selected doesn't change during editing so
-        // highlight_selected_prim won't fire on its own.
+        // highlight_selected_prim won't fire on its own. Copy-on-write out of the
+        // shared pool so the live preview only restyles the prim being edited.
         if let Some(handle) = mat_handle {
-            if let Some(mut mat) = materials.get_mut(&handle.0) {
+            if let Some(mut mat) = crate::systems::rendering::owned_material(
+                &mut commands,
+                &mut materials,
+                entity,
+                &handle.0,
+                owned,
+            ) {
                 // Live preview of the texture surface (transparency / glow / full-bright / UV),
                 // then a subtle selection highlight on top so the surface stays visible.
                 crate::systems::rendering::apply_surface(&mut mat, new_color, &edit_dialog.surface);
@@ -1125,7 +1133,13 @@ pub fn send_prim_mutations(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
     db: Option<Res<Database>>,
-    mut prim_query: Query<(Entity, &mut Prim, &mut Transform, Option<&MeshMaterial3d<StandardMaterial>>)>,
+    mut prim_query: Query<(
+        Entity,
+        &mut Prim,
+        &mut Transform,
+        Option<&MeshMaterial3d<StandardMaterial>>,
+        Has<crate::systems::rendering::OwnedMaterial>,
+    )>,
     region_query: Query<&Region>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     texture_cache: Res<PrimTextureCache>,
@@ -1321,7 +1335,7 @@ pub fn send_prim_mutations(
                     dialog_state.surface,
                 );
             }
-            for (entity, mut prim, mut transform, mat_handle_opt) in prim_query.iter_mut() {
+            for (entity, mut prim, mut transform, mat_handle_opt, owned) in prim_query.iter_mut() {
                 if prim.id == prim_id {
                     let texture_changed = prim.texture_id != dialog_state.texture_id;
                     let geom_changed = prim.shape != PrimShape::from_str(&dialog_state.shape)
@@ -1359,17 +1373,15 @@ pub fn send_prim_mutations(
                         dialog_state.scale[1],
                         dialog_state.scale[2],
                     ));
-                    if texture_changed {
-                        apply_texture_to_material(
-                            mat_handle_opt,
-                            &mut materials,
-                            &texture_cache,
-                            dialog_state.texture_id.as_deref(),
-                        );
-                    }
-                    apply_surface_to_material(
+                    apply_material_edits(
+                        &mut commands,
+                        entity,
                         mat_handle_opt,
+                        owned,
                         &mut materials,
+                        &texture_cache,
+                        dialog_state.texture_id.as_deref(),
+                        texture_changed,
                         prim.color,
                         &prim.surface,
                     );
@@ -1387,7 +1399,7 @@ pub fn send_prim_mutations(
 
     if let Some(revert) = game_state.pending_prim_revert.take() {
         if let Some(prim_id) = revert.prim_id {
-            for (entity, mut prim, mut transform, mat_handle_opt) in prim_query.iter_mut() {
+            for (entity, mut prim, mut transform, mat_handle_opt, owned) in prim_query.iter_mut() {
                 if prim.id == prim_id {
                     let texture_changed = prim.texture_id != revert.original_texture_id;
                     let geom_changed = prim.shape != PrimShape::from_str(&revert.shape)
@@ -1417,17 +1429,15 @@ pub fn send_prim_mutations(
                         revert.rotation[2],
                     ))
                     .with_scale(Vec3::new(revert.scale[0], revert.scale[1], revert.scale[2]));
-                    if texture_changed {
-                        apply_texture_to_material(
-                            mat_handle_opt,
-                            &mut materials,
-                            &texture_cache,
-                            revert.original_texture_id.as_deref(),
-                        );
-                    }
-                    apply_surface_to_material(
+                    apply_material_edits(
+                        &mut commands,
+                        entity,
                         mat_handle_opt,
+                        owned,
                         &mut materials,
+                        &texture_cache,
+                        revert.original_texture_id.as_deref(),
+                        texture_changed,
                         prim.color,
                         &prim.surface,
                     );
@@ -1452,7 +1462,7 @@ pub fn send_prim_mutations(
             let conn = db.conn.lock().unwrap();
             let _ = conn.execute("DELETE FROM prims WHERE id=?1", rusqlite::params![prim_id]);
         }
-        for (entity, prim, _, _) in prim_query.iter() {
+        for (entity, prim, _, _, _) in prim_query.iter() {
             if prim.id == prim_id {
                 commands.entity(entity).despawn();
                 tracing::info!(id = prim_id, "deleted prim");
@@ -1462,39 +1472,37 @@ pub fn send_prim_mutations(
     }
 }
 
-/// Applies (or clears) a texture on a material handle in-place, same frame.
-fn apply_texture_to_material(
+/// Applies a prim's texture (optionally) and surface params (transparency / glow /
+/// full-bright / UV transform) onto its material in a single copy-on-write out of
+/// the shared batching pool. Doing both in one call matters: the CoW clone is
+/// taken from the pooled handle, so two separate CoWs in the same frame would each
+/// start from the pool and the second would discard the first's change.
+fn apply_material_edits(
+    commands: &mut Commands,
+    entity: Entity,
     mat_handle_opt: Option<&MeshMaterial3d<StandardMaterial>>,
+    owned: bool,
     materials: &mut Assets<StandardMaterial>,
     cache: &PrimTextureCache,
     texture_id: Option<&str>,
-) {
-    let Some(mat_handle) = mat_handle_opt else {
-        return;
-    };
-    let Some(mut mat) = materials.get_mut(&mat_handle.0) else {
-        return;
-    };
-    mat.base_color_texture = texture_id
-        .and_then(|id| cache.handles.get(id))
-        .cloned()
-        .map(|h| h.into());
-}
-
-/// Applies a prim's surface params (transparency / glow / full-bright / UV transform)
-/// onto a material handle in-place, preserving its `base_color_texture`.
-fn apply_surface_to_material(
-    mat_handle_opt: Option<&MeshMaterial3d<StandardMaterial>>,
-    materials: &mut Assets<StandardMaterial>,
+    apply_texture: bool,
     color: Color,
     surface: &vibe_core::PrimSurface,
 ) {
     let Some(mat_handle) = mat_handle_opt else {
         return;
     };
-    let Some(mut mat) = materials.get_mut(&mat_handle.0) else {
+    let Some(mut mat) =
+        crate::systems::rendering::owned_material(commands, materials, entity, &mat_handle.0, owned)
+    else {
         return;
     };
+    if apply_texture {
+        mat.base_color_texture = texture_id
+            .and_then(|id| cache.handles.get(id))
+            .cloned()
+            .map(|h| h.into());
+    }
     crate::systems::rendering::apply_surface(&mut mat, color, surface);
 }
 

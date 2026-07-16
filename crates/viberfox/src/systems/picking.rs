@@ -37,12 +37,19 @@ pub fn prim_picking(
         return;
     }
 
+    let left_pressed = mouse_buttons.just_pressed(MouseButton::Left);
+    let right_pressed = mouse_buttons.just_pressed(MouseButton::Right);
+
     // Any click outside egui closes the context menu.
-    if context_menu.visible
-        && (mouse_buttons.just_pressed(MouseButton::Left)
-            || mouse_buttons.just_pressed(MouseButton::Right))
-    {
+    if context_menu.visible && (left_pressed || right_pressed) {
         context_menu.visible = false;
+    }
+
+    // Picking only reacts to a fresh left/right press. The hit test below is a
+    // brute-force ray-vs-box over every prim (with a matrix inverse each); skip it
+    // entirely on the (vast majority of) frames with no click to test.
+    if !left_pressed && !right_pressed {
+        return;
     }
 
     let window = match windows.iter().next() {
@@ -310,14 +317,27 @@ pub fn handle_delete_key(
 
 /// System to highlight selected prim with a different material color
 pub fn highlight_selected_prim(
+    mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     selected_query: Query<
-        (&Prim, &MeshMaterial3d<StandardMaterial>),
+        (
+            Entity,
+            &Prim,
+            &MeshMaterial3d<StandardMaterial>,
+            Has<crate::systems::rendering::OwnedMaterial>,
+        ),
         (With<Selected>, Changed<Selected>),
     >,
 ) {
-    for (prim, material_handle) in selected_query.iter() {
-        if let Some(mut material) = materials.get_mut(&material_handle.0) {
+    for (entity, prim, material_handle, owned) in selected_query.iter() {
+        // Selecting restyles just this prim, so copy it out of the shared pool first.
+        if let Some(mut material) = crate::systems::rendering::owned_material(
+            &mut commands,
+            &mut materials,
+            entity,
+            &material_handle.0,
+            owned,
+        ) {
             // Keep the real surface (color/texture/alpha/glow/uv) and add only a subtle
             // highlight, so the texture stays visible while the prim is selected.
             crate::systems::rendering::apply_surface(&mut material, prim.color, &prim.surface);
@@ -328,15 +348,26 @@ pub fn highlight_selected_prim(
 
 /// System to restore original color when prim is deselected
 pub fn unhighlight_deselected_prim(
+    mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     // No With<Selected> filter: entity has already lost the component by the time
     // RemovedComponents fires.
-    query: Query<(&Prim, &MeshMaterial3d<StandardMaterial>)>,
+    query: Query<(
+        &Prim,
+        &MeshMaterial3d<StandardMaterial>,
+        Has<crate::systems::rendering::OwnedMaterial>,
+    )>,
     mut deselected: RemovedComponents<Selected>,
 ) {
     for entity in deselected.read() {
-        if let Ok((prim, material_handle)) = query.get(entity) {
-            if let Some(mut material) = materials.get_mut(&material_handle.0) {
+        if let Ok((prim, material_handle, owned)) = query.get(entity) {
+            if let Some(mut material) = crate::systems::rendering::owned_material(
+                &mut commands,
+                &mut materials,
+                entity,
+                &material_handle.0,
+                owned,
+            ) {
                 // Restore the full surface (alpha/glow/full-bright/uv), not just RGB.
                 crate::systems::rendering::apply_surface(&mut material, prim.color, &prim.surface);
             }

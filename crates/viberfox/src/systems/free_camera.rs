@@ -30,7 +30,9 @@ pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
     // dawn/dusk haze glows warm with the sky instead of snapping grey→black.
     let t = sun::sun_transmittance(hours);
     let tint = t / t.max_element().max(1e-4);
-    let warm = 0.65 * sun::horizon_proximity(hours);
+    // Modest warm tint only — the built-in atmosphere already colours the sky at
+    // low sun, so a strong red fog on top read as an unrealistic blood-red dusk.
+    let warm = 0.30 * sun::horizon_proximity(hours);
     let c = night_color.lerp(day_color, day) * Vec3::ONE.lerp(tint, warm);
 
     // Map density to a visibility distance on an exponential curve:

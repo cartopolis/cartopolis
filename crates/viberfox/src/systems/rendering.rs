@@ -9,6 +9,7 @@ use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine2;
 use bevy::asset::RenderAssetUsages;
+use std::collections::HashMap;
 use vibe_core::world::tile_to_meters;
 use vibe_core::PrimSurface;
 
@@ -71,6 +72,185 @@ pub fn apply_surface(mat: &mut StandardMaterial, base_color: Color, s: &PrimSurf
     mat.uv_transform = surface_uv_transform(s);
 }
 
+// ---------------------------------------------------------------------------
+// Draw-call batching: shared mesh + material pools
+//
+// Bevy batches instances that share the *same* mesh and material asset handles.
+// Prims are overwhelmingly duplicates (a thousand identical grey boxes), so we
+// pool handles by geometry and by appearance instead of minting a fresh mesh +
+// material per prim. A prim that is later individually restyled (selected,
+// edited, re-textured) copies its material out of the pool on first write via
+// `owned_material`, so per-entity edits never leak into their pooled siblings.
+// ---------------------------------------------------------------------------
+
+/// Geometry cache key. Two prims with identical shape + deformation share one
+/// mesh handle. Float fields use their exact bit pattern, so identical inputs to
+/// `prim_mesh_handle` (which is a pure function of these) hash and compare equal.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct MeshKey {
+    shape: u8,
+    bits: [u32; 11],
+}
+
+impl MeshKey {
+    fn from_prim(p: &Prim) -> Self {
+        let shape = match p.shape {
+            PrimShape::Box => 0,
+            PrimShape::Sphere => 1,
+            PrimShape::Cylinder => 2,
+            PrimShape::Cone => 3,
+            PrimShape::Torus => 4,
+        };
+        Self {
+            shape,
+            bits: [
+                p.path_cut_begin.to_bits(),
+                p.path_cut_end.to_bits(),
+                p.hollow.to_bits(),
+                p.twist_begin.to_bits(),
+                p.twist_end.to_bits(),
+                p.taper_x.to_bits(),
+                p.taper_y.to_bits(),
+                p.top_shear_x.to_bits(),
+                p.top_shear_y.to_bits(),
+                p.slice_begin.to_bits(),
+                p.slice_end.to_bits(),
+            ],
+        }
+    }
+}
+
+/// Appearance cache key. Two prims with identical colour + texture id + surface
+/// share one material handle (required, alongside a shared mesh, for the pair to
+/// batch into a single draw call).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct MaterialKey {
+    color: [u32; 4],
+    texture_id: Option<String>,
+    alpha: u32,
+    glow: u32,
+    full_bright: bool,
+    repeat_u: u32,
+    repeat_v: u32,
+    flip_u: bool,
+    flip_v: bool,
+    rotation: u32,
+    offset_u: u32,
+    offset_v: u32,
+}
+
+impl MaterialKey {
+    fn from_prim(p: &Prim) -> Self {
+        let c = p.color.to_linear();
+        let s = &p.surface;
+        Self {
+            color: [
+                c.red.to_bits(),
+                c.green.to_bits(),
+                c.blue.to_bits(),
+                c.alpha.to_bits(),
+            ],
+            texture_id: p.texture_id.clone(),
+            alpha: s.alpha.to_bits(),
+            glow: s.glow.to_bits(),
+            full_bright: s.full_bright,
+            repeat_u: s.repeat_u.to_bits(),
+            repeat_v: s.repeat_v.to_bits(),
+            flip_u: s.flip_u,
+            flip_v: s.flip_v,
+            rotation: s.rotation.to_bits(),
+            offset_u: s.offset_u.to_bits(),
+            offset_v: s.offset_v.to_bits(),
+        }
+    }
+}
+
+/// Pool of shared prim mesh handles, keyed by geometry.
+#[derive(Resource, Default)]
+pub struct MeshCache(HashMap<MeshKey, Handle<Mesh>>);
+
+/// Pool of shared prim material handles, keyed by appearance.
+#[derive(Resource, Default)]
+pub struct MaterialCache(HashMap<MaterialKey, Handle<StandardMaterial>>);
+
+/// Marker: this prim owns a private material copied out of the shared pool (it
+/// was selected / edited / re-textured), so mutating it is safe. See
+/// [`owned_material`].
+#[derive(Component)]
+pub struct OwnedMaterial;
+
+/// Return the pooled mesh handle for `prim`, building and caching it on first use.
+fn cached_prim_mesh(prim: &Prim, meshes: &mut Assets<Mesh>, cache: &mut MeshCache) -> Handle<Mesh> {
+    let key = MeshKey::from_prim(prim);
+    if let Some(handle) = cache.0.get(&key) {
+        return handle.clone();
+    }
+    let handle = prim_mesh_handle(prim, meshes);
+    cache.0.insert(key, handle.clone());
+    handle
+}
+
+/// Return the pooled material handle for `prim`, building and caching it on first use.
+fn cached_prim_material(
+    prim: &Prim,
+    materials: &mut Assets<StandardMaterial>,
+    cache: &mut MaterialCache,
+    texture_cache: &PrimTextureCache,
+) -> Handle<StandardMaterial> {
+    // Only untextured prims are pooled. A texture may not be loaded yet at spawn
+    // (it arrives via NeedsTextureRefresh), so a pooled entry keyed by texture id
+    // could go stale and hand a later prim the pre-load (textureless) material.
+    // Textured prims are the minority and drop out of any pool on first restyle
+    // anyway, so give them a fresh material — matching pre-pooling behaviour.
+    let poolable = prim.texture_id.is_none();
+    let key = MaterialKey::from_prim(prim);
+    if poolable {
+        if let Some(handle) = cache.0.get(&key) {
+            return handle.clone();
+        }
+    }
+    let base_color_texture = prim
+        .texture_id
+        .as_ref()
+        .and_then(|id| texture_cache.handles.get(id))
+        .cloned();
+    let mut material = StandardMaterial {
+        base_color: prim.color,
+        base_color_texture,
+        ..default()
+    };
+    apply_surface(&mut material, prim.color, &prim.surface);
+    let handle = materials.add(material);
+    if poolable {
+        cache.0.insert(key, handle.clone());
+    }
+    handle
+}
+
+/// Copy-on-write access to a prim's material. If the prim already owns its
+/// material (`already_owned`), returns it mutably in place. Otherwise clones the
+/// shared pooled material into a fresh handle, swaps that onto `entity`, tags it
+/// `OwnedMaterial`, and returns the clone — so the mutation cannot leak into
+/// sibling prims still sharing the pooled handle. Safe to call every frame: once
+/// the entity owns its material the first branch reuses it with no new asset.
+pub fn owned_material<'a>(
+    commands: &mut Commands,
+    materials: &'a mut Assets<StandardMaterial>,
+    entity: Entity,
+    handle: &Handle<StandardMaterial>,
+    already_owned: bool,
+) -> Option<bevy::asset::AssetMut<'a, StandardMaterial>> {
+    if already_owned {
+        return materials.get_mut(handle);
+    }
+    let base = materials.get(handle)?.clone();
+    let new = materials.add(base);
+    commands
+        .entity(entity)
+        .insert((MeshMaterial3d(new.clone()), OwnedMaterial));
+    materials.get_mut(&new)
+}
+
 #[derive(Component)]
 pub struct PrimMesh;
 
@@ -86,17 +266,15 @@ pub fn spawn_regions(
     let Ok(root) = bigspace.single() else {
         return; // BigSpace not spawned yet (camera setup runs first); retry next frame
     };
+    // Cheap steady-state early-out: nothing un-meshed to spawn. Avoids the
+    // O(regions) `all_regions` scan below on every frame once regions exist.
+    if region_query.is_empty() {
+        return;
+    }
     // Calculate grid size based on total regions
     let total_regions = all_regions.iter().count();
-    let query_count = region_query.iter().count();
-
     if total_regions == 0 {
         return; // No regions to spawn
-    }
-
-    if query_count == 0 && total_regions > 0 {
-        // All region entities already have meshes (or are filtered out) — normal steady state.
-        return;
     }
 
     let grid_size = (total_regions as f32).sqrt().ceil();
@@ -213,25 +391,15 @@ pub fn spawn_prims(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut mesh_cache: ResMut<MeshCache>,
+    mut material_cache: ResMut<MaterialCache>,
     prim_query: Query<(Entity, &Prim, &Transform), (Without<PrimMesh>, Without<RegionMesh>)>,
     texture_cache: Res<PrimTextureCache>,
 ) {
     for (entity, prim, transform) in prim_query.iter() {
-        let mesh_handle = prim_mesh_handle(prim, &mut meshes);
-
-        let base_color_texture = prim
-            .texture_id
-            .as_ref()
-            .and_then(|id| texture_cache.handles.get(id))
-            .cloned();
-
-        let mut material = StandardMaterial {
-            base_color: prim.color,
-            base_color_texture,
-            ..default()
-        };
-        apply_surface(&mut material, prim.color, &prim.surface);
-        let material_handle = materials.add(material);
+        let mesh_handle = cached_prim_mesh(prim, &mut meshes, &mut mesh_cache);
+        let material_handle =
+            cached_prim_material(prim, &mut materials, &mut material_cache, &texture_cache);
 
         commands.entity(entity).insert((
             Mesh3d(mesh_handle),
@@ -243,13 +411,16 @@ pub fn spawn_prims(
 }
 
 /// Rebuild meshes for prims whose geometry (shape/path-cut/hollow) changed.
+/// Replaces the whole mesh handle (never mutates in place), so pooled siblings
+/// keep the old shared handle and stay batched.
 pub fn rebuild_prim_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut mesh_cache: ResMut<MeshCache>,
     query: Query<(Entity, &Prim), With<NeedsMeshRebuild>>,
 ) {
     for (entity, prim) in query.iter() {
-        let mesh_handle = prim_mesh_handle(prim, &mut meshes);
+        let mesh_handle = cached_prim_mesh(prim, &mut meshes, &mut mesh_cache);
         commands
             .entity(entity)
             .insert(Mesh3d(mesh_handle))
@@ -261,11 +432,22 @@ pub fn rebuild_prim_meshes(
 pub fn refresh_prim_textures(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    query: Query<(Entity, &Prim, &MeshMaterial3d<StandardMaterial>), With<NeedsTextureRefresh>>,
+    query: Query<
+        (
+            Entity,
+            &Prim,
+            &MeshMaterial3d<StandardMaterial>,
+            Has<OwnedMaterial>,
+        ),
+        With<NeedsTextureRefresh>,
+    >,
     cache: Res<PrimTextureCache>,
 ) {
-    for (entity, prim, mat_handle) in query.iter() {
-        if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+    for (entity, prim, mat_handle, owned) in query.iter() {
+        // Copy-on-write: a texture swap is a per-prim mutation, so it must not
+        // touch the shared pooled material.
+        if let Some(mut mat) = owned_material(&mut commands, &mut materials, entity, &mat_handle.0, owned)
+        {
             mat.base_color_texture = prim
                 .texture_id
                 .as_ref()

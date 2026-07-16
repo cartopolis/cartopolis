@@ -28,6 +28,7 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::pbr::AtmosphereSettings;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
 
@@ -385,8 +386,12 @@ pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
 /// the star field showing through).
 #[allow(clippy::type_complexity)]
 pub fn update_globe_visibility(
+    mut commands: Commands,
     globe: Res<GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
+    camera: Query<
+        (Entity, &GridCell, &Transform, Has<AtmosphereSettings>),
+        With<crate::systems::free_camera::FreeCamera>,
+    >,
     mut globe_vis: Query<
         &mut Visibility,
         (With<GlobeMesh>, Without<HideInSpace>),
@@ -412,10 +417,27 @@ pub fn update_globe_visibility(
     if !globe.ready {
         return;
     }
-    let Ok((cell, tf)) = camera.single() else {
+    let Ok((cam_entity, cell, tf, has_atmosphere)) = camera.single() else {
         return;
     };
     let show_globe = globe.in_space(cell, tf);
+
+    // Toggle the built-in atmosphere with the tier. Its aerial-perspective LUT
+    // only spans `aerial_view_lut_max_distance` (~32 km); from orbit the globe
+    // surface is thousands of km away, so every tile clamps to the LUT's far
+    // slice and gets painted with full inscattering — the whole planet washes
+    // out to a uniform haze and the draped tiles vanish. Removing
+    // `AtmosphereSettings` drops the camera from the atmosphere passes entirely
+    // (see bevy_pbr `extract_atmosphere`), so in space the sky is black with the
+    // star field showing through and the globe renders untinted. Re-added on the
+    // way back down. This mirrors the old bevy_atmosphere skybox hide (ADR-025).
+    if show_globe && has_atmosphere {
+        commands.entity(cam_entity).remove::<AtmosphereSettings>();
+    } else if !show_globe && !has_atmosphere {
+        commands
+            .entity(cam_entity)
+            .insert(AtmosphereSettings::default());
+    }
 
     let want_globe = if show_globe { Visibility::Visible } else { Visibility::Hidden };
     for mut v in globe_vis.iter_mut() {

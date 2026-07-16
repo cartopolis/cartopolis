@@ -1,5 +1,6 @@
 use bevy::asset::AssetPlugin;
 use bevy::log::LogPlugin;
+use bevy::camera::Exposure;
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
@@ -96,6 +97,8 @@ fn main() {
     .init_resource::<MarqueeState>()
     .init_resource::<TextureLibrary>()
     .init_resource::<PrimTextureCache>()
+    .init_resource::<systems::rendering::MeshCache>()
+    .init_resource::<systems::rendering::MaterialCache>()
     .insert_resource(AiConfig {
         api_key: std::env::var("ANTHROPIC_KEY").ok(),
         model: std::env::var("ANTHROPIC_MODEL")
@@ -418,6 +421,17 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
 /// physical daylight drives most of the frame into the tonemapper's shoulder
 /// (Bevy's default TonyMcMapface) and everything reads flat and washed out.
 const SUN_SCALE: f32 = 0.75;
+
+/// Camera exposure (EV100) at full daylight. Exposure adapts toward night by this
+/// many stops, mimicking eye/camera adaptation so twilight and the lit city aren't
+/// crushed by the bright-noon exposure. Lower ev100 = brighter.
+const DAY_EXPOSURE_EV100: f32 = 13.0;
+const NIGHT_EXPOSURE_LIFT: f32 = 3.5;
+
+/// How saturated the sun's *light* colour is (1 = full transmittance colour,
+/// 0 = white). Kept below 1 because the built-in atmosphere already reddens the
+/// sky at low sun, so a fully-red sun on top read as too red at dawn/dusk.
+const SUN_COLOR_SATURATION: f32 = 0.7;
 /// Peak added ambient brightness at noon (same washout consideration — and darker
 /// ambient keeps midday shadows readable, which is where the depth comes from).
 const AMBIENT_DAY_BRIGHTNESS: f32 = 1800.0;
@@ -457,8 +471,10 @@ fn moonlight_factor(hours: f32, moon_age_days: f32) -> f32 {
 fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
     let t = utils::sun::sun_transmittance(hours);
     let peak = t.max_element().max(1e-4);
-    // Hue in the color (peak-normalized), magnitude in the illuminance.
-    let color = Color::linear_rgb(t.x / peak, t.y / peak, t.z / peak);
+    // Hue in the color (peak-normalized), magnitude in the illuminance. Desaturated
+    // toward white so the sun light doesn't compound the atmosphere's own sunset red.
+    let hue = Vec3::ONE.lerp(Vec3::new(t.x / peak, t.y / peak, t.z / peak), SUN_COLOR_SATURATION);
+    let color = Color::linear_rgb(hue.x, hue.y, hue.z);
     // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
     let sun_through_fog = 1.0 - 0.75 * fog_density;
     // Physical sunlight (RAW_SUNLIGHT ≈ 130k lux, unfiltered) so the built-in
@@ -740,11 +756,20 @@ fn apply_day_night_cycle(
     mut moon: Query<(&mut Transform, &mut DirectionalLight), With<MoonLight>>,
     // AmbientLight is a per-camera component in Bevy 0.19 (attached in setup_camera).
     mut ambient: Query<&mut AmbientLight>,
+    mut exposure: Query<&mut Exposure, With<systems::free_camera::FreeCamera>>,
 ) {
     if !dev.is_changed() {
         return;
     }
     let sun_dir = sun_direction(dev.time_of_day);
+
+    // Adapt exposure to the light level (eye/camera adaptation): brighten toward
+    // twilight and night by up to NIGHT_EXPOSURE_LIFT stops so dusk and the lit city
+    // aren't crushed by the bright-noon exposure that suits the physical daytime sun.
+    let day = utils::sun::daylight(dev.time_of_day);
+    if let Ok(mut exp) = exposure.single_mut() {
+        exp.ev100 = DAY_EXPOSURE_EV100 - NIGHT_EXPOSURE_LIFT * (1.0 - day);
+    }
 
     let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
     for (mut tf, mut light) in sun.iter_mut() {
@@ -970,13 +995,13 @@ fn update_horizon_haze(
         let alt = systems::free_camera::fog_altitude_factor(altitude);
         let d = dev.fog_density * alt;
         mat.color = fog.color.to_linear();
-        // The band rises and strengthens with fog density; a small base keeps the
-        // sky's single-scattering horizon artifact covered even with the fog off —
-        // that base is faded out with altitude too, so it vanishes high up.
+        // Density-driven only: the built-in atmosphere (Bevy 0.19) has no
+        // single-scattering horizon artifact to cover, so there's no base haze —
+        // a base veil just tinted the (already correct) sky with the warm fog colour.
         // The zenith floor (w) grows quadratically so light haze leaves the sky
         // blue while dense fog closes over the whole dome.
         mat.params = Vec4::new(
-            0.03 + 0.25 * d,
+            0.25 * d,
             (0.35 * alt + 1.2 * d).min(1.0),
             fog.directional_light_exponent,
             d * d,

@@ -5,11 +5,23 @@ use bevy_image::{Image, ImageSampler};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 pub use vibe_core::TileKey;
 
 /// Identifying User-Agent — OSM's tile policy blocks requests without a real one.
 const TILE_USER_AGENT: &str = "viberfox/0.1 (OSM map client; https://github.com/garage44/viberfox)";
+
+/// Number of background tile-fetch workers (matches the globe's fetch pool).
+const TILE_WORKERS: usize = 3;
+
+/// Decoded tile image handed back from a worker thread. Decoding happens off the
+/// main thread; only the cheap `Image`/`Assets` insertion stays on it.
+struct TileImageData {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
 
 /// Resource for managing OSM tile loading and caching
 #[derive(Resource)]
@@ -18,6 +30,10 @@ pub struct TileCache {
     pub handles: Arc<Mutex<HashMap<TileKey, Handle<Image>>>>,
     /// Cache of loading states (tiles currently being loaded)
     pub loading: Arc<Mutex<HashMap<TileKey, bool>>>,
+    /// Job queue to the background fetch workers (created on first use).
+    jobs: Option<Sender<(TileKey, String)>>,
+    /// Completed fetches drained on the main thread (`None` = fetch/decode failed).
+    results: Arc<Mutex<Vec<(TileKey, Option<TileImageData>)>>>,
 }
 
 impl Default for TileCache {
@@ -25,7 +41,60 @@ impl Default for TileCache {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
             loading: Arc::new(Mutex::new(HashMap::new())),
+            jobs: None,
+            results: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+}
+
+impl TileCache {
+    /// Lazily spawn the fetch worker pool and return the job sender. Workers pull
+    /// `(tile, url-template)` jobs, do the blocking network/disk fetch + PNG decode
+    /// off the main thread, and push results back for the main thread to upload.
+    fn jobs_sender(&mut self) -> Sender<(TileKey, String)> {
+        if let Some(tx) = &self.jobs {
+            return tx.clone();
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<(TileKey, String)>();
+        let rx: Arc<Mutex<Receiver<(TileKey, String)>>> = Arc::new(Mutex::new(rx));
+        for _ in 0..TILE_WORKERS {
+            let rx = rx.clone();
+            let results = self.results.clone();
+            std::thread::spawn(move || loop {
+                let Ok((key, template)) = ({
+                    let Ok(guard) = rx.lock() else { break };
+                    guard.recv()
+                }) else {
+                    break;
+                };
+                let outcome = match load_tile_image(&key, &template) {
+                    Ok(bytes) => match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (width, height) = (rgba.width(), rgba.height());
+                            Some(TileImageData {
+                                rgba: rgba.into_raw(),
+                                width,
+                                height,
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!(tile = %key.to_path(), error = %e, "failed to decode tile image");
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(tile = %key.to_path(), error = %e, "failed to fetch OSM tile");
+                        None
+                    }
+                };
+                if let Ok(mut r) = results.lock() {
+                    r.push((key, outcome));
+                }
+            });
+        }
+        self.jobs = Some(tx.clone());
+        tx
     }
 }
 
@@ -91,15 +160,59 @@ pub fn load_tile_image(
     Ok(bytes)
 }
 
-/// System to load OSM tiles for regions
+/// System to load OSM tiles for regions.
+///
+/// The blocking network/disk fetch + PNG decode runs on a background worker pool
+/// (see [`TileCache::jobs_sender`]); this system only drains completed results and
+/// enqueues new work, so it never stalls the render loop on a tile fetch.
 pub fn load_region_tiles(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
-    tile_cache: Res<TileCache>,
+    mut tile_cache: ResMut<TileCache>,
     tile_url: Res<OsmTileUrlTemplate>,
     region_query: Query<(Entity, &RegionTile), Without<RegionTileTexture>>,
 ) {
+    // 1. Drain finished fetches: upload the texture and publish its handle.
+    let finished: Vec<(TileKey, Option<TileImageData>)> = tile_cache
+        .results
+        .lock()
+        .map(|mut r| std::mem::take(&mut *r))
+        .unwrap_or_default();
+    for (tile_key, outcome) in finished {
+        match outcome {
+            Some(data) => {
+                let size = bevy::render::render_resource::Extent3d {
+                    width: data.width,
+                    height: data.height,
+                    depth_or_array_layers: 1,
+                };
+                let mut bevy_image = Image::new(
+                    size,
+                    bevy::render::render_resource::TextureDimension::D2,
+                    data.rgba,
+                    bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::default(),
+                );
+                bevy_image.sampler = ImageSampler::linear();
+                let handle = images.add(bevy_image);
+                if let Ok(mut handles) = tile_cache.handles.lock() {
+                    handles.insert(tile_key.clone(), handle);
+                }
+                tracing::info!(tile = %tile_key.to_path(), "tile loaded and applied");
+            }
+            None => {
+                // Fetch/decode failed — already logged by the worker. Clearing the
+                // loading flag below lets it be retried on a later frame.
+            }
+        }
+        if let Ok(mut loading) = tile_cache.loading.lock() {
+            loading.remove(&tile_key);
+        }
+    }
+
+    // 2. Attach ready textures / enqueue missing ones for the background workers.
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut sender: Option<Sender<(TileKey, String)>> = None;
     for (entity, region_tile) in region_query.iter() {
         let tile_key = region_tile.tile_key.clone();
 
@@ -121,54 +234,12 @@ pub fn load_region_tiles(
             loading.insert(tile_key.clone(), true);
         }
 
-        tracing::info!(tile = %tile_key.to_path(), "fetching OSM tile");
-        match load_tile_image(&tile_key, &template) {
-            Ok(bytes) => match image::load_from_memory(&bytes) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let size = bevy::render::render_resource::Extent3d {
-                        width: rgba.width(),
-                        height: rgba.height(),
-                        depth_or_array_layers: 1,
-                    };
-
-                    let mut bevy_image = Image::new(
-                        size,
-                        bevy::render::render_resource::TextureDimension::D2,
-                        rgba.into_raw(),
-                        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-
-                    bevy_image.sampler = ImageSampler::linear();
-
-                    let handle = images.add(bevy_image);
-
-                    {
-                        let mut handles = tile_cache.handles.lock().unwrap();
-                        handles.insert(tile_key.clone(), handle.clone());
-                    }
-
-                    commands.entity(entity).insert(RegionTileTexture {
-                        handle: handle.clone(),
-                    });
-
-                    {
-                        let mut loading = tile_cache.loading.lock().unwrap();
-                        loading.remove(&tile_key);
-                    }
-
-                    tracing::info!(tile = %tile_key.to_path(), "tile loaded and applied");
-                }
-                Err(e) => {
-                    tracing::error!(tile = %tile_key.to_path(), error = %e, "failed to decode tile image");
-                    let mut loading = tile_cache.loading.lock().unwrap();
-                    loading.remove(&tile_key);
-                }
-            },
-            Err(e) => {
-                tracing::error!(tile = %tile_key.to_path(), error = %e, "failed to fetch OSM tile");
-                let mut loading = tile_cache.loading.lock().unwrap();
+        let tx = sender.get_or_insert_with(|| tile_cache.jobs_sender());
+        tracing::info!(tile = %tile_key.to_path(), "queued OSM tile fetch");
+        if tx.send((tile_key.clone(), template.clone())).is_err() {
+            // Worker pool gone (shouldn't happen) — undo the loading flag so a
+            // later frame can retry.
+            if let Ok(mut loading) = tile_cache.loading.lock() {
                 loading.remove(&tile_key);
             }
         }

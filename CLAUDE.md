@@ -38,13 +38,14 @@ There are no test suites currently. Use `cargo check -p <crate>` to validate cha
 
 ## Architecture
 
-This is a **Cargo workspace** with three crates:
+This is a **Cargo workspace** with four crates:
 
 | Crate | Role | Notable deps |
 |-------|------|-------------|
 | `vibe_core` | Shared protocol types, `NetMessage`, tile/coordinate math | `serde`, `postcard`, `glam` |
 | `vibe_sim` | Headless TCP simulation server; SQLite authority; tick loop | `tokio`, `rusqlite`, `refinery` — **no Bevy** |
-| `viberfox` | Bevy 0.16 client; rendering, ECS systems, UI | Bevy + `bevy_atmosphere`, `egui` |
+| `viberfox` | Bevy 0.19 client; rendering, ECS systems, UI | Bevy 0.19 + `big_space` (path dep), `egui` 0.35 |
+| `big_space` | **Vendored fork** of `big_space` 0.10 ported to Bevy 0.19 (floating-origin transform propagation, ADR-019). Upstream tops out at Bevy 0.18, so we keep a copy under `crates/big_space` and advance it on each Bevy bump — re-sync the vendored transform-propagation code (`bevy_compat.rs`) against Bevy when upgrading. | Bevy sub-crates |
 
 ### Client (`viberfox`) — Bevy ECS layout
 
@@ -60,7 +61,7 @@ This is a **Cargo workspace** with three crates:
   - `picking` — raycasting for prim selection
   - `ui` — egui context menu + prim edit dialog
   - `gizmo` — transform gizmo toolbar and drag interaction
-  - `egui_manager` — custom `EguiPlugin` (wraps `egui-wgpu`)
+  - `egui_manager` — custom `EguiPlugin` (wraps `egui-wgpu`); renders egui as the `egui_pass` **system** in the `Core3d` render schedule (Bevy 0.19's schedule-based render graph replaced the old `ViewNode`/render-graph API), drawing onto the post-upscaling sRGB output. Panels use a shared root `Ui` (egui 0.35 shows panels inside a `Ui`, not the `Context`).
 - **`db/`** — local SQLite schema init (client-side offline mode only)
 
 **Online vs offline mode:** the client runs in offline mode (local SQLite) by default. Pass `--connect <host:port>` to connect to `vibe_sim`; this replaces the `Database` resource with a network snapshot path.
@@ -100,7 +101,10 @@ New ADR checklist: copy `meta/adr/template.md`, set `Aligns with: G-*, P-*`, add
 
 ## Known issues / workarounds
 
-- **`SkyBoxMaterial` panic (Bevy 0.16):** `bevy_atmosphere` is used without the `detection` feature; the skybox is spawned in `Startup` alongside the camera. Re-enabling automatic detection triggers a crash (see `free_camera::setup_camera` and [bevy#18980](https://github.com/bevyengine/bevy/issues/18980)).
+- **Atmosphere is Bevy 0.19's built-in `bevy_pbr` atmosphere** (not `bevy_atmosphere`, which was dropped). It's planetary-scale, so `free_camera::setup_camera` spawns it on a **planet-centered entity** 6,360 km below the local ground (surface at `y = 0`). The camera carries `AtmosphereSettings` + `AtmosphereEnvironmentMapLight` + a physical `Exposure`, the sun runs at `RAW_SUNLIGHT`, and `apply_day_night_cycle` adapts exposure by time of day. **TODO:** the atmosphere still renders from the orbit/space tier — it should be hidden above the space threshold (ADR-025), as the old skybox was.
+- **Two directional lights must have matching shadow cascades:** Bevy 0.19's `bevy_light` panics (`index out of bounds` in cascade-visibility) if the sun and moon `DirectionalLight`s have **different `num_cascades`**, or if `shadow_maps_enabled` is toggled at runtime. Keep both at `num_cascades: 4` and never toggle shadows after spawn (see `setup_sky` / `apply_day_night_cycle`).
+- **`reflect_auto_register` bevy feature is required:** glTF scenes load as `WorldAsset`s spawned by `bevy_world_serialization`, which reflect-spawns every component; without it, spawning the avatar fox panics on the first unregistered type.
+- **Fox glTF animations don't play (Bevy 0.19):** the glTF animation asset labels changed; `GltfAssetLabel::Animation(n)` no longer resolves for `Fox.glb`, so the avatar mesh spawns (via `WorldAssetRoot`) but stays in its rest pose (see `avatar::spawn_avatar`). TODO.
 - **Wayland + GLES flicker:** force Vulkan with `WGPU_BACKEND=vulkan cargo run -p viberfox`.
 - **Database migrations:** copy `data/regions.db` before schema upgrades; `refinery` migrations run automatically on `vibe_sim` startup (ADR-013).
 - **`fast-dev` feature** uses Bevy dynamic linking — never use it for `--release` or distributable binaries.
