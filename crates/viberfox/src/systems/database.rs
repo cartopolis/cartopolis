@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::TextureFormat;
 use std::sync::Mutex;
 use crate::components::{Region, Prim, PrimShape};
 use crate::db::schema::{RegionRow, PrimRow};
@@ -277,16 +277,16 @@ pub fn load_local_textures(
                         );
                         texture_lib.egui_handles.insert(id.clone(), egui_handle);
 
-                        // Bevy Image for material texturing.
-                        let mut bevy_img = Image::new(
-                            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                            TextureDimension::D2,
+                        // Bevy Image for material texturing (mipmapped, repeat
+                        // addressing so repeat_u/v > 1 tiles).
+                        let bevy_img = crate::systems::rendering::mipmapped_image(
+                            w,
+                            h,
                             raw,
                             TextureFormat::Rgba8UnormSrgb,
                             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+                            crate::systems::rendering::repeat_linear_sampler(),
                         );
-                        // Repeat addressing so texture repeats (repeat_u/v > 1) tile.
-                        bevy_img.sampler = crate::systems::rendering::repeat_linear_sampler();
                         let handle = images.add(bevy_img);
                         texture_cache.handles.insert(id.clone(), handle);
                         entries.push(TextureEntry { id, name });

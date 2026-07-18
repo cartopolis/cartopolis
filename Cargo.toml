@@ -102,3 +102,16 @@ codegen-units = 256
 
 [profile.dev-bevy.package.vibe_core]
 opt-level = 0
+
+# Shipped builds: trade compile time for runtime frame times (per the Bevy
+# cheatbook's performance guidance). Fat LTO + a single codegen unit let the
+# optimizer inline across crate boundaries (Bevy's hot ECS / render paths benefit
+# most); abort-on-panic drops unwind tables and landing pads. `lto = true` (fat)
+# is slow to link — drop to "thin" if the release compile becomes painful.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+incremental = false
+debug = false
+panic = "abort"

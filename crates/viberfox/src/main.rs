@@ -24,7 +24,7 @@ use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AvatarState, CameraState, ConnectAddr, ContextMenuState, Database,
     DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState, MouseState,
-    OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
+    OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
 };
 use big_space::prelude::{BigSpace, GridCell};
 use systems::egui_manager::EguiPlugin;
@@ -106,6 +106,7 @@ fn main() {
     })
     .init_resource::<AiAssistantState>()
     .init_resource::<DevPanelState>()
+    .init_resource::<StatsState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
     .init_resource::<systems::data_layers::DataLayers>()
     .init_resource::<systems::transit_live::TransitLive>()
@@ -118,7 +119,11 @@ fn main() {
     // Space background: the atmosphere skybox covers this everywhere in the local
     // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
     .insert_resource(ClearColor(Color::BLACK))
-    .insert_resource(DirectionalLightShadowMap { size: 4096 });
+    // 2048 rather than 4096: with sun + moon each casting 4 cascades, a night
+    // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
+    // memory versus 4096² for a barely-perceptible near-shadow softness at this
+    // scene's cascade distances.
+    .insert_resource(DirectionalLightShadowMap { size: 2048 });
 
     if let Some(addr) = cli.connect {
         app.insert_resource(ConnectAddr(addr));
@@ -281,6 +286,7 @@ fn main() {
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
             systems::ui::render_dev_panel,
+            systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
             // The right-hand panels draw into the shared root `Ui`, so their call
             // order fixes their right-to-left placement. Chain them (AI → Layers →
             // Bookmarks) so the order is deterministic — otherwise Bevy runs these
@@ -301,6 +307,7 @@ fn main() {
                 .after(systems::free_camera::camera_controls),
             advance_day_cycle.before(apply_day_night_cycle),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
+            manage_moon_light.after(systems::ui::render_dev_panel),
             apply_distance_fog.after(systems::ui::render_dev_panel),
             update_window_glow,
             // Track the camera after it has been positioned this frame.
@@ -389,21 +396,44 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
         SunLight,
     ));
 
-    // Moonlight: a second, faint directional light (kept in sync with the moon
-    // disc by apply_day_night_cycle). Perceptually blue-gray, with a shorter
-    // shadow range than the sun — moon shadows only need to read up close.
+    // Moonlight is a second, shadow-casting directional light. It only exists while
+    // it actually contributes (moon up at night); `manage_moon_light` spawns and
+    // despawns it so its 4 shadow cascades aren't rendered through the whole day.
+    if moon_light_wanted(&dev) {
+        spawn_moon_light(&mut commands, &dev);
+    }
+}
+
+/// Threshold on `moonlight_factor` below which the moon light is despawned: its
+/// illuminance (and shadows) would be imperceptible, so paying for its cascade
+/// shadow passes is pure waste.
+const MOON_LIGHT_MIN: f32 = 0.002;
+
+/// Whether the moon light should currently exist (moon up, illuminated, at night).
+fn moon_light_wanted(dev: &DevPanelState) -> bool {
+    moonlight_factor(dev.time_of_day, dev.moon_age_days) > MOON_LIGHT_MIN
+}
+
+/// Spawn the moon's directional light with its shadow cascades. Perceptually
+/// blue-gray, with a shorter shadow range than the sun — moon shadows only need to
+/// read up close.
+fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
+    let illuminance = MOONLIGHT_ILLUMINANCE
+        * moonlight_factor(dev.time_of_day, dev.moon_age_days)
+        * (1.0 - 0.75 * dev.fog_density);
     commands.spawn((
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
-            illuminance: MOONLIGHT_ILLUMINANCE
-                * moonlight_factor(dev.time_of_day, dev.moon_age_days),
+            illuminance,
             shadow_maps_enabled: true,
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
         // (cascade-visibility index out of bounds) when two directional lights in
-        // the scene have *different* numbers of shadow cascades.
+        // the scene have *different* numbers of shadow cascades. Spawning/despawning
+        // the whole light (rather than toggling `shadow_maps_enabled`, which also
+        // panics) keeps the two live lights' cascade counts equal at all times.
         CascadeShadowConfigBuilder {
             num_cascades: 4,
             minimum_distance: 2.0,
@@ -415,6 +445,28 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
         Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y),
         MoonLight,
     ));
+}
+
+/// Spawn the moon light at dusk / despawn it at dawn, so its 4 shadow cascade
+/// passes are only rendered when moonlight is actually visible. Runs only when the
+/// time of day changes (same trigger as `apply_day_night_cycle`). Never toggles an
+/// existing light's `shadow_maps_enabled`, and never leaves two live directional
+/// lights with mismatched cascade counts — both bevy_light panic conditions.
+fn manage_moon_light(
+    mut commands: Commands,
+    dev: Res<DevPanelState>,
+    moon: Query<Entity, With<MoonLight>>,
+) {
+    if !dev.is_changed() {
+        return;
+    }
+    match (moon_light_wanted(&dev), moon.single()) {
+        (true, Err(_)) => spawn_moon_light(&mut commands, &dev), // wanted but absent
+        (false, Ok(entity)) => {
+            commands.entity(entity).despawn(); // present but no longer wanted
+        }
+        _ => {}
+    }
 }
 
 /// Global trim on the sun's illuminance: the OSM basemap is near-white, so full
@@ -669,8 +721,15 @@ fn update_moon(
     };
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let rotation = Quat::from_rotation_arc(Vec3::Z, -moon_dir);
+    // The disc follows the camera every frame so it stays fixed on the sky.
     tf.translation = cam.translation() + moon_dir * MOON_DISTANCE;
     tf.rotation = rotation;
+
+    // The material (phase lighting + brightness) depends only on time of day, so
+    // rewrite its uniform only when that changed — not every frame.
+    if !dev.is_changed() {
+        return;
+    }
 
     // Visible from twilight on (the moon shows before full dark), dimmed by fog
     // and by atmospheric extinction as it nears the horizon.
@@ -832,16 +891,36 @@ fn update_window_glow(
         &systems::osm_buildings::WindowGlow,
         &MeshMaterial3d<StandardMaterial>,
     )>,
+    // Windows stream in continuously as you move; newly-added ones need their glow
+    // set even on frames where the time of day hasn't changed.
+    new_windows: Query<
+        (
+            &systems::osm_buildings::WindowGlow,
+            &MeshMaterial3d<StandardMaterial>,
+        ),
+        Added<systems::osm_buildings::WindowGlow>,
+    >,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let elevation = sun_direction(dev.time_of_day).y;
     // Begin glowing as the sun lowers in the evening (elevation ~0.18), reaching
     // full a little after dusk — a gentle ramp, not an on/off at full dark.
     let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
-    for (bucket, mat) in windows.iter() {
+    let mut apply = |bucket: &systems::osm_buildings::WindowGlow, mat: &MeshMaterial3d<StandardMaterial>| {
         if let Some(mut m) = materials.get_mut(&mat.0) {
             let e = 1.2 * glow * bucket.0; // subtle, warm; per-bucket brightness
             m.emissive = LinearRgba::rgb(e, 0.72 * e, 0.34 * e);
+        }
+    };
+    // Only rewrite every window's emissive when the time of day actually changed;
+    // otherwise just catch up newly-streamed windows.
+    if dev.is_changed() {
+        for (bucket, mat) in windows.iter() {
+            apply(bucket, mat);
+        }
+    } else {
+        for (bucket, mat) in new_windows.iter() {
+            apply(bucket, mat);
         }
     }
 }

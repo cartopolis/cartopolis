@@ -70,6 +70,8 @@ pub struct DevPanelState {
     /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
     /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
     pub moon_age_days: f32,
+    /// Show the FPS / frame-time / entity-count overlay. Off by default.
+    pub show_stats: bool,
 }
 
 impl Default for DevPanelState {
@@ -81,8 +83,21 @@ impl Default for DevPanelState {
             cycle_seconds: 10.0,
             fog_density: 0.15,
             moon_age_days: 14.8, // full moon
+            show_stats: false,
         }
     }
+}
+
+/// Smoothed runtime stats for the dev overlay. Kept **separate** from
+/// [`DevPanelState`] on purpose: it updates every frame, and mutating
+/// `DevPanelState` each frame would trip its `is_changed()` gate and re-run the
+/// day/night lighting recompute continuously.
+#[derive(Resource, Default)]
+pub struct StatsState {
+    /// Exponential moving average of frames per second.
+    pub fps: f32,
+    /// Exponential moving average of frame time in milliseconds.
+    pub frame_ms: f32,
 }
 
 #[derive(Resource, Default)]

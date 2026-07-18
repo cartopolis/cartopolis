@@ -8,7 +8,7 @@ use crate::resources::{
 use crate::systems::avatar::{fox_facing_yaw_from_camera, wish_dir_camera_relative};
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::TextureFormat;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
@@ -459,17 +459,16 @@ fn decode_png_to_image(png_bytes: &[u8]) -> Option<Image> {
     let dynamic = image::load_from_memory(png_bytes).ok()?;
     let rgba = dynamic.to_rgba8();
     let (w, h) = rgba.dimensions();
-    // MAIN_WORLD keeps the CPU bytes available for `create_egui_texture_handles`.
-    let mut img = Image::new(
-        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        TextureDimension::D2,
+    // Mipmapped + repeat addressing (repeat_u/v > 1 tiles). MAIN_WORLD keeps the
+    // mip-0 CPU bytes available for `create_egui_texture_handles`.
+    Some(crate::systems::rendering::mipmapped_image(
+        w,
+        h,
         rgba.into_raw(),
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
-    // Repeat addressing so texture repeats (repeat_u/v > 1) tile.
-    img.sampler = crate::systems::rendering::repeat_linear_sampler();
-    Some(img)
+        crate::systems::rendering::repeat_linear_sampler(),
+    ))
 }
 
 /// Creates egui thumbnail handles for any texture in the library that doesn't have one yet.
@@ -499,10 +498,13 @@ pub fn create_egui_texture_handles(
         };
         let w = img.width();
         let h = img.height();
-        if data.len() != (w * h * 4) as usize {
+        // `data` now holds the full mip chain; the thumbnail only needs mip 0
+        // (the first w·h·4 bytes).
+        let mip0_len = (w * h * 4) as usize;
+        if data.len() < mip0_len {
             continue;
         }
-        let pixels: Vec<egui::Color32> = data
+        let pixels: Vec<egui::Color32> = data[..mip0_len]
             .chunks_exact(4)
             .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
             .collect();

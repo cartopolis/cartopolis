@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, Grid, GridCell};
@@ -89,6 +89,17 @@ pub struct StreamTile {
 #[derive(Component)]
 pub struct StreamTileReady;
 
+/// A tile decoded and mipmapped **off the main thread** by a fetch worker. Holds
+/// the full packed mip chain ready for a cheap `Image` assembly + GPU upload on
+/// the main thread — the PNG decode and mip generation (the expensive parts) never
+/// touch the render loop, so streaming new tiles while moving doesn't hitch.
+struct DecodedTile {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+}
+
 #[derive(Resource)]
 pub struct MapStream {
     /// World origin: a (lat, lng) plus base zoom. Every zoom's tiles are placed
@@ -109,7 +120,7 @@ pub struct MapStream {
     requested: HashSet<TileKey>,
     /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
     failed: HashMap<TileKey, (u32, std::time::Instant)>,
-    results: Arc<Mutex<HashMap<TileKey, Option<Vec<u8>>>>>,
+    results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
     /// Fetch jobs, tagged with the anchor generation they were queued for so the
     /// workers can drop jobs from a previous anchor instead of grinding through
     /// hundreds of stale fetches before the new anchor's tiles get a turn.
@@ -255,15 +266,37 @@ pub fn init_map_stream(
             if gen != live_gen.load(Ordering::Relaxed) {
                 continue;
             }
-            let bytes = match load_tile_image(&key, &template) {
-                Ok(b) => Some(b),
+            // Fetch, decode, and build the mip chain here on the worker thread so
+            // the main thread only has to hand the finished pixels to the GPU.
+            let decoded = match load_tile_image(&key, &template) {
+                Ok(b) => match image::load_from_memory(&b) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (width, height) = (rgba.width(), rgba.height());
+                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
+                            width,
+                            height,
+                            rgba.into_raw(),
+                        );
+                        Some(DecodedTile {
+                            data,
+                            width,
+                            height,
+                            mip_count,
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(tile = %key.to_path(), error = %e, "map tile decode failed");
+                        None
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(tile = %key.to_path(), error = %e, "map tile fetch failed");
                     None
                 }
             };
             if let Ok(mut g) = results.lock() {
-                g.insert(key, bytes);
+                g.insert(key, decoded);
             }
         });
     }
@@ -456,14 +489,25 @@ pub fn apply_stream_textures(
     let Ok(mut results) = results_arc.lock() else {
         return;
     };
+    // Cap texture finalizations per frame: a fast pan can land dozens of decoded
+    // tiles at once, and uploading them all in one frame hitches. The rest keep
+    // their decoded data queued (Without<StreamTileReady>) and upload next frame.
+    const MAX_UPLOADS_PER_FRAME: usize = 8;
+    let mut uploaded = 0;
     for (entity, tile) in tiles.iter() {
-        match results.get(&tile.key) {
-            None => continue,
-            Some(None) => {
-                // Fetch failed. Clear the result and record the failure so the
-                // retry pump in update_map_stream can re-queue it; only after
-                // the attempt budget is spent does the placeholder become final.
-                results.remove(&tile.key);
+        if uploaded >= MAX_UPLOADS_PER_FRAME {
+            break;
+        }
+        // Take ownership so the decoded mip chain is freed once uploaded (leaving
+        // it in `results` would grow the map unboundedly as you move).
+        let Some(outcome) = results.remove(&tile.key) else {
+            continue;
+        };
+        match outcome {
+            None => {
+                // Fetch/decode failed. Record the failure so the retry pump in
+                // update_map_stream can re-queue it; only after the attempt budget
+                // is spent does the placeholder become final.
                 let attempts = {
                     let entry = stream
                         .failed
@@ -478,34 +522,29 @@ pub fn apply_stream_textures(
                     commands.entity(entity).insert(StreamTileReady);
                 }
             }
-            Some(Some(bytes)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    let rgba = img.to_rgba8();
-                    let size = Extent3d {
-                        width: rgba.width(),
-                        height: rgba.height(),
-                        depth_or_array_layers: 1,
-                    };
-                    let mut bevy_image = Image::new(
-                        size,
-                        TextureDimension::D2,
-                        rgba.into_raw(),
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-                    bevy_image.sampler = ImageSampler::linear();
-                    let handle = images.add(bevy_image);
-                    let mat = materials.add(StandardMaterial {
-                        base_color_texture: Some(handle),
-                        // Matte, like the placeholder — no grazing-angle sheen.
-                        perceptual_roughness: 1.0,
-                        reflectance: 0.0,
-                        ..default()
-                    });
-                    commands.entity(entity).insert(MeshMaterial3d(mat));
-                }
+            Some(decoded) => {
+                // Decode + mipmaps already done off-thread; just assemble and upload.
+                let bevy_image = crate::systems::rendering::image_from_mip_chain(
+                    decoded.width,
+                    decoded.height,
+                    decoded.data,
+                    decoded.mip_count,
+                    TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::default(),
+                    ImageSampler::linear(),
+                );
+                let handle = images.add(bevy_image);
+                let mat = materials.add(StandardMaterial {
+                    base_color_texture: Some(handle),
+                    // Matte, like the placeholder — no grazing-angle sheen.
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    ..default()
+                });
+                commands.entity(entity).insert(MeshMaterial3d(mat));
                 stream.failed.remove(&tile.key);
                 commands.entity(entity).insert(StreamTileReady);
+                uploaded += 1;
             }
         }
     }

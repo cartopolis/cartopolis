@@ -15,12 +15,14 @@ const TILE_USER_AGENT: &str = "viberfox/0.1 (OSM map client; https://github.com/
 /// Number of background tile-fetch workers (matches the globe's fetch pool).
 const TILE_WORKERS: usize = 3;
 
-/// Decoded tile image handed back from a worker thread. Decoding happens off the
-/// main thread; only the cheap `Image`/`Assets` insertion stays on it.
+/// Decoded, mipmapped tile image handed back from a worker thread. Decoding and
+/// mip-chain generation happen off the main thread; only the cheap `Image`/`Assets`
+/// insertion stays on it. `data` holds the full packed mip chain.
 struct TileImageData {
-    rgba: Vec<u8>,
+    data: Vec<u8>,
     width: u32,
     height: u32,
+    mip_count: u32,
 }
 
 /// Resource for managing OSM tile loading and caching
@@ -72,10 +74,17 @@ impl TileCache {
                         Ok(img) => {
                             let rgba = img.to_rgba8();
                             let (width, height) = (rgba.width(), rgba.height());
+                            let (data, mip_count) =
+                                crate::systems::rendering::build_mip_chain(
+                                    width,
+                                    height,
+                                    rgba.into_raw(),
+                                );
                             Some(TileImageData {
-                                rgba: rgba.into_raw(),
+                                data,
                                 width,
                                 height,
+                                mip_count,
                             })
                         }
                         Err(e) => {
@@ -180,20 +189,16 @@ pub fn load_region_tiles(
         .unwrap_or_default();
     for (tile_key, outcome) in finished {
         match outcome {
-            Some(data) => {
-                let size = bevy::render::render_resource::Extent3d {
-                    width: data.width,
-                    height: data.height,
-                    depth_or_array_layers: 1,
-                };
-                let mut bevy_image = Image::new(
-                    size,
-                    bevy::render::render_resource::TextureDimension::D2,
-                    data.rgba,
+            Some(tile) => {
+                let bevy_image = crate::systems::rendering::image_from_mip_chain(
+                    tile.width,
+                    tile.height,
+                    tile.data,
+                    tile.mip_count,
                     bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
                     RenderAssetUsages::default(),
+                    ImageSampler::linear(),
                 );
-                bevy_image.sampler = ImageSampler::linear();
                 let handle = images.add(bevy_image);
                 if let Ok(mut handles) = tile_cache.handles.lock() {
                     handles.insert(tile_key.clone(), handle);

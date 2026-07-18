@@ -188,6 +188,10 @@ pub fn setup_camera(
             root.insert(Visibility::default());
             root.spawn_spatial((
                 Camera3d::default(),
+                // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
+                // main-pass multisample cost for a marginal edge-quality change at
+                // this scene's geometric density.
+                Msaa::Sample2,
                 // Bevy's default far plane (1 km) clips the streamed tile pyramid
                 // and the horizon ground disc; reversed-z depth keeps precision
                 // fine at this range.
@@ -207,7 +211,13 @@ pub fn setup_camera(
                 Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
                 // Sky-driven image-based lighting: surfaces are lit by and reflect
                 // the actual atmosphere — the big realism win in Bevy's demo.
-                AtmosphereEnvironmentMapLight::default(),
+                // 256² IBL cubemap instead of the 512² default quarters the
+                // per-frame environment-map compute bake; ambient/diffuse IBL is
+                // low-frequency, so the resolution drop is imperceptible.
+                AtmosphereEnvironmentMapLight {
+                    size: UVec2::splat(256),
+                    ..default()
+                },
                 AmbientLight::default(),
                 FreeCamera,
                 FloatingOrigin,

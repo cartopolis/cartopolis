@@ -242,12 +242,73 @@ pub fn render_dev_panel(
                         .speed(0.5),
                 );
             });
+            ui.separator();
+            ui.checkbox(&mut dev.show_stats, "Show stats overlay (FPS)");
         });
     // Closing via the window's [x] only writes when it actually changed, to avoid
     // marking the resource changed every frame (which would re-run the lighting update).
     if !open && dev.open {
         dev.open = false;
     }
+}
+
+/// Toggleable performance overlay (top-left, below the menu bar): smoothed FPS,
+/// frame time, and live entity count. Enabled from the dev panel's "Show stats
+/// overlay" checkbox — off by default. The FPS/frame-time smoothing lives in
+/// [`StatsState`] (not `DevPanelState`) so updating it every frame doesn't
+/// re-trigger the day/night lighting recompute.
+pub fn render_stats_overlay(
+    mut egui: ResMut<EguiManager>,
+    dev: Res<crate::resources::DevPanelState>,
+    time: Res<Time<Real>>,
+    mut stats: ResMut<crate::resources::StatsState>,
+    entities: Query<()>,
+) {
+    if !dev.show_stats {
+        return;
+    }
+    // Exponential moving average so the readout is steady, not jittering per frame.
+    const ALPHA: f32 = 0.1;
+    let dt = time.delta_secs().max(1e-6);
+    let inst_fps = 1.0 / dt;
+    let inst_ms = dt * 1000.0;
+    stats.fps = if stats.fps <= 0.0 {
+        inst_fps
+    } else {
+        stats.fps + ALPHA * (inst_fps - stats.fps)
+    };
+    stats.frame_ms = if stats.frame_ms <= 0.0 {
+        inst_ms
+    } else {
+        stats.frame_ms + ALPHA * (inst_ms - stats.frame_ms)
+    };
+    let entity_count = entities.iter().count();
+
+    let fps = stats.fps;
+    let frame_ms = stats.frame_ms;
+    // Left side is clear of the right-docked panels; offset down to clear the menu bar.
+    egui::Area::new(egui::Id::new("stats_overlay"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 40.0))
+        .show(egui.ctx_mut(), |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgba_unmultiplied(10, 14, 22, 200))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(9, 6))
+                .show(ui, |ui| {
+                    let mono = |ui: &mut egui::Ui, text: String, gray: u8| {
+                        ui.label(
+                            egui::RichText::new(text)
+                                .monospace()
+                                .size(12.5)
+                                .color(egui::Color32::from_gray(gray)),
+                        );
+                    };
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    mono(ui, format!("{fps:5.1} fps"), 235);
+                    mono(ui, format!("{frame_ms:5.2} ms/frame"), 170);
+                    mono(ui, format!("{entity_count} entities"), 170);
+                });
+        });
 }
 
 /// Fill the edit dialog's fields and revert snapshots from a prim. Leaves `visible` and

@@ -27,6 +27,67 @@ pub fn repeat_linear_sampler() -> ImageSampler {
     })
 }
 
+/// Build a full RGBA8 mipmap chain from a mip-0 level, returning the packed data
+/// (all levels, smallest-last) and the level count. Pure CPU work — safe to run on
+/// a background thread. Mips let the GPU sample a size-appropriate level, so
+/// minified textures filter smoothly instead of aliasing/shimmering, and distant
+/// draws read far less texture bandwidth.
+pub fn build_mip_chain(width: u32, height: u32, mip0: Vec<u8>) -> (Vec<u8>, u32) {
+    let mut data = Vec::with_capacity(mip0.len() * 2);
+    data.extend_from_slice(&mip0);
+    let Some(mut level) = image::RgbaImage::from_raw(width, height, mip0) else {
+        return (data, 1);
+    };
+    let mut count = 1u32;
+    while level.width() > 1 || level.height() > 1 {
+        let w = (level.width() / 2).max(1);
+        let h = (level.height() / 2).max(1);
+        level = image::imageops::resize(&level, w, h, image::imageops::FilterType::Triangle);
+        data.extend_from_slice(level.as_raw());
+        count += 1;
+    }
+    (data, count)
+}
+
+/// Assemble an [`Image`] from a pre-packed mipmap chain (see [`build_mip_chain`]).
+/// Uses `new_uninit` to skip `Image::new`'s mip-0-only length assertion, then
+/// points the descriptor at all levels; wgpu uploads each from the packed data.
+pub fn image_from_mip_chain(
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+    mip_count: u32,
+    format: bevy::render::render_resource::TextureFormat,
+    usage: RenderAssetUsages,
+    sampler: ImageSampler,
+) -> Image {
+    use bevy::render::render_resource::{Extent3d, TextureDimension};
+    let size = Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let mut image = Image::new_uninit(size, TextureDimension::D2, format, usage);
+    image.texture_descriptor.mip_level_count = mip_count;
+    image.data = Some(data);
+    image.sampler = sampler;
+    image
+}
+
+/// Convenience: build a mipmapped [`Image`] from a mip-0 RGBA8 buffer in one call
+/// (mip generation + upload assembly), for on-main-thread callers like prim textures.
+pub fn mipmapped_image(
+    width: u32,
+    height: u32,
+    mip0: Vec<u8>,
+    format: bevy::render::render_resource::TextureFormat,
+    usage: RenderAssetUsages,
+    sampler: ImageSampler,
+) -> Image {
+    let (data, mip_count) = build_mip_chain(width, height, mip0);
+    image_from_mip_chain(width, height, data, mip_count, format, usage, sampler)
+}
+
 /// Subtle selection cue added on top of a surfaced material: a faint additive blue
 /// emissive that signals "selected" while leaving the prim's color and texture clearly
 /// visible (unlike a full base-color tint, which reads as a solid slab). The gizmo arms
