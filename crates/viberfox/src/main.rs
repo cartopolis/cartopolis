@@ -39,6 +39,41 @@ struct Cli {
     connect: Option<String>,
 }
 
+/// Force Bevy onto the stable CPU light-clustering path.
+///
+/// Bevy 0.19's GPU-driven clustering grows its per-view cluster buffers via an
+/// async GPU readback (`cluster::gpu::cluster_on_gpu` → `schedule_readback_buffer_map`).
+/// When the view frustum gets large — e.g. zooming the Earth camera out to altitude
+/// — that readback-and-grow path races/frees its staging buffer and loses the wgpu
+/// device, which then makes every downstream buffer creation that frame (the
+/// atmosphere env-map generation, the clustering uploads) fail with "buffer invalid"
+/// across threads. CPU clustering has no such readback and is far more than enough
+/// for this scene's handful of clustered lights. `GlobalClusterSettings` documents
+/// `gpu_clustering = None` as the supported off-switch; it is an `ExtractResource`,
+/// so the `None` is cloned into the render world every frame and gates every
+/// GPU-clustering system (`.run_if(gpu_clustering_is_enabled)`) off.
+struct ForceCpuClusteringPlugin;
+
+impl Plugin for ForceCpuClusteringPlugin {
+    fn build(&self, _app: &mut App) {}
+
+    // `finish` hooks run in plugin-add order, so adding this plugin after
+    // DefaultPlugins guarantees it runs after `PbrPlugin::finish` has inserted
+    // `GlobalClusterSettings` into the main world.
+    fn finish(&self, app: &mut App) {
+        if let Some(mut settings) = app
+            .world_mut()
+            .get_resource_mut::<bevy::light::cluster::GlobalClusterSettings>()
+        {
+            settings.gpu_clustering = None;
+            tracing::info!(
+                "GPU light clustering disabled; using CPU clustering (avoids the \
+                 readback device-loss when zooming out)"
+            );
+        }
+    }
+}
+
 fn main() {
     dotenvy::dotenv().ok();
 
@@ -47,7 +82,14 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off,viberfox=info")),
+                // wgpu/naga at `warn` so GPU validation + device-loss errors
+                // surface (they're the real cause of the zoom-out crash; the
+                // panics only show the aftermath). Override with RUST_LOG.
+                .unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(
+                        "off,viberfox=info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn",
+                    )
+                }),
         )
         .init();
 
@@ -77,6 +119,9 @@ fn main() {
 
     app.add_plugins(default_plugins)
     .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
+    // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
+    // creates GlobalClusterSettings) — see the plugin's doc comment.
+    .add_plugins(ForceCpuClusteringPlugin)
     .add_plugins(EguiPlugin)
     // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
     // PbrPlugin); it's attached as a component to the camera in setup_camera.
@@ -477,8 +522,13 @@ const SUN_SCALE: f32 = 0.75;
 /// Camera exposure (EV100) at full daylight. Exposure adapts toward night by this
 /// many stops, mimicking eye/camera adaptation so twilight and the lit city aren't
 /// crushed by the bright-noon exposure. Lower ev100 = brighter.
+///
+/// Kept modest (2.0 stops = 4×): the old 3.5-stop lift (≈11×) multiplied the
+/// night ambient floor and moon terms so hard that the near-white OSM ground read
+/// as bright daylight, not night. Night should be dark — lit by the moon's
+/// directional shaping and the glowing windows, not a lifted exposure.
 const DAY_EXPOSURE_EV100: f32 = 13.0;
-const NIGHT_EXPOSURE_LIFT: f32 = 3.5;
+const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
 
 /// How saturated the sun's *light* colour is (1 = full transmittance colour,
 /// 0 = white). Kept below 1 because the built-in atmosphere already reddens the
@@ -487,9 +537,12 @@ const SUN_COLOR_SATURATION: f32 = 0.7;
 /// Peak added ambient brightness at noon (same washout consideration — and darker
 /// ambient keeps midday shadows readable, which is where the depth comes from).
 const AMBIENT_DAY_BRIGHTNESS: f32 = 1800.0;
-/// Ambient floor at night — faint blue city skyglow so the world stays legible
-/// instead of vanishing into black between the lit windows.
-const AMBIENT_NIGHT_BRIGHTNESS: f32 = 80.0;
+/// Ambient floor at night — a faint blue city skyglow so the world doesn't vanish
+/// into pure black between the lit windows. Deliberately low: this is a *floor*,
+/// not the main night light (that's the moon + window glow). At the old value of
+/// 80 the near-white OSM ground lit up almost like day once the exposure lift
+/// (see `NIGHT_EXPOSURE_LIFT`) amplified it.
+const AMBIENT_NIGHT_BRIGHTNESS: f32 = 15.0;
 /// Peak moonlight illuminance (full moon at the zenith), on the same trimmed
 /// scale as the sun. Deliberately well above the night ambient floor: for the
 /// directional shaping to *read* — lit roofs and moon-facing facades standing
@@ -497,8 +550,10 @@ const AMBIENT_NIGHT_BRIGHTNESS: f32 = 80.0;
 /// which is also how a real moonlit night looks (the full moon is ~2500× any
 /// other natural night-sky light).
 const MOONLIGHT_ILLUMINANCE: f32 = 180.0;
-/// Peak added ambient from a full moon overhead — the sky-scattered part.
-const MOON_AMBIENT_BRIGHTNESS: f32 = 80.0;
+/// Peak added ambient from a full moon overhead — the sky-scattered part. Halved
+/// alongside the night-ambient trim so a full moon lifts the scene enough to read
+/// by without flattening it back to daylight brightness.
+const MOON_AMBIENT_BRIGHTNESS: f32 = 40.0;
 
 /// Marker for the sun's directional light.
 #[derive(Component)]

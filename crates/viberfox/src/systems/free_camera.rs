@@ -311,10 +311,22 @@ pub fn camera_controls(
         return;
     }
 
-    let Ok((mut camera_cell, mut camera_transform, mut projection)) = camera_query.single_mut()
+    let Ok((mut camera_cell_mut, mut camera_transform_mut, mut projection)) =
+        camera_query.single_mut()
     else {
         return;
     };
+    // Work on copies of the camera's Transform + GridCell and write them back at the
+    // end only if they actually changed. The camera is the big_space FloatingOrigin:
+    // any change to its Transform/GridCell forces big_space to recompute EVERY
+    // entity's GlobalTransform that frame (O(scene), see grid/propagation.rs). The
+    // follow-lerp / look_at / orbit placement below rewrote these every frame even
+    // when the view was perfectly still, which pinned that whole-scene propagation on
+    // permanently and is the dominant CPU cost of a stationary frame.
+    let prev_transform = *camera_transform_mut;
+    let prev_cell = *camera_cell_mut;
+    let mut camera_transform = prev_transform;
+    let mut camera_cell = prev_cell;
     let delta_time = time.delta().as_secs_f32();
 
     // Keep the near/far at their ground defaults unless the space tier overrides
@@ -379,6 +391,12 @@ pub fn camera_controls(
             // Framerate-independent smoothing so orbit matches the follow target
             let cam_alpha = 1.0 - (-12.0_f32 * delta_time).exp();
             camera_transform.translation = camera_transform.translation.lerp(target_position, cam_alpha);
+            // Snap once essentially settled: the lerp only approaches the target
+            // asymptotically, so without this the transform (and thus the whole-scene
+            // propagation) would keep changing by a hair forever while standing still.
+            if camera_transform.translation.distance_squared(target_position) < 1e-6 {
+                camera_transform.translation = target_position;
+            }
             camera_transform.look_at(avatar_pos + Vec3::Y * 1.5, Vec3::Y);
         }
         CameraMode::Free => {
@@ -801,27 +819,44 @@ pub fn camera_controls(
             };
             let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
             let (new_cell, local) = grid.translation_to_grid(cam_world);
-            *camera_cell = new_cell;
+            camera_cell = new_cell;
             camera_transform.translation = local;
             let pivot_local = (pivot - cell_origin(&new_cell)).as_vec3();
             camera_transform.look_at(pivot_local, look_up);
-
-            // Depth range: once the globe is in view (high surface orbit or space),
-            // push the far plane past the far limb and raise the near plane with
-            // altitude so nothing relevant clips. Otherwise the ground defaults.
-            if globe.ready {
-                let altitude = (cam_world - center).length() - radius;
-                if altitude as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
-                    let dist_center = (cam_world - center).length() as f32;
-                    // Keep `near` below the star/moon shells (~150 km) so they stay
-                    // visible from deep space; reversed-z keeps depth precise even
-                    // with a small near against the far-limb `far`.
-                    let near = (altitude as f32 * 0.01).clamp(100.0, 50_000.0);
-                    let far = (dist_center + globe.radius * 2.5).clamp(DEFAULT_FAR, 60_000_000.0);
-                    set_projection(&mut projection, near, far);
-                }
-            }
         }
+    }
+
+    // Depth range for the space tier — applied in EVERY camera mode, not just
+    // Orbit. The projection is reset to the ground defaults each frame (near 0.1,
+    // far 200 km, above); once the camera climbs high enough that the globe (or
+    // the far ground) sits beyond that 200 km far plane, everything gets clipped
+    // and the screen goes black. This was previously only fixed inside the Orbit
+    // arm, so flying up in Free/Avatar mode (or any high view) clipped the whole
+    // world. Push the far plane past the far limb and raise the near plane with
+    // altitude so nothing relevant clips, keyed off the true geocentric altitude.
+    if globe.ready {
+        let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
+        let center = globe.center_local.as_dvec3();
+        let dist_center = (cam_world - center).length();
+        let altitude = dist_center - globe.radius as f64;
+        if altitude as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
+            // Keep `near` below the star/moon shells (~150 km) so they stay visible
+            // from deep space; reversed-z keeps depth precise even with a small
+            // near against the far-limb `far`.
+            let near = (altitude as f32 * 0.01).clamp(100.0, 50_000.0);
+            let far = (dist_center as f32 + globe.radius * 2.5).clamp(DEFAULT_FAR, 60_000_000.0);
+            set_projection(&mut projection, near, far);
+        }
+    }
+
+    // Commit the pose only if it actually changed. This is the payoff of the working
+    // copies above: on a still frame nothing differs, the FloatingOrigin stays
+    // unchanged, and big_space skips the whole-scene GlobalTransform recompute.
+    if camera_transform != prev_transform {
+        *camera_transform_mut = camera_transform;
+    }
+    if camera_cell != prev_cell {
+        *camera_cell_mut = camera_cell;
     }
 }
 

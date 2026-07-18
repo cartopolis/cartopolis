@@ -28,6 +28,7 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::light::AtmosphereEnvironmentMapLight;
 use bevy::pbr::AtmosphereSettings;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
@@ -380,16 +381,21 @@ pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
 
 /// Show the globe only once high enough that it's the thing you're looking at, so
 /// normal ground play never pays for it or sees it poke through the tiles. At the
-/// same altitude the atmosphere skybox is hidden: it's a ~300 km depth-writing
-/// shell around the camera and would otherwise occlude the globe 6,400 km away,
-/// so above the threshold the sky becomes the black-of-space clear colour (with
-/// the star field showing through).
+/// same altitude the atmosphere flips to its `Raymarched` mode (see below) so the
+/// planet reads correctly from orbit — a lit globe under a thin atmospheric limb —
+/// instead of washing out under the surface-tuned aerial-perspective LUT.
 #[allow(clippy::type_complexity)]
 pub fn update_globe_visibility(
     mut commands: Commands,
     globe: Res<GlobeState>,
     camera: Query<
-        (Entity, &GridCell, &Transform, Has<AtmosphereSettings>),
+        (
+            Entity,
+            &GridCell,
+            &Transform,
+            Has<AtmosphereSettings>,
+            Has<AtmosphereEnvironmentMapLight>,
+        ),
         With<crate::systems::free_camera::FreeCamera>,
     >,
     mut globe_vis: Query<
@@ -417,26 +423,46 @@ pub fn update_globe_visibility(
     if !globe.ready {
         return;
     }
-    let Ok((cam_entity, cell, tf, has_atmosphere)) = camera.single() else {
+    let Ok((cam_entity, cell, tf, has_atmosphere, has_env)) = camera.single() else {
         return;
     };
     let show_globe = globe.in_space(cell, tf);
 
-    // Toggle the built-in atmosphere with the tier. Its aerial-perspective LUT
-    // only spans `aerial_view_lut_max_distance` (~32 km); from orbit the globe
-    // surface is thousands of km away, so every tile clamps to the LUT's far
-    // slice and gets painted with full inscattering — the whole planet washes
-    // out to a uniform haze and the draped tiles vanish. Removing
+    // Drop the camera from the atmosphere + IBL passes in the space tier.
+    //
+    // The built-in atmosphere is both wrong and dangerous from orbit here. Its
+    // `LookupTexture` aerial LUT clamps at ~32 km, so the distant globe gets
+    // painted with full inscattering (a uniform-haze wash-out); its `Raymarched`
+    // mode fixes that but is a per-fragment integration far too heavy for a weak
+    // GPU at the space-tier far plane — on an Intel iGPU it overran the command-
+    // buffer timeout and lost the device (`VK_ERROR_DEVICE_LOST`). Removing
     // `AtmosphereSettings` drops the camera from the atmosphere passes entirely
-    // (see bevy_pbr `extract_atmosphere`), so in space the sky is black with the
-    // star field showing through and the globe renders untinted. Re-added on the
-    // way back down. This mirrors the old bevy_atmosphere skybox hide (ADR-025).
-    if show_globe && has_atmosphere {
-        commands.entity(cam_entity).remove::<AtmosphereSettings>();
-    } else if !show_globe && !has_atmosphere {
-        commands
-            .entity(cam_entity)
-            .insert(AtmosphereSettings::default());
+    // (see bevy_pbr `extract_atmosphere`); removing the env-map light stops its
+    // per-frame IBL bake. The globe then renders untinted against black space with
+    // the star field, and both are restored on descent. (This replaces an
+    // in-progress Raymarched-in-space attempt that hung the GPU here and still
+    // blacked the globe out.)
+    if show_globe {
+        if has_atmosphere {
+            commands.entity(cam_entity).remove::<AtmosphereSettings>();
+        }
+        if has_env {
+            commands
+                .entity(cam_entity)
+                .remove::<AtmosphereEnvironmentMapLight>();
+        }
+    } else {
+        if !has_atmosphere {
+            commands
+                .entity(cam_entity)
+                .insert(AtmosphereSettings::default());
+        }
+        if !has_env {
+            commands.entity(cam_entity).insert(AtmosphereEnvironmentMapLight {
+                size: UVec2::splat(256),
+                ..default()
+            });
+        }
     }
 
     let want_globe = if show_globe { Visibility::Visible } else { Visibility::Hidden };
