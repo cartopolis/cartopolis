@@ -1,16 +1,24 @@
 # Viberfox
 
-A networked 3D virtual world built with Rust and Bevy. Explore a world anchored in real geography — pan across an [OpenStreetMap](https://www.openstreetmap.org/)-backed map, fly up through the atmosphere to a planetary globe and into space, and drop down into a walkable street-level scene with imported 3D buildings. Author and edit 3D objects in place, and share the space with others in real time.
+A networked 3D virtual world built with Rust and Bevy, anchored in the real planet. Walk a street lined with buildings imported straight from [OpenStreetMap](https://www.openstreetmap.org/), then just keep flying up — through the atmosphere, past the whole planet turning below you, out into space — and drop back down anywhere on Earth. Build in place, and share the world with others in real time.
 
-Highlights:
+What's in the box:
 
-- **Real-world anchoring** — the ground is streamed OSM map tiles; move the anchor to visit anywhere.
-- **Planet scale** — a floating-origin coordinate model spans street level to orbit to a full planetary globe and space tier, without precision loss.
-- **3D from OSM** — buildings imported from OpenStreetMap footprints, plus toggleable data layers and live transit boards.
-- **Authoring** — create, texture, and reshape prims (path-cut, hollow, twist, taper, slice) with a transform gizmo and edit dialog.
-- **Dynamic sky** — a physically-based atmosphere with a day/night cycle, sun, moon, and stars.
-- **Multiplayer** — an authoritative headless sim server replicates avatars and world state to connected clients.
-- **LLM-assisted** — an in-client AI panel for assisted world building.
+- **The real world, streamed** — the ground is live OSM map tiles; move the anchor and the world re-streams around wherever you land.
+- **Street to orbit, seamlessly** — one continuous space from the pavement to a full planetary globe and space, held together by a floating-origin coordinate model with no precision loss and no loading screens.
+- **3D from the map** — buildings raised from OpenStreetMap footprints, plus toggleable data layers and live transit boards.
+- **Build in place** — create, texture, and reshape prims (path-cut, hollow, twist, taper, slice) with a transform gizmo and edit dialog.
+- **A sky that moves** — a physically-based atmosphere with a day/night cycle, sun, moon, and stars.
+- **Shared, in real time** — an authoritative headless sim server keeps avatars and world state in sync across connected clients.
+- **An AI copilot** — an in-client panel for LLM-assisted world building.
+
+## Screenshots
+
+| | | |
+|---|---|---|
+| ![Viberfox screenshot 1](docs/img/screenshot-1.png) | ![Viberfox screenshot 2](docs/img/screenshot-2.png) | ![Viberfox screenshot 3](docs/img/screenshot-3.png) |
+
+_Captured in-app from the developer panel (see the [manual](docs/manual.md#taking-screenshots))._
 
 ## Prerequisites
 
@@ -27,6 +35,8 @@ cargo run -p viberfox
 ```
 
 This starts the client in **offline mode**, loading from a local SQLite database at `data/regions.db`.
+
+New here? The [user manual](docs/manual.md) covers getting around, authoring objects, the developer panel, and taking screenshots.
 
 To connect to a live sim server:
 

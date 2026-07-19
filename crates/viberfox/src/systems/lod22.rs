@@ -48,10 +48,17 @@ const MAX_BUILDS_PER_FRAME: usize = 1;
 /// colour correctly from the real geometry.
 const FLAT_ROOF_NORMAL_Y: f32 = 0.90;
 const FLAT_ROOF_COLOR: [f32; 3] = [0.52, 0.52, 0.54];
-/// Real buildings cast shadows (like the extruded detail patch). If a weak GPU
-/// struggles rendering the covered city into the sun/moon cascades, set false to
-/// mark the meshes `NotShadowCaster` — geometry stays, only cast shadows drop.
-const LOD22_CAST_SHADOWS: bool = true;
+/// Shadow LOD: only cells within this Chebyshev radius of the camera cast into
+/// the sun/moon cascades (radius 1 → the 3×3 around the camera). Distant cells'
+/// shadows are sub-pixel, but rasterizing their ~240k-triangle geometry into up
+/// to 8 cascade passes is the dominant frame cost — so they're `NotShadowCaster`.
+/// Set to a large value to shadow everything, or -1 to disable shadow casting.
+const SHADOW_RADIUS: i64 = 1;
+/// Cull back faces. The LoD2.2 solids are consistently wound (outward), and the
+/// lat/lng→local mapping preserves orientation, so back-face culling drops the
+/// ~half of triangles facing away — a big raster/vertex saving. Set false (→
+/// double-sided) if any building renders inside-out.
+const BACKFACE_CULL: bool = true;
 
 /// Marker for spawned LoD2.2 meshes.
 #[derive(Component)]
@@ -88,6 +95,10 @@ pub struct Lod22Buildings {
     failed: HashMap<(i64, i64), u32>,
     /// Spawned cell entities, despawned when out of range.
     cells: HashMap<(i64, i64), Entity>,
+    /// Cells currently marked `NotShadowCaster` (beyond `SHADOW_RADIUS`), so the
+    /// shadow-LOD pass only issues a command when a cell actually crosses the
+    /// boundary rather than every frame.
+    no_shadow: HashSet<(i64, i64)>,
     /// Shared material (white base, per-vertex wall/roof colours).
     material: Option<Handle<StandardMaterial>>,
 }
@@ -114,6 +125,7 @@ pub fn update_lod22(
         for (_, e) in lod.cells.drain() {
             commands.entity(e).despawn();
         }
+        lod.no_shadow.clear();
         lod.requested.clear();
         lod.failed.clear();
         lod.jobs = None;
@@ -209,25 +221,29 @@ pub fn update_lod22(
                         materials.add(StandardMaterial {
                             base_color: Color::WHITE,
                             perceptual_roughness: 0.95,
-                            double_sided: true,
-                            cull_mode: None,
+                            double_sided: !BACKFACE_CULL,
+                            cull_mode: if BACKFACE_CULL {
+                                Some(bevy::render::render_resource::Face::Back)
+                            } else {
+                                None
+                            },
                             ..default()
                         })
                     })
                     .clone();
-                let mut e = commands.spawn((
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(material),
-                    Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                    grid_cell,
-                    ChildOf(root),
-                    Lod22Mesh,
-                    HideInSpace,
-                ));
-                if !LOD22_CAST_SHADOWS {
-                    e.insert(bevy::light::NotShadowCaster);
-                }
-                lod.cells.insert(c, e.id());
+                let e = commands
+                    .spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(material),
+                        Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                        grid_cell,
+                        ChildOf(root),
+                        Lod22Mesh,
+                        HideInSpace,
+                    ))
+                    .id();
+                // Shadow-caster state is set by the shadow-LOD pass below.
+                lod.cells.insert(c, e);
                 tracing::info!(cell = ?c, live = lod.cells.len(), "lod22 cell rendered");
             }
             Ok(None) => {} // empty cell; stays requested so it isn't re-queried
@@ -251,7 +267,25 @@ pub fn update_lod22(
         if let Some(e) = lod.cells.remove(&c) {
             commands.entity(e).despawn();
         }
+        lod.no_shadow.remove(&c);
         lod.requested.remove(&c);
+    }
+
+    // Shadow LOD: cells within SHADOW_RADIUS cast shadows, the rest don't. Only act
+    // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
+    // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
+    // change is the directional lights' `num_cascades` — see CLAUDE.md.
+    let snapshot: Vec<((i64, i64), Entity)> = lod.cells.iter().map(|(&k, &v)| (k, v)).collect();
+    for ((cx, cy), e) in snapshot {
+        let near = (cx - ccx).abs().max((cy - ccy).abs()) <= SHADOW_RADIUS;
+        let off = lod.no_shadow.contains(&(cx, cy));
+        if near && off {
+            commands.entity(e).remove::<bevy::light::NotShadowCaster>();
+            lod.no_shadow.remove(&(cx, cy));
+        } else if !near && !off {
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
+            lod.no_shadow.insert((cx, cy));
+        }
     }
 }
 

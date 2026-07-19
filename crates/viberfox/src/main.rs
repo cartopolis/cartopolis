@@ -163,6 +163,7 @@ fn main() {
     .init_resource::<AiAssistantState>()
     .init_resource::<DevPanelState>()
     .init_resource::<StatsState>()
+    .init_resource::<resources::ScreenshotState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
     .init_resource::<systems::lod22::Lod22Buildings>()
     .init_resource::<systems::data_layers::DataLayers>()
@@ -356,7 +357,12 @@ fn main() {
             systems::ui::render_menu_bar.before(systems::ai_assistant::render_ai_panel),
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
-            systems::ui::render_dev_panel,
+            // Nested to stay under the per-tuple system limit: the driver runs after
+            // the panel so a button click is seen the same frame it's captured.
+            (
+                systems::ui::render_dev_panel,
+                systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
+            ),
             systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
             // The right-hand panels draw into the shared root `Ui`, so their call
             // order fixes their right-to-left placement. Chain them (AI → Layers →
@@ -406,7 +412,13 @@ fn main() {
             systems::gizmo::handle_gizmo_interaction,
         ),
     )
-    .add_systems(Update, frame_time_watchdog);
+    .add_systems(Update, (frame_time_watchdog, log_render_cost))
+    // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
+    .add_systems(
+        PostUpdate,
+        systems::ui::suppress_egui_for_screenshot
+            .after(systems::egui_manager::end_egui_frame),
+    );
 
     app.run();
 }
@@ -990,6 +1002,82 @@ fn frame_time_watchdog(
             "asset census"
         );
     }
+}
+
+/// Render-cost census: triangle counts by layer, plus the **shadow-caster**
+/// triangle load — the costs that mesh/image/material counts hide (a static scene
+/// with 26 meshes still hung the GPU). Shadow-caster triangles are re-rasterized
+/// once per shadow cascade (sun + moon, 4 each), so `ktris_shadow` weighs far
+/// heavier than its raw value and is usually what pins this iGPU; `draws` is the
+/// visible mesh count. Watch these against `frame_ms` to see what "too much" is.
+fn log_render_cost(
+    time: Res<Time<Real>>,
+    mut next: Local<f32>,
+    meshes: Res<Assets<Mesh>>,
+    q: Query<(
+        &Mesh3d,
+        &bevy::camera::visibility::ViewVisibility,
+        Has<bevy::light::NotShadowCaster>,
+        Has<systems::osm_buildings::OsmBuildingMesh>,
+        Has<systems::lod22::Lod22Mesh>,
+        Has<systems::map_stream::StreamTile>,
+        Has<systems::globe::GlobeMesh>,
+    )>,
+) {
+    *next -= time.delta_secs();
+    if *next > 0.0 {
+        return;
+    }
+    *next = 5.0;
+
+    let tris = |h: &Handle<Mesh>| -> usize {
+        meshes.get(h).map_or(0, |m| {
+            // Use the non-panicking accessors: meshes uploaded RENDER_WORLD-only
+            // (tiles, globe, transit) have had their main-world geometry dropped
+            // after extraction, so `indices()`/`count_vertices()` would panic
+            // (they assert MAIN_WORLD). Count those as 0 rather than crashing.
+            match m.try_indices_option() {
+                Ok(Some(i)) => i.len() / 3,
+                Ok(None) => m.count_vertices() / 3, // non-indexed, still in main world
+                Err(_) => 0,                        // extracted to render world only
+            }
+        })
+    };
+    let (mut draws, mut total, mut shadow) = (0usize, 0usize, 0usize);
+    let (mut bld, mut lod22, mut tiles, mut globe) = (0usize, 0usize, 0usize, 0usize);
+    for (mesh, vis, no_shadow, is_bld, is_lod22, is_tile, is_globe) in &q {
+        if !vis.get() {
+            continue; // not actually rendered this frame
+        }
+        let t = tris(&mesh.0);
+        draws += 1;
+        total += t;
+        if !no_shadow {
+            shadow += t;
+        }
+        if is_bld {
+            bld += t;
+        }
+        if is_lod22 {
+            lod22 += t;
+        }
+        if is_tile {
+            tiles += t;
+        }
+        if is_globe {
+            globe += t;
+        }
+    }
+    tracing::info!(
+        draws,
+        ktris_total = total / 1000,
+        ktris_shadow = shadow / 1000,
+        ktris_buildings = bld / 1000,
+        ktris_lod22 = lod22 / 1000,
+        ktris_tiles = tiles / 1000,
+        ktris_globe = globe / 1000,
+        "render cost",
+    );
 }
 
 fn apply_day_night_cycle(

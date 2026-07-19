@@ -180,6 +180,7 @@ pub fn toggle_dev_panel_shortcut(
 pub fn render_dev_panel(
     mut egui: ResMut<EguiManager>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    mut shot: ResMut<crate::resources::ScreenshotState>,
 ) {
     if !dev.open {
         return;
@@ -255,11 +256,113 @@ pub fn render_dev_panel(
             );
             ui.separator();
             ui.checkbox(&mut dev.show_stats, "Show stats overlay (FPS)");
+            ui.separator();
+            ui.label("README screenshots");
+            ui.horizontal(|ui| {
+                // Clicking captures a chrome-free shot into the next slot, cycling
+                // docs/img/screenshot-{1..N}.png. The `capture_requested` guard stops
+                // a held click from queuing more than one capture.
+                if ui
+                    .button(format!("📷 Capture slot {}", shot.next_slot + 1))
+                    .on_hover_text("Hides the UI for one frame, then saves docs/img/screenshot-N.png")
+                    .clicked()
+                    && !shot.hide_ui
+                {
+                    shot.hide_ui = true;
+                    shot.capture_requested = true;
+                }
+                if ui.button("Reset to 1").clicked() {
+                    shot.next_slot = 0;
+                }
+            });
         });
     // Closing via the window's [x] only writes when it actually changed, to avoid
     // marking the resource changed every frame (which would re-run the lighting update).
     if !open && dev.open {
         dev.open = false;
+    }
+}
+
+/// Fires the pending README screenshot requested from the dev panel. Runs in Update
+/// **after** `render_dev_panel` so the button click is visible this frame; because
+/// `suppress_egui_for_screenshot` drops the egui output later this same frame (while
+/// `hide_ui` is set), the captured swapchain has no UI chrome. After the capturing
+/// frame, `hide_ui` is cleared and the panel reappears.
+pub fn drive_screenshots(
+    mut commands: Commands,
+    mut shot: ResMut<crate::resources::ScreenshotState>,
+) {
+    use bevy::render::view::screenshot::Screenshot;
+
+    if shot.capture_requested {
+        // The `docs/img/` dir must exist or the save fails with an IO error.
+        if let Err(e) = std::fs::create_dir_all("docs/img") {
+            warn!("Could not create docs/img/ directory: {e}");
+            shot.capture_requested = false;
+            shot.hide_ui = false;
+            return;
+        }
+        let slot = shot.next_slot;
+        let path = std::path::PathBuf::from(format!("docs/img/screenshot-{}.png", slot + 1));
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_screenshot_fixed_resolution(path));
+        shot.next_slot = (slot + 1) % crate::resources::SCREENSHOT_SLOTS;
+        shot.capture_requested = false;
+        // Leave `hide_ui` set: this is the frame being captured, so the UI must stay
+        // hidden. It's cleared on the next run below.
+    } else if shot.hide_ui {
+        shot.hide_ui = false;
+    }
+}
+
+/// Screenshot observer (a fixed-resolution replacement for Bevy's `save_to_disk`):
+/// normalizes every capture to `SCREENSHOT_WIDTH`×`SCREENSHOT_HEIGHT` so README images
+/// stay consistent regardless of window size. The capture is center-cropped to the
+/// target aspect ratio and resampled (`resize_to_fill`), then the alpha channel — which
+/// carries HDR brightness, not transparency — is dropped before saving as RGB PNG.
+fn save_screenshot_fixed_resolution(
+    path: std::path::PathBuf,
+) -> impl FnMut(On<bevy::render::view::screenshot::ScreenshotCaptured>) {
+    use crate::resources::{SCREENSHOT_HEIGHT, SCREENSHOT_WIDTH};
+
+    move |captured| {
+        let dynamic = match captured.image.clone().try_into_dynamic() {
+            Ok(img) => img,
+            Err(e) => {
+                error!("Screenshot capture could not be decoded: {e}");
+                return;
+            }
+        };
+        let normalized = dynamic
+            .resize_to_fill(
+                SCREENSHOT_WIDTH,
+                SCREENSHOT_HEIGHT,
+                image::imageops::FilterType::Lanczos3,
+            )
+            .to_rgb8();
+        match normalized.save(&path) {
+            Ok(()) => info!(
+                "Screenshot saved to {} ({}×{})",
+                path.display(),
+                SCREENSHOT_WIDTH,
+                SCREENSHOT_HEIGHT
+            ),
+            Err(e) => error!("Cannot save screenshot {}: {e}", path.display()),
+        }
+    }
+}
+
+/// When a screenshot is being captured, drop this frame's tessellated egui geometry so
+/// the shot is free of UI chrome. Runs in PostUpdate **after** `end_egui_frame` (which
+/// writes the output) and before render-world extraction. Only `clipped_primitives` is
+/// cleared — `textures_delta` is left intact so egui's font/texture uploads aren't lost.
+pub fn suppress_egui_for_screenshot(
+    shot: Res<crate::resources::ScreenshotState>,
+    mut output: ResMut<super::egui_manager::EguiRenderOutput>,
+) {
+    if shot.hide_ui {
+        output.clipped_primitives.clear();
     }
 }
 

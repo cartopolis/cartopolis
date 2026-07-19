@@ -105,6 +105,31 @@ impl Default for DevPanelState {
     }
 }
 
+/// Number of README screenshot slots the dev-panel button cycles through
+/// (`docs/img/screenshot-1.png` … `screenshot-3.png`).
+pub const SCREENSHOT_SLOTS: usize = 3;
+
+/// Fixed output resolution for captured screenshots (16:9). Every capture is
+/// center-cropped to this aspect ratio and resampled to these exact dimensions, so
+/// README images stay consistent regardless of the window size at capture time.
+pub const SCREENSHOT_WIDTH: u32 = 1920;
+pub const SCREENSHOT_HEIGHT: u32 = 1080;
+
+/// Drives the dev-panel "Screenshot" button: on click, egui is suppressed for one
+/// frame so the capture has no UI chrome, then a `Screenshot` of the primary window
+/// is saved to the next slot. Kept **separate** from [`DevPanelState`] so toggling it
+/// every frame doesn't re-trigger the lighting recompute.
+#[derive(Resource, Default)]
+pub struct ScreenshotState {
+    /// Next slot to write (0-based), cycling `0..SCREENSHOT_SLOTS` → files 1..=N.
+    pub next_slot: usize,
+    /// When true, egui rendering is dropped this frame so the shot has no UI chrome.
+    pub hide_ui: bool,
+    /// A capture was requested this frame; the driver spawns the `Screenshot` and
+    /// clears this on its next run (while `hide_ui` is still active).
+    pub capture_requested: bool,
+}
+
 /// Smoothed runtime stats for the dev overlay. Kept **separate** from
 /// [`DevPanelState`] on purpose: it updates every frame, and mutating
 /// `DevPanelState` each frame would trip its `is_changed()` gate and re-run the
