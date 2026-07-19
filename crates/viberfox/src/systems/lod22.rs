@@ -38,9 +38,11 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 /// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
 /// the server binned into, and the cells `osm_buildings` skips).
 const LOD22_ZOOM: u32 = 14;
-/// CACHE_ZOOM cells streamed around the camera (radius 3 → 7×7 ≈ ±5 km): enough to
-/// carry the whole surrounding city in real detail at street level.
-const LOD22_RADIUS: i64 = 3;
+/// CACHE_ZOOM cells streamed around the camera at full LoD2.2 detail (radius 2 →
+/// 5×5 ≈ ±3.5 km). Covered cells *beyond* this fall back to the simplified,
+/// inset, non-shadow far-cell extrusion in `osm_buildings` (a distance LOD): the
+/// simplified volume nests inside the real one, so the transition never z-fights.
+pub const LOD22_RADIUS: i64 = 2;
 /// Cap on cell meshes uploaded per frame (iGPU device-loss guard — see module doc).
 const MAX_BUILDS_PER_FRAME: usize = 1;
 /// A roof triangle whose |normal.y| exceeds this reads as flat → grey; steeper
@@ -53,7 +55,10 @@ const FLAT_ROOF_COLOR: [f32; 3] = [0.52, 0.52, 0.54];
 /// shadows are sub-pixel, but rasterizing their ~240k-triangle geometry into up
 /// to 8 cascade passes is the dominant frame cost — so they're `NotShadowCaster`.
 /// Set to a large value to shadow everything, or -1 to disable shadow casting.
-const SHADOW_RADIUS: i64 = 1;
+/// At 0 only the camera's own cell casts — profiling showed shadow-casting
+/// geometry (rendered into up to 8 sun+moon cascades) was the dominant frame
+/// cost, and near dense cells carry most of it.
+const SHADOW_RADIUS: i64 = 0;
 /// Cull back faces. The LoD2.2 solids are consistently wound (outward), and the
 /// lat/lng→local mapping preserves orientation, so back-face culling drops the
 /// ~half of triangles facing away — a big raster/vertex saving. Set false (→

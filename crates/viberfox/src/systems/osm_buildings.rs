@@ -575,11 +575,15 @@ pub fn update_buildings(
         for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
             for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
                 let cell = (ccx + dx, ccy + dy);
+                // Distance LOD: within the LoD2.2 near radius the real meshes
+                // (lod22.rs) own the cell, so skip the simplified far extrusion.
+                // Beyond it, the far extrusion is the distant simplified tier.
+                let lod22_near = lod22_covers(cell.0, cell.1)
+                    && (cell.0 - ccx).abs().max((cell.1 - ccy).abs())
+                        <= crate::systems::lod22::LOD22_RADIUS;
                 if !osm.far_requested.contains(&cell)
                     && *osm.far_failed.get(&cell).unwrap_or(&0) < 3
-                    // Real LoD2.2 meshes (lod22.rs) own these cells; skip the
-                    // simplified far extrusion so the two don't z-fight.
-                    && !lod22_covers(cell.0, cell.1)
+                    && !lod22_near
                 {
                     to_request.push(cell);
                 }
