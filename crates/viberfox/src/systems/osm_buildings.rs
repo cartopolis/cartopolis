@@ -20,9 +20,10 @@
 //! scale until the real-metre frame (ADR-019) lands.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
@@ -57,6 +58,135 @@ const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter
 /// self-hosted default.
 fn overpass_url() -> String {
     std::env::var("VIBE_OVERPASS_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.to_string())
+}
+
+/// Self-hosted 3DBAG static building host (real Dutch BAG heights + ground level;
+/// ADR-027). Serves Overpass-shaped per-cell JSON at
+/// `/buildings/{CACHE_ZOOM}/{x}/{y}.json` plus a `/coverage.json` manifest, so
+/// covered cells parse through the same `parse_buildings` path as Overpass — only
+/// the source differs. Override with `VIBE_3DBAG_URL`; empty disables 3DBAG.
+const DEFAULT_3DBAG_URL: &str = "https://3dbag.garage44.eu";
+
+/// Resolve the 3DBAG host from `VIBE_3DBAG_URL` (empty string disables 3DBAG,
+/// falling back to OSM buildings everywhere).
+pub(crate) fn tdbag_url() -> String {
+    std::env::var("VIBE_3DBAG_URL").unwrap_or_else(|_| DEFAULT_3DBAG_URL.to_string())
+}
+
+/// Which fixed-zoom cells the 3DBAG host serves, loaded once from its coverage
+/// manifest. Cells outside this set (and any 3DBAG fetch miss) fall through to
+/// Overpass/OSM.
+struct Coverage {
+    zoom: u32,
+    cells: HashSet<(i64, i64)>,
+    attribution: String,
+}
+
+static COVERAGE: OnceLock<Coverage> = OnceLock::new();
+static COVERAGE_LOD22: OnceLock<Coverage> = OnceLock::new();
+
+/// Lazily fetch a 3DBAG coverage manifest (once per process, on whichever
+/// background fetch thread reaches it first). A missing/unreachable host yields an
+/// empty coverage, so the client silently uses OSM buildings everywhere.
+fn fetch_coverage(sub: &str) -> Coverage {
+    let empty = Coverage {
+        zoom: CACHE_ZOOM,
+        cells: HashSet::new(),
+        attribution: String::new(),
+    };
+    let base = tdbag_url();
+    if base.is_empty() {
+        return empty;
+    }
+    let url = format!("{base}{sub}");
+    let text = match ureq::get(&url).call() {
+        Ok(r) => match r.into_string() {
+            Ok(t) => t,
+            Err(_) => return empty,
+        },
+        Err(e) => {
+            tracing::info!(%url, error = %e, "no 3DBAG coverage reachable; using OSM buildings");
+            return empty;
+        }
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return empty;
+    };
+    let zoom = json
+        .get("zoom")
+        .and_then(|z| z.as_u64())
+        .unwrap_or(CACHE_ZOOM as u64) as u32;
+    let attribution = json
+        .get("attribution")
+        .and_then(|a| a.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let mut cells = HashSet::new();
+    if let Some(arr) = json.get("cells").and_then(|c| c.as_array()) {
+        for cell in arr {
+            if let Some(pair) = cell.as_array() {
+                if let (Some(x), Some(y)) = (
+                    pair.first().and_then(|v| v.as_i64()),
+                    pair.get(1).and_then(|v| v.as_i64()),
+                ) {
+                    cells.insert((x, y));
+                }
+            }
+        }
+    }
+    tracing::info!(sub, cells = cells.len(), zoom, "3DBAG coverage loaded");
+    Coverage {
+        zoom,
+        cells,
+        attribution,
+    }
+}
+
+/// LoD1.2 (Overpass-shaped footprint) coverage.
+fn coverage() -> &'static Coverage {
+    COVERAGE.get_or_init(|| fetch_coverage("/coverage.json"))
+}
+
+/// LoD2.2 (real triangulated roof mesh) coverage — served by `lod22.rs`.
+fn coverage_lod22() -> &'static Coverage {
+    COVERAGE_LOD22.get_or_init(|| fetch_coverage("/lod22/coverage.json"))
+}
+
+/// True if the 3DBAG host serves this cell's LoD1.2 footprints.
+fn tdbag_covers(cx: i64, cy: i64) -> bool {
+    let cov = coverage();
+    cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy))
+}
+
+/// True if the 3DBAG host serves this cell as a real LoD2.2 mesh (rendered by
+/// `lod22.rs`). The OSM/LoD1.2 building layers skip these cells so the real
+/// meshes render without overlapping simplified extrusions.
+pub(crate) fn lod22_covers(cx: i64, cy: i64) -> bool {
+    let cov = coverage_lod22();
+    cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy))
+}
+
+/// The 3DBAG attribution string, if any 3DBAG coverage (LoD2.2 or LoD1.2) is
+/// loaded and non-empty — for the UI credits (CC BY 4.0). Non-blocking: reads the
+/// already-initialised manifests and returns `None` until a building fetch has
+/// loaded coverage, so it never triggers the network fetch itself.
+pub fn tdbag_attribution() -> Option<String> {
+    for cov in [COVERAGE_LOD22.get(), COVERAGE.get()].into_iter().flatten() {
+        if !cov.cells.is_empty() && !cov.attribution.is_empty() {
+            return Some(cov.attribution.clone());
+        }
+    }
+    None
+}
+
+/// Wall + tiled-roof colour for a LoD2.2 building at a location, reusing the same
+/// palette/jitter as the extruded buildings so 3DBAG and OSM buildings share a
+/// look. (`lod22.rs` picks grey for near-flat roof triangles by slope.)
+pub(crate) fn building_palette(lat: f64, lng: f64) -> ([f32; 3], [f32; 3]) {
+    let seed = color_seed((lat, lng));
+    let wall = jitter(palette_color((lat, lng)), seed, 0.12);
+    let roof = jitter(default_roof("yes", seed), seed.rotate_left(17), 0.12);
+    (wall, roof)
 }
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
@@ -349,7 +479,25 @@ pub fn update_buildings(
         .last_fetch
         .map(|t| t.elapsed() >= DETAIL_REFETCH_COOLDOWN)
         .unwrap_or(true);
-    if need && !osm.in_flight && cooled && cam_altitude < DETAIL_FREEZE_ALT {
+    // Over a LoD2.2-covered cell the real meshes (lod22.rs) carry the near
+    // detail, so skip the extruded detail patch there entirely. `center` is in
+    // base-zoom tile coords; coverage is keyed on CACHE_ZOOM cells, so convert.
+    let cam_shift = z.saturating_sub(CACHE_ZOOM);
+    let cam_cell14 = (
+        center.0.div_euclid(1i64 << cam_shift),
+        center.1.div_euclid(1i64 << cam_shift),
+    );
+    let over_lod22 = lod22_covers(cam_cell14.0, cam_cell14.1);
+    // Entering LoD2.2 territory from outside: despawn any lingering extruded
+    // detail patch (it only refreshes via a new fetch, which we now skip here) so
+    // it doesn't shine through the real meshes.
+    if over_lod22 && !osm.detail_entities.is_empty() {
+        for e in osm.detail_entities.drain(..) {
+            commands.entity(e).despawn();
+        }
+        osm.last_center = None;
+    }
+    if need && !osm.in_flight && cooled && cam_altitude < DETAIL_FREEZE_ALT && !over_lod22 {
         osm.in_flight = true;
         osm.last_center = Some(center);
         osm.last_fetch = Some(Instant::now());
@@ -429,6 +577,9 @@ pub fn update_buildings(
                 let cell = (ccx + dx, ccy + dy);
                 if !osm.far_requested.contains(&cell)
                     && *osm.far_failed.get(&cell).unwrap_or(&0) < 3
+                    // Real LoD2.2 meshes (lod22.rs) own these cells; skip the
+                    // simplified far extrusion so the two don't z-fight.
+                    && !lod22_covers(cell.0, cell.1)
                 {
                     to_request.push(cell);
                 }
@@ -1291,9 +1442,71 @@ fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Build
     Ok(out)
 }
 
-/// One fixed cell's buildings, from disk cache or a single Overpass query (cached).
-/// Cache hits skip the network (and the throttle) entirely.
+/// One fixed cell's buildings. Covered cells (ADR-027) come from the self-hosted
+/// 3DBAG host (real Dutch BAG heights); everything else — and any 3DBAG miss (a
+/// 404 or transport error) — falls back to Overpass/OSM. Both paths return the
+/// same `Building` shape via `parse_buildings`.
 fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+    if zoom == CACHE_ZOOM && tdbag_covers(cx, cy) {
+        match fetch_cell_3dbag(cx, cy) {
+            Ok(buildings) => return Ok(buildings),
+            Err(e) => {
+                tracing::debug!(cx, cy, error = %e, "3DBAG cell fetch failed; falling back to OSM");
+            }
+        }
+    }
+    fetch_cell_overpass(cx, cy, zoom)
+}
+
+/// On-disk cache path for a 3DBAG cell — namespaced apart from the Overpass cache
+/// (`cache/buildings/3dbag/…`) so a cell whose source flips never serves stale
+/// geometry cached from the other source.
+fn cell_cache_path_3dbag(cx: i64, cy: i64) -> PathBuf {
+    PathBuf::from("cache")
+        .join("buildings")
+        .join("3dbag")
+        .join(CACHE_ZOOM.to_string())
+        .join(cx.to_string())
+        .join(format!("{}.json", cy))
+}
+
+/// Fetch one cell from the 3DBAG static host (disk-cached). The host serves
+/// Overpass-shaped JSON, so `parse_buildings` handles it unchanged. A 404 (cell
+/// not actually covered) or any transport error is returned as `Err`, letting the
+/// caller fall back to Overpass.
+fn fetch_cell_3dbag(cx: i64, cy: i64) -> Result<Vec<Building>, String> {
+    let path = cell_cache_path_3dbag(cx, cy);
+    if let Ok(cached) = std::fs::read_to_string(&path) {
+        match parse_buildings(&cached) {
+            Ok(buildings) => return Ok(buildings),
+            // Truncated/partial cached write — drop it and re-fetch.
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    let url = format!("{}/buildings/{}/{}/{}.json", tdbag_url(), CACHE_ZOOM, cx, cy);
+    // Read the body directly (bounded) rather than `into_string`, whose 10 MB cap
+    // a dense cell can exceed once decompressed.
+    let mut text = String::new();
+    ureq::get(&url)
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_reader()
+        .take(64 * 1024 * 1024)
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    let buildings = parse_buildings(&text)?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    write_cache_atomic(&path, &text);
+    Ok(buildings)
+}
+
+/// One fixed cell's buildings from disk cache or a single Overpass query (cached).
+/// Cache hits skip the network (and the throttle) entirely.
+fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
     let path = cell_cache_path(cx, cy, zoom);
     if let Ok(cached) = std::fs::read_to_string(&path) {
         match parse_buildings(&cached) {

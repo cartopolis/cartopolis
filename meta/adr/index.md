@@ -27,3 +27,5 @@
 | [023](./023-data-layers.md) | Data Layers (Togglable OSM Point-of-Interest Overlays) | Proposed | osm, data-layers, rendering, ui, import |
 | [024](./024-transit-live-boards.md) | Live Transit Departure Boards (OVapi) | Proposed | data-layers, transit, live-data, ui, dependency |
 | [025](./025-planetary-globe-and-space-tier.md) | Planetary Globe and Space Tier | Proposed | rendering, coordinates, globe, osm, large-world, camera |
+| [026](./026-live-transit-vehicles.md) | Live Transit Vehicle Positions (OVapi GTFS-Realtime) | Proposed | data-layers, transit, live-data, rendering, gtfs-rt |
+| [027](./027-3dbag-buildings.md) | Self-Hosted 3DBAG Buildings for Covered Areas | Proposed | buildings, osm, 3dbag, rendering, import, dependency, ops |

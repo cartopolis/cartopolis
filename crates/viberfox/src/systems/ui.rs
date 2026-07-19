@@ -243,6 +243,17 @@ pub fn render_dev_panel(
                 );
             });
             ui.separator();
+            ui.label("Render features");
+            ui.checkbox(&mut dev.shadows_enabled, "Shadows (sun + moon)");
+            // Atmosphere / env-map IBL can't be hot-swapped — removing those
+            // components at runtime hangs the GPU on this stack — so they apply at
+            // startup only (a live flip needs a relaunch to take effect).
+            ui.checkbox(&mut dev.atmosphere_enabled, "Atmosphere (restart)");
+            ui.add_enabled(
+                dev.atmosphere_enabled,
+                egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
+            );
+            ui.separator();
             ui.checkbox(&mut dev.show_stats, "Show stats overlay (FPS)");
         });
     // Closing via the window's [x] only writes when it actually changed, to avoid

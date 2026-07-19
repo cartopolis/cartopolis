@@ -118,6 +118,10 @@ const REANCHOR_DISTANCE: f64 = 120_000.0;
 /// Exponential rate of the smooth zoom glide (per second): the wheel moves a
 /// target distance, and the camera flies toward it at this rate.
 const ZOOM_GLIDE_RATE: f64 = 6.0;
+/// Exponential rate the compass "north up" reset eases the orbit view back to
+/// north (per second) — brisk enough to feel instant, slow enough to read as a
+/// turn rather than a snap.
+const NORTH_RESET_RATE: f32 = 9.0;
 /// Default camera near/far (restored outside the space view).
 const DEFAULT_NEAR: f32 = 0.1;
 const DEFAULT_FAR: f32 = 200_000.0;
@@ -180,13 +184,23 @@ pub fn setup_camera(
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19).
     let medium = scattering_media.add(ScatteringMedium::default());
 
+    // Atmosphere and its env-map IBL are chosen once here, at startup: they can't
+    // be safely toggled at runtime (removing the components frees in-flight GPU
+    // resources and hangs the device — see `globe::update_globe_visibility`). The
+    // dev-panel checkboxes seed these but only take effect on the next launch; the
+    // env flags force them off. Env-map IBL requires the atmosphere it bakes from.
+    let want_atmosphere =
+        dev.atmosphere_enabled && !crate::env_flag("VIBERFOX_NO_ATMOSPHERE");
+    let want_envmap =
+        want_atmosphere && dev.envmap_enabled && !crate::env_flag("VIBERFOX_NO_ENVMAP");
+
     commands.spawn_big_space(
         Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD),
         |root| {
             // The root must carry Visibility: renderable children inherit it, and a
             // missing parent Visibility triggers Bevy's B0004 warning per child.
             root.insert(Visibility::default());
-            root.spawn_spatial((
+            let mut cam = root.spawn_spatial((
                 Camera3d::default(),
                 // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
                 // main-pass multisample cost for a marginal edge-quality change at
@@ -203,21 +217,14 @@ pub fn setup_camera(
                 // Bevy 0.19 built-in atmosphere: the camera carries only the render
                 // settings; the sky is derived from the sun DirectionalLight direction
                 // and the camera's altitude above the planet entity spawned below.
+                // Kept even when the atmosphere is disabled — `update_globe_visibility`
+                // queries it, and without an `Atmosphere` entity it renders nothing.
                 // AmbientLight is per-camera now; apply_day_night_cycle drives its
                 // color/brightness from utils::sun.
                 AtmosphereSettings::default(),
                 // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
                 // scene isn't blown out while the sky is lit correctly.
                 Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
-                // Sky-driven image-based lighting: surfaces are lit by and reflect
-                // the actual atmosphere — the big realism win in Bevy's demo.
-                // 256² IBL cubemap instead of the 512² default quarters the
-                // per-frame environment-map compute bake; ambient/diffuse IBL is
-                // low-frequency, so the resolution drop is imperceptible.
-                AtmosphereEnvironmentMapLight {
-                    size: UVec2::splat(256),
-                    ..default()
-                },
                 AmbientLight::default(),
                 FreeCamera,
                 FloatingOrigin,
@@ -225,6 +232,16 @@ pub fn setup_camera(
                 // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
                 distance_fog(dev.fog_density, dev.time_of_day),
             ));
+            if want_envmap {
+                // Sky-driven image-based lighting: surfaces are lit by and reflect
+                // the actual atmosphere. 256² IBL cubemap instead of the 512²
+                // default quarters the per-frame environment-map compute bake;
+                // ambient/diffuse IBL is low-frequency, so the drop is imperceptible.
+                cam.insert(AtmosphereEnvironmentMapLight {
+                    size: UVec2::splat(256),
+                    ..default()
+                });
+            }
 
             // A ground disc out to the horizon, in the OSM basemap's paper tone.
             // Without it, the world ends at the loaded tiles and the void below
@@ -256,10 +273,15 @@ pub fn setup_camera(
     // the camera reads at its true altitude above it. A plain entity (not under the
     // BigSpace): the camera is the floating origin and stays near y = 0, so the sky's
     // altitude stays effectively constant — correct for the flat local world.
-    commands.spawn((
-        Atmosphere::earth(medium),
-        Transform::from_xyz(0.0, -EARTH_ATMOSPHERE_INNER_RADIUS, 0.0),
-    ));
+    // `update_atmosphere_origin` moves it to Earth's true render-space centre.
+    // Spawned only when the atmosphere is enabled (startup choice — see above).
+    if want_atmosphere {
+        commands.spawn((
+            crate::systems::globe::PlanetAtmosphere,
+            Atmosphere::earth(medium),
+            Transform::from_xyz(0.0, -EARTH_ATMOSPHERE_INNER_RADIUS, 0.0),
+        ));
+    }
 }
 
 pub fn camera_mode_toggle(
@@ -752,6 +774,45 @@ pub fn camera_controls(
                     camera_state.orbit_pitch = (camera_state.orbit_pitch
                         + rot_delta.y * ORBIT_ROT_SENS)
                         .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
+                }
+            }
+
+            // Compass "north up" reset. Eases the view back to north without
+            // moving the pivot: on the surface, yaw → the nearest multiple of a
+            // full turn (0 = north up); in space, roll the arcball up toward the
+            // pole while the look direction stays fixed. Any manual rotate this
+            // frame cancels it (grabbing the globe wins).
+            if rot_delta != Vec2::ZERO {
+                camera_state.orbit_north_reset = false;
+            }
+            if camera_state.orbit_north_reset {
+                let k = (1.0 - (-NORTH_RESET_RATE * delta_time).exp()).clamp(0.0, 1.0);
+                if space {
+                    let dir = camera_state.orbit_dir;
+                    let n = globe.north_axis_local().as_dvec3();
+                    let desired = n - dir * n.dot(dir); // north projected onto the view plane
+                    if desired.length_squared() < 1e-9 {
+                        // Looking straight down the pole: no unique "up".
+                        camera_state.orbit_north_reset = false;
+                    } else {
+                        let desired = desired.normalize();
+                        let cur = camera_state.orbit_up;
+                        let step = DQuat::IDENTITY
+                            .slerp(DQuat::from_rotation_arc(cur, desired), k as f64);
+                        camera_state.orbit_up = (step * cur).normalize();
+                        if cur.dot(desired) > 0.9999 {
+                            camera_state.orbit_up = desired;
+                            camera_state.orbit_north_reset = false;
+                        }
+                    }
+                } else {
+                    let target = (camera_state.orbit_yaw / std::f32::consts::TAU).round()
+                        * std::f32::consts::TAU;
+                    camera_state.orbit_yaw += (target - camera_state.orbit_yaw) * k;
+                    if (target - camera_state.orbit_yaw).abs() < 1e-3 {
+                        camera_state.orbit_yaw = target;
+                        camera_state.orbit_north_reset = false;
+                    }
                 }
             }
 

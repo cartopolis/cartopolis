@@ -72,6 +72,20 @@ pub struct DevPanelState {
     pub moon_age_days: f32,
     /// Show the FPS / frame-time / entity-count overlay. Off by default.
     pub show_stats: bool,
+    // ── Render feature toggles (perf/visual inspection) ─────────────────────
+    /// Sun + moon shadow maps. Off = both directional lights respawn without
+    /// shadows (`manage_lights`); toggling `shadow_maps_enabled` in place panics
+    /// bevy_light, so it despawns/respawns instead. Safe to flip at runtime.
+    ///
+    /// (Atmosphere and env-map IBL are deliberately NOT live toggles: removing
+    /// those components at runtime tears down in-flight GPU resources and hangs
+    /// the device on this stack — they're startup env flags instead. See
+    /// `main::env_flag` / `VIBERFOX_NO_ATMOSPHERE` / `VIBERFOX_NO_ENVMAP`.)
+    pub shadows_enabled: bool,
+    /// Planetary atmosphere on/off (dev panel toggle).
+    pub atmosphere_enabled: bool,
+    /// Environment-map image-based lighting on/off (dev panel toggle).
+    pub envmap_enabled: bool,
 }
 
 impl Default for DevPanelState {
@@ -84,6 +98,9 @@ impl Default for DevPanelState {
             fog_density: 0.15,
             moon_age_days: 14.8, // full moon
             show_stats: false,
+            shadows_enabled: true,
+            atmosphere_enabled: true,
+            envmap_enabled: true,
         }
     }
 }
@@ -347,6 +364,11 @@ pub struct CameraState {
     /// anchor: (lat, lng, altitude) to re-anchor the world to. Consumed by
     /// `apply_camera_reanchor`, which turns it into a re-anchoring teleport.
     pub reanchor_request: Option<(f64, f64, f64)>,
+    /// Compass request: while true, the Orbit camera eases its view back to
+    /// north-up each frame (yaw → 0 on the surface, arcball roll → pole up in
+    /// space). Set by the top-right compass overlay, cleared once aligned or as
+    /// soon as the user rotates. Ignored outside Orbit (fly/avatar are free-form).
+    pub orbit_north_reset: bool,
 }
 
 #[derive(Resource, Default)]
@@ -389,6 +411,7 @@ impl Default for CameraState {
             orbit_initialized: false,
             orbit_space: false,
             reanchor_request: None,
+            orbit_north_reset: false,
         }
     }
 }

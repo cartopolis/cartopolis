@@ -80,6 +80,14 @@ const SURFACE_LAYER_MAX_ALT: f64 = 20_000.0;
 const LAYER_CELL_RADIUS: i64 = 3;
 /// Give up on a cell after this many failed fetch rounds.
 const MAX_CELL_ATTEMPTS: u32 = 5;
+/// Density LOD: max markers rendered per cell. A dense shopping district returns
+/// 500+ POIs in one cell, and every pin head renders *always-on-top* and
+/// alpha-blended (see [`PinHeadMaterial`] / [`DepthAlways`]) — so emitting them all
+/// is unbounded transparent overdraw with no early-z rejection, which pins a weak
+/// iGPU at its command-buffer timeout (`VK_ERROR_DEVICE_LOST`) in shop-dense areas.
+/// Above the cap we subsample evenly, keeping a representative spread: a lower-LOD
+/// overview instead of every single POI.
+const MAX_MARKERS_PER_CELL: usize = 80;
 
 /// Index of the public-transport layer in [`LAYER_DEFS`] (see `transit_live`).
 pub const TRANSIT_LAYER: usize = 0;
@@ -293,6 +301,8 @@ pub struct DataLayers {
     pub buildings_enabled: bool,
     /// Feature toggle: the map ground (streamed OSM tiles + region plane).
     pub map_enabled: bool,
+    /// Feature toggle: live moving vehicles on the transit layer (ADR-026).
+    pub vehicles_enabled: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
@@ -323,6 +333,7 @@ impl Default for DataLayers {
             panel_open: false,
             buildings_enabled: true,
             map_enabled: true,
+            vehicles_enabled: false,
             popup: None,
             anchor: None,
             synced_gen: 0,
@@ -332,11 +343,20 @@ impl Default for DataLayers {
             head_material: None,
             ring_mesh: None,
             ring_materials: HashMap::new(),
-            layers: LAYER_DEFS
-                .iter()
-                .map(|_| LayerRuntime { enabled: true, ..Default::default() })
-                .collect(),
+            // Overlay layers (transit stops, shops) start off — only the base
+            // map tiles and 3D buildings are on at startup; the rest are opt-in
+            // from the Layers panel.
+            layers: LAYER_DEFS.iter().map(|_| LayerRuntime::default()).collect(),
         }
+    }
+}
+
+impl DataLayers {
+    /// The live-feed anchor once established: base tile `(x, y)`, zoom, and the
+    /// anchor latitude — the frame `lat_lng_to_local` maps into. Used by
+    /// `transit_vehicles` to place live vehicles the same way pins are placed.
+    pub fn anchor(&self) -> Option<(i64, i64, u32, f64)> {
+        self.anchor
     }
 }
 
@@ -970,6 +990,14 @@ pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<Da
                             ui.label(egui::RichText::new(*label).size(13.0));
                         });
                     }
+                    // Live moving vehicles ride on the transit layer (ADR-026).
+                    if i == TRANSIT_LAYER {
+                        ui.add_space(2.0);
+                        ui.checkbox(
+                            &mut dl.vehicles_enabled,
+                            egui::RichText::new("Live vehicles").size(13.0),
+                        );
+                    }
                 });
                 ui.add_space(4.0);
                 ui.separator();
@@ -980,7 +1008,13 @@ pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<Da
                 egui::RichText::new("Buildings").size(14.0),
             );
             ui.indent("buildings", |ui| {
-                ui.label(egui::RichText::new("OSM 3D buildings and windows").size(13.0));
+                // 3DBAG serves covered NL areas (real BAG heights); OSM elsewhere.
+                let label = if crate::systems::osm_buildings::tdbag_attribution().is_some() {
+                    "3DBAG (NL) + OSM 3D buildings"
+                } else {
+                    "OSM 3D buildings and windows"
+                };
+                ui.label(egui::RichText::new(label).size(13.0));
             });
             ui.add_space(4.0);
             ui.separator();
@@ -993,8 +1027,11 @@ pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<Da
             ui.separator();
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 ui.add_space(6.0);
+                if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
+                    ui.small(credit);
+                }
                 ui.small("Data © OpenStreetMap contributors (ODbL), via Overpass API");
-                ui.small("Live departures: OVapi (v0.ovapi.nl)");
+                ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
             });
         });
     if close {
@@ -1045,8 +1082,13 @@ fn build_layer_cell(
 
     let mut buf = MeshData::default();
     let mut heads = MeshData::default();
-    let mut instances = Vec::with_capacity(pois.len());
-    for poi in &pois {
+    // Density LOD: cap markers per cell with an even subsample, so a shop-dense
+    // cell doesn't emit hundreds of always-on-top transparent pin heads at once
+    // (the overdraw that hangs a weak GPU). Instances are capped in lockstep, so
+    // only rendered markers stay clickable.
+    let step = pois.len().div_ceil(MAX_MARKERS_PER_CELL).max(1);
+    let mut instances = Vec::with_capacity(pois.len() / step + 1);
+    for poi in pois.iter().step_by(step) {
         let w = lat_lng_to_local(poi.lat, poi.lng, ax, ay, z, tile_m);
         let local = Vec2::new(w.x - ox, w.y - oz);
         let style = &def.categories[poi.category].1;

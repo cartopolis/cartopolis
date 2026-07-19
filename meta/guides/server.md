@@ -434,6 +434,92 @@ reverse-geocoding (`bookmarks.rs`) both use `nominatim_base_url()`, which defaul
 to `DEFAULT_NOMINATIM_URL` and is overridable with `VIBE_NOMINATIM_URL` (e.g.
 `https://nominatim.openstreetmap.org`).
 
+## 8. 3DBAG buildings (self-hosted static tiles)
+
+For the Netherlands we serve **3DBAG** building data (real BAG heights + ground
+level) instead of OSM footprints with guessed heights. The live 3DBAG API is
+slow, so — like Overpass — we host it ourselves. Unlike Overpass it is **static,
+download-once** data: no database, no diffs, just preprocessed files behind
+Caddy. Currently the **city of Groningen** is covered (90k buildings, ~44 MB).
+
+**Pieces on the box** (all under `/data/3dbag/`, owned by `ubuntu`):
+
+```
+/data/3dbag
+├── venv/                 # python venv with pyproj (RD -> WGS84 reprojection)
+├── bin/3dbag_extract.py  # deployed copy of tools/3dbag_extract.py
+└── site/                 # OUTPUT, bind-mounted read-only into caddy
+    ├── coverage.json     # which z14 cells this host serves (client routing)
+    └── buildings/14/{x}/{y}.json   # per-cell Overpass-shaped buildings
+```
+
+The extract script (`tools/3dbag_extract.py` in the repo) pages the 3DBAG WFS
+`BAG3D:lod12` layer over an RD/EPSG:28992 bbox, reprojects footprints to WGS84,
+derives `height`/`roof:shape`/`roof:height` tags from the BAG attributes
+(`b3_h_maaiveld`, `b3_h_70p`, `b3_h_nok`, `b3_dak_type`), and bins each building
+into the client's zoom-14 CACHE_ZOOM cell. Output is **Overpass-shaped JSON**, so
+the client's existing `parse_buildings` consumes it unchanged — only the *source
+URL* differs per covered cell.
+
+**One-time setup** (already done on this box):
+
+```bash
+sudo mkdir -p /data/3dbag/{bin,site} && sudo chown -R ubuntu:ubuntu /data/3dbag
+sudo apt-get install -y python3.14-venv
+cd /data/3dbag && python3 -m venv venv && ./venv/bin/pip install -q pyproj
+```
+
+**Generate / refresh a city** (idempotent — rewrites `site/`, no Caddy change):
+
+```bash
+# from the repo, redeploy the script if it changed:
+scp tools/3dbag_extract.py ubuntu@garage44.eu:/data/3dbag/bin/
+
+# on the box (default bbox = Groningen city; ~40 s):
+cd /data/3dbag && ./venv/bin/python bin/3dbag_extract.py --out site --name groningen
+# other area: --name <city> --bbox <xmin ymin xmax ymax>   (EPSG:28992 / RD New)
+```
+
+**LoD2.2 real roofs** (`tools/3dbag_lod22.py`) — the higher-detail tier: instead
+of footprints, it parses 3DBAG's **CityJSON** tiles, triangulates each building's
+real LoD2.2 roof/wall surfaces, reprojects, and emits per-cell meshes to
+`site/lod22/{14}/{x}/{y}.json` (+ `site/lod22/coverage.json`). Needs `numpy` +
+`mapbox_earcut` in the venv:
+
+```bash
+cd /data/3dbag && ./venv/bin/pip install -q numpy mapbox_earcut
+# ~3-4 min for Groningen; writes into the already-served site/ tree:
+./venv/bin/python bin/3dbag_lod22.py --out site --name groningen
+```
+
+The client's `lod22.rs` streams these for covered cells (real roofs); the LoD1.2
+footprints above remain the fallback tier. Groningen LoD2.2 is ~114 MB / 101k
+buildings / 112 cells.
+
+**Serving** — the `caddy` service bind-mounts `/data/3dbag/site:/srv/3dbag:ro`
+and the `Caddyfile` has:
+
+```caddy
+3dbag.garage44.eu {
+	root * /srv/3dbag
+	encode gzip
+	file_server
+	header Access-Control-Allow-Origin "*"
+	header /buildings/* Cache-Control "public, max-age=86400"
+}
+```
+
+Adding the bind mount needs a **recreate** (not reload):
+`docker compose up -d --force-recreate caddy`. A DNS record
+`3dbag` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist (Let's Encrypt).
+
+Smoke test: `curl --compressed https://3dbag.garage44.eu/coverage.json`.
+
+**Client wiring:** the client fetches covered z14 cells from
+`VIBE_3DBAG_URL` (default `https://3dbag.garage44.eu`) and falls back to Overpass
+(OSM) on a 404 — see `osm_buildings.rs`. Attribution
+(`coverage.json.attribution`, CC BY 4.0) is shown in the client.
+
 ## Maintenance
 
 Routine upkeep is mostly automatic — the containers self-update from Geofabrik

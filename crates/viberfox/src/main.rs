@@ -105,6 +105,17 @@ fn main() {
             primary_window: Some(Window {
                 title: "Viberfox".into(),
                 resolution: WindowResolution::new(1280, 720),
+                // NOT vsync (FIFO): on Wayland, when this window is occluded the
+                // compositor stops releasing swapchain images, FIFO's acquire then
+                // blocks ~1 s per frame (the watchdog's eerily constant ~1024 ms
+                // "slow frames" with a near-idle GPU), and submissions waiting on
+                // the never-signaled acquire semaphore eventually trip i915's hang
+                // detection → `VK_ERROR_DEVICE_LOST` → the app dies in
+                // `Buffer::get_mapped_range` panics. Mailbox/Immediate never block
+                // on occlusion. This was misdiagnosed for a long time as content
+                // overload (tiles/buildings/shadows/atmosphere) because crashes
+                // struck whenever the window sat covered while logs were read.
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
             }),
             ..default()
@@ -153,9 +164,11 @@ fn main() {
     .init_resource::<DevPanelState>()
     .init_resource::<StatsState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
+    .init_resource::<systems::lod22::Lod22Buildings>()
     .init_resource::<systems::data_layers::DataLayers>()
     .init_resource::<systems::transit_live::TransitLive>()
     .init_resource::<systems::transit_live::WorldClock>()
+    .init_resource::<systems::transit_vehicles::TransitVehicles>()
     .init_resource::<systems::geo_nav::GeoNavState>()
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
@@ -219,6 +232,7 @@ fn main() {
             systems::tile_loader::load_region_tiles,
             rendering::update_region_materials,
             systems::osm_buildings::update_buildings.after(rendering::spawn_regions),
+            systems::lod22::update_lod22.after(rendering::spawn_regions),
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
             systems::data_layers::animate_stop_rings
                 .after(systems::data_layers::update_data_layers),
@@ -229,10 +243,18 @@ fn main() {
                 .after(rendering::spawn_regions),
             systems::data_layers::handle_poi_click
                 .after(systems::data_layers::update_data_layers),
-            systems::transit_live::update_world_clock,
-            systems::transit_live::poll_transit_live
-                .after(systems::data_layers::update_data_layers)
-                .after(systems::transit_live::update_world_clock),
+            // Transit polling, nested to stay under the per-tuple system limit.
+            (
+                systems::transit_live::update_world_clock,
+                systems::transit_live::poll_transit_live
+                    .after(systems::data_layers::update_data_layers)
+                    .after(systems::transit_live::update_world_clock),
+                // Live moving vehicles (ADR-026): fold new GPS fixes after the
+                // data layer has (re)established its anchor and the clock ticked.
+                systems::transit_vehicles::poll_transit_vehicles
+                    .after(systems::data_layers::update_data_layers)
+                    .after(systems::transit_live::update_world_clock),
+            ),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old
             // tiles before streaming resumes at the new origin (ADR-025).
@@ -287,6 +309,10 @@ fn main() {
                 .after(avatar::handle_avatar_movement),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
             systems::globe::update_globe_visibility
+                .after(systems::free_camera::camera_controls),
+            // Track the atmosphere's planet centre against the floating-origin
+            // camera cell (correct sky altitude in every tier — see its doc).
+            systems::globe::update_atmosphere_origin
                 .after(systems::free_camera::camera_controls),
             avatar::spawn_avatar,
             avatar::update_fox_animation.after(avatar::handle_avatar_movement),
@@ -346,13 +372,20 @@ fn main() {
             systems::data_layers::render_poi_popup
                 .after(systems::ui::render_menu_bar)
                 .after(systems::free_camera::camera_controls),
-            // Boards billboard toward the camera, so run after it has moved.
-            systems::transit_live::update_transit_boards
-                .after(systems::transit_live::poll_transit_live)
-                .after(systems::free_camera::camera_controls),
+            // Transit in-world rendering, nested to stay under the per-tuple
+            // system limit. Both run after the camera has moved this frame:
+            // boards billboard toward it, vehicles interpolate relative to it.
+            (
+                systems::transit_live::update_transit_boards
+                    .after(systems::transit_live::poll_transit_live)
+                    .after(systems::free_camera::camera_controls),
+                systems::transit_vehicles::update_transit_vehicles
+                    .after(systems::transit_vehicles::poll_transit_vehicles)
+                    .after(systems::free_camera::camera_controls),
+            ),
             advance_day_cycle.before(apply_day_night_cycle),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
-            manage_moon_light.after(systems::ui::render_dev_panel),
+            manage_lights.after(systems::ui::render_dev_panel),
             apply_distance_fog.after(systems::ui::render_dev_panel),
             update_window_glow,
             // Track the camera after it has been positioned this frame.
@@ -372,7 +405,8 @@ fn main() {
             systems::gizmo::render_gizmo_visuals,
             systems::gizmo::handle_gizmo_interaction,
         ),
-    );
+    )
+    .add_systems(Update, frame_time_watchdog);
 
     app.run();
 }
@@ -413,19 +447,42 @@ fn attach_avatar_to_bigspace(
     }
 }
 
+/// Startup-time feature switch read from the environment. Used for the render
+/// subsystems that can't be safely toggled at runtime (atmosphere, env-map IBL):
+/// removing those components mid-run tears down in-flight GPU resources and hangs
+/// the device, so they're chosen once at launch. `VIBERFOX_NO_ATMOSPHERE=1`,
+/// `VIBERFOX_NO_ENVMAP=1`. (Shadows are a live dev-panel toggle — they respawn
+/// entities cleanly instead.)
+pub fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
     // The built-in atmosphere derives the sky from the sun's `DirectionalLight`
     // direction and the camera position, so there's no atmosphere model to poke
     // here — we just spawn the sun/moon lights. `AmbientLight` is a per-camera
     // component now (set in setup_camera, driven by apply_day_night_cycle).
+    spawn_sun_light(&mut commands, &dev);
+
+    // Moonlight is a second, shadow-casting directional light. It only exists while
+    // it actually contributes (moon up at night); `manage_moon_light` spawns and
+    // despawns it so its 4 shadow cascades aren't rendered through the whole day.
+    if moon_light_wanted(&dev) {
+        spawn_moon_light(&mut commands, &dev);
+    }
+}
+
+/// Spawn the sun's directional light. Shadows follow the dev panel toggle
+/// (`dev.shadows_enabled`), applied at spawn — the toggle respawns the light
+/// rather than mutating `shadow_maps_enabled`, which panics bevy_light.
+fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
     let sun_dir = sun_direction(dev.time_of_day);
     let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
-
     commands.spawn((
         DirectionalLight {
             color: sun_color,
             illuminance,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: dev.shadows_enabled,
             ..default()
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
@@ -440,13 +497,6 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
         Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y),
         SunLight,
     ));
-
-    // Moonlight is a second, shadow-casting directional light. It only exists while
-    // it actually contributes (moon up at night); `manage_moon_light` spawns and
-    // despawns it so its 4 shadow cascades aren't rendered through the whole day.
-    if moon_light_wanted(&dev) {
-        spawn_moon_light(&mut commands, &dev);
-    }
 }
 
 /// Threshold on `moonlight_factor` below which the moon light is despawned: its
@@ -471,7 +521,7 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: dev.shadows_enabled,
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
@@ -492,25 +542,49 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
     ));
 }
 
-/// Spawn the moon light at dusk / despawn it at dawn, so its 4 shadow cascade
-/// passes are only rendered when moonlight is actually visible. Runs only when the
-/// time of day changes (same trigger as `apply_day_night_cycle`). Never toggles an
-/// existing light's `shadow_maps_enabled`, and never leaves two live directional
-/// lights with mismatched cascade counts — both bevy_light panic conditions.
-fn manage_moon_light(
+/// Owns the sun/moon light lifecycle whenever the dev panel changes:
+///   - moon spawned at dusk / despawned at dawn, so its 4 shadow cascade passes
+///     only render while moonlight is actually visible;
+///   - both lights respawned when the shadow toggle flips (Bevy 0.19's bevy_light
+///     panics if `shadow_maps_enabled` is mutated on a live light, so it
+///     despawns/respawns instead — keeping their cascade counts matched, the
+///     other panic condition).
+/// One system, one command buffer: the despawn-then-spawn on a shadow flip can't
+/// race the moon's dusk/dawn spawn into two moons.
+fn manage_lights(
     mut commands: Commands,
     dev: Res<DevPanelState>,
+    sun: Query<Entity, With<SunLight>>,
     moon: Query<Entity, With<MoonLight>>,
+    mut last_shadows: Local<Option<bool>>,
 ) {
     if !dev.is_changed() {
         return;
     }
-    match (moon_light_wanted(&dev), moon.single()) {
-        (true, Err(_)) => spawn_moon_light(&mut commands, &dev), // wanted but absent
-        (false, Ok(entity)) => {
-            commands.entity(entity).despawn(); // present but no longer wanted
+    // A shadow-toggle flip (not the first run, where setup_sky already spawned
+    // the lights correctly) respawns both lights with the new shadow state.
+    let prev = last_shadows.replace(dev.shadows_enabled);
+    let shadows_flipped = prev.is_some() && prev != Some(dev.shadows_enabled);
+
+    if shadows_flipped {
+        for e in sun.iter() {
+            commands.entity(e).despawn();
         }
-        _ => {}
+        spawn_sun_light(&mut commands, &dev);
+        for e in moon.iter() {
+            commands.entity(e).despawn();
+        }
+        if moon_light_wanted(&dev) {
+            spawn_moon_light(&mut commands, &dev);
+        }
+    } else {
+        match (moon_light_wanted(&dev), moon.single()) {
+            (true, Err(_)) => spawn_moon_light(&mut commands, &dev), // wanted but absent
+            (false, Ok(entity)) => {
+                commands.entity(entity).despawn(); // present but no longer wanted
+            }
+            _ => {}
+        }
     }
 }
 
@@ -864,6 +938,60 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 
 /// Drives the sun direction, sun light intensity, and ambient brightness from the dev
 /// panel's time-of-day slider (Ctrl+Shift+D). Runs only when the value changes.
+/// Warn when a frame's CPU time climbs toward the GPU command-buffer timeout.
+///
+/// The `VK_ERROR_DEVICE_LOST` crash gives no warning of its own — the driver just
+/// kills the device once a command buffer overruns (~1–2 s on Mesa/Intel). When
+/// the GPU falls behind, its backpressure stalls the CPU frame too, so a run of
+/// climbing frame times (`slow frame` at 250 ms → 600 ms → …) is the visible
+/// warning that a hang is imminent. Watch these lines in the log to see *when*
+/// (which altitude / what just streamed) the GPU starts choking.
+fn frame_time_watchdog(
+    time: Res<Time<Real>>,
+    globe_meshes: Query<(), With<systems::globe::GlobeMesh>>,
+    meshes: Res<Assets<Mesh>>,
+    images: Res<Assets<Image>>,
+    materials: Res<Assets<StandardMaterial>>,
+    globe: Res<systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<systems::free_camera::FreeCamera>>,
+    mut census: Local<f32>,
+) {
+    // NB: RenderDiagnosticsPlugin (per-pass GPU timestamp queries) was tried here
+    // and measured the instrumented passes at ~7 ms during 1 s frames — useful
+    // once, but its own GPU buffer readback panicked on this Mesa/Intel driver
+    // (`Buffer::get_mapped_range` in the task pools, no device loss preceding),
+    // crashing the app at startup. Don't re-add it on this hardware.
+    let ms = time.delta_secs() * 1000.0;
+    if ms > 250.0 {
+        let altitude_m = camera
+            .single()
+            .map(|(cell, tf)| globe.altitude_m(cell, tf))
+            .unwrap_or(f64::NAN);
+        tracing::warn!(
+            frame_ms = ms as u32,
+            altitude_m = altitude_m as i64,
+            globe_tiles = globe_meshes.iter().count(),
+            meshes = meshes.len(),
+            images = images.len(),
+            materials = materials.len(),
+            "slow frame — GPU may be nearing its command-buffer timeout (TDR)"
+        );
+    }
+    // Periodic asset census: if these climb without bound while flying around,
+    // a streaming path is leaking GPU resources — the other way this hardware
+    // reaches device-loss/allocation failure besides one-frame upload bursts.
+    *census += time.delta_secs();
+    if *census >= 10.0 {
+        *census = 0.0;
+        tracing::info!(
+            meshes = meshes.len(),
+            images = images.len(),
+            materials = materials.len(),
+            "asset census"
+        );
+    }
+}
+
 fn apply_day_night_cycle(
     dev: Res<DevPanelState>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), (With<SunLight>, Without<MoonLight>)>,

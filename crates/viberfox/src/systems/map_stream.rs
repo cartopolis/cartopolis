@@ -60,6 +60,12 @@ const COARSE_RADIUS: i64 = 3;
 const MIN_ZOOM: u32 = 10;
 /// Give up on a tile fetch after this many failed attempts (leaves the placeholder).
 const MAX_FETCH_ATTEMPTS: u32 = 4;
+/// Max ground tiles to despawn per frame — the mass-*despawn* twin of
+/// `MAX_UPLOADS_PER_FRAME`. A zoom-out steps the LOD zoom down and retires the
+/// whole previous finest-zoom ring at once; freeing all those per-tile textures in
+/// one command buffer overran a weak GPU's timeout. Retired tiles are queued and
+/// freed at this rate.
+const MAX_TILE_DESPAWNS_PER_FRAME: usize = 12;
 /// Altitude margin a zoom boundary must be crossed by before switching (anti-thrash).
 const ZOOM_HYSTERESIS_M: f32 = 60.0;
 
@@ -131,6 +137,12 @@ pub struct MapStream {
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
     placeholder: Option<Handle<StandardMaterial>>,
+    /// Tiles retired from `loaded`, despawned under `MAX_TILE_DESPAWNS_PER_FRAME`
+    /// per frame. A LOD zoom-out retires a whole finest-zoom ring at once and a
+    /// re-anchor retires the entire patch; freeing hundreds of tile textures in one
+    /// command buffer is the mass-despawn burst that hangs a weak GPU
+    /// (`VK_ERROR_DEVICE_LOST`) — the same failure the upload cap already guards.
+    despawn_queue: Vec<Entity>,
 }
 
 impl MapStream {
@@ -152,7 +164,6 @@ impl MapStream {
 /// globe and buildings rebuild for the new origin. `update_map_stream` re-streams
 /// tiles around the camera next frame; the on-disk tile cache keeps it cheap.
 pub fn apply_reanchor(
-    mut commands: Commands,
     mut stream: ResMut<MapStream>,
     tiles: Query<Entity, With<StreamTile>>,
 ) {
@@ -163,8 +174,13 @@ pub fn apply_reanchor(
         .anchor
         .map(|(_, _, z)| z)
         .unwrap_or(vibe_core::world::REGION_ZOOM_LEVEL);
+    // Queue the whole old-anchor patch for bounded despawn rather than freeing it
+    // all in one frame (mass-despawn device-loss guard; drained by
+    // `update_map_stream`). The queued entities are still live StreamTiles, so the
+    // query re-captures them — clear any prior queue first to avoid double-frees.
+    stream.despawn_queue.clear();
     for e in tiles.iter() {
-        commands.entity(e).despawn();
+        stream.despawn_queue.push(e);
     }
     stream.loaded.clear();
     // Clear the fetch bookkeeping so the re-streamed tiles request again (served
@@ -205,6 +221,7 @@ impl Default for MapStream {
             gen_shared: Arc::new(AtomicU32::new(0)),
             quads: HashMap::new(),
             placeholder: None,
+            despawn_queue: Vec::new(),
         }
     }
 }
@@ -324,6 +341,16 @@ pub fn update_map_stream(
     let Ok(root) = bigspace.single() else {
         return;
     };
+
+    // Drain the tile despawn queue under a per-frame budget (mass-despawn guard).
+    // Above the space-freeze return below nothing is queued, but draining here
+    // keeps a zoom-out's retired rings clearing steadily as the camera climbs.
+    if !stream.despawn_queue.is_empty() {
+        let n = stream.despawn_queue.len().min(MAX_TILE_DESPAWNS_PER_FRAME);
+        for e in stream.despawn_queue.drain(..n) {
+            commands.entity(e).despawn();
+        }
+    }
 
     // Freeze streaming from orbit (ADR-025): above the globe-show altitude the
     // detailed tiles are hidden anyway (globe::HideInSpace), so keep the pyramid
@@ -472,7 +499,9 @@ pub fn update_map_stream(
         .collect();
     for key in stale {
         if let Some(entity) = stream.loaded.remove(&key) {
-            commands.entity(entity).despawn();
+            // Queue rather than despawn inline: a LOD zoom-out retires a whole
+            // ring at once, and the per-frame drain keeps the teardown bounded.
+            stream.despawn_queue.push(entity);
         }
     }
 }

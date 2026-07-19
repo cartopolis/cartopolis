@@ -51,28 +51,68 @@ pub struct HudActions {
     pub bookmark: bool,
 }
 
-fn cardinal(deg: f32) -> &'static str {
-    const DIRS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    DIRS[(((deg + 22.5) / 45.0) as usize) % 8]
-}
+/// Diameter (points) of the top-right compass overlay.
+const COMPASS_SIZE: f32 = 46.0;
 
-/// A small compass rose: red half of the needle points to geographic north.
-fn compass_widget(ui: &mut egui::Ui, heading_deg: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-    let p = ui.painter();
-    let c = rect.center();
-    p.circle_stroke(c, 8.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(110)));
-    let th = heading_deg.to_radians();
-    // Screen direction of north when "up" is the camera's forward.
-    let north = egui::vec2(-th.sin(), -th.cos());
-    p.line_segment(
-        [c + north * 7.0, c],
-        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(235, 90, 80)),
-    );
-    p.line_segment(
-        [c, c - north * 5.0],
-        egui::Stroke::new(2.0_f32, egui::Color32::from_gray(150)),
-    );
+/// Draws the top-right compass rose (Organic-Maps style): the red needle and
+/// the "N" point to geographic north as it appears on screen. In globe (Orbit)
+/// mode it is a button — clicking eases the view back to north-up; in the
+/// free-form fly/avatar modes it is a passive indicator. Returns true when the
+/// user clicked it (only possible when `interactive`).
+fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("compass_overlay"))
+        // Below the top menu bar, tucked into the right margin.
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 52.0))
+        .show(ctx, |ui| {
+            let sense = if interactive {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(COMPASS_SIZE, COMPASS_SIZE), sense);
+            let hovered = interactive && resp.hovered();
+            let p = ui.painter();
+            let c = rect.center();
+            let r = COMPASS_SIZE * 0.5 - 2.0;
+            // Disc + ring (ring brightens on hover to signal it's clickable).
+            p.circle_filled(c, r, egui::Color32::from_rgba_unmultiplied(10, 14, 22, 210));
+            p.circle_stroke(
+                c,
+                r,
+                egui::Stroke::new(1.5, egui::Color32::from_gray(if hovered { 210 } else { 130 })),
+            );
+            // Screen direction of north when screen-up is the view heading.
+            let th = heading_deg.to_radians();
+            let north = egui::vec2(-th.sin(), -th.cos());
+            let side = egui::vec2(north.y, -north.x); // 90° clockwise from north
+            let w = side * 4.5;
+            // North half: red arrow; south half: light grey.
+            p.add(egui::Shape::convex_polygon(
+                vec![c + north * (r - 3.0), c + w, c - w],
+                egui::Color32::from_rgb(230, 80, 70),
+                egui::Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                vec![c - north * (r - 7.0), c + w, c - w],
+                egui::Color32::from_gray(190),
+                egui::Stroke::NONE,
+            ));
+            // "N" over the north tip.
+            p.text(
+                c + north * (r - 11.0),
+                egui::Align2::CENTER_CENTER,
+                "N",
+                egui::FontId::proportional(10.0),
+                egui::Color32::WHITE,
+            );
+            if interactive {
+                resp.clone().on_hover_text("Reset to north-up");
+            }
+            clicked = resp.clicked();
+        });
+    clicked
 }
 
 /// Build the overlay's anchored box and return what was clicked. Pure UI over
@@ -110,14 +150,15 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                             mono(ui, format!("{:.5}° {}", lng.abs(), ew), 11.5, 170);
                         }
                         if let Some(alt) = data.altitude {
-                            mono(ui, format!("alt {:.0} m", alt.max(0.0)), 11.5, 170);
+                            let alt = alt.max(0.0);
+                            let text = if alt >= 1000.0 {
+                                format!("alt {:.1} km", alt / 1000.0)
+                            } else {
+                                format!("alt {alt:.0} m")
+                            };
+                            mono(ui, text, 11.5, 170);
                         }
-                        if let Some(deg) = data.heading {
-                            ui.horizontal(|ui| {
-                                compass_widget(ui, deg);
-                                mono(ui, format!("{} {:03.0}°", cardinal(deg), deg), 11.5, 170);
-                            });
-                        }
+                        // Heading now lives in the top-right compass overlay.
                         // Location actions.
                         if data.geo.is_some() && data.altitude.is_some() {
                             ui.horizontal(|ui| {
@@ -145,12 +186,24 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
     actions
 }
 
-/// Compass bearing of the camera's view direction in degrees (0 = north,
-/// 90 = east). North is −Z in world space (East is +X, South is +Z).
-fn camera_heading(tf: &Transform) -> Option<f32> {
-    let f = tf.rotation * Vec3::NEG_Z;
-    let horizontal = f.x * f.x + f.z * f.z;
-    (horizontal > 1e-6).then(|| f.x.atan2(-f.z).to_degrees().rem_euclid(360.0))
+/// Compass bearing (deg, 0 = north, 90 = east) of the direction that reads as
+/// "up" on screen over the ground. North is −Z in world space (East +X, South
+/// +Z). Uses the camera's forward when it is tilted toward the ground, and its
+/// up vector when looking straight down — the two point the same way on the
+/// horizontal plane and hand over smoothly, so the compass stays defined
+/// through a top-down orbit and out in space (where the old forward-only
+/// bearing went undefined at nadir).
+fn view_heading(tf: &Transform) -> Option<f32> {
+    let fwd = tf.rotation * Vec3::NEG_Z;
+    let up = tf.rotation * Vec3::Y;
+    let fwd_flat = Vec3::new(fwd.x, 0.0, fwd.z);
+    let up_flat = Vec3::new(up.x, 0.0, up.z);
+    let h = if fwd_flat.length_squared() >= up_flat.length_squared() {
+        fwd_flat
+    } else {
+        up_flat
+    };
+    (h.length_squared() > 1e-9).then(|| h.x.atan2(-h.z).to_degrees().rem_euclid(360.0))
 }
 
 /// Draw the status overlay and apply its copy / bookmark actions.
@@ -159,10 +212,12 @@ pub fn render_hud(
     mut egui: ResMut<EguiManager>,
     clock: Res<WorldClock>,
     stream: Res<MapStream>,
-    camera_state: Res<CameraState>,
+    mut camera_state: ResMut<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut store: ResMut<UserStore>,
     mut bookmarks: ResMut<BookmarksState>,
+    data_layers: Res<crate::systems::data_layers::DataLayers>,
+    ai: Res<crate::resources::AiAssistantState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
 ) {
@@ -199,11 +254,27 @@ pub fn render_hud(
             }
         }),
         altitude,
-        heading: cam.and_then(|(_, tf)| camera_heading(tf)),
+        heading: cam.and_then(|(_, tf)| view_heading(tf)),
         copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
     };
 
     let actions = hud_area(egui.ctx_mut(), &data);
+
+    // Top-right compass. Clicking it resets to north-up in globe (Orbit) mode
+    // only; fly/avatar are free-form, so there it is a passive indicator.
+    //
+    // A right-docked panel (Layers, Bookmarks, AI) sits opaque over this same
+    // corner. egui always paints floating Areas on top of panels (panels live
+    // on the bottom-most background layer, and even `Order::Background` Areas
+    // paint above it), so the only way to keep the compass *behind* the panel
+    // is to drop it while one is open.
+    let right_panel_open = data_layers.panel_open || bookmarks.panel_open || ai.open;
+    if let Some(heading) = data.heading.filter(|_| !right_panel_open) {
+        let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
+        if compass_overlay(egui.ctx_mut(), heading, orbit) {
+            camera_state.orbit_north_reset = true;
+        }
+    }
 
     if actions.copy {
         if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {

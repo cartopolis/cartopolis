@@ -28,8 +28,7 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::camera::visibility::NoFrustumCulling;
-use bevy::light::AtmosphereEnvironmentMapLight;
-use bevy::pbr::AtmosphereSettings;
+use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
 
@@ -90,6 +89,20 @@ const BACKSTOP_DEPTH: f64 = 50_000.0;
 /// globe is hidden and the flat tiles own the view); loaded tiles are kept.
 const QT_MIN_ALT: f64 = 35_000.0;
 
+/// Max globe tiles to build (PNG decode + mesh + texture upload) per frame. A
+/// zoom-out can land 100+ fetched tiles at once; building them all in one frame
+/// packs one giant command buffer that overran a weak GPU's timeout
+/// (`VK_ERROR_DEVICE_LOST`). The rest are deferred to later frames — they stay in
+/// `pending` (so they aren't re-fetched) and are pushed back into `results`.
+const MAX_GLOBE_TILE_BUILDS_PER_FRAME: usize = 4;
+
+/// Max globe tiles to despawn per frame — the mass-*despawn* half of the
+/// device-loss guard (its upload half is `MAX_GLOBE_TILE_BUILDS_PER_FRAME`). A
+/// zoom-out, stale reclaim, or re-anchor teardown can retire 100+ tiles at once;
+/// freeing that many meshes + textures in one command buffer is the same burst
+/// that hangs a weak GPU. Retired entities are queued and freed at this rate.
+const MAX_GLOBE_TILE_DESPAWNS_PER_FRAME: usize = 8;
+
 #[derive(Resource, Default)]
 pub struct GlobeState {
     /// The base (ocean backstop) sphere entity, once built.
@@ -128,6 +141,10 @@ pub struct GlobeState {
     select_timer: f32,
     /// Last selection's desired set (kept for the despawn policy between runs).
     desired: HashSet<TileKey>,
+    /// Tiles retired from `loaded` and awaiting despawn, freed under
+    /// `MAX_GLOBE_TILE_DESPAWNS_PER_FRAME` per frame so a mass teardown (zoom-out,
+    /// stale reclaim, re-anchor) never packs one giant command buffer.
+    despawn_queue: Vec<Entity>,
 }
 
 impl GlobeState {
@@ -148,6 +165,21 @@ impl GlobeState {
             return cam.y;
         }
         (cam - self.center_local.as_dvec3()).length() - self.radius as f64
+    }
+
+    /// Bevy-local unit direction of Earth's spin axis (points toward the
+    /// geographic north pole), in the current anchor frame. The compass
+    /// "north up" reset uses it in space, where north-up means aligning the
+    /// pole with the top of the screen. Returns `Y` until the globe exists.
+    pub fn north_axis_local(&self) -> Vec3 {
+        if !self.ready {
+            return Vec3::Y;
+        }
+        let frame = TangentFrame::new(self.anchor_lat, self.anchor_lng, 0.0);
+        // ECEF spin axis (0,0,1) → ENU (dot with the frame basis) → Bevy
+        // (E, U, −N), the same mapping `sub_point` inverts.
+        Vec3::new(frame.east.z as f32, frame.up.z as f32, -frame.north.z as f32)
+            .normalize_or_zero()
     }
 
     /// Whether the camera is high enough that the globe is shown and the local
@@ -274,9 +306,12 @@ pub fn setup_globe(
     if let Some(old) = globe.entity.take() {
         commands.entity(old).despawn();
     }
-    for (_, e) in globe.loaded.drain() {
-        commands.entity(e).despawn();
-    }
+    // Queue the old anchor's tiles for bounded despawn rather than freeing the
+    // whole set in one frame — the mass-despawn burst that hangs a weak GPU.
+    // (Below GLOBE_SHOW_ALT they're hidden anyway, so draining over ~1 s is
+    // invisible; update_globe_tiles drains the queue every frame.)
+    let old_tiles = globe.loaded.drain().map(|(_, e)| e).collect::<Vec<_>>();
+    globe.despawn_queue.extend(old_tiles);
     globe.pending.clear();
     globe.failed.clear();
     globe.desired.clear();
@@ -285,14 +320,18 @@ pub fn setup_globe(
     let entity = commands
         .spawn((
             Mesh3d(meshes.add(mesh)),
-            // Unlit, in the OSM basemap's water tone: unlit matches the tiles
-            // (see below — a lit globe put half the planet in near-black night,
-            // which read as missing data), and the water tone makes the polar
-            // caps beyond Mercator's ±85° and still-loading areas read as ocean
-            // instead of a void.
+            // Lit (matte), in the OSM basemap's water tone. The globe must be lit,
+            // not unlit: the camera runs a physical `Exposure` (ev100 ≈ 13, for the
+            // 130 klux sun), under which an unlit 0–1 base colour tonemaps to
+            // near-black — that was the whole globe rendering black from orbit.
+            // As a normal PBR surface it exposes like the map tiles: the sunlit day
+            // side is bright and the night side is softly filled by the ambient
+            // light (not a void). The water tone backstops the polar caps beyond
+            // Mercator's ±85° and still-loading tiles.
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.67, 0.80, 0.85),
-                unlit: true,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
                 double_sided: true,
                 cull_mode: None,
                 ..default()
@@ -379,23 +418,88 @@ pub struct HideInSpace;
 /// (and can't z-fight the tiles that sit on its surface).
 pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
 
+/// Marker for the planet-centred entity that carries the built-in atmosphere's
+/// [`Atmosphere`] component (spawned in `free_camera::setup_camera`), keeping a
+/// copy of that component. `update_atmosphere_origin` reads it to keep the
+/// atmosphere centred on Earth in render coords.
+///
+/// NOTE: do NOT add/remove the `Atmosphere` component (or the camera's
+/// `AtmosphereEnvironmentMapLight`) at runtime as an on/off switch — that
+/// teardown frees GPU resources still in flight and hangs the device on this
+/// stack (confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
+/// (`VIBERFOX_NO_ATMOSPHERE` / `VIBERFOX_NO_ENVMAP`); the only safe runtime
+/// change is the in-place render-*mode* switch below.
+#[derive(Component)]
+pub struct PlanetAtmosphere;
+
+/// Render the atmosphere from orbit? `true`: the space tier switches the camera
+/// to `AtmosphereMode::Raymarched` (at [`GLOBE_SKY_SAMPLES`]) so the planet shows
+/// a real atmospheric limb; `update_atmosphere_origin` keeps the atmosphere's
+/// planet centre at the camera's true geocentric offset, which is what makes
+/// Raymarched-from-space geometrically possible at all. `false`: stay in
+/// `LookupTexture` in space too (no raymarch cost; the globe just loses its
+/// atmospheric limb). Either way the components stay put — only the mode changes.
+///
+/// Forced `false`: on the Intel iGPU the full-screen Raymarched integration from
+/// orbit pins every frame near the command-buffer timeout (measured `frame_ms`
+/// ~1024 starting the instant altitude crosses `GLOBE_SHOW_ALT`, regardless of
+/// tile count), and a streaming hitch then tips it over into
+/// `VK_ERROR_DEVICE_LOST`. Even at [`GLOBE_SKY_SAMPLES`] = 6 it's too heavy here.
+/// `LookupTexture` in space is a fixed cheap cost and needs no component teardown.
+/// Re-enable only behind a GPU-capability check, never unconditionally.
+const SPACE_ATMOSPHERE: bool = false;
+/// Raymarch sky samples per fragment in the space tier (Bevy's default is 16).
+/// The integration runs full-screen from orbit, so keep it lean for weak GPUs;
+/// the atmosphere is a thin shell from out there and needs few samples.
+const GLOBE_SKY_SAMPLES: u32 = 6;
+/// Bevy's default sky samples, restored at ground level (LookupTexture mode
+/// only raymarches in its LUT builds, so this is mostly for correctness).
+const GROUND_SKY_SAMPLES: u32 = 16;
+
+/// Keep the planet-centred `Atmosphere` entity at Earth's **true centre in
+/// render coordinates**, every frame once the globe exists.
+///
+/// The camera is the big_space `FloatingOrigin`: its `GlobalTransform` stays
+/// near the origin at ANY real altitude (big_space rebases the world around
+/// it). The atmosphere entity used to be parked at a fixed `(0, −R, 0)`, so
+/// bevy_pbr always measured a ground-level camera radius — correct for the flat
+/// city view, but in the space tier "Raymarched from orbit" was integrating a
+/// *surface* sky dome over the whole screen: visually wrong (washed/black
+/// globe) and needlessly expensive, which got misread as "Raymarched can't do
+/// space on this GPU". The entity lives OUTSIDE the BigSpace (its Transform is
+/// plain render coords), so placing it at `center_local − camera_cell_origin`
+/// gives bevy_pbr the exact camera→Earth-centre vector in every tier: at
+/// ground level this reproduces the old `(0, −R, 0)`, from orbit the radius
+/// grows with the real geocentric altitude and the raymarched limb is correct.
+pub fn update_atmosphere_origin(
+    globe: Res<GlobeState>,
+    camera: Query<&GridCell, With<crate::systems::free_camera::FreeCamera>>,
+    mut planet: Query<&mut Transform, With<PlanetAtmosphere>>,
+) {
+    if !globe.ready {
+        return;
+    }
+    let (Ok(cell), Ok(mut tf)) = (camera.single(), planet.single_mut()) else {
+        return;
+    };
+    let edge = crate::systems::free_camera::WORLD_CELL_EDGE as f64;
+    let centre = globe.center_local.as_dvec3()
+        - DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * edge;
+    let new = centre.as_vec3();
+    if tf.translation != new {
+        tf.translation = new;
+    }
+}
+
 /// Show the globe only once high enough that it's the thing you're looking at, so
 /// normal ground play never pays for it or sees it poke through the tiles. At the
-/// same altitude the atmosphere flips to its `Raymarched` mode (see below) so the
-/// planet reads correctly from orbit — a lit globe under a thin atmospheric limb —
-/// instead of washing out under the surface-tuned aerial-perspective LUT.
+/// same altitude the atmosphere is disabled (see below) so the planet renders lit
+/// against black space instead of washing out or hanging the GPU.
 #[allow(clippy::type_complexity)]
 pub fn update_globe_visibility(
-    mut commands: Commands,
     globe: Res<GlobeState>,
-    camera: Query<
-        (
-            Entity,
-            &GridCell,
-            &Transform,
-            Has<AtmosphereSettings>,
-            Has<AtmosphereEnvironmentMapLight>,
-        ),
+    mut camera: Query<
+        (&GridCell, &Transform, &mut AtmosphereSettings),
         With<crate::systems::free_camera::FreeCamera>,
     >,
     mut globe_vis: Query<
@@ -423,46 +527,35 @@ pub fn update_globe_visibility(
     if !globe.ready {
         return;
     }
-    let Ok((cam_entity, cell, tf, has_atmosphere, has_env)) = camera.single() else {
+    let Ok((cell, tf, mut atmosphere)) = camera.single_mut() else {
         return;
     };
     let show_globe = globe.in_space(cell, tf);
 
-    // Drop the camera from the atmosphere + IBL passes in the space tier.
+    // Tiered atmosphere *render mode* — the ONLY atmosphere change that's safe at
+    // runtime. Near the ground the cheap `LookupTexture` mode suits the city view;
+    // from orbit only `Raymarched` renders a planet seen from outside the
+    // atmosphere, so switch modes at the globe threshold with a reduced sample
+    // count for weak GPUs. Correct only because `update_atmosphere_origin` feeds
+    // bevy_pbr the true geocentric camera position (without that, Raymarched from
+    // orbit integrated a surface sky dome over the whole screen).
     //
-    // The built-in atmosphere is both wrong and dangerous from orbit here. Its
-    // `LookupTexture` aerial LUT clamps at ~32 km, so the distant globe gets
-    // painted with full inscattering (a uniform-haze wash-out); its `Raymarched`
-    // mode fixes that but is a per-fragment integration far too heavy for a weak
-    // GPU at the space-tier far plane — on an Intel iGPU it overran the command-
-    // buffer timeout and lost the device (`VK_ERROR_DEVICE_LOST`). Removing
-    // `AtmosphereSettings` drops the camera from the atmosphere passes entirely
-    // (see bevy_pbr `extract_atmosphere`); removing the env-map light stops its
-    // per-frame IBL bake. The globe then renders untinted against black space with
-    // the star field, and both are restored on descent. (This replaces an
-    // in-progress Raymarched-in-space attempt that hung the GPU here and still
-    // blacked the globe out.)
-    if show_globe {
-        if has_atmosphere {
-            commands.entity(cam_entity).remove::<AtmosphereSettings>();
-        }
-        if has_env {
-            commands
-                .entity(cam_entity)
-                .remove::<AtmosphereEnvironmentMapLight>();
-        }
+    // We deliberately do NOT add/remove the `Atmosphere` or the camera's
+    // `AtmosphereEnvironmentMapLight` here (an earlier version dropped the env-map
+    // light in space): tearing those components down at runtime frees GPU
+    // resources still in flight and hangs the device (`VK_ERROR_DEVICE_LOST`,
+    // confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
+    // (`setup_camera`, gated by the dev-panel/env flags) and left in place.
+    let (want_mode, want_samples) = if show_globe && SPACE_ATMOSPHERE {
+        (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
     } else {
-        if !has_atmosphere {
-            commands
-                .entity(cam_entity)
-                .insert(AtmosphereSettings::default());
-        }
-        if !has_env {
-            commands.entity(cam_entity).insert(AtmosphereEnvironmentMapLight {
-                size: UVec2::splat(256),
-                ..default()
-            });
-        }
+        (AtmosphereMode::LookupTexture, GROUND_SKY_SAMPLES)
+    };
+    if atmosphere.rendering_method as u32 != want_mode as u32 {
+        atmosphere.rendering_method = want_mode;
+    }
+    if atmosphere.sky_max_samples != want_samples {
+        atmosphere.sky_max_samples = want_samples;
     }
 
     let want_globe = if show_globe { Visibility::Visible } else { Visibility::Hidden };
@@ -513,6 +606,17 @@ pub fn update_globe_tiles(
     let frame = TangentFrame::new(globe.anchor_lat, globe.anchor_lng, 0.0);
     let earth_c = globe.center_local.as_dvec3();
 
+    // ── Drain the despawn queue under a per-frame budget (every frame) ──────
+    // The mass-despawn half of the device-loss guard, paired with the build cap.
+    // Runs above the QT_MIN_ALT early-return below so a ground-level re-anchor
+    // teardown still clears while the globe is hidden.
+    if !globe.despawn_queue.is_empty() {
+        let n = globe.despawn_queue.len().min(MAX_GLOBE_TILE_DESPAWNS_PER_FRAME);
+        for e in globe.despawn_queue.drain(..n) {
+            commands.entity(e).despawn();
+        }
+    }
+
     // ── Harvest finished fetches into live tile entities (every frame) ──────
     let ready: Vec<(TileKey, TileFetch)> = globe
         .results
@@ -520,11 +624,16 @@ pub fn update_globe_tiles(
         .map(|mut g| g.drain(..).collect())
         .unwrap_or_default();
     let mut fetch_failures = 0u32;
+    let mut built = 0usize;
+    let mut deferred: Vec<(TileKey, TileFetch)> = Vec::new();
     for (key, outcome) in ready {
-        globe.pending.remove(&key);
         let bytes = match outcome {
-            TileFetch::Cancelled => continue, // left the view while queued
+            TileFetch::Cancelled => {
+                globe.pending.remove(&key);
+                continue; // left the view while queued
+            }
             TileFetch::Failed => {
+                globe.pending.remove(&key);
                 let e = globe.failed.entry(key).or_insert((0, Instant::now()));
                 e.0 += 1;
                 e.1 = Instant::now();
@@ -542,8 +651,16 @@ pub fn update_globe_tiles(
                 .iter()
                 .any(|d| covers(&key, d) && !globe.loaded.contains_key(d));
         if !useful {
+            globe.pending.remove(&key);
             continue;
         }
+        // Cap decode + upload per frame; defer the rest (kept in `pending` so they
+        // aren't re-fetched) to keep the tile burst from overrunning the GPU timeout.
+        if built >= MAX_GLOBE_TILE_BUILDS_PER_FRAME {
+            deferred.push((key, TileFetch::Ok(bytes)));
+            continue;
+        }
+        globe.pending.remove(&key);
         let Ok(img) = image::load_from_memory(&bytes) else {
             let e = globe.failed.entry(key).or_insert((0, Instant::now()));
             e.0 += 1;
@@ -609,11 +726,13 @@ pub fn update_globe_tiles(
         let entity = commands
             .spawn((
                 Mesh3d(meshes.add(mesh)),
-                // Unlit: the map is uniformly legible from any side (a lit
-                // globe rendered the night half near-black, reading as holes).
+                // Lit (matte) to match the base sphere: an unlit tile tonemaps to
+                // near-black under the camera's physical exposure (see the base
+                // sphere note). Sunlit day side bright, night side ambient-filled.
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color_texture: Some(texture),
-                    unlit: true,
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
                     ..default()
                 })),
                 Transform::from_translation(origin),
@@ -627,7 +746,14 @@ pub fn update_globe_tiles(
             ))
             .id();
         if let Some(old) = globe.loaded.insert(key, entity) {
-            commands.entity(old).despawn();
+            globe.despawn_queue.push(old);
+        }
+        built += 1;
+    }
+    // Requeue the tiles we deferred this frame for the next one.
+    if !deferred.is_empty() {
+        if let Ok(mut g) = globe.results.lock() {
+            g.extend(deferred);
         }
     }
     if fetch_failures > 0 {
@@ -785,7 +911,13 @@ pub fn update_globe_tiles(
         }
     }
     if queued > 0 {
-        tracing::info!(queued, desired = desired_set.len(), "globe tile fetches queued");
+        tracing::info!(
+            queued,
+            desired = desired_set.len(),
+            loaded = globe.loaded.len(),
+            despawn_pending = globe.despawn_queue.len(),
+            "globe tile fetches queued"
+        );
     }
 
     // Despawn tiles no longer desired — but only once every desired tile that
@@ -807,7 +939,9 @@ pub fn update_globe_tiles(
         .collect();
     for key in stale {
         if let Some(e) = globe.loaded.remove(&key) {
-            commands.entity(e).despawn();
+            // Queue rather than despawn inline: on a fast zoom-out many tiles go
+            // stale at once, and the per-frame drain keeps the teardown bounded.
+            globe.despawn_queue.push(e);
         }
     }
 }
