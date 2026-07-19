@@ -20,10 +20,10 @@
 //! scale until the real-metre frame (ADR-019) lands.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -116,6 +116,8 @@ pub struct OsmBuildings {
     synced_gen: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
+    /// When the last detail fetch was kicked off (`DETAIL_REFETCH_COOLDOWN`).
+    last_fetch: Option<Instant>,
     in_flight: bool,
     /// Latest completed detail fetch+build, consumed on the main thread.
     fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
@@ -216,6 +218,17 @@ const FAR_CELL_RADIUS: i64 = 3;
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
 /// patch trailing the camera a bit further before refreshing.
 const REFETCH_TILES: i64 = 4;
+/// Freeze detail-patch re-fetches above this altitude (m). Individual buildings
+/// are a few pixels from up here and the far cells carry the look — but a
+/// zoom-out sweep drags the fetch centre kilometres sideways, and every drift
+/// re-fetch despawns + re-uploads a giant merged patch mesh. One zoom-out fired
+/// 13 full rebuilds (6,776 → 46 buildings) in 2.4 s and the burst of uploads
+/// overran the iGPU's command-buffer timeout (`VK_ERROR_DEVICE_LOST`) — the same
+/// failure shape the flat-tile and globe-tile per-frame build caps guard against.
+const DETAIL_FREEZE_ALT: f32 = 3_000.0;
+/// Minimum spacing between detail-patch re-fetches (the storm brake for fast
+/// low-altitude panning; each rebuild is a multi-MB mesh upload).
+const DETAIL_REFETCH_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Muted, realistic wall tones (tans, greys, beige, muted brick, off-white).
 const BUILDING_COLORS: [[f32; 3]; 8] = [
@@ -272,6 +285,7 @@ pub fn update_buildings(
         osm.far_failed.clear();
         osm.buildings.clear();
         osm.last_center = None;
+        osm.last_fetch = None;
         osm.in_flight = false;
         osm.far_jobs = None;
         osm.far_results = Arc::new(Mutex::new(Vec::new()));
@@ -322,14 +336,23 @@ pub fn update_buildings(
         ay + (world_z / tile_m).round() as i64,
     );
 
-    // Kick off a re-fetch when the camera has drifted far enough.
+    // Kick off a re-fetch when the camera has drifted far enough — but never
+    // above `DETAIL_FREEZE_ALT` (a zoom-out drags `center` sideways fast; the
+    // rebuild storm that triggered is what hung the GPU — see the const), and
+    // never inside the cooldown window. The existing patch stays up while
+    // frozen; descending below the threshold refreshes it at the new spot.
     let need = match osm.last_center {
         None => true,
         Some((lx, ly)) => (center.0 - lx).abs() + (center.1 - ly).abs() >= REFETCH_TILES,
     };
-    if need && !osm.in_flight {
+    let cooled = osm
+        .last_fetch
+        .map(|t| t.elapsed() >= DETAIL_REFETCH_COOLDOWN)
+        .unwrap_or(true);
+    if need && !osm.in_flight && cooled && cam_altitude < DETAIL_FREEZE_ALT {
         osm.in_flight = true;
         osm.last_center = Some(center);
+        osm.last_fetch = Some(Instant::now());
         let slot = osm.fetch.clone();
 
         // Detail bounding box; the fetch assembles it from fixed CACHE_ZOOM
@@ -447,6 +470,12 @@ pub fn update_buildings(
                                 grid_cell,
                                 ChildOf(root),
                                 OsmBuildingMesh,
+                                // Far cells are 1–5 km out: at the cascades'
+                                // 2048²/3 km settings their shadows are sub-texel,
+                                // but their double-sided (cull_mode None) geometry
+                                // is most of what up to 8 night cascade passes
+                                // would rasterize. Pure waste — skip it.
+                                bevy::light::NotShadowCaster,
                                 // From orbit the patch reads as a grey blob over
                                 // the anchor; hidden with the tiles (ADR-025).
                                 crate::systems::globe::HideInSpace,
@@ -483,6 +512,9 @@ pub fn update_buildings(
                                     grid_cell,
                                     ChildOf(root),
                                     WindowGlow(WINDOW_GLOW_MULT[i]),
+                                    // Proud-of-facade quads; see the detail-patch
+                                    // window spawn — never worth shadow-casting.
+                                    bevy::light::NotShadowCaster,
                                     crate::systems::globe::HideInSpace,
                                 ))
                                 .id(),
@@ -582,9 +614,10 @@ fn build_far_cell(
     let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
     for b in &buildings {
         // A building straddling a cell edge is returned by both cells; only the
-        // cell owning its first vertex renders it.
+        // cell owning its first vertex renders it. Half-open bounds ([south,north),
+        // [west,east)) so a vertex exactly on a shared edge lands in one cell only.
         let (blat, blng) = b.ring[0];
-        if blat < south || blat > north || blng < west || blng > east {
+        if blat < south || blat >= north || blng < west || blng >= east {
             continue;
         }
         let ring: Vec<Vec2> = b
@@ -600,13 +633,19 @@ fn build_far_cell(
         if polygon_area(&ring) < 30.0 {
             continue;
         }
-        // Approximate total height when only eaves height is known.
-        let h = if b.height_is_eaves {
-            b.height_m + 2.0
-        } else {
-            b.height_m
-        };
-        push_building_lod(&mut buf, &mut wins, b.id as u64, &ring, h, b.wall_color, b.roof_color);
+        // Cap the LOD box at the detail mesh's eaves (its roof's lowest point) so
+        // the far volume sits *under* its detailed twin in the overlap region,
+        // instead of a flat slab poking up through the pitched roof (Stage 1).
+        let eaves = detail_eaves(b, &ring);
+        push_building_lod(
+            &mut buf,
+            &mut wins,
+            b.id as u64,
+            &ring,
+            eaves,
+            b.wall_color,
+            b.roof_color,
+        );
     }
     Ok(buf
         .into_mesh()
@@ -671,6 +710,10 @@ fn spawn_detail_patch(
                 patch_cell,
                 ChildOf(root),
                 WindowGlow(WINDOW_GLOW_MULT[i]),
+                // Windows sit 6 cm proud of the facade that already casts the
+                // shadow — rendering their (huge) quad soup into up to 8 cascade
+                // maps buys nothing.
+                bevy::light::NotShadowCaster,
                 crate::systems::globe::HideInSpace,
             ))
             .id();
@@ -826,13 +869,36 @@ fn simplify_ring(ring: &[Vec2], tol: f32) -> Vec<Vec2> {
     if out.len() >= 3 { out } else { ring.to_vec() }
 }
 
+/// The eaves (wall-top) height the *detail* mesh uses for this building — the
+/// lowest point of its roof. The far-LOD box is capped here so it always sits
+/// under its detailed twin instead of poking a flat cap through the roof. Mirrors
+/// the eaves computation in `push_building`.
+fn detail_eaves(b: &Building, ring: &[Vec2]) -> f32 {
+    if b.height_is_eaves {
+        // Detail walls rise to the full tagged/estimated height; the roof adds on top.
+        return b.height_m;
+    }
+    // Total-height building: the detail mesh carves the roof out of the top, so the
+    // wall top is `height − roof_height`.
+    let pitch = if b.roof_shape == RoofShape::Flat {
+        0.0
+    } else {
+        let obb = oriented_bbox(ring);
+        let short = (obb.umax - obb.umin).min(obb.vmax - obb.vmin);
+        b.roof_height.unwrap_or((short * 0.35).clamp(1.5, 6.0))
+    };
+    let roof_h = pitch.min(b.height_m - 2.0).max(0.0);
+    b.height_m - roof_h
+}
+
 /// Far-LOD building: a simplified plain extrusion with a flat cap and a sparse
 /// grid of lit-window quads (`FAR_WINDOWS`) — no roof shapes. Merged into per-cell
-/// meshes for the whole far ring. The footprint is inset toward the centroid and
-/// the cap kept slightly low, so the LOD volume nests strictly *inside* the
-/// detailed version of the same building: the far mesh covers the detail area too
-/// (as a fallback while a patch refresh is in flight) without ever z-fighting it —
-/// and its windows sit behind the detail walls, so lights never double up.
+/// meshes for the whole far ring. `height` is the detailed twin's *eaves* height
+/// (its roof's lowest point); with the footprint inset toward the centroid and the
+/// cap dropped just under that, the LOD volume nests strictly *inside* the detailed
+/// version: the far mesh covers the detail area too (as a fallback while a patch
+/// refresh is in flight) without poking through it, and its windows sit behind the
+/// detail walls, so lights never double up.
 fn push_building_lod(
     bld: &mut MeshData,
     wins: &mut [MeshData; 4],
@@ -886,12 +952,11 @@ fn push_building_lod(
         bld.indices
             .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 
-        // Sparse lit windows so the night city keeps glowing past the detail ring.
-        // Capped below the eaves estimate (total height minus a roof allowance) so
-        // they never poke through a shaped roof on the detailed twin.
-        let eaves = height - 2.5;
-        if eaves >= WINDOW_MIN_HEIGHT {
-            push_wall_windows(wins, seed, a, b, perp, eaves, &FAR_WINDOWS);
+        // Sparse lit windows so the night city keeps glowing past the detail ring;
+        // kept a couple of metres below the wall top so they never reach the roof.
+        let win_top = height - 2.5;
+        if win_top >= WINDOW_MIN_HEIGHT {
+            push_wall_windows(wins, seed, a, b, perp, win_top, &FAR_WINDOWS);
         }
     }
     flat_cap(bld, &ring, height, roof);
@@ -1231,7 +1296,16 @@ fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Build
 fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
     let path = cell_cache_path(cx, cy, zoom);
     if let Ok(cached) = std::fs::read_to_string(&path) {
-        return parse_buildings(&cached);
+        match parse_buildings(&cached) {
+            Ok(buildings) => return Ok(buildings),
+            // A cached file that no longer parses — a truncated write, or a stale
+            // `remark`/error body cached before validate-on-write existed. Drop it
+            // and re-fetch rather than failing this cell forever.
+            Err(e) => {
+                tracing::warn!(?path, error = %e, "re-fetching unparseable cached cell");
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     let (north, west) = tile_to_lat_lng(cx, cy, zoom);
@@ -1240,13 +1314,30 @@ fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
         "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
     );
     let fetched = overpass_query(&query)?;
+    // Space out live queries so a multi-cell patch doesn't burst-trip the limit
+    // (every live query, even one we end up rejecting below).
+    std::thread::sleep(OVERPASS_THROTTLE);
+    // Validate *before* persisting: `parse_buildings` rejects a `remark` response
+    // (Overpass's 200-status error channel), so a transient timeout is never cached
+    // as a permanently-empty cell.
+    let buildings = parse_buildings(&fetched)?;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, &fetched);
-    // Space out live queries so a multi-cell patch doesn't burst-trip the limit.
-    std::thread::sleep(OVERPASS_THROTTLE);
-    parse_buildings(&fetched)
+    write_cache_atomic(&path, &fetched);
+    Ok(buildings)
+}
+
+/// Persist a cache cell via a temp file + rename, so a crash mid-write can't leave
+/// a truncated JSON that would parse-fail on every later run. The temp name is
+/// per-thread because the detail-patch thread and the far-cell worker can fetch the
+/// same cell concurrently.
+fn write_cache_atomic(path: &Path, contents: &str) {
+    let tid = std::thread::current().id();
+    let tmp = path.with_extension(format!("{tid:?}.tmp"));
+    if std::fs::write(&tmp, contents).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
 }
 
 /// POST an Overpass query, retrying a couple of times with backoff on failure
@@ -1272,6 +1363,12 @@ pub(crate) fn overpass_query(query: &str) -> Result<String, String> {
 /// Parse an Overpass `out geom` response into buildings.
 fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // Overpass reports timeouts / runtime errors / rate limits as HTTP 200 with a
+    // `remark` field (usually alongside empty `elements`). Treat it as an error so
+    // it neither renders as "no buildings here" nor gets cached as a real result.
+    if let Some(remark) = json.get("remark").and_then(|r| r.as_str()) {
+        return Err(format!("Overpass remark: {}", remark.trim()));
+    }
     let elements = json
         .get("elements")
         .and_then(|e| e.as_array())
