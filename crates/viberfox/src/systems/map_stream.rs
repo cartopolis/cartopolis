@@ -122,7 +122,12 @@ pub struct MapStream {
     /// levels are derived from it down to `MIN_ZOOM`.
     current_zoom: u32,
     loaded: HashMap<TileKey, Entity>,
-    /// Tiles ever queued for fetch (kept as a cache so re-entry doesn't refetch).
+    /// Tiles with a fetch **in flight** (job sent, result not yet applied). Purely
+    /// an in-flight guard so a pending tile isn't re-queued every frame — a tile is
+    /// dropped from here when it's retired, because the texture dies with the
+    /// entity and a re-entering tile must fetch again (the on-disk cache makes that
+    /// cheap). Treating it as a permanent "ever requested" set left every
+    /// re-streamed tile grey forever.
     requested: HashSet<TileKey>,
     /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
     failed: HashMap<TileKey, (u32, std::time::Instant)>,
@@ -150,6 +155,12 @@ impl MapStream {
     /// mapping other systems build on.
     pub fn geo_anchor(&self) -> Option<(f64, f64, u32)> {
         self.anchor
+    }
+
+    /// Are tiles still being fetched or retired? Used by the `--shot` harness to
+    /// capture as soon as the view has settled instead of on a fixed timer.
+    pub fn streaming_busy(&self) -> bool {
+        !self.requested.is_empty() || !self.despawn_queue.is_empty()
     }
 
     /// Request a re-anchor to a new (lat, lng); applied by `apply_reanchor`, which
@@ -503,6 +514,13 @@ pub fn update_map_stream(
             // ring at once, and the per-frame drain keeps the teardown bounded.
             stream.despawn_queue.push(entity);
         }
+        // Clear the fetch bookkeeping: the material/texture is dropped with the
+        // entity, so a tile that comes back into range (pan back, or a LOD
+        // zoom-in restoring a finer ring) has to fetch again. Leaving the key in
+        // `requested` suppressed that job and the re-spawned tile kept the grey
+        // placeholder permanently — the "tiles stop loading" instability.
+        stream.requested.remove(&key);
+        stream.failed.remove(&key);
     }
 }
 
@@ -518,6 +536,12 @@ pub fn apply_stream_textures(
     let Ok(mut results) = results_arc.lock() else {
         return;
     };
+    // Drop results for tiles that were retired before their fetch landed. Nobody
+    // will ever consume them (the entity is gone) and they hold a full decoded mip
+    // chain each, so roaming would grow this map without bound. A tile re-entering
+    // range re-queues its own fetch, so nothing is lost.
+    results.retain(|key, _| stream.loaded.contains_key(key));
+
     // Cap texture finalizations per frame: a fast pan can land dozens of decoded
     // tiles at once, and uploading them all in one frame hitches. The rest keep
     // their decoded data queued (Without<StreamTileReady>) and upload next frame.

@@ -935,6 +935,19 @@ pub fn animate_stop_rings(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut rings: Query<&mut Transform, With<StopRing>>,
 ) {
+    // Toggling a layer off only hides its entities (`apply_feature_toggles`), so
+    // without this gate a disabled transit layer still costs one `Transform` write
+    // per ring — thousands of them — each tripping change detection into
+    // `GlobalTransform` propagation and render-world re-extraction, plus a
+    // `Modified` event per ring material. Nothing is visible to animate.
+    if !dl
+        .layers
+        .iter()
+        .enumerate()
+        .any(|(li, l)| l.enabled && LAYER_DEFS[li].rings)
+    {
+        return;
+    }
     const PERIOD: f32 = 3.0;
     const MAX_RADIUS: f32 = 4.5;
     let phase = (time.elapsed_secs() % PERIOD) / PERIOD;

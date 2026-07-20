@@ -363,6 +363,11 @@ pub fn suppress_egui_for_screenshot(
 ) {
     if shot.hide_ui {
         output.clipped_primitives.clear();
+        // This mutates the output in place, so `end_egui_frame` must rewrite it next
+        // frame even if egui reports nothing changed — otherwise the cleared geometry
+        // is what stays resident and the UI never comes back after a screenshot.
+        output.force_next_write = true;
+        output.generation = output.generation.wrapping_add(1);
     }
 }
 
@@ -396,7 +401,11 @@ pub fn render_stats_overlay(
     } else {
         stats.frame_ms + ALPHA * (inst_ms - stats.frame_ms)
     };
-    let entity_count = entities.iter().count();
+    // `Query::count()`, not `iter().count()`: `QueryIter` doesn't override
+    // `Iterator::count`, so the latter walks every entity in the world (tens of
+    // thousands, with tiles + buildings streamed in) just to render one number.
+    // `Query::count` takes the archetype `size_hint` fast path — same value.
+    let entity_count = entities.count();
 
     let fps = stats.fps;
     let frame_ms = stats.frame_ms;

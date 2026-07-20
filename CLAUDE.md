@@ -32,7 +32,11 @@ cargo run -p vibe_sim
 cargo build -p viberfox --release
 ```
 
-There are no test suites currently. Use `cargo check -p <crate>` to validate changes.
+Unit tests live in `#[cfg(test)]` modules inside `viberfox`. It has no lib target, so
+run them with `cargo test -p viberfox --bin viberfox` (`--lib` fails). Note `cargo check`
+does **not** compile `cfg(test)` code — the suite silently rotted through the egui 0.35
+migration until someone ran it, so run the tests, not just a check, when touching egui
+or the building geometry.
 
 **Linker:** `.cargo/config.toml` uses `clang + lld` on Linux. If linking is slow, switch to `mold` (`fuse-ld=mold`).
 

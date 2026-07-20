@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
 use bevy_image::{Image, ImageSampler};
@@ -182,6 +182,14 @@ impl GlobeState {
             .normalize_or_zero()
     }
 
+    /// Are globe tiles still being fetched or retired? Used by the `--shot`
+    /// harness to capture as soon as the globe has settled (see `shot_harness`).
+    pub fn streaming_busy(&self) -> bool {
+        !self.pending.is_empty()
+            || !self.despawn_queue.is_empty()
+            || self.results.lock().map(|r| !r.is_empty()).unwrap_or(false)
+    }
+
     /// Whether the camera is high enough that the globe is shown and the local
     /// ground props are hidden — the shared test for every system that flips
     /// per-tier visibility (single source of truth; two systems disagreeing on
@@ -225,13 +233,44 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 }
 
 /// Does tile `a` cover (is an ancestor of, or equal) tile `b`?
+/// Decode a fetched tile image to RGBA8 and build its mipmap chain. Pure CPU work,
+/// called on the fetch workers. `None` on a corrupt/undecodable payload.
+fn decode_globe_tile(bytes: &[u8]) -> Option<DecodedTile> {
+    let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    let (data, mip_count) =
+        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
+    Some(DecodedTile {
+        data,
+        width,
+        height,
+        mip_count,
+    })
+}
+
 fn covers(a: &TileKey, b: &TileKey) -> bool {
     a.z <= b.z && (b.x >> (b.z - a.z)) == a.x && (b.y >> (b.z - a.z)) == a.y
 }
 
+/// A globe tile decoded to RGBA8 with a full mipmap chain, built on the fetch
+/// worker (mirrors `map_stream::DecodedTile`).
+///
+/// Both halves matter. **Mipmaps:** a globe tile is 256², but from orbit it covers
+/// 20–80 px — sampling mip 0 there means near-random access across the whole
+/// working set every frame *and* severe minification shimmer. **Off-thread:** the
+/// PNG decode used to run on the main thread, up to `MAX_GLOBE_TILE_BUILDS_PER_FRAME`
+/// times per frame, right in the render loop.
+struct DecodedTile {
+    /// Packed mip chain, all levels, smallest last.
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+}
+
 /// Outcome of one worker fetch.
 enum TileFetch {
-    Ok(Vec<u8>),
+    Ok(DecodedTile),
     Failed,
     /// The tile left the desired set while queued — dropped without a network
     /// call; not a failure.
@@ -388,8 +427,13 @@ pub fn setup_globe(
                 let outcome = if !still_wanted {
                     TileFetch::Cancelled
                 } else {
+                    // Decode + mip generation happen here, on the worker, so the
+                    // main thread only assembles and uploads (see `DecodedTile`).
                     match load_tile_image(&key, &template) {
-                        Ok(bytes) => TileFetch::Ok(bytes),
+                        Ok(bytes) => match decode_globe_tile(&bytes) {
+                            Some(tile) => TileFetch::Ok(tile),
+                            None => TileFetch::Failed,
+                        },
                         Err(_) => TileFetch::Failed,
                     }
                 };
@@ -627,7 +671,7 @@ pub fn update_globe_tiles(
     let mut built = 0usize;
     let mut deferred: Vec<(TileKey, TileFetch)> = Vec::new();
     for (key, outcome) in ready {
-        let bytes = match outcome {
+        let tile = match outcome {
             TileFetch::Cancelled => {
                 globe.pending.remove(&key);
                 continue; // left the view while queued
@@ -640,7 +684,7 @@ pub fn update_globe_tiles(
                 fetch_failures += 1;
                 continue;
             }
-            TileFetch::Ok(bytes) => bytes,
+            TileFetch::Ok(tile) => tile,
         };
         // Usefulness gate: don't spawn a tile the view has moved past — unless
         // it backstops a desired-but-unloaded descendant. (The bytes are on
@@ -657,27 +701,20 @@ pub fn update_globe_tiles(
         // Cap decode + upload per frame; defer the rest (kept in `pending` so they
         // aren't re-fetched) to keep the tile burst from overrunning the GPU timeout.
         if built >= MAX_GLOBE_TILE_BUILDS_PER_FRAME {
-            deferred.push((key, TileFetch::Ok(bytes)));
+            deferred.push((key, TileFetch::Ok(tile)));
             continue;
         }
         globe.pending.remove(&key);
-        let Ok(img) = image::load_from_memory(&bytes) else {
-            let e = globe.failed.entry(key).or_insert((0, Instant::now()));
-            e.0 += 1;
-            e.1 = Instant::now();
-            fetch_failures += 1;
-            continue;
-        };
-        let rgba = img.to_rgba8();
-        let (w, h) = (rgba.width(), rgba.height());
-        let mut image = Image::new(
-            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            TextureDimension::D2,
-            rgba.into_raw(),
+        // Decode + mips already done on the worker; just assemble and upload.
+        let image = crate::systems::rendering::image_from_mip_chain(
+            tile.width,
+            tile.height,
+            tile.data,
+            tile.mip_count,
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::default(),
+            ImageSampler::linear(),
         );
-        image.sampler = ImageSampler::linear();
         let texture = images.add(image);
 
         // Sphere-patch mesh over the tile's Mercator footprint: rows linear in
@@ -874,13 +911,18 @@ pub fn update_globe_tiles(
     // a per-pass budget: a steady trickle instead of 100-tile bursts (which
     // trip the tile server's rate limiting and made fetches fail en masse).
     // Backed-off failures retry after a cooldown.
+    // Filter *before* the map: the consuming loop below skips anything already
+    // loaded or in flight, so in steady state nearly every one of the ~900 desired
+    // keys was paying a `sinh` + `atan` + a full geodetic→ENU transform only to be
+    // discarded. Sort on the squared distance — same rank order, ~900 fewer sqrts.
     let mut queue_order: Vec<(TileKey, u64)> = desired_set
         .iter()
+        .filter(|k| !globe.loaded.contains_key(*k) && !globe.pending.contains(*k))
         .map(|k| {
             let c_lat = tile_frac_to_lat(k.y as f64 + 0.5, k.z);
             let c_lng = tile_frac_to_lng(k.x as f64 + 0.5, k.z);
             let centre = geodetic_to_local(&frame, c_lat, c_lng, 0.0).as_dvec3();
-            (k.clone(), (cam - centre).length() as u64)
+            (k.clone(), (cam - centre).length_squared() as u64)
         })
         .collect();
     queue_order.sort_by_key(|(k, dist)| (k.z, *dist));

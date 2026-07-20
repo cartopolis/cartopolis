@@ -17,6 +17,7 @@ pub mod osm_buildings;
 pub mod picking;
 pub mod prim_ops;
 pub mod rendering;
+pub mod shot_harness;
 pub mod tile_loader;
 pub mod transit_live;
 pub mod transit_vehicles;

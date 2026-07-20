@@ -41,6 +41,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // toward the zenith floor. The asymptotic tail (unlike a smoothstep's hard
     // end) leaves no visible edge where the haze hands over to the sky, and the
     // floor veils the whole dome when the fog is dense.
-    let fade = params.w + (1.0 - params.w) * exp(-max(dir.y, 0.0) / params.x);
-    return vec4<f32>(rgb, color.a * params.y * fade);
+    //
+    // The falloff scale goes to 0 whenever the haze does (fog density 0, or any
+    // camera altitude past FOG_FADE_HIGH), and `-0.0 / 0.0` is NaN — which for a
+    // horizon-or-below ray (`dir.y <= 0`, i.e. everything you look at from the
+    // air) turned the alpha NaN and blended this shell to *black* over the whole
+    // scene. That is what blacked out the globe above ~180 km, where the shell's
+    // lower faces finally pass the depth test in front of the planet, and what
+    // put a black band under the horizon in high flat-tier views. Clamp the
+    // divisor so a zero-strength shell is simply transparent.
+    let scale = max(params.x, 1e-6);
+    let fade = params.w + (1.0 - params.w) * exp(-max(dir.y, 0.0) / scale);
+    return vec4<f32>(rgb, clamp(color.a * params.y * fade, 0.0, 1.0));
 }

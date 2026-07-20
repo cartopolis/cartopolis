@@ -318,19 +318,23 @@ mod tests {
         for _ in 0..10 {
             let mut raw = egui::RawInput::default();
             raw.screen_rect = Some(screen);
-            let out = ctx.run(raw, |ctx| {
+            // egui 0.35: `Context::run` is `run_ui` and panels are shown inside a
+            // root `Ui` rather than on the `Context` (`SidePanel` → `Panel`,
+            // `default_width` → `default_size`) — same layout as `egui_manager`
+            // drives in the live app.
+            let out = ctx.run_ui(raw, |ui| {
                 // Side panels present, like the live app.
-                egui::SidePanel::right("layers_panel")
-                    .default_width(260.0)
-                    .show(ctx, |ui| {
+                egui::Panel::right("layers_panel")
+                    .default_size(260.0)
+                    .show(ui, |ui| {
                         ui.heading("Layers");
                     });
-                egui::SidePanel::right("bookmarks_panel")
-                    .default_width(280.0)
-                    .show(ctx, |ui| {
+                egui::Panel::right("bookmarks_panel")
+                    .default_size(280.0)
+                    .show(ui, |ui| {
                         ui.heading("Bookmarks");
                     });
-                hud_area(ctx, &data);
+                hud_area(&ui.ctx().clone(), &data);
             });
             // The HUD's frame is the largest translucent rect (the side panels
             // are opaque). `from_rgba_unmultiplied` premultiplies internally,

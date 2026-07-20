@@ -285,6 +285,23 @@ pub struct OsmBuildingMesh;
 #[derive(Component)]
 pub struct WindowGlow(pub f32);
 
+/// Cull back faces on the wall/roof materials (mirrors `lod22::BACKFACE_CULL`).
+///
+/// Building solids are closed, and every generator now emits consistently outward
+/// windings via [`MeshData::tri_facing`] / [`MeshData::quad_facing`], so roughly
+/// half the triangles face away and need not be rasterized — in the main view and,
+/// for the shadow-casting detail patch, in each cascade too. Set `false` (→
+/// double-sided, the old behaviour) if any building renders inside-out.
+///
+/// Only the wall/roof materials; the window quads stay double-sided since they're
+/// genuinely single-sided geometry sitting proud of the facade.
+const BACKFACE_CULL: bool = true;
+
+/// The wall/roof `cull_mode`, gated by [`BACKFACE_CULL`].
+fn building_cull_mode() -> Option<bevy::render::render_resource::Face> {
+    BACKFACE_CULL.then_some(bevy::render::render_resource::Face::Back)
+}
+
 /// Default metres per storey when only `building:levels` is present.
 const STOREY_HEIGHT: f32 = 3.0;
 
@@ -519,7 +536,9 @@ pub fn update_buildings(
             let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
             let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
             let result = fetch_patch(d_south, d_west, d_north, d_east).map(|buildings| {
-                let mut bld = MeshData::default();
+                // Deduped: with consistent windings the fan-triangulated flat caps
+                // and shared footprint corners collapse to one vertex each.
+                let mut bld = MeshData::with_dedup();
                 let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
                 for b in &buildings {
                     let ring: Vec<Vec2> = b
@@ -610,8 +629,8 @@ pub fn update_buildings(
                             materials.add(StandardMaterial {
                                 base_color: Color::WHITE,
                                 perceptual_roughness: 0.95,
-                                double_sided: true,
-                                cull_mode: None,
+                                double_sided: !BACKFACE_CULL,
+                                cull_mode: building_cull_mode(),
                                 ..default()
                             })
                         })
@@ -765,7 +784,8 @@ fn build_far_cell(
     let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
     let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
 
-    let mut buf = MeshData::default();
+    // Deduped — see the far-cell merge.
+    let mut buf = MeshData::with_dedup();
     let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
     for b in &buildings {
         // A building straddling a cell edge is returned by both cells; only the
@@ -825,8 +845,8 @@ fn spawn_detail_patch(
         let material = materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.95,
-            double_sided: true,
-            cull_mode: None,
+            double_sided: !BACKFACE_CULL,
+            cull_mode: building_cull_mode(),
             ..default()
         });
         let entity = commands
@@ -903,25 +923,137 @@ pub(crate) struct MeshData {
     normals: Vec<[f32; 3]>,
     colors: Vec<[f32; 4]>,
     indices: Vec<u32>,
+    /// When set, [`MeshData::vertex`] reuses an existing vertex whose position,
+    /// normal *and* colour all match instead of appending a fresh one. See
+    /// [`MeshData::with_dedup`].
+    dedup: Option<HashMap<[u32; 10], u32>>,
 }
 
 impl MeshData {
+    /// A buffer that shares identical vertices between triangles.
+    ///
+    /// For geometry assembled triangle-by-triangle from an already-indexed source
+    /// — the LoD2.2 cell merge, which receives deduplicated vertices from the host
+    /// and would otherwise re-push three fresh ones per triangle — this is a large
+    /// win: a dense cell went from 3 vertices per triangle plus an identity index
+    /// buffer (which offers the post-transform cache nothing to hit) to genuinely
+    /// shared corners.
+    ///
+    /// Lossless by construction: vertices merge only when position, flat normal and
+    /// colour are bit-identical, which is exactly the coplanar-same-colour case
+    /// (fan-triangulated flat roofs, earcut output) where the duplicates were
+    /// redundant anyway. Anything with a normal or colour discontinuity — every
+    /// wall/roof crease — keeps its separate vertices, so shading is unchanged.
+    pub(crate) fn with_dedup() -> Self {
+        Self {
+            dedup: Some(HashMap::new()),
+            ..Default::default()
+        }
+    }
+
+    /// Append (or, in dedup mode, look up) one vertex and return its index.
+    fn vertex(&mut self, v: Vec3, n: Vec3, color: [f32; 4]) -> u32 {
+        // Hash the bit patterns, not the floats: these are copied values, so equal
+        // corners are bit-equal. (NaN can't arise here — `normalize_or_zero`.)
+        let key = self.dedup.is_some().then(|| {
+            [
+                v.x.to_bits(),
+                v.y.to_bits(),
+                v.z.to_bits(),
+                n.x.to_bits(),
+                n.y.to_bits(),
+                n.z.to_bits(),
+                color[0].to_bits(),
+                color[1].to_bits(),
+                color[2].to_bits(),
+                color[3].to_bits(),
+            ]
+        });
+        if let (Some(k), Some(map)) = (&key, &self.dedup) {
+            if let Some(&i) = map.get(k) {
+                return i;
+            }
+        }
+        let idx = self.positions.len() as u32;
+        self.positions.push([v.x, v.y, v.z]);
+        self.normals.push([n.x, n.y, n.z]);
+        self.colors.push(color);
+        if let (Some(k), Some(map)) = (key, &mut self.dedup) {
+            map.insert(k, idx);
+        }
+        idx
+    }
+
     /// Push a triangle with a flat computed normal.
     pub(crate) fn tri(&mut self, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4]) {
         let n = (b - a).cross(c - a).normalize_or_zero();
-        let base = self.positions.len() as u32;
-        for v in [a, b, c] {
-            self.positions.push([v.x, v.y, v.z]);
-            self.normals.push([n.x, n.y, n.z]);
-            self.colors.push(color);
-        }
-        self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        let ia = self.vertex(a, n, color);
+        let ib = self.vertex(b, n, color);
+        let ic = self.vertex(c, n, color);
+        self.indices.extend_from_slice(&[ia, ib, ic]);
     }
 
-    /// Push a quad (a→b→c→d) as two triangles.
+    /// Push a planar quad (a→b→c→d) as two triangles over **four** shared vertices.
+    ///
+    /// Not `tri(a,b,c) + tri(a,c,d)`: that emits six vertices and recomputes the
+    /// same flat normal twice. Every window pane goes through here and windows are
+    /// the highest-count geometry in the scene, so the 33% saving on
+    /// position/normal/colour bytes — and on vertex-shader invocations, in the main
+    /// view *and* in each of the up-to-8 shadow cascades — is worth the duplication
+    /// of `tri`'s body. Output is pixel-identical: all callers pass planar quads, so
+    /// the single normal is the one both triangles would have computed anyway.
     pub(crate) fn quad(&mut self, a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: [f32; 4]) {
-        self.tri(a, b, c, color);
-        self.tri(a, c, d, color);
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        let ia = self.vertex(a, n, color);
+        let ib = self.vertex(b, n, color);
+        let ic = self.vertex(c, n, color);
+        let id = self.vertex(d, n, color);
+        self.indices.extend_from_slice(&[ia, ib, ic, ia, ic, id]);
+    }
+
+    /// Push a triangle wound so its face normal points along `outward`.
+    ///
+    /// The generators below can't guarantee a consistent winding on their own:
+    /// earcut preserves whatever orientation the OSM ring happened to have, and the
+    /// oriented-bounding-box basis can come out either handedness. That's why the
+    /// building materials were `double_sided` with `cull_mode: None` — which costs
+    /// rasterizing every back face, in the main view *and* in each shadow cascade.
+    ///
+    /// Rather than hand-orienting each generator, every call states the direction
+    /// the surface *faces* — `Vec3::Y` for any roof, the outward wall normal for a
+    /// wall — and the winding follows. Note this fixes shading too: `tri` derives
+    /// its flat normal from the winding, so inward-wound roofs were previously
+    /// lit via `double_sided`'s normal flip rather than being correct.
+    pub(crate) fn tri_facing(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        color: [f32; 4],
+        outward: Vec3,
+    ) {
+        if (b - a).cross(c - a).dot(outward) < 0.0 {
+            self.tri(a, c, b, color);
+        } else {
+            self.tri(a, b, c, color);
+        }
+    }
+
+    /// [`MeshData::tri_facing`] for a planar quad (a→b→c→d).
+    pub(crate) fn quad_facing(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        d: Vec3,
+        color: [f32; 4],
+        outward: Vec3,
+    ) {
+        if (b - a).cross(c - a).dot(outward) < 0.0 {
+            self.quad(d, c, b, a, color);
+        } else {
+            self.quad(a, b, c, d, color);
+        }
     }
 
     /// Finalise into a `Mesh` (or `None` if empty).
@@ -1092,20 +1224,15 @@ fn push_building_lod(
         if perp.dot((a + b) * 0.5 - centroid) < 0.0 {
             perp = -perp;
         }
-        let nrm = [perp.x, 0.0, perp.y];
-        let base = bld.positions.len() as u32;
-        for v in [
+        // Wound to face `perp` so far walls back-face cull too (see `quad_facing`).
+        bld.quad_facing(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, height, b.y),
             Vec3::new(a.x, height, a.y),
-        ] {
-            bld.positions.push([v.x, v.y, v.z]);
-            bld.normals.push(nrm);
-            bld.colors.push(wall);
-        }
-        bld.indices
-            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            wall,
+            Vec3::new(perp.x, 0.0, perp.y),
+        );
 
         // Sparse lit windows so the night city keeps glowing past the detail ring;
         // kept a couple of metres below the wall top so they never reach the roof.
@@ -1173,20 +1300,17 @@ fn push_building(
         if perp.dot((a + b) * 0.5 - centroid) < 0.0 {
             perp = -perp;
         }
-        let nrm = [perp.x, 0.0, perp.y];
-        let base = bld.positions.len() as u32;
-        for v in [
+        // Wound to face `perp`, so the wall can be back-face culled. (A vertical
+        // quad's derived flat normal is exactly ±perp, so this is identical to the
+        // explicit normal this used to push — just with the winding fixed too.)
+        bld.quad_facing(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, wall_h, b.y),
             Vec3::new(a.x, wall_h, a.y),
-        ] {
-            bld.positions.push([v.x, v.y, v.z]);
-            bld.normals.push(nrm);
-            bld.colors.push(wall);
-        }
-        bld.indices
-            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            wall,
+            Vec3::new(perp.x, 0.0, perp.y),
+        );
 
         // Windows only on the walls of tall enough buildings (skips houses/sheds
         // and all roof/gable surfaces).
@@ -1203,11 +1327,12 @@ fn push_building(
             for i in 0..n {
                 let a = ring[i];
                 let b = ring[(i + 1) % n];
-                bld.tri(
+                bld.tri_facing(
                     Vec3::new(a.x, wall_h, a.y),
                     Vec3::new(b.x, wall_h, b.y),
                     apex,
                     roof,
+                    Vec3::Y,
                 );
             }
         }
@@ -1309,7 +1434,9 @@ fn flat_cap(buf: &mut MeshData, ring: &[Vec2], y: f32, color: [f32; 4]) {
     };
     for t in cap.chunks_exact(3) {
         let p = |i: usize| Vec3::new(ring[i].x, y, ring[i].y);
-        buf.tri(p(t[0]), p(t[1]), p(t[2]), color);
+        // Earcut keeps the input ring's orientation, which OSM doesn't guarantee —
+        // orient by "a roof faces up" instead (see `tri_facing`).
+        buf.tri_facing(p(t[0]), p(t[1]), p(t[2]), color, Vec3::Y);
     }
 }
 
@@ -1339,7 +1466,14 @@ fn skillion_roof(
         return;
     };
     for t in cap.chunks_exact(3) {
-        buf.tri(lift(ring[t[0]]), lift(ring[t[1]]), lift(ring[t[2]]), color);
+        // A mono-pitch plane still faces up, so `Vec3::Y` orients it (see `flat_cap`).
+        buf.tri_facing(
+            lift(ring[t[0]]),
+            lift(ring[t[1]]),
+            lift(ring[t[2]]),
+            color,
+            Vec3::Y,
+        );
     }
 }
 
@@ -1386,18 +1520,22 @@ fn ridged_roof(
     let r0 = pt(a0 + inset, bc, ridge_y);
     let r1 = pt(a1 - inset, bc, ridge_y);
 
-    // Two main slopes (roof-coloured).
-    buf.quad(e00, e10, r1, r0, roof);
-    buf.quad(e11, e01, r0, r1, roof);
+    // Two main slopes (roof-coloured). Both face up, whatever handedness the OBB
+    // basis came out with (see `tri_facing`).
+    buf.quad_facing(e00, e10, r1, r0, roof, Vec3::Y);
+    buf.quad_facing(e11, e01, r0, r1, roof, Vec3::Y);
 
     if hipped {
-        // Hip ends are sloped roof triangles.
-        buf.tri(e00, r0, e01, roof);
-        buf.tri(e10, e11, r1, roof);
+        // Hip ends are sloped roof triangles — they face up like the main slopes.
+        buf.tri_facing(e00, r0, e01, roof, Vec3::Y);
+        buf.tri_facing(e10, e11, r1, roof, Vec3::Y);
     } else {
-        // Gable ends are vertical triangles (wall-coloured).
-        buf.tri(e00, r0, e01, wall);
-        buf.tri(e10, e11, r1, wall);
+        // Gable ends are vertical triangles (wall-coloured), so `Vec3::Y` can't
+        // orient them — they face outward along the ridge axis instead. `a0 < a1`
+        // are projections onto `a_ax`, so the `a0` end faces −`a_ax`.
+        let a_out = Vec3::new(a_ax.x, 0.0, a_ax.y);
+        buf.tri_facing(e00, r0, e01, wall, -a_out);
+        buf.tri_facing(e10, e11, r1, wall, a_out);
     }
 }
 
@@ -1871,4 +2009,126 @@ fn num_from_value(v: &serde_json::Value) -> Option<f32> {
         .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
         .collect();
     num.parse::<f32>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every triangle of a closed building solid must be wound so its face normal
+    /// points *away* from the solid's interior — that invariant is what makes
+    /// `BACKFACE_CULL` safe. Source rings come from OSM in either orientation and
+    /// earcut preserves whichever it got, so this is checked rather than assumed.
+    ///
+    /// Uses the centroid as the reference interior point, which is valid because
+    /// the footprints below are convex and the solid is star-shaped about it.
+    fn assert_outward(buf: &MeshData, label: &str) {
+        assert!(!buf.indices.is_empty(), "{label}: produced no geometry");
+        let pos = |i: u32| {
+            let p = buf.positions[i as usize];
+            Vec3::new(p[0], p[1], p[2])
+        };
+        let interior = {
+            let sum: Vec3 = buf.indices.iter().map(|&i| pos(i)).sum();
+            sum / buf.indices.len() as f32
+        };
+        for (t, tri) in buf.indices.chunks_exact(3).enumerate() {
+            let (a, b, c) = (pos(tri[0]), pos(tri[1]), pos(tri[2]));
+            let normal = (b - a).cross(c - a);
+            if normal.length_squared() < 1e-12 {
+                continue; // degenerate sliver: no facing to speak of
+            }
+            let outward = (a + b + c) / 3.0 - interior;
+            assert!(
+                normal.dot(outward) > 0.0,
+                "{label}: triangle {t} is wound inward (normal {normal:?}, outward {outward:?})",
+            );
+        }
+    }
+
+    /// A square footprint, given in both winding orders: OSM tags don't guarantee
+    /// one, and the fix must not depend on it.
+    fn square(clockwise: bool) -> Vec<Vec2> {
+        let mut r = vec![
+            Vec2::new(-10.0, -10.0),
+            Vec2::new(10.0, -10.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(-10.0, 10.0),
+        ];
+        if clockwise {
+            r.reverse();
+        }
+        r
+    }
+
+    #[test]
+    fn detail_buildings_are_wound_outward() {
+        let shapes = [
+            (RoofShape::Flat, "flat"),
+            (RoofShape::Gabled, "gabled"),
+            (RoofShape::Hipped, "hipped"),
+            (RoofShape::Pyramidal, "pyramidal"),
+            (RoofShape::Skillion, "skillion"),
+        ];
+        for clockwise in [false, true] {
+            for (shape, name) in shapes {
+                let mut bld = MeshData::with_dedup();
+                let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+                push_building(
+                    &mut bld,
+                    &mut wins,
+                    1,
+                    &square(clockwise),
+                    20.0,
+                    true,
+                    [0.5, 0.5, 0.5],
+                    [0.4, 0.3, 0.3],
+                    shape,
+                    None,
+                    false,
+                );
+                assert_outward(&bld, &format!("{name} (clockwise={clockwise})"));
+            }
+        }
+    }
+
+    #[test]
+    fn far_lod_buildings_are_wound_outward() {
+        for clockwise in [false, true] {
+            let mut bld = MeshData::with_dedup();
+            let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+            push_building_lod(
+                &mut bld,
+                &mut wins,
+                1,
+                &square(clockwise),
+                20.0,
+                [0.5, 0.5, 0.5],
+                [0.4, 0.3, 0.3],
+            );
+            assert_outward(&bld, &format!("far lod (clockwise={clockwise})"));
+        }
+    }
+
+    /// Dedup must only merge vertices that agree in position, normal *and* colour,
+    /// so a cube's eight corners stay eight-per-face-triple, not eight total.
+    #[test]
+    fn dedup_preserves_normal_and_colour_discontinuities() {
+        let mut bld = MeshData::with_dedup();
+        let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+        push_building_lod(
+            &mut bld,
+            &mut wins,
+            1,
+            &square(false),
+            20.0,
+            [0.5, 0.5, 0.5],
+            [0.4, 0.3, 0.3],
+        );
+        // 4 walls × 4 corners (each wall has its own normal, so no sharing across
+        // the vertical creases) + a flat cap that shares its 4 ring corners.
+        assert_eq!(bld.positions.len(), 20);
+        assert_eq!(bld.positions.len(), bld.normals.len());
+        assert_eq!(bld.positions.len(), bld.colors.len());
+    }
 }

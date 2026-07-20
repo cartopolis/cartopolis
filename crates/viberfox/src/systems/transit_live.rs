@@ -192,6 +192,14 @@ pub fn poll_transit_live(
     if live.in_flight || !dl.layers[TRANSIT_LAYER].enabled {
         return;
     }
+    // Conservative early-out before the POI scan below. That scan walks every
+    // loaded transit POI (thousands) and clones two `String`s per in-range stop,
+    // every frame — then the real interval check throws it all away, since polls
+    // are 8–30 s apart. `WARMUP_INTERVAL` is the shorter of the two intervals, so
+    // gating on it here can't delay a poll that the check below would have allowed.
+    if live.last_poll.is_some_and(|t| t.elapsed() < WARMUP_INTERVAL) {
+        return;
+    }
     let Ok((cam_cell, cam_tf)) = camera.single() else {
         return;
     };

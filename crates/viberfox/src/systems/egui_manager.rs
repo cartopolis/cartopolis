@@ -94,7 +94,12 @@ impl EguiManager {
 
 // ─── Extracted render data ────────────────────────────────────────────────────
 
-/// Tessellated egui output, extracted to the render world each frame.
+/// Tessellated egui output, extracted to the render world when it changes.
+///
+/// Deliberately *not* rewritten every frame — see [`end_egui_frame`]. `ExtractResource`'s
+/// derive is a plain `clone()`, and `extract_resource` only skips it when the main-world
+/// resource is unchanged, so an unconditional write meant deep-copying the whole UI
+/// vertex/index geometry into the render world 60×/s for a pixel-identical picture.
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct EguiRenderOutput {
     pub clipped_primitives: Vec<egui::ClippedPrimitive>,
@@ -102,15 +107,29 @@ pub struct EguiRenderOutput {
     /// Physical window size in pixels (for `ScreenDescriptor`).
     pub size_in_pixels: [u32; 2],
     pub pixels_per_point: f32,
+    /// Bumped on every real write. [`egui_pass`] compares it against the generation
+    /// it last uploaded so it can skip `update_buffers` / texture uploads for
+    /// geometry already resident on the GPU — and, critically, so a `textures_delta`
+    /// that lingers in a re-used output isn't re-applied every frame.
+    pub generation: u64,
+    /// Set by a system that mutated this resource in place (currently
+    /// `ui::suppress_egui_for_screenshot`, which clears the geometry for one frame).
+    /// Forces the next [`end_egui_frame`] to write even if egui reports no repaint,
+    /// otherwise the suppressed state would stick and the UI would never come back.
+    pub force_next_write: bool,
 }
 
 // ─── Render-world resource ─────────────────────────────────────────────────
 
 /// Lazily-initialized egui-wgpu renderer in the render world.
 /// Stores the renderer alongside the sample count it was compiled for so we
-/// can detect and handle MSAA changes (e.g. camera settings changed).
+/// can detect and handle MSAA changes (e.g. camera settings changed), plus the
+/// [`EguiRenderOutput::generation`] whose geometry/textures are currently resident
+/// on the GPU (`None` until the first upload).
 #[derive(Resource, Default)]
-pub struct EguiWgpuRenderer(pub Mutex<Option<(egui_wgpu::Renderer, TextureFormat, u32)>>);
+pub struct EguiWgpuRenderer(
+    pub Mutex<Option<(egui_wgpu::Renderer, TextureFormat, u32, Option<u64>)>>,
+);
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
@@ -347,6 +366,36 @@ pub fn end_egui_frame(
         }
     }
     let pixels_per_point = full_output.pixels_per_point;
+    let size_in_pixels = [window.physical_width(), window.physical_height()];
+
+    // Skip the whole tessellate → clone → upload chain when egui itself says the UI
+    // is unchanged. `repaint_delay == Duration::MAX` is egui's "nothing to redraw"
+    // signal; `Context::tessellate` never reuses the previous frame's work, so
+    // without this a completely static menu bar + panel rebuilt (and reallocated)
+    // its full vertex/index geometry, deep-copied it into the render world, and
+    // re-uploaded it to the GPU, every single frame.
+    //
+    // Leaving `render_output` untouched is what makes it free: the last-written
+    // primitives are still there, `egui_pass` redraws them against the fresh colour
+    // target, and Bevy's change detection skips the extract clone.
+    //
+    // NB: these reads must not go through `DerefMut` — touching `render_output`
+    // mutably would mark it changed and defeat the very skip we're setting up.
+    let force = render_output.force_next_write;
+    let quiet = full_output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| v.repaint_delay == std::time::Duration::MAX);
+    if !force
+        && quiet
+        && full_output.textures_delta.is_empty()
+        && render_output.size_in_pixels == size_in_pixels
+        && render_output.pixels_per_point == pixels_per_point
+    {
+        // Drop the shapes without tessellating them.
+        return;
+    }
+
     let clipped_primitives = egui_manager
         .ctx
         .tessellate(full_output.shapes, pixels_per_point);
@@ -354,8 +403,10 @@ pub fn end_egui_frame(
     *render_output = EguiRenderOutput {
         clipped_primitives,
         textures_delta: full_output.textures_delta,
-        size_in_pixels: [window.physical_width(), window.physical_height()],
+        size_in_pixels,
         pixels_per_point,
+        generation: render_output.generation.wrapping_add(1),
+        force_next_write: false,
     };
 }
 
@@ -391,7 +442,7 @@ pub fn egui_pass(
     // (Re-)create the wgpu renderer when the output format or sample count changes.
     let needs_recreate = guard
         .as_ref()
-        .map(|(_, fmt, s)| *fmt != texture_format || *s != sample_count)
+        .map(|(_, fmt, s, _)| *fmt != texture_format || *s != sample_count)
         .unwrap_or(true);
 
     if needs_recreate {
@@ -408,23 +459,31 @@ pub fn egui_pass(
             ),
             texture_format,
             sample_count,
+            // A fresh renderer holds no buffers, so force an upload below.
+            None,
         ));
     }
 
-    let (renderer, _, _) = guard.as_mut().unwrap();
+    let (renderer, _, _, uploaded_gen) = guard.as_mut().unwrap();
 
     let screen_descriptor = egui_wgpu::ScreenDescriptor {
         size_in_pixels: render_data.size_in_pixels,
         pixels_per_point: render_data.pixels_per_point,
     };
 
-    // Upload new / changed textures (font atlas, custom images).
-    for (id, delta) in &render_data.textures_delta.set {
-        renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
-    }
+    // Only re-upload when the output actually changed. `end_egui_frame` leaves
+    // `render_data` untouched on quiet frames, so its `clipped_primitives` — and its
+    // `textures_delta` — are the same ones already on the GPU; re-running these
+    // would rewrite the whole vertex/index buffer set and re-apply a spent texture
+    // delta every frame for an identical picture.
+    let needs_upload = *uploaded_gen != Some(render_data.generation);
 
-    // Upload vertex/index buffers; collect any extra staging command buffers.
-    let extra_cmd_bufs = {
+    let extra_cmd_bufs = if needs_upload {
+        // Upload new / changed textures (font atlas, custom images).
+        for (id, delta) in &render_data.textures_delta.set {
+            renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
+        }
+        // Upload vertex/index buffers; collect any extra staging command buffers.
         let encoder = render_context.command_encoder();
         renderer.update_buffers(
             render_device.wgpu_device(),
@@ -433,7 +492,10 @@ pub fn egui_pass(
             &render_data.clipped_primitives,
             &screen_descriptor,
         )
+    } else {
+        Vec::new()
     };
+    *uploaded_gen = Some(render_data.generation);
 
     // Draw egui on top of the presented frame.
     {
@@ -466,8 +528,11 @@ pub fn egui_pass(
         render_context.add_command_buffer(cb);
     }
 
-    // Release GPU resources for textures egui no longer needs.
-    for id in &render_data.textures_delta.free {
-        renderer.free_texture(id);
+    // Release GPU resources for textures egui no longer needs — once, on the frame
+    // the delta arrived (see `needs_upload`), not every frame it stays resident.
+    if needs_upload {
+        for id in &render_data.textures_delta.free {
+            renderer.free_texture(id);
+        }
     }
 }

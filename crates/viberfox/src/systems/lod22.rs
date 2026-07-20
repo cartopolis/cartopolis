@@ -316,7 +316,11 @@ fn build_lod22_cell(
     let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
     let oz = grid_cell.z as f32 * WORLD_CELL_EDGE;
 
-    let mut buf = MeshData::default();
+    // Deduplicating: the host sends each building with a shared vertex list plus an
+    // index list, and the loop below expands it triangle-by-triangle. Without this
+    // a dense cell ballooned to three unshared vertices per triangle (~720k for a
+    // ~240k-triangle cell) behind a useless identity index buffer.
+    let mut buf = MeshData::with_dedup();
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.

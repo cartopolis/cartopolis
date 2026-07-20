@@ -13,6 +13,7 @@ use bevy::shader::ShaderRef;
 use bevy::window::WindowResolution;
 use clap::Parser;
 use std::path::PathBuf;
+use std::time::Duration;
 
 mod components;
 mod db;
@@ -37,6 +38,41 @@ struct Cli {
     /// Connect to a `vibe_sim` instance (TCP, postcard messages).
     #[arg(long)]
     connect: Option<String>,
+
+    /// Scripted capture: place the camera, wait for the world to stream in,
+    /// save this PNG and exit (see `systems::shot_harness`).
+    #[arg(long, value_name = "PATH")]
+    shot: Option<PathBuf>,
+
+    /// Camera position for `--shot`, as "lat,lng,altitude_m". Repeat for a
+    /// sweep: one capture each, all in a single launch.
+    #[arg(long, value_name = "LAT,LNG,ALT")]
+    at: Vec<String>,
+
+    /// Look angles for `--shot`, as "pitch,yaw" in degrees (−90 = straight
+    /// down). Pairs with `--at` by position; the last one carries over.
+    #[arg(long, value_name = "PITCH,YAW")]
+    look: Vec<String>,
+
+    /// Offscreen render size for `--shot`.
+    #[arg(long, value_name = "WxH", default_value = "1280x720")]
+    size: String,
+
+    /// Seconds of quiet tile streaming required before a `--shot` capture.
+    #[arg(long, default_value_t = 0.8)]
+    settle: f32,
+
+    /// Hard cap on the settle wait per `--shot` capture, in seconds.
+    #[arg(long, default_value_t = 15.0)]
+    wait: f32,
+
+    /// Leave the egui overlay (menu bar, HUD) out of `--shot` captures.
+    #[arg(long)]
+    hide_ui: bool,
+
+    /// Camera mode for `--shot`: "free" (exact placement) or "earth" (orbit).
+    #[arg(long, default_value = "free")]
+    shot_mode: String,
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -116,6 +152,12 @@ fn main() {
                 // overload (tiles/buildings/shadows/atmosphere) because crashes
                 // struck whenever the window sat covered while logs were read.
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
+                // A scripted `--shot` run keeps its window off the desktop: it
+                // renders to an offscreen image (see `shot_harness`), so nothing
+                // pops up and no compositor can occlude — and blacken — the
+                // captured frame. The window still exists because egui and the
+                // HUD size themselves from it.
+                visible: cli.shot.is_none(),
                 ..default()
             }),
             ..default()
@@ -186,6 +228,48 @@ fn main() {
 
     if let Some(addr) = cli.connect {
         app.insert_resource(ConnectAddr(addr));
+    }
+
+    // Scripted capture mode (`--shot`): the harness owns the camera and ends the
+    // run, and the user store stays out of it (no restore, no autosave).
+    if let Some(path) = cli.shot.clone() {
+        match systems::shot_harness::ShotHarness::from_cli(
+            path,
+            &cli.at,
+            &cli.look,
+            &cli.size,
+            cli.settle,
+            cli.wait,
+            cli.hide_ui,
+            cli.shot_mode.clone(),
+        ) {
+            Ok(harness) => {
+                app.insert_resource(harness)
+                    .init_resource::<systems::shot_harness::ShotProgress>()
+                    .add_systems(
+                        Startup,
+                        systems::shot_harness::setup_offscreen_target
+                            .after(systems::free_camera::setup_camera),
+                    )
+                    .add_systems(
+                        Update,
+                        (
+                            systems::shot_harness::place_camera
+                                .before(systems::geo_nav::apply_teleport),
+                            // After drive_screenshots so the `hide_ui` it clears
+                            // each frame isn't cleared again before PostUpdate's
+                            // egui suppression reads it.
+                            systems::shot_harness::drive_capture
+                                .after(systems::free_camera::camera_controls)
+                                .after(systems::ui::drive_screenshots),
+                        ),
+                    );
+            }
+            Err(e) => {
+                eprintln!("--shot: {e}");
+                std::process::exit(2);
+            }
+        }
     }
 
     app.add_systems(
@@ -269,13 +353,17 @@ fn main() {
             // Restore feeds pending_teleport, so it must run before the
             // teleport applies; teleports move the camera, so apply before
             // camera_controls reads it this frame.
+            // Both skipped under `--shot`: a scripted capture places its own
+            // camera and must not overwrite the interactive session's location.
             systems::user_store::restore_last_location
-                .after(systems::map_stream::init_map_stream),
+                .after(systems::map_stream::init_map_stream)
+                .run_if(not(systems::shot_harness::harness_active)),
             systems::geo_nav::apply_teleport
                 .after(systems::geo_nav::drive_geocode)
                 .after(systems::user_store::restore_last_location)
                 .before(systems::free_camera::camera_controls),
-            systems::user_store::autosave_user_store,
+            systems::user_store::autosave_user_store
+                .run_if(not(systems::shot_harness::harness_active)),
             systems::bookmarks::poll_bookmark_addresses,
             systems::map_stream::apply_stream_textures.after(systems::map_stream::update_map_stream),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
@@ -305,9 +393,15 @@ fn main() {
             avatar::smooth_remote_avatars.after(avatar::smooth_online_avatar_display),
             avatar::tick_remote_avatar_motion_hint.after(avatar::smooth_remote_avatars),
             network::send_network_intent.after(avatar::handle_avatar_movement),
+            // 20 Hz, not per-frame: the window runs `AutoNoVsync`, so unthrottled
+            // this pushed several hundred position messages a second at the sim for
+            // a value it only uses to pick an area of interest.
             network::send_observer_update
                 .after(network::apply_network_snapshot)
-                .after(avatar::handle_avatar_movement),
+                .after(avatar::handle_avatar_movement)
+                .run_if(bevy::time::common_conditions::on_timer(
+                    Duration::from_millis(50),
+                )),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
             systems::globe::update_globe_visibility
                 .after(systems::free_camera::camera_controls),
@@ -418,7 +512,8 @@ fn main() {
         PostUpdate,
         systems::ui::suppress_egui_for_screenshot
             .after(systems::egui_manager::end_egui_frame),
-    );
+    )
+    .add_systems(Last, frame_limiter);
 
     app.run();
 }
@@ -958,6 +1053,45 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 /// climbing frame times (`slow frame` at 250 ms → 600 ms → …) is the visible
 /// warning that a hang is imminent. Watch these lines in the log to see *when*
 /// (which altitude / what just streamed) the GPU starts choking.
+/// Cap the presentation rate (default 60 fps; `VIBERFOX_FPS_CAP=0` disables).
+///
+/// The window deliberately runs `PresentMode::AutoNoVsync` — on Wayland, FIFO's
+/// acquire blocks ~1 s per frame while the window is occluded and eventually trips
+/// i915's hang detection into `VK_ERROR_DEVICE_LOST` (see the `present_mode`
+/// comment). That fix is load-bearing, but it also means the app renders as fast as
+/// the iGPU will go on hardware this code documents as living near its
+/// command-buffer timeout. Sleeping in `Last` to a fixed frame deadline keeps the
+/// Wayland behaviour (we never block on acquire) while roughly halving GPU *and*
+/// CPU work at identical image quality.
+///
+/// Sleeping — not spinning: the point is to leave the GPU idle, so burning a core
+/// for sub-millisecond deadline precision would defeat it.
+fn frame_limiter(mut deadline: Local<Option<std::time::Instant>>, mut period: Local<Option<Duration>>) {
+    let period = *period.get_or_insert_with(|| {
+        let fps: f64 = std::env::var("VIBERFOX_FPS_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60.0);
+        if fps <= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(1.0 / fps)
+        }
+    });
+    if period.is_zero() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    // A deadline in the past means we're already running below the cap (a hitch, or
+    // a genuinely heavy frame). Re-base on `now` rather than sleeping zero for a
+    // burst of frames trying to "catch up" to a schedule we can't meet.
+    let target = deadline.filter(|d| *d > now).unwrap_or(now);
+    if let Some(wait) = target.checked_duration_since(now) {
+        std::thread::sleep(wait);
+    }
+    *deadline = Some(target + period);
+}
+
 fn frame_time_watchdog(
     time: Res<Time<Real>>,
     globe_meshes: Query<(), With<systems::globe::GlobeMesh>>,
@@ -1302,6 +1436,12 @@ fn setup_horizon_haze(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HorizonHazeMaterial>>,
 ) {
+    // Startup switch, alongside VIBERFOX_NO_ATMOSPHERE: leave the haze shell out
+    // entirely, to tell "the scene is dark" from "a sky shell is covering it"
+    // when bisecting a render problem with `--shot`.
+    if env_flag("VIBERFOX_NO_HAZE") {
+        return;
+    }
     let mesh = meshes.add(Cuboid::from_length(360_000.0).mesh());
     let material = materials.add(HorizonHazeMaterial {
         color: LinearRgba::WHITE,
@@ -1327,23 +1467,34 @@ fn update_horizon_haze(
         (&GridCell, &GlobalTransform, &Transform, &DistanceFog),
         (With<Camera3d>, Without<HorizonHaze>),
     >,
-    mut haze: Query<(&mut Transform, &MeshMaterial3d<HorizonHazeMaterial>), With<HorizonHaze>>,
+    mut haze: Query<
+        (&mut Transform, &mut Visibility, &MeshMaterial3d<HorizonHazeMaterial>),
+        With<HorizonHaze>,
+    >,
     mut materials: ResMut<Assets<HorizonHazeMaterial>>,
 ) {
     let Ok((cell, cam, cam_local, fog)) = camera.single() else {
         return;
     };
-    let Ok((mut tf, mat_handle)) = haze.single_mut() else {
+    let Ok((mut tf, mut vis, mat_handle)) = haze.single_mut() else {
         return;
     };
     tf.translation = cam.translation();
 
+    // The haze thins with altitude alongside the ground fog, so an orbit view
+    // sees the map through clear air instead of a grey band at the horizon.
+    let altitude = globe.altitude_m(cell, cam_local) as f32;
+    let alt = systems::free_camera::fog_altitude_factor(altitude);
+    let d = dev.fog_density * alt;
+
+    // Once it carries no haze at all, drop the shell out of the frame rather than
+    // drawing a fully transparent 360 km box over the whole view every frame.
+    let want = if alt <= 0.0 && d <= 0.0 { Visibility::Hidden } else { Visibility::Inherited };
+    if *vis != want {
+        *vis = want;
+    }
+
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-        // The haze thins with altitude alongside the ground fog, so an orbit view
-        // sees the map through clear air instead of a grey band at the horizon.
-        let altitude = globe.altitude_m(cell, cam_local) as f32;
-        let alt = systems::free_camera::fog_altitude_factor(altitude);
-        let d = dev.fog_density * alt;
         mat.color = fog.color.to_linear();
         // Density-driven only: the built-in atmosphere (Bevy 0.19) has no
         // single-scattering horizon artifact to cover, so there's no base haze —
