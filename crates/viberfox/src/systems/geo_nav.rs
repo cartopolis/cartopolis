@@ -238,6 +238,42 @@ pub fn world_to_lat_lng(anchor: (f64, f64, u32), wx: f64, wz: f64) -> (f64, f64)
     (lat, lng)
 }
 
+/// Where the camera is on Earth — the single definition of that, shared by the
+/// HUD readout and the persisted last location (`user_store`).
+///
+/// Below the space tier the anchored Mercator frame *is* the ground truth: the
+/// streamed tiles are keyed with the same mapping, so `world_to_lat_lng` names
+/// exactly the imagery under the camera. In space it is meaningless — the camera
+/// is thousands of kilometres from the anchor and the flat frame projects that
+/// offset onto an arbitrary point of the map — so the geographic sub-point is
+/// used instead.
+///
+/// Autosave used to skip that split and store the flat-frame value: quitting
+/// from orbit wrote a mid-ocean "last location" (plus a far-side-negative local
+/// `y` as altitude), which the next startup faithfully restored and re-anchored
+/// to — no tiles, no buildings, until the user jumped to a bookmark.
+pub fn camera_geo(
+    anchor: (f64, f64, u32),
+    globe: &crate::systems::globe::GlobeState,
+    cell: &GridCell,
+    tf: &Transform,
+) -> (f64, f64) {
+    let edge = WORLD_CELL_EDGE as f64;
+    let cam = DVec3::new(
+        cell.x as f64 * edge + tf.translation.x as f64,
+        cell.y as f64 * edge + tf.translation.y as f64,
+        cell.z as f64 * edge + tf.translation.z as f64,
+    );
+    if globe.in_space(cell, tf) {
+        let dir = (cam - globe.center_local.as_dvec3())
+            .normalize_or_zero()
+            .as_vec3();
+        crate::systems::globe::sub_point(globe.anchor_lat, globe.anchor_lng, dir)
+    } else {
+        world_to_lat_lng(anchor, cam.x, cam.z)
+    }
+}
+
 /// Parse a pasted coordinate pair: "53.21940, 6.56650", "53.2194 6.5665",
 /// "53.2194N, 6.5665E", "(-33.9, 18.4)". Returns (lat, lng) when both values
 /// are in range.
@@ -677,6 +713,54 @@ pub fn apply_teleport(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::globe::{sub_point, GlobeState};
+
+    const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
+
+    /// A globe built around [`ANCHOR`], the way `setup_globe` leaves it: Earth's
+    /// centre one radius below the local ground.
+    fn test_globe() -> GlobeState {
+        let mut globe = GlobeState::default();
+        globe.radius = 6_378_137.0;
+        globe.center_local = Vec3::new(0.0, -globe.radius, 0.0);
+        globe.anchor_lat = ANCHOR.0;
+        globe.anchor_lng = ANCHOR.1;
+        globe.ready = true;
+        globe
+    }
+
+    /// Near the ground the anchored Mercator frame is the ground truth (the
+    /// streamed tiles are keyed with it), so the fix stays on the flat mapping.
+    #[test]
+    fn camera_geo_uses_the_flat_frame_near_the_ground() {
+        let tf = Transform::from_xyz(1_200.0, 400.0, -800.0);
+        let got = camera_geo(ANCHOR, &test_globe(), &GridCell::default(), &tf);
+        let flat = world_to_lat_lng(ANCHOR, 1_200.0, -800.0);
+        assert!((got.0 - flat.0).abs() < 1e-9 && (got.1 - flat.1).abs() < 1e-9);
+    }
+
+    /// In space the flat frame projects a multi-thousand-kilometre offset onto an
+    /// arbitrary point of the map — the bug that saved a mid-ocean last location
+    /// on exit from orbit. The sub-point is used instead.
+    #[test]
+    fn camera_geo_uses_the_sub_point_in_space() {
+        let globe = test_globe();
+        let tf = Transform::from_xyz(3_000_000.0, 1_000_000.0, 0.0);
+        let got = camera_geo(ANCHOR, &globe, &GridCell::default(), &tf);
+
+        let dir = (tf.translation.as_dvec3() - globe.center_local.as_dvec3())
+            .normalize()
+            .as_vec3();
+        let expected = sub_point(globe.anchor_lat, globe.anchor_lng, dir);
+        assert!((got.0 - expected.0).abs() < 1e-9 && (got.1 - expected.1).abs() < 1e-9);
+
+        // …and that is nowhere near what the flat frame claimed.
+        let flat = world_to_lat_lng(ANCHOR, 3_000_000.0, 0.0);
+        assert!(
+            (flat.1 - got.1).abs() > 5.0,
+            "flat frame {flat:?} should disagree wildly with the sub-point {got:?}"
+        );
+    }
 
     #[test]
     fn parse_location_variants() {

@@ -53,6 +53,21 @@ pub struct Database {
     pub conn: Mutex<Connection>,
 }
 
+/// Stand-in for the primary `Window` when there isn't one: a scripted `--shot`
+/// run is windowless (no winit event loop at all) and renders into an offscreen
+/// image, but egui still needs a screen to lay out and scissor against, and the
+/// tile/globe LOD heuristics still need a viewport height to size their split
+/// thresholds in pixels. Present only in headless runs; every reader falls back
+/// to the real `Window` first, so interactive mode is untouched.
+#[derive(Resource, Clone, Copy)]
+pub struct HeadlessSurface {
+    /// Physical pixels of the offscreen target (`--size`).
+    pub size: UVec2,
+    /// Logical→physical scale. 1.0: there's no monitor to inherit a DPI from,
+    /// and the capture is measured in its own pixels.
+    pub scale: f32,
+}
+
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
 /// exposes a day/night slider that drives the sun, and a distance-fog slider.
 #[derive(Resource)]
@@ -367,12 +382,21 @@ pub struct CameraState {
     /// smooth camera-fly rather than a per-notch jump.
     pub orbit_distance: f64,
     pub orbit_distance_target: f64,
-    /// Space tier: free-arcball orientation — the unit direction from the
-    /// Earth's centre to the camera plus the camera's up vector, rotated by
-    /// quaternions. No yaw/pitch parameterization, so there is no pole clamp:
-    /// the globe spins without locks in any direction.
+    /// Space tier: the unit direction from the Earth's centre to the camera
+    /// (i.e. the sub-camera point on the globe). Drag rotates it.
     pub orbit_dir: bevy::math::DVec3,
+    /// Space tier: the camera's up vector, **derived** each frame from the
+    /// planet's north axis and [`Self::orbit_heading`] — not integrated through
+    /// drags. Kept as state only so a frame where north is degenerate (looking
+    /// straight down a pole) can carry the previous up over.
     pub orbit_up: bevy::math::DVec3,
+    /// Space tier: view rotation about the view axis, in radians. 0 = north up,
+    /// which is where the globe stays unless the user explicitly rotates
+    /// (middle-drag / Ctrl+drag) — the Google Earth convention. Holding this as
+    /// an explicit angle rather than letting an arcball accumulate roll is what
+    /// keeps the horizon level: composed drag rotations do not commute, so an
+    /// integrated up vector drifts off north a little more with every gesture.
+    pub orbit_heading: f32,
     /// Azimuth around the focus (radians); horizontal drag spins it.
     pub orbit_yaw: f32,
     /// Elevation angle above the ground plane (radians): 0 = grazing the
@@ -390,10 +414,16 @@ pub struct CameraState {
     /// `apply_camera_reanchor`, which turns it into a re-anchoring teleport.
     pub reanchor_request: Option<(f64, f64, f64)>,
     /// Compass request: while true, the Orbit camera eases its view back to
-    /// north-up each frame (yaw → 0 on the surface, arcball roll → pole up in
-    /// space). Set by the top-right compass overlay, cleared once aligned or as
-    /// soon as the user rotates. Ignored outside Orbit (fly/avatar are free-form).
+    /// north-up each frame (yaw → 0 on the surface, heading → 0 in space). Set by
+    /// the top-right compass overlay, cleared once aligned or as soon as the user
+    /// rotates. Ignored outside Orbit (fly/avatar are free-form).
     pub orbit_north_reset: bool,
+    /// Compass lock: while true the Orbit camera is *held* north-up instead of
+    /// merely eased there once — the view-turn gesture (middle-drag / Ctrl+drag
+    /// in space, horizontal rotate on the surface) is ignored and the heading is
+    /// re-armed toward north every frame, so the polar axis stays vertical on
+    /// screen no matter how the globe is spun. Toggled by clicking the compass.
+    pub orbit_north_lock: bool,
 }
 
 #[derive(Resource, Default)]
@@ -431,12 +461,14 @@ impl Default for CameraState {
             orbit_distance_target: 1500.0,
             orbit_dir: bevy::math::DVec3::Z,
             orbit_up: bevy::math::DVec3::Y,
+            orbit_heading: 0.0,
             orbit_yaw: 0.0,
             orbit_pitch: std::f32::consts::FRAC_PI_2 * 0.85,
             orbit_initialized: false,
             orbit_space: false,
             reanchor_request: None,
             orbit_north_reset: false,
+            orbit_north_lock: false,
         }
     }
 }

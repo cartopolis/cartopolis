@@ -39,6 +39,16 @@ use vibe_core::geo::TangentFrame;
 use vibe_core::world::tile_to_meters;
 use vibe_core::TileKey;
 
+/// Albedo multiplier on the globe's imagery. The OSM basemap is a *map*: pale
+/// beige land on near-white paper, reflecting ~0.8 where the real Earth averages
+/// ~0.3. Rendered at face value the sunlit hemisphere sat in the tonemapper's
+/// shoulder as a flat white ball, and the only way to tame it was to stop the
+/// camera down — which took the faint things down with it (the atmosphere's limb
+/// glow, the stars). Darkening the imagery to a plausible planetary albedo fixes
+/// the cause instead, and buys back the exposure those need. Globe meshes only
+/// render in the space tier, so nothing on the ground is affected.
+pub const GLOBE_ALBEDO: f32 = 0.55;
+
 /// Latitude/longitude tessellation of the base (ocean backstop) sphere.
 const GLOBE_RINGS: usize = 64;
 const GLOBE_SEGMENTS: usize = 128;
@@ -167,6 +177,17 @@ impl GlobeState {
         (cam - self.center_local.as_dvec3()).length() - self.radius as f64
     }
 
+    /// Bevy-local unit direction from Earth's centre toward a geodetic point,
+    /// in the current anchor frame — the inverse of [`sub_point`]. Places the
+    /// space camera over a given lat/lng (the `--shot` harness uses it).
+    pub fn direction_local(&self, lat: f64, lng: f64) -> Vec3 {
+        if !self.ready {
+            return Vec3::Y;
+        }
+        let frame = TangentFrame::new(self.anchor_lat, self.anchor_lng, 0.0);
+        (geodetic_to_local(&frame, lat, lng, 0.0) - self.center_local).normalize_or_zero()
+    }
+
     /// Bevy-local unit direction of Earth's spin axis (points toward the
     /// geographic north pole), in the current anchor frame. The compass
     /// "north up" reset uses it in space, where north-up means aligning the
@@ -197,6 +218,45 @@ impl GlobeState {
     pub fn in_space(&self, cell: &GridCell, tf: &Transform) -> bool {
         self.ready && self.altitude_m(cell, tf) > GLOBE_SHOW_ALT as f64
     }
+
+    /// How far into space the view is, 0 → 1: 0 at the globe threshold, 1 by
+    /// [`SPACE_FULL_ALT`], smooth in between.
+    ///
+    /// Everything the space tier does *by degree* — the exaggerated atmosphere,
+    /// the extra bloom, the exposure that pays for the darkened globe imagery —
+    /// rides this instead of the `in_space` boolean. Switching them at the
+    /// threshold put a hard cut in the middle of a zoom: the frame changed
+    /// brightness, haze and glare in one step. It also applied the whole
+    /// exaggeration at 200 km, where the camera is *inside* the stretched shell
+    /// and the map drowned in blue.
+    pub fn space_factor(&self, cell: &GridCell, tf: &Transform) -> f32 {
+        if !self.ready {
+            return 0.0;
+        }
+        crate::utils::sun::smoothstep(
+            GLOBE_SHOW_ALT,
+            SPACE_FULL_ALT,
+            self.altitude_m(cell, tf) as f32,
+        )
+    }
+
+    /// Radius the viewer-centred sky shells (star field, moon) should sit at, or
+    /// `None` on the ground where their built-in radius is right.
+    ///
+    /// Those shells are sized for a ground observer — ~150 km out, "beyond all
+    /// world geometry". From orbit that is *nearer than the planet*, so the stars
+    /// blended over the Earth disc and the moon quad drew in front of it. In
+    /// space they follow the camera out: past the far limb (`dist + R`) with
+    /// margin, and inside the far plane `camera_controls` sets there
+    /// (`dist + 2.5 R`). Angular sizes are unchanged — the meshes are scaled
+    /// uniformly along with the distance.
+    pub fn sky_shell_radius(&self, cell: &GridCell, tf: &Transform) -> Option<f32> {
+        if !self.in_space(cell, tf) {
+            return None;
+        }
+        let dist_center = self.altitude_m(cell, tf) + self.radius as f64;
+        Some(dist_center as f32 + self.radius * 1.5)
+    }
 }
 
 /// Geographic sub-point (lat, lng) of a Bevy-local direction pointing out from
@@ -218,6 +278,28 @@ pub fn sub_point(anchor_lat: f64, anchor_lng: f64, dir_bevy: Vec3) -> (f64, f64)
 fn geodetic_to_local(frame: &TangentFrame, lat: f64, lng: f64, height: f64) -> Vec3 {
     let enu = frame.geodetic_to_local(lat, lng, height);
     Vec3::new(enu.x as f32, enu.z as f32, -enu.y as f32)
+}
+
+/// Is a quadtree tile entirely behind the horizon, and so safe to prune (with it
+/// its whole subtree)? `normal` is the outward normal at the tile centre,
+/// `to_cam` the unit direction from that centre to the camera.
+///
+/// The test is against the tile's *centre*, so the slack has to cover the tile's
+/// own angular extent on the sphere — a coarse tile spans a large arc, and at low
+/// orbit its centre can sit well under the camera's horizon while the part
+/// directly beneath the camera is in plain view. Without that term, at ~106 km
+/// the z2 root containing the camera (centre ~29° away, i.e. ~12° below the
+/// horizon) was pruned at the root: nothing under the camera ever refined and the
+/// globe fell back to the z2/z3 floor — the blurry band between the flat tier's
+/// 50 km ceiling and a few hundred km. The log named it exactly (`desired=80`:
+/// 16 + 64 floor tiles and nothing else). Same failure mode as the centre-only
+/// in-view test in the selection loop, which already carries its own widening.
+///
+/// The fixed −0.15 keeps limb tiles alive; the span term vanishes at fine zooms,
+/// so far-side z12 tiles are still culled.
+fn over_the_horizon(normal: DVec3, to_cam: DVec3, ground_span_m: f64, radius: f64) -> bool {
+    let span = ((ground_span_m * 0.75) / radius).min(std::f64::consts::FRAC_PI_2);
+    normal.dot(to_cam) < -0.15 - span.sin()
 }
 
 /// Latitude (deg) of a fractional Web-Mercator tile row at a zoom.
@@ -368,7 +450,11 @@ pub fn setup_globe(
             // light (not a void). The water tone backstops the polar caps beyond
             // Mercator's ±85° and still-loading tiles.
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.67, 0.80, 0.85),
+                base_color: Color::srgb(
+                    0.67 * GLOBE_ALBEDO,
+                    0.80 * GLOBE_ALBEDO,
+                    0.85 * GLOBE_ALBEDO,
+                ),
                 perceptual_roughness: 1.0,
                 reflectance: 0.0,
                 double_sided: true,
@@ -484,18 +570,63 @@ pub struct PlanetAtmosphere;
 /// `LookupTexture` in space too (no raymarch cost; the globe just loses its
 /// atmospheric limb). Either way the components stay put — only the mode changes.
 ///
-/// Forced `false`: on the Intel iGPU the full-screen Raymarched integration from
-/// orbit pins every frame near the command-buffer timeout (measured `frame_ms`
-/// ~1024 starting the instant altitude crosses `GLOBE_SHOW_ALT`, regardless of
-/// tile count), and a streaming hitch then tips it over into
-/// `VK_ERROR_DEVICE_LOST`. Even at [`GLOBE_SKY_SAMPLES`] = 6 it's too heavy here.
-/// `LookupTexture` in space is a fixed cheap cost and needs no component teardown.
-/// Re-enable only behind a GPU-capability check, never unconditionally.
-const SPACE_ATMOSPHERE: bool = false;
-/// Raymarch sky samples per fragment in the space tier (Bevy's default is 16).
-/// The integration runs full-screen from orbit, so keep it lean for weak GPUs;
-/// the atmosphere is a thin shell from out there and needs few samples.
-const GLOBE_SKY_SAMPLES: u32 = 6;
+/// This was `false` for a while, on the strength of a measurement that turned out
+/// to be someone else's bug: the "Raymarched from orbit pins every frame at
+/// ~1024 ms" reading is the *same* eerily constant ~1024 ms the occluded-window
+/// Wayland/FIFO stall produces (see the `present_mode` note in `main.rs`) — it was
+/// the compositor withholding swapchain images, not the raymarch. Measured
+/// offscreen with `--shot` (which no compositor can stall), Raymarched at
+/// [`GLOBE_SKY_SAMPLES`] costs a few ms a frame from orbit on this iGPU, so it
+/// stays on: the planet gets its atmospheric limb back. `VIBERFOX_NO_SPACE_RAYMARCH=1`
+/// forces the cheap `LookupTexture` path if a weaker GPU ever needs it.
+const SPACE_ATMOSPHERE: bool = true;
+
+/// Whether the space tier should raymarch (see [`SPACE_ATMOSPHERE`]), read once.
+fn space_raymarch() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| SPACE_ATMOSPHERE && !crate::env_flag("VIBERFOX_NO_SPACE_RAYMARCH"))
+}
+/// Raymarch sky samples per fragment in the space tier. Held at Bevy's default:
+/// measured offscreen at 200 km and 15,000 km, 16 samples costs the same as 6
+/// within run-to-run noise (~2 ms over `LookupTexture` either way), so there's
+/// nothing to buy by starving the integration.
+const GLOBE_SKY_SAMPLES: u32 = 16;
+
+/// Thickness of `Atmosphere::earth` (outer − inner radius), in metres.
+const EARTH_ATMOSPHERE_THICKNESS: f32 = 100_000.0;
+/// How much taller the atmosphere is made in the space tier.
+///
+/// A deliberate departure from physics. Earth's atmosphere is 100 km on a
+/// 6,371 km ball — 1.5% of the radius — so on a screen where the globe spans
+/// 500 px the limb is *four pixels*: correct, and reading as a drawn outline
+/// rather than air. Every "Earth from orbit" render you remember exaggerates it.
+/// The `Falloff::Exponential` scale is a *fraction* of the shell's thickness, so
+/// raising `outer_radius` alone stretches the whole density profile with it —
+/// one knob, same shape, taller and brighter.
+///
+/// Only applied above the globe threshold; the ground tier gets the physical
+/// shell back, which is what the city-level sky and the dawn/dusk curves are
+/// tuned against.
+pub const SPACE_ATMOSPHERE_THICKNESS: f32 = 2.5;
+
+/// Altitude at which the space treatment is fully applied (see
+/// [`GlobeState::space_factor`]). Deliberately far out: the exaggeration exists
+/// to make a limb that's a handful of pixels read, and from low orbit the limb
+/// is already thick on screen — applying it there only fogs the map you came to
+/// look at.
+pub const SPACE_FULL_ALT: f32 = 3_000_000.0;
+
+/// Change in shell thickness that's worth rebuilding the scattering medium for.
+const MEDIUM_REBUILD_STEP: f32 = 0.05;
+
+/// The scattering media: Bevy's Earth preset, and the copy `update_globe_visibility`
+/// re-derives as the shell stretches (thinned to keep the column constant — see
+/// [`SPACE_ATMOSPHERE_THICKNESS`]). Built once in `free_camera::setup_camera`.
+#[derive(Resource)]
+pub struct AtmosphereMedia {
+    pub ground: Handle<bevy::light::atmosphere::ScatteringMedium>,
+    pub space: Handle<bevy::light::atmosphere::ScatteringMedium>,
+}
 /// Bevy's default sky samples, restored at ground level (LookupTexture mode
 /// only raymarches in its LUT builds, so this is mostly for correctness).
 const GROUND_SKY_SAMPLES: u32 = 16;
@@ -546,6 +677,11 @@ pub fn update_globe_visibility(
         (&GridCell, &Transform, &mut AtmosphereSettings),
         With<crate::systems::free_camera::FreeCamera>,
     >,
+    mut planet: Query<&mut bevy::light::Atmosphere, With<PlanetAtmosphere>>,
+    media: Option<Res<AtmosphereMedia>>,
+    mut scattering_media: ResMut<Assets<bevy::light::atmosphere::ScatteringMedium>>,
+    // Shell thickness the current `media.space` asset was built for.
+    mut applied_thickness: Local<f32>,
     mut globe_vis: Query<
         &mut Visibility,
         (With<GlobeMesh>, Without<HideInSpace>),
@@ -590,7 +726,7 @@ pub fn update_globe_visibility(
     // resources still in flight and hangs the device (`VK_ERROR_DEVICE_LOST`,
     // confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
     // (`setup_camera`, gated by the dev-panel/env flags) and left in place.
-    let (want_mode, want_samples) = if show_globe && SPACE_ATMOSPHERE {
+    let (want_mode, want_samples) = if show_globe && space_raymarch() {
         (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
     } else {
         (AtmosphereMode::LookupTexture, GROUND_SKY_SAMPLES)
@@ -600,6 +736,35 @@ pub fn update_globe_visibility(
     }
     if atmosphere.sky_max_samples != want_samples {
         atmosphere.sky_max_samples = want_samples;
+    }
+
+    // Exaggerate the shell's height from orbit (see `SPACE_ATMOSPHERE_THICKNESS`).
+    // Mutating the existing component's fields is safe — it's the add/remove that
+    // hangs the device, not a field write.
+    if let (Ok(mut planet), Some(media)) = (planet.single_mut(), media) {
+        // Stretch the shell in with altitude rather than at the threshold, and
+        // thin the air by the same factor so the column through it never changes
+        // (stretching alone buries the surface under haze). At `space_factor` 0
+        // this is exactly Bevy's Earth preset, which is why crossing the tier
+        // boundary shows no seam at all.
+        let thickness = 1.0 + (SPACE_ATMOSPHERE_THICKNESS - 1.0) * globe.space_factor(cell, tf);
+        let want_outer = planet.inner_radius + EARTH_ATMOSPHERE_THICKNESS * thickness;
+        if planet.outer_radius != want_outer {
+            planet.outer_radius = want_outer;
+        }
+        if planet.medium != media.space {
+            planet.medium = media.space.clone();
+        }
+        // The medium is an asset, so it can't be lerped per-frame for free —
+        // rewriting it rebuilds its falloff/phase LUTs. Re-derive it only when
+        // the density has actually drifted (a few times across a full zoom).
+        if (thickness - *applied_thickness).abs() > MEDIUM_REBUILD_STEP {
+            if let Some(mut medium) = scattering_media.get_mut(&media.space) {
+                *medium = bevy::light::atmosphere::ScatteringMedium::default()
+                    .with_density_multiplier(1.0 / thickness);
+                *applied_thickness = thickness;
+            }
+        }
     }
 
     let want_globe = if show_globe { Visibility::Visible } else { Visibility::Hidden };
@@ -635,9 +800,11 @@ pub fn update_globe_tiles(
         With<crate::systems::free_camera::FreeCamera>,
     >,
     windows: Query<&Window>,
+    headless: Option<Res<crate::resources::HeadlessSurface>>,
     bigspace: Query<Entity, With<BigSpace>>,
     time: Res<Time>,
 ) {
+    let headless = headless.map(|h| *h);
     if !globe.ready {
         return;
     }
@@ -728,9 +895,22 @@ pub fn update_globe_tiles(
         let mut normals: Vec<[f32; 3]> = Vec::new();
         let mut uvs: Vec<[f32; 2]> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
+        // Web Mercator stops at ±85.05°, so the tile grid leaves a bare cap at
+        // each pole — the backstop sphere showing through as a disc from orbit.
+        // Web maps close it by stretching the outermost row of the top/bottom
+        // tiles onto the pole itself; the cap's imagery is a smear of the last
+        // texel row, which is ice/ocean at both poles. The row collapses to a
+        // point at the pole, turning that band of quads into a triangle fan.
+        let rows = 1i64 << key.z;
         for iy in 0..=QT_SEGS {
             let v = iy as f64 / QT_SEGS as f64;
-            let lat = tile_frac_to_lat(key.y as f64 + v, key.z);
+            let lat = if key.y == 0 && iy == 0 {
+                90.0
+            } else if key.y == rows - 1 && iy == QT_SEGS {
+                -90.0
+            } else {
+                tile_frac_to_lat(key.y as f64 + v, key.z)
+            };
             for ix in 0..=QT_SEGS {
                 let u = ix as f64 / QT_SEGS as f64;
                 let lng = tile_frac_to_lng(key.x as f64 + u, key.z);
@@ -767,6 +947,7 @@ pub fn update_globe_tiles(
                 // near-black under the camera's physical exposure (see the base
                 // sphere note). Sunlit day side bright, night side ambient-filled.
                 MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(GLOBE_ALBEDO, GLOBE_ALBEDO, GLOBE_ALBEDO),
                     base_color_texture: Some(texture),
                     perceptual_roughness: 1.0,
                     reflectance: 0.0,
@@ -823,7 +1004,14 @@ pub fn update_globe_tiles(
             Projection::Perspective(p) => p.fov,
             _ => std::f32::consts::FRAC_PI_4,
         };
-        let h = windows.iter().next().map(|w| w.height()).unwrap_or(800.0);
+        // Headless (`--shot`) has no window; the offscreen target is the viewport,
+        // and getting its height wrong mis-sizes every screen-space split test.
+        let h = windows
+            .iter()
+            .next()
+            .map(|w| w.height())
+            .or_else(|| headless.map(|h| h.size.y as f32 / h.scale))
+            .unwrap_or(800.0);
         (fov, h)
     };
     let fwd = (tf.rotation * Vec3::NEG_Z).as_dvec3();
@@ -840,14 +1028,13 @@ pub fn update_globe_tiles(
         let c_lat = tile_frac_to_lat(key.y as f64 + 0.5, key.z);
         let c_lng = tile_frac_to_lng(key.x as f64 + 0.5, key.z);
         let centre = geodetic_to_local(&frame, c_lat, c_lng, 0.0).as_dvec3();
-        // Far-side cull, with slack so limb tiles survive.
+        let gs = tile_to_meters(key.z, c_lat);
         let normal = (centre - earth_c).normalize_or_zero();
         let to_cam = (cam - centre).normalize_or_zero();
-        if normal.dot(to_cam) < -0.15 {
+        if over_the_horizon(normal, to_cam, gs, globe.radius as f64) {
             continue;
         }
         // Projected size: ground edge over distance, mapped to pixels.
-        let gs = tile_to_meters(key.z, c_lat);
         let d = (cam - centre).length().max(1.0);
         let px = (gs / d) as f32 * h_px / fov;
         // In-view test for the split gate: the view cone widened by the tile's
@@ -984,6 +1171,59 @@ pub fn update_globe_tiles(
             // Queue rather than despawn inline: on a fast zoom-out many tiles go
             // stale at once, and the per-frame drain keeps the teardown bounded.
             globe.despawn_queue.push(e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const R: f64 = 6_378_137.0;
+
+    /// Outward normal and camera direction for a tile whose centre lies
+    /// `theta_deg` of arc from the sub-camera point, with the camera at
+    /// `alt_m`. The tile centre sits at the sphere's +Z pole of this frame.
+    fn geometry(theta_deg: f64, alt_m: f64) -> (DVec3, DVec3) {
+        let centre = DVec3::new(0.0, 0.0, R);
+        let (s, c) = theta_deg.to_radians().sin_cos();
+        let cam = DVec3::new((R + alt_m) * s, 0.0, (R + alt_m) * c);
+        (centre.normalize(), (cam - centre).normalize())
+    }
+
+    /// The regression: at low orbit the coarse root under the camera has its
+    /// centre far below the horizon, but it must NOT be pruned — everything
+    /// beneath the camera refines out of it.
+    #[test]
+    fn coarse_tile_under_a_low_orbit_camera_survives() {
+        // z2 over Europe, camera at ~106 km: centre ~29° away (~12° below the
+        // camera's horizon as seen from the tile).
+        let (normal, to_cam) = geometry(29.0, 106_000.0);
+        assert!(
+            normal.dot(to_cam) < -0.15,
+            "test premise: the centre must be past the plain −0.15 cut"
+        );
+        let z2_span = tile_to_meters(2, 41.0);
+        assert!(!over_the_horizon(normal, to_cam, z2_span, R));
+    }
+
+    /// …while a fine tile at the same spot is genuinely over the horizon and
+    /// still gets culled: the widening must not disable the cull outright.
+    #[test]
+    fn fine_tile_over_the_horizon_is_still_culled() {
+        let (normal, to_cam) = geometry(29.0, 106_000.0);
+        let z12_span = tile_to_meters(12, 41.0);
+        assert!(over_the_horizon(normal, to_cam, z12_span, R));
+    }
+
+    /// A tile straight under the camera is never culled, at any zoom.
+    #[test]
+    fn tile_beneath_the_camera_is_never_culled() {
+        for z in [2, 6, 12] {
+            for alt in [60_000.0, 1_000_000.0, 30_000_000.0] {
+                let (normal, to_cam) = geometry(0.0, alt);
+                assert!(!over_the_horizon(normal, to_cam, tile_to_meters(z, 0.0), R));
+            }
         }
     }
 }

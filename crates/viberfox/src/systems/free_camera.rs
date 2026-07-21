@@ -1,6 +1,7 @@
 use bevy::math::{DQuat, DVec3};
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::camera::Exposure;
+use bevy::post_process::bloom::Bloom;
 use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
 use bevy::pbr::AtmosphereSettings;
 use bevy::prelude::*;
@@ -19,6 +20,10 @@ pub struct FreeCamera;
 /// and geometry vanishes into a fog "wall"; the fog color follows the sky — bright
 /// haze by day, warm-tinted through sunrise/sunset (fog is lit by the same
 /// extinction-reddened sun the sky shows), near-black murk at night.
+/// How much of the sun's transmittance colour the fog's sun-side glow keeps
+/// (1 = the raw beam colour, 0 = white).
+const GLOW_SATURATION: f32 = 0.5;
+
 pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
     use crate::utils::sun;
 
@@ -49,13 +54,20 @@ pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
     DistanceFog {
         color: Color::srgb(c.x, c.y, c.z),
         // Sun-side glow in the fog, colored like the sun itself (white by day,
-        // orange-red as it sets); fades out through early twilight.
-        directional_light_color: Color::srgba(
-            tint.x,
-            tint.y,
-            tint.z,
-            0.55 * sun::smoothstep(-0.08, 0.02, sun::sun_direction(hours).y),
-        ),
+        // orange as it sets); fades out through early twilight. The tint is
+        // desaturated toward white and kept faint on purpose: at full
+        // transmittance colour the glow is *pure* red at dusk, and with the
+        // twilight exposure lift on top it flooded the sun half of the frame
+        // with one saturated red sheet, ground included.
+        directional_light_color: {
+            let g = Vec3::ONE.lerp(tint, GLOW_SATURATION);
+            Color::srgba(
+                g.x,
+                g.y,
+                g.z,
+                0.35 * sun::smoothstep(-0.08, 0.02, sun::sun_direction(hours).y),
+            )
+        },
         directional_light_exponent: 30.0,
         falloff,
     }
@@ -126,6 +138,81 @@ const NORTH_RESET_RATE: f32 = 9.0;
 const DEFAULT_NEAR: f32 = 0.1;
 const DEFAULT_FAR: f32 = 200_000.0;
 
+/// How close to a pole the space orbit's sub-camera point may get (radians of
+/// latitude). Dragging past the pole would swing the view through the point
+/// where "north up" has no meaning and pop the horizon 180°; Google Earth stops
+/// you just short of it, and so does this.
+const GLOBE_LAT_LIMIT: f64 = 89.5 * std::f64::consts::PI / 180.0;
+
+/// Screen-up for the space orbit: the planet's north axis projected into the
+/// view plane, turned about the view axis by `heading` (0 = north up).
+///
+/// Deriving up every frame — instead of rotating a stored up vector along with
+/// each drag — is what keeps the horizon level. Rotations on a sphere do not
+/// commute, so an integrated up picks up a little roll from every drag and the
+/// globe slowly ends up sideways with no way back but the compass button.
+///
+/// `fallback` (the previous frame's up) covers the one degenerate case: looking
+/// straight down the polar axis, where north projects to nothing.
+pub fn globe_up(dir: DVec3, north: DVec3, heading: f32, fallback: DVec3) -> DVec3 {
+    let projected = north - dir * north.dot(dir);
+    let base = if projected.length_squared() > 1e-12 {
+        projected.normalize()
+    } else {
+        let f = fallback - dir * fallback.dot(dir);
+        if f.length_squared() < 1e-12 {
+            return fallback.normalize_or_zero();
+        }
+        f.normalize()
+    };
+    (DQuat::from_axis_angle(dir, heading as f64) * base).normalize()
+}
+
+/// The heading `up` represents for this view — the inverse of [`globe_up`], used
+/// to carry the current orientation into the space tier without the view jumping.
+pub fn globe_heading(dir: DVec3, north: DVec3, up: DVec3) -> f32 {
+    let north_up = globe_up(dir, north, 0.0, up);
+    let right = (-dir).cross(north_up);
+    // Signed angle from north-up to the actual up, about the view axis. Negated
+    // because `dir` points at the viewer, so a positive rotation about it carries
+    // up toward screen-*left*.
+    -(up.dot(right)).atan2(up.dot(north_up)) as f32
+}
+
+/// One drag step of the space orbit: horizontal spins the globe about the
+/// screen-up axis, vertical tips it about screen-right — so the ground tracks
+/// the cursor in both axes — and the result is held short of the poles by
+/// [`GLOBE_LAT_LIMIT`]. Returns the new camera direction.
+pub fn globe_spin(dir: DVec3, north: DVec3, up: DVec3, drag: Vec2, sens: f32) -> DVec3 {
+    let right = (-dir).cross(up).normalize_or_zero();
+    let lat = dir.dot(north).clamp(-1.0, 1.0).asin();
+
+    // Bound the vertical rotation *before* applying it. Rotating θ about
+    // screen-right moves the sub-camera point −θ in latitude, so this keeps it
+    // inside ±[`GLOBE_LAT_LIMIT`]. Clamping only the result would not do: one
+    // fast flick can carry the point clean over a pole, and it would land on the
+    // far side within the limit — the globe appearing to jump hemispheres.
+    let tip = (-(drag.y * sens) as f64).clamp(lat - GLOBE_LAT_LIMIT, lat + GLOBE_LAT_LIMIT);
+    let rot = DQuat::from_axis_angle(up, -(drag.x * sens) as f64)
+        * DQuat::from_axis_angle(right, tip);
+    let spun = (rot * dir).normalize();
+
+    // With a turned view (heading ≠ 0) screen-right is not perpendicular to the
+    // polar axis, so the bound above is approximate; walk back any residue about
+    // the same axis, whichever way actually reduces the latitude.
+    let excess = spun.dot(north).clamp(-1.0, 1.0).asin().abs() - GLOBE_LAT_LIMIT;
+    if excess <= 0.0 {
+        return spun;
+    }
+    let a = (DQuat::from_axis_angle(right, excess) * spun).normalize();
+    let b = (DQuat::from_axis_angle(right, -excess) * spun).normalize();
+    if a.dot(north).abs() < b.dot(north).abs() {
+        a
+    } else {
+        b
+    }
+}
+
 /// Absolute world position of a big_space grid cell's origin.
 fn cell_origin(cell: &GridCell) -> DVec3 {
     DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * WORLD_CELL_EDGE as f64
@@ -154,6 +241,14 @@ fn set_projection(projection: &mut Projection, near: f32, far: f32) {
 /// balancing scene brightness against the (now physical) sky.
 const ATMOSPHERE_EXPOSURE_EV100: f32 = 13.0;
 
+/// Bloom strength on the ground. Low (Bevy's 0.15 default is tuned for
+/// emissive-heavy scenes) so the daytime basemap doesn't smear.
+pub const GROUND_BLOOM_INTENSITY: f32 = 0.12;
+/// …and in space, where the frame is mostly black and the only bright things are
+/// the sun disk, the star field and a thin sunlit limb. `apply_day_night_cycle`
+/// switches between the two at the tier boundary.
+pub const SPACE_BLOOM_INTENSITY: f32 = 0.35;
+
 /// Earth inner radius used by `Atmosphere::earth` (metres). The planet-centre
 /// entity sits this far below the local ground so the atmosphere's surface aligns
 /// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
@@ -181,8 +276,21 @@ pub fn setup_camera(
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
 
-    // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19).
+    // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19), and
+    // the stretched variant the space tier swaps in (see
+    // `globe::SPACE_ATMOSPHERE_THICKNESS`): the same air spread over a taller
+    // shell, thinned by exactly the height factor so the *column* through it is
+    // unchanged. Stretching without thinning multiplies the column and buries the
+    // planet's surface under haze — the limb reads, and nothing else does.
     let medium = scattering_media.add(ScatteringMedium::default());
+    let tall_medium = scattering_media.add(
+        ScatteringMedium::default()
+            .with_density_multiplier(1.0 / crate::systems::globe::SPACE_ATMOSPHERE_THICKNESS),
+    );
+    commands.insert_resource(crate::systems::globe::AtmosphereMedia {
+        ground: medium.clone(),
+        space: tall_medium,
+    });
 
     // Atmosphere and its env-map IBL are chosen once here, at startup: they can't
     // be safely toggled at runtime (removing the components frees in-flight GPU
@@ -225,6 +333,17 @@ pub fn setup_camera(
                 // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
                 // scene isn't blown out while the sky is lit correctly.
                 Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
+                // Bloom: the glare that makes an HDR scene read as bright. The
+                // sun disk is the case that needs it — a physically-sized disc
+                // is a few pixels across, and without glare around it the sky's
+                // brightest object looks like a sticker. It also gives the night
+                // city's window lights and the sunlit limb from orbit their
+                // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
+                // scenes) so the daytime basemap doesn't smear.
+                Bloom {
+                    intensity: GROUND_BLOOM_INTENSITY,
+                    ..Bloom::NATURAL
+                },
                 AmbientLight::default(),
                 FreeCamera,
                 FloatingOrigin,
@@ -592,10 +711,17 @@ pub fn camera_controls(
                     camera_state.orbit_space = true;
                     camera_state.orbit_distance = d;
                     camera_state.orbit_distance_target = d * ratio;
-                    // Free-arcball orientation: direction from the Earth's centre
-                    // plus the camera's current up, so the view doesn't jump.
+                    // Carry the current orientation up into the space tier: the
+                    // direction from the Earth's centre, plus the heading that
+                    // reproduces the camera's present up, so the view doesn't jump.
                     camera_state.orbit_dir = off / d;
-                    camera_state.orbit_up = (camera_transform.rotation * Vec3::Y).as_dvec3();
+                    let up = (camera_transform.rotation * Vec3::Y).as_dvec3();
+                    camera_state.orbit_heading = globe_heading(
+                        camera_state.orbit_dir,
+                        globe.north_axis_local().as_dvec3(),
+                        up,
+                    );
+                    camera_state.orbit_up = up;
                 } else if camera_state.orbit_space && alt < SPACE_EXIT_ALT {
                     // How far the descent point is from the home anchor (origin).
                     let horiz = (cam_world.x * cam_world.x + cam_world.z * cam_world.z).sqrt();
@@ -637,21 +763,30 @@ pub fn camera_controls(
             // middle button or Ctrl+left. Suppressed while egui/gizmo owns pointer.
             let mut rot_delta = Vec2::ZERO;
             let mut pan_delta = Vec2::ZERO;
+            // Space tier only: horizontal drag of the "turn the view" gesture,
+            // which spins the compass rather than the planet.
+            let mut heading_delta = 0.0_f32;
             if gizmo_state.active_axis.is_some() || egui_manager.ctx.egui_wants_pointer_input() {
                 camera_state.pan_offset = None;
                 cursor_moved_events.clear();
             } else {
                 let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
                     || keyboard_input.pressed(KeyCode::ControlRight);
-                let rotating = mouse_input.pressed(MouseButton::Middle)
-                    || (ctrl && mouse_input.pressed(MouseButton::Left))
-                    || (space && mouse_input.pressed(MouseButton::Left));
+                // Google Earth's split: plain drag moves you over the planet,
+                // middle-drag (or Ctrl+drag) turns the *view* — compass heading in
+                // space, yaw/tilt on the surface. In space that keeps plain
+                // left-drag as "grab the globe and spin it" with north still up.
+                let turning = mouse_input.pressed(MouseButton::Middle)
+                    || (ctrl && mouse_input.pressed(MouseButton::Left));
+                let rotating = turning || (space && mouse_input.pressed(MouseButton::Left));
                 let panning = !rotating && !space && mouse_input.pressed(MouseButton::Left);
                 if rotating || panning {
                     for event in cursor_moved_events.read() {
                         if let Some(last) = camera_state.pan_offset {
                             let delta = event.position - last;
-                            if rotating {
+                            if turning && space {
+                                heading_delta += delta.x;
+                            } else if rotating {
                                 rot_delta += delta;
                             } else {
                                 pan_delta += delta;
@@ -729,20 +864,30 @@ pub fn camera_controls(
                     });
                 if let Some(hit_dir) = cursor_hit {
                     // Pull the orbit toward the cursor point at the pace of the
-                    // glide; the up vector rides the same rotation, so there is
-                    // no pole/clamp anywhere on the way.
+                    // glide. Only the direction moves — up is re-derived from
+                    // north below, so zooming never rolls the view.
                     let blend = ((1.0 - zoom_factor) * 1.5).clamp(0.0, 0.5);
-                    let new_dir = camera_state.orbit_dir.lerp(hit_dir, blend).normalize();
-                    let rot = DQuat::from_rotation_arc(camera_state.orbit_dir, new_dir);
-                    camera_state.orbit_dir = new_dir;
-                    camera_state.orbit_up = (rot * camera_state.orbit_up).normalize();
+                    camera_state.orbit_dir =
+                        camera_state.orbit_dir.lerp(hit_dir, blend).normalize();
                 }
             }
 
-            // Apply rotation. Space: a free arcball — horizontal drag rotates the
-            // orbit about the camera's up, vertical about its right; up rides
-            // along, so there is no pole and no lock in any direction. Surface:
-            // the yaw/pitch turntable as before.
+            // Compass lock: the view is *held* north-up, so the turn gesture is
+            // inert and the ease below is re-armed every frame.
+            let north_lock = camera_state.orbit_north_lock;
+
+            // Space: turn the view (compass heading) without moving the camera.
+            if space && heading_delta != 0.0 && !north_lock {
+                camera_state.orbit_heading -= heading_delta * ORBIT_ROT_SENS;
+                camera_state.orbit_north_reset = false;
+            }
+
+            // Apply rotation. Space: grab-and-spin the globe — horizontal drag
+            // rotates the orbit about the screen-up axis, vertical about
+            // screen-right, so the ground follows the cursor on both axes. Up is
+            // re-derived from north below rather than rotated along, so the
+            // horizon stays level and the view never rolls off north by itself.
+            // Surface: the yaw/pitch turntable as before.
             if rot_delta != Vec2::ZERO {
                 if space {
                     // Grab-the-globe: scale radians-per-pixel so the ground under
@@ -763,14 +908,17 @@ pub fn camera_controls(
                     let far_arc =
                         2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
                     let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
-                    let up = camera_state.orbit_up;
-                    let right = (-camera_state.orbit_dir).cross(up).normalize_or_zero();
-                    let rot = DQuat::from_axis_angle(up, -(rot_delta.x * sens) as f64)
-                        * DQuat::from_axis_angle(right, -(rot_delta.y * sens) as f64);
-                    camera_state.orbit_dir = (rot * camera_state.orbit_dir).normalize();
-                    camera_state.orbit_up = (rot * camera_state.orbit_up).normalize();
+                    camera_state.orbit_dir = globe_spin(
+                        camera_state.orbit_dir,
+                        globe.north_axis_local().as_dvec3(),
+                        camera_state.orbit_up,
+                        rot_delta,
+                        sens,
+                    );
                 } else {
-                    camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
+                    if !north_lock {
+                        camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
+                    }
                     camera_state.orbit_pitch = (camera_state.orbit_pitch
                         + rot_delta.y * ORBIT_ROT_SENS)
                         .clamp(ORBIT_PITCH_MIN, ORBIT_PITCH_MAX);
@@ -779,31 +927,27 @@ pub fn camera_controls(
 
             // Compass "north up" reset. Eases the view back to north without
             // moving the pivot: on the surface, yaw → the nearest multiple of a
-            // full turn (0 = north up); in space, roll the arcball up toward the
-            // pole while the look direction stays fixed. Any manual rotate this
-            // frame cancels it (grabbing the globe wins).
-            if rot_delta != Vec2::ZERO {
+            // full turn; in space, heading → 0. Any manual rotate this frame
+            // cancels it (grabbing the globe wins) — unless the compass is
+            // locked, in which case the ease is re-armed instead, so spinning
+            // the globe can never carry the poles off vertical.
+            if rot_delta != Vec2::ZERO && !north_lock {
                 camera_state.orbit_north_reset = false;
+            }
+            if north_lock {
+                camera_state.orbit_north_reset = true;
             }
             if camera_state.orbit_north_reset {
                 let k = (1.0 - (-NORTH_RESET_RATE * delta_time).exp()).clamp(0.0, 1.0);
                 if space {
-                    let dir = camera_state.orbit_dir;
-                    let n = globe.north_axis_local().as_dvec3();
-                    let desired = n - dir * n.dot(dir); // north projected onto the view plane
-                    if desired.length_squared() < 1e-9 {
-                        // Looking straight down the pole: no unique "up".
+                    // Take the short way round: a heading of 350° eases to 360°,
+                    // not backwards through 180°.
+                    let tau = std::f32::consts::TAU;
+                    let target = (camera_state.orbit_heading / tau).round() * tau;
+                    camera_state.orbit_heading += (target - camera_state.orbit_heading) * k;
+                    if (target - camera_state.orbit_heading).abs() < 1e-4 {
+                        camera_state.orbit_heading = 0.0;
                         camera_state.orbit_north_reset = false;
-                    } else {
-                        let desired = desired.normalize();
-                        let cur = camera_state.orbit_up;
-                        let step = DQuat::IDENTITY
-                            .slerp(DQuat::from_rotation_arc(cur, desired), k as f64);
-                        camera_state.orbit_up = (step * cur).normalize();
-                        if cur.dot(desired) > 0.9999 {
-                            camera_state.orbit_up = desired;
-                            camera_state.orbit_north_reset = false;
-                        }
                     }
                 } else {
                     let target = (camera_state.orbit_yaw / std::f32::consts::TAU).round()
@@ -856,20 +1000,24 @@ pub fn camera_controls(
             }
 
             // Place the camera: pivot + offset → big_space cell + local, then look
-            // at the pivot (ground focus, or the Earth centre in space). The space
-            // view uses the arcball's own up (re-orthonormalized against drift) —
-            // a fixed world-up is what created the old pole locks.
+            // at the pivot (ground focus, or the Earth centre in space). In space
+            // the up vector is derived fresh from the planet's north axis and the
+            // heading, so the horizon is level by construction — no drift to
+            // re-orthonormalize away, and no pole lock either (the sub-camera
+            // latitude is held short of the pole by `globe_spin`).
             let (pivot, cam_world, look_up) = if space {
                 let dir = camera_state.orbit_dir;
-                let mut up = camera_state.orbit_up - dir * camera_state.orbit_up.dot(dir);
-                if up.length_squared() < 1e-12 {
-                    up = DVec3::Y; // degenerate after extreme drags: re-seed
-                }
-                camera_state.orbit_up = up.normalize();
+                let up = globe_up(
+                    dir,
+                    globe.north_axis_local().as_dvec3(),
+                    camera_state.orbit_heading,
+                    camera_state.orbit_up,
+                );
+                camera_state.orbit_up = up;
                 (
                     center,
                     center + dir * camera_state.orbit_distance,
-                    camera_state.orbit_up.as_vec3(),
+                    up.as_vec3(),
                 )
             } else {
                 (
@@ -934,4 +1082,117 @@ fn get_ground_height(position: Vec3, region_mesh_query: &Query<&GlobalTransform,
         }
     }
     min_height
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bevy-local north for these tests: the anchor frame's +Y (see
+    /// `GlobeState::north_axis_local`, which returns the real thing in-app).
+    const NORTH: DVec3 = DVec3::Y;
+
+    fn latitude(dir: DVec3) -> f64 {
+        dir.dot(NORTH).clamp(-1.0, 1.0).asin().to_degrees()
+    }
+
+    /// Heading 0 means north points up the screen, at any sub-camera latitude.
+    #[test]
+    fn globe_up_is_north_when_heading_is_zero() {
+        for lat in [-80.0_f64, -30.0, 0.0, 45.0, 80.0] {
+            let (s, c) = lat.to_radians().sin_cos();
+            let dir = DVec3::new(c * 0.6, s, c * 0.8).normalize();
+            let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
+            // Perpendicular to the view axis, and on north's side of it.
+            assert!(up.dot(dir).abs() < 1e-9, "up must be perpendicular to dir");
+            assert!(up.dot(NORTH) > 0.0, "north must be up, not down, at lat {lat}");
+        }
+    }
+
+    /// Over a pole north projects to nothing; the previous up carries over
+    /// instead of the view snapping to some arbitrary axis.
+    #[test]
+    fn globe_up_falls_back_over_the_pole() {
+        let up = globe_up(DVec3::Y, NORTH, 0.0, DVec3::Z);
+        assert!(up.dot(DVec3::Y).abs() < 1e-9);
+        assert!(up.dot(DVec3::Z) > 0.99);
+    }
+
+    /// `globe_heading` inverts `globe_up`, so entering the space tier can carry
+    /// the current view over without a jump.
+    #[test]
+    fn globe_heading_inverts_globe_up() {
+        let dir = DVec3::new(0.4, 0.5, 0.76).normalize();
+        for heading in [-2.0_f32, -0.3, 0.0, 0.7, 2.5] {
+            let up = globe_up(dir, NORTH, heading, DVec3::Y);
+            let back = globe_heading(dir, NORTH, up);
+            assert!(
+                (back - heading).abs() < 1e-4,
+                "heading {heading} round-tripped to {back}"
+            );
+        }
+    }
+
+    /// A drag spins the globe under the cursor: horizontal moves the sub-camera
+    /// point sideways, vertical moves it in latitude — and the reverse drag
+    /// puts it back (no drift).
+    #[test]
+    fn globe_spin_tracks_the_drag_and_is_reversible() {
+        let dir = DVec3::new(0.0, 0.0, 1.0);
+        let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
+
+        // Drag down (screen y grows downward) → the map is pulled down and the
+        // camera walks north, exactly as grabbing the globe should feel.
+        let down = globe_spin(dir, NORTH, up, Vec2::new(0.0, 20.0), 0.01);
+        assert!(latitude(down) > 0.5, "drag down should walk the sub-point north");
+
+        // There and back again.
+        let there = globe_spin(dir, NORTH, up, Vec2::new(15.0, 10.0), 0.01);
+        let up2 = globe_up(there, NORTH, 0.0, up);
+        let back = globe_spin(there, NORTH, up2, Vec2::new(-15.0, -10.0), 0.01);
+        assert!(
+            back.dot(dir) > 0.9999,
+            "a drag and its inverse should return to the same point"
+        );
+    }
+
+    /// The sub-camera point stops short of the pole however hard it is dragged,
+    /// so the view never swings through the point where north-up is undefined.
+    #[test]
+    fn globe_spin_clamps_at_the_poles() {
+        let mut dir = DVec3::new(0.0, 0.0, 1.0);
+        for _ in 0..50 {
+            let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
+            dir = globe_spin(dir, NORTH, up, Vec2::new(0.0, 100.0), 0.01);
+            assert!(
+                latitude(dir) <= GLOBE_LAT_LIMIT.to_degrees() + 1e-6,
+                "latitude {} passed the limit",
+                latitude(dir)
+            );
+        }
+        // …and it actually got there, rather than stalling early.
+        assert!(latitude(dir) > GLOBE_LAT_LIMIT.to_degrees() - 1.0);
+    }
+
+    /// Repeated round-trip drags must not accumulate roll: this is the whole
+    /// point of deriving up from north instead of rotating a stored vector.
+    #[test]
+    fn globe_view_does_not_roll_off_north() {
+        let mut dir = DVec3::new(0.2, 0.3, 0.93).normalize();
+        for i in 0..200 {
+            let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
+            let drag = if i % 2 == 0 {
+                Vec2::new(9.0, 7.0)
+            } else {
+                Vec2::new(-9.0, -7.0)
+            };
+            dir = globe_spin(dir, NORTH, up, drag, 0.01);
+        }
+        let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
+        let north_up = (NORTH - dir * NORTH.dot(dir)).normalize();
+        assert!(
+            up.dot(north_up) > 0.999999,
+            "view rolled off north after repeated drags"
+        );
+    }
 }

@@ -22,8 +22,8 @@ use big_space::prelude::GridCell;
 use crate::resources::CameraState;
 use crate::systems::bookmarks::{BookmarksState, PLACEHOLDER_NAME};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
-use crate::systems::geo_nav::{world_to_lat_lng, CameraPose};
+use crate::systems::free_camera::FreeCamera;
+use crate::systems::geo_nav::{camera_geo, CameraPose};
 use crate::systems::map_stream::MapStream;
 use crate::systems::transit_live::WorldClock;
 use crate::systems::user_store::UserStore;
@@ -56,11 +56,14 @@ const COMPASS_SIZE: f32 = 46.0;
 
 /// Draws the top-right compass rose (Organic-Maps style): the red needle and
 /// the "N" point to geographic north as it appears on screen. In globe (Orbit)
-/// mode it is a button — clicking eases the view back to north-up; in the
-/// free-form fly/avatar modes it is a passive indicator. Returns true when the
-/// user clicked it (only possible when `interactive`).
-fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool) -> bool {
+/// mode it is a toggle — clicking locks the view north-up (and unlocking
+/// releases it); in the free-form fly/avatar modes it is a passive indicator.
+/// `locked` tints the ring and adds a lock glyph. Returns true when the user
+/// clicked it (only possible when `interactive`).
+fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, locked: bool) -> bool {
     let mut clicked = false;
+    // Amber, the same "held" accent the locked ring and glyph share.
+    let lock_color = egui::Color32::from_rgb(240, 190, 90);
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Below the top menu bar, tucked into the right margin.
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 52.0))
@@ -76,13 +79,15 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool) -> 
             let p = ui.painter();
             let c = rect.center();
             let r = COMPASS_SIZE * 0.5 - 2.0;
-            // Disc + ring (ring brightens on hover to signal it's clickable).
+            // Disc + ring (ring brightens on hover to signal it's clickable, and
+            // goes amber while the view is locked north-up).
             p.circle_filled(c, r, egui::Color32::from_rgba_unmultiplied(10, 14, 22, 210));
-            p.circle_stroke(
-                c,
-                r,
-                egui::Stroke::new(1.5, egui::Color32::from_gray(if hovered { 210 } else { 130 })),
-            );
+            let ring = if locked {
+                lock_color
+            } else {
+                egui::Color32::from_gray(if hovered { 210 } else { 130 })
+            };
+            p.circle_stroke(c, r, egui::Stroke::new(if locked { 2.0 } else { 1.5 }, ring));
             // Screen direction of north when screen-up is the view heading.
             let th = heading_deg.to_radians();
             let north = egui::vec2(-th.sin(), -th.cos());
@@ -107,8 +112,34 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool) -> 
                 egui::FontId::proportional(10.0),
                 egui::Color32::WHITE,
             );
+            // Locked: a small padlock at the south edge, clear of the needle.
+            // Drawn from primitives rather than an emoji — egui's bundled font
+            // only carries a subset of them, and a missing glyph reads as tofu.
+            if locked {
+                let lc = egui::pos2(c.x, c.y + r - 7.0);
+                p.rect_filled(
+                    egui::Rect::from_center_size(lc, egui::vec2(7.0, 5.0)),
+                    1.0,
+                    lock_color,
+                );
+                // Shackle: half-circle rising out of the body.
+                let shackle: Vec<egui::Pos2> = (0..=8)
+                    .map(|i| {
+                        let a = std::f32::consts::PI * (i as f32) / 8.0;
+                        egui::pos2(lc.x - a.cos() * 2.3, lc.y - 2.5 - a.sin() * 2.3)
+                    })
+                    .collect();
+                p.add(egui::Shape::line(
+                    shackle,
+                    egui::Stroke::new(1.2, lock_color),
+                ));
+            }
             if interactive {
-                resp.clone().on_hover_text("Reset to north-up");
+                resp.clone().on_hover_text(if locked {
+                    "North-up locked — click to release"
+                } else {
+                    "Lock the view north-up"
+                });
             }
             clicked = resp.clicked();
         });
@@ -206,6 +237,23 @@ fn view_heading(tf: &Transform) -> Option<f32> {
     (h.length_squared() > 1e-9).then(|| h.x.atan2(-h.z).to_degrees().rem_euclid(360.0))
 }
 
+/// Compass bearing in the space tier, where [`view_heading`]'s flat-frame notion
+/// of north (−Z) is simply the wrong question: thousands of kilometres from the
+/// anchor, "north up" means the Earth's **spin axis** points up the screen, which
+/// is what the globe camera aligns to (`free_camera::globe_up`). Measuring the
+/// local frame instead made the needle read a nonzero heading with the view
+/// perfectly north-up — the compass lock looked broken while it was working.
+///
+/// `north` is `GlobeState::north_axis_local()`. The bearing is the screen angle
+/// from up, clockwise, so it matches the rose's drawing convention: project the
+/// axis onto the view plane by taking its components along camera right and up.
+/// `None` only when looking straight down the axis, where north-up is undefined.
+fn space_view_heading(tf: &Transform, north: Vec3) -> Option<f32> {
+    let x = north.dot(tf.rotation * Vec3::X);
+    let y = north.dot(tf.rotation * Vec3::Y);
+    (x * x + y * y > 1e-9).then(|| x.atan2(y).to_degrees().rem_euclid(360.0))
+}
+
 /// Draw the status overlay and apply its copy / bookmark actions.
 #[allow(clippy::too_many_arguments)]
 pub fn render_hud(
@@ -225,43 +273,32 @@ pub fn render_hud(
     let cam = camera.single().ok();
     // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
     let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
-    let in_space = altitude
-        .is_some_and(|a| a as f32 > crate::systems::globe::GLOBE_SHOW_ALT && globe.ready);
     let data = HudData {
         time: if is_local {
             format!("{h:02}:{m:02}:{s:02}")
         } else {
             format!("{h:02}:{m:02}:{s:02} UTC")
         },
-        geo: cam.zip(stream.geo_anchor()).map(|((cell, tf), anchor)| {
-            if in_space {
-                // Over the globe: the flat-frame mapping is meaningless far from
-                // the anchor — show the geographic sub-point instead.
-                let edge = WORLD_CELL_EDGE as f64;
-                let cam_w = bevy::math::DVec3::new(
-                    cell.x as f64 * edge + tf.translation.x as f64,
-                    cell.y as f64 * edge + tf.translation.y as f64,
-                    cell.z as f64 * edge + tf.translation.z as f64,
-                );
-                let dir = (cam_w - globe.center_local.as_dvec3())
-                    .normalize_or_zero()
-                    .as_vec3();
-                crate::systems::globe::sub_point(globe.anchor_lat, globe.anchor_lng, dir)
+        geo: cam
+            .zip(stream.geo_anchor())
+            .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
+        altitude,
+        // Over the globe the bearing is measured against the spin axis, not the
+        // local flat frame (see `space_view_heading`).
+        heading: cam.and_then(|(cell, tf)| {
+            if globe.in_space(cell, tf) {
+                space_view_heading(tf, globe.north_axis_local())
             } else {
-                let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
-                let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
-                world_to_lat_lng(anchor, wx, wz)
+                view_heading(tf)
             }
         }),
-        altitude,
-        heading: cam.and_then(|(_, tf)| view_heading(tf)),
         copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
     };
 
     let actions = hud_area(egui.ctx_mut(), &data);
 
-    // Top-right compass. Clicking it resets to north-up in globe (Orbit) mode
-    // only; fly/avatar are free-form, so there it is a passive indicator.
+    // Top-right compass. Clicking it toggles the north-up lock in globe (Orbit)
+    // mode only; fly/avatar are free-form, so there it is a passive indicator.
     //
     // A right-docked panel (Layers, Bookmarks, AI) sits opaque over this same
     // corner. egui always paints floating Areas on top of panels (panels live
@@ -271,8 +308,12 @@ pub fn render_hud(
     let right_panel_open = data_layers.panel_open || bookmarks.panel_open || ai.open;
     if let Some(heading) = data.heading.filter(|_| !right_panel_open) {
         let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
-        if compass_overlay(egui.ctx_mut(), heading, orbit) {
-            camera_state.orbit_north_reset = true;
+        let locked = orbit && camera_state.orbit_north_lock;
+        if compass_overlay(egui.ctx_mut(), heading, orbit, locked) {
+            // Toggle the lock; engaging it also eases the view back to north
+            // (the lock holds it there from then on).
+            camera_state.orbit_north_lock = !locked;
+            camera_state.orbit_north_reset = camera_state.orbit_north_lock;
         }
     }
 
@@ -296,6 +337,42 @@ pub fn render_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the globe camera north-up over a part of the planet far from the
+    /// anchor, the compass must read 0 — the lock holds that view, so anything
+    /// else means the needle is lying about a working lock. The flat-frame
+    /// bearing is measured too, since it reading far off here is exactly why
+    /// space needs its own heading.
+    #[test]
+    fn space_compass_reads_zero_when_north_is_up() {
+        use crate::systems::globe::GlobeState;
+        use bevy::math::DVec3;
+
+        let mut globe = GlobeState::default();
+        globe.radius = 6_378_137.0;
+        globe.anchor_lat = 53.2194;
+        globe.anchor_lng = 6.5665;
+        globe.center_local = Vec3::new(0.0, -globe.radius, 0.0);
+        globe.ready = true;
+
+        let north = globe.north_axis_local();
+        // Camera 3,000 km over the equator at 100°E — half a planet from the
+        // anchor, where the two frames disagree most.
+        let dir = globe.direction_local(0.0, 100.0).as_dvec3();
+        let up = crate::systems::free_camera::globe_up(dir, north.as_dvec3(), 0.0, DVec3::Y);
+        let cam = globe.center_local.as_dvec3() + dir * (globe.radius as f64 + 3_000_000.0);
+        let tf =
+            Transform::from_translation(cam.as_vec3()).looking_at(globe.center_local, up.as_vec3());
+
+        let h = space_view_heading(&tf, north).expect("heading defined off the polar axis");
+        assert!(h < 0.05 || h > 359.95, "space heading should be north-up, got {h}");
+        let flat = view_heading(&tf).expect("flat bearing defined");
+        assert!(
+            flat.min(360.0 - flat) > 5.0,
+            "flat-frame bearing should disagree here (got {flat}) — if it doesn't, \
+             this test no longer covers the mismatch it was written for"
+        );
+    }
 
     /// The overlay must not grow across frames: a size-to-content anchored
     /// Area with an unbounded inner row would stretch a little each frame

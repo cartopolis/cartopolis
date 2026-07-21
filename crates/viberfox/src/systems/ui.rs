@@ -123,11 +123,11 @@ pub fn render_menu_bar(
                         cs.orbit_focus = DVec3::ZERO;
                         cs.orbit_distance = globe.radius as f64 * 3.0;
                         cs.orbit_distance_target = cs.orbit_distance;
-                        // Arcball pose: over the anchor, slightly north-east tilted,
-                        // up orthogonalized against the view direction.
+                        // Over the anchor, slightly north-east; heading 0 so the
+                        // view arrives north-up (free_camera derives the up vector
+                        // from the planet's north axis and this heading).
                         cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
-                        cs.orbit_up =
-                            (DVec3::Y - cs.orbit_dir * cs.orbit_dir.y).normalize();
+                        cs.orbit_heading = 0.0;
                         ui.close();
                     }
                 });

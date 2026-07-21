@@ -15,8 +15,8 @@ use big_space::prelude::GridCell;
 use serde::{Deserialize, Serialize};
 
 use crate::resources::CameraState;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
-use crate::systems::geo_nav::{world_to_lat_lng, CameraPose, GeoNavState, Teleport};
+use crate::systems::free_camera::FreeCamera;
+use crate::systems::geo_nav::{camera_geo, CameraPose, GeoNavState, Teleport};
 use crate::systems::map_stream::MapStream;
 
 /// Seconds between autosave snapshots of the current location.
@@ -164,6 +164,7 @@ pub fn autosave_user_store(
     mut exits: MessageReader<AppExit>,
     mut store: ResMut<UserStore>,
     stream: Res<MapStream>,
+    globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
     cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
@@ -177,10 +178,12 @@ pub fn autosave_user_store(
     }
 
     if let (Some(anchor), Ok((cell, tf))) = (stream.geo_anchor(), cameras.single()) {
-        let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
-        let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
-        let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
-        let altitude = cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64;
+        // Both through the shared camera fix (`camera_geo` / `altitude_m`): the
+        // flat-frame lat/lng and the local `y` are only meaningful below the
+        // space tier, and storing them from orbit is what saved a mid-ocean
+        // last location that the next startup restored and re-anchored to.
+        let (lat, lng) = camera_geo(anchor, &globe, cell, tf);
+        let altitude = globe.altitude_m(cell, tf);
         store.data.last_location = Some(SavedLocation {
             lat,
             lng,

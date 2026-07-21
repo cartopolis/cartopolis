@@ -35,6 +35,8 @@ use bevy::{
 };
 use std::sync::Mutex;
 
+use crate::resources::HeadlessSurface;
+
 // ─── Main-world resource ─────────────────────────────────────────────────────
 
 /// Holds the egui context for the main Bevy world.
@@ -159,10 +161,24 @@ impl Plugin for EguiPlugin {
 
 // ─── Systems ──────────────────────────────────────────────────────────────────
 
+/// The surface egui lays out against: the primary window, or the offscreen
+/// target in a headless `--shot` run (see [`HeadlessSurface`]). Physical pixels
+/// plus the logical→physical scale.
+fn egui_surface(
+    windows: &Query<&Window>,
+    headless: Option<&Res<HeadlessSurface>>,
+) -> Option<(UVec2, f32)> {
+    if let Some(w) = windows.iter().next() {
+        return Some((UVec2::new(w.physical_width(), w.physical_height()), w.scale_factor() as f32));
+    }
+    headless.map(|h| (h.size, h.scale))
+}
+
 /// Collect Bevy input and begin an egui frame (runs in PreUpdate).
 pub fn begin_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     windows: Query<&Window>,
+    headless: Option<Res<HeadlessSurface>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut mouse_wheel: MessageReader<MouseWheel>,
@@ -170,16 +186,14 @@ pub fn begin_egui_frame(
     mut keyboard_input: MessageReader<KeyboardInput>,
     time: Res<Time>,
 ) {
-    let window = match windows.iter().next() {
-        Some(w) => w,
-        None => return,
+    let Some((physical, scale)) = egui_surface(&windows, headless.as_ref()) else {
+        return;
     };
 
     egui_manager.elapsed_time += time.delta_secs_f64();
 
-    let scale = window.scale_factor() as f32;
-    let logical_w = window.width();
-    let logical_h = window.height();
+    let logical_w = physical.x as f32 / scale;
+    let logical_h = physical.y as f32 / scale;
 
     let mut events: Vec<egui::Event> = Vec::new();
 
@@ -212,8 +226,8 @@ pub fn begin_egui_frame(
         });
     }
 
-    // Mouse buttons
-    if let Some(cursor_pos) = window.cursor_position() {
+    // Mouse buttons. Headless has no cursor at all, so this block just doesn't run.
+    if let Some(cursor_pos) = windows.iter().next().and_then(|w| w.cursor_position()) {
         let pos = egui::Pos2::new(cursor_pos.x, cursor_pos.y);
         for (bevy_btn, egui_btn) in [
             (MouseButton::Left, egui::PointerButton::Primary),
@@ -349,10 +363,10 @@ pub fn end_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     mut render_output: ResMut<EguiRenderOutput>,
     windows: Query<&Window>,
+    headless: Option<Res<HeadlessSurface>>,
 ) {
-    let window = match windows.iter().next() {
-        Some(w) => w,
-        None => return,
+    let Some((physical, _)) = egui_surface(&windows, headless.as_ref()) else {
+        return;
     };
 
     // Drop the shared root `Ui`, finalizing its panel layers, before ending the pass.
@@ -366,7 +380,7 @@ pub fn end_egui_frame(
         }
     }
     let pixels_per_point = full_output.pixels_per_point;
-    let size_in_pixels = [window.physical_width(), window.physical_height()];
+    let size_in_pixels = [physical.x, physical.y];
 
     // Skip the whole tessellate → clone → upload chain when egui itself says the UI
     // is unchanged. `repaint_delay == Duration::MAX` is egui's "nothing to redraw"

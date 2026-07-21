@@ -885,13 +885,21 @@ pub fn apply_feature_toggles(
             With<crate::systems::osm_buildings::WindowGlow>,
         )>,
     >,
+    stream: Res<crate::systems::map_stream::MapStream>,
     mut map: Query<
         &mut Visibility,
         (
-            Or<(
-                With<crate::systems::map_stream::StreamTile>,
-                With<crate::systems::rendering::RegionMesh>,
-            )>,
+            With<crate::systems::map_stream::StreamTile>,
+            Without<crate::systems::rendering::RegionMesh>,
+            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::systems::osm_buildings::WindowGlow>,
+        ),
+    >,
+    mut region_quads: Query<
+        (&crate::components::Region, &mut Visibility),
+        (
+            With<crate::systems::rendering::RegionMesh>,
+            Without<crate::systems::map_stream::StreamTile>,
             Without<crate::systems::osm_buildings::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
         ),
@@ -920,6 +928,26 @@ pub fn apply_feature_toggles(
         Visibility::Hidden
     };
     for mut vis in map.iter_mut() {
+        if *vis != want {
+            *vis = want;
+        }
+    }
+
+    // The legacy region quad is a single tile-sized textured slab pinned to the
+    // world origin, and unlike everything else it does NOT follow a re-anchor
+    // (ADR-025). Re-anchored elsewhere it becomes a lone patch of the *old*
+    // city's imagery sitting exactly where the camera lands — the one
+    // recognisable thing in an otherwise empty view, which reads as "streaming
+    // is broken" rather than "you are somewhere else". Hide it once the map
+    // anchor has left its tile; the streamed tiles cover that ground now.
+    let anchor_tile = stream.geo_anchor().map(|(clat, clng, z)| {
+        let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
+        (ax, ay, z as i64)
+    });
+    for (region, mut vis) in region_quads.iter_mut() {
+        let stale = anchor_tile
+            .is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
+        let want = if stale { Visibility::Hidden } else { want };
         if *vis != want {
             *vis = want;
         }

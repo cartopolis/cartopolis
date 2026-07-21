@@ -19,9 +19,12 @@
 //! ```
 //!
 //! Three things make it cheap and side-effect free:
-//!   * **Offscreen.** The window is created invisible and the camera renders to
-//!     an image; nothing appears on the desktop and no compositor can occlude
-//!     (and blacken) the captured frame.
+//!   * **Headless.** No window is created at all — `main` drops `WinitPlugin` and
+//!     drives the frames with `ScheduleRunnerPlugin`, and the camera renders into
+//!     an offscreen image. Nothing appears on the desktop, no compositor can
+//!     occlude (and blacken) the captured frame, and the run needs no display
+//!     server. `resources::HeadlessSurface` stands in for the missing `Window`
+//!     wherever one is needed (egui layout, screen-space LOD).
 //!   * **Settle-on-idle.** Rather than a fixed sleep, each capture waits until
 //!     the tile streams go quiet ([`MapStream::streaming_busy`] /
 //!     [`GlobeState::streaming_busy`]) for `--settle` seconds, capped by
@@ -130,13 +133,7 @@ impl ShotHarness {
         if shots.is_empty() {
             return Err("--shot needs at least one --at lat,lng,alt".into());
         }
-        let (w, h) = size
-            .split_once(['x', 'X'])
-            .ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
-        let size = UVec2::new(
-            w.trim().parse().map_err(|e| format!("--size width: {e}"))?,
-            h.trim().parse().map_err(|e| format!("--size height: {e}"))?,
-        );
+        let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
         Ok(Self { path, shots, size, settle, wait, hide_ui, mode })
     }
 
@@ -157,6 +154,14 @@ impl ShotHarness {
     }
 }
 
+/// Parse a `--size` string ("1280x720"). Also read in `main` to size the window
+/// to the offscreen target — egui scissors against the window, so the two must
+/// agree or wgpu validation kills the run (see the `shot_size` comment there).
+pub fn parse_size(size: &str) -> Option<UVec2> {
+    let (w, h) = size.split_once(['x', 'X'])?;
+    Some(UVec2::new(w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
 /// The offscreen colour target the camera renders into.
 #[derive(Resource)]
 pub struct ShotTarget(pub Handle<Image>);
@@ -172,6 +177,10 @@ pub struct ShotProgress {
     elapsed: f32,
     /// Seconds the tile streams have been quiet.
     quiet: f32,
+    /// Frames and wall-clock seconds since placement, for the mean frame time
+    /// reported with each capture (how the space tier's render cost is A/B'd).
+    frames: u32,
+    frame_time: f32,
     /// The capture frame has been requested (waiting on the GPU readback).
     fired: bool,
     /// Flipped by the capture observer once the PNG is on disk.
@@ -237,6 +246,8 @@ pub fn place_camera(
     progress.placed = true;
     progress.elapsed = 0.0;
     progress.quiet = 0.0;
+    progress.frames = 0;
+    progress.frame_time = 0.0;
     let pose = CameraPose {
         mode: harness.mode.clone(),
         // free_camera_rotation is (pitch, yaw), in radians.
@@ -265,6 +276,39 @@ pub fn place_camera(
         mode = %harness.mode,
         "shot harness: camera placed"
     );
+}
+
+/// `--shot-mode earth` above the space threshold: put the orbit camera straight
+/// into its space tier over the target. The ordinary teleport path caps the
+/// surface orbit at 250 km (`ORBIT_MAX_DISTANCE_SURFACE`) and lets the handoff
+/// promote it from there, which is right for a user jump but leaves a scripted
+/// "show me the globe from 15,000 km" run parked just above the atmosphere.
+/// Runs after the teleport so it has the last word.
+pub fn place_space_orbit(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    globe: Res<GlobeState>,
+    mut cam_state: ResMut<CameraState>,
+    mut done: Local<usize>,
+) {
+    let Some(shot) = harness.shots.get(progress.index) else {
+        return;
+    };
+    // Once per shot, and only for an earth-mode run that wants to be in space.
+    if !progress.placed || *done > progress.index || harness.mode != "earth" || !globe.ready {
+        return;
+    }
+    *done = progress.index + 1;
+    if shot.alt <= 60_000.0 {
+        return;
+    }
+    cam_state.orbit_space = true;
+    cam_state.orbit_initialized = true;
+    cam_state.orbit_dir = globe.direction_local(shot.lat, shot.lng).as_dvec3();
+    cam_state.orbit_distance = globe.radius as f64 + shot.alt;
+    cam_state.orbit_distance_target = cam_state.orbit_distance;
+    // Heading 0: the globe comes up north-up, like every other space arrival.
+    cam_state.orbit_heading = 0.0;
 }
 
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
@@ -305,6 +349,12 @@ pub fn drive_capture(
         return;
     }
     progress.elapsed += time.delta_secs();
+    // Only count settled frames: the first second after a teleport is dominated
+    // by tile decode/upload, not by the steady-state render cost being measured.
+    if progress.quiet > 0.0 {
+        progress.frames += 1;
+        progress.frame_time += time.delta_secs();
+    }
     if progress.fired {
         // The readback normally lands within a frame or two; don't hang forever.
         if progress.elapsed > harness.wait + 20.0 {
@@ -335,6 +385,10 @@ pub fn drive_capture(
         tracing::info!(
             shot = progress.index + 1,
             settled_in = format!("{:.1}s", progress.elapsed),
+            frame_ms = format!(
+                "{:.1}",
+                1000.0 * progress.frame_time / progress.frames.max(1) as f32
+            ),
             alt_m = globe.altitude_m(cell, tf) as i64,
             in_space = globe.in_space(cell, tf),
             orbit_space = cam_state.orbit_space,

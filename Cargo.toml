@@ -25,6 +25,9 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_gltf",
     "bevy_log",
     "bevy_pbr",
+    # Bloom (moved out of bevy_core_pipeline in 0.19): the glare around the sun
+    # disk and the sunlit limb from orbit — see `free_camera::setup_camera`.
+    "bevy_post_process",
     "bevy_render",
     "bevy_scene",
     "bevy_state",

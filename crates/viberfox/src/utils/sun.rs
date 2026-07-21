@@ -43,7 +43,10 @@ const AEROSOL: Vec3 = Vec3::new(0.037, 0.048, 0.063);
 /// symmetry of a pure position model.
 fn haze(hours: f32) -> f32 {
     let phase = ((hours - 6.0) / 24.0 * std::f32::consts::TAU).cos(); // 1 at 06:00, −1 at 18:00
-    1.2 - 0.6 * phase
+    // Swing kept moderate (0.75–1.45×): at 0.6–1.8× the evening beam was so far
+    // into the red that dusk read as a single saturated red sheet once the sky,
+    // the fog glow and the sunlight all took their cut of the same tint.
+    1.1 - 0.35 * phase
 }
 
 /// Relative optical air mass toward the sun (Kasten–Young 1989): ~1 overhead,

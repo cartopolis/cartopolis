@@ -73,6 +73,16 @@ struct Cli {
     /// Camera mode for `--shot`: "free" (exact placement) or "earth" (orbit).
     #[arg(long, default_value = "free")]
     shot_mode: String,
+
+    /// Time of day in hours (0–24) to start at — the main knob for checking the
+    /// lighting curves in a `--shot` capture (e.g. `--time 6` for sunrise).
+    #[arg(long, value_name = "HOURS")]
+    time: Option<f32>,
+
+    /// Distance-fog density to start at (0–1); pairs with `--time` for isolating
+    /// how much of a washed-out frame is the fog and how much is the lighting.
+    #[arg(long, value_name = "DENSITY")]
+    fog: Option<f32>,
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -130,6 +140,13 @@ fn main() {
         .init();
 
     let mut app = App::new();
+    // A scripted run is windowless (see `HeadlessSurface`): it renders into an
+    // offscreen image, so `--size` is the whole surface — there is nothing for
+    // egui to lay out against but this.
+    let shot_size = cli
+        .shot
+        .as_ref()
+        .and_then(|_| systems::shot_harness::parse_size(&cli.size));
     let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .display()
@@ -138,7 +155,8 @@ fn main() {
         .build()
         .disable::<LogPlugin>()
         .set(WindowPlugin {
-            primary_window: Some(Window {
+            // No window at all for a scripted run — see the headless block below.
+            primary_window: (shot_size.is_none()).then(|| Window {
                 title: "Viberfox".into(),
                 resolution: WindowResolution::new(1280, 720),
                 // NOT vsync (FIFO): on Wayland, when this window is occluded the
@@ -152,14 +170,16 @@ fn main() {
                 // overload (tiles/buildings/shadows/atmosphere) because crashes
                 // struck whenever the window sat covered while logs were read.
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
-                // A scripted `--shot` run keeps its window off the desktop: it
-                // renders to an offscreen image (see `shot_harness`), so nothing
-                // pops up and no compositor can occlude — and blacken — the
-                // captured frame. The window still exists because egui and the
-                // HUD size themselves from it.
-                visible: cli.shot.is_none(),
                 ..default()
             }),
+            // With no window there is nothing to close, and the harness writes its
+            // own `AppExit` when the last capture lands.
+            exit_condition: if shot_size.is_some() {
+                bevy::window::ExitCondition::DontExit
+            } else {
+                bevy::window::ExitCondition::OnAllClosed
+            },
+            close_when_requested: shot_size.is_none(),
             ..default()
         })
         .set(AssetPlugin {
@@ -169,6 +189,21 @@ fn main() {
         // big_space owns transform propagation (ADR-019); Bevy's TransformPlugin
         // must be disabled or big_space errors at startup.
         .disable::<bevy::transform::TransformPlugin>();
+
+    // Headless (`--shot`): no window, and therefore no winit event loop to pump
+    // the app — `ScheduleRunnerPlugin` drives the frames instead, as fast as the
+    // GPU allows, until the harness writes its `AppExit`. wgpu needs no surface
+    // to render into an image, so the whole run happens off the desktop: nothing
+    // pops up, nothing can occlude (and blacken) a capture, and it works over SSH
+    // or in CI with no compositor at all.
+    let default_plugins = match shot_size {
+        Some(_) => default_plugins
+            .disable::<bevy::winit::WinitPlugin>()
+            .add(bevy::app::ScheduleRunnerPlugin::run_loop(
+                std::time::Duration::ZERO,
+            )),
+        None => default_plugins,
+    };
 
     app.add_plugins(default_plugins)
     .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
@@ -203,7 +238,11 @@ fn main() {
             .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
     })
     .init_resource::<AiAssistantState>()
-    .init_resource::<DevPanelState>()
+    .insert_resource(DevPanelState {
+        time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
+        fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
+        ..default()
+    })
     .init_resource::<StatsState>()
     .init_resource::<resources::ScreenshotState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
@@ -244,7 +283,11 @@ fn main() {
             cli.shot_mode.clone(),
         ) {
             Ok(harness) => {
-                app.insert_resource(harness)
+                app.insert_resource(resources::HeadlessSurface {
+                    size: harness.size,
+                    scale: 1.0,
+                })
+                    .insert_resource(harness)
                     .init_resource::<systems::shot_harness::ShotProgress>()
                     .add_systems(
                         Startup,
@@ -256,6 +299,9 @@ fn main() {
                         (
                             systems::shot_harness::place_camera
                                 .before(systems::geo_nav::apply_teleport),
+                            systems::shot_harness::place_space_orbit
+                                .after(systems::geo_nav::apply_teleport)
+                                .before(systems::free_camera::camera_controls),
                             // After drive_screenshots so the `hide_ui` it clears
                             // each frame isn't cleared again before PostUpdate's
                             // egui suppression reads it.
@@ -602,9 +648,23 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         }
         .build(),
         Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y),
+        // Bevy's procedural sun disk (drawn by the atmosphere's sky pass, so it
+        // shows both from the ground and — raymarched — from orbit). Stated
+        // explicitly rather than left to the `SunDisk::EARTH` default because
+        // the size is a deliberate departure from it: at the true 0.53° the disc
+        // is ~6 px wide at 1080p, a dot you have to hunt for. Widened to ~1.4°,
+        // which is roughly what the eye reports anyway once glare is included,
+        // and left at physical intensity so bloom does the rest.
+        bevy::light::SunDisk {
+            angular_size: SUN_DISK_ANGULAR_SIZE,
+            intensity: 1.0,
+        },
         SunLight,
     ));
 }
+
+/// Apparent diameter of the sun disk, in radians (the true value is 0.0093).
+const SUN_DISK_ANGULAR_SIZE: f32 = 0.024;
 
 /// Threshold on `moonlight_factor` below which the moon light is despawned: its
 /// illuminance (and shadows) would be imperceptible, so paying for its cascade
@@ -708,16 +768,38 @@ const SUN_SCALE: f32 = 0.75;
 /// night ambient floor and moon terms so hard that the near-white OSM ground read
 /// as bright daylight, not night. Night should be dark — lit by the moon's
 /// directional shaping and the glowing windows, not a lifted exposure.
-const DAY_EXPOSURE_EV100: f32 = 13.0;
+const DAY_EXPOSURE_EV100: f32 = 13.6;
 const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
+/// Extra stops around sunrise/sunset, on top of the night lift. The direct beam
+/// there is ~3% of noon (air mass ~38 strips most of it), so the two lifts the
+/// night curve gives are nowhere near enough — dawn rendered as a black city
+/// under a dark red band. Real twilight *looks* bright because the eye adapts to
+/// it; this is that adaptation. Gated on `horizon_proximity`, so it fades out
+/// well before midnight and leaves the night floor untouched.
+const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
 
 /// How saturated the sun's *light* colour is (1 = full transmittance colour,
-/// 0 = white). Kept below 1 because the built-in atmosphere already reddens the
-/// sky at low sun, so a fully-red sun on top read as too red at dawn/dusk.
-const SUN_COLOR_SATURATION: f32 = 0.7;
-/// Peak added ambient brightness at noon (same washout consideration — and darker
-/// ambient keeps midday shadows readable, which is where the depth comes from).
-const AMBIENT_DAY_BRIGHTNESS: f32 = 1800.0;
+/// 0 = white). Kept well below 1 because the built-in atmosphere already reddens
+/// the sky at low sun and the near-white basemap takes the cast readily: at 0.7
+/// the whole city went maroon at dawn, ambient and all.
+const SUN_COLOR_SATURATION: f32 = 0.25;
+/// Exponent softening our own extinction of the sun's *magnitude* (1 = the full
+/// Kasten–Young air-mass curve, 0 = none).
+///
+/// Bevy's atmosphere is fed by the sun `DirectionalLight`'s colour and
+/// illuminance and runs its own scattering/extinction on top (`bevy_pbr`
+/// atmosphere docs). Handing it a beam we had already extincted double-counted
+/// the air mass: at sunrise the raw curve leaves 9% of the beam, the atmosphere
+/// then took its own cut, and the sky came out near-black maroon instead of a
+/// lit dawn. Softening the exponent (0.09 → 0.32 at the horizon) leaves noon
+/// essentially untouched — the curve only bends where the air mass is large.
+const SUN_EXTINCTION_SOFTNESS: f32 = 0.45;
+/// Peak added ambient brightness at noon. Low on purpose: the sky's own IBL
+/// (`AtmosphereEnvironmentMapLight`) already fills the shadows, so ambient piled
+/// on top only flattens midday — the shadows are where the depth comes from, and
+/// at 1800 the near-white basemap and the near-white buildings washed into one
+/// pale sheet.
+const AMBIENT_DAY_BRIGHTNESS: f32 = 900.0;
 /// Ambient floor at night — a faint blue city skyglow so the world doesn't vanish
 /// into pure black between the lit windows. Deliberately low: this is a *floor*,
 /// not the main night light (that's the moon + window glow). At the old value of
@@ -735,6 +817,20 @@ const MOONLIGHT_ILLUMINANCE: f32 = 180.0;
 /// alongside the night-ambient trim so a full moon lifts the scene enough to read
 /// by without flattening it back to daylight brightness.
 const MOON_AMBIENT_BRIGHTNESS: f32 = 40.0;
+/// Ambient in the space tier — Earthshine scale, not sky scale (see
+/// `apply_day_night_cycle`). There is no atmosphere overhead to scatter light
+/// into the night side from orbit, so this is only a floor that keeps the dark
+/// half legible against the starfield.
+const SPACE_AMBIENT_BRIGHTNESS: f32 = 120.0;
+/// Stops of *extra* exposure headroom in the space tier (positive = darker).
+///
+/// Held at 0: this was 1.0 while the globe's map imagery was rendered at its own
+/// near-white albedo and the sunlit hemisphere blew out. Stopping the camera
+/// down fixed that at the cost of everything faint in the same frame — the
+/// atmosphere's limb glow went to a hairline and the stars nearly vanished.
+/// `globe::GLOBE_ALBEDO` treats the cause instead, so the exposure can stay
+/// where the rest of the scene wants it.
+const SPACE_EXPOSURE_STOPS: f32 = 0.0;
 
 /// Marker for the sun's directional light.
 #[derive(Component)]
@@ -769,8 +865,11 @@ fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
     // atmosphere is lit correctly — its sky brightness/colour scale with the sun's
     // illuminance. The camera's Exposure (see setup_camera) brings this back to a
     // sensible scene brightness; tune `ATMOSPHERE_EXPOSURE_EV100` to taste.
-    let illuminance =
-        RAW_SUNLIGHT * SUN_SCALE * peak * utils::sun::sun_disc(hours) * sun_through_fog;
+    let illuminance = RAW_SUNLIGHT
+        * SUN_SCALE
+        * peak.powf(SUN_EXTINCTION_SOFTNESS)
+        * utils::sun::sun_disc(hours)
+        * sun_through_fog;
     (color, illuminance)
 }
 
@@ -943,9 +1042,15 @@ fn setup_moon(
 /// Places the moon disc on the sky shell around the camera and feeds the material
 /// the sun direction in the quad's local frame (phase shading) plus the overall
 /// brightness: fading in through dusk, veiled by fog, extinguished near the horizon.
+#[allow(clippy::type_complexity)]
 fn update_moon(
     dev: Res<DevPanelState>,
+    globe: Res<systems::globe::GlobeState>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
+    free_camera: Query<
+        (&GridCell, &Transform),
+        (With<systems::free_camera::FreeCamera>, Without<Moon>),
+    >,
     mut moon: Query<(&mut Transform, &MeshMaterial3d<MoonMaterial>), With<Moon>>,
     mut materials: ResMut<Assets<MoonMaterial>>,
 ) {
@@ -957,9 +1062,17 @@ fn update_moon(
     };
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let rotation = Quat::from_rotation_arc(Vec3::Z, -moon_dir);
+    // Same shell rescale as the stars: at its ground distance the disc is nearer
+    // than the planet, so from orbit an opaque moon quad hung in front of Earth.
+    let space_shell = free_camera
+        .single()
+        .ok()
+        .and_then(|(cell, cam_tf)| globe.sky_shell_radius(cell, cam_tf));
+    let scale = space_shell.map_or(1.0, |r| r / MOON_DISTANCE);
     // The disc follows the camera every frame so it stays fixed on the sky.
-    tf.translation = cam.translation() + moon_dir * MOON_DISTANCE;
+    tf.translation = cam.translation() + moon_dir * MOON_DISTANCE * scale;
     tf.rotation = rotation;
+    tf.scale = Vec3::splat(scale);
 
     // The material (phase lighting + brightness) depends only on time of day, so
     // rewrite its uniform only when that changed — not every frame.
@@ -1214,28 +1327,82 @@ fn log_render_cost(
     );
 }
 
+#[allow(clippy::type_complexity)]
 fn apply_day_night_cycle(
     dev: Res<DevPanelState>,
+    globe: Res<systems::globe::GlobeState>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), (With<SunLight>, Without<MoonLight>)>,
     mut moon: Query<(&mut Transform, &mut DirectionalLight), With<MoonLight>>,
     // AmbientLight is a per-camera component in Bevy 0.19 (attached in setup_camera).
     mut ambient: Query<&mut AmbientLight>,
-    mut exposure: Query<&mut Exposure, With<systems::free_camera::FreeCamera>>,
+    camera: Query<
+        (
+            &GridCell,
+            &Transform,
+            &mut Exposure,
+            &mut bevy::post_process::bloom::Bloom,
+        ),
+        (
+            With<systems::free_camera::FreeCamera>,
+            Without<SunLight>,
+            Without<MoonLight>,
+        ),
+    >,
+    // The space tier changes the whole lighting model, so the `dev.is_changed()`
+    // gate has to let a climb through it too — `space_factor` at the last apply.
+    mut was_space: Local<f32>,
 ) {
-    if !dev.is_changed() {
+    let mut camera = camera;
+    // 0 on the ground, 1 in deep space, smooth in between: every lighting term
+    // below crossfades on it. As a boolean these all stepped at once, mid-zoom.
+    let space = camera
+        .single()
+        .map(|(cell, tf, _, _)| globe.space_factor(cell, tf))
+        .unwrap_or(0.0);
+    if !dev.is_changed() && (space - *was_space).abs() < SPACE_RAMP_STEP {
         return;
     }
+    *was_space = space;
     let sun_dir = sun_direction(dev.time_of_day);
 
     // Adapt exposure to the light level (eye/camera adaptation): brighten toward
     // twilight and night by up to NIGHT_EXPOSURE_LIFT stops so dusk and the lit city
     // aren't crushed by the bright-noon exposure that suits the physical daytime sun.
+    // From space there's nothing to adapt to — the lit half of the planet is in full
+    // daylight whatever the local clock says — so the day exposure holds.
     let day = utils::sun::daylight(dev.time_of_day);
-    if let Ok(mut exp) = exposure.single_mut() {
-        exp.ev100 = DAY_EXPOSURE_EV100 - NIGHT_EXPOSURE_LIFT * (1.0 - day);
+    let ground_ev = DAY_EXPOSURE_EV100
+        - NIGHT_EXPOSURE_LIFT * (1.0 - day)
+        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day);
+    if let Ok((_, _, mut exp, mut bloom)) = camera.single_mut() {
+        // The space end of the ramp opens up by `GLOBE_ALBEDO`'s worth of stops:
+        // the globe's imagery is darkened by that factor, and at the tier
+        // boundary it replaces the full-brightness flat map tiles, so without
+        // the compensation the map dropped a stop the moment the globe appeared.
+        let space_ev = DAY_EXPOSURE_EV100 + SPACE_EXPOSURE_STOPS
+            - globe_albedo_stops() * (1.0 - space);
+        exp.ev100 = ground_ev.lerp(space_ev, space);
+        // More glare the farther out you go (see the constants): from deep space
+        // the limb is a few pixels of arc, and glare is most of what makes it
+        // read as an atmosphere rather than a drawn outline. Near the ground
+        // that much bloom just smears the map.
+        bloom.intensity = systems::free_camera::GROUND_BLOOM_INTENSITY.lerp(
+            systems::free_camera::SPACE_BLOOM_INTENSITY,
+            space,
+        );
     }
 
-    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
+    // Above the atmosphere the sun is unfiltered: no air mass to redden or dim
+    // it, and no local horizon to set behind. Attenuating it by the *anchor's*
+    // ground-level extinction (`sun_light`) is what left the globe a dim red disc
+    // at 18:00 and unlit at all at night, when what the view should show is a
+    // fully sunlit day side and a dark night side, terminator between. Crossfaded
+    // rather than switched, or climbing out at dusk changed the light in a step.
+    let (ground_color, ground_lux) = sun_light(dev.time_of_day, dev.fog_density);
+    let sun_color = Color::from(LinearRgba::from_vec4(
+        LinearRgba::from(ground_color).to_vec4().lerp(LinearRgba::WHITE.to_vec4(), space),
+    ));
+    let illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
     for (mut tf, mut light) in sun.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y);
         light.color = sun_color;
@@ -1257,9 +1424,29 @@ fn apply_day_night_cycle(
     }
 
     if let Ok(mut a) = ambient.single_mut() {
-        *a = ambient_light(dev.time_of_day, dev.moon_age_days);
+        // Space has no sky to scatter light back into the shadowed side, so the
+        // ambient falls off toward Earthshine scale — just enough that the night
+        // side reads as unlit land rather than a hole cut out of the starfield.
+        let ground = ambient_light(dev.time_of_day, dev.moon_age_days);
+        let ground_rgb = LinearRgba::from(ground.color).to_vec4();
+        let space_rgb = LinearRgba::rgb(0.55, 0.62, 0.85).to_vec4();
+        *a = AmbientLight {
+            color: Color::from(LinearRgba::from_vec4(ground_rgb.lerp(space_rgb, space))),
+            brightness: ground.brightness.lerp(SPACE_AMBIENT_BRIGHTNESS, space),
+            affects_lightmapped_meshes: true,
+        };
     }
 }
+
+/// Stops of exposure the globe's darkened imagery costs (see `globe::GLOBE_ALBEDO`).
+fn globe_albedo_stops() -> f32 {
+    -systems::globe::GLOBE_ALBEDO.log2()
+}
+
+/// Change in `GlobeState::space_factor` worth re-applying the lighting for. The
+/// terms it drives are all smooth, so a coarse step is invisible — and it keeps a
+/// slow climb from rewriting the sun light (and its shadow cascades) every frame.
+const SPACE_RAMP_STEP: f32 = 0.01;
 
 /// Drives the camera's atmospheric [`DistanceFog`] from the dev panel's fog slider,
 /// the time of day (fog darkens at night), and the camera altitude — the fog thins
@@ -1514,10 +1701,19 @@ fn update_horizon_haze(
 /// Keeps the star field centred on the camera (so it reads as infinitely far),
 /// spins it around the celestial pole with the time of day, and drives the
 /// material's brightness (night factor, veiled by fog) and twinkle clock.
+#[allow(clippy::type_complexity)]
 fn update_star_sky(
     dev: Res<DevPanelState>,
     time: Res<Time>,
+    globe: Res<systems::globe::GlobeState>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
+    free_camera: Query<
+        (&GridCell, &Transform),
+        (
+            With<systems::free_camera::FreeCamera>,
+            Without<StarSky>,
+        ),
+    >,
     mut star: Query<(&mut Transform, &MeshMaterial3d<StarFieldMaterial>), With<StarSky>>,
     mut materials: ResMut<Assets<StarFieldMaterial>>,
 ) {
@@ -1527,22 +1723,40 @@ fn update_star_sky(
     let Ok((mut tf, mat_handle)) = star.single_mut() else {
         return;
     };
+    // In space the shell moves out past the far limb so stars sit *behind* the
+    // planet instead of blending over it (see `GlobeState::sky_shell_radius`).
+    let space_shell = free_camera
+        .single()
+        .ok()
+        .and_then(|(cell, cam_tf)| globe.sky_shell_radius(cell, cam_tf));
+    tf.scale = Vec3::splat(space_shell.map_or(1.0, |r| r / STAR_SHELL_RADIUS));
     tf.translation = cam.translation();
     // Diurnal rotation of the celestial sphere (shared with the moon, so they
     // move together). Quick-cycle mode becomes a star-trail time-lapse.
     tf.rotation = utils::sun::celestial_rotation(dev.time_of_day);
 
     // Fade in once the sun is below the horizon; full when it's well below (dark sky).
+    // Above the atmosphere there is no daylight to drown them: the stars are out
+    // whatever the clock at the anchor says, and no fog can veil them. Without
+    // this the space view was an unlit black void whenever it was daytime below.
     let elevation = sun_direction(dev.time_of_day).y;
-    let night = ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0);
+    let night = match space_shell {
+        Some(_) => 1.0,
+        None => ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0),
+    };
     // Fog is opaque to starlight long before it swallows the city: veil the star
     // field with density so a foggy night reads as murk, not crisp stars over murk.
-    let fog_veil = (-3.0 * dev.fog_density).exp();
+    let fog_veil = match space_shell {
+        Some(_) => 1.0,
+        None => (-3.0 * dev.fog_density).exp(),
+    };
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params = Vec4::new(
             night * STAR_BRIGHTNESS * fog_veil,
             time.elapsed_secs(),
-            0.0,
+            // Space flag: drops the shader's horizon cut, air extinction and
+            // twinkle, none of which exist above the atmosphere.
+            space_shell.is_some() as u32 as f32,
             0.0,
         );
     }
