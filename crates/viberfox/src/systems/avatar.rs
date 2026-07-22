@@ -92,21 +92,6 @@ const CHAR_IDLE: usize = 4; // Idle
 const CHAR_RUN: usize = 16; // Run
 // The set has no jump/fly clip, so Idle doubles as the airborne pose.
 
-/// The Bevy sample fox — the fallback (whole model shown) if the character glTFs
-/// aren't fetched. Its clips are embedded (0=Survey/idle, 2=Run; no fly pose).
-fn fox_holder() -> Holder {
-    Holder {
-        scene: "models/animated/Fox.glb",
-        anims: "models/animated/Fox.glb",
-        mask: SlotMask::ALL,
-        scale: 0.02,
-        idle_ix: 0,
-        run_ix: 2,
-        fly_ix: 0,
-        anim_speed: 1.5,
-    }
-}
-
 /// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
 /// showing the slots in `mask`.
 fn character_holder(scene: &'static str, mask: SlotMask) -> Holder {
@@ -209,8 +194,8 @@ fn add_slot(groups: &mut Vec<(&'static str, SlotMask)>, file: Option<&'static st
 
 /// Resolve an appearance into the holders to spawn: one per distinct character glTF
 /// used across the slots, each carrying the slots it contributes. A preset (all
-/// slots one style) collapses to a single holder. Falls back to the fox if none of
-/// the needed files are present.
+/// slots one style) collapses to a single holder. Empty if the character glTFs
+/// aren't present (e.g. a clone without Git LFS) — the avatar is then invisible.
 fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
     let mut groups: Vec<(&'static str, SlotMask)> = Vec::new();
     add_slot(&mut groups, style_file(a.sex, &a.head), Slot::Head);
@@ -220,18 +205,14 @@ fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
     if let Some(acc) = &a.accessory {
         add_slot(&mut groups, style_file(a.sex, acc), Slot::Accessory);
     }
-    if groups.is_empty() {
-        vec![fox_holder()]
-    } else {
-        groups
-            .into_iter()
-            .map(|(f, mask)| character_holder(f, mask))
-            .collect()
-    }
+    groups
+        .into_iter()
+        .map(|(f, mask)| character_holder(f, mask))
+        .collect()
 }
 
 /// Whether an avatar glTF is present under the runtime `assets/` root. Lets the
-/// client fall back to the fox instead of spawning an invisible avatar when the
+/// client skip a missing character (rather than spawning an invisible avatar) when the
 /// (large, gitignored) Quaternius packs haven't been fetched.
 fn avatar_asset_exists(scene_rel: &str) -> bool {
     std::path::Path::new("assets").join(scene_rel).is_file()
@@ -458,8 +439,8 @@ pub fn play_avatar_animation_when_ready(
 
     // Keep only this holder's masked slots visible, and always hide weapons (e.g.
     // the Suit/Swat `Pistol`, Medieval `Sword`) — no business avatar brandishing a
-    // gun. Unslotted meshes (the fox) fall through and stay. `iter_descendants`
-    // walks the whole subtree; hiding a node hides its mesh children too.
+    // gun. Unslotted meshes fall through and stay. `iter_descendants` walks the
+    // whole subtree; hiding a node hides its mesh children too.
     let mask = masks.get(root).copied().unwrap_or(SlotMask::ALL);
     for child in children.iter_descendants(root) {
         let Ok(name) = names.get(child) else { continue };
@@ -470,8 +451,8 @@ pub fn play_avatar_animation_when_ready(
         }
     }
 
-    // Case 1 — the model's own glTF embeds its clips (the fox), so Bevy already
-    // spawned an `AnimationPlayer`. Play the idle clip on it directly.
+    // Case 1 — the character glTF embeds its own clips, so Bevy already spawned an
+    // `AnimationPlayer`. Play the idle clip on it directly.
     if let Some(player_entity) = children
         .iter_descendants(root)
         .find(|&e| players.get(e).is_ok())
