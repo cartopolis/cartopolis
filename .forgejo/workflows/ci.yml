@@ -9,6 +9,14 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    env:
+      # CI-tuned compile: no incremental (useless on fresh runners), and
+      # line-tables-only debuginfo — keeps panic backtraces but cuts LLVM
+      # codegen work and shrinks target/ a lot (faster cache save/restore).
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_TERM_COLOR: always
+      CARGO_NET_RETRY: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,8 +36,8 @@ jobs:
       - name: Cache cargo registry + build artifacts
         uses: https://github.com/Swatinem/rust-cache@v2
 
-      - name: Build viberfox
-        run: cargo build -p viberfox
-
-      - name: Test viberfox
+      # `cargo test` compiles the crate and runs its tests in one pass — a
+      # separate `cargo build` would recompile viberfox a second time (test vs
+      # non-test cfg) for no extra coverage, so we do just this.
+      - name: Build & test viberfox
         run: cargo test -p viberfox --bin viberfox
