@@ -272,6 +272,52 @@ pub fn delete_prim(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
     Ok(deleted)
 }
 
+/// One stored chat message (ADR-028 scrollback).
+pub struct ChatRow {
+    pub sender_id: i64,
+    pub sender_name: String,
+    pub sent_at_ms: i64,
+    pub body: String,
+}
+
+/// Persist a chat message to a durable channel's scrollback (ADR-028). Local
+/// (proximity) messages are ephemeral and never passed here.
+pub fn insert_chat(
+    conn: &Connection,
+    channel: &str,
+    sender_id: i64,
+    sender_name: &str,
+    sent_at_ms: i64,
+    body: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO chat_messages (channel, sender_id, sender_name, sent_at_ms, body) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![channel, sender_id, sender_name, sent_at_ms, body],
+    )?;
+    Ok(())
+}
+
+/// Most recent `limit` messages for a channel, returned oldest → newest for replay.
+pub fn recent_chat(conn: &Connection, channel: &str, limit: i64) -> anyhow::Result<Vec<ChatRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT sender_id, sender_name, sent_at_ms, body FROM chat_messages \
+         WHERE channel = ?1 ORDER BY sent_at_ms DESC, id DESC LIMIT ?2",
+    )?;
+    let mut out: Vec<ChatRow> = stmt
+        .query_map(rusqlite::params![channel, limit], |r| {
+            Ok(ChatRow {
+                sender_id: r.get(0)?,
+                sender_name: r.get(1)?,
+                sent_at_ms: r.get(2)?,
+                body: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    out.reverse();
+    Ok(out)
+}
+
 /// Helper: retrieve a prim by id (internal use)  (ADR-017 Phase 2)
 fn select_prim_by_id(conn: &Connection, prim_id: i64) -> anyhow::Result<Option<PrimDto>> {
     let sql = format!("SELECT {PRIM_COLUMNS} FROM prims WHERE id = ?1");

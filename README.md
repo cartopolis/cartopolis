@@ -34,14 +34,20 @@ Wayland and X11 are both supported.
 cargo run -p viberfox
 ```
 
-This starts the client in **offline mode**, loading from a local SQLite database at `data/regions.db`.
+This starts the client in **solo mode**: an in-process sim runs on loopback and the client connects to it over the same authenticated path an external server uses. Your world (avatar, objects) is authoritative in that sim and persisted to `data/world.db`.
 
 New here? The [user manual](docs/manual.md) covers getting around, authoring objects, the developer panel, and taking screenshots.
 
-To connect to a live sim server:
+To connect to a live sim server instead (split mode):
 
 ```bash
 cargo run -p viberfox -- --connect <host:port>
+```
+
+To run with no sim at all — single user, no auth, no persistence (what `--shot` uses):
+
+```bash
+cargo run -p viberfox -- --offline
 ```
 
 ### Controls

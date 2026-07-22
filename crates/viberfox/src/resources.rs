@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
-use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::mpsc::UnboundedSender;
@@ -49,11 +48,6 @@ pub struct AiAssistantState {
     pub scroll_to_bottom: bool,
 }
 
-#[derive(Resource)]
-pub struct Database {
-    pub conn: Mutex<Connection>,
-}
-
 /// Stand-in for the primary `Window` when there isn't one: a scripted `--shot`
 /// run is windowless (no winit event loop at all) and renders into an offscreen
 /// image, but egui still needs a screen to lay out and scissor against, and the
@@ -80,6 +74,32 @@ pub struct AvatarChooserState {
     pub draft: crate::systems::user_store::AvatarAppearance,
     /// Whether `draft` has been seeded from the saved appearance since opening.
     pub seeded: bool,
+}
+
+/// Which right-hand panel is open. Exactly one at a time (opening one replaces
+/// any other); the bottom bar and the top menu toggle it, and each panel renders
+/// with an egui slide-in animation gated on this. `None` = all closed.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RightPanel {
+    #[default]
+    None,
+    Layers,
+    Places,
+    Assistant,
+    Chat,
+    Appearance,
+}
+
+impl RightPanel {
+    /// Toggle a panel: open it, or close it if it was already the active one.
+    pub fn toggle(&mut self, panel: RightPanel) {
+        *self = if *self == panel { RightPanel::None } else { panel };
+    }
+
+    #[must_use]
+    pub fn is(self, panel: RightPanel) -> bool {
+        self == panel
+    }
 }
 
 /// How `time_of_day` (the sun/moon/fog clock) is driven — a light/dark/auto
@@ -126,6 +146,12 @@ pub struct DevPanelState {
     /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
     /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
     pub moon_age_days: f32,
+    /// Solar declination in radians (±0.409 ≈ ±23.44°): the sun's seasonal angle
+    /// north/south of the celestial equator. In every automatic mode this rides
+    /// the real date (`main::apply_sun_mode`), so the day length, sunrise/sunset
+    /// times and peak elevation track the season instead of the old fixed
+    /// 06:00-sunrise/18:00-sunset equinox arc. See `utils::sun::sun_direction`.
+    pub sun_declination_rad: f32,
     /// Show the FPS / frame-time / entity-count overlay. Off by default.
     pub show_stats: bool,
     // ── Render feature toggles (perf/visual inspection) ─────────────────────
@@ -156,6 +182,9 @@ impl Default for DevPanelState {
             cloud_cover: 0.0,
             precipitation: 0.0,
             moon_age_days: 14.8, // full moon
+            // Overwritten from the real date on frame 1 by `apply_sun_mode`; this
+            // default is the equinox (0°), only ever seen before the first update.
+            sun_declination_rad: 0.0,
             show_stats: false,
             shadows_enabled: true,
             atmosphere_enabled: true,
@@ -384,6 +413,11 @@ pub struct AvatarState {
     pub position: Vec3,
     /// Visual follow target: smoothed toward `position` online so camera and mesh do not stutter at tick rate.
     pub display_position: Vec3,
+    /// Online client-side prediction: the world-space velocity most recently sent
+    /// to the sim (after collision steering + fly scaling), replicating the sim's
+    /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
+    /// at frame rate so movement is smooth between 20 Hz snapshots.
+    pub predicted_velocity: Vec3,
     /// Offline / local yaw for tank controls (radians).
     pub rotation: f32,
     /// Online: replicated world yaw from snapshots (authoritative for reconciliation).
@@ -400,6 +434,7 @@ impl Default for AvatarState {
         Self {
             position: p,
             display_position: p,
+            predicted_velocity: Vec3::ZERO,
             rotation: 0.0,
             sim_facing_yaw: 0.0,
             online_tank_yaw: 0.0,

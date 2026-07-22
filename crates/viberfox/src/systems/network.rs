@@ -9,14 +9,16 @@ use crate::resources::{
 use crate::systems::user_store::UserStore;
 use bevy::ecs::system::SystemParam;
 
-/// Auth-related writeback for `apply_network_snapshot`, grouped so the system
-/// stays under Bevy's system-parameter count limit (ADR-016).
+/// Cross-cutting writeback for `apply_network_snapshot` (auth identity, token
+/// persistence, chat), grouped so the system stays under Bevy's system-parameter
+/// count limit (ADR-016 / ADR-028).
 #[derive(SystemParam)]
 pub struct AuthWriteback<'w> {
     identity: ResMut<'w, AuthIdentity>,
     connect_auth: Option<Res<'w, ConnectAuth>>,
     connect_addr: Option<Res<'w, ConnectAddr>>,
     user_store: ResMut<'w, UserStore>,
+    chat: ResMut<'w, crate::systems::chat::ChatState>,
 }
 use crate::systems::avatar::{avatar_facing_yaw_from_camera, wish_dir_camera_relative};
 use bevy::prelude::*;
@@ -233,6 +235,7 @@ pub fn apply_network_snapshot(
                 tracing::info!(%username, "authenticated");
                 auth.identity.principal_id = Some(principal_id);
                 auth.identity.username = Some(username);
+                auth.chat.my_id = Some(your_avatar_id);
                 // Persist the token for silent reconnect to external sims (ADR-016).
                 if let (Some(cauth), Some(caddr)) = (&auth.connect_auth, &auth.connect_addr) {
                     if cauth.persist_token && !session_token.is_empty() {
@@ -381,6 +384,15 @@ pub fn apply_network_snapshot(
             NetMessage::TextureNotFound { texture_id, .. } => {
                 texture_cache.pending.remove(&texture_id);
                 tracing::warn!(id = %texture_id, "texture not found on server");
+            }
+            NetMessage::ChatMessage {
+                channel,
+                sender_name,
+                body,
+                distance_m,
+                ..
+            } => {
+                auth.chat.receive(&channel, sender_name, body, distance_m);
             }
             _ => {}
         }
@@ -603,18 +615,30 @@ pub fn create_egui_texture_handles(
 /// scalar (capped), so flying traverses this many times faster than walking.
 const FLY_MOVE_MULT: f32 = 4.0;
 
+// Sim intent → world velocity scaling, mirrored from `vibe_sim::state::apply_intent`
+// so the client can predict the local avatar's motion between snapshots. Keep in
+// sync with the sim (a mismatch just makes reconciliation fight prediction —
+// visible rubber-banding — it won't desync authority).
+const SIM_WALK_SPEED: f32 = 8.0;
+const SIM_MAX_SPEED: f32 = 32.0;
+const SIM_FLY_VERTICAL: f32 = 12.0;
+
 pub fn send_network_intent(
     online: Option<Res<OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     camera_state: Res<crate::resources::CameraState>,
-    avatar_state: Res<AvatarState>,
+    mut avatar_state: ResMut<AvatarState>,
     egui_manager: Res<super::egui_manager::EguiManager>,
     edit_dialog: Res<crate::resources::EditDialogState>,
+    colliders: Res<crate::systems::collision::BuildingColliders>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
 ) {
     let Some(sess) = online else {
         return;
     };
     if camera_state.mode != crate::resources::CameraMode::Avatar {
+        // Not driving the avatar: stop predicting so it doesn't drift.
+        avatar_state.predicted_velocity = Vec3::ZERO;
         return;
     }
 
@@ -637,12 +661,42 @@ pub fn send_network_intent(
 
     let az = camera_state.azimuth;
     let mut v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    // Building collision (the sim is authoritative but has no building geometry —
+    // that streams only on the client): steer the walk velocity so the avatar
+    // slides along walls and can't enter a building, and auto-walk it out if it
+    // ended up inside one (e.g. teleported in — no interiors yet). Flying passes
+    // over roofs, so it's exempt.
+    if !avatar_state.is_flying && layers.buildings_enabled && !colliders.is_empty() {
+        let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
+        let steered = colliders.steer_velocity(pos, Vec2::new(v.x, v.z));
+        v.x = steered.x;
+        v.z = steered.y;
+    }
     // Flying sends a larger magnitude so the sim moves the avatar faster (see
     // `FLY_MOVE_MULT` / `apply_intent`). Grounded stays a unit wish-dir.
     if avatar_state.is_flying {
         v *= FLY_MOVE_MULT;
     }
     let display_yaw = avatar_facing_yaw_from_camera(az);
+
+    // Predict the world velocity the sim will derive from this intent (same
+    // scaling as `apply_intent`): magnitude → capped speed, plus the fixed
+    // vertical fly rate. Client-side prediction integrates this for smooth motion
+    // between the 20 Hz snapshots (`smooth_online_avatar_display`).
+    let mag = Vec2::new(v.x, v.z).length();
+    let horizontal = if mag > 1e-4 {
+        Vec2::new(v.x, v.z) / mag * (mag * SIM_WALK_SPEED).min(SIM_MAX_SPEED)
+    } else {
+        Vec2::ZERO
+    };
+    let vy = if fly_up {
+        SIM_FLY_VERTICAL
+    } else if fly_down {
+        -SIM_FLY_VERTICAL
+    } else {
+        0.0
+    };
+    avatar_state.predicted_velocity = Vec3::new(horizontal.x, vy, horizontal.y);
 
     let _ = sess.intent_tx.send(NetMessage::ClientIntent {
         request_id: 0,

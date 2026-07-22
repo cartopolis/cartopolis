@@ -24,20 +24,20 @@ pub struct FreeCamera;
 /// (1 = the raw beam colour, 0 = white).
 const GLOW_SATURATION: f32 = 0.5;
 
-pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
+pub fn distance_fog(density: f32, hours: f32, decl_rad: f32) -> DistanceFog {
     use crate::utils::sun;
 
-    let day = sun::daylight(hours); // smooth through twilight, not a hard ramp
+    let day = sun::daylight(hours, decl_rad); // smooth through twilight, not a hard ramp
     let night_color = Vec3::new(0.015, 0.02, 0.035);
     // Slightly desaturated toward white so the fog wall meets the Mie-hazed sky.
     let day_color = Vec3::new(0.71, 0.75, 0.83);
     // Tint by the sun's transmittance color while it sits near the horizon, so
     // dawn/dusk haze glows warm with the sky instead of snapping grey→black.
-    let t = sun::sun_transmittance(hours);
+    let t = sun::sun_transmittance(hours, decl_rad);
     let tint = t / t.max_element().max(1e-4);
     // Modest warm tint only — the built-in atmosphere already colours the sky at
     // low sun, so a strong red fog on top read as an unrealistic blood-red dusk.
-    let warm = 0.30 * sun::horizon_proximity(hours);
+    let warm = 0.30 * sun::horizon_proximity(hours, decl_rad);
     let c = night_color.lerp(day_color, day) * Vec3::ONE.lerp(tint, warm);
 
     // Map density to a visibility distance on an exponential curve:
@@ -65,7 +65,7 @@ pub fn distance_fog(density: f32, hours: f32) -> DistanceFog {
                 g.x,
                 g.y,
                 g.z,
-                0.35 * sun::smoothstep(-0.08, 0.02, sun::sun_direction(hours).y),
+                0.35 * sun::smoothstep(-0.08, 0.02, sun::sun_direction(hours, decl_rad).y),
             )
         },
         directional_light_exponent: 30.0,
@@ -373,7 +373,7 @@ pub fn setup_camera(
                 FloatingOrigin,
                 // Atmospheric distance fog: distant buildings fade into haze, with a
                 // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
-                distance_fog(dev.fog_density, dev.time_of_day),
+                distance_fog(dev.fog_density, dev.time_of_day, dev.sun_declination_rad),
             ));
             if want_envmap {
                 // Sky-driven image-based lighting: surfaces are lit by and reflect

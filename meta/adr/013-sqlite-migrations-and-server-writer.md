@@ -23,7 +23,7 @@
 
 ## Decision
 
-**`vibe_sim`** is the **sole writer** to `regions.db` (or configured path). Schema changes go through checked-in migrations applied on startup.
+**`vibe_sim`** is the **sole writer** to `world.db` (or configured path). Schema changes go through checked-in migrations applied on startup.
 
 **Implementation** (`vibe_sim/src/db.rs`, `state.rs`):
 - **`rusqlite`** (bundled, ADR-002) + **`refinery`** `embed_migrations!("migrations")` for versioned, transactional upgrades. Migrations run on startup before accepting clients; errors surface via `anyhow`/`tracing`. Current versions: `V1__initial`, `V2__prim_texture`, `V3__prim_geometry_and_surface`.

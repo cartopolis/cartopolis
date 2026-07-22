@@ -9,8 +9,8 @@ pub mod yaw;
 pub use error::ProtocolError;
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
-    message_request_id, AuthCredential, AvatarStateDto, GeoAnchor, MessageKind, NetMessage,
-    PrimDto, PrimGeometry, PrimSurface, RegionDto, TextureEntry, PROTOCOL_VERSION,
+    message_request_id, AuthCredential, AvatarStateDto, ChatScope, GeoAnchor, MessageKind,
+    NetMessage, PrimDto, PrimGeometry, PrimSurface, RegionDto, TextureEntry, PROTOCOL_VERSION,
 };
 pub use world::{
     find_optimal_zoom, lat_lng_to_tile, tile_to_lat_lng, tile_to_meters, TileKey,

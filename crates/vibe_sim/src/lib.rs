@@ -7,6 +7,7 @@
 //! solo mode and `--connect` share one client path (see ADR-016 "Solo/dev mode").
 
 pub mod auth;
+pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -15,6 +16,7 @@ pub mod state;
 pub mod textures;
 
 pub use auth::{ensure_account, Sessions};
+pub use chat::ChatHub;
 pub use config::SimConfig;
 
 use std::net::SocketAddr;
@@ -65,12 +67,15 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let tick_task = tokio::spawn(net::tick_loop(world.clone(), config.clone(), tx_snap.clone()));
 
     let sessions = Arc::new(auth::Sessions::new());
+    let chat = Arc::new(chat::ChatHub::new());
 
     let listener = TcpListener::bind(&config.listen).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!(%local_addr, "listening");
 
-    let accept_task = tokio::spawn(accept_loop(listener, world, config, tx_snap, conn, sessions));
+    let accept_task = tokio::spawn(accept_loop(
+        listener, world, config, tx_snap, conn, sessions, chat,
+    ));
 
     Ok(SimHandle {
         local_addr,
@@ -88,6 +93,7 @@ async fn accept_loop(
     tx_snap: broadcast::Sender<Vec<u8>>,
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     sessions: Arc<auth::Sessions>,
+    chat: Arc<chat::ChatHub>,
 ) {
     loop {
         let (stream, addr) = match listener.accept().await {
@@ -104,9 +110,12 @@ async fn accept_loop(
         let tx_c = tx_snap.clone();
         let conn_c = conn.clone();
         let sessions_c = sessions.clone();
+        let chat_c = chat.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                net::handle_connection(stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c).await
+            if let Err(e) = net::handle_connection(
+                stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c, chat_c,
+            )
+            .await
             {
                 tracing::warn!(%addr, "client ended: {e:#}");
             }

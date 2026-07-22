@@ -7,10 +7,14 @@
 - **Date**: 2025-03-21
 - **Tags**: [avatar, networking, authority, simulation]
 - **Decision Type**: architecture_pattern
-- **Related**: [ADR-003, ADR-006, ADR-009, ADR-012]
+- **Related**: [ADR-003, ADR-006, ADR-009, ADR-012, ADR-016, ADR-031]
 - **Supersedes**: []
 - **Superseded By**: []
 ---
+
+> **Tier (ADR-031).** Avatars are a **Simulation-tier** feature: they exist only for a
+> logged-in session. The anonymous **Viewer** tier has no avatar — it is a map/lookup
+> viewer. Avatar traffic is served only after the ADR-016 auth handshake.
 
 ## Context
 

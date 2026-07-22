@@ -13,7 +13,7 @@
 //! cargo run -p viberfox --profile dev-bevy -- \
 //!     --shot /tmp/shot.png --at 53.2194,6.5665,180000 --look=-90,0
 //!
-//! # a sweep: one app launch, one PNG per --at (suffixed with the altitude)
+//! # a sweep: one app launch, one PNG per --at (index- and altitude-tagged)
 //! cargo run -p viberfox --profile dev-bevy -- --shot /tmp/sweep.png \
 //!     --at 53.2194,6.5665,60000 --at 53.2194,6.5665,180000 --look=-90,0
 //! ```
@@ -38,23 +38,52 @@
 //! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
 //! hand in a headless run, so `--ui <list>` opens them for the capture, e.g.
 //! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
+//!
+//! ## Metrics: the numbers behind the frame
+//!
+//! Every capture also measures a [`ShotMetrics`] — altitude, tier, the
+//! altitude-driven crossfade scalars (`space_factor`, exposure, bloom, globe
+//! albedo), near/far, and the globe mesh tally. One source, three sinks: the
+//! `shot state` log line (always), a `--csv` row per capture, and a `--dump-state`
+//! JSON snapshot. A new inspectable fact is one field on `ShotMetrics` and it
+//! shows up in all three at once — this is the introspection capability that lets
+//! a rendering question be answered from a shell without a recompile per question.
+//!
+//! ## Sweeps: `--frames N`
+//!
+//! With two or more `--at` waypoints, `--frames N` interpolates N viewpoints
+//! along the polyline (altitude log-interpolated, lat/lng/look linear) instead of
+//! capturing each `--at` verbatim — a filmstrip. Paired with `--csv` this is how a
+//! ramp is A/B'd for a *hard cut*: a jump between adjacent rows in the
+//! `space_factor` / `exposure` / `bloom` / `globe_albedo` columns is a seam a
+//! single still can't reveal. Files are index-prefixed (`sweep_00_..m.png`) so the
+//! frames sort in flight order.
+//!
+//! ```bash
+//! # 24-frame fly-out, straight down over Groningen, ramps logged to CSV
+//! cargo run -p viberfox --profile dev-bevy -- --shot /tmp/sweep.png \
+//!     --at 53.2194,6.5665,2000 --at 53.2194,6.5665,4000000 --frames 24 \
+//!     --look=-90,0 --csv /tmp/ramps.csv
+//! ```
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::RenderTarget;
+use bevy::camera::{Exposure, RenderTarget};
 use bevy::image::Image;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use big_space::prelude::GridCell;
+use serde::Serialize;
 
 use crate::resources::{CameraState, ScreenshotState};
 use crate::systems::free_camera::FreeCamera;
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
-use crate::systems::globe::{GlobeMesh, GlobeState};
+use crate::systems::globe::{GlobeMesh, GlobeState, GlobeSurfaceAlbedo};
 use crate::systems::map_stream::MapStream;
 use crate::systems::weather::WeatherState;
 
@@ -71,13 +100,59 @@ pub struct ShotSpec {
     pub yaw_deg: f32,
 }
 
+impl ShotSpec {
+    /// Interpolate between two viewpoints at `t` in `[0, 1]`. Position and look
+    /// angles are linear, but **altitude is geometric** (`a·(b/a)^t`): a fly-out
+    /// spans orders of magnitude (2 km → 4,000 km), and a linear sweep would put
+    /// almost every sample in space and none where the ground-tier ramps bend.
+    /// Geometric spacing keeps the visual rate of change even, so the samples land
+    /// across each ramp rather than bunched at one end.
+    fn lerp(a: &ShotSpec, b: &ShotSpec, t: f64) -> ShotSpec {
+        let lin = |x: f64, y: f64| x + (y - x) * t;
+        let alt = if a.alt > 0.0 && b.alt > 0.0 {
+            a.alt * (b.alt / a.alt).powf(t)
+        } else {
+            lin(a.alt, b.alt)
+        };
+        ShotSpec {
+            lat: lin(a.lat, b.lat),
+            lng: lin(a.lng, b.lng),
+            alt,
+            pitch_deg: lin(a.pitch_deg as f64, b.pitch_deg as f64) as f32,
+            yaw_deg: lin(a.yaw_deg as f64, b.yaw_deg as f64) as f32,
+        }
+    }
+}
+
+/// Expand `waypoints` into an even `frames`-sample sweep along the polyline they
+/// describe (endpoints included). `frames == 0` (or a single waypoint) passes the
+/// waypoints through unchanged — the plain multi-`--at` behaviour.
+fn densify_path(waypoints: &[ShotSpec], frames: u32) -> Vec<ShotSpec> {
+    if frames == 0 || waypoints.len() < 2 {
+        return waypoints.to_vec();
+    }
+    let segs = (waypoints.len() - 1) as f64;
+    (0..frames)
+        .map(|k| {
+            let t = if frames == 1 { 0.0 } else { k as f64 / (frames - 1) as f64 };
+            // Map the global parameter onto a segment. Clamping `seg` (rather than
+            // `pos`) means the final sample resolves to `local == 1.0` on the last
+            // segment — landing exactly on the last waypoint, not a hair short.
+            let pos = t * segs;
+            let seg = (pos.floor() as usize).min(waypoints.len() - 2);
+            ShotSpec::lerp(&waypoints[seg], &waypoints[seg + 1], pos - seg as f64)
+        })
+        .collect()
+}
+
 /// The scripted run, parsed from the CLI. Present as a resource only when
 /// `--shot` was passed; its absence is what other systems test to know the app
 /// is in normal interactive mode.
 #[derive(Resource, Clone)]
 pub struct ShotHarness {
-    /// Base output path; with more than one shot the altitude is appended
-    /// (`/tmp/s.png` → `/tmp/s_180000m.png`).
+    /// Base output path; with more than one shot a zero-padded index and the
+    /// altitude are appended (`/tmp/s.png` → `/tmp/s_00_180000m.png`). See
+    /// [`ShotHarness::path_for`].
     pub path: PathBuf,
     pub shots: Vec<ShotSpec>,
     /// Offscreen render size.
@@ -94,11 +169,85 @@ pub struct ShotHarness {
     pub ui: Vec<String>,
     /// "free" (exact placement) or "earth" (the orbit camera).
     pub mode: String,
+    /// Write a [`ShotMetrics`] row per capture to this CSV (the sweep analysis
+    /// artifact). Header + one row per shot, written when the run completes.
+    pub csv: Option<PathBuf>,
+    /// Dump the full per-capture [`ShotMetrics`] as JSON on exit — a single
+    /// object for one shot, an array for a sweep. The "inspect the settled world
+    /// from a shell" snapshot.
+    pub dump_state: Option<PathBuf>,
+}
+
+/// The numbers behind one settled capture: the image is the *what*, this is the
+/// *why*. Built once per shot in [`drive_capture`] and emitted three ways — the
+/// `shot state` log line, a `--csv` row, and a `--dump-state` JSON object — so
+/// there is a single source of truth for "what was the world doing here". A black
+/// frame with `globe_rendered > 0` is a black *scene*, not a black *capture*; a
+/// `space_factor` that jumps between two rows of a sweep is a hard cut in a ramp.
+#[derive(Clone, Debug, Serialize)]
+pub struct ShotMetrics {
+    /// 1-based index within the run.
+    pub shot: usize,
+    pub lat: f64,
+    pub lng: f64,
+    /// Seconds from placement to the settled capture.
+    pub settled_s: f32,
+    /// Mean frame time over the settled frames (ms) — the space tier's render cost.
+    pub frame_ms: f32,
+    pub alt_m: i64,
+    /// Space-tier crossfade, 0 (ground) → 1 (deep space). Every ramp rides this.
+    pub space_factor: f32,
+    pub in_space: bool,
+    pub orbit_space: bool,
+    pub near_m: i64,
+    pub far_m: i64,
+    /// Camera exposure (EV100); lower = brighter.
+    pub exposure_ev100: f32,
+    pub bloom: f32,
+    /// Globe imagery tint (1.0 near the threshold → `GLOBE_DEEP_ALBEDO` in space).
+    pub globe_albedo: f32,
+    pub globe_entities: usize,
+    pub globe_visible: usize,
+    pub globe_rendered: usize,
+}
+
+/// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
+/// so the two never drift; a mismatch would silently mislabel columns.
+const CSV_HEADER: &str = "shot,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
+orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,globe_entities,globe_visible,\
+globe_rendered";
+
+impl ShotMetrics {
+    /// One CSV line, columns in [`CSV_HEADER`] order.
+    fn csv_row(&self) -> String {
+        format!(
+            "{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{},{},{}",
+            self.shot,
+            self.lat,
+            self.lng,
+            self.settled_s,
+            self.frame_ms,
+            self.alt_m,
+            self.space_factor,
+            self.in_space,
+            self.orbit_space,
+            self.near_m,
+            self.far_m,
+            self.exposure_ev100,
+            self.bloom,
+            self.globe_albedo,
+            self.globe_entities,
+            self.globe_visible,
+            self.globe_rendered,
+        )
+    }
 }
 
 impl ShotHarness {
     /// Build from the raw CLI strings: `at` is one or more "lat,lng,alt", `look`
     /// zero or more "pitch,yaw" (paired by index; the last one carries over).
+    /// `frames > 0` densifies the waypoints into an N-frame sweep (see
+    /// [`densify_path`]).
     #[allow(clippy::too_many_arguments)]
     pub fn from_cli(
         path: PathBuf,
@@ -110,6 +259,9 @@ impl ShotHarness {
         hide_ui: bool,
         ui: Vec<String>,
         mode: String,
+        frames: u32,
+        csv: Option<PathBuf>,
+        dump_state: Option<PathBuf>,
     ) -> Result<Self, String> {
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
             let v: Vec<f64> = s
@@ -142,22 +294,66 @@ impl ShotHarness {
         if shots.is_empty() {
             return Err("--shot needs at least one --at lat,lng,alt".into());
         }
+        if frames > 0 && shots.len() < 2 {
+            return Err("--frames needs at least two --at waypoints to interpolate between".into());
+        }
+        let shots = densify_path(&shots, frames);
         let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
-        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode })
+        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode, csv, dump_state })
+    }
+
+    /// Write the accumulated per-capture metrics to whichever sinks were
+    /// requested. Called once, when the last shot lands. CSV is a header plus one
+    /// row per shot; the JSON dump is a bare object for a single shot and an array
+    /// for a sweep (so a one-shot `--dump-state` reads as a plain snapshot).
+    fn write_metrics(&self, metrics: &[ShotMetrics]) {
+        if let Some(path) = &self.csv {
+            let mut out = String::from(CSV_HEADER);
+            for m in metrics {
+                out.push('\n');
+                out.push_str(&m.csv_row());
+            }
+            out.push('\n');
+            match std::fs::write(path, out) {
+                Ok(()) => tracing::info!(path = %path.display(), rows = metrics.len(), "shot harness: wrote CSV"),
+                Err(e) => tracing::error!(path = %path.display(), error = %e, "shot harness: CSV write failed"),
+            }
+        }
+        if let Some(path) = &self.dump_state {
+            let json = match metrics {
+                [one] => serde_json::to_string_pretty(one),
+                many => serde_json::to_string_pretty(many),
+            };
+            match json {
+                Ok(s) => match std::fs::write(path, s) {
+                    Ok(()) => tracing::info!(path = %path.display(), shots = metrics.len(), "shot harness: wrote state dump"),
+                    Err(e) => tracing::error!(path = %path.display(), error = %e, "shot harness: dump write failed"),
+                },
+                Err(e) => tracing::error!(error = %e, "shot harness: dump serialize failed"),
+            }
+        }
     }
 
     /// Output path for shot `i` (bare `--shot` path for a single capture).
+    ///
+    /// A sweep is index-prefixed *and* altitude-tagged (`s_00_180000m.png`): the
+    /// zero-padded index keeps the filmstrip in flight order (altitude alone is
+    /// non-monotonic across a polyline and collides when interpolated frames round
+    /// to the same metre near the ground), the altitude keeps a frame legible.
     fn path_for(&self, i: usize) -> PathBuf {
         if self.shots.len() == 1 {
             return self.path.clone();
         }
         let stem = self.path.file_stem().map(|s| s.to_string_lossy().into_owned());
         let ext = self.path.extension().map(|s| s.to_string_lossy().into_owned());
+        let width = (self.shots.len() - 1).to_string().len();
         let name = format!(
-            "{}_{}m.{}",
+            "{}_{:0width$}_{}m.{}",
             stem.as_deref().unwrap_or("shot"),
+            i,
             self.shots[i].alt as i64,
             ext.as_deref().unwrap_or("png"),
+            width = width,
         );
         self.path.with_file_name(name)
     }
@@ -196,6 +392,9 @@ pub struct ShotProgress {
     saved: Arc<AtomicBool>,
     /// Frames left before exiting (drains after the last save).
     exit_in: Option<u32>,
+    /// One [`ShotMetrics`] per captured viewpoint, flushed to `--csv`/`--dump-state`
+    /// when the run completes.
+    metrics: Vec<ShotMetrics>,
 }
 
 /// True while a scripted capture is configured — the run condition the user
@@ -400,7 +599,8 @@ pub fn drive_capture(
     stream: Res<MapStream>,
     weather: Res<WeatherState>,
     cam_state: Res<CameraState>,
-    camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
+    surface_albedo: Res<GlobeSurfaceAlbedo>,
+    camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
 ) {
     if let Some(frames) = progress.exit_in.as_mut() {
@@ -414,6 +614,8 @@ pub fn drive_capture(
     if progress.saved.swap(false, Ordering::Relaxed) {
         progress.index += 1;
         if progress.index >= harness.shots.len() {
+            // Every viewpoint captured — flush the metrics before draining to exit.
+            harness.write_metrics(&progress.metrics);
             progress.exit_in = Some(2);
         } else {
             progress.placed = false;
@@ -455,28 +657,51 @@ pub fn drive_capture(
 
     // The numbers behind the image, so a black frame can be diagnosed without
     // re-running: a black *scene* still reports visible, rendered globe meshes.
-    if let Ok((cell, tf, projection)) = camera.single() {
+    // Built once and reused for the log line, the `--csv` row and the JSON dump.
+    if let Ok((cell, tf, projection, exposure, bloom)) = camera.single() {
         let (near, far) = match projection {
             Projection::Perspective(p) => (p.near, p.far),
             _ => (0.0, 0.0),
         };
+        let shot = &harness.shots[progress.index];
+        let m = ShotMetrics {
+            shot: progress.index + 1,
+            lat: shot.lat,
+            lng: shot.lng,
+            settled_s: progress.elapsed,
+            frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
+            alt_m: globe.altitude_m(cell, tf) as i64,
+            space_factor: globe.space_factor(cell, tf),
+            in_space: globe.in_space(cell, tf),
+            orbit_space: cam_state.orbit_space,
+            near_m: near as i64,
+            far_m: far as i64,
+            exposure_ev100: exposure.ev100,
+            bloom: bloom.intensity,
+            globe_albedo: surface_albedo.0,
+            globe_entities: globe_meshes.iter().count(),
+            globe_visible: globe_meshes.iter().filter(|(_, v)| **v == Visibility::Visible).count(),
+            globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
+        };
         tracing::info!(
-            shot = progress.index + 1,
-            settled_in = format!("{:.1}s", progress.elapsed),
-            frame_ms = format!(
-                "{:.1}",
-                1000.0 * progress.frame_time / progress.frames.max(1) as f32
-            ),
-            alt_m = globe.altitude_m(cell, tf) as i64,
-            in_space = globe.in_space(cell, tf),
-            orbit_space = cam_state.orbit_space,
-            near_m = near as i64,
-            far_m = far as i64,
-            globe_entities = globe_meshes.iter().count(),
-            globe_visible = globe_meshes.iter().filter(|(_, v)| **v == Visibility::Visible).count(),
-            globe_rendered = globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
+            shot = m.shot,
+            settled_in = format!("{:.1}s", m.settled_s),
+            frame_ms = format!("{:.1}", m.frame_ms),
+            alt_m = m.alt_m,
+            space_factor = format!("{:.3}", m.space_factor),
+            in_space = m.in_space,
+            orbit_space = m.orbit_space,
+            near_m = m.near_m,
+            far_m = m.far_m,
+            exposure_ev100 = format!("{:.2}", m.exposure_ev100),
+            bloom = format!("{:.3}", m.bloom),
+            globe_albedo = format!("{:.3}", m.globe_albedo),
+            globe_entities = m.globe_entities,
+            globe_visible = m.globe_visible,
+            globe_rendered = m.globe_rendered,
             "shot state"
         );
+        progress.metrics.push(m);
     }
 
     // `--hide-ui`: drop this frame's egui geometry (ui::suppress_egui_for_screenshot
@@ -508,4 +733,122 @@ pub fn drive_capture(
                 Err(e) => tracing::error!(error = %e, "shot decode failed"),
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(lat: f64, lng: f64, alt: f64) -> ShotSpec {
+        ShotSpec { lat, lng, alt, pitch_deg: -90.0, yaw_deg: 0.0 }
+    }
+
+    #[test]
+    fn densify_passthrough_when_off_or_single() {
+        let wp = vec![spec(0.0, 0.0, 2000.0), spec(1.0, 1.0, 4000.0)];
+        assert_eq!(densify_path(&wp, 0).len(), 2, "frames=0 leaves waypoints as-is");
+        let one = vec![spec(0.0, 0.0, 2000.0)];
+        assert_eq!(densify_path(&one, 8).len(), 1, "a single waypoint can't be swept");
+    }
+
+    #[test]
+    fn densify_hits_both_endpoints() {
+        let wp = vec![spec(10.0, 20.0, 2000.0), spec(11.0, 22.0, 4_000_000.0)];
+        let out = densify_path(&wp, 16);
+        assert_eq!(out.len(), 16);
+        // First and last samples are the waypoints themselves.
+        assert!((out[0].lat - 10.0).abs() < 1e-9 && (out[0].alt - 2000.0).abs() < 1e-6);
+        assert!((out[15].lat - 11.0).abs() < 1e-9 && (out[15].alt - 4_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn altitude_is_geometric_not_linear() {
+        // Midpoint of a 2 km → 200 km sweep: geometric mean (20 km), not the
+        // linear midpoint (101 km). This is what keeps samples off the ceiling.
+        let wp = vec![spec(0.0, 0.0, 2_000.0), spec(0.0, 0.0, 200_000.0)];
+        let out = densify_path(&wp, 3);
+        assert!((out[1].alt - 20_000.0).abs() < 1.0, "got {}", out[1].alt);
+    }
+
+    #[test]
+    fn densify_spans_multiple_segments() {
+        // Three waypoints, even frame count: the middle waypoint is passed through
+        // exactly at the sweep's centre.
+        let wp = vec![spec(0.0, 0.0, 1000.0), spec(5.0, 0.0, 1000.0), spec(10.0, 0.0, 1000.0)];
+        let out = densify_path(&wp, 5);
+        assert_eq!(out.len(), 5);
+        assert!((out[2].lat - 5.0).abs() < 1e-9, "centre sample is the middle waypoint");
+    }
+
+    #[test]
+    fn frames_requires_two_waypoints() {
+        let result = ShotHarness::from_cli(
+            "/tmp/s.png".into(),
+            &["0,0,1000".into()],
+            &[],
+            "64x64",
+            0.1,
+            1.0,
+            false,
+            vec![],
+            "free".into(),
+            8,
+            None,
+            None,
+        );
+        match result {
+            Err(e) => assert!(e.contains("--frames"), "got {e:?}"),
+            Ok(_) => panic!("expected --frames with one waypoint to error"),
+        }
+    }
+
+    #[test]
+    fn path_for_indexes_and_pads_a_sweep() {
+        let h = ShotHarness::from_cli(
+            "/tmp/sweep.png".into(),
+            &["0,0,2000".into(), "0,0,4000000".into()],
+            &[],
+            "64x64",
+            0.1,
+            1.0,
+            false,
+            vec![],
+            "free".into(),
+            12,
+            None,
+            None,
+        )
+        .unwrap();
+        // 12 frames → indices 00..11, zero-padded to width 2, altitude-tagged.
+        assert_eq!(h.path_for(0), PathBuf::from("/tmp/sweep_00_2000m.png"));
+        assert!(h.path_for(11).to_string_lossy().starts_with("/tmp/sweep_11_"));
+    }
+
+    #[test]
+    fn csv_header_and_row_have_matching_arity() {
+        let m = ShotMetrics {
+            shot: 1,
+            lat: 0.0,
+            lng: 0.0,
+            settled_s: 1.0,
+            frame_ms: 16.6,
+            alt_m: 1000,
+            space_factor: 0.0,
+            in_space: false,
+            orbit_space: false,
+            near_m: 1,
+            far_m: 1000,
+            exposure_ev100: 14.0,
+            bloom: 0.15,
+            globe_albedo: 1.0,
+            globe_entities: 0,
+            globe_visible: 0,
+            globe_rendered: 0,
+        };
+        assert_eq!(
+            CSV_HEADER.split(',').count(),
+            m.csv_row().split(',').count(),
+            "CSV header and row column counts drifted"
+        );
+    }
 }

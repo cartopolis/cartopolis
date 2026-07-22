@@ -22,11 +22,19 @@ developer tools. For build/run instructions and system requirements, see the
 cargo run -p viberfox
 ```
 
-This launches the client in **offline mode**, backed by the local SQLite database
-at `data/regions.db`. To join a live world, point it at a running sim server:
+This launches the client in **solo mode**: an in-process sim starts on loopback and
+the client connects to it. Your world is authoritative in that sim and persisted to
+`data/world.db`. To join a live world instead, point it at a running sim server:
 
 ```bash
 cargo run -p viberfox -- --connect <host:port>
+```
+
+Or run with no sim at all — single user, no auth, no persistence (also what `--shot`
+uses):
+
+```bash
+cargo run -p viberfox -- --offline
 ```
 
 The world opens at street level, standing on a patch of OpenStreetMap-backed

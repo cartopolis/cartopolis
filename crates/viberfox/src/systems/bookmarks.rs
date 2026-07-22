@@ -115,10 +115,10 @@ pub fn render_bookmarks_panel(
     stream: Res<MapStream>,
     camera_state: Res<CameraState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
 ) {
-    if !bookmarks.panel_open {
-        return;
-    }
+    let open_before = right_panel.is(crate::resources::RightPanel::Places);
+    let mut open = open_before;
 
     // Current location + view, for the per-bookmark "update to here" action.
     let current = camera.single().ok().zip(stream.geo_anchor()).map(
@@ -141,9 +141,9 @@ pub fn render_bookmarks_panel(
     egui::Panel::right("bookmarks_panel")
         .resizable(true)
         .default_size(280.0)
-        .show(ui_root, |ui| {
+        .show_collapsible(ui_root, &mut open, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Bookmarks");
+                ui.heading("Places");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("✕").clicked() {
                         close = true;
@@ -260,7 +260,7 @@ pub fn render_bookmarks_panel(
     if let Some(tp) = teleport {
         nav.pending_teleport = Some(tp);
     }
-    if close {
-        bookmarks.panel_open = false;
+    if close || (open_before && !open) {
+        *right_panel = crate::resources::RightPanel::None;
     }
 }

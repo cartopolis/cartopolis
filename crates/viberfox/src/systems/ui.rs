@@ -11,34 +11,71 @@ use crate::resources::OnlineSession;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 use egui::Window;
-use crate::resources::AiAssistantState;
+use crate::resources::RightPanel;
 use vibe_core::NetMessage;
 
-/// Top menu bar: `File ▸ Exit`, `View ▸ AI Panel / Dev Panel`, `Layers` and
-/// `Bookmarks` (top-level panel toggles), plus the geo search bar.
+/// Auto-hiding top bar: a browser-style address bar (`File` menu, Back /
+/// Forward / Home, geo search). Hidden by default; it slides down when the
+/// pointer nudges the top edge, stays while it's hovered / a menu is open / the
+/// search field has focus, and `Ctrl+L` reveals it and focuses the address bar.
+///
+/// The panel toggles that used to live here (AI, Layers, Places, Appearance) and
+/// the camera-mode picker now live in the bottom bar ([`camera_picker_ui`],
+/// `chat::render_chat_panel`), so the top strip declutters down to navigation.
 #[allow(clippy::too_many_arguments)]
 pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
-    mut ai_state: ResMut<AiAssistantState>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
-    mut avatar_chooser: ResMut<crate::resources::AvatarChooserState>,
-    mut layers: ResMut<crate::systems::data_layers::DataLayers>,
-    mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
-    mut camera_state: ResMut<crate::resources::CameraState>,
-    avatars: Query<(), With<crate::components::Avatar>>,
-    globe: Res<crate::systems::globe::GlobeState>,
+    store: Res<crate::systems::user_store::UserStore>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut app_exit: MessageWriter<AppExit>,
+    // Whether the bar was revealed last frame — widens the hover keep-zone to a
+    // full bar height so moving onto the bar doesn't immediately re-hide it.
+    mut revealed: Local<bool>,
 ) {
-    // Follow is avatar-only (logged-in viewer); greyed out in anonymous mode.
-    let has_avatar = !avatars.is_empty();
-    let ui_root = egui.ui_mut();
-    // Symmetric top/bottom margin makes the panel size to its content with equal
-    // padding above and below, so the row is vertically centred (unlike
-    // `exact_height`, which top-aligns the content).
-    let frame = egui::Frame::side_top_panel(ui_root.style())
-        .inner_margin(egui::Margin::symmetric(10, 8));
-    egui::Panel::top("menu_bar").frame(frame).show(ui_root, |ui| {
+    let ctx = egui.ctx_mut();
+
+    // Ctrl+L (browser address-bar shortcut): reveal the bar and grab the search
+    // field's focus next frame (`nav.focus_search`, consumed in `nav_bar_ui`).
+    let ctrl =
+        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
+        nav.focus_search = true;
+    }
+
+    // Reveal when the pointer is inside the top strip; keep it up while hovered
+    // (the zone widens to a bar height once shown), while one of the bar's own
+    // menus is open (`*revealed && any_popup_open` — a combo opened *elsewhere*,
+    // e.g. the bottom bar, must not summon this one), or while the address bar
+    // holds focus / is about to (so typing a search doesn't dismiss it).
+    const BAR_HEIGHT: f32 = 46.0;
+    let reveal_zone = if *revealed { BAR_HEIGHT } else { 6.0 };
+    let hot = ctx.pointer_latest_pos().is_some_and(|p| p.y <= reveal_zone);
+    let want = hot
+        || (*revealed && ctx.any_popup_open())
+        || nav.search_has_focus
+        || nav.focus_search;
+    *revealed = want;
+    if !want {
+        // Nothing rendered this frame → the search field can hold no focus.
+        nav.search_has_focus = false;
+        return;
+    }
+
+    // A floating full-width strip (not a `Panel::top`) so the side panels keep
+    // their full height and the bar overlays them when it drops in.
+    let width = ctx.viewport_rect().width();
+    egui::Area::new(egui::Id::new("menu_bar"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(0.0, 0.0))
+        .show(ctx, |ui| {
+        // Symmetric top/bottom margin makes the strip size to its content with
+        // equal padding above and below, so the row is vertically centred.
+        let frame = egui::Frame::side_top_panel(ui.style())
+            .inner_margin(egui::Margin::symmetric(10, 8));
+        frame.show(ui, |ui| {
+        ui.set_width(width);
         // `MenuBar` uses this as the row height and centres items within it
         // (its layout is `Align::Center`); bumping it gives the buttons and the
         // taller search field a common, roomier height that lines up.
@@ -46,127 +83,145 @@ pub fn render_menu_bar(
         ui.style_mut().spacing.item_spacing.x = 8.0;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Exit").clicked() {
-                    app_exit.write(AppExit::Success);
-                    ui.close();
-                }
-            });
-            ui.menu_button("View", |ui| {
-                let ai_label = if ai_state.open {
-                    "Hide AI Panel"
-                } else {
-                    "Show AI Panel"
-                };
-                if ui.button(ai_label).clicked() {
-                    ai_state.open = !ai_state.open;
-                    ui.close();
-                }
                 let dev_label = if dev_state.open {
-                    "Hide Dev Panel"
+                    "Hide developer tools"
                 } else {
-                    "Show Dev Panel"
+                    "Developer tools"
                 };
                 if ui.button(dev_label).clicked() {
                     dev_state.open = !dev_state.open;
                     ui.close();
                 }
-                let avatar_label = if avatar_chooser.open {
-                    "Hide Avatar Chooser"
-                } else {
-                    "Choose Avatar…"
-                };
-                if ui.button(avatar_label).clicked() {
-                    avatar_chooser.open = !avatar_chooser.open;
-                    avatar_chooser.seeded = false; // re-seed the draft on next open
+                ui.separator();
+                if ui.button("Exit").clicked() {
+                    app_exit.write(AppExit::Success);
                     ui.close();
                 }
             });
-            // Camera mode picker (also cyclable with Tab).
+            ui.separator();
+            // Browser-style Back / Forward through the location history. Every
+            // teleport (search, bookmark, Home, coords) is a history entry.
+            if ui
+                .add_enabled(nav.can_go_back(), egui::Button::new("◀"))
+                .on_hover_text("Back to the previous location")
+                .on_disabled_hover_text("No previous location")
+                .clicked()
             {
-                use crate::resources::CameraMode;
-                let label = match camera_state.mode {
-                    CameraMode::Avatar => "Camera: Follow",
-                    CameraMode::Free => "Camera: Fly",
-                    CameraMode::Orbit => "Camera: Earth",
-                };
-                ui.menu_button(label, |ui| {
-                    let mut pick: Option<CameraMode> = None;
-                    for (mode, name) in [
-                        (CameraMode::Avatar, "Follow (third-person)"),
-                        (CameraMode::Free, "Fly (free camera)"),
-                        (CameraMode::Orbit, "Earth (orbit the globe)"),
-                    ] {
-                        // Follow needs an avatar (logged-in viewer only).
-                        let enabled = has_avatar || mode != CameraMode::Avatar;
-                        let mut clicked = false;
-                        ui.add_enabled_ui(enabled, |ui| {
-                            clicked = ui
-                                .selectable_label(camera_state.mode == mode, name)
-                                .clicked();
-                        });
-                        if clicked {
-                            pick = Some(mode);
-                        }
-                    }
-                    // One-click jump to an orbit that frames the whole planet.
-                    let mut whole_earth = false;
-                    if globe.ready {
-                        ui.separator();
-                        if ui.button("🌍 View Whole Earth").clicked() {
-                            whole_earth = true;
-                        }
-                    }
-                    if let Some(mode) = pick {
-                        // Same entry behaviour as the Tab cycle (restore/seed per mode).
-                        crate::systems::free_camera::enter_mode(&mut camera_state, mode);
-                        camera_state.mode = mode;
-                        ui.close();
-                    }
-                    if whole_earth {
-                        use bevy::math::DVec3;
-                        let cs = &mut *camera_state;
-                        cs.mode = CameraMode::Orbit;
-                        cs.orbit_initialized = true;
-                        cs.orbit_has_pose = true;
-                        cs.orbit_space = true;
-                        cs.orbit_focus = DVec3::ZERO;
-                        cs.orbit_distance = globe.radius as f64 * 3.0;
-                        cs.orbit_distance_target = cs.orbit_distance;
-                        // Over the anchor, slightly north-east; heading 0 so the
-                        // view arrives north-up (free_camera derives the up vector
-                        // from the planet's north axis and this heading).
-                        cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
-                        cs.orbit_heading = 0.0;
-                        ui.close();
-                    }
-                });
+                nav.go_back();
             }
-            // Top-level toggles, like a browser's sidebar buttons.
-            if ui.button("Layers").clicked() {
-                layers.panel_open = !layers.panel_open;
+            if ui
+                .add_enabled(nav.can_go_forward(), egui::Button::new("▶"))
+                .on_hover_text("Forward to the next location")
+                .on_disabled_hover_text("No next location")
+                .clicked()
+            {
+                nav.go_forward();
             }
-            if ui.button("Bookmarks").clicked() {
-                bookmarks.panel_open = !bookmarks.panel_open;
+            // Home button, browser-style, beside the address/search bar: jump to
+            // the user's saved Home location (set via the status panel's 🏠
+            // button). Disabled until a Home has been saved.
+            let home = store.data.home.clone();
+            let resp = ui
+                .add_enabled(home.is_some(), egui::Button::new("🏠"))
+                .on_hover_text("Go to your Home location")
+                .on_disabled_hover_text("No Home set — use the 🏠 button in the status panel");
+            if resp.clicked() {
+                if let Some(h) = &home {
+                    nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
+                        lat: h.lat,
+                        lng: h.lng,
+                        altitude: Some(h.altitude),
+                        pose: Some(h.pose.clone()),
+                    });
+                }
             }
             ui.separator();
             // Browser-style geo search: place names via Nominatim, or pasted
             // "lat, lng(, altitude)" coordinates.
             crate::systems::geo_nav::nav_bar_ui(ui, &mut nav);
         });
+        });
+    });
+}
+
+/// Camera-mode picker for the bottom bar (Follow / Fly / Earth, plus a one-click
+/// "View Whole Earth"). Moved out of the top bar so it can auto-hide; the mode
+/// is also Tab-cyclable. Follow needs an avatar (logged-in viewer only).
+pub fn camera_picker_ui(
+    ui: &mut egui::Ui,
+    camera_state: &mut crate::resources::CameraState,
+    has_avatar: bool,
+    globe: &crate::systems::globe::GlobeState,
+) {
+    use crate::resources::CameraMode;
+    let label = match camera_state.mode {
+        CameraMode::Avatar => "📷 Follow",
+        CameraMode::Free => "📷 Fly",
+        CameraMode::Orbit => "📷 Earth",
+    };
+    ui.menu_button(label, |ui| {
+        let mut pick: Option<CameraMode> = None;
+        for (mode, name) in [
+            (CameraMode::Avatar, "Follow (third-person)"),
+            (CameraMode::Free, "Fly (free camera)"),
+            (CameraMode::Orbit, "Earth (orbit the globe)"),
+        ] {
+            let enabled = has_avatar || mode != CameraMode::Avatar;
+            let mut clicked = false;
+            ui.add_enabled_ui(enabled, |ui| {
+                clicked = ui
+                    .selectable_label(camera_state.mode == mode, name)
+                    .clicked();
+            });
+            if clicked {
+                pick = Some(mode);
+            }
+        }
+        // One-click jump to an orbit that frames the whole planet.
+        let mut whole_earth = false;
+        if globe.ready {
+            ui.separator();
+            if ui.button("🌍 View Whole Earth").clicked() {
+                whole_earth = true;
+            }
+        }
+        if let Some(mode) = pick {
+            // Same entry behaviour as the Tab cycle (restore/seed per mode).
+            crate::systems::free_camera::enter_mode(camera_state, mode);
+            camera_state.mode = mode;
+            ui.close();
+        }
+        if whole_earth {
+            use bevy::math::DVec3;
+            let cs = &mut *camera_state;
+            cs.mode = CameraMode::Orbit;
+            cs.orbit_initialized = true;
+            cs.orbit_has_pose = true;
+            cs.orbit_space = true;
+            cs.orbit_focus = DVec3::ZERO;
+            cs.orbit_distance = globe.radius as f64 * 3.0;
+            cs.orbit_distance_target = cs.orbit_distance;
+            // Over the anchor, slightly north-east; heading 0 so the view arrives
+            // north-up (free_camera derives the up vector from the planet's north
+            // axis and this heading).
+            cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
+            cs.orbit_heading = 0.0;
+            ui.close();
+        }
     });
 }
 
 /// Toggle the AI panel with Ctrl+Shift+A.
 pub fn toggle_ai_panel_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut ai_state: ResMut<AiAssistantState>,
+    mut right_panel: ResMut<RightPanel>,
 ) {
     let ctrl =
         keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     let shift =
         keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     if ctrl && shift && keyboard.just_pressed(KeyCode::KeyA) {
-        ai_state.open = !ai_state.open;
+        right_panel.toggle(RightPanel::Assistant);
     }
 }
 
@@ -349,25 +404,32 @@ pub fn render_avatar_chooser(
     mut egui: ResMut<EguiManager>,
     mut chooser: ResMut<crate::resources::AvatarChooserState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
+    mut right_panel: ResMut<RightPanel>,
 ) {
     use crate::systems::avatar::{accessory_styles_for, styles_for};
     use crate::systems::user_store::AvatarSex;
-    if !chooser.open {
-        return;
-    }
-    // Seed the draft from the saved appearance the first time the window opens.
-    if !chooser.seeded {
+    let mut is_open = right_panel.is(RightPanel::Appearance);
+    // Seed the draft from the saved appearance the first time the panel opens.
+    if is_open && !chooser.seeded {
         chooser.draft = store.data.appearance.clone();
         chooser.seeded = true;
     }
     let saved = store.data.appearance.clone();
-    let ctx = egui.ctx_mut();
-    let mut open = true;
     let mut apply = false;
-    egui::Window::new("Choose Avatar")
-        .open(&mut open)
-        .default_width(260.0)
-        .show(ctx, |ui| {
+    let mut close = false;
+    egui::Panel::right("appearance_panel")
+        .resizable(true)
+        .default_size(280.0)
+        .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Appearance");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("✕").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.separator();
             let d = &mut chooser.draft;
             ui.label("Body");
             ui.horizontal(|ui| {
@@ -445,8 +507,9 @@ pub fn render_avatar_chooser(
         store.data.appearance = chooser.draft.clone();
         store.dirty = true;
     }
-    if !open && chooser.open {
-        chooser.open = false;
+    if close {
+        *right_panel = RightPanel::None;
+        chooser.seeded = false;
     }
 }
 

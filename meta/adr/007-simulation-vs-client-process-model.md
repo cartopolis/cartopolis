@@ -27,6 +27,7 @@ Split into **simulation** (headless, authoritative state, DB writer) and **clien
 
 - **`vibe_sim`**: Tokio; fixed-tick loop; loads config (ADR-014); owns network listen; applies intents; persists via ADR-013.
 - **`viberfox`** (Bevy client): **offline by default** (local SQLite); `--connect host:port` switches to online — connect to sim, spawn entities from snapshots, send intent.
+  - **Update (2026, ADR-016/031):** the default is now **solo** — an in-process `vibe_sim` on loopback reached through the authenticated online path, so the client is server-authoritative in every mode. `--connect host:port` = external sim; `--offline` = no sim at all (single user, no auth). The old client-side local-SQLite world was removed (no `Database`/`db/` on the client); persistence lives only in `vibe_sim`.
 - **Shared `vibe_core`**: types, coordinate model (ADR-006), protocol codec (ADR-008/009), region/prim DTOs.
 
 Both binaries use **`tracing`** for structured logs (ADR-014).

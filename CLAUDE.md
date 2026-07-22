@@ -50,9 +50,14 @@ hand (`crates/viberfox/src/systems/shot_harness.rs`):
 cargo run -p viberfox --profile dev-bevy -- \
     --shot /tmp/shot.png --at 53.2194,6.5665,180000 --look=-90,0
 
-# an altitude sweep in ONE launch → /tmp/sweep_60000m.png, /tmp/sweep_1000000m.png, …
+# an altitude sweep in ONE launch → /tmp/sweep_0_60000m.png, /tmp/sweep_1_1000000m.png, …
 cargo run -p viberfox --profile dev-bevy -- --shot /tmp/sweep.png \
     --at 53.2194,6.5665,60000 --at 53.2194,6.5665,1000000 --look=-90,0
+
+# a 24-frame flythrough between two --at, with the ramp scalars logged to CSV
+cargo run -p viberfox --profile dev-bevy -- --shot /tmp/fly.png \
+    --at 53.2194,6.5665,2000 --at 53.2194,6.5665,4000000 --frames 24 \
+    --look=-90,0 --csv /tmp/ramps.csv
 ```
 
 `--look` takes `pitch,yaw` in degrees and pairs with `--at` by position (note the
@@ -70,6 +75,24 @@ self-documenting); `--hide-ui` omits it. Scripted runs never read or write
 `--time HOURS` / `--fog DENSITY` (seed the day-night and fog state — how the
 lighting curves get A/B'd: `--time 6` for dawn, `--time 18 --fog 0` to tell a
 washed-out sky apart from a washed-out fog).
+
+**Sweeps and metrics (the transition/introspection layer).** Every capture also
+measures a `ShotMetrics` — altitude, tier, the altitude-driven crossfade scalars
+(`space_factor`, exposure, bloom, `globe_albedo`), near/far, and the globe mesh
+tally — from one source into three sinks: the `shot state` log line (always),
+`--csv PATH` (one row per capture), and `--dump-state PATH` (the full metrics as
+JSON — a bare object for a single shot, an array for a sweep). A new inspectable
+fact is one field on `ShotMetrics` (`shot_harness.rs`) and it appears in all three
+at once — this is the "inspect the settled world from a shell without a recompile
+per question" path. `--frames N` (needs ≥2 `--at`) interpolates N viewpoints along
+the waypoint polyline (**altitude log-interpolated**, so samples aren't all bunched
+in space; lat/lng/look linear) instead of one capture per `--at`; sweep PNGs are
+index- **and** altitude-tagged (`fly_00_2000m.png`) so the filmstrip sorts in
+flight order. Pair `--frames` with `--csv` to catch a **hard cut in a ramp**: a
+jump between adjacent rows of the `space_factor` / `exposure` / `bloom` /
+`globe_albedo` columns is a seam a single still can't reveal. The metrics report
+*actual* camera state (e.g. the placed altitude after the teleport snaps it), not
+the requested `--at` — which is the point.
 
 With no window, `--size` *is* the screen: `resources::HeadlessSurface` stands in
 for the primary `Window` so egui has something to lay out and scissor against
@@ -96,11 +119,11 @@ This is a **Cargo workspace** with four crates:
 ### Client (`viberfox`) — Bevy ECS layout
 
 - **`components.rs`** — Bevy `Component` types: `Region`, `Prim`, `Avatar`, `RemoteAvatar`, `Selected`, etc.
-- **`resources.rs`** — Bevy `Resource` types: `Database`, `GameState`, `AvatarState`, `CameraState`, `ContextMenuState`, `EditDialogState`, `MouseState`, `OsmTileUrlTemplate`, `ConnectAddr`
+- **`resources.rs`** — Bevy `Resource` types: `GameState`, `AvatarState`, `CameraState`, `ContextMenuState`, `EditDialogState`, `MouseState`, `OsmTileUrlTemplate`, `ConnectAddr`
 - **`systems/`** — one file per concern, all registered in `main.rs`:
   - `avatar` — movement, animation, remote avatar interpolation
   - `camera` / `free_camera` — orbit camera, mode toggle
-  - `database` — local SQLite load of regions/prims (offline mode)
+  - `collision` — avatar↔building collision (footprint index; walk-block + teleport eject)
   - `network` — TCP connection to `vibe_sim`, snapshot apply, intent send
   - `rendering` — spawn/update Bevy meshes for regions and prims
   - `tile_loader` — async OSM tile fetch → region texture
@@ -108,9 +131,8 @@ This is a **Cargo workspace** with four crates:
   - `ui` — egui context menu + prim edit dialog
   - `gizmo` — transform gizmo toolbar and drag interaction
   - `egui_manager` — custom `EguiPlugin` (wraps `egui-wgpu`); renders egui as the `egui_pass` **system** in the `Core3d` render schedule (Bevy 0.19's schedule-based render graph replaced the old `ViewNode`/render-graph API), drawing onto the post-upscaling sRGB output. Panels use a shared root `Ui` (egui 0.35 shows panels inside a `Ui`, not the `Context`).
-- **`db/`** — local SQLite schema init (client-side offline mode only)
 
-**Online vs offline mode:** the client runs in offline mode (local SQLite) by default. Pass `--connect <host:port>` to connect to `vibe_sim`; this replaces the `Database` resource with a network snapshot path.
+**Run modes (`main.rs`, ADR-016/031):** the client is **server-authoritative** — the avatar and prims live in `vibe_sim` and are replicated over the wire; the client sends `ClientIntent` (a walk-velocity wish + fly flags) and applies `WorldSnapshot`s. The **default is solo**: an in-process `vibe_sim` on loopback (the `solo` feature in `crates/viberfox/src/solo.rs`), reached through the same authenticated path an external sim uses. `--connect <host:port>` connects to an **external** sim (split mode) instead. `--offline` (implied by `--shot`) runs **no sim at all** — single user, no auth, no world persistence; only the streamed OSM/3DBAG map and a local avatar move under client control. There is **no client-side database** anymore: the old local-SQLite path (`db/`, `systems/database.rs`, the `Database` resource) was removed. Persistence and world authority live in `vibe_sim` (`data/world.db`).
 
 ### Server (`vibe_sim`) — async Tokio
 
@@ -163,8 +185,9 @@ New ADR checklist: copy `meta/adr/template.md`, set `Aligns with: G-*, P-*`, add
 - **Avatar standing height comes from THREE places, all fox-tuned to 0.45 originally** — fixed to feet-on-ground (`GROUND_HEIGHT` = 0.05): `vibe_sim::state` spawn y (online), `avatar::handle_avatar_movement` gravity clamp (offline), and `geo_nav::AVATAR_GROUND_Y` (teleport / location restore). The teleport one was the sneaky one — it re-plants the avatar on every geo-nav and at startup. The models are origin-at-feet, so 0.45 (= ground + half fox height) floated them. Each present scene spawns as its own child "holder" entity so a per-scene `WorldInstanceReady` observer binds only its own skeleton; all holders play the same `AnimationGraph`, so body and clothing move in lockstep. The head/skull is welded into the base body's full-body mesh (only a thin `Face` surface is separate), so you can't graft a head-only onto an outfit — it's whole-base-body or nothing.
 - **`ui_owns_keyboard` must gate on `ctx.text_edit_focused()`, not `egui_wants_keyboard_input()`.** The latter is `memory.focused().is_some()` — true whenever *any* widget (a button, a selectable in the avatar chooser) holds focus, which silently swallowed avatar WASD **and** the Space/Shift fly keys until you clicked empty space. Only real text entry (search bar, rename) should yield the keyboard.
 - **Avatar standing height is y=0 (feet on the ground).** The Quaternius models are authored origin-at-feet, so `vibe_sim` spawns the avatar at `start` (not the old `+1.0`, which floated the humanoids a metre up — that offset only ever suited the fox, whose origin is its centre). The follow camera looks at `avatar_pos + 1.5·Y` (≈ chest of a 1.8 m avatar).
+- **Avatar↔building collision is client-side prediction, not server physics** (`systems/collision.rs`). The sim (`vibe_sim`) is authoritative for avatar position but has **no building geometry** — OSM/3DBAG footprints stream only on the client. So both building streamers publish 2D footprint polygons into the `BuildingColliders` resource in the anchored world-XZ frame (`osm_buildings` = exact detail-patch rings; `lod22` = a convex hull of each 3DBAG building's projected vertices, since only a triangle soup survives there — cleared/rebuilt per cell and on re-anchor). Collision then acts on whichever channel owns movement in the current run mode: **solo/split (server-authoritative)** steer the *velocity wish* in `network::send_network_intent` (`steer_velocity` slides along walls and auto-walks a trapped avatar out — a snap-eject can't work there, the next snapshot would overwrite the transform); **`--offline`** moves the transform directly in `avatar::handle_avatar_movement` (`slide`) with `collision::eject_avatar_from_buildings` as a snap-out backstop. Gated on `DataLayers::buildings_enabled` (collision matches what's drawn) and skipped while flying. `avatar_state.position.xz` is the avatar's absolute world-XZ (the avatar sits near origin and the world re-anchors around it), so it compares directly against the footprints.
 - **`bind_external_animations` (avatar Case 2) is the fallback for a scene with no embedded clips** — it roots an `AnimationPlayer` on the `Armature` node and hashes each bone's name-path into the `AnimationTargetId` `bevy_gltf` would have assigned, so clips from a *separate* glTF (matching skeleton) bind and play. Currently unexercised (the Ultimate Modular characters all embed their own clips → Case 1), but kept for future modular content on a shared rig.
 - **`--shot-mode avatar` frames the avatar (the way to check avatars).** Free/earth shot modes put the camera at `--at` while the avatar sits at the map anchor — they usually don't coincide, so the avatar is off-screen (this caused a lot of "the avatar isn't rendering" confusion when it was fine, just elsewhere). In avatar mode `place_camera` puts the follow camera on the avatar: `--at` altitude = follow distance, `--look` = (elevation°, azimuth°). Use it at scale 1.0 instead of giant-scaling to hunt the avatar in a free-cam shot.
 - **Wayland + GLES flicker:** force Vulkan with `WGPU_BACKEND=vulkan cargo run -p viberfox`.
-- **Database migrations:** copy `data/regions.db` before schema upgrades; `refinery` migrations run automatically on `vibe_sim` startup (ADR-013).
+- **Database migrations:** copy `data/world.db` before schema upgrades; `refinery` migrations run automatically on `vibe_sim` startup (ADR-013).
 - **`fast-dev` feature** uses Bevy dynamic linking — never use it for `--release` or distributable binaries.

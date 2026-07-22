@@ -409,6 +409,7 @@ pub fn update_buildings(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
+    mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -431,6 +432,7 @@ pub fn update_buildings(
         osm.far_requested.clear();
         osm.far_failed.clear();
         osm.buildings.clear();
+        colliders.clear_detail();
         osm.last_center = None;
         osm.last_fetch = None;
         osm.in_flight = false;
@@ -743,6 +745,22 @@ pub fn update_buildings(
     let patch_cell = patch.patch_cell;
     let count = patch.buildings.len();
     osm.buildings = patch.buildings; // retain footprints for future per-building conversion
+    // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
+    // collision. `ax/ay/z/tile_m` are the anchor established above, so these land
+    // in the same frame as the avatar's absolute position.
+    let detail_fps = osm
+        .buildings
+        .iter()
+        .filter_map(|b| {
+            let ring: Vec<Vec2> = b
+                .ring
+                .iter()
+                .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                .collect();
+            crate::systems::collision::Footprint::new(ring)
+        })
+        .collect();
+    colliders.set_detail(detail_fps);
     spawn_detail_patch(
         &mut commands,
         &mut meshes,

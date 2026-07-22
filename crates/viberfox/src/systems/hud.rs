@@ -52,6 +52,8 @@ pub struct HudData {
     pub heading: Option<f32>,
     /// Show the copy button's "just copied" ✔ state.
     pub copied: bool,
+    /// Show the Set Home button's "just set" ✔ state.
+    pub home_set: bool,
     /// Authenticated username, if online (ADR-016). Drives the profile chip;
     /// grows into a chat/presence affordance later.
     pub user: Option<String>,
@@ -62,6 +64,8 @@ pub struct HudData {
 pub struct HudActions {
     pub copy: bool,
     pub bookmark: bool,
+    /// User clicked Set Home (save the current spot + view as Home).
+    pub set_home: bool,
     /// User clicked the Local/UTC clock toggle.
     pub toggle_utc: bool,
     /// User picked a new sun mode from the Auto/Day/Night switcher.
@@ -312,6 +316,15 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         if data.geo.is_some() && data.altitude.is_some() {
                             ui.horizontal(|ui| {
                                 if ui
+                                    .add(egui::Button::new(if data.home_set { "✔" } else { "🏠" }))
+                                    .on_hover_text(
+                                        "Set Home (the nav bar's Home button returns here)",
+                                    )
+                                    .clicked()
+                                {
+                                    actions.set_home = true;
+                                }
+                                if ui
                                     .add(egui::Button::new(if data.copied { "✔" } else { "⧉" }))
                                     .on_hover_text(
                                         "Copy location (paste in the search bar to return)",
@@ -389,6 +402,7 @@ pub fn render_hud(
     identity: Res<crate::resources::AuthIdentity>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
+    mut home_set_at: Local<Option<Instant>>,
 ) {
     let ((h, m, s), is_local) = clock.hms();
     let cam = camera.single().ok();
@@ -428,6 +442,7 @@ pub fn render_hud(
             }
         }),
         copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
+        home_set: home_set_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
         user: identity.username.clone(),
     };
 
@@ -466,6 +481,13 @@ pub fn render_hud(
             let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
             bookmarks.request_address(id, lat, lng);
             bookmarks.panel_open = true;
+        }
+    }
+    if actions.set_home {
+        if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
+            // Capture the current view so Home returns to it exactly.
+            store.set_home(lat, lng, alt, CameraPose::capture(&camera_state));
+            *home_set_at = Some(Instant::now());
         }
     }
     if actions.toggle_utc {
@@ -537,6 +559,7 @@ mod tests {
             altitude: Some(17.0),
             heading: Some(247.0),
             copied: false,
+            home_set: false,
             user: Some("dev".to_string()),
         };
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1323.0, 819.0));
@@ -559,7 +582,7 @@ mod tests {
                 egui::Panel::right("bookmarks_panel")
                     .default_size(280.0)
                     .show(ui, |ui| {
-                        ui.heading("Bookmarks");
+                        ui.heading("Places");
                     });
                 hud_area(&ui.ctx().clone(), &data);
             });

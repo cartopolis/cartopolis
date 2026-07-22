@@ -77,8 +77,9 @@ struct Bldg {
     t: Vec<(usize, usize, usize, u8)>,
 }
 
-/// A built cell: its BigSpace grid cell and the merged mesh.
-type Lod22Build = (GridCell, Mesh);
+/// A built cell: its BigSpace grid cell, the merged mesh, and one footprint
+/// polygon per building (world-XZ, for avatar collision).
+type Lod22Build = (GridCell, Mesh, Vec<crate::systems::collision::Footprint>);
 
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
 /// streamer: a worker builds one cell at a time; cells are kept while in range.
@@ -118,6 +119,7 @@ pub fn update_lod22(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<GlobeState>,
+    mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -130,6 +132,7 @@ pub fn update_lod22(
         for (_, e) in lod.cells.drain() {
             commands.entity(e).despawn();
         }
+        colliders.clear_lod22();
         lod.no_shadow.clear();
         lod.requested.clear();
         lod.failed.clear();
@@ -219,7 +222,8 @@ pub fn update_lod22(
         .unwrap_or_default();
     for (c, built) in done {
         match built {
-            Ok(Some((grid_cell, mesh))) => {
+            Ok(Some((grid_cell, mesh, footprints))) => {
+                colliders.set_cell(c, footprints);
                 let material = lod
                     .material
                     .get_or_insert_with(|| {
@@ -272,6 +276,7 @@ pub fn update_lod22(
         if let Some(e) = lod.cells.remove(&c) {
             commands.entity(e).despawn();
         }
+        colliders.remove_cell(c);
         lod.no_shadow.remove(&c);
         lod.requested.remove(&c);
     }
@@ -321,6 +326,8 @@ fn build_lod22_cell(
     // a dense cell ballooned to three unshared vertices per triangle (~720k for a
     // ~240k-triangle cell) behind a useless identity index buffer.
     let mut buf = MeshData::with_dedup();
+    // One footprint polygon per building, in world XZ (for avatar collision).
+    let mut footprints: Vec<crate::systems::collision::Footprint> = Vec::new();
     for b in &elements {
         // The server bins each building to the cell owning its first vertex; keep
         // the same half-open ownership so a cross-edge building renders once.
@@ -333,13 +340,24 @@ fn build_lod22_cell(
         let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], 1.0];
         let flat = [FLAT_ROOF_COLOR[0], FLAT_ROOF_COLOR[1], FLAT_ROOF_COLOR[2], 1.0];
 
+        // World-XZ position of each vertex (before the cell offset); the hull of
+        // these is the building's footprint no-go polygon.
+        let world_xz: Vec<Vec2> = b
+            .p
+            .iter()
+            .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+            .collect();
+        if let Some(fp) = crate::systems::collision::Footprint::new(
+            crate::systems::collision::convex_hull_xz(world_xz.clone()),
+        ) {
+            footprints.push(fp);
+        }
+
         let local: Vec<Vec3> = b
             .p
             .iter()
-            .map(|&(la, lo, h)| {
-                let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
-                Vec3::new(w.x - ox, h, w.y - oz)
-            })
+            .zip(&world_xz)
+            .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h, w.y - oz))
             .collect();
         for &(i, j, k, is_roof) in &b.t {
             let (a, bb, c) = (local[i], local[j], local[k]);
@@ -356,7 +374,7 @@ fn build_lod22_cell(
             buf.tri(a, bb, c, color);
         }
     }
-    Ok(buf.into_mesh().map(|m| (grid_cell, m)))
+    Ok(buf.into_mesh().map(|m| (grid_cell, m, footprints)))
 }
 
 /// On-disk cache path for a LoD2.2 cell (its own namespace).

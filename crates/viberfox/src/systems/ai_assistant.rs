@@ -263,22 +263,20 @@ pub fn render_ai_panel(
     mut egui: ResMut<EguiManager>,
     mut state: ResMut<AiAssistantState>,
     config: Res<AiConfig>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
 ) {
-    if !state.open {
-        // Opened via the View menu (View ▸ Show AI Panel) or Ctrl+Shift+A.
-        return;
-    }
+    let mut open = right_panel.is(crate::resources::RightPanel::Assistant);
 
     egui::Panel::right("ai_panel")
         .resizable(true)
         .default_size(320.0)
-        .show(egui.ui_mut(), |ui| {
+        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             // Header
             ui.horizontal(|ui| {
                 ui.heading("AI Assistant");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("✕").clicked() {
-                        state.open = false;
+                        *right_panel = crate::resources::RightPanel::None;
                     }
                 });
             });

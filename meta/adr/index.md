@@ -29,7 +29,8 @@
 | [025](./025-planetary-globe-and-space-tier.md) | Planetary Globe and Space Tier | Accepted | rendering, coordinates, globe, osm, large-world, camera |
 | [026](./026-live-transit-vehicles.md) | Live Transit Vehicle Positions (OVapi GTFS-Realtime) | Accepted | data-layers, transit, live-data, rendering, gtfs-rt |
 | [027](./027-3dbag-buildings.md) | Self-Hosted 3DBAG Buildings for Covered Areas | Accepted | buildings, osm, 3dbag, rendering, import, dependency, ops |
-| [028](./028-proximity-chat.md) | Proximity Chat with Place-Derived Channels | Proposed | chat, social, geo, places, protocol, networking, privacy, persistence |
+| [028](./028-proximity-chat.md) | Proximity Chat with Place-Derived Channels | Accepted | chat, social, geo, places, protocol, networking, privacy, persistence |
 | [029](./029-geo-anchored-prim-storage.md) | Geo-Anchored Prim Storage | Proposed | prims, coordinates, storage, protocol, precision, large-world, persistence |
 | [030](./030-platform-capability-model.md) | Platform Capability Model (Substitutable Providers + Additive Plugins) | Proposed | architecture, platform, wasm, web, capabilities, portability, plugins |
 | [031](./031-layered-access-model.md) | Layered Access Model (Anonymous Viewer → Login → ACL Layers) | Proposed | architecture, layers, session, auth, authz, acl, viewer, entitlements |
+| [032](./032-global-cloud-cover-data.md) | Global Cloud Cover from GFS (Real Weather Driving Procedural Clouds) | Accepted | rendering, globe, weather, live-data, dependency, clouds |

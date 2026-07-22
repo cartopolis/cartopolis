@@ -25,6 +25,11 @@ const AUTOSAVE_INTERVAL: f32 = 5.0;
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct UserData {
     pub last_location: Option<SavedLocation>,
+    /// The user's Home location — set from the status panel's Set Home button
+    /// and jumped to by the nav bar's Home button. Camera pose included (like a
+    /// bookmark) so Home returns to the exact view, not just the spot.
+    #[serde(default)]
+    pub home: Option<SavedLocation>,
     pub bookmarks: Vec<Bookmark>,
     /// ADR-016: session tokens keyed by server address, so an external sim only
     /// asks for a password once. Not stored for solo mode (ephemeral port).
@@ -218,6 +223,13 @@ impl UserStore {
             .push(Bookmark { id, name, lat, lng, altitude, pose });
         self.dirty = true;
         id
+    }
+
+    /// Set (or replace) the Home location — the spot the nav bar's Home button
+    /// returns to. Pose included so Home restores the exact view.
+    pub fn set_home(&mut self, lat: f64, lng: f64, altitude: f64, pose: CameraPose) {
+        self.data.home = Some(SavedLocation { lat, lng, altitude, pose });
+        self.dirty = true;
     }
 }
 

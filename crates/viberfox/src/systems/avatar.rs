@@ -220,6 +220,11 @@ fn avatar_asset_exists(scene_rel: &str) -> bool {
 
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
 const ONLINE_DISPLAY_SMOOTHING: f32 = 14.0;
+/// Online prediction reconcile rate: how quickly the locally-predicted display
+/// position is corrected toward the authoritative sim position. Since prediction
+/// integrates the same velocity the sim does, the residual error is small, so
+/// this can be brisk without the tick-rate pulsing the old ease-to-latest had.
+const ONLINE_RECONCILE_RATE: f32 = 9.0;
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
@@ -694,8 +699,22 @@ pub fn smooth_online_avatar_display(
 ) {
     let dt = time.delta_secs();
     if online.is_some() {
-        let alpha = 1.0 - (-ONLINE_DISPLAY_SMOOTHING * dt).exp();
-        avatar_state.display_position = avatar_state.display_position.lerp(avatar_state.position, alpha);
+        // Client-side prediction: advance the display by the velocity we're
+        // sending to the sim (frame-rate integration), then reconcile gently
+        // toward the authoritative position. The sim only reports position at
+        // 20 Hz; easing straight toward that coarse target (the old behaviour)
+        // decelerated between snapshots and pulsed — worst flying straight up.
+        // Reconciliation still corrects any drift, ground clamp, or server-side
+        // difference. `predicted_velocity` already reflects collision steering.
+        let target = avatar_state.position;
+        let mut display = avatar_state.display_position + avatar_state.predicted_velocity * dt;
+        // Match the sim's ground clamp (`state::step`, y >= 0) so a fly-down
+        // prediction doesn't dip through the floor and bounce back.
+        if display.y < 0.0 {
+            display.y = 0.0;
+        }
+        let reconcile = 1.0 - (-ONLINE_RECONCILE_RATE * dt).exp();
+        avatar_state.display_position = display.lerp(target, reconcile);
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }
@@ -708,11 +727,13 @@ pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut avatar_query: Query<&mut Transform, With<Avatar>>,
+    mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
     camera_state: Res<crate::resources::CameraState>,
     egui_manager: Res<crate::systems::egui_manager::EguiManager>,
     edit_dialog: Res<crate::resources::EditDialogState>,
+    colliders: Res<crate::systems::collision::BuildingColliders>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
 ) {
     // Don't move avatar unless the follow camera is active (Free and Earth
     // modes decouple the camera from the avatar).
@@ -730,7 +751,7 @@ pub fn handle_avatar_movement(
         return;
     }
 
-    let Ok(mut transform) = avatar_query.single_mut() else {
+    let Ok((mut transform, grid_cell)) = avatar_query.single_mut() else {
         return;
     };
     let delta_time = time.delta().as_secs_f32();
@@ -781,8 +802,23 @@ pub fn handle_avatar_movement(
     if wish.length_squared() > 1e-8 {
         let speed = if avatar_state.is_flying { FLY_SPEED } else { WALK_SPEED };
         let delta = wish * speed * delta_time;
-        transform.translation.x += delta.x;
-        transform.translation.z += delta.z;
+        // Collide against buildings while walking (flying passes over roofs) when
+        // the buildings layer is on. Footprints live in the anchored world-XZ
+        // frame, so resolve the move in absolute metres (cell + local).
+        if !avatar_state.is_flying && layers.buildings_enabled && !colliders.is_empty() {
+            use crate::systems::free_camera::WORLD_CELL_EDGE;
+            let base = Vec2::new(
+                grid_cell.x as f32 * WORLD_CELL_EDGE,
+                grid_cell.z as f32 * WORLD_CELL_EDGE,
+            );
+            let from = base + Vec2::new(transform.translation.x, transform.translation.z);
+            let resolved = colliders.slide(from, from + Vec2::new(delta.x, delta.z));
+            transform.translation.x = resolved.x - base.x;
+            transform.translation.z = resolved.y - base.y;
+        } else {
+            transform.translation.x += delta.x;
+            transform.translation.z += delta.z;
+        }
         avatar_state.is_walking = true;
     } else {
         avatar_state.is_walking = false;

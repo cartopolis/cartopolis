@@ -27,7 +27,7 @@ fn default_listen() -> String {
 }
 
 fn default_db() -> String {
-    "data/regions.db".into()
+    "data/world.db".into()
 }
 
 fn default_tick_hz() -> f32 {

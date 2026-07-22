@@ -72,6 +72,23 @@ fn fbm(p: vec2<f32>) -> f32 {
     return v / norm;
 }
 
+// Cheap 3-octave version used only to build the lighting normal (the gradient
+// wants the large-scale cloud shape, not fine detail — and it costs four extra
+// samples per pixel, so keep them light on the iGPU).
+fn fbm_lo(p: vec2<f32>) -> f32 {
+    var v = 0.0;
+    var amp = 0.5;
+    var norm = 0.0;
+    var q = p;
+    for (var i = 0; i < 3; i = i + 1) {
+        v += amp * value_noise(q);
+        norm += amp;
+        q = q * 2.03 + vec2<f32>(37.1, 17.3);
+        amp *= 0.55;
+    }
+    return v / norm;
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dir = normalize(in.world_position.xyz - view.world_position.xyz);
@@ -105,13 +122,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Cheap self-shadow: sample the field a step toward the sun; where that side
-    // is denser, this pixel sits under a taller column, so it reads shadowed.
-    let sun2d = normalize(sun_dir.xz + vec2<f32>(1e-4, 0.0));
-    let toward_sun = fbm(uv + sun2d * 0.09);
-    let lit = clamp((density - toward_sun) + 0.55, 0.0, 1.0);
-    // A touch darker toward the base of thick cloud for depth.
-    let col = mix(shadow_color.rgb, lit_color.rgb, lit * mix(0.7, 1.0, density));
+    // Directional sun lighting. Treat the cloud density as a height field and
+    // build a surface normal from its gradient (finite differences); tops facing
+    // the sun are bright, the far sides fall into shadow. This tracks the real sun
+    // direction AND elevation, so the deck is side-lit and warm at dawn/dusk and
+    // bright-topped at noon — unlike the old flat self-shadow tap, which collapsed
+    // to a single mid-tone whenever the sun was overhead (sun.xz ≈ 0).
+    let e = 0.02;
+    let hx = fbm_lo(uv + vec2<f32>(e, 0.0)) - fbm_lo(uv - vec2<f32>(e, 0.0));
+    let hy = fbm_lo(uv + vec2<f32>(0.0, e)) - fbm_lo(uv - vec2<f32>(0.0, e));
+    let n = normalize(vec3<f32>(-hx * 6.0, 1.0, -hy * 6.0));
+    let sun = normalize(sun_dir.xyz);
+    // Half-Lambert: clouds scatter light, so the shadowed side is dim, not black.
+    let ndl = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+    let shade = 0.28 + 0.72 * ndl;
+    // Thick cores read a touch fuller than the wispy edges.
+    let col = mix(shadow_color.rgb, lit_color.rgb, shade * mix(0.82, 1.0, density));
 
     return vec4<f32>(col, clamp(a, 0.0, 1.0));
 }

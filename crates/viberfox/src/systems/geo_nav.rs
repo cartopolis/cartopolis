@@ -100,6 +100,73 @@ pub struct GeoNavState {
     /// startup restore. Consumed by `apply_teleport` (kept until the world
     /// anchor exists).
     pub pending_teleport: Option<Teleport>,
+    /// Browser-style location history; `history[history_pos]` is where we are.
+    /// Every teleport that isn't itself a Back/Forward move truncates the
+    /// forward entries and appends the destination (see `apply_teleport`).
+    pub history: Vec<NavEntry>,
+    pub history_pos: usize,
+    /// The pending teleport is a Back/Forward move — `apply_teleport` must not
+    /// re-record it as a new visit.
+    from_history: bool,
+    /// The address bar should grab keyboard focus next frame (set by the top
+    /// bar's Ctrl+L shortcut, consumed in `nav_bar_ui`); also keeps the
+    /// auto-hiding top bar revealed until the field actually takes focus.
+    pub focus_search: bool,
+    /// The address bar currently holds keyboard focus — keeps the auto-hiding
+    /// top bar revealed while the user is typing a search (set in `nav_bar_ui`).
+    pub search_has_focus: bool,
+}
+
+impl GeoNavState {
+    /// Record a visited destination, browser-style: drop any forward history,
+    /// then append (skipping an exact duplicate of the current spot).
+    fn record_visit(&mut self, entry: NavEntry) {
+        if !self.history.is_empty() {
+            self.history.truncate(self.history_pos + 1);
+            if self
+                .history
+                .last()
+                .is_some_and(|e| e.lat == entry.lat && e.lng == entry.lng)
+            {
+                return; // same place — don't stack a duplicate
+            }
+        }
+        self.history.push(entry);
+        self.history_pos = self.history.len() - 1;
+    }
+
+    /// Whether Back / Forward have anywhere to go.
+    pub fn can_go_back(&self) -> bool {
+        self.history_pos > 0
+    }
+    pub fn can_go_forward(&self) -> bool {
+        self.history_pos + 1 < self.history.len()
+    }
+
+    /// Move the history cursor one step and queue a teleport to that entry,
+    /// flagged so it isn't recorded as a new visit.
+    pub fn go_back(&mut self) {
+        if self.can_go_back() {
+            self.history_pos -= 1;
+            self.queue_history_entry();
+        }
+    }
+    pub fn go_forward(&mut self) {
+        if self.can_go_forward() {
+            self.history_pos += 1;
+            self.queue_history_entry();
+        }
+    }
+    fn queue_history_entry(&mut self) {
+        let e = &self.history[self.history_pos];
+        self.pending_teleport = Some(Teleport {
+            lat: e.lat,
+            lng: e.lng,
+            altitude: Some(e.altitude),
+            pose: Some(e.pose.clone()),
+        });
+        self.from_history = true;
+    }
 }
 
 /// A pending teleport target consumed by [`apply_teleport`].
@@ -118,6 +185,16 @@ impl Teleport {
     pub fn geo(lat: f64, lng: f64, altitude: Option<f64>) -> Self {
         Self { lat, lng, altitude, pose: None }
     }
+}
+
+/// One visited location in the browser-style Back/Forward history. Records the
+/// resolved spot *and* the view, so revisiting it restores the exact framing.
+#[derive(Clone)]
+pub struct NavEntry {
+    pub lat: f64,
+    pub lng: f64,
+    pub altitude: f64,
+    pub pose: CameraPose,
 }
 
 /// A camera orientation snapshot, persisted with saved locations and bookmarks
@@ -207,6 +284,11 @@ impl Default for GeoNavState {
             force_search: false,
             results: Arc::new(Mutex::new(None)),
             pending_teleport: None,
+            history: Vec::new(),
+            history_pos: 0,
+            from_history: false,
+            focus_search: false,
+            search_has_focus: false,
         }
     }
 }
@@ -445,6 +527,12 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
             .margin(egui::Margin::symmetric(8, 6))
             .hint_text("Search place, or paste \"lat, lng\"…"),
     );
+    // Ctrl+L from the top bar asks the field to grab focus this frame.
+    if std::mem::take(&mut nav.focus_search) {
+        field.request_focus();
+    }
+    // Report focus so the auto-hiding top bar stays up while the user types.
+    nav.search_has_focus = field.has_focus();
     if nav.in_flight {
         ui.spinner();
     }
@@ -621,6 +709,9 @@ pub fn apply_teleport(
     if space_target && !globe.ready {
         return;
     }
+    // The altitude we'll record in history when the target carries none (a plain
+    // geo jump keeps the current altitude) — read before the camera moves.
+    let current_alt = cameras.single().ok().map(|(cell, tf)| globe.altitude_m(cell, tf));
     let tp = nav.pending_teleport.take().unwrap();
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
     // Restore the saved camera orientation first, so the placement below and
@@ -761,6 +852,16 @@ pub fn apply_teleport(
         }
     }
 
+    // Record the visit in the Back/Forward history — unless this teleport *was*
+    // a Back/Forward move (the cursor already points at it). The pose is
+    // captured after the arms above have settled the camera, so it restores the
+    // exact framing on a later revisit.
+    if !std::mem::take(&mut nav.from_history) {
+        let altitude = target_alt.or(current_alt).unwrap_or(MIN_TELEPORT_ALTITUDE);
+        let pose = CameraPose::capture(&camera_state);
+        nav.record_visit(NavEntry { lat, lng, altitude, pose });
+    }
+
     tracing::info!(lat, lng, "teleported to geo target");
 }
 
@@ -814,6 +915,57 @@ mod tests {
             (flat.1 - got.1).abs() > 5.0,
             "flat frame {flat:?} should disagree wildly with the sub-point {got:?}"
         );
+    }
+
+    #[test]
+    fn nav_history_back_forward() {
+        let mk = |lat: f64| NavEntry {
+            lat,
+            lng: 0.0,
+            altitude: 100.0,
+            pose: CameraPose::default(),
+        };
+        let mut nav = GeoNavState::default();
+        assert!(!nav.can_go_back() && !nav.can_go_forward());
+
+        nav.record_visit(mk(1.0));
+        assert!(!nav.can_go_back(), "one entry: nowhere to go back");
+        nav.record_visit(mk(2.0));
+        nav.record_visit(mk(3.0));
+        assert_eq!(nav.history_pos, 2);
+        assert!(nav.can_go_back() && !nav.can_go_forward());
+
+        // Back to 2.0 queues a flagged teleport (so it isn't re-recorded).
+        nav.go_back();
+        assert_eq!(nav.history_pos, 1);
+        assert!(nav.from_history);
+        assert_eq!(nav.pending_teleport.as_ref().unwrap().lat, 2.0);
+        assert!(nav.can_go_forward());
+
+        // Forward again to 3.0 (simulate apply_teleport clearing the flag).
+        nav.from_history = false;
+        nav.pending_teleport = None;
+        nav.go_forward();
+        assert_eq!(nav.history_pos, 2);
+        assert_eq!(nav.pending_teleport.as_ref().unwrap().lat, 3.0);
+        assert!(!nav.can_go_forward());
+
+        // Go back, then a fresh (non-history) visit truncates the forward tail
+        // (3.0) and appends — browser semantics.
+        nav.from_history = false;
+        nav.go_back(); // pos 1 → 2.0
+        nav.from_history = false; // a real teleport, not a history move
+        nav.record_visit(mk(9.0));
+        assert_eq!(
+            nav.history.iter().map(|e| e.lat).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 9.0]
+        );
+        assert_eq!(nav.history_pos, 2);
+        assert!(!nav.can_go_forward());
+
+        // Re-visiting the current spot is a no-op (no duplicate stacking).
+        nav.record_visit(mk(9.0));
+        assert_eq!(nav.history.len(), 3);
     }
 
     #[test]

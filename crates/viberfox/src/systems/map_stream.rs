@@ -21,7 +21,6 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::components::Region;
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::tile_loader::load_tile_image;
@@ -238,24 +237,25 @@ impl Default for MapStream {
 }
 
 /// Once a region exists, set the anchor and spawn the background fetch worker.
+/// Bootstrap map anchor when nothing else has set one (Groningen Grote Markt).
+/// `user_store` re-anchors to the last location on startup if one is saved.
+const DEFAULT_ANCHOR_LAT: f64 = 53.2194;
+const DEFAULT_ANCHOR_LNG: f64 = 6.5665;
+const DEFAULT_ANCHOR_ZOOM: u32 = 17;
+
 pub fn init_map_stream(
     mut stream: ResMut<MapStream>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    regions: Query<&Region>,
     tile_url: Res<OsmTileUrlTemplate>,
 ) {
     if stream.anchor.is_some() {
         return;
     }
-    let Some(region) = regions.iter().next() else {
-        return;
-    };
-    let z = region.tile_z.clamp(0, u32::MAX as i64) as u32;
-    // World origin = centre of the region tile (matches the region quad + buildings).
-    let (n_lat, w_lng) = tile_to_lat_lng(region.tile_x, region.tile_y, z);
-    let (s_lat, e_lng) = tile_to_lat_lng(region.tile_x + 1, region.tile_y + 1, z);
-    let clat = (n_lat + s_lat) / 2.0;
-    let clng = (w_lng + e_lng) / 2.0;
+    // Bootstrap anchor (movable, not region-derived): the map opens here, then
+    // `user_store` teleports a returning user to their last location, which
+    // re-anchors. Regions are retired (ADR-020/029), so there is no seed region
+    // to read a location from.
+    let (clat, clng, z) = (DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
     stream.anchor = Some((clat, clng, z));
     stream.current_zoom = z;
     stream.anchor_generation = stream.anchor_generation.wrapping_add(1);

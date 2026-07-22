@@ -96,6 +96,11 @@ impl SimWorld {
         self.avatars.remove(&id);
     }
 
+    /// Current position of an avatar (proximity chat, ADR-028).
+    pub fn avatar_position(&self, id: u64) -> Option<Vec3> {
+        self.avatars.get(&id).map(|a| a.position)
+    }
+
     pub fn set_observer(&mut self, p: Vec3) {
         self.observer = p;
     }

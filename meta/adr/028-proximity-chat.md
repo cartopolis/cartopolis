@@ -10,10 +10,20 @@
 - **Aligns with**: [G-03, G-04, P-01, P-02, P-07]
 - **Roadmap tier**: P2
 - **Doc resolution**: R1
-- **Related**: [ADR-009, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-021, ADR-023]
+- **Related**: [ADR-009, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-023, ADR-029, ADR-031]
 - **Supersedes**: []
 - **Superseded By**: []
 ---
+
+> **Tier (ADR-031).** Chat is a **Simulation-tier** feature: it requires a logged-in
+> session, alongside avatars and prims. The anonymous **Viewer** tier has no chat.
+>
+> **Implemented (protocol v11):** Local (proximity say/shout), Global, and Rooms —
+> `ChatSend`/`ChatMessage`/`ChatSubscribe` (kinds 17–19), `ChatHub` routing, per-scope
+> rate limits, SQLite scrollback for durable channels (migration V6), and the egui chat
+> panel. **Deferred to `vibe_geo`:** the geo tiers (country/province/municipality) and
+> avatar geo-authority on the sim — they slot in as extra channels behind the same
+> `resolve()` with no protocol change.
 
 ## Context
 
@@ -136,12 +146,12 @@ microseconds. The client never asserts membership; it is told.
 - **Linger**: on a real exit the previous channel stays subscribed read-only for
   ~60 s, so a conversation does not vanish mid-sentence.
 
-Positions today are cluster-local ENU (`Vec3`, ADR-021), so the sim converts via
-`TangentFrame` → `ecef_to_geodetic` (both already in `vibe_core::geo`) using the
-anchor from region 1. When globally-positioned assets land, that conversion step
-disappears and `resolve()` is called directly.
+Positions are geo-anchored (ADR-029): prims carry an absolute `f64` lat/lng, and
+avatar positions resolve to lat/lng the same way. The sim passes that coordinate
+straight to `resolve()` — no tangent-frame conversion, since the sim holds geo
+authority and has no anchor of its own.
 
-### Protocol (v8 → v9, ADR-009 envelope unchanged)
+### Protocol (adds kinds 17–19, bumps `PROTOCOL_VERSION`; ADR-009 envelope unchanged)
 
 ```rust
 enum ChatScope { Local { shout: bool }, Place(PlaceLevel), Global, Room(String) }
@@ -280,11 +290,12 @@ somewhere to land, and the client needs no per-country knowledge.
 
 ## Related
 
-- [ADR-009](./009-application-protocol-envelope-v0.md): Envelope reused unchanged; this bumps `PROTOCOL_VERSION` 8 → 9 and adds kinds 17–19.
+- [ADR-009](./009-application-protocol-envelope-v0.md): Envelope reused unchanged; this adds message kinds 17–19 and bumps `PROTOCOL_VERSION` (currently 10).
 - [ADR-012](./012-interest-management-and-osm-tiles.md): Tier 0 needs the same entity proximity query as observer AOI; one index should serve both.
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Scrollback writes go through the single server writer; this is also why a shared-SQLite chat bus was rejected.
 - [ADR-015](./015-workspace-module-boundaries.md): Adds the `vibe_geo` crate.
 - [ADR-016](./016-authentication-and-session-model-v0.md): Prerequisite for an ungated chat send path.
-- [ADR-021](./021-region-tessellation-flat-clusters-quad-index.md): Supplies today's `TangentFrame` anchor; when regions give way to globally-positioned assets, the ENU → geodetic conversion drops out.
+- [ADR-029](./029-geo-anchored-prim-storage.md): Geo-anchored positions (`f64` lat/lng) that `resolve()` consumes directly — no tangent-frame conversion.
+- [ADR-031](./031-layered-access-model.md): Chat is a Simulation-tier feature (login required).
 - [ADR-023](./023-data-layers.md): Same self-hosted-geo and attribution shape; also the source of the "layers must work worldwide" constraint this addresses.
 - [ADR-027](./027-3dbag-buildings.md): Precedent for worldwide baseline plus NL enhancement.

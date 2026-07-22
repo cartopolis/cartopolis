@@ -1,13 +1,15 @@
 pub mod ai_assistant;
 pub mod avatar;
 pub mod bookmarks;
+pub mod chat;
+pub mod collision;
 pub mod data_layers;
-pub mod database;
 pub mod debug;
 pub mod egui_manager;
 pub mod free_camera;
 pub mod geo_nav;
 pub mod globe;
+pub mod globe_weather;
 pub mod map_stream;
 pub mod gizmo;
 pub mod hud;

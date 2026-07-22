@@ -1,9 +1,25 @@
-// Planet-wrapping cloud layer for the globe / space tier. A sphere a few km above
-// the globe surface, centred on Earth's render-space centre (fed each frame like
-// the planet atmosphere entity — see globe::update_atmosphere_origin). Its
-// fragment shader samples a 3D FBM field on the surface direction for coverage
-// and shades it by the sun terminator, so from orbit you see scattered cloud over
-// the day side fading into the night. Fades in with `params.y` (space_factor) so
+// Planet-wrapping cloud layer for the globe / space tier — a global *weather*
+// system, not a uniform noise field. A sphere a few km above the globe surface,
+// centred on Earth's render-space centre (fed each frame like the planet
+// atmosphere entity — see globe::update_atmosphere_origin). Its fragment shader
+// builds an Earth-like cloud pattern:
+//   * Latitude banding — a cloudy equatorial ITCZ, clear subtropical highs
+//     (~25°), and cloudy mid-latitude storm tracks (~55°), the signature stripes
+//     of the planet from space.
+//   * Zonal stretch — features are elongated east–west into bands and fronts
+//     (real cloud systems are stretched by the zonal winds), eased off in the
+//     mid-latitude storm belts so cyclones there stay round.
+//   * Domain-warped 3D FBM with a Coriolis-signed curl twist — cloud masses wind
+//     into cyclonic spirals (counterclockwise north, clockwise south) and ridged
+//     detail carves fibrous fronts, instead of round blobs.
+//   * Motion obeys one invariant: only latitude-INDEPENDENT terms may grow with
+//     time (a latitude-dependent term × unbounded time aliases into thin latitude
+//     stripes — the "taffy" smearing). So bulk motion is a slow UNIFORM spin, the
+//     weather evolves via a UNIFORM warp scroll (features form and dissolve around
+//     an anchored base), and the hemispheric swirl is a time-static Coriolis curl.
+//     Real per-region weather variation is meant to come from live GFS/TCDC data
+//     (ADR-032), not from procedural differential drift, which is unstable here.
+// Shaded by the sun terminator and faded in with `params.y` (space_factor) so
 // it's absent on the ground, where the camera-relative ceiling (clouds.wgsl)
 // takes over. One static sphere mesh — fixed cost, no churn.
 #import bevy_pbr::forward_io::VertexOutput
@@ -19,6 +35,18 @@
 @group(3) @binding(3) var<uniform> lit_color: vec4<f32>;
 // rgb: night-side cloud colour. a unused.
 @group(3) @binding(4) var<uniform> shadow_color: vec4<f32>;
+// xyz: Earth's spin axis in the local frame (for latitude banding + drift).
+@group(3) @binding(5) var<uniform> north_axis: vec4<f32>;
+// xyz: local-frame direction to geographic (0°,0°) — the prime-meridian/equator
+// reference used to recover longitude for the data lookup. w: data weight
+// (0 = pure procedural fallback, 1 = live GFS/TCDC coverage — see ADR-032).
+@group(3) @binding(6) var<uniform> frame_ref: vec4<f32>;
+// Live Total Cloud Cover: a coarse equirectangular grid (GFS TCDC), r = cloud
+// fraction 0..1. Row 0 = +90° lat, column 0 = 0° lng, columns increase eastward.
+@group(3) @binding(7) var cloud_field: texture_2d<f32>;
+@group(3) @binding(8) var cloud_samp: sampler;
+
+const PI: f32 = 3.14159265;
 
 fn hash3(p: vec3<i32>) -> f32 {
     var n = u32(p.x) * 1597334677u + u32(p.y) * 3812015801u + u32(p.z) * 2798796415u;
@@ -49,49 +77,173 @@ fn vnoise3(p: vec3<f32>) -> f32 {
     return mix(y0, y1, u.z);
 }
 
+// A rotation-and-scale applied between octaves. Value/gradient noise lives on an
+// axis-aligned lattice; adding octaves along the *same* axes reinforces that grid
+// (the hexagonal/blocky blobs). Rotating each octave by this non-axis-aligned
+// matrix decorrelates the lattices, so the sum reads as smooth fractal cloud.
+const M3: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(0.00, 0.80, 0.60),
+    vec3<f32>(-0.80, 0.36, -0.48),
+    vec3<f32>(-0.60, -0.48, 0.64),
+);
+
 fn fbm3(p: vec3<f32>) -> f32 {
     var v = 0.0;
     var amp = 0.5;
     var norm = 0.0;
     var q = p;
-    for (var i = 0; i < 5; i = i + 1) {
+    for (var i = 0; i < 6; i = i + 1) {
         v += amp * vnoise3(q);
         norm += amp;
-        q = q * 2.02 + vec3<f32>(19.3, 7.1, 13.7);
-        amp *= 0.55;
+        q = M3 * q * 2.0;
+        amp *= 0.5;
     }
     return v / norm;
 }
+
+// Rotate `v` about a unit `axis` by `ang` radians (Rodrigues).
+fn rotate_about(v: vec3<f32>, axis: vec3<f32>, ang: f32) -> vec3<f32> {
+    let c = cos(ang);
+    let s = sin(ang);
+    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
+}
+
+// Unit-area Gaussian bump. Used with a manual `x*x` (not `pow(x, 2.0)`, which is
+// undefined for x<0 in WGSL) so latitude bands centred off the equator are safe.
+fn gauss(x: f32) -> f32 {
+    return exp(-x * x);
+}
+
+// THE INVARIANT: only latitude-INDEPENDENT terms may grow with time. Any
+// latitude-dependent phase multiplied by unbounded `t` develops an ever-steeper
+// latitudinal gradient and aliases into thin latitude-parallel stripes (the
+// "taffy" smearing). So bulk motion is a uniform spin, evolution is a uniform
+// warp scroll, and every latitude-dependent term (curl, banding) is time-static.
+
+// Bulk planet spin: a slow UNIFORM rotation about the axis (same at every
+// latitude → rigid → zero shear). Gentle, since it spins the clouds relative to
+// the fixed map beneath.
+const BULK_DRIFT: f32 = 0.002;
+// Uniform temporal evolution: a fixed, latitude-independent translation of the
+// warp SOURCE through the noise, so the field regenerates (features form and
+// dissolve) without introducing any latitude-varying phase. This is the safe
+// substitute for differential drift — the "weather evolves" motion.
+const EVO_RATE: f32 = 0.020;
+// Coriolis-signed curl twist on the warp: cyclones wind counterclockwise in the
+// north, clockwise in the south, none on the equator. Latitude-signed but NOT
+// time-growing, so it's bounded and alias-free.
+const SWIRL_STRENGTH: f32 = 1.10;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Surface direction from Earth's centre — frame-independent of the render
     // translation, so it matches the sun direction's local frame.
     let normal = normalize(in.world_position.xyz - centre.xyz);
+    let axis = normalize(north_axis.xyz);
 
-    let drift = vec3<f32>(params.z * 0.004, 0.0, 0.0);
-    let base = normal * params.w + drift;
-    // Domain warping: offset the sample by a lower-frequency noise vector so the
-    // field forms swirls, bands and fronts instead of an even field of blobs.
-    let warp = vec3<f32>(
-        fbm3(base * 0.5 + vec3<f32>(11.5, 3.2, 7.7)),
-        fbm3(base * 0.5 + vec3<f32>(27.3, 19.1, 2.4)),
-        fbm3(base * 0.5 + vec3<f32>(43.1, 8.6, 31.9)),
+    // Latitude (−π/2..π/2) from the spin axis. Drift below rotates about that
+    // axis, which preserves latitude, so this is the same before and after.
+    let up = dot(normal, axis);
+    let lat = asin(clamp(up, -1.0, 1.0));
+
+    // Bulk uniform spin only (grows with time but never shears — same angle at
+    // every latitude). The large-scale cloud positions are anchored to this
+    // rigidly-rotated frame; all evolution rides the bounded warp below.
+    let dn = rotate_about(normal, axis, params.z * BULK_DRIFT);
+    let radial = normalize(dn);
+
+    // Anisotropic sample frame: a mild east–west stretch shapes zonal bands
+    // (eased off in the mid-latitude storm belts so cyclones stay round). Kept low
+    // — a strong stretch pre-smears features into the long streaks we're avoiding.
+    let eqv = dn - axis * up;
+    let stretch = mix(1.35, 1.05, gauss((abs(lat) - 0.90) / 0.35));
+    let sample_n = eqv + axis * up * stretch;
+    let base = sample_n * params.w;
+
+    // Uniform temporal evolution: a fixed, latitude-INDEPENDENT translation of the
+    // warp source through the noise. Identical for every fragment, so it adds no
+    // latitude-varying phase (no aliasing however large `t` grows); it just sweeps
+    // the warp, which — since the final density is sampled at `base + 2.2 * rw`
+    // with `rw` bounded — makes clouds form and dissolve around the anchored
+    // `base` without ever sliding or winding away.
+    let evo = vec3<f32>(0.61, -0.42, 0.67) * (params.z * EVO_RATE);
+
+    // Iterative flow warping (iq's technique) plus a Coriolis-signed curl
+    // (`rotate_about` the local vertical `radial`) that twists the advection into
+    // spirals — counterclockwise north, clockwise south, none on the equator (the
+    // ITCZ convects, it doesn't rotate).
+    let coriolis = sin(lat);
+    let q = vec3<f32>(
+        fbm3(base + evo),
+        fbm3(base + evo + vec3<f32>(5.2, 1.3, 7.8)),
+        fbm3(base + evo + vec3<f32>(2.7, 9.1, 3.4)),
     ) - 0.5;
-    let density = fbm3(base + warp * 2.2);
-    let cover = params.x;
-    // Bias the threshold so coverage 0.5 leaves clear gaps; a wide smoothstep and
-    // a power give soft, wispy cloud edges rather than hard-cut spots.
-    let thresh = 1.0 - 0.75 * cover;
-    var a = smoothstep(thresh, thresh + 0.28, density);
-    a = pow(a, 1.3);
-    a *= lit_color.a * params.y;
+    let qw = rotate_about(q, radial, coriolis * SWIRL_STRENGTH);
+    let r = vec3<f32>(
+        fbm3(base + evo + 2.2 * qw + vec3<f32>(1.7, 8.2, 4.1)),
+        fbm3(base + evo + 2.2 * qw + vec3<f32>(6.3, 2.9, 9.6)),
+        fbm3(base + evo + 2.2 * qw + vec3<f32>(3.8, 5.5, 1.2)),
+    ) - 0.5;
+    let rw = rotate_about(r, radial, coriolis * SWIRL_STRENGTH * 0.6);
+    let base_density = fbm3(base + 2.2 * rw);
+
+    // Ridged high-frequency detail carves fronts and fibrous filaments into the
+    // cloud edges (sharp crests) instead of leaving soft, round halos.
+    let ridge = 1.0 - abs(2.0 * fbm3(base * 2.6 + 4.0 * rw) - 1.0);
+    let density = mix(base_density, base_density * (0.55 + 0.9 * ridge), 0.4);
+
+    // Latitude banding — the planet's signature stripes. Cloudy equatorial ITCZ,
+    // thinner (not bare) subtropical highs (~26°), cloudy mid-latitude storm
+    // tracks (~54°). A high baseline keeps every band populated so it reads as a
+    // cloudy planet with structure, not scattered dots.
+    let l = abs(lat);
+    let itcz = 0.55 * exp(-pow(l / 0.15, 2.0));
+    let dry = -0.35 * exp(-pow((l - 0.46) / 0.18, 2.0));
+    let storm = 0.45 * exp(-pow((l - 0.95) / 0.32, 2.0));
+    let band = clamp(0.85 + itcz + dry + storm, 0.2, 1.6);
+    let proc_cover = params.x * band;
+
+    // Live coverage from GFS Total Cloud Cover. Recover geographic (lng, lat) for
+    // this fragment — latitude from the spin axis (reuse `lat`), longitude from the
+    // prime-meridian reference — and look up the coarse equirectangular grid. Row 0
+    // is +90°, column 0 is 0° lng increasing east, so v = 0.5 − lat/π and
+    // u = lng/2π (wrapped). Real TCDC already carries the ITCZ/storm-track
+    // structure, so it *replaces* the hand-authored bands (weighted by frame_ref.w,
+    // which is 0 until data lands → the procedural fallback below).
+    let east0 = normalize(cross(axis, normalize(frame_ref.xyz)));
+    let lng = atan2(dot(normal, east0), dot(normal, normalize(frame_ref.xyz)));
+    // Perturb the lookup by the flow warp so the coarse 1° grid's blocky cell
+    // boundaries dissolve into fractal cloud edges instead of reading as stair-steps.
+    let uv = vec2<f32>(fract(lng / (2.0 * PI)), 0.5 - lat / PI) + vec2<f32>(rw.x, rw.z) * 0.02;
+    let tcdc = textureSampleLevel(cloud_field, cloud_samp, uv, 0.0).r;
+
+    // Coverage envelope from real TCDC (or the procedural fallback). Held back from
+    // saturation (0.72, not 0.95) so even the cloudiest regions keep broken gaps —
+    // the surface should read *through* the weather, not vanish under a solid sheet.
+    let cover = clamp(mix(proc_cover, tcdc, frame_ref.w), 0.0, 1.0);
+    let thresh = 1.0 - 0.72 * cover;
+
+    // Opacity varies with cloud THICKNESS instead of snapping to one flat value:
+    //   * `presence` is a soft, wide-edged mask (gentle borders, not a hard cut);
+    //   * `thickness` keeps ramping past the edge, and is squared so most cloud
+    //     stays a translucent veil the surface reads through, with only the densest
+    //     cores going bright/opaque — the opacity spread of real satellite cloud;
+    //   * `wisp` breaks each cloud into filaments/cells in OPACITY only (finer,
+    //     warped noise), adding texture without enlarging the cloud's footprint.
+    let presence = smoothstep(thresh, thresh + 0.28, density);
+    let thickness = smoothstep(thresh, thresh + 0.60, density);
+    // Gentle, LARGE-scale opacity variation (thin veils vs solid cores). Low
+    // frequency and shallow, so it grades the cloud rather than shattering it into
+    // cells — the earlier fine, deep wisp is what fragmented the masses.
+    let wisp = 0.72 + 0.36 * fbm3(base * 1.3 + 3.0 * rw);
+    let opacity = mix(0.16, 1.0, thickness) * wisp;
+    var a = presence * clamp(opacity, 0.0, 1.0) * lit_color.a * params.y;
     if a <= 0.003 {
         discard;
     }
 
     // Day/night terminator: clouds on the lit hemisphere are bright, the night
-    // side falls to a dim blue.
+    // side falls to a dim blue. Use the un-rotated normal so lighting is fixed.
     let ndl = dot(normal, sun_dir.xyz);
     let day = smoothstep(-0.18, 0.22, ndl);
     let col = mix(shadow_color.rgb, lit_color.rgb, day);

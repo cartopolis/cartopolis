@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod components;
-mod db;
 mod login;
 mod resources;
 #[cfg(feature = "solo")]
@@ -28,7 +27,7 @@ use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
     ConnectAddr, ConnectAuth,
-    ContextMenuState, Database, DevPanelState, EditDialogState, GameState, LocalAvatarSimId,
+    ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId,
     MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
 };
 use big_space::prelude::{BigSpace, GridCell};
@@ -96,6 +95,23 @@ struct Cli {
     /// Camera mode for `--shot`: "free" (exact placement) or "earth" (orbit).
     #[arg(long, default_value = "free")]
     shot_mode: String,
+
+    /// Densify the `--at` waypoints (two or more) into an N-frame sweep: capture N
+    /// viewpoints interpolated along the path (altitude log-interpolated) instead
+    /// of one per `--at`. With `--csv` this A/B's the altitude-driven ramps
+    /// (space_factor, exposure, bloom, albedo) for a hard cut. 0 = off.
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    frames: u32,
+
+    /// Write per-capture metrics (altitude, tier, ramp scalars, mesh tally) as one
+    /// CSV row each — the sweep analysis artifact (see `systems::shot_harness`).
+    #[arg(long, value_name = "PATH")]
+    csv: Option<PathBuf>,
+
+    /// Dump the full per-capture metrics as JSON on exit (one object for a single
+    /// shot, an array for a sweep) — inspect the settled world state from a shell.
+    #[arg(long, value_name = "PATH")]
+    dump_state: Option<PathBuf>,
 
     /// Time of day in hours (0–24) to start at — the main knob for checking the
     /// lighting curves in a `--shot` capture (e.g. `--time 6` for sunrise).
@@ -318,6 +334,7 @@ fn main() {
     .init_resource::<resources::ScreenshotState>()
     .init_resource::<systems::osm_buildings::OsmBuildings>()
     .init_resource::<systems::lod22::Lod22Buildings>()
+    .init_resource::<systems::collision::BuildingColliders>()
     .init_resource::<systems::data_layers::DataLayers>()
     .init_resource::<systems::transit_live::TransitLive>()
     .init_resource::<systems::transit_live::WorldClock>()
@@ -348,6 +365,8 @@ fn main() {
     //  - otherwise (default) → solo mode: bring up an in-process sim on loopback
     //    and connect to it via the same authenticated path an external sim uses.
     app.init_resource::<AuthIdentity>();
+    app.init_resource::<systems::chat::ChatState>();
+    app.init_resource::<resources::RightPanel>();
     let offline = cli.offline || cli.shot.is_some();
     if !offline {
         let login = login::resolve(cli.login.as_deref());
@@ -382,6 +401,9 @@ fn main() {
             cli.hide_ui,
             cli.ui.clone(),
             cli.shot_mode.clone(),
+            cli.frames,
+            cli.csv.clone(),
+            cli.dump_state.clone(),
         ) {
             Ok(harness) => {
                 app.insert_resource(resources::HeadlessSurface {
@@ -423,8 +445,6 @@ fn main() {
     app.add_systems(
         Startup,
         (
-            database::init_database.run_if(no_connect_addr),
-            database::load_local_textures.run_if(no_connect_addr),
             network::spawn_network_thread.run_if(has_connect_addr),
             systems::free_camera::setup_camera,
             spawn_avatar_entity,
@@ -443,11 +463,7 @@ fn main() {
             network::apply_network_snapshot,
             network::create_egui_texture_handles
                 .after(network::apply_network_snapshot),
-            database::load_regions
-                .run_if(has_database)
-                .after(network::apply_network_snapshot),
             rendering::spawn_regions
-                .after(database::load_regions)
                 .after(network::apply_network_snapshot),
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
@@ -497,6 +513,10 @@ fn main() {
                 // cloud/fog/rain knobs after the anchor is (re)established.
                 systems::weather::poll_weather
                     .after(systems::map_stream::apply_reanchor),
+                // Live global cloud cover (GFS/TCDC) for the planet layer (ADR-032):
+                // one background fetch → the coarse coverage texture the globe
+                // cloud shader samples. Independent of the anchor (it's global).
+                systems::globe_weather::poll_globe_clouds,
             ),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old
@@ -545,11 +565,21 @@ fn main() {
         (
             systems::free_camera::camera_mode_toggle,
             avatar::handle_avatar_movement.after(network::apply_network_snapshot),
+            // After `send_network_intent`, which stamps this frame's
+            // `predicted_velocity` that the prediction integrates.
             avatar::smooth_online_avatar_display
                 .after(network::apply_network_snapshot)
-                .after(avatar::handle_avatar_movement),
+                .after(avatar::handle_avatar_movement)
+                .after(network::send_network_intent),
             avatar::smooth_remote_avatars.after(avatar::smooth_online_avatar_display),
             avatar::tick_remote_avatar_motion_hint.after(avatar::smooth_remote_avatars),
+            // Keep the avatar out of buildings: block walking into them, and
+            // eject one that lands inside (teleport / a building streaming over
+            // it). Runs after movement and before the camera follows the
+            // corrected position.
+            systems::collision::eject_avatar_from_buildings
+                .after(avatar::handle_avatar_movement)
+                .before(systems::free_camera::camera_controls),
             network::send_network_intent.after(avatar::handle_avatar_movement),
             // 20 Hz, not per-frame: the window runs `AutoNoVsync`, so unthrottled
             // this pushed several hundred position messages a second at the sim for
@@ -609,7 +639,8 @@ fn main() {
     .add_systems(
         Update,
         (
-            // Top menu bar must reserve its space before the AI side panel lays out.
+            // Auto-hiding top address bar (floating overlay, reserves no layout
+            // space); ordered before the side panels for deterministic input.
             systems::ui::render_menu_bar.before(systems::ai_assistant::render_ai_panel),
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
@@ -628,7 +659,10 @@ fn main() {
             systems::data_layers::render_data_layers_panel
                 .after(systems::ui::render_menu_bar)
                 .after(systems::ai_assistant::render_ai_panel),
-            systems::hud::render_hud.after(systems::ui::render_menu_bar),
+            (
+                systems::hud::render_hud.after(systems::ui::render_menu_bar),
+                systems::chat::render_chat_panel.after(systems::ui::render_menu_bar),
+            ),
             systems::bookmarks::render_bookmarks_panel
                 .after(systems::ui::render_menu_bar)
                 .after(systems::data_layers::render_data_layers_panel),
@@ -679,7 +713,7 @@ fn main() {
             systems::gizmo::handle_gizmo_interaction,
         ),
     )
-    .add_systems(Update, (frame_time_watchdog, log_render_cost))
+    .add_systems(Update, (frame_time_watchdog, log_render_cost, frame_stats))
     // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
     .add_systems(
         PostUpdate,
@@ -693,14 +727,6 @@ fn main() {
 
 fn has_connect_addr(addr: Option<Res<ConnectAddr>>) -> bool {
     addr.is_some()
-}
-
-fn no_connect_addr(addr: Option<Res<ConnectAddr>>) -> bool {
-    addr.is_none()
-}
-
-fn has_database(db: Option<Res<Database>>) -> bool {
-    db.is_some()
 }
 
 fn spawn_avatar_entity(mut commands: Commands) {
@@ -758,8 +784,8 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
 /// (`dev.shadows_enabled`), applied at spawn — the toggle respawns the light
 /// rather than mutating `shadow_maps_enabled`, which panics bevy_light.
 fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
-    let sun_dir = sun_direction(dev.time_of_day);
-    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.fog_density);
+    let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
+    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     commands.spawn((
         DirectionalLight {
             color: sun_color,
@@ -802,7 +828,7 @@ const MOON_LIGHT_MIN: f32 = 0.002;
 
 /// Whether the moon light should currently exist (moon up, illuminated, at night).
 fn moon_light_wanted(dev: &DevPanelState) -> bool {
-    moonlight_factor(dev.time_of_day, dev.moon_age_days) > MOON_LIGHT_MIN
+    moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad) > MOON_LIGHT_MIN
 }
 
 /// Spawn the moon's directional light with its shadow cascades. Perceptually
@@ -811,7 +837,7 @@ fn moon_light_wanted(dev: &DevPanelState) -> bool {
 fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let illuminance = MOONLIGHT_ILLUMINANCE
-        * moonlight_factor(dev.time_of_day, dev.moon_age_days)
+        * moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad)
         * (1.0 - 0.75 * dev.fog_density);
     commands.spawn((
         DirectionalLight {
@@ -972,18 +998,18 @@ struct MoonLight;
 
 /// Moonlight strength 0–1: moon elevation × illuminated fraction, faded out by
 /// day (moonlight is negligible next to any amount of daylight).
-fn moonlight_factor(hours: f32, moon_age_days: f32) -> f32 {
+fn moonlight_factor(hours: f32, moon_age_days: f32, decl_rad: f32) -> f32 {
     let up = utils::sun::moon_direction(hours, moon_age_days).y.max(0.0);
     up * utils::sun::moon_illuminated_fraction(moon_age_days)
-        * (1.0 - utils::sun::daylight(hours))
+        * (1.0 - utils::sun::daylight(hours, decl_rad))
 }
 
 /// Sun light color and illuminance for a time of day. The hue and magnitude both
 /// come from the atmosphere's transmittance toward the sun (see `utils::sun`), so
 /// the light warms and dims exactly as the sky it hangs in: warm white at noon,
 /// gold in the morning/evening, deep red and faint as the disc grazes the horizon.
-fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
-    let t = utils::sun::sun_transmittance(hours);
+fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
+    let t = utils::sun::sun_transmittance(hours, decl_rad);
     let peak = t.max_element().max(1e-4);
     // Hue in the color (peak-normalized), magnitude in the illuminance. Desaturated
     // toward white so the sun light doesn't compound the atmosphere's own sunset red.
@@ -998,7 +1024,7 @@ fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
     let illuminance = RAW_SUNLIGHT
         * SUN_SCALE
         * peak.powf(SUN_EXTINCTION_SOFTNESS)
-        * utils::sun::sun_disc(hours)
+        * utils::sun::sun_disc(hours, decl_rad)
         * sun_through_fog;
     (color, illuminance)
 }
@@ -1006,13 +1032,13 @@ fn sun_light(hours: f32, fog_density: f32) -> (Color, f32) {
 /// Ambient light for a time of day: brightness follows the sky through twilight
 /// (the sky lights the city before sunrise and after sunset), color follows the
 /// sky's hue — blue night, warm dawn/dusk, cool-white day.
-fn ambient_light(hours: f32, moon_age_days: f32) -> AmbientLight {
-    let c = utils::sun::ambient_sky_color(hours);
+fn ambient_light(hours: f32, moon_age_days: f32, decl_rad: f32) -> AmbientLight {
+    let c = utils::sun::ambient_sky_color(hours, decl_rad);
     AmbientLight {
         color: Color::linear_rgb(c.x, c.y, c.z),
         brightness: AMBIENT_NIGHT_BRIGHTNESS
-            + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours)
-            + MOON_AMBIENT_BRIGHTNESS * moonlight_factor(hours, moon_age_days),
+            + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours, decl_rad)
+            + MOON_AMBIENT_BRIGHTNESS * moonlight_factor(hours, moon_age_days, decl_rad),
         affects_lightmapped_meshes: true,
     }
 }
@@ -1212,7 +1238,7 @@ fn update_moon(
 
     // Visible from twilight on (the moon shows before full dark), dimmed by fog
     // and by atmospheric extinction as it nears the horizon.
-    let sun_elev = sun_direction(dev.time_of_day).y;
+    let sun_elev = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     let dusk = ((0.05 - sun_elev) / 0.15).clamp(0.0, 1.0);
     let fog_veil = (-3.0 * dev.fog_density).exp();
     let extinction = 0.3 + 0.7 * utils::sun::smoothstep(0.0, 0.25, moon_dir.y);
@@ -1221,7 +1247,7 @@ fn update_moon(
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         // Phase-consistent sunlight (not the raw sun direction — see sun.rs).
         let sun_local = rotation.inverse()
-            * utils::sun::moon_sunlight_direction(dev.time_of_day, dev.moon_age_days);
+            * utils::sun::moon_sunlight_direction(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad);
         mat.sun_local = sun_local.extend(brightness);
     }
 }
@@ -1283,8 +1309,21 @@ fn apply_sun_mode(
     globe: Res<systems::globe::GlobeState>,
     mut dev: ResMut<DevPanelState>,
 ) {
-    // Manual hands the whole day/night group — time *and* moon — to the dev panel
-    // (slider / presets / Quick-cycle).
+    // Solar declination depends only on the date, not the sun mode — so track it
+    // from the real clock in *every* mode, including Manual (the dev panel drives
+    // the time of day, but the season is still today's). This is what gives the
+    // sun its correct seasonal day length; without it the arc set sunset at 18:00
+    // year-round (a July evening in NL read as dark hours too early).
+    let day_of_year = jiff::Timestamp::from_second(clock.now_unix as i64)
+        .map(|ts| ts.to_zoned(jiff::tz::TimeZone::UTC).date().day_of_year() as f32)
+        .unwrap_or(80.0); // equinox fallback
+    let target_decl = utils::sun::solar_declination_rad(day_of_year);
+    if (dev.sun_declination_rad - target_decl).abs() > 1e-5 {
+        dev.sun_declination_rad = target_decl;
+    }
+
+    // Manual hands the rest of the day/night group — time *and* moon — to the dev
+    // panel (slider / presets / Quick-cycle).
     if dev.sun_mode == resources::SunMode::Manual {
         return;
     }
@@ -1375,6 +1414,41 @@ fn frame_limiter(mut deadline: Local<Option<std::time::Instant>>, mut period: Lo
         std::thread::sleep(wait);
     }
     *deadline = Some(target + period);
+}
+
+/// Opt-in per-second frame stats (`VIBERFOX_FPS_LOG=1`): sustained FPS, worst
+/// frame this second, and how much the frame time varies (jitter). Motion that
+/// reads as "stutter" is usually low or jittery FPS, not the movement code — this
+/// tells them apart. Debug builds run Bevy at `opt-level=0`; use `--profile
+/// dev-bevy` for a playable framerate (see CLAUDE.md).
+fn frame_stats(
+    time: Res<Time<Real>>,
+    // (elapsed_s, frames, worst_ms, sum_ms, sum_ms_sq)
+    mut acc: Local<(f32, u32, f32, f32, f32)>,
+    mut enabled: Local<Option<bool>>,
+) {
+    if !*enabled.get_or_insert_with(|| std::env::var("VIBERFOX_FPS_LOG").is_ok()) {
+        return;
+    }
+    let ms = time.delta_secs() * 1000.0;
+    acc.0 += time.delta_secs();
+    acc.1 += 1;
+    acc.2 = acc.2.max(ms);
+    acc.3 += ms;
+    acc.4 += ms * ms;
+    if acc.0 >= 1.0 {
+        let n = acc.1.max(1) as f32;
+        let mean = acc.3 / n;
+        let var = (acc.4 / n - mean * mean).max(0.0);
+        tracing::info!(
+            fps = (acc.1 as f32 / acc.0) as u32,
+            mean_frame_ms = mean as u32,
+            worst_frame_ms = acc.2 as u32,
+            jitter_ms = var.sqrt() as u32,
+            "frame stats"
+        );
+        *acc = (0.0, 0, 0.0, 0.0, 0.0);
+    }
 }
 
 fn frame_time_watchdog(
@@ -1542,17 +1616,17 @@ fn apply_day_night_cycle(
     // cloud sphere shades the globe there), so it fades out with `space`.
     let overcast = dev.cloud_cover.max(dev.precipitation * 0.9) * (1.0 - space);
 
-    let sun_dir = sun_direction(dev.time_of_day);
+    let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
 
     // Adapt exposure to the light level (eye/camera adaptation): brighten toward
     // twilight and night by up to NIGHT_EXPOSURE_LIFT stops so dusk and the lit city
     // aren't crushed by the bright-noon exposure that suits the physical daytime sun.
     // From space there's nothing to adapt to — the lit half of the planet is in full
     // daylight whatever the local clock says — so the day exposure holds.
-    let day = utils::sun::daylight(dev.time_of_day);
+    let day = utils::sun::daylight(dev.time_of_day, dev.sun_declination_rad);
     let ground_ev = DAY_EXPOSURE_EV100
         - NIGHT_EXPOSURE_LIFT * (1.0 - day)
-        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day)
+        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day, dev.sun_declination_rad)
         // A small lift so an overcast scene reads dim-but-legible rather than
         // being crushed once the direct sun is pulled down.
         - OVERCAST_EXPOSURE_LIFT * overcast;
@@ -1584,7 +1658,7 @@ fn apply_day_night_cycle(
     // at 18:00 and unlit at all at night, when what the view should show is a
     // fully sunlit day side and a dark night side, terminator between. Crossfaded
     // rather than switched, or climbing out at dusk changed the light in a step.
-    let (ground_color, ground_lux) = sun_light(dev.time_of_day, dev.fog_density);
+    let (ground_color, ground_lux) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     let mut sun_color = Color::from(LinearRgba::from_vec4(
         LinearRgba::from(ground_color).to_vec4().lerp(LinearRgba::WHITE.to_vec4(), space),
     ));
@@ -1607,7 +1681,7 @@ fn apply_day_night_cycle(
     // Moonlight tracks the moon disc; fog diffuses it like it does the sun.
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let moonlight = MOONLIGHT_ILLUMINANCE
-        * moonlight_factor(dev.time_of_day, dev.moon_age_days)
+        * moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad)
         * (1.0 - 0.75 * dev.fog_density);
     for (mut tf, mut light) in moon.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y);
@@ -1622,7 +1696,7 @@ fn apply_day_night_cycle(
         // Space has no sky to scatter light back into the shadowed side, so the
         // ambient falls off toward Earthshine scale — just enough that the night
         // side reads as unlit land rather than a hole cut out of the starfield.
-        let ground = ambient_light(dev.time_of_day, dev.moon_age_days);
+        let ground = ambient_light(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad);
         let mut ground_rgb = LinearRgba::from(ground.color).to_vec4();
         // Overcast fills shadows: the diffuse sky light rises and greys, so an
         // overcast day is flat and cool rather than sunlit-and-shadowed.
@@ -1667,7 +1741,7 @@ fn apply_distance_fog(
     // (see update_horizon_haze), veiling the whole dome as density rises.
     let altitude = globe.altitude_m(cell, tf) as f32;
     let density = dev.fog_density * systems::free_camera::fog_altitude_factor(altitude);
-    *fog = systems::free_camera::distance_fog(density, dev.time_of_day);
+    *fog = systems::free_camera::distance_fog(density, dev.time_of_day, dev.sun_declination_rad);
 }
 
 /// Spawns the star-map night sky: a box centred on the viewer whose custom material
@@ -1691,7 +1765,7 @@ fn update_window_glow(
     >,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let elevation = sun_direction(dev.time_of_day).y;
+    let elevation = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     // Begin glowing as the sun lowers in the evening (elevation ~0.18), reaching
     // full a little after dusk — a gentle ramp, not an on/off at full dark.
     let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
@@ -1936,7 +2010,7 @@ fn update_star_sky(
     // Above the atmosphere there is no daylight to drown them: the stars are out
     // whatever the clock at the anchor says, and no fog can veil them. Without
     // this the space view was an unlit black void whenever it was daytime below.
-    let elevation = sun_direction(dev.time_of_day).y;
+    let elevation = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     let night = match space_shell {
         Some(_) => 1.0,
         None => ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0),
@@ -2108,8 +2182,8 @@ fn update_clouds(
 
     // Lit tops and shadowed undersides track the day/night cycle: sun-tinted and
     // bright by day, deep blue-grey at night (the deck goes with the sky).
-    let day = utils::sun::daylight(dev.time_of_day);
-    let (sun_c, _) = sun_light(dev.time_of_day, dev.fog_density);
+    let day = utils::sun::daylight(dev.time_of_day, dev.sun_declination_rad);
+    let (sun_c, _) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     let sun_v = LinearRgba::from(sun_c).to_vec4();
     let day_lit = Vec4::splat(1.0).lerp(sun_v, 0.5);
     let night_lit = Vec4::new(0.06, 0.08, 0.13, 1.0);
@@ -2127,7 +2201,7 @@ fn update_clouds(
             CLOUD_LAYER_HEIGHT,
         );
         mat.params1 = Vec4::new(CLOUD_WIND.x, CLOUD_WIND.y, space, alt_fade);
-        mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
+        mat.sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad).extend(0.0);
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::from_vec4(shadow);
         // World-anchor: the camera's horizontal position in the local anchor
@@ -2264,6 +2338,10 @@ const GLOBE_CLOUD_ALT: f32 = 25_000.0;
 const GLOBE_CLOUD_FREQ: f32 = 1.8;
 /// Overall opacity of the planet cloud sphere.
 const GLOBE_CLOUD_OPACITY: f32 = 0.85;
+/// Fixed global cloudiness for the planet layer — a realistic partly-cloudy Earth
+/// (the shader's latitude banding pushes this up in the ITCZ, down in the
+/// subtropics). Deliberately NOT the ground weather slider, which is one point.
+const GLOBE_CLOUD_COVER: f32 = 0.5;
 
 /// Planet-scale cloud layer for the globe / space tier: a sphere just above the
 /// surface, sampled by a 3D noise field and shaded by the sun terminator. Fades
@@ -2288,6 +2366,17 @@ struct GlobeCloudMaterial {
     /// Earth's spin axis in the local frame (latitude banding + zonal drift).
     #[uniform(5)]
     north_axis: Vec4,
+    /// xyz: local-frame direction to geographic (0°,0°), used to recover longitude
+    /// for the data lookup. w: data weight (0 = procedural fallback, 1 = live
+    /// GFS/TCDC coverage). See `systems::globe_weather` and ADR-032.
+    #[uniform(6)]
+    frame_ref: Vec4,
+    /// Live Total Cloud Cover grid (equirectangular, r = cloud fraction). A
+    /// mid-grey placeholder until the first GFS fetch lands (weight stays 0 so it's
+    /// unused meanwhile).
+    #[texture(7)]
+    #[sampler(8)]
+    cloud_field: Handle<Image>,
 }
 
 impl Material for GlobeCloudMaterial {
@@ -2325,10 +2414,15 @@ fn setup_globe_clouds(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GlobeCloudMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     if env_flag("VIBERFOX_NO_CLOUDS") {
         return;
     }
+    // Placeholder cloud-cover grid (mid-grey) at the live grid's dimensions, so the
+    // texture binding is valid from frame 0. `globe_weather` overwrites its pixels
+    // once a GFS fetch lands and ramps the material's data weight up from 0.
+    let cloud_field = images.add(systems::globe_weather::placeholder_grid());
     let mesh = meshes.add(Sphere::new(1.0).mesh().ico(6).unwrap());
     let material = materials.add(GlobeCloudMaterial {
         centre: Vec4::ZERO,
@@ -2337,7 +2431,10 @@ fn setup_globe_clouds(
         lit_color: LinearRgba::WHITE,
         shadow_color: LinearRgba::BLACK,
         north_axis: Vec4::Y,
+        frame_ref: Vec4::new(1.0, 0.0, 0.0, 0.0),
+        cloud_field: cloud_field.clone(),
     });
+    commands.insert_resource(systems::globe_weather::GlobeCloudData::new(cloud_field));
     commands.spawn((
         Mesh3d(mesh),
         MeshMaterial3d(material),
@@ -2366,6 +2463,7 @@ fn update_globe_clouds(
         With<GlobeClouds>,
     >,
     mut materials: ResMut<Assets<GlobeCloudMaterial>>,
+    cloud_data: Option<Res<systems::globe_weather::GlobeCloudData>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
         return;
@@ -2404,19 +2502,33 @@ fn update_globe_clouds(
 
     // Sunlit cloud colour is white lightly warmed by the current sun tint; the
     // shader's terminator handles the day→night falloff across the sphere.
-    let (sun_c, _) = sun_light(dev.time_of_day, dev.fog_density);
+    let (sun_c, _) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     let sun_v = LinearRgba::from(sun_c).to_vec4();
     let mut lit = Vec4::splat(1.0).lerp(sun_v, 0.35);
     lit.w = GLOBE_CLOUD_OPACITY;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.centre = centre.extend(radius);
-        mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
-        // The globe is a weather system, not a slave to the ground cloud slider:
-        // Earth always has substantial cloud from orbit, so give it a baseline the
-        // slider adds to (0 → light broken cover, 1 → heavily overcast).
-        let globe_cover = 0.42 + 0.4 * dev.cloud_cover;
-        mat.params = Vec4::new(globe_cover, space, time.elapsed_secs(), GLOBE_CLOUD_FREQ);
+        mat.sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad).extend(0.0);
+        // Coverage: live global Total Cloud Cover (GFS/TCDC, ADR-032) when it has
+        // landed, else the fixed procedural baseline. `GLOBE_CLOUD_COVER` is the
+        // fallback the shader's latitude banding varies (heavier ITCZ, clear
+        // subtropics); the ground weather slider is deliberately NOT used here (one
+        // met.no point shouldn't overcast the planet). `frame_ref` carries the
+        // geographic longitude reference for the data lookup and the data weight
+        // (0 until the first fetch lands, then ramped to 1 in `globe_weather`).
+        let weight = cloud_data.as_ref().map_or(0.0, |d| d.weight);
+        mat.frame_ref = globe.direction_local(0.0, 0.0).extend(weight);
+        // Cloud animation phase. Normally the elapsed wall-clock; a `--shot`
+        // captures only ~2 s in, so cloud MOTION is otherwise untestable offscreen
+        // — `VIBERFOX_CLOUD_TIME=<seconds>` seeds the phase to inspect the field
+        // at any age (e.g. verify it doesn't smear after 10 min), like `--time`
+        // does for the day-night lighting.
+        let cloud_t = std::env::var("VIBERFOX_CLOUD_TIME")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or_else(|| time.elapsed_secs());
+        mat.params = Vec4::new(GLOBE_CLOUD_COVER, space, cloud_t, GLOBE_CLOUD_FREQ);
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::rgb(0.06, 0.09, 0.16);
         mat.north_axis = globe.north_axis_local().extend(0.0);

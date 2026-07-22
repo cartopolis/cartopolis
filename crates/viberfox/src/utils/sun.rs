@@ -22,13 +22,37 @@ pub fn day_angle(hours: f32) -> f32 {
     (t - 0.25) * std::f32::consts::TAU
 }
 
-/// Unit direction toward the sun for a time of day. The constant z tips the whole
-/// arc away from the zenith like a mid-latitude sky: noon tops out near 61°
-/// elevation (Amsterdam in June) instead of passing overhead, so even midday light
-/// arrives at an angle — facades stay modeled and shadows never collapse to dots.
-pub fn sun_direction(hours: f32) -> Vec3 {
-    let a = day_angle(hours);
-    Vec3::new(a.cos(), a.sin(), 0.55).normalize()
+/// Solar declination in radians for a day of the year (1–366): the sun's angle
+/// north/south of the celestial equator, swinging ±23.44° across the year. This
+/// is the seasonal term the old equinox-only arc was missing — it's what makes
+/// summer days long and winter days short at mid-latitudes. Cooper's 1969
+/// approximation (within ~0.5° of the true value, ample for lighting).
+pub fn solar_declination_rad(day_of_year: f32) -> f32 {
+    const AXIAL_TILT: f32 = 0.409_105; // 23.44° in radians
+    AXIAL_TILT * (std::f32::consts::TAU * (day_of_year + 284.0) / 365.0).sin()
+}
+
+/// Unit direction toward the sun for a time of day and solar declination, in real
+/// horizontal coordinates at the observer latitude:
+/// `sin(elevation) = sinφ·sinδ + cosφ·cosδ·cos H` (H = hour angle, 0 at solar
+/// noon). Because elevation now carries the declination δ, the day length,
+/// sunrise/sunset times and peak elevation all track the season: at the June
+/// solstice (δ ≈ +23.4°, φ = 52°) noon tops out near 61° and the sun stays up past
+/// 20:00 solar time; at the December solstice the day collapses to ~7½ h. The old
+/// arc ignored δ entirely and set the sun at the horizon at 06:00/18:00 every day
+/// of the year. World frame: +x east, +y up, +z south (noon sun sits south, so
+/// even midday light arrives at an angle — facades stay modeled, shadows never
+/// collapse to dots).
+pub fn sun_direction(hours: f32, decl_rad: f32) -> Vec3 {
+    let lat = OBSERVER_LATITUDE_DEG.to_radians();
+    let hour_angle = (hours - 12.0) / 12.0 * std::f32::consts::PI; // 0 at solar noon
+    let (sin_h, cos_h) = hour_angle.sin_cos();
+    let (sin_d, cos_d) = decl_rad.sin_cos();
+    let (sin_l, cos_l) = lat.sin_cos();
+    let east = -sin_h * cos_d;
+    let up = sin_l * sin_d + cos_l * cos_d * cos_h;
+    let south = cos_h * cos_d * sin_l - sin_d * cos_l;
+    Vec3::new(east, up, south).normalize()
 }
 
 /// Hermite smoothstep: 0 below `e0`, 1 above `e1`, smooth in between.
@@ -71,29 +95,29 @@ fn air_mass(sin_elevation: f32) -> f32 {
 
 /// Per-channel atmospheric transmittance of the direct sun beam for a time of day.
 /// Encodes both the sun's color (channel ratios) and its dimming (magnitude).
-pub fn sun_transmittance(hours: f32) -> Vec3 {
+pub fn sun_transmittance(hours: f32, decl_rad: f32) -> Vec3 {
     let depth = RAYLEIGH + AEROSOL * haze(hours);
-    (-depth * air_mass(sun_direction(hours).y)).exp()
+    (-depth * air_mass(sun_direction(hours, decl_rad).y)).exp()
 }
 
 /// Fraction of the solar disc's light clearing the horizon — the soft boundary for
 /// the *direct* beam around sunrise/sunset (no hard on/off at 6:00/18:00).
-pub fn sun_disc(hours: f32) -> f32 {
-    smoothstep(-0.03, 0.06, sun_direction(hours).y)
+pub fn sun_disc(hours: f32, decl_rad: f32) -> f32 {
+    smoothstep(-0.03, 0.06, sun_direction(hours, decl_rad).y)
 }
 
 /// Smooth 0–1 daylight factor for sky-driven light (ambient, fog color). Rises
 /// through civil twilight (sun still below the horizon) and saturates by
 /// mid-morning, because the scattered sky lights the scene well before and after
 /// the sun itself crosses the horizon.
-pub fn daylight(hours: f32) -> f32 {
-    smoothstep(-0.15, 0.40, sun_direction(hours).y)
+pub fn daylight(hours: f32, decl_rad: f32) -> f32 {
+    smoothstep(-0.15, 0.40, sun_direction(hours, decl_rad).y)
 }
 
 /// How close the sun is to the horizon, 1 at the horizon → 0 away from it
 /// (gaussian in elevation). Gates the warm sunrise/sunset cast on ambient and fog.
-pub fn horizon_proximity(hours: f32) -> f32 {
-    let y = sun_direction(hours).y;
+pub fn horizon_proximity(hours: f32, decl_rad: f32) -> f32 {
+    let y = sun_direction(hours, decl_rad).y;
     (-(y / 0.16) * (y / 0.16)).exp()
 }
 
@@ -155,10 +179,10 @@ pub fn moon_illuminated_fraction(age_days: f32) -> f32 {
 /// the terminator faces the way you'd expect. (The disc can't be lit by the raw
 /// sun direction: our sun rides its own arc rather than the celestial sphere,
 /// so at full-moon age the raw geometry would never quite reach a full disc.)
-pub fn moon_sunlight_direction(hours: f32, age_days: f32) -> Vec3 {
+pub fn moon_sunlight_direction(hours: f32, age_days: f32, decl_rad: f32) -> Vec3 {
     let moon = moon_direction(hours, age_days);
     let axis = moon
-        .cross(sun_direction(hours))
+        .cross(sun_direction(hours, decl_rad))
         .try_normalize()
         .unwrap_or_else(|| moon.any_orthonormal_vector());
     Quat::from_axis_angle(axis, moon_phase_angle(age_days)) * moon
@@ -168,21 +192,49 @@ pub fn moon_sunlight_direction(hours: f32, age_days: f32) -> Vec3 {
 /// around sunrise/sunset, near-white with a cool cast at midday (a clear sky is a
 /// blue ambient source — it's the sun that is warm). Dawn and dusk differ: the
 /// clean morning air gives a rosier, cooler twilight, the hazy evening an amber one.
-pub fn ambient_sky_color(hours: f32) -> Vec3 {
+pub fn ambient_sky_color(hours: f32, decl_rad: f32) -> Vec3 {
     let night = Vec3::new(0.35, 0.45, 0.80);
     let noon = Vec3::new(0.88, 0.93, 1.00);
     let dawn = Vec3::new(0.98, 0.72, 0.60);
     let dusk = Vec3::new(1.00, 0.60, 0.35);
     // The sun's x picks which horizon it sits at: +1 east (morning), −1 west (evening).
-    let east = smoothstep(-0.5, 0.5, sun_direction(hours).x);
+    let east = smoothstep(-0.5, 0.5, sun_direction(hours, decl_rad).x);
     let twilight = dusk.lerp(dawn, east);
-    let base = night.lerp(noon, daylight(hours));
-    base.lerp(twilight, 0.6 * horizon_proximity(hours))
+    let base = night.lerp(noon, daylight(hours, decl_rad));
+    base.lerp(twilight, 0.6 * horizon_proximity(hours, decl_rad))
 }
 
 #[cfg(test)]
 mod tests {
     use super::solar_time_of_day;
+
+    /// The sun's elevation must carry the season: at the summer solstice the day
+    /// is long (sun still well up at 19:00 solar time and past the horizon at
+    /// 20:00) and noon is high; at the winter solstice the day is short (sun
+    /// already set by 17:00). The old equinox-only arc set every day's sunset at
+    /// exactly 18:00, which is what read as "dark far too early" in NL summer.
+    #[test]
+    fn sun_elevation_tracks_the_season() {
+        use super::{solar_declination_rad, sun_direction};
+        let summer = solar_declination_rad(172.0); // ~June 21
+        let winter = solar_declination_rad(355.0); // ~Dec 21
+
+        // Summer noon is much higher than winter noon (lat 52°: ~61.4° vs ~14.6°).
+        assert!(sun_direction(12.0, summer).y > sun_direction(12.0, winter).y + 0.5);
+
+        // 19:00 solar time: sun still up in summer, long set in winter.
+        assert!(sun_direction(19.0, summer).y > 0.05);
+        assert!(sun_direction(19.0, winter).y < 0.0);
+
+        // 20:00 solar time in summer the disc is still at/above the horizon —
+        // the equinox arc had it 30° below by then.
+        assert!(sun_direction(20.0, summer).y > -0.02);
+
+        // Sanity: at the equinox (δ≈0) sunrise/sunset land at 06:00/18:00.
+        let equinox = solar_declination_rad(80.0); // ~Mar 21
+        assert!(sun_direction(6.0, equinox).y.abs() < 0.02);
+        assert!(sun_direction(18.0, equinox).y.abs() < 0.02);
+    }
 
     /// Lunar age counts from the reference new moon, wraps at one synodic month,
     /// and reads full at the half-cycle — so the automatic cycle shows a real

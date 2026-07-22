@@ -31,7 +31,7 @@
 
 **Config keys** (all with in-code defaults):
 - `listen` (`127.0.0.1:4747`) — bind host:port, ADR-008
-- `database_path` (`data/regions.db`) — ADR-013
+- `database_path` (`data/world.db`) — ADR-013
 - `tick_hz` (`20.0`), `aoi_radius` (`500.0`) — ADR-012
 - `osm_tile_url_template` (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`) — client tile handoff, ADR-004
 - `texture_dir` (`data/textures`) — directory of `*.png` textures served to clients

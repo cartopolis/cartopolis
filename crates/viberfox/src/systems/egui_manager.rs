@@ -53,8 +53,27 @@ pub struct EguiManager {
 
 impl Default for EguiManager {
     fn default() -> Self {
+        let ctx = egui::Context::default();
+        // egui defaults *two* `DebugOptions` to `cfg!(debug_assertions)`, so every
+        // debug build paints stray overlays over the real UI:
+        //  - `show_unaligned` draws orange edges on widgets off the physical-pixel
+        //    grid (common under fractional display scaling), and
+        //  - `warn_if_rect_changes_id` strokes a red box around any widget that
+        //    keeps its rect but changes `Id` between passes — which our animated
+        //    panels (chat / bookmarks slide-in, conditionally-shown widgets that
+        //    shift their neighbours' auto-ids) trip constantly, so it reads as red
+        //    boxes all over the chat panel and bottom bar.
+        // Force the whole debug overlay off so none of it leaks in, in any build.
+        ctx.all_styles_mut(|style| {
+            style.debug.show_unaligned = false;
+            style.debug.warn_if_rect_changes_id = false;
+            style.debug.debug_on_hover = false;
+            style.debug.show_interactive_widgets = false;
+            style.debug.show_expand_width = false;
+            style.debug.show_expand_height = false;
+        });
         Self {
-            ctx: egui::Context::default(),
+            ctx,
             root_ui: None,
             elapsed_time: 0.0,
         }

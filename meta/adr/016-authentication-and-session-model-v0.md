@@ -50,6 +50,13 @@
 
 ## Solo/dev mode and process model
 
+**Tier context (ADR-031).** The product runs two tiers: the **Viewer** (anonymous,
+no login) and the **Simulation** (login — avatars, prims, editing, chat). The app
+**starts in the Viewer tier**; authenticating here is the **runtime transition** that
+adds the Simulation tier. The CLI modes below are **dev shortcuts** that pre-seed that
+transition (auto-connect + auto-login), not the product's default entry — a fresh web
+or desktop launch lands anonymous and upgrades on a login action.
+
 Adding auth must not change the dev DX: `cargo run -p viberfox --profile dev-bevy`
 still launches a working sim+viewer with one command. This is achieved without a
 solo-only code path:

@@ -9,9 +9,34 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use vibe_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, ProtocolError,
+    decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, ProtocolError,
     PROTOCOL_VERSION,
 };
+
+/// Chat channel keys and limits (ADR-028).
+const GLOBAL_CHANNEL: &str = "geo:";
+const LOCAL_CHANNEL: &str = "local";
+const MAX_CHAT_LEN: usize = 500;
+const CHAT_REPLAY: i64 = 50;
+const MIN_LOCAL_INTERVAL: Duration = Duration::from_millis(500);
+const MIN_GLOBAL_INTERVAL: Duration = Duration::from_secs(5);
+const MIN_ROOM_INTERVAL: Duration = Duration::from_millis(2000);
+
+/// Milliseconds since the Unix epoch, for chat timestamps.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Recent scrollback for a channel (empty on any lock/query error).
+fn chat_history(conn: &Arc<Mutex<rusqlite::Connection>>, channel: &str) -> Vec<crate::db::ChatRow> {
+    conn.lock()
+        .ok()
+        .and_then(|c| crate::db::recent_chat(&c, channel, CHAT_REPLAY).ok())
+        .unwrap_or_default()
+}
 
 /// Resolve a hello credential to `(principal, username)` (ADR-016). `None` = reject.
 fn authenticate(
@@ -46,6 +71,7 @@ pub async fn handle_connection(
     tx_snap: broadcast::Sender<Vec<u8>>,
     conn: Arc<Mutex<rusqlite::Connection>>,
     sessions: Arc<crate::auth::Sessions>,
+    chat: Arc<crate::chat::ChatHub>,
 ) -> anyhow::Result<()> {
     let mut framed = Framed::new(
         stream,
@@ -99,6 +125,8 @@ pub async fn handle_connection(
         w.spawn_avatar()
     };
     tracing::info!(%principal, %username, avatar_id, "client authenticated");
+    // Display name for chat (the ack moves `username`).
+    let display_name = username.clone();
     let ack = encode_app_frame(&NetMessage::ServerHelloAck {
         session_id: uuid::Uuid::new_v4(),
         tick_hz: config.tick_hz,
@@ -114,11 +142,36 @@ pub async fn handle_connection(
         return Err(e.into());
     }
 
+    // Chat (ADR-028): register a personal delivery inbox, then replay recent
+    // Global scrollback so the tab isn't empty on connect.
+    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    chat.register(avatar_id, chat_tx);
+    for r in chat_history(&conn, GLOBAL_CHANNEL) {
+        let frame = encode_app_frame(&NetMessage::ChatMessage {
+            channel: GLOBAL_CHANNEL.into(),
+            sender_id: r.sender_id as u64,
+            sender_name: r.sender_name,
+            sent_at_ms: r.sent_at_ms as u64,
+            body: r.body,
+            distance_m: None,
+        })?;
+        framed.send(Bytes::from(frame)).await?;
+    }
+
     let mut last_intent = Instant::now()
         .checked_sub(MIN_INTENT_INTERVAL)
         .unwrap_or_else(Instant::now);
     let mut last_observer = Instant::now()
         .checked_sub(MIN_OBSERVER_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut last_local = Instant::now()
+        .checked_sub(MIN_LOCAL_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut last_global = Instant::now()
+        .checked_sub(MIN_GLOBAL_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut last_room = Instant::now()
+        .checked_sub(MIN_ROOM_INTERVAL)
         .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
@@ -267,6 +320,90 @@ pub async fn handle_connection(
                                     }
                                 }
                             }
+                            NetMessage::ChatSend { scope, body, .. } => {
+                                let body: String = body.trim().chars().take(MAX_CHAT_LEN).collect();
+                                if body.is_empty() {
+                                    continue;
+                                }
+                                let now_ms = now_millis();
+                                match scope {
+                                    ChatScope::Global => {
+                                        if last_global.elapsed() < MIN_GLOBAL_INTERVAL {
+                                            continue;
+                                        }
+                                        last_global = Instant::now();
+                                        if let Ok(c) = conn.lock() {
+                                            let _ = crate::db::insert_chat(&c, GLOBAL_CHANNEL, avatar_id as i64, &display_name, now_ms as i64, &body);
+                                        }
+                                        let frame = encode_app_frame(&NetMessage::ChatMessage {
+                                            channel: GLOBAL_CHANNEL.into(), sender_id: avatar_id,
+                                            sender_name: display_name.clone(), sent_at_ms: now_ms,
+                                            body, distance_m: None,
+                                        })?;
+                                        chat.deliver_all(&frame);
+                                    }
+                                    ChatScope::Room(room) => {
+                                        if last_room.elapsed() < MIN_ROOM_INTERVAL {
+                                            continue;
+                                        }
+                                        last_room = Instant::now();
+                                        let channel = format!("room:{room}");
+                                        if let Ok(c) = conn.lock() {
+                                            let _ = crate::db::insert_chat(&c, &channel, avatar_id as i64, &display_name, now_ms as i64, &body);
+                                        }
+                                        let frame = encode_app_frame(&NetMessage::ChatMessage {
+                                            channel: channel.clone(), sender_id: avatar_id,
+                                            sender_name: display_name.clone(), sent_at_ms: now_ms,
+                                            body, distance_m: None,
+                                        })?;
+                                        chat.deliver_room(&channel, &frame);
+                                    }
+                                    ChatScope::Local { shout } => {
+                                        if last_local.elapsed() < MIN_LOCAL_INTERVAL {
+                                            continue;
+                                        }
+                                        last_local = Instant::now();
+                                        let radius = if shout { crate::chat::SHOUT_RADIUS_M } else { crate::chat::SAY_RADIUS_M };
+                                        // Sender + all candidate recipient positions in one read.
+                                        let (sender_pos, positions) = {
+                                            let w = world.read().await;
+                                            let sp = w.avatar_position(avatar_id);
+                                            let ps: Vec<(u64, _)> = chat.connected_ids().into_iter()
+                                                .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
+                                                .collect();
+                                            (sp, ps)
+                                        };
+                                        // Local is ephemeral — delivered by distance, never stored.
+                                        if let Some(sp) = sender_pos {
+                                            for (id, p) in positions {
+                                                let d = (p - sp).length();
+                                                if d <= radius {
+                                                    let frame = encode_app_frame(&NetMessage::ChatMessage {
+                                                        channel: LOCAL_CHANNEL.into(), sender_id: avatar_id,
+                                                        sender_name: display_name.clone(), sent_at_ms: now_ms,
+                                                        body: body.clone(), distance_m: Some(d),
+                                                    })?;
+                                                    chat.deliver_to(id, frame);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            NetMessage::ChatSubscribe { room, join } => {
+                                let channel = format!("room:{room}");
+                                chat.set_room(avatar_id, &channel, join);
+                                if join {
+                                    for r in chat_history(&conn, &channel) {
+                                        let frame = encode_app_frame(&NetMessage::ChatMessage {
+                                            channel: channel.clone(), sender_id: r.sender_id as u64,
+                                            sender_name: r.sender_name, sent_at_ms: r.sent_at_ms as u64,
+                                            body: r.body, distance_m: None,
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                }
+                            }
                             NetMessage::PrimRemoved { .. }
                             | NetMessage::WorldSnapshot { .. }
                             | NetMessage::ServerHelloAck { .. }
@@ -274,7 +411,8 @@ pub async fn handle_connection(
                             | NetMessage::PrimUpsert { .. }
                             | NetMessage::TextureCatalog { .. }
                             | NetMessage::TextureData { .. }
-                            | NetMessage::TextureNotFound { .. } => {
+                            | NetMessage::TextureNotFound { .. }
+                            | NetMessage::ChatMessage { .. } => {
                                 tracing::debug!("ignored message from client");
                             }
                         }
@@ -293,9 +431,21 @@ pub async fn handle_connection(
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+            chat_frame = chat_rx.recv() => {
+                match chat_frame {
+                    Some(frame) => {
+                        if let Err(e) = framed.send(Bytes::from(frame)).await {
+                            outcome = Err(e.into());
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
         }
     }
 
+    chat.unregister(avatar_id);
     {
         let mut w = world.write().await;
         w.remove_avatar(avatar_id);

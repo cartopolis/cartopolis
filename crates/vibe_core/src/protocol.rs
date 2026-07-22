@@ -13,7 +13,9 @@ use crate::error::ProtocolError;
 ///     + `session_token` (ADR-016).
 /// v10: geo-anchored prims — `PrimDto.geo`, `CreatePrim`/`UpdatePrim` carry a
 ///      mandatory `GeoAnchor`; prim horizontal placement is lat/lng (ADR-029).
-pub const PROTOCOL_VERSION: u16 = 10;
+/// v11: chat — `ChatSend` / `ChatMessage` / `ChatSubscribe` (ADR-028, Simulation
+///      tier). Local (proximity), Global, and Room scopes; geo tiers land later.
+pub const PROTOCOL_VERSION: u16 = 11;
 
 const APP_HEADER_LEN: usize = 8;
 
@@ -36,6 +38,9 @@ pub enum MessageKind {
     TextureRequest = 14,
     TextureData = 15,
     TextureNotFound = 16,
+    ChatSend = 17,
+    ChatMessage = 18,
+    ChatSubscribe = 19,
 }
 
 impl MessageKind {
@@ -58,6 +63,9 @@ impl MessageKind {
             14 => Some(Self::TextureRequest),
             15 => Some(Self::TextureData),
             16 => Some(Self::TextureNotFound),
+            17 => Some(Self::ChatSend),
+            18 => Some(Self::ChatMessage),
+            19 => Some(Self::ChatSubscribe),
             _ => None,
         }
     }
@@ -234,6 +242,18 @@ pub struct AvatarStateDto {
     pub yaw: f32,
 }
 
+/// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
+/// channel. Geo tiers (country/province/municipality) land with `vibe_geo`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ChatScope {
+    /// Proximity chat; `shout` widens the radius. Ephemeral, never stored.
+    Local { shout: bool },
+    /// Everyone online.
+    Global,
+    /// A named, opt-in room.
+    Room(String),
+}
+
 /// Credential presented in the [`NetMessage::ClientHello`] handshake (ADR-016).
 /// The server verifies it against its local account store and issues a session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -361,6 +381,28 @@ pub enum NetMessage {
         request_id: u32,
         texture_id: String,
     },
+    /// ADR-028: client sends a chat message in a scope; the server resolves the
+    /// concrete channel, applies rate limits, and delivers it.
+    ChatSend {
+        request_id: u32,
+        scope: ChatScope,
+        body: String,
+    },
+    /// ADR-028: server delivers a chat message on a resolved channel. `distance_m`
+    /// is `Some` only for `Local` (proximity) messages.
+    ChatMessage {
+        channel: String,
+        sender_id: u64,
+        sender_name: String,
+        sent_at_ms: u64,
+        body: String,
+        distance_m: Option<f32>,
+    },
+    /// ADR-028: client joins (`join = true`) or leaves a room channel.
+    ChatSubscribe {
+        room: String,
+        join: bool,
+    },
 }
 
 #[must_use]
@@ -382,6 +424,9 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::TextureRequest { .. } => MessageKind::TextureRequest,
         NetMessage::TextureData { .. } => MessageKind::TextureData,
         NetMessage::TextureNotFound { .. } => MessageKind::TextureNotFound,
+        NetMessage::ChatSend { .. } => MessageKind::ChatSend,
+        NetMessage::ChatMessage { .. } => MessageKind::ChatMessage,
+        NetMessage::ChatSubscribe { .. } => MessageKind::ChatSubscribe,
     }
 }
 
@@ -396,6 +441,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::TextureRequest { request_id, .. } => *request_id,
         NetMessage::TextureData { request_id, .. } => *request_id,
         NetMessage::TextureNotFound { request_id, .. } => *request_id,
+        NetMessage::ChatSend { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -538,6 +584,37 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_chat_app_frames() {
+        for m in [
+            NetMessage::ChatSend {
+                request_id: 7,
+                scope: ChatScope::Local { shout: true },
+                body: "hi".into(),
+            },
+            NetMessage::ChatSend {
+                request_id: 8,
+                scope: ChatScope::Room("helpdesk".into()),
+                body: "yo".into(),
+            },
+            NetMessage::ChatMessage {
+                channel: "geo:".into(),
+                sender_id: 3,
+                sender_name: "dev".into(),
+                sent_at_ms: 1234,
+                body: "hello".into(),
+                distance_m: Some(12.5),
+            },
+            NetMessage::ChatSubscribe {
+                room: "helpdesk".into(),
+                join: true,
+            },
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+    }
+
+    #[test]
     fn roundtrip_delete_prim_app_frame() {
         let m = NetMessage::DeletePrim {
             request_id: 125,
@@ -578,5 +655,79 @@ mod tests {
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
         assert_eq!(m, m2);
+    }
+
+    /// Every `MessageKind` must survive the `discriminant → from_wire` trip, and
+    /// nothing may sit outside the assigned range. This is the guard the
+    /// per-message round-trips above can't be: adding a `NetMessage` variant +
+    /// kind but forgetting its `from_wire` arm (or mis-numbering it) silently
+    /// desyncs a real client. The `ALL.len()` assert is a deliberate tripwire —
+    /// a new variant fails here until it's added to this list.
+    #[test]
+    fn message_kind_wire_is_a_bijection() {
+        use MessageKind::*;
+        const ALL: [MessageKind; 19] = [
+            ClientHello,
+            ServerHelloAck,
+            ServerError,
+            ClientIntent,
+            ObserverUpdate,
+            WorldSnapshot,
+            PrimRemoved,
+            CreatePrim,
+            UpdatePrim,
+            DeletePrim,
+            PrimUpsert,
+            TextureCatalogRequest,
+            TextureCatalog,
+            TextureRequest,
+            TextureData,
+            TextureNotFound,
+            ChatSend,
+            ChatMessage,
+            ChatSubscribe,
+        ];
+        for k in ALL {
+            assert_eq!(
+                MessageKind::from_wire(k as u16),
+                Some(k),
+                "discriminant {} lost its from_wire arm",
+                k as u16
+            );
+        }
+        // Contiguous 1..=19, nothing on either side.
+        assert_eq!(MessageKind::from_wire(0), None);
+        assert_eq!(MessageKind::from_wire(ALL.len() as u16 + 1), None);
+    }
+
+    /// The header guards in `decode_app_frame` — the checks that keep a
+    /// version-skewed or corrupt frame from being misread as a valid message.
+    /// Untested by the round-trips, and exactly the paths a mismatched client hits.
+    #[test]
+    fn decode_app_frame_rejects_bad_headers() {
+        let good = encode_app_frame(&NetMessage::PrimRemoved { id: 1 }).unwrap();
+
+        // Truncated below the 8-byte app header.
+        assert!(matches!(
+            decode_app_frame(&good[..4]),
+            Err(ProtocolError::FrameTooShort(4))
+        ));
+
+        // Wrong protocol version (bytes 0..2).
+        let mut wrong_ver = good.clone();
+        wrong_ver[0] = wrong_ver[0].wrapping_add(1);
+        assert!(matches!(
+            decode_app_frame(&wrong_ver),
+            Err(ProtocolError::UnsupportedVersion(_))
+        ));
+
+        // Unknown message kind (bytes 2..4); 0 is never assigned.
+        let mut bad_kind = good.clone();
+        bad_kind[2] = 0;
+        bad_kind[3] = 0;
+        assert!(matches!(
+            decode_app_frame(&bad_kind),
+            Err(ProtocolError::UnknownMessageKind(0))
+        ));
     }
 }

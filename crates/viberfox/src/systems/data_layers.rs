@@ -995,15 +995,18 @@ pub fn animate_stop_rings(
 /// The Layers side panel (menu bar ▸ Layers): a checkbox per layer with a
 /// colour legend, plus the required OSM attribution. Styled like the AI
 /// assistant panel (right side panel, resizable).
-pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<DataLayers>) {
-    if !dl.panel_open {
-        return;
-    }
+pub fn render_data_layers_panel(
+    mut egui: ResMut<EguiManager>,
+    mut dl: ResMut<DataLayers>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+) {
+    let open_before = right_panel.is(crate::resources::RightPanel::Layers);
+    let mut open = open_before;
     let mut close = false;
     egui::Panel::right("layers_panel")
         .resizable(true)
         .default_size(260.0)
-        .show(egui.ui_mut(), |ui| {
+        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Layers");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1075,8 +1078,8 @@ pub fn render_data_layers_panel(mut egui: ResMut<EguiManager>, mut dl: ResMut<Da
                 ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
             });
         });
-    if close {
-        dl.panel_open = false;
+    if close || (open_before && !open) {
+        *right_panel = crate::resources::RightPanel::None;
     }
 }
 

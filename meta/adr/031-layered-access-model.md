@@ -49,13 +49,17 @@ different question from *is the user allowed it*.
 Model the viewer as a **stack of layers**, each declaring an **access tier**; the session
 carries a monotonically growing set of **entitlements** that selects which layers are active.
 
+**Two tiers are primary today — the `Viewer` (no login) and the `Simulation` (login)** — with a
+future **Authorized** sub-tier for per-user ACL grants. **Avatars and chat live behind the
+Simulation tier**: they require a logged-in session.
+
 **Access tiers** (a layer declares exactly one):
 
-| Tier | Unlocked by | Examples | Enforcement |
-|------|-------------|----------|-------------|
-| **Public** | nothing (anonymous) | map tiles, place lookup, routing, public POI/transit data layers | none — external services hit directly by the client |
-| **Authenticated** | any logged-in session | the **simulation layer** = ADR-020's sim tier (avatars, prims, editing, chat) | server: sim only serves/accepts for authenticated sessions |
-| **Authorized(cap)** | a specific ACL/role grant | future restricted layers (private worlds, moderator overlays, org data) | server: sim withholds data / rejects intents unless the session holds `cap` |
+| Tier | Product name | Unlocked by | Examples | Enforcement |
+|------|--------------|-------------|----------|-------------|
+| **Public** | **Viewer** | nothing (anonymous) | map tiles, place lookup, routing, public POI/transit data layers | none — external services hit directly by the client |
+| **Authenticated** | **Simulation** | any logged-in session | the sim tier (ADR-020): **avatars, prims, editing, chat** | server: sim only serves/accepts for authenticated sessions |
+| **Authorized(cap)** | *(future)* | a specific ACL/role grant | restricted layers (private worlds, moderator overlays, org data) | server: sim withholds data / rejects intents unless the session holds `cap` |
 
 **Session entitlements** grow, never shrink within a session:
 `{Public}` (anonymous) → `+Authenticated` on login → `+Authorized(cap)` per granted capability.

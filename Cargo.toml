@@ -51,7 +51,6 @@ bevy = { version = "0.19", default-features = false, features = [
     "std",
     "tonemapping_luts",
     "wayland",
-    "x11",
 ] }
 # bevy_atmosphere removed in the 0.19 migration — replaced by Bevy's built-in
 # bevy_pbr atmosphere (Atmosphere/AtmosphereSettings on the camera).
