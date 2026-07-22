@@ -117,13 +117,10 @@ Deploying the server to a host? See [`meta/guides/server.md`](meta/guides/server
 
 ### Assets
 
-The client loads from `assets/` at the workspace root. If `assets/models/animated/Fox.glb` is missing:
-
-```bash
-mkdir -p assets/models/animated
-curl -fsSL -o assets/models/animated/Fox.glb \
-  https://raw.githubusercontent.com/bevyengine/bevy/main/assets/models/animated/Fox.glb
-```
+The client loads from `assets/` at the workspace root. The avatar character models
+(`assets/models/avatar/characters/`) are stored in **Git LFS**, so install it once
+(`git lfs install`) before cloning — otherwise you get pointer files and avatars
+won't render. See [`assets/README.md`](assets/README.md) for details.
 
 ## Architecture
 
@@ -147,3 +144,11 @@ WGPU_BACKEND=vulkan cargo run -p viberfox
 ```
 
 **Build errors after a toolchain or dependency bump:** `cargo clean` and rebuild usually clears stale incremental state.
+
+## Credits
+
+Viberfox stands on generous open work:
+
+- **Avatar characters** — [Quaternius](https://quaternius.com/), *Ultimate Modular Men* and *Ultimate Modular Women* (character meshes + animations), released under **CC0**. They're a joy to build on — consider supporting the work on [Patreon](https://www.patreon.com/quaternius).
+- **Map data** — © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, under the ODbL. Building footprints, streets, and place names are derived from OSM.
+- **Engine** — built with [Bevy](https://bevy.org/).
