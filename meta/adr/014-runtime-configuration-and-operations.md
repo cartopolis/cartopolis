@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-014
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [config, ops, deployment]
 - **Decision Type**: architecture_pattern
@@ -14,7 +14,7 @@
 
 ## Context
 
-**Problem**: Running `vibe_sim` on a host (ADR-007) requires **bind address**, **port**, **database path**, **tile URL template** (for operator documentation even if clients fetch tiles), **log level**, and **AOI parameters** (ADR-012) without recompiling. Tundra historically uses **CLI flags** and **JSON config** (`tundra.json`).
+**Problem**: Running `vibe_sim` on a host (ADR-007) requires **listen address**, **database path**, **tile URL template**, **texture dir**, **tick rate**, and **AOI radius** (ADR-012) without recompiling.
 
 **Requirements**:
 - Sensible defaults for local dev
@@ -23,27 +23,26 @@
 
 ## Decision
 
-Use a **layered config**: defaults in code → optional config file → **environment variable** overrides for secrets and container deploys.
+**Layered config**: defaults in code → optional `vibe.toml` → `VIBE_*` env vars → CLI flags (`clap`), each layer overriding the previous.
 
-**Rust ecosystem**:
-- **`figment`** with **`Toml`** + **`Env`** providers and a `serde`-derived settings struct—single pattern for file + `VIBE_*` (or `APP_*`) env overrides without ad hoc `std::env::var` scattered everywhere.
-- CLI overrides: **`clap`** (derive) mirroring the same struct fields where useful.
-- Logging: **`tracing`** + **`tracing-subscriber`** (`fmt`, **`EnvFilter`**); enable the **`json`** feature (or crate **`tracing-bunyan-formatter`**) when structured logs for aggregators are needed.
+**Implementation** (`vibe_sim/src/config.rs`, `cli.rs`):
+- **`figment`** with `Serialized::defaults` + `Toml` + `Env::prefixed("VIBE_")` providers on a `serde`-derived `SimConfig`. `apply_cli` layers `clap` flag overrides on top.
+- Logging: **`tracing`** + **`tracing-subscriber`** with `EnvFilter`.
 
-**Approach** (minimum keys):
-- **Network**: `listen_host`, `listen_port` (ADR-008)
-- **Data**: `database_path` (ADR-013)
-- **Tiles**: `osm_tile_url_template` or equivalent (ADR-004) for docs/client handoff
-- **Sim**: `tick_hz`, **AOI radius** defaults (ADR-012)
-- **Logging**: level + optional structured output
+**Config keys** (all with in-code defaults):
+- `listen` (`127.0.0.1:4747`) — bind host:port, ADR-008
+- `database_path` (`data/regions.db`) — ADR-013
+- `tick_hz` (`20.0`), `aoi_radius` (`500.0`) — ADR-012
+- `osm_tile_url_template` (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`) — client tile handoff, ADR-004
+- `texture_dir` (`data/textures`) — directory of `*.png` textures served to clients
 
-Default file path: **`vibe.toml`** (loaded through **`figment`**’s `Toml` provider). CLI flags may mirror the same keys via **`clap`** (implementation detail).
+`vibe.toml` is loaded only if present; env keys are `VIBE_<field>` (e.g. `VIBE_listen`).
 
 ## Rationale
 
 **Primary Reasoning**:
 1. **12-factor** style env overrides are standard for containers.
-2. **File config** matches Tundra/OpenSim operator expectations.
+2. **File config** matches operator expectations for a dedicated server.
 3. **Separation**: Keeps secrets out of source control.
 
 **Alternatives Considered**:

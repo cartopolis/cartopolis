@@ -3,14 +3,20 @@
 ---
 **Metadata:**
 - **ID**: ADR-006
-- **Status**: Proposed
+- **Status**: Superseded
 - **Date**: 2025-03-21
 - **Tags**: [coordinates, osm, regions, networking]
 - **Decision Type**: architecture_pattern
 - **Related**: [ADR-004, ADR-010, ADR-012]
 - **Supersedes**: []
-- **Superseded By**: []
+- **Superseded By**: [ADR-019, ADR-020, ADR-021]
 ---
+
+> **Superseded.** The absolute-f32 sim-unit region frame here proved too imprecise at
+> planet scale (ADR-019) and too coupled (map vs sim, ADR-020). Only the Web-Mercator
+> **tile math** survives, implemented in `vibe_core::world` (`lat_lng_to_tile`,
+> `tile_key_from_lat_lng`, `REGION_ZOOM_LEVEL = 17`). The region model itself is being
+> retired — see ADR-021 and the capacity-bounded asset direction. Kept for history.
 
 ## Context
 

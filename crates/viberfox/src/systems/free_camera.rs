@@ -213,6 +213,32 @@ pub fn globe_spin(dir: DVec3, north: DVec3, up: DVec3, drag: Vec2, sens: f32) ->
     }
 }
 
+/// The compass-locked variant of [`globe_spin`]: horizontal drag is a *pure
+/// longitude* spin about the planet's true polar axis (so the poles stay pinned,
+/// and you circle them in longitude but never travel over them), and vertical
+/// drag walks the meridian in latitude, clamped short of the pole exactly as
+/// [`globe_spin`] is. Unlike [`globe_spin`] — which rotates about the *screen*
+/// axes for direct grab-the-globe manipulation and so lets a drag drift your
+/// latitude and carry the view around a pole — this keeps north genuinely fixed,
+/// which is what the compass lock is asking for. Returns the new camera direction.
+pub fn globe_spin_polar(dir: DVec3, north: DVec3, drag: Vec2, sens: f32) -> DVec3 {
+    let north = north.normalize_or_zero();
+    // Horizontal: spin about the polar axis → longitude only, latitude untouched.
+    let spun = (DQuat::from_axis_angle(north, -(drag.x * sens) as f64) * dir).normalize();
+    // Vertical: tip along the meridian about the east tangent. Rotating `spun`
+    // about `east` by θ moves its latitude by −θ, so clamp θ into
+    // [lat − LIMIT, lat + LIMIT] to keep the result inside ±[`GLOBE_LAT_LIMIT`]
+    // (same bound-before-apply as `globe_spin`, and exact here since heading is 0).
+    let east = north.cross(spun);
+    if east.length_squared() < 1e-12 {
+        return spun; // looking straight down the axis; no meridian to walk
+    }
+    let east = east.normalize();
+    let lat = spun.dot(north).clamp(-1.0, 1.0).asin();
+    let tip = (-(drag.y * sens) as f64).clamp(lat - GLOBE_LAT_LIMIT, lat + GLOBE_LAT_LIMIT);
+    (DQuat::from_axis_angle(east, tip) * spun).normalize()
+}
+
 /// Absolute world position of a big_space grid cell's origin.
 fn cell_origin(cell: &GridCell) -> DVec3 {
     DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * WORLD_CELL_EDGE as f64
@@ -276,21 +302,13 @@ pub fn setup_camera(
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
 
-    // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19), and
-    // the stretched variant the space tier swaps in (see
-    // `globe::SPACE_ATMOSPHERE_THICKNESS`): the same air spread over a taller
-    // shell, thinned by exactly the height factor so the *column* through it is
-    // unchanged. Stretching without thinning multiplies the column and buries the
-    // planet's surface under haze — the limb reads, and nothing else does.
+    // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
+    // density is rewritten by altitude in `globe::update_globe_visibility` (thin
+    // low down so the map reads, rising for the limb from orbit — see
+    // `globe::ATMOSPHERE_DENSITY_NEAR`), so it's handed to that system as a shared
+    // handle. The planet spawns with it below.
     let medium = scattering_media.add(ScatteringMedium::default());
-    let tall_medium = scattering_media.add(
-        ScatteringMedium::default()
-            .with_density_multiplier(1.0 / crate::systems::globe::SPACE_ATMOSPHERE_THICKNESS),
-    );
-    commands.insert_resource(crate::systems::globe::AtmosphereMedia {
-        ground: medium.clone(),
-        space: tall_medium,
-    });
+    commands.insert_resource(crate::systems::globe::AtmosphereMedia { space: medium.clone() });
 
     // Atmosphere and its env-map IBL are chosen once here, at startup: they can't
     // be safely toggled at runtime (removing the components frees in-flight GPU
@@ -908,13 +926,26 @@ pub fn camera_controls(
                     let far_arc =
                         2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
                     let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
-                    camera_state.orbit_dir = globe_spin(
-                        camera_state.orbit_dir,
-                        globe.north_axis_local().as_dvec3(),
-                        camera_state.orbit_up,
-                        rot_delta,
-                        sens,
-                    );
+                    // Compass locked: spin about the true polar axis (north pinned
+                    // up, longitude-only horizontal, latitude clamped short of the
+                    // pole) instead of the screen-relative grab-the-globe rotate,
+                    // so the view can no longer be carried around the poles.
+                    camera_state.orbit_dir = if north_lock {
+                        globe_spin_polar(
+                            camera_state.orbit_dir,
+                            globe.north_axis_local().as_dvec3(),
+                            rot_delta,
+                            sens,
+                        )
+                    } else {
+                        globe_spin(
+                            camera_state.orbit_dir,
+                            globe.north_axis_local().as_dvec3(),
+                            camera_state.orbit_up,
+                            rot_delta,
+                            sens,
+                        )
+                    };
                 } else {
                     if !north_lock {
                         camera_state.orbit_yaw -= rot_delta.x * ORBIT_ROT_SENS;
@@ -1171,6 +1202,38 @@ mod tests {
             );
         }
         // …and it actually got there, rather than stalling early.
+        assert!(latitude(dir) > GLOBE_LAT_LIMIT.to_degrees() - 1.0);
+    }
+
+    /// Compass locked: a horizontal drag is a pure longitude spin — the
+    /// sub-camera latitude never changes, so the view circles the pole but is
+    /// never carried over or around it out of the north-up frame.
+    #[test]
+    fn globe_spin_polar_horizontal_holds_latitude() {
+        let mut dir = DVec3::new(0.3, 0.6, 0.74).normalize();
+        let lat0 = latitude(dir);
+        for _ in 0..90 {
+            dir = globe_spin_polar(dir, NORTH, Vec2::new(12.0, 0.0), 0.02);
+            assert!(
+                (latitude(dir) - lat0).abs() < 1e-6,
+                "horizontal drag drifted latitude {} off {lat0}",
+                latitude(dir)
+            );
+        }
+    }
+
+    /// Vertical drag still walks the meridian, and still stops short of the pole.
+    #[test]
+    fn globe_spin_polar_clamps_at_the_poles() {
+        let mut dir = DVec3::new(0.0, 0.0, 1.0);
+        for _ in 0..50 {
+            dir = globe_spin_polar(dir, NORTH, Vec2::new(0.0, 100.0), 0.01);
+            assert!(
+                latitude(dir) <= GLOBE_LAT_LIMIT.to_degrees() + 1e-6,
+                "latitude {} passed the limit",
+                latitude(dir)
+            );
+        }
         assert!(latitude(dir) > GLOBE_LAT_LIMIT.to_degrees() - 1.0);
     }
 

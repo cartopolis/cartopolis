@@ -48,6 +48,40 @@
 - **Self-service account lifecycle** (email verify, forgot-password flows, MFA enrollment) — not required for v0; **operator-driven CLI** covers bootstrap and password rotation.
 - **Fine-grained authorization** — separate ADR when mutating surface grows beyond “one trust level”.
 
+## Solo/dev mode and process model
+
+Adding auth must not change the dev DX: `cargo run -p viberfox --profile dev-bevy`
+still launches a working sim+viewer with one command. This is achieved without a
+solo-only code path:
+
+- **One client path.** The client's only entry point is `connect(addr, credentials)`.
+  Solo mode supplies its inputs (a loopback address + a dev account); `--connect`
+  supplies a remote address + `--login` credentials. Everything downstream —
+  handshake, auth, snapshot apply — is identical, so external connect stays
+  first-class and always-tested.
+- **In-process sim over loopback TCP.** `vibe_sim` is split into a **lib**
+  (`serve(config) -> SimHandle`, `ensure_account(...)`) + a thin bin (ADR-015). In
+  solo mode `viberfox` runs `serve` on a background tokio runtime bound to
+  `127.0.0.1:0` (ephemeral), reads back `SimHandle::local_addr`, and connects to it
+  as a normal authenticated client. **No in-memory bypass** of the socket or the
+  auth handshake — that would create a divergent, rotting path. `tokio`/`rusqlite`
+  are already client deps, so the added weight is small.
+- **Feature-gated.** A default-on `solo` cargo feature pulls the `vibe_sim` lib into
+  `viberfox`. Release/lean client builds turn it off and require `--connect`.
+- **Auto-provisioned dev account.** In solo mode the client calls the sim lib's
+  `ensure_account` (idempotent) at startup, so the real argon2 handshake runs every
+  launch with no manual `user add` and no "skip auth in solo" shortcut.
+- **Modes.** Default = solo (spawn + auth + connect); `--connect host:port` =
+  external sim; `--offline` = today's no-sim local-SQLite path (no auth); `--shot`
+  implies `--offline` so the screenshot harness stays sim-free.
+- **`--login`.** Credential source that avoids an interactive prompt: `--login <FILE>`
+  (gitignored TOML: `server?`, `user`, `password`|`token`) or inline `--login user:pass`;
+  a default path is checked when the flag is omitted. Combined with **session-token
+  persistence** in the user store, the password is entered at most once — later runs
+  reuse the token.
+- **Lifecycle.** In-process teardown is tied to Bevy `AppExit`: dropping `SimHandle`
+  aborts the accept/tick tasks. (The `SimHandle` Drop already does this.)
+
 ## Rationale
 
 **Primary Reasoning**:

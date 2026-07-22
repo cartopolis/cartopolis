@@ -1,16 +1,9 @@
-//! Headless simulation server (ADR-007, ADR-008, ADR-010–014).
-
-mod cli;
-mod config;
-mod db;
-mod net;
-mod state;
-mod textures;
+//! Headless simulation server binary — a thin wrapper over the `vibe_sim` lib
+//! (ADR-007). Loads layered config (ADR-014), serves, and runs until Ctrl-C.
 
 use clap::Parser;
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::sync::{broadcast, RwLock};
+use vibe_sim::{cli::SimCli, serve, SimConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,8 +14,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let sim_cli = cli::SimCli::parse();
-    let mut config = config::SimConfig::load()?;
+    let sim_cli = SimCli::parse();
+    let mut config = SimConfig::load()?;
     config.apply_cli(&sim_cli);
     let config = Arc::new(config);
     tracing::info!(
@@ -35,37 +28,12 @@ async fn main() -> anyhow::Result<()> {
         "vibe_sim"
     );
 
-    let conn = db::open_and_migrate(&config.database_path)?;
-    let (regions, prims) = db::load_world(&conn)?;
-    let conn = Arc::new(std::sync::Mutex::new(conn));
+    let handle = serve(config).await?;
+    tracing::info!(addr = %handle.local_addr, "vibe_sim ready");
 
-    let world = Arc::new(RwLock::new(state::SimWorld::new(
-        regions,
-        prims,
-        config.aoi_radius,
-        conn.clone(),
-    )));
-
-    let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);
-    let world_tick = world.clone();
-    let config_tick = config.clone();
-    tokio::spawn(net::tick_loop(world_tick, config_tick, tx_snap.clone()));
-
-    let listener = TcpListener::bind(&config.listen).await?;
-    tracing::info!("listening on {}", config.listen);
-
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        tracing::info!(%addr, "accepted");
-        let world_c = world.clone();
-        let cfg_c = config.clone();
-        let rx = tx_snap.subscribe();
-        let tx_c = tx_snap.clone();
-        let conn_c = conn.clone();
-        tokio::spawn(async move {
-            if let Err(e) = net::handle_connection(stream, world_c, cfg_c, rx, tx_c, conn_c).await {
-                tracing::warn!(%addr, "client ended: {e:#}");
-            }
-        });
-    }
+    // Hold the handle so the server keeps running until Ctrl-C; on exit it drops
+    // and the accept/tick tasks are aborted.
+    tokio::signal::ctrl_c().await?;
+    tracing::info!("shutting down");
+    Ok(())
 }

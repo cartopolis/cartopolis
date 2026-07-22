@@ -24,39 +24,37 @@
 
 ## Decision
 
-Use Bevy as the game engine for vibe-rs.
+Use Bevy as the game engine for viberfox.
 
-**Approach**: Bevy 0.16 with default plugins for rendering, ECS, windowing, and asset loading.
+**Approach**: Bevy 0.19 with a slimmed, explicit feature set (`default-features = false`, see `crates/viberfox/Cargo.toml`) — only the plugins used: `bevy_pbr`, `bevy_render`, `bevy_core_pipeline`, `bevy_post_process` (bloom), `bevy_gltf`, `bevy_animation`, `bevy_scene`, `bevy_winit`, `reflect_auto_register`, etc.
 
 ## Rationale
 
 **Primary Reasoning**:
-1. **Rust-native**: First-class Rust support, no FFI overhead
-2. **ECS-first**: Built-in ECS aligns with data-oriented design for many entities
-3. **Modular**: Plugin system allows adding only what's needed
-4. **PBR rendering**: Built-in physically-based rendering for materials
-5. **Active development**: Regular releases, growing ecosystem
+1. **Rust-native**: no FFI overhead
+2. **ECS-first**: aligns with data-oriented design for many entities
+3. **Modular**: opt into only the features needed
+4. **PBR rendering** + built-in atmosphere, bloom, cascaded shadows
+5. **Active development**: regular releases
 
 **Alternatives Considered**:
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
-| Amethyst | Mature ECS | Project inactive | Development halted |
-| Godot | Mature, full-featured | GDScript/C++ not Rust | Rust bindings immature |
+| Amethyst | Mature ECS | No longer actively developed | Not a Rust ECS we can build on long-term |
+| Godot | Mature, full-featured | GDScript/C++ not Rust | Rust bindings are third-party, not first-class |
 | Raw wgpu | Full control | Low-level, boilerplate | Too much work for scope |
 | Three.js (WASM) | Web target | JS overhead, different runtime | Not native Rust |
 
 ## Consequences
 
 **Positive**:
-- Fast iteration with hot reload
 - Clear separation of concerns via systems
-- Good documentation and examples
-- Built-in camera, lighting, transforms
+- Built-in camera, lighting, transforms, PBR
 
 **Negative**:
-- Bevy API changes between versions (mitigation: pin version, migrate when needed)
-- Smaller ecosystem than Unity/Unreal (mitigation: Bevy is sufficient for current scope)
+- Bevy API churn between versions (mitigation: pin version, migrate on each bump — the vendored `big_space` fork is re-synced then)
+- Smaller ecosystem than Unity/Unreal (mitigation: sufficient for current scope)
 
 ## Related
 

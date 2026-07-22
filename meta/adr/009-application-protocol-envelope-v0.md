@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-009
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [protocol, networking, api]
 - **Decision Type**: architecture_pattern
@@ -14,7 +14,7 @@
 
 ## Context
 
-**Problem**: Framed TCP (ADR-008) needs a **versioned, extensible** inner format so client and sim can evolve. Classic Tundra defines a large **numeric opcode** space in [TundraMessages.h](https://github.com/realXtend/tundra/blob/master/src/Core/TundraProtocolModule/TundraMessages.h) (login 100/101, scene sync 109+, entity action 120, …) and expects **login before scene traffic**.
+**Problem**: Framed TCP (ADR-008) needs a **versioned, extensible** inner format so client and sim can evolve.
 
 **Requirements**:
 - **Protocol version** negotiation or rejection
@@ -24,32 +24,31 @@
 
 ## Decision
 
-Define a **binary envelope** for every payload: `protocol_version`, `message_kind` (`u16` or `u32`), optional `request_id`, then **length-prefixed payload** decoded per kind. Implement **Handshake → Ack** (or Error) before **WorldSnapshot** or **Intent** messages.
+Every TCP frame body (ADR-008 length-delimited) is an **app frame**: an 8-byte header + postcard payload.
 
-**Approach**:
-- **Handshake**: client sends supported version + client id token (opaque string for v0); server replies Ack + assigned session parameters or Error with code.
-- **Serialization**: Use **`serde`** for all message bodies; encode on the wire with **`postcard`** (compact, `no_std`-friendly, deterministic enough for tests) unless profiling favors **`bincode`** 2—pick **one** codec for v0 and document the crate version. Optional JSON **only** for debug logging, not on hot paths.
-- **Opcode naming**: Rust **`enum` with `#[repr(u16)]` or `#[repr(u32)]`** (or explicit discriminant field) for `message_kind`; optional **`strum::Display`** for human-readable logs without hand-maintained string tables.
-- **Session tokens**: Prefer **`uuid::Uuid`** (v4 or v7 per policy) for opaque session ids rather than ad hoc strings.
+**Header** (`crates/vibe_core/src/protocol.rs`, all little-endian):
+- `protocol_version: u16` — `PROTOCOL_VERSION`, currently **8**; `decode_app_frame` rejects mismatches (`ProtocolError::UnsupportedVersion`).
+- `message_kind: u16` — discriminant of the `MessageKind` enum (`#[repr(u16)]`, values 1–16, `ClientHello`…`TextureNotFound`); mismatch vs the decoded body is rejected.
+- `request_id: u32` — correlation id (echoed in `ServerError`); 0 when unused.
 
-**Rust ecosystem summary**: `serde` + `postcard` (or `bincode`) + `uuid` + `thiserror` for typed protocol errors in `vibe_core`.
+**Body**: postcard-encoded `NetMessage` (the rest of the frame — the transport already delimits length, so no inner length prefix). `serde` derives on every message; `uuid::Uuid` for session ids; `thiserror` (`ProtocolError`) for typed decode errors.
 
-**Ordering** (aligned with Tundra login-before-scene): Handshake → (optional lightweight Ready) → WorldSnapshot / deltas / Intent.
+**Handshake / gate**: `ClientHello { protocol_version, client_token }` → `ServerHelloAck { session_id, tick_hz, your_avatar_id, osm_tile_url_template }` (or `ServerError`) before any `WorldSnapshot`/`ClientIntent`. Auth (real credential verification) is **not built** — `client_token` is an opaque placeholder for v0.
 
 ## Rationale
 
 **Primary Reasoning**:
 1. **Evolution**: Version + kind allow adding messages without new transports.
 2. **Debugging**: `request_id` links errors to client actions.
-3. **Familiar flow**: Same *gate* as Tundra/FIWARE sync docs without copying their byte layout.
+3. **Simple gate**: handshake-before-scene, without a full EC-attribute schema.
 
 **Alternatives Considered**:
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
 | JSON-only messages | Human-readable | Bandwidth + speed | Poor fit for snapshots |
-| Protobuf / **tonic** gRPC | Schema tooling, multi-lang | Heavier codegen, HTTP/2 stack | Defer until multi-language clients |
-| Clone Tundra opcodes 1:1 | Interop dream | Wrong security & layout | Explicit non-goal |
+| Protobuf / gRPC | Schema tooling, multi-lang | Heavier codegen, HTTP/2 stack | Defer until multi-language clients |
+| Bincode instead of postcard | Slightly faster | Less `no_std`-friendly, larger | Postcard is compact and deterministic enough |
 
 ## Consequences
 
@@ -58,12 +57,11 @@ Define a **binary envelope** for every payload: `protocol_version`, `message_kin
 - Testable with golden vectors per message kind
 
 **Negative**:
-- Every new kind needs versioning discipline (mitigation: feature flags in handshake)
-- Manual doc must stay in sync with Rust enums (mitigation: single `vibe_core` module; optional **`serde_json`** one-liners in tests for golden vectors)
+- Every new kind needs versioning discipline (mitigation: bump `PROTOCOL_VERSION`)
+- Wire schema lives in one `vibe_core` module; roundtrip tests per kind guard it
 
 ## Related
 
 - [ADR-008](./008-network-transport-layer.md): Frames carry this envelope
 - [ADR-010](./010-authoritative-avatar-state-v0.md): Intent message kinds
 - [ADR-011](./011-static-world-replication-v0.md): Snapshot / delta kinds
-- [Tundra protocol wiki](https://github.com/realXtend/tundra/wiki/Tundra-protocol) — byte-level reference we do **not** implement

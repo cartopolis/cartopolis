@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-013
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [sqlite, storage, migrations, server]
 - **Decision Type**: architecture_pattern
@@ -23,22 +23,19 @@
 
 ## Decision
 
-**`vibe_sim`** is the **sole writer** to `regions.db` (or configured path). Schema changes go through a **migration** mechanism checked in alongside code.
+**`vibe_sim`** is the **sole writer** to `regions.db` (or configured path). Schema changes go through checked-in migrations applied on startup.
 
-**Rust ecosystem**:
-- Keep **`rusqlite`** (ADR-002); add **`refinery`** with **embedded SQL migrations** (`include_str!` or refinery’s **`embed_migrations!`** helper) for versioned, transactional upgrades—common pairing in the ecosystem.
-- Run migrations on sim startup **before** binding the network port; surface errors with **`anyhow`/`tracing`** at the binary.
-
-**Approach**:
-- **Connection discipline**: Client binary does not open the production DB path when in networked mode; local single-player may keep current behavior until explicitly deprecated.
-- **Migrations**: One folder or module of ordered SQL/Rust migrations; sim applies on startup before accepting clients.
-- **Backup hook**: Document operator expectation (copy `.db` before major upgrade) in ops ADR-014.
+**Implementation** (`vibe_sim/src/db.rs`, `state.rs`):
+- **`rusqlite`** (bundled, ADR-002) + **`refinery`** `embed_migrations!("migrations")` for versioned, transactional upgrades. Migrations run on startup before accepting clients; errors surface via `anyhow`/`tracing`. Current versions: `V1__initial`, `V2__prim_texture`, `V3__prim_geometry_and_surface`.
+- **Single writer**: the connection is held as `Arc<Mutex<rusqlite::Connection>>` shared by `SimWorld` and `net.rs` — one serialized write path.
+- **Connection discipline**: the client does not open the production DB path in networked mode; it receives DTOs (ADR-011). Local single-player keeps its own SQLite.
+- **Backup**: operator copies `.db` before a major upgrade (documented in ADR-014).
 
 ## Rationale
 
 **Primary Reasoning**:
 1. **SQLite expectation**: Single writer is the safe default; WAL helps readers but not multi-writer apps.
-2. **Operational clarity**: Matches dedicated region sim mental model (OpenSim/Tundra server owns world).
+2. **Operational clarity**: The sim owns the world (ADR-007).
 3. **Growth**: Migrations unlock new columns for networking ids, timestamps, etc.
 
 **Alternatives Considered**:

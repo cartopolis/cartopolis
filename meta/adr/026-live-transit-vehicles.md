@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-026
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-19
 - **Tags**: [data-layers, transit, live-data, rendering, gtfs-rt]
 - **Decision Type**: technology_choice
@@ -38,24 +38,24 @@ all live Dutch vehicles — on a worker thread, and drive one **coloured box mes
 per nearby vehicle** that glides between successive fixes.
 
 **Approach** (`systems/transit_vehicles.rs`):
-- A worker fetches the feed every 15 s (gated on the transit layer being on, the
-  camera being near the ground, and vehicles in range).
+- A worker fetches the feed every 15 s (gated on the layer being on, the camera
+  near the ground, and vehicles in range).
 - A **hand-rolled minimal protobuf reader** extracts the few fields needed
-  (entity id, position lat/lng, timestamp) — no `prost`/codegen. Stale fixes
-  (timestamp > 10 min old; the feed leaves ghosts) are dropped.
-- Each fix is converted to the world frame via the shared map anchor, exactly
-  like the POI pins (`lat_lng_to_local`), so vehicles follow re-anchors.
-- Vehicles are reconciled into at most 80 boxes within 3 km of the camera
-  (nearest first), each interpolated from its previous shown position to the
-  new fix over the poll interval. Heading is **derived from travel direction**
-  (the feed carries no bearing/speed field).
-- **Line number + mode**: the feed's `route_id` is opaque, so the worker fetches
-  OVapi's `/line/` list once (disk-cached, 24 h TTL) and maps the operator
-  line-planning number carried in the vehicle id (`…:GVB:293:…`) to the public
-  line (`N93`) and its `TransportType`. The number is painted (fontdue, egui's
-  embedded font — same technique as the departure boards) onto a small badge
-  texture, shared per line, and shown on a camera-facing label above the box;
-  the mode drives the box/label colour. Verified live: 139/140 vehicles resolve.
+  (entity id, position lat/lng, timestamp) — no `prost`/codegen. Fixes older
+  than 10 min (the feed leaves ghosts) are dropped.
+- Each fix is converted to the world frame via the shared map anchor
+  (`lat_lng_to_local`), so vehicles follow re-anchors.
+- Vehicles are reconciled into ≤80 boxes within 3 km (nearest first), spawned
+  ≤6/frame (iGPU device-loss guard), each interpolated from its last shown
+  position to the new fix over the poll interval. Heading is **derived from
+  travel direction** (the feed carries no bearing/speed field).
+- **Line number + mode**: `route_id` is opaque, so the worker fetches OVapi's
+  `/line/` list once (disk-cached, 24 h TTL) and maps the operator line-planning
+  number in the vehicle id (`…:GVB:293:…`) to the public line (`N93`) and its
+  `TransportType`. The number is painted (fontdue, egui's embedded font — as on
+  the departure boards) onto a per-line badge texture, shown on a camera-facing
+  label above the box; the mode drives the box/label colour. Verified live:
+  139/140 vehicles resolve.
 - Toggled by a "Live vehicles" sub-checkbox under the transit layer; hidden in
   the space tier.
 
@@ -77,7 +77,7 @@ per nearby vehicle** that glides between successive fixes.
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
 | `prost` + generated GTFS-RT schema | Standard, complete | New heavy dep + build codegen for 6 fields; own ADR for the dependency | Overkill; a minimal reader is enough and lighter |
-| NDOV KV6 push feed | Authoritative, includes speed/bearing | Registration, ZeroMQ, per-operator formats | Far too heavy for a client overlay (same reason ADR-024 rejected it) |
+| NDOV KV6 push feed | Authoritative, includes speed/bearing | Registration, ZeroMQ, per-operator formats | Heavier than a client overlay needs (same reason as ADR-024) |
 | GPS bearing from the feed | Exact heading | Field is absent in this feed (0/140 carry it) | Not available; heading derived from motion instead |
 | Real bus glTF model | Diegetic, recognisable | Modelling/animation work | Placeholder box ships now; the renderer can be swapped without touching the data path |
 

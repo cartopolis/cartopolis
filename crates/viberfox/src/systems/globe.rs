@@ -39,15 +39,41 @@ use vibe_core::geo::TangentFrame;
 use vibe_core::world::tile_to_meters;
 use vibe_core::TileKey;
 
-/// Albedo multiplier on the globe's imagery. The OSM basemap is a *map*: pale
-/// beige land on near-white paper, reflecting ~0.8 where the real Earth averages
-/// ~0.3. Rendered at face value the sunlit hemisphere sat in the tonemapper's
-/// shoulder as a flat white ball, and the only way to tame it was to stop the
-/// camera down — which took the faint things down with it (the atmosphere's limb
-/// glow, the stars). Darkening the imagery to a plausible planetary albedo fixes
-/// the cause instead, and buys back the exposure those need. Globe meshes only
-/// render in the space tier, so nothing on the ground is affected.
-pub const GLOBE_ALBEDO: f32 = 0.55;
+/// Surface-imagery albedo in deep space. The OSM basemap is a *map*: pale beige
+/// land on near-white paper, reflecting ~0.8 where the real Earth averages ~0.3.
+/// At face value the sunlit hemisphere sits on the tonemapper's shoulder as a
+/// flat pale ball — and because the shoulder compresses highlights, stopping the
+/// *camera* down barely darkens it (and dims the limb and stars with it). So the
+/// darkening is a tint on the imagery itself, where it actually bites.
+///
+/// Crucially it's *ramped* to 1.0 at the globe threshold (see
+/// [`GlobeSurfaceAlbedo`] / `update_globe_albedo`): a fixed tint made the globe
+/// step a stop darker than the flat map tiles the instant it appeared, because
+/// the globe replaces those tiles exactly at the boundary. Ramped, the boundary
+/// is seamless and only deep space reads planetary. Surface-only, so the
+/// atmosphere limb stays bright.
+const GLOBE_DEEP_ALBEDO: f32 = 0.55;
+/// Change in the ramped albedo worth rewriting the globe materials for.
+const ALBEDO_UPDATE_STEP: f32 = 0.03;
+
+/// Current globe surface-imagery albedo (see [`GLOBE_DEEP_ALBEDO`]): 1.0 near the
+/// threshold, falling toward `GLOBE_DEEP_ALBEDO` with altitude. Read at tile spawn
+/// so new tiles start at the right tint; `update_globe_albedo` keeps the live
+/// materials in step.
+#[derive(Resource)]
+pub struct GlobeSurfaceAlbedo(pub f32);
+
+impl Default for GlobeSurfaceAlbedo {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// A globe surface's *base* imagery tone (before the albedo ramp): white for map
+/// tiles, the ocean tone for the backstop sphere. `update_globe_albedo` multiplies
+/// it by the current [`GlobeSurfaceAlbedo`] to get each material's `base_color`.
+#[derive(Component)]
+pub struct GlobeSurfaceTint(pub Vec3);
 
 /// Latitude/longitude tessellation of the base (ocean backstop) sphere.
 const GLOBE_RINGS: usize = 64;
@@ -450,11 +476,7 @@ pub fn setup_globe(
             // light (not a void). The water tone backstops the polar caps beyond
             // Mercator's ±85° and still-loading tiles.
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(
-                    0.67 * GLOBE_ALBEDO,
-                    0.80 * GLOBE_ALBEDO,
-                    0.85 * GLOBE_ALBEDO,
-                ),
+                base_color: Color::srgb(0.67, 0.80, 0.85),
                 perceptual_roughness: 1.0,
                 reflectance: 0.0,
                 double_sided: true,
@@ -471,6 +493,9 @@ pub fn setup_globe(
             bevy::light::NotShadowReceiver,
             Visibility::Hidden, // shown by update_globe_visibility only in space
             GlobeMesh,
+            // Base tone for the albedo ramp (see GlobeSurfaceTint): the ocean
+            // colour, matching this material's base_color at albedo 1.0.
+            GlobeSurfaceTint(Vec3::new(0.67, 0.80, 0.85)),
         ))
         .id();
     globe.entity = Some(entity);
@@ -616,15 +641,27 @@ pub const SPACE_ATMOSPHERE_THICKNESS: f32 = 2.5;
 /// look at.
 pub const SPACE_FULL_ALT: f32 = 3_000_000.0;
 
+/// Atmosphere density multiplier at the globe threshold (`space_factor` 0). Low
+/// so the aerial-perspective wash lifts off the detailed map at low orbit; it
+/// ramps up toward `1/SPACE_ATMOSPHERE_THICKNESS` in deep space, where the fuller
+/// column is what makes the limb glow. See `update_globe_visibility`.
+const ATMOSPHERE_DENSITY_NEAR: f32 = 0.12;
+
+/// Below this altitude the atmosphere is held at full Earth density: this same
+/// planet `Atmosphere` is the city's sky dome and its dawn/dusk colour, tuned
+/// against the real preset. Between here and `GLOBE_SHOW_ALT` the density fades
+/// down to `ATMOSPHERE_DENSITY_NEAR` — a climb-out band, above the city sky and
+/// below the globe view, where thinning nothing critical shows.
+const CITY_ATMOSPHERE_ALT: f32 = 15_000.0;
+
 /// Change in shell thickness that's worth rebuilding the scattering medium for.
 const MEDIUM_REBUILD_STEP: f32 = 0.05;
 
-/// The scattering media: Bevy's Earth preset, and the copy `update_globe_visibility`
-/// re-derives as the shell stretches (thinned to keep the column constant — see
-/// [`SPACE_ATMOSPHERE_THICKNESS`]). Built once in `free_camera::setup_camera`.
+/// The planet's scattering medium, whose density `update_globe_visibility`
+/// re-derives by altitude (see [`ATMOSPHERE_DENSITY_NEAR`]). Built once in
+/// `free_camera::setup_camera`.
 #[derive(Resource)]
 pub struct AtmosphereMedia {
-    pub ground: Handle<bevy::light::atmosphere::ScatteringMedium>,
     pub space: Handle<bevy::light::atmosphere::ScatteringMedium>,
 }
 /// Bevy's default sky samples, restored at ground level (LookupTexture mode
@@ -680,8 +717,8 @@ pub fn update_globe_visibility(
     mut planet: Query<&mut bevy::light::Atmosphere, With<PlanetAtmosphere>>,
     media: Option<Res<AtmosphereMedia>>,
     mut scattering_media: ResMut<Assets<bevy::light::atmosphere::ScatteringMedium>>,
-    // Shell thickness the current `media.space` asset was built for.
-    mut applied_thickness: Local<f32>,
+    // Density multiplier the current `media.space` asset was built for.
+    mut applied_density: Local<f32>,
     mut globe_vis: Query<
         &mut Visibility,
         (With<GlobeMesh>, Without<HideInSpace>),
@@ -742,12 +779,11 @@ pub fn update_globe_visibility(
     // Mutating the existing component's fields is safe — it's the add/remove that
     // hangs the device, not a field write.
     if let (Ok(mut planet), Some(media)) = (planet.single_mut(), media) {
-        // Stretch the shell in with altitude rather than at the threshold, and
-        // thin the air by the same factor so the column through it never changes
-        // (stretching alone buries the surface under haze). At `space_factor` 0
-        // this is exactly Bevy's Earth preset, which is why crossing the tier
-        // boundary shows no seam at all.
-        let thickness = 1.0 + (SPACE_ATMOSPHERE_THICKNESS - 1.0) * globe.space_factor(cell, tf);
+        let sf = globe.space_factor(cell, tf);
+        // Shell height stretches with altitude so the limb reads from deep space
+        // (see `SPACE_ATMOSPHERE_THICKNESS`); at the boundary it's Earth's real
+        // 100 km.
+        let thickness = 1.0 + (SPACE_ATMOSPHERE_THICKNESS - 1.0) * sf;
         let want_outer = planet.inner_radius + EARTH_ATMOSPHERE_THICKNESS * thickness;
         if planet.outer_radius != want_outer {
             planet.outer_radius = want_outer;
@@ -755,14 +791,34 @@ pub fn update_globe_visibility(
         if planet.medium != media.space {
             planet.medium = media.space.clone();
         }
-        // The medium is an asset, so it can't be lerped per-frame for free —
-        // rewriting it rebuilds its falloff/phase LUTs. Re-derive it only when
-        // the density has actually drifted (a few times across a full zoom).
-        if (thickness - *applied_thickness).abs() > MEDIUM_REBUILD_STEP {
+        // Air density crossfades with altitude — deliberately NOT a constant
+        // column. The atmosphere's inscattering washes the surface blue in
+        // proportion to the air the view ray crosses, and looking straight down
+        // from low orbit that's the whole depth of it. Held at full density near
+        // the boundary (the old constant-column rule) it buried the detailed map
+        // under a blue veil right where the flat-tile view takes over. Three
+        // regimes, blended so there's no seam anywhere:
+        //   * City (below `CITY_ATMOSPHERE_ALT`): full Earth density — this same
+        //     Atmosphere is the city's sky dome and its dawn/dusk colour, which
+        //     are tuned against the real preset.
+        //   * Low orbit (climb-out → threshold): thinning to
+        //     `ATMOSPHERE_DENSITY_NEAR` so the aerial-perspective wash lifts off
+        //     the detailed map and it reads like the flat tiles it hands off to.
+        //   * Deep space: rising to the column that makes the limb glow.
+        // `city_fade` reaches 1 exactly at the globe threshold, where `sf` picks
+        // up from 0, so the inner and outer lerps meet continuously.
+        let alt = globe.altitude_m(cell, tf) as f32;
+        let city_fade = crate::utils::sun::smoothstep(CITY_ATMOSPHERE_ALT, GLOBE_SHOW_ALT, alt);
+        let density = (1.0f32.lerp(ATMOSPHERE_DENSITY_NEAR, city_fade))
+            .lerp(1.0 / SPACE_ATMOSPHERE_THICKNESS, sf);
+        // The medium is an asset; rewriting it rebuilds its falloff/phase LUTs, so
+        // re-derive it only when the density has actually drifted (a handful of
+        // times across a full zoom, not every frame).
+        if (density - *applied_density).abs() > MEDIUM_REBUILD_STEP {
             if let Some(mut medium) = scattering_media.get_mut(&media.space) {
                 *medium = bevy::light::atmosphere::ScatteringMedium::default()
-                    .with_density_multiplier(1.0 / thickness);
-                *applied_thickness = thickness;
+                    .with_density_multiplier(density);
+                *applied_density = density;
             }
         }
     }
@@ -780,6 +836,38 @@ pub fn update_globe_visibility(
     for mut v in hide_vis.iter_mut() {
         if *v != want_local {
             *v = want_local;
+        }
+    }
+}
+
+/// Ramp the globe's surface-imagery albedo with altitude (see [`GLOBE_DEEP_ALBEDO`]):
+/// full brightness at the tier boundary, so the globe matches the flat map tiles
+/// it replaces there, darkening to a planetary tone as you climb to orbit. Writes
+/// the shared [`GlobeSurfaceAlbedo`] (read at tile spawn) and rewrites the live
+/// tile + backstop materials when it drifts past [`ALBEDO_UPDATE_STEP`].
+pub fn update_globe_albedo(
+    globe: Res<GlobeState>,
+    camera: Query<
+        (&GridCell, &Transform),
+        With<crate::systems::free_camera::FreeCamera>,
+    >,
+    mut albedo: ResMut<GlobeSurfaceAlbedo>,
+    tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<StandardMaterial>), With<GlobeMesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut applied: Local<Option<f32>>,
+) {
+    let Ok((cell, tf)) = camera.single() else {
+        return;
+    };
+    let a = 1.0f32.lerp(GLOBE_DEEP_ALBEDO, globe.space_factor(cell, tf));
+    albedo.0 = a;
+    if applied.is_some_and(|p| (a - p).abs() < ALBEDO_UPDATE_STEP) {
+        return;
+    }
+    *applied = Some(a);
+    for (tint, mat) in tinted.iter() {
+        if let Some(mut m) = materials.get_mut(&mat.0) {
+            m.base_color = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
         }
     }
 }
@@ -802,6 +890,7 @@ pub fn update_globe_tiles(
     windows: Query<&Window>,
     headless: Option<Res<crate::resources::HeadlessSurface>>,
     bigspace: Query<Entity, With<BigSpace>>,
+    surface_albedo: Res<GlobeSurfaceAlbedo>,
     time: Res<Time>,
 ) {
     let headless = headless.map(|h| *h);
@@ -947,7 +1036,14 @@ pub fn update_globe_tiles(
                 // near-black under the camera's physical exposure (see the base
                 // sphere note). Sunlit day side bright, night side ambient-filled.
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(GLOBE_ALBEDO, GLOBE_ALBEDO, GLOBE_ALBEDO),
+                    // Current ramped albedo, so a tile streaming in while parked
+                    // in orbit starts at the right tint instead of popping bright
+                    // (the throttled `update_globe_albedo` won't re-touch it if
+                    // the camera isn't moving). White base tone (see the tint).
+                    base_color: {
+                        let a = surface_albedo.0;
+                        Color::srgb(a, a, a)
+                    },
                     base_color_texture: Some(texture),
                     perceptual_roughness: 1.0,
                     reflectance: 0.0,
@@ -961,6 +1057,7 @@ pub fn update_globe_tiles(
                 bevy::light::NotShadowReceiver,
                 Visibility::Hidden, // update_globe_visibility shows it in space
                 GlobeMesh,
+                GlobeSurfaceTint(Vec3::ONE),
             ))
             .id();
         if let Some(old) = globe.loaded.insert(key, entity) {

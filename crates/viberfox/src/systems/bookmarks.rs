@@ -35,7 +35,12 @@ pub struct BookmarksState {
 }
 
 impl BookmarksState {
-    /// Resolve a bookmark's address on a background thread.
+    /// Resolve a bookmark's address on a background thread. The reverse lookup
+    /// uses only lat/lng — altitude never enters it, so a bookmark taken from
+    /// orbit resolves the same as one taken at street level. What it resolves to
+    /// is the point on the globe directly under the camera; over open ocean (or
+    /// on a network failure) Nominatim has no address, so we fall back to the
+    /// coordinates rather than leaving the name stuck on the placeholder.
     pub fn request_address(&self, id: u64, lat: f64, lng: f64) {
         let resolved = self.resolved.clone();
         std::thread::spawn(move || {
@@ -51,11 +56,10 @@ impl BookmarksState {
                 .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
                 .and_then(|json| {
                     json.get("display_name").and_then(|v| v.as_str()).map(short_address)
-                });
-            if let Some(name) = name {
-                if let Ok(mut g) = resolved.lock() {
-                    g.push((id, name));
-                }
+                })
+                .unwrap_or_else(|| coord_label(lat, lng));
+            if let Ok(mut g) = resolved.lock() {
+                g.push((id, name));
             }
         });
     }
@@ -66,6 +70,14 @@ impl BookmarksState {
 fn short_address(display_name: &str) -> String {
     let parts: Vec<&str> = display_name.split(',').map(str::trim).take(3).collect();
     parts.join(", ")
+}
+
+/// Fallback name when the reverse lookup finds no address (open ocean, or a
+/// failed request): the signed coordinates as N/S, E/W.
+fn coord_label(lat: f64, lng: f64) -> String {
+    let ns = if lat >= 0.0 { 'N' } else { 'S' };
+    let ew = if lng >= 0.0 { 'E' } else { 'W' };
+    format!("{:.3}°{ns}, {:.3}°{ew}", lat.abs(), lng.abs())
 }
 
 /// Fold finished reverse lookups into the bookmark names.

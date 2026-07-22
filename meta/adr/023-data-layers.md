@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-023
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-10
 - **Tags**: [osm, data-layers, rendering, ui, import]
 - **Decision Type**: architecture_pattern
@@ -33,14 +33,14 @@ streaming and disposal.
 
 ## Decision
 
-Introduce a **client-side data-layer registry** (`systems/data_layers.rs`) whose
-first layer is **public transport stops**, sourced from the **OSM Overpass API**.
+Introduce a **client-side data-layer registry** (`systems/data_layers.rs`), sourced
+from the **OSM Overpass API**. Shipped layers: **transit stops** and **shops**.
 
 **Approach**: A `LAYER_DEFS` table declares each layer as `{key, name, Overpass
 query with a {bbox} placeholder, categories with marker styles, classify fn}`.
 Shared machinery streams every *enabled* layer per fixed zoom-14 cell within
-`LAYER_CELL_RADIUS` of the camera: disk-cached Overpass fetch → POI classify →
-one merged pin-marker mesh per cell, all on a worker thread; the main thread only
+`LAYER_CELL_RADIUS` (3) of the camera: disk-cached Overpass fetch → POI classify →
+one merged marker mesh per cell, all on a worker thread; the main thread only
 spawns entities. Disabling a layer flips `Visibility` rather than despawning.
 
 ## Rationale
@@ -52,16 +52,16 @@ spawns entities. Disabling a layer flips `Visibility` rather than despawning.
 2. **The building far-cell streamer is a proven template** for exactly this
    shape of problem (fetch-once/keep-while-in-range/anchor-to-BigSpace-cell), so
    the layer streamer reuses its cache layout, throttle, and cell geometry.
-3. **Transit stops are the right first layer**: dense enough in Dutch cities to
-   be visibly interesting immediately, node-only (no geometry assembly), and
-   split into three tag-obvious categories that exercise the styling path.
+3. **Transit stops are the right first layer**: dense in Dutch cities, node-only
+   (no geometry assembly), and split into tag-obvious categories that exercise the
+   styling path. Shops followed as a denser, pin-headed second layer.
 
 **Alternatives Considered**:
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
 | NL-only sources (NDOV/OVapi, CBS, BAG) | Richer, authoritative, real-time departures | Netherlands-only; each has its own schema, endpoint, and terms | Layers must work worldwide; a NL-only first layer would bake NL assumptions into the registry's shape |
-| Wikidata / Wikimedia SPARQL | Worldwide, CC0, rich entity links | Sparse and inconsistent geo coverage; SPARQL endpoint is slow and rate-limited | Poor coverage of exactly the street-level POIs we want |
+| Wikidata / Wikimedia SPARQL | Worldwide, CC0, rich entity links | Uneven street-level geo coverage; public SPARQL endpoint is rate-limited | Coverage too thin for the street-level POIs this layer set targets |
 | Overpass, one query per POI type | Simple per-layer queries | N× the requests against a shared free service | Union queries fetch a whole layer's categories in one request per cell |
 | Bake POIs into the SQLite world DB server-side | No client network path; server can enrich | Requires an import pipeline and schema before we know what layers we want | Premature; revisit once layer set stabilises (see Consequences) |
 
@@ -77,7 +77,7 @@ spawns entities. Disabling a layer flips `Visibility` rather than despawning.
 **Negative**:
 - **Free-service load**: layer fetches share the Overpass budget with buildings.
   Mitigated by the same 800 ms inter-query throttle, the disk cache, bounded
-  retries (3), and only streaming layers the user has enabled.
+  retries (5 rounds per cell, with backoff), and only streaming enabled layers.
 - **Attribution obligation**: ODbL requires credit. The Data Layers panel
   carries "Data © OpenStreetMap contributors (ODbL), via Overpass API".
 - **Client-side fetching** means each client queries Overpass independently. If

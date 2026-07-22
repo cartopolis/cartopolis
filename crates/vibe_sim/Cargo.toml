@@ -3,12 +3,17 @@ name = "vibe_sim"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "vibe_sim"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vibe_sim"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+argon2.workspace = true
 bytes.workspace = true
 clap.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }

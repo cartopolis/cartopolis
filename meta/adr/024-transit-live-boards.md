@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-024
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-11
 - **Tags**: [data-layers, transit, live-data, ui, dependency]
 - **Decision Type**: technology_choice
@@ -35,16 +35,16 @@ Poll **OVapi** (`http://v0.ovapi.nl`), the open real-time feed for all Dutch
 public transport, and render an egui departure board anchored above each
 nearby stop pin.
 
-**Approach**: OSM stops carry `ref:IFOPT` (`NL:Q:10006090`); the numeric
-suffix is OVapi's timing-point code, giving a direct join with no lookup
-table. A worker thread issues one batched `/tpc/{code,…}` request per 30 s
-interval covering the ≤40 nearest stops within 800 m of the camera. A
-`WorldClock` resource tracks unix time each frame; OVapi's naive-local
-timestamps are converted using the UTC offset the feed itself reports in
-`LastUpdateTimeStamp` (`+0200`/`+0100`), so DST is handled by the feed and the
-client needs only `std` date math. Boards are egui overlays projected from the
-pin anchors (max 8, nearest within 500 m), showing line, destination, and
-minutes-to-departure with delay/cancellation colouring.
+**Approach** (`systems/transit_live.rs`): OSM stops carry `ref:IFOPT`
+(`NL:Q:10006090`); the numeric suffix is OVapi's timing-point code — a direct
+join, no lookup table. A worker thread issues one batched `/tpc/{code,…}`
+request per 30 s covering the ≤40 nearest stops within 800 m. A `WorldClock`
+resource tracks unix time; OVapi's naive-local timestamps are converted using
+the UTC offset the feed reports in `LastUpdateTimeStamp` (`+0200`/`+0100`), so
+DST is the feed's problem and the client needs only `std` date math. Boards are
+egui overlays projected from the pin anchors (max 8, nearest within 500 m),
+showing line, destination, and minutes-to-departure with delay/cancellation
+colouring.
 
 ## Rationale
 
@@ -61,7 +61,7 @@ minutes-to-departure with delay/cancellation colouring.
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
-| NDOV raw feeds (KV6/KV78turbo) | Authoritative, push-based | Registration, ZeroMQ plumbing, per-operator formats | Far too heavy for a client-side overlay |
+| NDOV raw feeds (KV6/KV78turbo) | Authoritative, push-based | Registration, ZeroMQ plumbing, per-operator formats | Heavier than a client-side overlay needs |
 | GTFS-Realtime aggregators | Worldwide pattern | No single open worldwide endpoint; per-feed keys and formats | Right direction for non-NL later, not for v0 |
 | 3D text boards in-world | Prettier, diegetic | Needs a text-to-texture pipeline Bevy lacks | egui overlay ships now; 3D skin can replace the renderer later without touching the data path |
 

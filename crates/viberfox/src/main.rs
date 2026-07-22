@@ -256,6 +256,7 @@ fn main() {
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
     .init_resource::<systems::globe::GlobeState>()
+    .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
     // Space background: the atmosphere skybox covers this everywhere in the local
     // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
     .insert_resource(ClearColor(Color::BLACK))
@@ -450,6 +451,8 @@ fn main() {
                 )),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
             systems::globe::update_globe_visibility
+                .after(systems::free_camera::camera_controls),
+            systems::globe::update_globe_albedo
                 .after(systems::free_camera::camera_controls),
             // Track the atmosphere's planet centre against the floating-origin
             // camera cell (correct sky altitude in every tier — see its doc).
@@ -822,14 +825,12 @@ const MOON_AMBIENT_BRIGHTNESS: f32 = 40.0;
 /// into the night side from orbit, so this is only a floor that keeps the dark
 /// half legible against the starfield.
 const SPACE_AMBIENT_BRIGHTNESS: f32 = 120.0;
-/// Stops of *extra* exposure headroom in the space tier (positive = darker).
-///
-/// Held at 0: this was 1.0 while the globe's map imagery was rendered at its own
-/// near-white albedo and the sunlit hemisphere blew out. Stopping the camera
-/// down fixed that at the cost of everything faint in the same frame — the
-/// atmosphere's limb glow went to a hairline and the stars nearly vanished.
-/// `globe::GLOBE_ALBEDO` treats the cause instead, so the exposure can stay
-/// where the rest of the scene wants it.
+/// Stops the camera stops down by in deep space (positive = darker), faded in
+/// from the globe threshold on `space_factor`. Held near 0: the near-white map
+/// imagery sits on the tonemapper's shoulder, where stopping the camera down
+/// barely darkens the surface but does dim the limb and stars. The surface
+/// darkening is a tint on the imagery instead (`globe::GLOBE_DEEP_ALBEDO`), which
+/// bites where exposure can't; this is left as a small trim knob.
 const SPACE_EXPOSURE_STOPS: f32 = 0.0;
 
 /// Marker for the sun's directional light.
@@ -1375,12 +1376,16 @@ fn apply_day_night_cycle(
         - NIGHT_EXPOSURE_LIFT * (1.0 - day)
         - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day);
     if let Ok((_, _, mut exp, mut bloom)) = camera.single_mut() {
-        // The space end of the ramp opens up by `GLOBE_ALBEDO`'s worth of stops:
-        // the globe's imagery is darkened by that factor, and at the tier
-        // boundary it replaces the full-brightness flat map tiles, so without
-        // the compensation the map dropped a stop the moment the globe appeared.
-        let space_ev = DAY_EXPOSURE_EV100 + SPACE_EXPOSURE_STOPS
-            - globe_albedo_stops() * (1.0 - space);
+        // The globe's map imagery is bright (near-white paper); from orbit the
+        // sunlit hemisphere blows out, so stop the camera down as you climb. This
+        // rides `space_factor`, so at the tier boundary it's exactly the ground
+        // exposure — the globe there renders as bright as the flat tiles it
+        // replaces, no step — and only deep in space does it darken to a
+        // planetary look. (The darkening lives here, not baked into the tile
+        // material, precisely so it can be zero at the boundary; a fixed material
+        // tint can't be, because exposure is global and can't tell the globe
+        // above the boundary from the flat tiles just below it.)
+        let space_ev = DAY_EXPOSURE_EV100 + SPACE_EXPOSURE_STOPS;
         exp.ev100 = ground_ev.lerp(space_ev, space);
         // More glare the farther out you go (see the constants): from deep space
         // the limb is a few pixels of arc, and glare is most of what makes it
@@ -1436,11 +1441,6 @@ fn apply_day_night_cycle(
             affects_lightmapped_meshes: true,
         };
     }
-}
-
-/// Stops of exposure the globe's darkened imagery costs (see `globe::GLOBE_ALBEDO`).
-fn globe_albedo_stops() -> f32 {
-    -systems::globe::GLOBE_ALBEDO.log2()
 }
 
 /// Change in `GlobeState::space_factor` worth re-applying the lighting for. The

@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-018
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-06-12
 - **Tags**: [prims, textures, ui, protocol, persistence, rendering]
 - **Decision Type**: architecture_pattern
@@ -23,7 +23,7 @@ per meter, and offset.
 
 **Requirements**:
 - Edit, live-preview, persist, and (when online) replicate these values per prim.
-- Map cleanly onto Bevy 0.16 `StandardMaterial` without a custom shader.
+- Map cleanly onto Bevy 0.19 `StandardMaterial` without a custom shader.
 - Stay backward-tolerant for stored prims that predate the columns.
 
 ## Decision
@@ -51,7 +51,7 @@ edit dialog.
 
 **Primary Reasoning**:
 1. One grouped value type keeps ~20 construction/threading sites to a single field each.
-2. `StandardMaterial` already exposes every needed property in 0.16 — no shader work.
+2. `StandardMaterial` already exposes every needed property in 0.19 — no shader work.
 3. Following the existing warp-param pattern minimizes reviewer surprise.
 
 **Alternatives Considered**:
@@ -64,18 +64,15 @@ edit dialog.
 
 ## Notes / Limitations
 
-- Texture rotation and repeats pivot about the texture center (0.5, 0.5).
-- `UpdatePrim` carries both `PrimSurface` and `PrimGeometry`; the server persists all of
-  them, so surface and geometry survive a reconnect / fresh `WorldSnapshot`.
-- **Online prim authoring is now wired end-to-end.** The dialog's Save/Create/Delete emit
-  `UpdatePrim` / `CreatePrim` / `DeletePrim` when connected (previously only gizmo drags
-  sent anything). `CreatePrim` was extended to carry the full initial authoring state
-  (name/transform/color/texture/surface/geometry) so online create has offline parity; the
-  server inserts then applies it in one step and broadcasts `PrimUpsert`.
-- The client now applies `PrimUpsert` broadcasts: existing prims update **in place**
-  (mesh/texture/surface refreshed via marker components — no despawn/respawn flicker at the
-  ~20 Hz gizmo-drag rate), and unknown ids spawn. The prim the local user currently has
-  selected is skipped, since its local copy is authoritative during editing and was already
-  applied locally — avoiding an echo fight.
-- Selection highlight is a subtle additive emissive (not a base-color tint), so the texture
-  stays visible while a prim is selected/edited.
+- Rotation and repeats pivot about the texture center (0.5, 0.5).
+- `UpdatePrim` carries both `PrimSurface` and `PrimGeometry`; the server persists both, so
+  they survive a reconnect / fresh `WorldSnapshot`.
+- **Online authoring is wired end-to-end.** Save/Create/Delete emit `UpdatePrim` /
+  `CreatePrim` / `DeletePrim` when connected. `CreatePrim` carries the full initial state
+  (name/transform/color/texture/surface/geometry) for offline parity; the server inserts,
+  applies, and broadcasts `PrimUpsert`.
+- Clients apply `PrimUpsert`: known prims update **in place** via marker components (no
+  despawn/respawn flicker at the ~20 Hz drag rate), unknown ids spawn. The locally-selected
+  prim is skipped — its local copy is authoritative during editing, avoiding an echo fight.
+- Selection highlight is additive emissive (not a base-color tint), so the texture stays
+  visible while editing.

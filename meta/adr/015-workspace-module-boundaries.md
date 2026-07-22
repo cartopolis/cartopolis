@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-015
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [workspace, crates, architecture]
 - **Decision Type**: architecture_pattern
@@ -14,30 +14,26 @@
 
 ## Context
 
-**Problem**: Networking (ADR-008/009), coordinates (ADR-006), and protocol types will **outgrow** a single `main.rs` + flat `src/`. Without boundaries, sim and client **duplicate** logic or create import cycles. Classic Tundra separates **core scene** from **protocol module** ([`TundraProtocolModule`](https://github.com/realXtend/tundra/tree/master/src/Core/TundraProtocolModule)) from **client shell**.
+**Problem**: Networking (ADR-008/009), coordinates (ADR-006), and protocol types **outgrow** a single `main.rs` + flat `src/`. Without crate boundaries, sim and client **duplicate** logic or create import cycles.
 
 **Requirements**:
-- **`vibe_core`**: shared types, protocol, coordinate math — **no** Bevy dependency (or optional `bevy` feature gated)
-- **`vibe_sim`**: I/O, DB, tick loop — may depend on `vibe_core` + async/runtime
-- **`vibe_client`**: Bevy app — depends on `vibe_core`
+- **`vibe_core`**: shared types, protocol, coordinate math — **no** Bevy dependency
+- **`vibe_sim`**: I/O, DB, tick loop — depends on `vibe_core` + Tokio
+- **`viberfox`**: Bevy client — depends on `vibe_core`
 - Clear rule: **where new message types live**
 
 ## Decision
 
-Restructure the Cargo workspace into at least **`vibe_core`**, **`vibe_sim`**, and **`vibe_client`** (names may be prefixed with package name used in `Cargo.toml`), with **strict dependency direction**: `vibe_client` → `vibe_core`, `vibe_sim` → `vibe_core`, **no** `vibe_sim` ↔ `vibe_client` dependency.
+The Cargo workspace has **four members** (`Cargo.toml`), with **strict dependency direction** — both binaries depend on `vibe_core`, never on each other:
 
-**Approach**:
-- **Protocol enums / DTOs**: `vibe_core::protocol` (or similar module path).
-- **Coordinate + tile key helpers**: `vibe_core::world` (ADR-006).
-- **Bevy systems** stay in `vibe_client` only; sim may use a minimal ECS later but must not force Bevy on `vibe_core`.
-- **Future**: Optional `vibe_proto` crate if generated code appears — only if duplication hurts (YAGNI for v0).
+- **`vibe_core`** — shared protocol (`vibe_core::protocol`), coordinate/tile math (`vibe_core::world`, ADR-006). No Bevy.
+- **`vibe_sim`** — headless Tokio server, SQLite authority, tick loop. Depends on `vibe_core`. Exposes both a **lib** (`serve`, `SimHandle`, `ensure_account`) and a thin bin, so the server can run standalone *or* embedded in-process by the client's solo/dev mode (ADR-016).
+- **`viberfox`** — Bevy 0.19 client; all Bevy systems live here. Depends on `vibe_core`, and — behind a default-on **`solo`** feature — on the `vibe_sim` lib to run an in-process server for one-command dev (ADR-016). This is the **one sanctioned exception** to "binaries never depend on each other"; it is feature-gated and off for lean/release client builds. Solo mode still talks to the embedded sim over loopback TCP, so the boundary stays a real client/server split.
+- **`big_space`** — **vendored fork** of `big_space` 0.10 ported to Bevy 0.19 (floating-origin transform propagation, ADR-019). Kept in-tree because upstream tops out at Bevy 0.18.
 
-**Rust ecosystem**:
-- Root **`[workspace]`** with members for `vibe_core`, `vibe_sim`, `vibe_client` (exact names per `Cargo.toml`); use **`[workspace.dependencies]`** for aligned versions of **`tokio`**, **`serde`**, **`tracing`**, **`thiserror`**.
-- Integration tests for **`vibe_sim`**: prefer **`cargo-nextest`** in CI when the suite grows.
-- Hot paths (codec/framing): optional **`criterion`** benches in `vibe_core` once there is measurable code.
+A fifth crate **`vibe_geo`** (geo/place lookups) is **planned, not yet built** (ADR-028).
 
-**Per-component `sync` flags** (Tundra `SceneDesc` pattern): if field-level replication returns, those metadata bits live beside component definitions in `vibe_core`, not scattered in UI code.
+**Rust ecosystem**: root `[workspace.dependencies]` pins aligned versions of `tokio`, `serde`, `tracing`, `thiserror`, `glam`, etc. Protocol/codec hot paths could later carry `criterion` benches in `vibe_core`.
 
 ## Rationale
 

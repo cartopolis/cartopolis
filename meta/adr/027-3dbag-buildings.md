@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-027
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-19
 - **Tags**: [buildings, osm, 3dbag, rendering, import, dependency, ops]
 - **Decision Type**: architecture_pattern
@@ -103,8 +103,9 @@ covered cells to it — OSM elsewhere.** Two tiers, both keyed on the client's
   mitigated by a generous bbox around each city.
 - **LoD2.2 payload**: real meshes are heavier — Groningen is 114 MB (vs 44 MB for
   LoD1.2), the densest z14 cell 14.7 MB (~3.5 MB gzipped, ~240k triangles). The
-  one-cell-per-frame upload cap keeps that off the render loop; shadow-casting the
-  whole covered city is the remaining cost (const `LOD22_CAST_SHADOWS` to disable).
+  one-cell-per-frame upload cap keeps that off the render loop; shadow cost is
+  bounded by a `SHADOW_RADIUS` LOD (`lod22.rs`) — cells past it are marked
+  `NotShadowCaster`.
 - **No render if LoD2.2 fetch fails**: covered cells skip the OSM path even if the
   mesh fetch fails, so a persistent host failure leaves those cells empty rather
   than falling back. Acceptable for a static, reliable host; revisit if it bites.

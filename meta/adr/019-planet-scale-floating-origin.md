@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-019
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-06-19
 - **Tags**: [coordinates, precision, rendering, osm, large-world]
 - **Decision Type**: architecture_pattern
@@ -25,7 +25,7 @@ Bevy renders transforms in **f32**. Earth's circumference is ~40,000 km; the f32
 - Place and render content anywhere on Earth without f32 jitter (target: sub-cm stability anywhere).
 - Keep the existing f32 render path, ECS, camera, and `picking.rs` raycasts working with minimal disruption.
 - Preserve real-meter scale for the simulation tier (physics, avatar speed) — see ADR-006's Mercator scale caveat.
-- Be compatible with Bevy 0.16 (ADR-001).
+- Be compatible with Bevy 0.19 (ADR-001).
 
 ## Decision
 
@@ -36,7 +36,7 @@ Adopt a **floating-origin (camera-relative) coordinate model**: store each entit
 - **Render frame**: `Transform.translation = (global − floating_origin)`, recomputed when the origin shifts.
 - **Rebase**: when the camera drifts past a threshold from the current origin, snap the origin to the camera and translate everything uniformly (including the camera) — a uniform shift, so no visible pop.
 - **Map vs sim scale** (extends ADR-006): the map tier lives in Web Mercator units; an activated sim region reprojects to a **local ENU tangent frame in true meters** at conversion time, so the map→sim boundary is where "map units → real meters" happens once.
-- **Build vs adopt**: evaluate **`big_space`** (its grid + floating-origin propagation) before hand-rolling a `GlobalPos` component + sync system. `big_space` 0.10.0 targets Bevy 0.16.
+- **Build vs adopt → adopted `big_space`** (its grid + floating-origin propagation) over a hand-rolled `GlobalPos`. Upstream `big_space` 0.10 tops out at Bevy 0.18, so we keep a **vendored fork** at `crates/big_space` and advance its transform-propagation compat (`bevy_compat.rs`) on each Bevy bump — currently Bevy 0.19.
 
 ## Rationale
 
@@ -60,8 +60,8 @@ Adopt a **floating-origin (camera-relative) coordinate model**: store each entit
 | Keep absolute f32 (ADR-006 as-is) | No new code | ~1–2 m jitter at planet scale (measured) | Fails the planet-scale requirement |
 | f64 everywhere in render | Conceptually simple | Bevy renders f32; GPU is f32; pervasive conversion | Doesn't remove the f32 GPU limit |
 | Per-region local origins only (no global frame) | Simple per island | No continuous browsable planet surface between regions | Map tier needs a continuous global frame |
-| Hand-rolled `GlobalPos` + sync | Full control; exposes ULP for measurement | Reinvents grid/rebase machinery | Viable fallback if `big_space` clashes |
-| Adopt `big_space` | Grid + rebase for free; Bevy 0.16 compatible | New dependency; must fit camera/picking/atmosphere | **Preferred**, pending integration check |
+| Hand-rolled `GlobalPos` + sync | Full control; exposes ULP for measurement | Reinvents grid/rebase machinery | Fallback the spike used; not needed once `big_space` fit |
+| Adopt `big_space` | Grid + rebase for free | New dependency; must fit camera/picking/atmosphere; upstream lags Bevy | **Adopted** — vendored fork advanced to Bevy 0.19 |
 
 ## Consequences
 
@@ -72,11 +72,11 @@ Adopt a **floating-origin (camera-relative) coordinate model**: store each entit
 
 **Negative**:
 - **Invasiveness**: placement, camera, and `picking.rs` must read/write the global frame, not absolute `Transform` (mitigation: rebase keeps the camera near origin so most f32 math is unchanged; spike showed light touch).
-- **New dependency risk** if adopting `big_space` (mitigation: hand-rolled `GlobalPos` is a proven fallback — the spike used it).
+- **Vendored `big_space` fork** must be re-synced against Bevy each upgrade (`crates/big_space/.../bevy_compat.rs`); upstream tracks only up to Bevy 0.18.
 - **Coordinate-model migration**: `sim_origin` / region placement (ADR-006, `rendering.rs`) and any code hard-coding `REGION_SIZE_METERS = 256` must move onto the new frame (mitigation: phase in; sim regions can keep local ENU frames internally).
 
 ## Related
 
 - [ADR-006](./006-world-coordinate-and-osm-anchor.md): Extends the canonical coordinate contract for planet scale; sim regions keep a local frame, now explicitly ENU meters.
 - [ADR-004](./004-osm-tile-integration.md): `TileKey` informs the `i64`-tile global cell; tile streaming builds on this model.
-- [ADR-001](./001-bevy-game-engine.md): f32 render constraint is the root cause; `big_space` compatibility is gated on the Bevy version here.
+- [ADR-001](./001-bevy-game-engine.md): f32 render constraint is the root cause; the vendored `big_space` fork is re-synced on each Bevy bump.

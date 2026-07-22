@@ -38,8 +38,9 @@ turning every message into a geocoding request.
 - An explicit privacy position (P-07), since chat is a location-adjacent channel.
 
 **Non-goals** (deliberately deferred, see *Consequences*): multi-simulator chat
-routing, cross-sim presence, a boundary-rendering data layer, and polygon-accurate
-boundaries.
+routing, cross-sim presence, a boundary-rendering data layer, polygon-accurate
+boundaries, and **voice/video media** — this ADR is text only; real-time audio/video
+is a separate transport deferred behind auth (see *Consequences*).
 
 ## Decision
 
@@ -261,6 +262,21 @@ somewhere to land, and the client needs no per-country knowledge.
   protocol crate.
 - **Scrollback growth and data-subject rights** (deletion, export) are unaddressed
   in v0 beyond a retention bound.
+- **Voice/video is out of scope here and deferred behind auth.** The same
+  place-derived scopes are the obvious channel model for spatial audio later, but
+  real-time media is a different transport (WebRTC: ICE/DTLS/SRTP + an SFU), not a
+  `ChatBus` publish. The direction we are leaning is **str0m** (a sans-IO WebRTC
+  crate, sans-IO the same way `rtc` is): because it imposes no runtime or clock of
+  its own, the SFU state machine can be **embedded in `vibe_sim`** and driven from
+  the existing tick loop, keeping media in-process rather than a separate service.
+  SDP offer/answer can ride the existing ADR-009 envelope as new message kinds
+  rather than adding a signaling server. Sequencing: this waits until **ADR-016
+  (auth) lands** — an unauthenticated media path is a worse position oracle and
+  abuse surface than text, so it inherits the same auth-first gate as the text send
+  path above, and is picked up only after. Open costs a media ADR must own: TURN for
+  restrictive NATs, congestion control, simulcast, and the SFU forwarding layer
+  (str0m gives transport, not routing). A dedicated ADR supersedes this note when
+  the work starts.
 
 ## Related
 

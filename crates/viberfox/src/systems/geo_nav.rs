@@ -595,6 +595,7 @@ pub fn apply_teleport(
     mut stream: ResMut<MapStream>,
     mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
+    globe: Res<crate::systems::globe::GlobeState>,
     mut cameras: Query<
         (&mut GridCell, &mut Transform),
         (With<FreeCamera>, Without<Avatar>),
@@ -606,6 +607,17 @@ pub fn apply_teleport(
 ) {
     if stream.geo_anchor().is_none() || nav.pending_teleport.is_none() {
         return; // nothing to do, or world not initialized yet (stay pending)
+    }
+    // A target saved in the space tier needs the globe to reconstruct its orbit
+    // (radius, centre, north axis); firing before `globe.ready` would drop it to
+    // the surface arm and strand it at 250 km. Hold it pending until the globe
+    // exists — relevant for the startup restore of a location bookmarked from orbit.
+    let space_target = nav.pending_teleport.as_ref().is_some_and(|tp| {
+        tp.altitude
+            .is_some_and(|a| a > crate::systems::globe::GLOBE_SHOW_ALT as f64)
+    });
+    if space_target && !globe.ready {
+        return;
     }
     let tp = nav.pending_teleport.take().unwrap();
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
@@ -667,6 +679,46 @@ pub fn apply_teleport(
                     grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;
                 tf.translation = local;
+            }
+            // Earth mode with a bookmark/copied location saved from the space
+            // tier: return to space over the target instead of the surface. The
+            // surface arm below caps the orbit at 250 km (ORBIT_MAX_DISTANCE_SURFACE)
+            // and forces `orbit_space = false`, which is right for a ground jump
+            // but would strand a "bookmarked from orbit" view just above the
+            // atmosphere. Space uses a different parameterisation (`orbit_dir`
+            // from Earth's centre, not a ground focus + pitch/yaw), so we set it
+            // up directly — the same recipe as the `--shot` harness's
+            // `place_space_orbit`. We re-anchor to `lat,lng` above, so straight up
+            // (`+Y`) over the anchor *is* the direction to the target; heading 0
+            // brings the globe up north-up. camera_controls repositions from these.
+            CameraMode::Orbit
+                if globe.ready
+                    && target_alt.is_some_and(|a| {
+                        a > crate::systems::globe::GLOBE_SHOW_ALT as f64
+                    }) =>
+            {
+                let alt = target_alt.unwrap();
+                let center = globe.center_local.as_dvec3();
+                let dir = DVec3::Y;
+                camera_state.orbit_space = true;
+                camera_state.orbit_initialized = true;
+                camera_state.orbit_dir = dir;
+                camera_state.orbit_distance = globe.radius as f64 + alt;
+                camera_state.orbit_distance_target = camera_state.orbit_distance;
+                camera_state.orbit_heading = 0.0;
+                let north = globe.north_axis_local().as_dvec3();
+                let up = crate::systems::free_camera::globe_up(dir, north, 0.0, north);
+                camera_state.orbit_up = up;
+
+                let cam_world = center + dir * camera_state.orbit_distance;
+                let (new_cell, local) = grid.translation_to_grid(cam_world);
+                *cell = new_cell;
+                tf.translation = local;
+                let cell_origin =
+                    DVec3::new(new_cell.x as f64, new_cell.y as f64, new_cell.z as f64)
+                        * WORLD_CELL_EDGE as f64;
+                let pivot_local = (center - cell_origin).as_vec3();
+                tf.look_at(pivot_local, up.as_vec3());
             }
             // Earth mode: recenter the orbit on the target. The view angles are
             // already restored (pose) or kept; a carried altitude sets how far

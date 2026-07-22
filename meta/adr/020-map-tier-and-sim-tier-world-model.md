@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-020
-- **Status**: Proposed
+- **Status**: Accepted (map tier); sim tier partly revised — see note
 - **Date**: 2026-06-19
 - **Tags**: [coordinates, map, regions, osm, large-world, architecture]
 - **Decision Type**: architecture_pattern
@@ -14,6 +14,14 @@
 - **Supersedes**: []
 - **Superseded By**: []
 ---
+
+> **Update.** The **map tier** and the one-shared-ruler principle below are implemented
+> (streamed multi-zoom tiles, OSM buildings, the planetary globe — ADR-025). The
+> **sim tier's shape has changed**: content is no longer *fixed discrete region squares*
+> (ADR-021, being retired) but a **capacity-bounded set of assets placed at any
+> real-world position**. The map-vs-content separation and the shared floating-origin
+> frame still hold; wherever this ADR says "region", read "server-authoritative content
+> anchored by lat/lng". A forthcoming ADR specifies the capacity-bounded asset model.
 
 ## Context
 

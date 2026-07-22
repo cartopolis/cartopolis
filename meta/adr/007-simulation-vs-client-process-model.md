@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-007
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [server, client, headless, architecture]
 - **Decision Type**: architecture_pattern
@@ -14,7 +14,7 @@
 
 ## Context
 
-**Problem**: The app is today a **single Bevy process** with local input and SQLite. A virtual world **server** needs an **authoritative** loop (time step, world mutations) separate from **presentation** (rendering, local prediction optional).
+**Problem**: A virtual world **server** needs an **authoritative** loop (time step, world mutations) separate from **presentation** (rendering). A single Bevy process with local input and SQLite can't host multiple clients.
 
 **Requirements**:
 - Clear ownership: which process reads/writes SQLite, which accepts network clients
@@ -23,23 +23,18 @@
 
 ## Decision
 
-Split into **simulation** (headless-capable, authoritative state, DB writer) and **client** (Bevy render + input + network consumer) as **separate binaries** sharing a **`vibe_core`** library.
+Split into **simulation** (headless, authoritative state, DB writer) and **client** (Bevy render + input + network consumer) as **separate binaries** sharing a **`vibe_core`** library.
 
-**Approach**:
-- **`vibe_sim`**: Runs fixed-tick (or fixed-update) loop; loads config (ADR-014); owns network listen; applies intents; persists via ADR-013 rules.
-- **`vibe_client`** (current app evolution): Connects to sim; spawns entities from snapshots; sends intent; may predict locally later (out of scope for this ADR).
-- **Shared `vibe_core`**: Types, coordinate model (ADR-006), protocol codec (ADR-008/009), DTOs for regions/prims.
+- **`vibe_sim`**: Tokio; fixed-tick loop; loads config (ADR-014); owns network listen; applies intents; persists via ADR-013.
+- **`viberfox`** (Bevy client): **offline by default** (local SQLite); `--connect host:port` switches to online — connect to sim, spawn entities from snapshots, send intent.
+- **Shared `vibe_core`**: types, coordinate model (ADR-006), protocol codec (ADR-008/009), region/prim DTOs.
 
-**Rust ecosystem**:
-- **`tracing`** (+ **`tracing-subscriber`** in each binary, ADR-014) so sim and client share the same structured log idioms (`info!`, spans, connection/session fields).
-- Run **`vibe_sim`** on the **`tokio`** runtime (ADR-008) even if the first sim loop is mostly sync + `block_on` for rusqlite—avoids rewriting when networking goes fully async.
-
-**Reference**: Classic Tundra runs a **server** mode headless with scene load; same *separation of concerns*, not the same stack (see [realXtend/tundra](https://github.com/realXtend/tundra) docs and `TundraConsole` usage).
+Both binaries use **`tracing`** for structured logs (ADR-014).
 
 ## Rationale
 
 **Primary Reasoning**:
-1. **Authority boundary**: Matches how OpenSim-style regions and Tundra-style sync think about “sim vs viewer.”
+1. **Authority boundary**: Standard "sim vs viewer" split.
 2. **Deployment**: VPS can run `vibe_sim` only (ADR-014).
 3. **Testing**: Sim binary can run integration tests without a window.
 
@@ -66,4 +61,4 @@ Split into **simulation** (headless-capable, authoritative state, DB writer) and
 - [ADR-003](./003-ecs-architecture.md): Client keeps Bevy ECS; sim may use ECS or minimal state (implementation choice after this ADR)
 - [ADR-008](./008-network-transport-layer.md): Sim accepts connections
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Only sim opens DB for writes
-- [ADR-015](./015-workspace-module-boundaries.md): Crate layout for `vibe_core` / `vibe_sim` / `vibe_client`
+- [ADR-015](./015-workspace-module-boundaries.md): Crate layout for `vibe_core` / `vibe_sim` / `viberfox`

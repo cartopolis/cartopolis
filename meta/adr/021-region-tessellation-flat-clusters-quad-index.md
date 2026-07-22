@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-021
-- **Status**: Proposed
+- **Status**: Superseded (direction retired)
 - **Date**: 2026-06-19
 - **Tags**: [coordinates, regions, addressing, sim, large-world, architecture]
 - **Decision Type**: architecture_pattern
@@ -12,8 +12,16 @@
 - **Doc resolution**: R2
 - **Related**: [ADR-020, ADR-019, ADR-006, ADR-010, ADR-012]
 - **Supersedes**: []
-- **Superseded By**: []
+- **Superseded By**: [forthcoming capacity-bounded asset ADR]
 ---
+
+> **Superseded direction.** The fixed-region-grid + cluster + S2-index model below is
+> **being retired**. The sim tier is moving to a **capacity-bounded set of assets placed
+> at any real-world position** (a simulator caps *how many* assets it hosts, not *where*
+> they sit) — no fixed 256 m squares, no cluster tessellation, no per-region `(i,j)`
+> addressing. The floating-origin frame (ADR-019) and the map/content separation
+> (ADR-020) still hold. Retained for history and for the addressing ideas a future
+> spatial-index/discovery design may reuse. A forthcoming ADR specifies the new model.
 
 ## Context
 

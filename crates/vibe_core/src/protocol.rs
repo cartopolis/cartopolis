@@ -9,7 +9,9 @@ use crate::error::ProtocolError;
 
 /// Bump when the app-frame layout or postcard schema changes incompatibly.
 /// v8: prim texture surface params (alpha/glow/full-bright/repeats/rotation/offset).
-pub const PROTOCOL_VERSION: u16 = 8;
+/// v9: authenticated handshake — `ClientHello.auth`, `ServerHelloAck.principal_id`
+///     + `session_token` (ADR-016).
+pub const PROTOCOL_VERSION: u16 = 9;
 
 const APP_HEADER_LEN: usize = 8;
 
@@ -212,16 +214,32 @@ pub struct AvatarStateDto {
     pub yaw: f32,
 }
 
+/// Credential presented in the [`NetMessage::ClientHello`] handshake (ADR-016).
+/// The server verifies it against its local account store and issues a session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AuthCredential {
+    /// A previously issued session token (silent reconnect).
+    Token(String),
+    /// Username + password. Verified server-side with argon2; never stored
+    /// client-side (persist the returned session token instead).
+    Password { username: String, password: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NetMessage {
     ClientHello {
         protocol_version: u16,
-        client_token: String,
+        /// ADR-016: credential the server authenticates before any world traffic.
+        auth: AuthCredential,
     },
     ServerHelloAck {
         session_id: Uuid,
         tick_hz: f32,
         your_avatar_id: u64,
+        /// ADR-016: stable account id bound to this connection.
+        principal_id: Uuid,
+        /// ADR-016: opaque session token to persist for silent reconnect.
+        session_token: String,
         /// ADR-014: operator tile URL; `{z}/{x}/{y}` placeholders. Empty = client default.
         #[serde(default)]
         osm_tile_url_template: String,
@@ -413,7 +431,25 @@ mod tests {
     fn roundtrip_hello_app_frame() {
         let m = NetMessage::ClientHello {
             protocol_version: PROTOCOL_VERSION,
-            client_token: "test".into(),
+            auth: AuthCredential::Password {
+                username: "dev".into(),
+                password: "dev".into(),
+            },
+        };
+        let b = encode_app_frame(&m).unwrap();
+        let m2 = decode_app_frame(&b).unwrap();
+        assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn roundtrip_hello_ack_app_frame() {
+        let m = NetMessage::ServerHelloAck {
+            session_id: Uuid::nil(),
+            tick_hz: 20.0,
+            your_avatar_id: 7,
+            principal_id: Uuid::nil(),
+            session_token: "deadbeef".into(),
+            osm_tile_url_template: String::new(),
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();

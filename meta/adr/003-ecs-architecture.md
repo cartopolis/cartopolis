@@ -24,12 +24,12 @@
 
 ## Decision
 
-Use Bevy's ECS with systems grouped by domain: database, rendering, tile_loader, avatar, camera, debug.
+Use Bevy's ECS with one system file per concern under `crates/viberfox/src/systems/` (database, rendering, tile_loader, network, avatar, camera/free_camera, picking, gizmo, ui, globe, …), all registered in `main.rs`.
 
 **Approach**:
-- **Resources**: `Database`, `GameState`, `AvatarState`, `CameraState`, `MouseState`, `TileCache`
-- **Components**: `Avatar`, `RegionTile`, etc.
-- **Systems**: Startup for init, Update for per-frame logic with explicit ordering via `.after()`
+- **Resources** (`resources.rs`, plus a few local to their system): `Database`, `GameState`, `AvatarState`, `CameraState`, `MouseState`, `TileCache`
+- **Components** (`components.rs`): `Region`, `Prim`, `Avatar`, `RemoteAvatar`, `Selected`, `RegionTile`, …
+- **Systems**: Startup for init, Update for per-frame logic; explicit ordering via `.after()` and `run_if`
 
 ## Rationale
 
@@ -51,15 +51,15 @@ Use Bevy's ECS with systems grouped by domain: database, rendering, tile_loader,
 
 **Positive**:
 - Systems are modular and testable
-- Clear dependencies in `main.rs`
-- Easy to add new systems (e.g. networking later)
+- Clear dependencies and ordering in `main.rs`
+- New concerns drop in as a system file (e.g. `network.rs` added without touching existing systems)
 
 **Negative**:
-- Learning curve for ECS (mitigation: Bevy docs are good)
-- System ordering must be explicit (mitigation: document in ADR)
+- ECS learning curve (mitigation: Bevy docs)
+- System ordering must be explicit
 
 ## Related
 
 - [ADR-001](./001-bevy-game-engine.md): Bevy provides the ECS
 - [ADR-002](./002-sqlite-storage.md): Database loads into ECS via systems
-- Main: `src/main.rs` system ordering
+- Registration/ordering: `crates/viberfox/src/main.rs`

@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-012
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [interest, aoi, osm, networking]
 - **Decision Type**: architecture_pattern
@@ -14,32 +14,23 @@
 
 ## Context
 
-**Problem**: Sending **all** regions/prims and **all** tile-related hints to every client wastes bandwidth. Classic Tundra’s [`SyncManager`](https://github.com/realXtend/tundra/blob/master/src/Core/TundraProtocolModule/SyncManager.h) supports **interest management**, an **observer** entity, **update periods**, and [`DefaultEntityPrioritizer`](https://github.com/realXtend/tundra/blob/master/src/Core/TundraProtocolModule/EntityPrioritizer.h) (distance-based priority). Observer position can be sent client→server ([`cObserverPositionMessage`](https://github.com/realXtend/tundra/blob/master/src/Core/TundraProtocolModule/TundraMessages.h)).
-
-**Requirements**:
-- **AOI** determines which **world DTOs** (ADR-011) and **avatar updates** (ADR-010) a client receives
-- Policy **consistent** with OSM tile usage (ADR-004, ADR-006): same anchor math
-- v0 **simple** (radius / region list) before full prioritization queues
+**Problem**: Sending **all** regions/prims to every client wastes bandwidth as the world grows. AOI (area-of-interest) filtering must decide which world DTOs (ADR-011) and avatar updates (ADR-010) a client receives, using the same anchor math as OSM tile selection (ADR-004, ADR-006). v0 keeps this simple (radius) before any prioritization queues.
 
 ## Decision
 
-Implement **interest management v0** as: server tracks each client’s **observer position** (and optional orientation) in sim space; include only regions/prims within a **configurable radius** (and optionally always-include list). **OSM tiles** are **not** proxied through the sim in v0; clients derive `TileKey`s from ADR-006 using the **same** observer position they report (or server echo), keeping the server’s role to **world + avatars** only.
+**Interest management v0**: the server tracks each client’s **observer position** in sim space and includes only regions/prims within a **configurable radius** (`aoi_radius`, default 500 m). **OSM tiles** are **not** proxied through the sim; clients derive `TileKey`s (ADR-006) client-side and fetch over HTTP (ADR-004). The server’s role stays **world + avatars** only.
 
-**Approach**:
-- **Client → server**: Periodic **observer update** message (rate-limited), analogous in role to Tundra’s observer position message — not byte-compatible.
-- **Server**: Filters snapshot/delta recipients; may subsample update frequency per client (inspired by Tundra `updatePeriod`).
-- **Tiles**: Client continues HTTP fetch (ADR-004); optional future ADR for server-side tile cache or CDN redirect.
-
-**Rust ecosystem**:
-- Use **`glam`** for observer position and radius checks (`distance`, length) shared with ADR-006/010 DTOs.
-- Rate limiting per connection: **`governor`** or a small in-house token bucket on top of **`tokio::time`**—prefer a **crate** over bespoke sleep logic for correctness under load.
+**Implementation** (`vibe_sim/src/state.rs`, `net.rs`):
+- `SimWorld::set_observer` records the observer; `snapshot()` filters regions by `(origin - observer).length_squared() <= aoi_radius²`, then prims by the surviving region set.
+- **Current limitation**: avatars are replicated to **all** clients regardless of AOI — only regions/prims are distance-filtered. AOI for avatars is future work.
+- A server-side tile cache or CDN redirect is deferred to a future ADR.
 
 ## Rationale
 
 **Primary Reasoning**:
 1. **Scales world size**: Reduces replication fan-out.
 2. **OSM alignment**: Tile choice follows the same spatial truth as AOI when coords are shared (ADR-006).
-3. **Incremental**: Radius AOI is easy; Tundra-style prioritizer can plug in later.
+3. **Incremental**: Radius AOI is easy; a distance prioritizer can plug in later.
 
 **Alternatives Considered**:
 

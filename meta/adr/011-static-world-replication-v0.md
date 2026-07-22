@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-011
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [replication, networking, regions, prims]
 - **Decision Type**: architecture_pattern
@@ -14,41 +14,36 @@
 
 ## Context
 
-**Problem**: Clients need **regions** and **prims** from the authoritative store ([ADR-002](./002-sqlite-storage.md)) without opening SQLite over the network (ADR-013). Classic Tundra optimizes **per-connection sync** with **dirty attribute bitfields** and **full vs incremental** component sends ([`SyncState.h` pattern](https://github.com/realXtend/tundra/blob/master/src/Core/TundraProtocolModule/SyncState.h)).
+**Problem**: Clients need **regions** and **prims** from the authoritative store ([ADR-002](./002-sqlite-storage.md)) without opening SQLite over the network (ADR-013).
 
 **Requirements**:
-- **Snapshot** on join (or after handshake, ADR-009)
+- **Snapshot** on join (after handshake, ADR-009)
 - **Minimal deltas** for v0 (coarse-grained acceptable)
-- **Server-assigned ids** for any entity created at runtime (pattern from [UniqueIdGenerator](https://github.com/realXtend/tundra/blob/master/src/Core/TundraCore/Scene/UniqueIdGenerator.h))
+- **Server-assigned ids** for any entity created at runtime
 - No **CRDT** / full distributed editing in this ADR
 
 ## Decision
 
-Replicate **static world** as **DTOs** (regions + prims) over ADR-009: initial **WorldSnapshot** message(s), then **small delta** messages (prim upsert/remove, region invalidate/reload) as implementation allows.
+Replicate **static world** as **DTOs** (`RegionDto` + `PrimDto`) over ADR-009: an initial `WorldSnapshot { tick, regions, prims, avatars }`, then **small delta** messages as edits occur.
 
-**Approach**:
-- **Snapshot**: Bounded size; paginate or stream multiple frames if needed (document max).
-- **Ids**: Integer ids stable in DB; server never trusts client-proposed ids for **new** objects without assignment ack.
-- **Delta v0**: Prefer whole-prim replace or delete-by-id before field-level bitfields.
-- **Evolution path**: Document that future work may adopt Tundra-style **per-client dirty masks** for fine-grained components (out of scope here).
-
-**Rust ecosystem**:
-- **`serde`** snapshot/delta DTOs in `vibe_core`; encode with the same codec as ADR-009 (**`postcard`** / **`bincode`**).
-- Large static payloads: optional **`bytes::Bytes`** (or `Vec<u8>` v0) for opaque blobs if snapshots include mesh/asset data later.
-- When AOI grows complex, consider **`rstar`** or **`spade`** for spatial indexes over region bounds (defer until profiling says linear scan fails).
+**As built** (`crates/vibe_core/src/protocol.rs`):
+- **Deltas**: `PrimUpsert { prim: PrimDto }` (whole-prim replace after create/update) and `PrimRemoved { id: i64 }` (delete-by-id) — no field-level bitfields.
+- **Ids**: `i64`, stable in the DB and server-assigned; the server never trusts client-proposed ids for new objects.
+- **Serialization**: `serde` DTOs in `vibe_core`, postcard-encoded (same codec as ADR-009).
+- **Evolution**: per-client dirty masks / fine-grained component sync are out of scope here.
 
 ## Rationale
 
 **Primary Reasoning**:
-1. **Matches current data model**: Regions and prims already map to SQLite rows.
-2. **Fast to ship**: DTO snapshot is simpler than full EC attribute replication.
-3. **Proven direction**: Tundra’s `ComponentSyncState` shows how to optimize later without blocking v0.
+1. **Matches current data model**: regions and prims already map to SQLite rows.
+2. **Fast to ship**: DTO snapshot is simpler than full component-attribute replication.
+3. **Room to optimize**: field-level sync can come later without blocking v0.
 
 **Alternatives Considered**:
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
-| Full ECA replication | Matches Tundra wire | Huge spec + code | Too ambitious for v0 |
+| Full EC-attribute replication | Fine-grained | Huge spec + code | Too ambitious for v0 |
 | CRDT scene graph | Offline-friendly | Complexity | Wrong problem for authoritative sim |
 | Filesync assets | Simple | Not real-time | Separate asset ADR later |
 

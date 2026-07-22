@@ -24,9 +24,9 @@
 
 ## Decision
 
-Use SQLite via rusqlite for region and prim storage.
+Use SQLite via rusqlite (`bundled`) for region and prim storage.
 
-**Approach**: Single file `data/regions.db` with `regions` and `prims` tables. Indexed by tile coordinates and region_id. Seed default region (Groningen) if empty.
+**Approach**: Single file `data/regions.db` with `regions` and `prims` tables, indexed by tile coordinates and region_id; seed a default region (Groningen) if empty. The offline client (`viberfox`) initializes its schema in `crates/viberfox/src/db/schema.rs` (`CREATE TABLE IF NOT EXISTS`); the authoritative server (`vibe_sim`) versions the same tables with `refinery` SQL migrations (`crates/vibe_sim/migrations/`), applied on startup.
 
 ## Rationale
 
@@ -49,15 +49,14 @@ Use SQLite via rusqlite for region and prim storage.
 ## Consequences
 
 **Positive**:
-- Simple schema in `src/db/schema.rs`
 - Easy to inspect with `sqlite3 data/regions.db`
-- Migrations possible via SQL scripts
+- Versioned via `refinery` migrations on the server (ADR-013)
 
 **Negative**:
-- Single writer (mitigation: acceptable for single-user client)
-- No built-in replication (mitigation: out of scope for now)
+- Single writer (mitigation: acceptable for single-user client / server serializes writes)
+- No built-in replication (mitigation: out of scope)
 
 ## Related
 
-- Schema: `src/db/schema.rs`
-- Systems: `src/systems/database.rs`
+- Client schema: `crates/viberfox/src/db/schema.rs`; load system: `crates/viberfox/src/systems/database.rs`
+- Server: `crates/vibe_sim/src/db.rs`, `crates/vibe_sim/migrations/`
