@@ -34,7 +34,10 @@
 //!
 //! The egui overlay is part of the capture (it carries the HUD's altitude and
 //! coordinates, which is what makes a shot self-documenting); pass `--hide-ui`
-//! for chrome-free images.
+//! for chrome-free images. The toggle-able panels (dev lighting/weather, layers,
+//! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
+//! hand in a headless run, so `--ui <list>` opens them for the capture, e.g.
+//! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,6 +56,7 @@ use crate::systems::free_camera::FreeCamera;
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
 use crate::systems::globe::{GlobeMesh, GlobeState};
 use crate::systems::map_stream::MapStream;
+use crate::systems::weather::WeatherState;
 
 /// One scripted viewpoint.
 #[derive(Clone)]
@@ -84,6 +88,10 @@ pub struct ShotHarness {
     pub wait: f32,
     /// Leave the egui overlay out of the capture.
     pub hide_ui: bool,
+    /// UI panels to open for the capture (`dev`, `layers`, `bookmarks`, `ai`,
+    /// `avatar`, `stats`, or `all`) — see [`open_scripted_ui`]. Empty = just the
+    /// always-on HUD + menu bar.
+    pub ui: Vec<String>,
     /// "free" (exact placement) or "earth" (the orbit camera).
     pub mode: String,
 }
@@ -100,6 +108,7 @@ impl ShotHarness {
         settle: f32,
         wait: f32,
         hide_ui: bool,
+        ui: Vec<String>,
         mode: String,
     ) -> Result<Self, String> {
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
@@ -134,7 +143,7 @@ impl ShotHarness {
             return Err("--shot needs at least one --at lat,lng,alt".into());
         }
         let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
-        Ok(Self { path, shots, size, settle, wait, hide_ui, mode })
+        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode })
     }
 
     /// Output path for shot `i` (bare `--shot` path for a single capture).
@@ -193,6 +202,57 @@ pub struct ShotProgress {
 /// store uses to keep out of the way.
 pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
     harness.is_some()
+}
+
+/// Open the UI panels named by `--ui` so a scripted capture can document them —
+/// the dev lighting/weather controls, the layers list, the bookmarks or AI
+/// panels — not just the always-on HUD and menu bar. These panels are normally
+/// closed at startup and toggled by hand, which a headless run can't do. Runs
+/// once. Unknown names are ignored (and logged) rather than aborting the run.
+pub fn open_scripted_ui(
+    harness: Res<ShotHarness>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
+    mut ai: ResMut<crate::resources::AiAssistantState>,
+    mut avatar: ResMut<crate::resources::AvatarChooserState>,
+    mut layers: ResMut<crate::systems::data_layers::DataLayers>,
+    mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
+    mut done: Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    *done = true;
+    if harness.ui.is_empty() {
+        return;
+    }
+    let all = harness.ui.iter().any(|u| u == "all");
+    let want = |k: &str| all || harness.ui.iter().any(|u| u == k);
+    if want("dev") {
+        dev.open = true;
+    }
+    if want("stats") {
+        dev.show_stats = true;
+    }
+    if want("ai") {
+        ai.open = true;
+    }
+    if want("avatar") {
+        avatar.open = true;
+    }
+    if want("layers") {
+        layers.panel_open = true;
+    }
+    if want("bookmarks") {
+        bookmarks.panel_open = true;
+    }
+    // Surface typos: anything that matched nothing is neither a panel nor `all`.
+    let known = ["dev", "stats", "ai", "avatar", "layers", "bookmarks", "all"];
+    for u in &harness.ui {
+        if !known.contains(&u.as_str()) {
+            tracing::warn!(name = %u, "shot harness: unknown --ui element (ignored)");
+        }
+    }
+    tracing::info!(ui = ?harness.ui, "shot harness: opened scripted UI panels");
 }
 
 /// Point the camera at an offscreen image of the requested size, so the run
@@ -338,6 +398,7 @@ pub fn drive_capture(
     mut exit: MessageWriter<AppExit>,
     globe: Res<GlobeState>,
     stream: Res<MapStream>,
+    weather: Res<WeatherState>,
     cam_state: Res<CameraState>,
     camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
@@ -380,8 +441,10 @@ pub fn drive_capture(
     }
 
     // Settle: capture once both tile streams have been quiet for `--settle`
-    // seconds, or when `--wait` runs out (whichever comes first).
-    if globe.streaming_busy() || stream.streaming_busy() {
+    // seconds, or when `--wait` runs out (whichever comes first). A
+    // `--weather-live` run also holds until the first met.no sample lands, so the
+    // capture shows real conditions rather than the default clear sky.
+    if globe.streaming_busy() || stream.streaming_busy() || (weather.live && !weather.ready()) {
         progress.quiet = 0.0;
     } else {
         progress.quiet += time.delta_secs();

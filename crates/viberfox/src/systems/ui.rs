@@ -189,6 +189,7 @@ pub fn toggle_dev_panel_shortcut(
 pub fn render_dev_panel(
     mut egui: ResMut<EguiManager>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    mut weather: ResMut<crate::systems::weather::WeatherState>,
     mut shot: ResMut<crate::resources::ScreenshotState>,
 ) {
     if !dev.open {
@@ -200,68 +201,105 @@ pub fn render_dev_panel(
         .open(&mut open)
         .default_width(260.0)
         .show(ctx, |ui| {
+            // ── Day / night cycle ──────────────────────────────────────────
+            // Auto tracks the real local time (sun *and* moon); Day/Night force
+            // noon/midnight; Manual unlocks the controls below. The manual
+            // controls are disabled outside Manual — like the weather sliders
+            // under Auto, they read the automatic value but can't be moved.
             ui.label("Day / night cycle");
-            ui.add(
-                egui::Slider::new(&mut dev.time_of_day, 0.0..=24.0)
-                    .suffix(" h")
-                    .step_by(0.1),
-            );
-            let h = dev.time_of_day.floor() as i32 % 24;
-            let m = (dev.time_of_day.fract() * 60.0).floor() as i32;
-            ui.label(format!("Time: {:02}:{:02}", h, m));
             ui.horizontal(|ui| {
-                if ui.button("Sunrise").clicked() {
-                    dev.time_of_day = 6.0;
-                }
-                if ui.button("Noon").clicked() {
-                    dev.time_of_day = 12.0;
-                }
-                if ui.button("Sunset").clicked() {
-                    dev.time_of_day = 18.0;
-                }
-                if ui.button("Midnight").clicked() {
-                    dev.time_of_day = 0.0;
-                }
+                use crate::resources::SunMode;
+                ui.selectable_value(&mut dev.sun_mode, SunMode::Auto, "Auto")
+                    .on_hover_text("Sun and moon follow the real local time");
+                ui.selectable_value(&mut dev.sun_mode, SunMode::Day, "Day");
+                ui.selectable_value(&mut dev.sun_mode, SunMode::Night, "Night");
+                ui.selectable_value(&mut dev.sun_mode, SunMode::Manual, "Manual");
+            });
+            let manual = dev.sun_mode == crate::resources::SunMode::Manual;
+            ui.add_enabled_ui(manual, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut dev.time_of_day, 0.0..=24.0)
+                        .suffix(" h")
+                        .step_by(0.1),
+                );
+                let h = dev.time_of_day.floor() as i32 % 24;
+                let m = (dev.time_of_day.fract() * 60.0).floor() as i32;
+                ui.label(format!("Time: {:02}:{:02}", h, m));
+                ui.horizontal(|ui| {
+                    if ui.button("Sunrise").clicked() {
+                        dev.time_of_day = 6.0;
+                    }
+                    if ui.button("Noon").clicked() {
+                        dev.time_of_day = 12.0;
+                    }
+                    if ui.button("Sunset").clicked() {
+                        dev.time_of_day = 18.0;
+                    }
+                    if ui.button("Midnight").clicked() {
+                        dev.time_of_day = 0.0;
+                    }
+                });
+                ui.add(
+                    egui::Slider::new(
+                        &mut dev.moon_age_days,
+                        0.0..=crate::utils::sun::LUNAR_CYCLE_DAYS,
+                    )
+                    .text("moon age (days)")
+                    .step_by(0.1),
+                );
+                let lit = crate::utils::sun::moon_illuminated_fraction(dev.moon_age_days);
+                ui.label(format!("{:.0}% lit (0 = new, ~14.8 = full)", lit * 100.0));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut dev.auto_cycle, "Quick cycle");
+                    ui.add(
+                        egui::DragValue::new(&mut dev.cycle_seconds)
+                            .suffix(" s")
+                            .range(1.0..=120.0)
+                            .speed(0.5),
+                    );
+                });
             });
             ui.separator();
-            ui.label("Distance fog");
-            ui.add(
-                egui::Slider::new(&mut dev.fog_density, 0.0..=1.0)
-                    .text("density")
-                    .step_by(0.01),
-            );
-            ui.separator();
+
+            // ── Weather ────────────────────────────────────────────────────
+            // Same shape as the day/night group: Auto pulls the live met.no
+            // forecast for the map anchor (driving cloud, rain, and fog);
+            // Manual unlocks the sliders. `weather.live` is the Auto flag.
             ui.label("Weather");
-            ui.add(
-                egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
-                    .text("cloud cover")
-                    .step_by(0.01),
-            );
-            ui.add(
-                egui::Slider::new(&mut dev.precipitation, 0.0..=1.0)
-                    .text("rain")
-                    .step_by(0.01),
-            );
-            ui.separator();
-            ui.label("Moon");
-            ui.add(
-                egui::Slider::new(
-                    &mut dev.moon_age_days,
-                    0.0..=crate::utils::sun::LUNAR_CYCLE_DAYS,
-                )
-                .text("age (days)")
-                .step_by(0.1),
-            );
-            let lit = crate::utils::sun::moon_illuminated_fraction(dev.moon_age_days);
-            ui.label(format!("{:.0}% lit (0 = new, ~14.8 = full)", lit * 100.0));
-            ui.separator();
             ui.horizontal(|ui| {
-                ui.checkbox(&mut dev.auto_cycle, "Quick cycle");
+                ui.selectable_value(&mut weather.live, true, "Auto")
+                    .on_hover_text("Live conditions for the map anchor from api.met.no");
+                ui.selectable_value(&mut weather.live, false, "Manual");
+            });
+            if weather.live {
+                if let Some(o) = weather.latest {
+                    ui.label(format!(
+                        "{:.0}% cloud · {:.1} mm/h · {:.0}°C · {:.0} m/s wind",
+                        o.cloud_cover * 100.0,
+                        o.precipitation * super::weather::RAIN_FULL_MM,
+                        o.air_temp_c,
+                        o.wind_ms,
+                    ))
+                    .on_hover_text(format!("sampled at {:.4}, {:.4}", o.lat, o.lng));
+                } else {
+                    ui.label("fetching…");
+                }
+            }
+            ui.add_enabled_ui(!weather.live, |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut dev.cycle_seconds)
-                        .suffix(" s")
-                        .range(1.0..=120.0)
-                        .speed(0.5),
+                    egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
+                        .text("cloud cover")
+                        .step_by(0.01),
+                );
+                ui.add(
+                    egui::Slider::new(&mut dev.precipitation, 0.0..=1.0)
+                        .text("rain")
+                        .step_by(0.01),
+                );
+                ui.add(
+                    egui::Slider::new(&mut dev.fog_density, 0.0..=1.0)
+                        .text("fog density")
+                        .step_by(0.01),
                 );
             });
             ui.separator();

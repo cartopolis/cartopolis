@@ -37,6 +37,16 @@ const HUD_WIDTH: f32 = 150.0;
 #[derive(Clone, Default)]
 pub struct HudData {
     pub time: String,
+    /// Whether the clock is currently shown as UTC (drives the Local/UTC toggle
+    /// label). True when the user forced UTC, or no local offset is known yet.
+    pub utc: bool,
+    /// Current sun-mode for the Auto/Day/Night switcher's active state.
+    pub sun_mode: crate::resources::SunMode,
+    /// Whether live (Auto) weather is on — drives the weather switcher's state.
+    pub weather_live: bool,
+    /// Forecast readout for the weather line: (compact, full-hover). `Some` only
+    /// when Auto weather has a sample to show.
+    pub weather_info: Option<(String, String)>,
     pub geo: Option<(f64, f64)>,
     pub altitude: Option<f64>,
     pub heading: Option<f32>,
@@ -52,6 +62,12 @@ pub struct HudData {
 pub struct HudActions {
     pub copy: bool,
     pub bookmark: bool,
+    /// User clicked the Local/UTC clock toggle.
+    pub toggle_utc: bool,
+    /// User picked a new sun mode from the Auto/Day/Night switcher.
+    pub set_sun_mode: Option<crate::resources::SunMode>,
+    /// User toggled live (Auto) weather on/off from the weather switcher.
+    pub set_weather_live: Option<bool>,
 }
 
 /// Diameter (points) of the top-right compass overlay.
@@ -207,7 +223,75 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                 );
                             });
                         }
-                        mono(ui, data.time.clone(), 15.0, 235);
+                        // Clock + a small Local/UTC toggle, then the sun-mode
+                        // switcher (Auto/Day/Night) — a light/dark/auto control
+                        // for the sky, the way a website theme toggle reads.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            mono(ui, data.time.clone(), 15.0, 235);
+                            let zone = if data.utc { "UTC" } else { "Local" };
+                            if ui
+                                .add(egui::Button::new(egui::RichText::new(zone).size(10.5)).small())
+                                .on_hover_text("Toggle the clock between local time and UTC")
+                                .clicked()
+                            {
+                                actions.toggle_utc = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            use crate::resources::SunMode;
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            let mut choice =
+                                |ui: &mut egui::Ui, mode: SunMode, label: &str, tip: &str| {
+                                    if ui
+                                        .selectable_label(
+                                            data.sun_mode == mode,
+                                            egui::RichText::new(label).size(11.0),
+                                        )
+                                        .on_hover_text(tip)
+                                        .clicked()
+                                    {
+                                        actions.set_sun_mode = Some(mode);
+                                    }
+                                };
+                            choice(ui, SunMode::Auto, "Auto", "Sun follows the real local time");
+                            choice(ui, SunMode::Day, "☀", "Force daylight (noon)");
+                            choice(ui, SunMode::Night, "🌙", "Force night (midnight)");
+                        });
+                        // Weather: an Auto/Manual toggle mirroring the sun switcher,
+                        // plus the live forecast readout for the map location.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            if ui
+                                .selectable_label(
+                                    data.weather_live,
+                                    egui::RichText::new("Auto").size(11.0),
+                                )
+                                .on_hover_text("Live weather for the map location (met.no)")
+                                .clicked()
+                            {
+                                actions.set_weather_live = Some(true);
+                            }
+                            if ui
+                                .selectable_label(
+                                    !data.weather_live,
+                                    egui::RichText::new("Manual").size(11.0),
+                                )
+                                .on_hover_text("Hold the weather; adjust it in the dev panel")
+                                .clicked()
+                            {
+                                actions.set_weather_live = Some(false);
+                            }
+                        });
+                        if let Some((short, full)) = &data.weather_info {
+                            ui.label(
+                                egui::RichText::new(short)
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(egui::Color32::from_gray(170)),
+                            )
+                            .on_hover_text(full);
+                        }
                         if let Some((lat, lng)) = data.geo {
                             let ns = if lat >= 0.0 { 'N' } else { 'S' };
                             let ew = if lng >= 0.0 { 'E' } else { 'W' };
@@ -292,7 +376,9 @@ fn space_view_heading(tf: &Transform, north: Vec3) -> Option<f32> {
 #[allow(clippy::too_many_arguments)]
 pub fn render_hud(
     mut egui: ResMut<EguiManager>,
-    clock: Res<WorldClock>,
+    mut clock: ResMut<WorldClock>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
+    mut weather: ResMut<crate::systems::weather::WeatherState>,
     stream: Res<MapStream>,
     mut camera_state: ResMut<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -309,11 +395,25 @@ pub fn render_hud(
     // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
     let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
     let data = HudData {
-        time: if is_local {
-            format!("{h:02}:{m:02}:{s:02}")
-        } else {
-            format!("{h:02}:{m:02}:{s:02} UTC")
-        },
+        // The Local/UTC label now lives in the toggle beside the clock, so the
+        // time reads bare.
+        time: format!("{h:02}:{m:02}:{s:02}"),
+        utc: !is_local,
+        sun_mode: dev.sun_mode,
+        weather_live: weather.live,
+        // Show the forecast only in Auto (in Manual the sim isn't using it).
+        weather_info: weather.live.then(|| weather.latest).flatten().map(|o| {
+            (
+                format!("{:.0}% cloud · {:.0}°C", o.cloud_cover * 100.0, o.air_temp_c),
+                format!(
+                    "{:.0}% cloud · {:.1} mm/h · {:.0}°C · {:.0} m/s wind",
+                    o.cloud_cover * 100.0,
+                    o.precipitation * crate::systems::weather::RAIN_FULL_MM,
+                    o.air_temp_c,
+                    o.wind_ms,
+                ),
+            )
+        }),
         geo: cam
             .zip(stream.geo_anchor())
             .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
@@ -368,6 +468,15 @@ pub fn render_hud(
             bookmarks.panel_open = true;
         }
     }
+    if actions.toggle_utc {
+        clock.show_utc = !clock.show_utc;
+    }
+    if let Some(mode) = actions.set_sun_mode {
+        dev.sun_mode = mode;
+    }
+    if let Some(live) = actions.set_weather_live {
+        weather.live = live;
+    }
 }
 
 #[cfg(test)]
@@ -420,6 +529,10 @@ mod tests {
         ctx.set_visuals(egui::Visuals::dark());
         let data = HudData {
             time: "08:14:11".to_string(),
+            utc: false,
+            sun_mode: crate::resources::SunMode::Auto,
+            weather_live: true,
+            weather_info: Some(("60% cloud · 16°C".to_string(), "60% cloud · 16°C".to_string())),
             geo: Some((53.21952, 6.58220)),
             altitude: Some(17.0),
             heading: Some(247.0),

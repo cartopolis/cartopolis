@@ -86,6 +86,13 @@ struct Cli {
     #[arg(long)]
     hide_ui: bool,
 
+    /// Open UI panels in `--shot` captures, comma-separated: `dev`, `layers`,
+    /// `bookmarks`, `ai`, `avatar`, `stats`, or `all`. The menu bar and HUD
+    /// already show (unless `--hide-ui`); this documents a panel too, e.g.
+    /// `--ui dev` to capture the lighting/weather controls.
+    #[arg(long, value_name = "LIST", value_delimiter = ',')]
+    ui: Vec<String>,
+
     /// Camera mode for `--shot`: "free" (exact placement) or "earth" (orbit).
     #[arg(long, default_value = "free")]
     shot_mode: String,
@@ -109,6 +116,12 @@ struct Cli {
     /// streaks. 0 = dry. Pairs with `--clouds` for an overcast, wet scene.
     #[arg(long, value_name = "INTENSITY")]
     rain: Option<f32>,
+
+    /// Pull real conditions for the map anchor from met.no and drive the
+    /// cloud/fog/rain knobs from them (overrides `--clouds`/`--rain`/`--fog`).
+    /// In `--shot` mode the capture waits for the first sample (capped by `--wait`).
+    #[arg(long)]
+    weather_live: bool,
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -288,6 +301,14 @@ fn main() {
     .init_resource::<AvatarChooserState>()
     .insert_resource(DevPanelState {
         time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
+        // A `--shot` capture must be deterministic, and an explicit `--time`
+        // pins the clock, so both start in Manual; a normal launch tracks the
+        // real local time of wherever the map opens.
+        sun_mode: if cli.shot.is_some() || cli.time.is_some() {
+            resources::SunMode::Manual
+        } else {
+            resources::SunMode::Auto
+        },
         fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
         cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),
         precipitation: cli.rain.unwrap_or(0.0).clamp(0.0, 1.0),
@@ -300,6 +321,11 @@ fn main() {
     .init_resource::<systems::data_layers::DataLayers>()
     .init_resource::<systems::transit_live::TransitLive>()
     .init_resource::<systems::transit_live::WorldClock>()
+    // Default to Auto (live met.no) in interactive runs; keep scripted captures
+    // deterministic — no network wait — unless `--weather-live` asks for it.
+    .insert_resource(systems::weather::WeatherState::with_live(
+        cli.shot.is_none() || cli.weather_live,
+    ))
     .init_resource::<systems::transit_vehicles::TransitVehicles>()
     .init_resource::<systems::geo_nav::GeoNavState>()
     .init_resource::<systems::bookmarks::BookmarksState>()
@@ -354,6 +380,7 @@ fn main() {
             cli.settle,
             cli.wait,
             cli.hide_ui,
+            cli.ui.clone(),
             cli.shot_mode.clone(),
         ) {
             Ok(harness) => {
@@ -371,6 +398,7 @@ fn main() {
                     .add_systems(
                         Update,
                         (
+                            systems::shot_harness::open_scripted_ui,
                             systems::shot_harness::place_camera
                                 .before(systems::geo_nav::apply_teleport),
                             systems::shot_harness::place_space_orbit
@@ -455,6 +483,8 @@ fn main() {
             // Transit polling, nested to stay under the per-tuple system limit.
             (
                 systems::transit_live::update_world_clock,
+                systems::transit_live::update_local_timezone
+                    .after(systems::transit_live::update_world_clock),
                 systems::transit_live::poll_transit_live
                     .after(systems::data_layers::update_data_layers)
                     .after(systems::transit_live::update_world_clock),
@@ -463,6 +493,10 @@ fn main() {
                 systems::transit_vehicles::poll_transit_vehicles
                     .after(systems::data_layers::update_data_layers)
                     .after(systems::transit_live::update_world_clock),
+                // Live weather for the current anchor (met.no); folds onto the
+                // cloud/fog/rain knobs after the anchor is (re)established.
+                systems::weather::poll_weather
+                    .after(systems::map_stream::apply_reanchor),
             ),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old
@@ -612,7 +646,12 @@ fn main() {
                     .after(systems::transit_vehicles::poll_transit_vehicles)
                     .after(systems::free_camera::camera_controls),
             ),
-            advance_day_cycle.before(apply_day_night_cycle),
+            (
+                apply_sun_mode
+                    .before(advance_day_cycle)
+                    .after(systems::transit_live::update_world_clock),
+                advance_day_cycle.before(apply_day_night_cycle),
+            ),
             apply_day_night_cycle.after(systems::ui::render_dev_panel),
             manage_lights.after(systems::ui::render_dev_panel),
             apply_distance_fog.after(systems::ui::render_dev_panel),
@@ -1234,8 +1273,50 @@ impl Material for HorizonHazeMaterial {
 
 /// When the dev panel's "Quick cycle" toggle is on, advances the time of day smoothly,
 /// looping the full 24 h over `cycle_seconds`.
+/// Drive `time_of_day` from the sun-mode switcher (HUD Auto/Day/Night). `Auto`
+/// tracks the real local *solar* time at the map anchor (so the sun is where it
+/// really is right now); `Day`/`Night` pin noon/midnight; `Manual` hands the
+/// clock to the dev panel. Runs before `advance_day_cycle` and
+/// `apply_day_night_cycle`, so the whole sun/moon/fog pipeline sees the value.
+fn apply_sun_mode(
+    clock: Res<systems::transit_live::WorldClock>,
+    globe: Res<systems::globe::GlobeState>,
+    mut dev: ResMut<DevPanelState>,
+) {
+    // Manual hands the whole day/night group — time *and* moon — to the dev panel
+    // (slider / presets / Quick-cycle).
+    if dev.sun_mode == resources::SunMode::Manual {
+        return;
+    }
+    let target_time = match dev.sun_mode {
+        resources::SunMode::Day => 12.0,
+        resources::SunMode::Night => 0.0,
+        // Quantize to the minute: the sun moves imperceptibly between, and this
+        // keeps `apply_day_night_cycle` (gated on `dev.is_changed()`) from
+        // re-lighting the whole scene every single frame.
+        resources::SunMode::Auto => {
+            let solar = utils::sun::solar_time_of_day(clock.now_unix, globe.anchor_lng);
+            (solar * 60.0).round() / 60.0
+        }
+        resources::SunMode::Manual => unreachable!("returned above"),
+    };
+    // The cycle includes the moon: in every automatic mode its phase and
+    // position ride the real date, not a fixed dev-panel value.
+    let target_moon = utils::sun::lunar_age_days(clock.now_unix);
+    // Only touch the resource when a value actually moves, so change detection
+    // stays quiet once Day/Night settle (and between Auto's minute ticks).
+    if (dev.time_of_day - target_time).abs() > 1e-4 {
+        dev.time_of_day = target_time;
+    }
+    if (dev.moon_age_days - target_moon).abs() > 1e-4 {
+        dev.moon_age_days = target_moon;
+    }
+}
+
 fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
-    if !dev.auto_cycle {
+    // Quick-cycle animates `time_of_day`/`moon_age_days` directly, so it only
+    // runs in Manual — any automatic mode overwrites them from the real clock.
+    if !dev.auto_cycle || dev.sun_mode != resources::SunMode::Manual {
         return;
     }
     let speed = 24.0 / dev.cycle_seconds.max(0.1); // hours per real second
@@ -1891,8 +1972,10 @@ const CLOUD_FREQ: f32 = 0.00034;
 const CLOUD_OPACITY: f32 = 0.92;
 /// Edge softness of the coverage cutoff (0 = hard, higher = wispier margins).
 const CLOUD_SOFTNESS: f32 = 0.18;
-/// Wind velocity in the shader's UV units per second (drifts the deck).
-const CLOUD_WIND: Vec2 = Vec2::new(0.004, 0.0015);
+/// Wind velocity in the shader's UV units per second (drifts the deck). The
+/// visible field spans ~1.7 UV units, so ~0.04/s crosses it in ~40 s — a clear
+/// drift without racing (the old 0.004 was imperceptible).
+const CLOUD_WIND: Vec2 = Vec2::new(0.04, 0.015);
 /// Clouds are at full strength up to this camera altitude, then fade out so a
 /// high flight or orbit view sees clear sky (the shell is a ceiling seen from
 /// below; flying *above* the deck to look down on the tops is a follow-up).
@@ -2172,10 +2255,13 @@ fn update_rain(
 #[derive(Component)]
 struct GlobeClouds;
 
-/// Height of the planet cloud shell above the globe surface, in metres.
-const GLOBE_CLOUD_ALT: f32 = 8_000.0;
-/// 3D noise frequency for the planet cloud sphere (feature scale on the globe).
-const GLOBE_CLOUD_FREQ: f32 = 4.5;
+/// Height of the planet cloud shell above the globe surface, in metres. Well
+/// clear of the surface so it doesn't z-fight the globe from orbit (the depth
+/// test is also forced Always — see the material's `specialize`).
+const GLOBE_CLOUD_ALT: f32 = 25_000.0;
+/// 3D noise frequency for the planet cloud sphere (feature scale on the globe) —
+/// low, so cloud systems are large and connected rather than a field of puffs.
+const GLOBE_CLOUD_FREQ: f32 = 1.8;
 /// Overall opacity of the planet cloud sphere.
 const GLOBE_CLOUD_OPACITY: f32 = 0.85;
 
@@ -2199,6 +2285,9 @@ struct GlobeCloudMaterial {
     /// Night-side cloud colour.
     #[uniform(4)]
     shadow_color: LinearRgba,
+    /// Earth's spin axis in the local frame (latitude banding + zonal drift).
+    #[uniform(5)]
+    north_axis: Vec4,
 }
 
 impl Material for GlobeCloudMaterial {
@@ -2216,10 +2305,15 @@ impl Material for GlobeCloudMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        use bevy::render::render_resource::CompareFunction;
         // Seen from outside in orbit: keep back-face culling (draw the outer
-        // shell) but don't write depth, so it blends over the globe surface.
+        // shell). Don't write depth, and force the depth test to Always — from
+        // 10,000 km the ~25 km shell is within the globe's depth precision, so a
+        // normal test z-fights and the clouds show only as scattered dots; Always
+        // makes the near hemisphere's clouds draw cleanly over the surface.
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             depth.depth_write_enabled = Some(false);
+            depth.depth_compare = Some(CompareFunction::Always);
         }
         Ok(())
     }
@@ -2242,6 +2336,7 @@ fn setup_globe_clouds(
         params: Vec4::ZERO,
         lit_color: LinearRgba::WHITE,
         shadow_color: LinearRgba::BLACK,
+        north_axis: Vec4::Y,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -2317,8 +2412,13 @@ fn update_globe_clouds(
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.centre = centre.extend(radius);
         mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
-        mat.params = Vec4::new(dev.cloud_cover, space, time.elapsed_secs(), GLOBE_CLOUD_FREQ);
+        // The globe is a weather system, not a slave to the ground cloud slider:
+        // Earth always has substantial cloud from orbit, so give it a baseline the
+        // slider adds to (0 → light broken cover, 1 → heavily overcast).
+        let globe_cover = 0.42 + 0.4 * dev.cloud_cover;
+        mat.params = Vec4::new(globe_cover, space, time.elapsed_secs(), GLOBE_CLOUD_FREQ);
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::rgb(0.06, 0.09, 0.16);
+        mat.north_axis = globe.north_axis_local().extend(0.0);
     }
 }
