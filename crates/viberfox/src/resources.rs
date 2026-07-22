@@ -82,11 +82,32 @@ pub struct AvatarChooserState {
     pub seeded: bool,
 }
 
+/// How `time_of_day` (the sun/moon/fog clock) is driven — a light/dark/auto
+/// switcher like a website's theme toggle. The HUD exposes Auto/Day/Night; the
+/// dev panel's slider, presets, and Quick-cycle drop into `Manual`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SunMode {
+    /// Realistic: the sun follows the real current time at the map location
+    /// (local solar time from the anchor longitude — see `utils::sun`).
+    #[default]
+    Auto,
+    /// Forced daylight (noon).
+    Day,
+    /// Forced night (midnight).
+    Night,
+    /// The dev panel owns the clock: the slider / presets / Quick-cycle set
+    /// `time_of_day` directly and `main::apply_sun_mode` leaves it untouched.
+    Manual,
+}
+
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
 /// exposes a day/night slider that drives the sun, and a distance-fog slider.
 #[derive(Resource)]
 pub struct DevPanelState {
     pub open: bool,
+    /// How the day/night clock is driven (Auto/Day/Night/Manual). `Manual` is
+    /// entered automatically by touching the slider, a preset, or Quick-cycle.
+    pub sun_mode: SunMode,
     /// Time of day in hours, 0.0–24.0 (12.0 = noon).
     pub time_of_day: f32,
     /// When true, `time_of_day` advances automatically, looping the full 24h.
@@ -127,6 +148,7 @@ impl Default for DevPanelState {
     fn default() -> Self {
         Self {
             open: false,
+            sun_mode: SunMode::Auto,
             time_of_day: 12.0,
             auto_cycle: false,
             cycle_seconds: 10.0,

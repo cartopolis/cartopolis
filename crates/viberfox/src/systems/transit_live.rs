@@ -72,19 +72,67 @@ const PANEL_PX: usize = 432;
 pub struct WorldClock {
     pub now_unix: f64,
     pub local_offset_secs: Option<i32>,
+    /// User forced the clock to UTC (HUD toggle next to the time). When false
+    /// the clock shows local time *if* an offset has been learned, UTC otherwise.
+    pub show_utc: bool,
 }
 
 impl WorldClock {
-    /// Time of day as (h, m, s) plus whether it is real local time (offset
-    /// known) or a UTC fallback.
+    /// Time of day as (h, m, s) plus whether it is being shown as real local
+    /// time. Local only when an offset is known *and* the user hasn't forced
+    /// UTC; otherwise it is the UTC fallback.
     pub fn hms(&self) -> ((u32, u32, u32), bool) {
-        let off = self.local_offset_secs.unwrap_or(0) as i64;
+        let local = !self.show_utc && self.local_offset_secs.is_some();
+        let off = if local { self.local_offset_secs.unwrap_or(0) } else { 0 } as i64;
         let secs = (self.now_unix as i64 + off).rem_euclid(86_400);
         (
             ((secs / 3600) as u32, (secs / 60 % 60) as u32, (secs % 60) as u32),
-            self.local_offset_secs.is_some(),
+            local,
         )
     }
+}
+
+/// Keep `WorldClock::local_offset_secs` set to the real timezone offset of the
+/// map anchor, so the HUD clock shows correct local time anywhere on Earth (with
+/// DST) — not just where the transit feed happens to report one. The anchor's
+/// coordinates are resolved to an IANA zone offline (`tzf-rs`, embedded polygon
+/// data) and the current UTC offset for that zone is read from the tz database
+/// (`jiff`). Longitude alone can't do this: political zones (the Netherlands at
+/// ~7°E running on CET/CEST) don't follow the 15°-per-hour solar bands.
+pub fn update_local_timezone(
+    globe: Res<crate::systems::globe::GlobeState>,
+    clock: ResMut<WorldClock>,
+    // Built once — parsing the embedded boundary data isn't free.
+    mut finder: Local<Option<tzf_rs::DefaultFinder>>,
+    // The last anchor cell we resolved (quantized), so we only re-look-up on a
+    // real move instead of every frame.
+    mut last_key: Local<Option<(i64, i64)>>,
+) {
+    let mut clock = clock;
+    let finder = finder.get_or_insert_with(tzf_rs::DefaultFinder::new);
+    // Quantize to ~0.1° (~11 km): fine enough to catch a zone change, coarse
+    // enough that ordinary panning doesn't trigger a lookup every frame.
+    let key = (
+        (globe.anchor_lat * 10.0).round() as i64,
+        (globe.anchor_lng * 10.0).round() as i64,
+    );
+    if *last_key == Some(key) {
+        return;
+    }
+    *last_key = Some(key);
+
+    // tzf takes (lng, lat). Empty over open ocean with no zone — leave the
+    // offset untouched (transit feed / previous value stand in).
+    let name = finder.get_tz_name(globe.anchor_lng, globe.anchor_lat);
+    if name.is_empty() {
+        return;
+    }
+    let Ok(tz) = jiff::tz::TimeZone::get(name) else {
+        return;
+    };
+    let ts = jiff::Timestamp::from_second(clock.now_unix as i64)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    clock.local_offset_secs = Some(tz.to_offset(ts).seconds());
 }
 
 /// Advance the wall clock (cheap; runs every frame).
@@ -777,6 +825,23 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The anchor's coordinates must resolve to the right political timezone
+    /// (not a longitude band) with a DST-aware offset — this is what lets the
+    /// HUD clock read correct local time. Groningen runs on Europe/Amsterdam:
+    /// CEST (+2h) in summer, CET (+1h) in winter, despite sitting near 7°E.
+    #[test]
+    fn anchor_resolves_to_local_timezone_with_dst() {
+        let finder = tzf_rs::DefaultFinder::new();
+        let name = finder.get_tz_name(6.5665, 53.2194); // (lng, lat)
+        assert_eq!(name, "Europe/Amsterdam");
+
+        let tz = jiff::tz::TimeZone::get(name).unwrap();
+        let summer: jiff::Timestamp = "2026-07-22T12:00:00Z".parse().unwrap();
+        let winter: jiff::Timestamp = "2026-01-15T12:00:00Z".parse().unwrap();
+        assert_eq!(tz.to_offset(summer).seconds(), 7200); // CEST
+        assert_eq!(tz.to_offset(winter).seconds(), 3600); // CET
+    }
 
     /// Paint a representative board and save a preview PNG (visual check that
     /// the rasteriser puts legible text where the layout says it should).

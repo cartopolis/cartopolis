@@ -4,6 +4,17 @@
 
 use bevy::math::{Quat, Vec3};
 
+/// Local apparent-solar time of day (0–24 h) for a Unix timestamp at a longitude
+/// (degrees east). The sun is overhead at local solar noon, and each 15° of
+/// longitude shifts that noon one hour from UTC — so this is the time that
+/// *physically* places the sun in the sky, with no timezone or DST table. Feed
+/// it into `time_of_day` (see `main::apply_sun_mode`) to make the sky track the
+/// real clock at wherever the map is anchored.
+pub fn solar_time_of_day(now_unix: f64, lng_deg: f64) -> f32 {
+    let utc_hours = (now_unix / 3600.0).rem_euclid(24.0);
+    (utc_hours + lng_deg / 15.0).rem_euclid(24.0) as f32
+}
+
 /// Sun-arc angle for a time of day (0–24 h): 0 = sunrise (east), π/2 = noon (up),
 /// π = sunset (west), −π/2 = midnight (below).
 pub fn day_angle(hours: f32) -> f32 {
@@ -105,6 +116,16 @@ pub fn celestial_rotation(hours: f32) -> Quat {
 /// One synodic month — the full new → full → new phase cycle, in days.
 pub const LUNAR_CYCLE_DAYS: f32 = 29.53;
 
+/// A known new moon, Unix seconds: 2000-01-06 18:14 UTC. Lunar age counts
+/// forward from here modulo the synodic month.
+pub const NEW_MOON_UNIX: f64 = 947_182_440.0;
+
+/// Real lunar age in days (0 = new, ~14.8 = full) for a Unix timestamp, so the
+/// automatic day/night cycle carries the true moon phase for today's date.
+pub fn lunar_age_days(now_unix: f64) -> f32 {
+    ((now_unix - NEW_MOON_UNIX) / 86_400.0).rem_euclid(LUNAR_CYCLE_DAYS as f64) as f32
+}
+
 /// Phase angle for a lunar age in days: 0 = new (moon beside the sun), π = full.
 fn moon_phase_angle(age_days: f32) -> f32 {
     age_days.rem_euclid(LUNAR_CYCLE_DAYS) / LUNAR_CYCLE_DAYS * std::f32::consts::TAU
@@ -157,4 +178,38 @@ pub fn ambient_sky_color(hours: f32) -> Vec3 {
     let twilight = dusk.lerp(dawn, east);
     let base = night.lerp(noon, daylight(hours));
     base.lerp(twilight, 0.6 * horizon_proximity(hours))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::solar_time_of_day;
+
+    /// Lunar age counts from the reference new moon, wraps at one synodic month,
+    /// and reads full at the half-cycle — so the automatic cycle shows a real
+    /// phase for the date.
+    #[test]
+    fn lunar_age_wraps_and_reaches_full() {
+        use super::{lunar_age_days, moon_illuminated_fraction, LUNAR_CYCLE_DAYS, NEW_MOON_UNIX};
+        let day = 86_400.0;
+        assert!(lunar_age_days(NEW_MOON_UNIX) < 1e-3);
+        let after = lunar_age_days(NEW_MOON_UNIX + LUNAR_CYCLE_DAYS as f64 * day);
+        assert!(after < 1e-2 || (LUNAR_CYCLE_DAYS - after) < 1e-2); // back to new
+        let half = lunar_age_days(NEW_MOON_UNIX + (LUNAR_CYCLE_DAYS as f64 / 2.0) * day);
+        assert!(moon_illuminated_fraction(half) > 0.999); // full
+    }
+
+    /// The sun is overhead at local solar noon: at 12:00 UTC it is noon on the
+    /// prime meridian, one hour later per 15° east, one earlier per 15° west,
+    /// and the clock wraps across the date line.
+    #[test]
+    fn solar_time_tracks_longitude() {
+        let noon_utc = 12.0 * 3600.0; // 12:00:00 UTC
+        let approx = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(approx(solar_time_of_day(noon_utc, 0.0), 12.0));
+        assert!(approx(solar_time_of_day(noon_utc, 15.0), 13.0)); // 15°E → +1h
+        assert!(approx(solar_time_of_day(noon_utc, -15.0), 11.0)); // 15°W → −1h
+        assert!(approx(solar_time_of_day(noon_utc, 180.0), 0.0)); // date line → midnight
+        // Wraps cleanly at UTC midnight on the prime meridian.
+        assert!(approx(solar_time_of_day(0.0, 0.0), 0.0));
+    }
 }
