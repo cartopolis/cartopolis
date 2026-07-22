@@ -5,7 +5,7 @@
 use super::egui_manager::EguiManager;
 use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region, Selected};
 use crate::resources::{
-    ContextMenuState, Database, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
+    ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
 };
 use crate::resources::OnlineSession;
 use bevy::pbr::StandardMaterial;
@@ -1298,25 +1298,12 @@ fn apply_warp(prim: &mut Prim, w: &crate::resources::PrimWarp) {
     prim.slice_end = w.slice_end;
 }
 
-/// Convert dialog warp (f32) into DB params (f64).
-fn warp_params(w: &crate::resources::PrimWarp) -> crate::systems::prim_ops::WarpParams {
-    crate::systems::prim_ops::WarpParams {
-        twist_begin: w.twist_begin as f64,
-        twist_end: w.twist_end as f64,
-        taper_x: w.taper_x as f64,
-        taper_y: w.taper_y as f64,
-        top_shear_x: w.top_shear_x as f64,
-        top_shear_y: w.top_shear_y as f64,
-        slice_begin: w.slice_begin as f64,
-        slice_end: w.slice_end as f64,
-    }
-}
-
-/// Persist prim changes to the local database and update the Bevy world.
+/// Send prim authoring changes to the server (ADR-029: online-only, geo-anchored)
+/// and apply them locally for immediate feedback.
 pub fn send_prim_mutations(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
-    db: Option<Res<Database>>,
+    stream: Res<crate::systems::map_stream::MapStream>,
     mut prim_query: Query<(
         Entity,
         &mut Prim,
@@ -1329,143 +1316,66 @@ pub fn send_prim_mutations(
     texture_cache: Res<PrimTextureCache>,
     online: Option<Res<OnlineSession>>,
 ) {
-    use crate::systems::prim_ops;
-
     if let Some(dialog_state) = game_state.pending_prim_save.take() {
         if dialog_state.is_new {
             let region_id = region_query.iter().next().map(|r| r.id).unwrap_or(1);
+            let pos = Vec3::new(
+                dialog_state.position[0],
+                dialog_state.position[1],
+                dialog_state.position[2],
+            );
 
-            // Online: ask the server to create the prim with its full initial state; the
-            // PrimUpsert echo spawns it locally with the server-assigned id.
-            if let Some(sess) = online.as_ref() {
-                let _ = sess.intent_tx.send(NetMessage::CreatePrim {
-                    request_id: 0,
-                    region_id,
-                    name: dialog_state.name.clone(),
-                    position: Vec3::new(
-                        dialog_state.position[0],
-                        dialog_state.position[1],
-                        dialog_state.position[2],
-                    ),
-                    rotation: Vec3::new(
-                        dialog_state.rotation[0],
-                        dialog_state.rotation[1],
-                        dialog_state.rotation[2],
-                    ),
-                    scale: Vec3::new(
-                        dialog_state.scale[0],
-                        dialog_state.scale[1],
-                        dialog_state.scale[2],
-                    ),
-                    color: dialog_state.color,
-                    texture_id: dialog_state.texture_id.clone(),
-                    shape: dialog_state.shape.clone(),
-                    surface: dialog_state.surface,
-                    geometry: dialog_state.geometry(),
-                });
-                tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
+            // ADR-029: prims are online-only and geo-anchored. Ask the server to
+            // create the prim; its PrimUpsert echo spawns the entity locally with
+            // the server-assigned id.
+            let (Some(sess), Some(geo)) = (
+                online.as_ref(),
+                crate::systems::prim_geo::geo_from_world(&stream, pos),
+            ) else {
+                tracing::warn!("cannot create prim: offline or world not anchored yet");
                 return;
-            }
-
-            let tex = dialog_state.texture_id.as_deref();
-
-            let new_id: Option<i64> = db.as_ref().and_then(|db| {
-                let conn = db.conn.lock().unwrap();
-                prim_ops::db_create_prim(
-                    &conn,
-                    region_id,
-                    &dialog_state.name,
-                    &dialog_state.shape,
-                    [
-                        dialog_state.position[0] as f64,
-                        dialog_state.position[1] as f64,
-                        dialog_state.position[2] as f64,
-                    ],
-                    [
-                        dialog_state.rotation[0] as f64,
-                        dialog_state.rotation[1] as f64,
-                        dialog_state.rotation[2] as f64,
-                    ],
-                    [
-                        dialog_state.scale[0] as f64,
-                        dialog_state.scale[1] as f64,
-                        dialog_state.scale[2] as f64,
-                    ],
-                    [
-                        dialog_state.color[0] as f64,
-                        dialog_state.color[1] as f64,
-                        dialog_state.color[2] as f64,
-                    ],
-                    tex,
-                    dialog_state.path_cut_begin as f64,
-                    dialog_state.path_cut_end as f64,
-                    dialog_state.hollow as f64,
-                    warp_params(&dialog_state.warp),
-                    dialog_state.surface,
-                )
-                .ok()
+            };
+            let _ = sess.intent_tx.send(NetMessage::CreatePrim {
+                request_id: 0,
+                region_id,
+                name: dialog_state.name.clone(),
+                position: pos,
+                rotation: Vec3::new(
+                    dialog_state.rotation[0],
+                    dialog_state.rotation[1],
+                    dialog_state.rotation[2],
+                ),
+                scale: Vec3::new(
+                    dialog_state.scale[0],
+                    dialog_state.scale[1],
+                    dialog_state.scale[2],
+                ),
+                color: dialog_state.color,
+                texture_id: dialog_state.texture_id.clone(),
+                shape: dialog_state.shape.clone(),
+                surface: dialog_state.surface,
+                geometry: dialog_state.geometry(),
+                geo,
             });
-
-            if let Some(id) = new_id {
-                commands.spawn((
-                    Prim {
-                        id,
-                        region_id,
-                        name: dialog_state.name.clone(),
-                        shape: PrimShape::from_str(&dialog_state.shape),
-                        color: Color::srgb(
-                            dialog_state.color[0],
-                            dialog_state.color[1],
-                            dialog_state.color[2],
-                        ),
-                        texture_id: dialog_state.texture_id.clone(),
-                        path_cut_begin: dialog_state.path_cut_begin,
-                        path_cut_end: dialog_state.path_cut_end,
-                        hollow: dialog_state.hollow,
-                        twist_begin: dialog_state.warp.twist_begin,
-                        twist_end: dialog_state.warp.twist_end,
-                        taper_x: dialog_state.warp.taper_x,
-                        taper_y: dialog_state.warp.taper_y,
-                        top_shear_x: dialog_state.warp.top_shear_x,
-                        top_shear_y: dialog_state.warp.top_shear_y,
-                        slice_begin: dialog_state.warp.slice_begin,
-                        slice_end: dialog_state.warp.slice_end,
-                        surface: dialog_state.surface,
-                    },
-                    Transform::from_xyz(
-                        dialog_state.position[0],
-                        dialog_state.position[1],
-                        dialog_state.position[2],
-                    )
-                    .with_rotation(Quat::from_euler(
-                        EulerRot::XYZ,
-                        dialog_state.rotation[0],
-                        dialog_state.rotation[1],
-                        dialog_state.rotation[2],
-                    ))
-                    .with_scale(Vec3::new(
-                        dialog_state.scale[0],
-                        dialog_state.scale[1],
-                        dialog_state.scale[2],
-                    )),
-                    Selected,
-                ));
-                game_state.selected_prim_id = Some(id);
-                tracing::info!(id, name = %dialog_state.name, "created prim");
-            }
+            tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
+            return;
         } else if let Some(prim_id) = dialog_state.prim_id {
-            // Online: send the authoritative update to the server. We still apply it
-            // locally below for immediate feedback; the PrimUpsert echo is skipped for
-            // the selected prim, so there's no fight.
-            if let Some(sess) = online.as_ref() {
+            // ADR-029: send the authoritative, geo-anchored update to the server.
+            // We still apply it locally below for immediate feedback; the PrimUpsert
+            // echo is skipped for the selected prim, so there's no fight.
+            let pos = Vec3::new(
+                dialog_state.position[0],
+                dialog_state.position[1],
+                dialog_state.position[2],
+            );
+            if let (Some(sess), Some(geo)) = (
+                online.as_ref(),
+                crate::systems::prim_geo::geo_from_world(&stream, pos),
+            ) {
                 let _ = sess.intent_tx.send(NetMessage::UpdatePrim {
                     request_id: 0,
                     prim_id,
-                    position: Vec3::new(
-                        dialog_state.position[0],
-                        dialog_state.position[1],
-                        dialog_state.position[2],
-                    ),
+                    position: pos,
                     rotation: Vec3::new(
                         dialog_state.rotation[0],
                         dialog_state.rotation[1],
@@ -1481,43 +1391,8 @@ pub fn send_prim_mutations(
                     name: dialog_state.name.clone(),
                     surface: dialog_state.surface,
                     geometry: dialog_state.geometry(),
+                    geo,
                 });
-            }
-            let tex = dialog_state.texture_id.as_deref();
-            if let Some(ref db) = db {
-                let conn = db.conn.lock().unwrap();
-                let _ = prim_ops::db_update_prim(
-                    &conn,
-                    prim_id,
-                    &dialog_state.name,
-                    &dialog_state.shape,
-                    [
-                        dialog_state.position[0] as f64,
-                        dialog_state.position[1] as f64,
-                        dialog_state.position[2] as f64,
-                    ],
-                    [
-                        dialog_state.rotation[0] as f64,
-                        dialog_state.rotation[1] as f64,
-                        dialog_state.rotation[2] as f64,
-                    ],
-                    [
-                        dialog_state.scale[0] as f64,
-                        dialog_state.scale[1] as f64,
-                        dialog_state.scale[2] as f64,
-                    ],
-                    [
-                        dialog_state.color[0] as f64,
-                        dialog_state.color[1] as f64,
-                        dialog_state.color[2] as f64,
-                    ],
-                    tex,
-                    dialog_state.path_cut_begin as f64,
-                    dialog_state.path_cut_end as f64,
-                    dialog_state.hollow as f64,
-                    warp_params(&dialog_state.warp),
-                    dialog_state.surface,
-                );
             }
             for (entity, mut prim, mut transform, mat_handle_opt, owned) in prim_query.iter_mut() {
                 if prim.id == prim_id {
@@ -1641,10 +1516,6 @@ pub fn send_prim_mutations(
             let _ = sess
                 .intent_tx
                 .send(NetMessage::DeletePrim { request_id: 0, prim_id });
-        }
-        if let Some(ref db) = db {
-            let conn = db.conn.lock().unwrap();
-            let _ = conn.execute("DELETE FROM prims WHERE id=?1", rusqlite::params![prim_id]);
         }
         for (entity, prim, _, _, _) in prim_query.iter() {
             if prim.id == prim_id {

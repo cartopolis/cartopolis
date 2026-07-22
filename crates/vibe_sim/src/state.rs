@@ -2,8 +2,8 @@ use glam::Vec3;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vibe_core::{
-    snap_yaw_continuation, AvatarStateDto, NetMessage, PrimDto, PrimGeometry, PrimSurface,
-    RegionDto,
+    snap_yaw_continuation, AvatarStateDto, GeoAnchor, NetMessage, PrimDto, PrimGeometry,
+    PrimSurface, RegionDto,
 };
 
 struct AvatarSim {
@@ -205,6 +205,7 @@ impl SimWorld {
         region_id: i64,
         position: Vec3,
         shape: &str,
+        geo: GeoAnchor,
     ) -> Result<PrimDto, String> {
         // Call db::insert_prim with a minimal lock
         let prim = {
@@ -212,7 +213,7 @@ impl SimWorld {
                 .conn
                 .lock()
                 .map_err(|e| format!("failed to acquire db lock: {}", e))?;
-            crate::db::insert_prim(&conn_guard, region_id, position, shape)
+            crate::db::insert_prim(&conn_guard, region_id, position, shape, geo)
                 .map_err(|e| format!("insert_prim failed: {}", e))?
         };
         // Add to in-memory list
@@ -235,6 +236,7 @@ impl SimWorld {
         name: &str,
         surface: PrimSurface,
         geometry: PrimGeometry,
+        geo: GeoAnchor,
     ) -> Result<PrimDto, String> {
         // Call db::update_prim with a minimal lock
         let prim = {
@@ -253,6 +255,7 @@ impl SimWorld {
                 name,
                 surface,
                 geometry,
+                geo,
             )
             .map_err(|e| format!("update_prim failed: {}", e))?
             .ok_or_else(|| format!("prim {} not found", prim_id))?

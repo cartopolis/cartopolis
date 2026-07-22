@@ -1,11 +1,24 @@
 //! TCP client for `--connect` (ADR-008, ADR-009).
 
-use crate::components::{Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimShape, Region, RemoteAvatar, RemoteAvatarMotionHint};
+use crate::components::{Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::{
-    AvatarState, CameraState, ConnectAddr, GameState, LocalAvatarSimId, NetworkMailbox,
-    NetworkSyncState, OnlineSession, OsmTileUrlTemplate, PrimTextureCache, TextureLibrary,
+    AuthIdentity, AvatarState, CameraState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
+    NetworkMailbox, NetworkSyncState, OnlineSession, OsmTileUrlTemplate, PrimTextureCache,
+    TextureLibrary,
 };
-use crate::systems::avatar::{fox_facing_yaw_from_camera, wish_dir_camera_relative};
+use crate::systems::user_store::UserStore;
+use bevy::ecs::system::SystemParam;
+
+/// Auth-related writeback for `apply_network_snapshot`, grouped so the system
+/// stays under Bevy's system-parameter count limit (ADR-016).
+#[derive(SystemParam)]
+pub struct AuthWriteback<'w> {
+    identity: ResMut<'w, AuthIdentity>,
+    connect_auth: Option<Res<'w, ConnectAuth>>,
+    connect_addr: Option<Res<'w, ConnectAddr>>,
+    user_store: ResMut<'w, UserStore>,
+}
+use crate::systems::avatar::{avatar_facing_yaw_from_camera, wish_dir_camera_relative};
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
@@ -17,13 +30,18 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use vibe_core::{
-    decode_app_frame, encode_app_frame, snap_yaw_continuation, wrap_angle_pi, AvatarStateDto,
-    NetMessage, PrimDto, RegionDto, PROTOCOL_VERSION,
+    decode_app_frame, encode_app_frame, snap_yaw_continuation, wrap_angle_pi, AuthCredential,
+    AvatarStateDto, NetMessage, PrimDto, RegionDto, PROTOCOL_VERSION,
 };
 
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
-pub fn spawn_network_thread(mut commands: Commands, addr: Res<ConnectAddr>) {
+pub fn spawn_network_thread(
+    mut commands: Commands,
+    addr: Res<ConnectAddr>,
+    auth: Option<Res<ConnectAuth>>,
+    user_store: Res<UserStore>,
+) {
     let tile_template = Arc::new(Mutex::new(String::new()));
     let tile_for_thread = tile_template.clone();
     commands.insert_resource(OsmTileUrlTemplate(tile_template));
@@ -31,6 +49,27 @@ pub fn spawn_network_thread(mut commands: Commands, addr: Res<ConnectAddr>) {
     let (out_tx, out_rx) = mpsc::channel::<NetMessage>();
     let (intent_tx, intent_rx) = tokio::sync::mpsc::unbounded_channel();
     let connect_to = addr.0.clone();
+
+    // Credential resolved by `login::resolve` in main; default to the solo `dev`
+    // account if the resource is somehow absent.
+    let auth = auth.map(|a| (*a).clone()).unwrap_or(ConnectAuth {
+        credential: AuthCredential::Password {
+            username: "dev".to_string(),
+            password: "dev".to_string(),
+        },
+        persist_token: false,
+    });
+    // Prefer a persisted session token for this server (silent reconnect), with
+    // the resolved credential as fallback in case the token is stale (ADR-016).
+    let (primary, fallback) = match auth
+        .persist_token
+        .then(|| user_store.session_token(&connect_to))
+        .flatten()
+    {
+        Some(token) => (AuthCredential::Token(token), Some(auth.credential)),
+        None => (auth.credential, None),
+    };
+
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -42,9 +81,14 @@ pub fn spawn_network_thread(mut commands: Commands, addr: Res<ConnectAddr>) {
                 return;
             }
         };
-        if let Err(e) =
-            rt.block_on(client_loop(connect_to, out_tx, intent_rx, tile_for_thread))
-        {
+        if let Err(e) = rt.block_on(client_loop(
+            connect_to,
+            primary,
+            fallback,
+            out_tx,
+            intent_rx,
+            tile_for_thread,
+        )) {
             eprintln!("network client ended: {e:#}");
         }
     });
@@ -57,49 +101,61 @@ pub fn spawn_network_thread(mut commands: Commands, addr: Res<ConnectAddr>) {
 
 async fn client_loop(
     addr: String,
+    primary: AuthCredential,
+    fallback: Option<AuthCredential>,
     out_tx: mpsc::Sender<NetMessage>,
     mut intent_rx: UnboundedReceiver<NetMessage>,
     tile_template: Arc<Mutex<String>>,
 ) -> anyhow::Result<()> {
-    let stream = TcpStream::connect(&addr).await?;
-    tracing::info!("connected to {addr}");
-    let mut framed = Framed::new(
-        stream,
-        LengthDelimitedCodec::builder()
-            .max_frame_length(MAX_FRAME)
-            .little_endian()
-            .new_codec(),
-    );
+    // Try the primary credential, then the fallback (a stale persisted token
+    // gets a fresh password login rather than locking the user out). Each attempt
+    // needs its own connection — the server closes on auth failure.
+    let attempts: Vec<AuthCredential> = std::iter::once(primary).chain(fallback).collect();
+    let mut authed: Option<(Framed<TcpStream, LengthDelimitedCodec>, NetMessage)> = None;
+    for (i, credential) in attempts.into_iter().enumerate() {
+        let stream = TcpStream::connect(&addr).await?;
+        let mut framed = Framed::new(
+            stream,
+            LengthDelimitedCodec::builder()
+                .max_frame_length(MAX_FRAME)
+                .little_endian()
+                .new_codec(),
+        );
+        let hello = encode_app_frame(&NetMessage::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            auth: credential,
+        })?;
+        framed.send(Bytes::from(hello)).await?;
 
-    let hello = encode_app_frame(&NetMessage::ClientHello {
-        protocol_version: PROTOCOL_VERSION,
-        client_token: format!("viberfox-{}", uuid::Uuid::new_v4()),
-    })?;
-    framed.send(Bytes::from(hello)).await?;
-
-    let ack_bytes = framed
-        .next()
-        .await
-        .transpose()?
-        .ok_or_else(|| anyhow::anyhow!("closed before ServerHelloAck"))?;
-    let ack_msg = decode_app_frame(&ack_bytes)?;
-    match &ack_msg {
-        NetMessage::ServerHelloAck {
-            tick_hz,
-            your_avatar_id,
-            osm_tile_url_template,
-            ..
-        } => {
-            if let Ok(mut g) = tile_template.lock() {
-                *g = osm_tile_url_template.clone();
+        let ack_bytes = framed
+            .next()
+            .await
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("closed before ServerHelloAck"))?;
+        let ack_msg = decode_app_frame(&ack_bytes)?;
+        match &ack_msg {
+            NetMessage::ServerHelloAck {
+                tick_hz,
+                your_avatar_id,
+                osm_tile_url_template,
+                ..
+            } => {
+                if let Ok(mut g) = tile_template.lock() {
+                    *g = osm_tile_url_template.clone();
+                }
+                tracing::info!(tick_hz, your_avatar_id, "handshake ok");
+                authed = Some((framed, ack_msg));
+                break;
             }
-            tracing::info!(tick_hz, your_avatar_id, "handshake ok");
+            NetMessage::ServerError { message, .. } => {
+                tracing::warn!("auth attempt {i} rejected: {message}");
+                continue;
+            }
+            other => anyhow::bail!("unexpected first server message: {other:?}"),
         }
-        NetMessage::ServerError { message, .. } => {
-            anyhow::bail!("server error: {message}");
-        }
-        other => anyhow::bail!("unexpected first server message: {other:?}"),
     }
+    let (mut framed, ack_msg) =
+        authed.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
     if out_tx.send(ack_msg).is_err() {
         return Ok(());
     }
@@ -159,14 +215,30 @@ pub fn apply_network_snapshot(
     mut texture_cache: ResMut<PrimTextureCache>,
     mut images: ResMut<Assets<Image>>,
     online: Option<Res<OnlineSession>>,
+    mut auth: AuthWriteback,
 ) {
     let Some(mb) = mailbox else {
         return;
     };
     while let Ok(msg) = mb.lock_rx().try_recv() {
         match msg {
-            NetMessage::ServerHelloAck { your_avatar_id, .. } => {
+            NetMessage::ServerHelloAck {
+                your_avatar_id,
+                principal_id,
+                username,
+                session_token,
+                ..
+            } => {
                 local_sim_id.0 = Some(your_avatar_id);
+                tracing::info!(%username, "authenticated");
+                auth.identity.principal_id = Some(principal_id);
+                auth.identity.username = Some(username);
+                // Persist the token for silent reconnect to external sims (ADR-016).
+                if let (Some(cauth), Some(caddr)) = (&auth.connect_auth, &auth.connect_addr) {
+                    if cauth.persist_token && !session_token.is_empty() {
+                        auth.user_store.set_session_token(&caddr.0, &session_token);
+                    }
+                }
             }
             NetMessage::WorldSnapshot {
                 regions,
@@ -211,7 +283,7 @@ pub fn apply_network_snapshot(
                 game_state.regions_loaded = true;
 
                 for p in prims {
-                    commands.spawn(prim_bundle_from_dto(p));
+                    spawn_prim_from_dto(&mut commands, p);
                 }
                 game_state.prims_loaded = true;
 
@@ -259,12 +331,18 @@ pub fn apply_network_snapshot(
                             .entity(entity)
                             .insert(NeedsMeshRebuild)
                             .insert(NeedsTextureRefresh);
+                        // ADR-029: keep the geo anchor in sync so place_geo_prims
+                        // re-derives the cell/local transform for the new position.
+                        commands.entity(entity).insert(PrimGeo {
+                            latitude: prim.geo.latitude,
+                            longitude: prim.geo.longitude,
+                        });
                         found = true;
                         break;
                     }
                 }
                 if !found {
-                    commands.spawn(prim_bundle_from_dto(prim));
+                    spawn_prim_from_dto(&mut commands, prim);
                 }
             }
             NetMessage::TextureCatalog { textures } => {
@@ -337,7 +415,7 @@ fn apply_local_avatar_pose_full(
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
     avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
-    let face = fox_facing_yaw_from_camera(camera_azimuth);
+    let face = avatar_facing_yaw_from_camera(camera_azimuth);
     avatar_state.online_tank_yaw = wrap_angle_pi(face - pi);
     if let Ok(mut tf) = avatar_tf.single_mut() {
         tf.translation = a.position;
@@ -451,8 +529,15 @@ fn transform_from_dto(p: &PrimDto) -> Transform {
         .with_scale(p.scale)
 }
 
-fn prim_bundle_from_dto(p: PrimDto) -> (Prim, Transform) {
-    (prim_from_dto(&p), transform_from_dto(&p))
+/// Spawn a prim entity from a DTO with its absolute geo anchor (ADR-029);
+/// `prim_geo::place_geo_prims` derives the `GridCell` + local `Transform` from
+/// the current OSM anchor.
+fn spawn_prim_from_dto(commands: &mut Commands, p: PrimDto) {
+    let geo = PrimGeo {
+        latitude: p.geo.latitude,
+        longitude: p.geo.longitude,
+    };
+    commands.spawn((prim_from_dto(&p), transform_from_dto(&p), geo));
 }
 
 fn decode_png_to_image(png_bytes: &[u8]) -> Option<Image> {
@@ -547,7 +632,7 @@ pub fn send_network_intent(
 
     let az = camera_state.azimuth;
     let v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
-    let display_yaw = fox_facing_yaw_from_camera(az);
+    let display_yaw = avatar_facing_yaw_from_camera(az);
 
     let _ = sess.intent_tx.send(NetMessage::ClientIntent {
         request_id: 0,

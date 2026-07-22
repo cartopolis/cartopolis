@@ -7,7 +7,9 @@
 use crate::components::{Prim, Selected};
 use crate::resources::{EditDialogState, OnlineSession};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::map_stream::MapStream;
 use bevy::prelude::*;
+use big_space::prelude::GridCell;
 use std::f32::consts::TAU;
 use vibe_core::NetMessage;
 
@@ -223,7 +225,9 @@ fn find_hit_axis_ring(
 // ─── Drag interaction ─────────────────────────────────────────────────────────
 
 pub fn handle_gizmo_interaction(
-    mut selected_query: Query<(&mut Transform, &Prim), With<Selected>>,
+    // ADR-029: `Option<&GridCell>` lets the send path reconstruct the prim's
+    // absolute world position (cell + local) to persist as a geo anchor.
+    mut selected_query: Query<(&mut Transform, &Prim, Option<&GridCell>), With<Selected>>,
     mut gizmo_state: ResMut<GizmoState>,
     mut edit_dialog: ResMut<EditDialogState>,
     egui_manager: Res<EguiManager>,
@@ -232,6 +236,7 @@ pub fn handle_gizmo_interaction(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
     online_session: Option<Res<OnlineSession>>,
+    stream: Res<MapStream>,
 ) {
     if selected_query.is_empty() {
         return;
@@ -254,7 +259,7 @@ pub fn handle_gizmo_interaction(
     if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.egui_wants_pointer_input() {
         // Read prim position without a mutable borrow.
         let (prim_pos, arm, start_tr) = {
-            let Ok((tr, _)) = selected_query.single() else { return; };
+            let Ok((tr, _, _)) = selected_query.single() else { return; };
             (tr.translation, arm_length(tr.scale.max_element()), *tr)
         };
 
@@ -269,21 +274,25 @@ pub fn handle_gizmo_interaction(
     // ── On release: clear drag state, send final network update ──────────────
     if mouse_buttons.just_released(MouseButton::Left) {
         if gizmo_state.active_axis.is_some() {
-            let Ok((transform, prim)) = selected_query.single() else { return; };
+            let Ok((transform, prim, cell)) = selected_query.single() else { return; };
             if let Some(ref session) = online_session {
-                let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
-                let _ = session.intent_tx.send(NetMessage::UpdatePrim {
-                    request_id: generate_request_id(),
-                    prim_id: prim.id,
-                    position: transform.translation,
-                    rotation: Vec3::new(rx, ry, rz),
-                    scale: transform.scale,
-                    color: edit_dialog.color,
-                    texture_id: edit_dialog.texture_id.clone(),
-                    name: edit_dialog.name.clone(),
-                    surface: edit_dialog.surface,
-                    geometry: edit_dialog.geometry(),
-                });
+                // ADR-029: persist the new position as an absolute geo anchor.
+                if let Some(geo) = crate::systems::prim_geo::geo_for(&stream, cell, transform) {
+                    let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
+                    let _ = session.intent_tx.send(NetMessage::UpdatePrim {
+                        request_id: generate_request_id(),
+                        prim_id: prim.id,
+                        position: transform.translation,
+                        rotation: Vec3::new(rx, ry, rz),
+                        scale: transform.scale,
+                        color: edit_dialog.color,
+                        texture_id: edit_dialog.texture_id.clone(),
+                        name: edit_dialog.name.clone(),
+                        surface: edit_dialog.surface,
+                        geometry: edit_dialog.geometry(),
+                        geo,
+                    });
+                }
             }
             gizmo_state.active_axis = None;
             gizmo_state.drag_start_transform = None;
@@ -311,7 +320,7 @@ pub fn handle_gizmo_interaction(
     // Signed distance the cursor moved along this axis (in world units).
     let world_delta = screen_norm.dot(mouse_delta) / screen_arm_px * arm;
 
-    let Ok((mut transform, prim)) = selected_query.single_mut() else { return; };
+    let Ok((mut transform, prim, cell)) = selected_query.single_mut() else { return; };
 
     match gizmo_state.mode {
         GizmoMode::Translate => {
@@ -344,18 +353,22 @@ pub fn handle_gizmo_interaction(
     if gizmo_state.last_update_time >= 0.05 {
         gizmo_state.last_update_time = 0.0;
         if let Some(ref session) = online_session {
-            let _ = session.intent_tx.send(NetMessage::UpdatePrim {
-                request_id: generate_request_id(),
-                prim_id: prim.id,
-                position: transform.translation,
-                rotation: Vec3::new(rx, ry, rz),
-                scale: transform.scale,
-                color: edit_dialog.color,
-                texture_id: edit_dialog.texture_id.clone(),
-                name: edit_dialog.name.clone(),
-                surface: edit_dialog.surface,
-                geometry: edit_dialog.geometry(),
-            });
+            // ADR-029: reproject the dragged position back to an absolute geo anchor.
+            if let Some(geo) = crate::systems::prim_geo::geo_for(&stream, cell, &transform) {
+                let _ = session.intent_tx.send(NetMessage::UpdatePrim {
+                    request_id: generate_request_id(),
+                    prim_id: prim.id,
+                    position: transform.translation,
+                    rotation: Vec3::new(rx, ry, rz),
+                    scale: transform.scale,
+                    color: edit_dialog.color,
+                    texture_id: edit_dialog.texture_id.clone(),
+                    name: edit_dialog.name.clone(),
+                    surface: edit_dialog.surface,
+                    geometry: edit_dialog.geometry(),
+                    geo,
+                });
+            }
         }
     }
 }

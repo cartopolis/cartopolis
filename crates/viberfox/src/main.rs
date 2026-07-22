@@ -17,15 +17,18 @@ use std::time::Duration;
 
 mod components;
 mod db;
+mod login;
 mod resources;
+#[cfg(feature = "solo")]
+mod solo;
 mod systems;
 mod utils;
 
 use components::Avatar;
 use resources::{
-    AiAssistantState, AiConfig, AvatarState, CameraState, ConnectAddr, ContextMenuState, Database,
-    DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState, MouseState,
-    OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
+    AiAssistantState, AiConfig, AuthIdentity, AvatarState, CameraState, ConnectAddr, ConnectAuth,
+    ContextMenuState, Database, DevPanelState, EditDialogState, GameState, LocalAvatarSimId,
+    MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
 };
 use big_space::prelude::{BigSpace, GridCell};
 use systems::egui_manager::EguiPlugin;
@@ -35,9 +38,21 @@ use utils::sun::sun_direction;
 #[derive(Parser, Debug)]
 #[command(name = "viberfox")]
 struct Cli {
-    /// Connect to a `vibe_sim` instance (TCP, postcard messages).
+    /// Connect to an external `vibe_sim` instance (TCP, postcard messages).
+    /// Omit for solo mode (an in-process sim); see `--offline`.
     #[arg(long)]
     connect: Option<String>,
+
+    /// Run without any sim: local SQLite, single user, no auth. This is the old
+    /// default and what `--shot` uses. Otherwise the default is solo mode.
+    #[arg(long)]
+    offline: bool,
+
+    /// Credentials for the online handshake, so you don't log in each run: a path
+    /// to a TOML login file, or inline `user:pass`. Defaults to `data/dev-login.toml`
+    /// if present, else env `VIBE_USER`/`VIBE_PASSWORD`, else the solo `dev` account.
+    #[arg(long, value_name = "FILE|user:pass")]
+    login: Option<String>,
 
     /// Scripted capture: place the camera, wait for the world to stream in,
     /// save this PNG and exit (see `systems::shot_harness`).
@@ -118,6 +133,24 @@ impl Plugin for ForceCpuClusteringPlugin {
             );
         }
     }
+}
+
+/// Bring up the in-process solo sim, returning its loopback address. `None` when
+/// the `solo` feature is disabled or startup failed (the caller then runs offline).
+#[cfg(feature = "solo")]
+fn start_solo_sim() -> Option<String> {
+    match solo::start() {
+        Ok(addr) => Some(addr),
+        Err(e) => {
+            tracing::error!("solo sim failed to start: {e:#}");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "solo"))]
+fn start_solo_sim() -> Option<String> {
+    None
 }
 
 fn main() {
@@ -266,8 +299,31 @@ fn main() {
     // scene's cascade distances.
     .insert_resource(DirectionalLightShadowMap { size: 2048 });
 
-    if let Some(addr) = cli.connect {
-        app.insert_resource(ConnectAddr(addr));
+    // Connection mode (ADR-016):
+    //  - `--connect ADDR` (or `server` in the login file) → external sim.
+    //  - `--offline` or `--shot` → no sim, local SQLite, no auth.
+    //  - otherwise (default) → solo mode: bring up an in-process sim on loopback
+    //    and connect to it via the same authenticated path an external sim uses.
+    app.init_resource::<AuthIdentity>();
+    let offline = cli.offline || cli.shot.is_some();
+    if !offline {
+        let login = login::resolve(cli.login.as_deref());
+        let external = cli.connect.or(login.server);
+        app.insert_resource(ConnectAuth {
+            credential: login.credential,
+            persist_token: external.is_some(),
+        });
+        if let Some(addr) = external {
+            app.insert_resource(ConnectAddr(addr));
+        } else {
+            match start_solo_sim() {
+                Some(addr) => {
+                    tracing::info!(%addr, "solo mode: in-process sim");
+                    app.insert_resource(ConnectAddr(addr));
+                }
+                None => tracing::info!("solo mode unavailable; running offline"),
+            }
+        }
     }
 
     // Scripted capture mode (`--shot`): the harness owns the camera and ends the
@@ -342,14 +398,15 @@ fn main() {
             database::load_regions
                 .run_if(has_database)
                 .after(network::apply_network_snapshot),
-            database::load_prims
-                .run_if(has_database)
-                .after(network::apply_network_snapshot),
             rendering::spawn_regions
                 .after(database::load_regions)
                 .after(network::apply_network_snapshot),
+            // ADR-029: derive geo-anchored prims' GridCell/Transform from the
+            // current OSM anchor (and re-project on re-anchor) before meshing.
+            systems::prim_geo::place_geo_prims
+                .after(network::apply_network_snapshot)
+                .before(rendering::spawn_prims),
             rendering::spawn_prims
-                .after(database::load_prims)
                 .after(network::apply_network_snapshot),
             rendering::rebuild_prim_meshes
                 .after(rendering::spawn_prims),
@@ -459,8 +516,8 @@ fn main() {
             systems::globe::update_atmosphere_origin
                 .after(systems::free_camera::camera_controls),
             avatar::spawn_avatar,
-            avatar::update_fox_animation.after(avatar::handle_avatar_movement),
-            avatar::update_remote_fox_animation.after(avatar::tick_remote_avatar_motion_hint),
+            avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
+            avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
             systems::debug::debug_region_entities.after(rendering::spawn_regions),
         ),
     )
@@ -580,9 +637,11 @@ fn has_database(db: Option<Res<Database>>) -> bool {
 }
 
 fn spawn_avatar_entity(mut commands: Commands) {
+    // Scale is applied by `avatar::spawn_avatar` from the resolved model, before
+    // the mesh instantiates — so spawn at the identity scale here.
     commands.spawn((
         Avatar,
-        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)).with_scale(Vec3::splat(0.02)),
+        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
     ));
 }
 

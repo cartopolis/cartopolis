@@ -48,6 +48,16 @@ pub struct Prim {
     pub surface: PrimSurface,
 }
 
+/// ADR-029: a prim's absolute geographic placement. Present iff the prim was
+/// authored with geo (`PrimDto::geo`). `prim_geo::place_geo_prims` derives the
+/// big_space `GridCell` + local `Transform` from this and the current OSM anchor,
+/// re-projecting on re-anchor so the prim keeps its real-world location.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PrimGeo {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
 /// Marker: prim's mesh needs to be rebuilt (shape/path-cut/hollow changed).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct NeedsMeshRebuild;

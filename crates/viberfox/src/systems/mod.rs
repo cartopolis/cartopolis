@@ -15,7 +15,7 @@ pub mod lod22;
 pub mod network;
 pub mod osm_buildings;
 pub mod picking;
-pub mod prim_ops;
+pub mod prim_geo;
 pub mod rendering;
 pub mod shot_harness;
 pub mod tile_loader;

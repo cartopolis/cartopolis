@@ -487,6 +487,24 @@ impl Default for OsmTileUrlTemplate {
 #[derive(Resource, Clone)]
 pub struct ConnectAddr(pub String);
 
+/// Credential presented in the ADR-016 handshake (resolved from `--login`, a login
+/// file, env, or the solo dev default). Read by `network::spawn_network_thread`.
+#[derive(Resource, Clone)]
+pub struct ConnectAuth {
+    pub credential: vibe_core::AuthCredential,
+    /// Persist the issued session token for silent reconnect. True for external
+    /// sims only — solo mode's loopback port is ephemeral, so a token is useless.
+    pub persist_token: bool,
+}
+
+/// Who is currently authenticated (ADR-016). Set from `ServerHelloAck`; drives the
+/// HUD profile chip and, later, chat sender identity.
+#[derive(Resource, Clone, Default)]
+pub struct AuthIdentity {
+    pub username: Option<String>,
+    pub principal_id: Option<uuid::Uuid>,
+}
+
 #[derive(Resource)]
 pub struct OnlineSession {
     pub intent_tx: UnboundedSender<NetMessage>,

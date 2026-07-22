@@ -42,6 +42,9 @@ pub struct HudData {
     pub heading: Option<f32>,
     /// Show the copy button's "just copied" ✔ state.
     pub copied: bool,
+    /// Authenticated username, if online (ADR-016). Drives the profile chip;
+    /// grows into a chat/presence affordance later.
+    pub user: Option<String>,
 }
 
 /// What the user clicked in the overlay this frame.
@@ -173,6 +176,37 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                     ui.set_width(HUD_WIDTH);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
+                        // Profile chip: a placeholder avatar dot with the account
+                        // initial, plus the username. Extends into a presence/chat
+                        // affordance later (ADR-016 / ADR-028).
+                        if let Some(user) = &data.user {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(15.0, 15.0),
+                                    egui::Sense::hover(),
+                                );
+                                let c = rect.center();
+                                ui.painter().circle_filled(
+                                    c,
+                                    7.0,
+                                    egui::Color32::from_rgb(86, 148, 232),
+                                );
+                                if let Some(ch) = user.chars().next() {
+                                    ui.painter().text(
+                                        c,
+                                        egui::Align2::CENTER_CENTER,
+                                        ch.to_uppercase().to_string(),
+                                        egui::FontId::proportional(9.5),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                                ui.label(
+                                    egui::RichText::new(user)
+                                        .size(12.5)
+                                        .color(egui::Color32::from_gray(232)),
+                                );
+                            });
+                        }
                         mono(ui, data.time.clone(), 15.0, 235);
                         if let Some((lat, lng)) = data.geo {
                             let ns = if lat >= 0.0 { 'N' } else { 'S' };
@@ -266,6 +300,7 @@ pub fn render_hud(
     mut bookmarks: ResMut<BookmarksState>,
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     ai: Res<crate::resources::AiAssistantState>,
+    identity: Res<crate::resources::AuthIdentity>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
 ) {
@@ -293,6 +328,7 @@ pub fn render_hud(
             }
         }),
         copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
+        user: identity.username.clone(),
     };
 
     let actions = hud_area(egui.ctx_mut(), &data);
@@ -388,6 +424,7 @@ mod tests {
             altitude: Some(17.0),
             heading: Some(247.0),
             copied: false,
+            user: Some("dev".to_string()),
         };
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1323.0, 819.0));
 

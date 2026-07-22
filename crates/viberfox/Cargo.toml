@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+# `solo`: one-command dev — run an in-process vibe_sim and connect to it (ADR-016).
+# On by default for dev; turn off for lean/release client builds (then `--connect`
+# is required for online play).
+default = ["solo"]
+solo = ["dep:vibe_sim"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 
@@ -30,7 +34,11 @@ ureq.workspace = true
 uuid.workspace = true
 dotenvy.workspace = true
 serde_json.workspace = true
+# Parse the optional `--login` credentials file (ADR-016).
+toml = "0.8"
 vibe_core = { path = "../vibe_core" }
+# Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
+vibe_sim = { path = "../vibe_sim", optional = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true

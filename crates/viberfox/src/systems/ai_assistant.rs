@@ -1,9 +1,10 @@
 use super::egui_manager::EguiManager;
-use super::prim_ops;
-use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region};
-use crate::resources::{AiAssistantState, AiConfig, Database, DisplayMessage, PendingAiResponse};
+use crate::components::{Prim, Region};
+use crate::resources::{AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse};
+use crate::systems::map_stream::MapStream;
 use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
+use vibe_core::{NetMessage, PrimSurface};
 
 const SYSTEM_PROMPT: &str = r#"You are the in-world building assistant for Viberfox, a 3D world editor. You construct
 scenes by composing primitives ("prims") with the create_prim, update_prim, delete_prim,
@@ -361,8 +362,8 @@ pub fn render_ai_panel(
 pub fn poll_ai_response(
     mut state: ResMut<AiAssistantState>,
     config: Res<AiConfig>,
-    mut commands: Commands,
-    db: Option<Res<Database>>,
+    online: Option<Res<OnlineSession>>,
+    stream: Res<MapStream>,
     prim_query: Query<(Entity, &Prim, &Transform)>,
     region_query: Query<&Region>,
 ) {
@@ -473,8 +474,8 @@ pub fn poll_ai_response(
                 let result_text = run_tool(
                     &tool_name,
                     input,
-                    &mut commands,
-                    &db,
+                    online.as_deref(),
+                    &stream,
                     &prim_query,
                     &region_query,
                 );
@@ -512,8 +513,8 @@ pub fn poll_ai_response(
 fn run_tool(
     name: &str,
     input: &serde_json::Value,
-    commands: &mut Commands,
-    db: &Option<Res<Database>>,
+    online: Option<&OnlineSession>,
+    stream: &MapStream,
     prim_query: &Query<(Entity, &Prim, &Transform)>,
     region_query: &Query<&Region>,
 ) -> String {
@@ -546,45 +547,29 @@ fn run_tool(
             let region_id = region_query.iter().next().map(|r| r.id).unwrap_or(1);
             let geom = PrimGeom::defaults().merged_with(input);
 
-            let new_id = db.as_ref().and_then(|db| {
-                let conn = db.conn.lock().unwrap();
-                prim_ops::db_create_prim(
-                    &conn,
-                    region_id,
-                    &prim_name,
-                    &shape_str,
-                    [pos.x as f64, pos.y as f64, pos.z as f64],
-                    [0.0, 0.0, 0.0],
-                    [scale.x as f64, scale.y as f64, scale.z as f64],
-                    [color[0] as f64, color[1] as f64, color[2] as f64],
-                    texture_id.as_deref(),
-                    geom.path_cut_begin as f64,
-                    geom.path_cut_end as f64,
-                    geom.hollow as f64,
-                    geom.warp(),
-                    vibe_core::PrimSurface::default(),
-                )
-                .ok()
+            // ADR-029: prims are online-only and geo-anchored. The server assigns
+            // the id and echoes a PrimUpsert that spawns the entity locally.
+            let Some(session) = online else {
+                return "Failed: prims require an online session".to_string();
+            };
+            let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, pos) else {
+                return "Failed: world not anchored yet".to_string();
+            };
+            let _ = session.intent_tx.send(NetMessage::CreatePrim {
+                request_id: 0,
+                region_id,
+                name: prim_name.clone(),
+                position: pos,
+                rotation: Vec3::ZERO,
+                scale,
+                color,
+                texture_id,
+                shape: shape_str,
+                surface: PrimSurface::default(),
+                geometry: geom.geometry(),
+                geo,
             });
-
-            match new_id {
-                Some(id) => {
-                    commands.spawn((
-                        geom.into_prim(
-                            id,
-                            region_id,
-                            prim_name.clone(),
-                            &shape_str,
-                            color,
-                            texture_id.clone(),
-                        ),
-                        Transform::from_xyz(pos.x, pos.y, pos.z)
-                            .with_scale(Vec3::new(scale.x, scale.y, scale.z)),
-                    ));
-                    format!("Created '{}' id={}", prim_name, id)
-                }
-                None => "Failed: no database".to_string(),
-            }
+            format!("Created '{}' (sent to server)", prim_name)
         }
 
         "update_prim" => {
@@ -595,24 +580,27 @@ fn run_tool(
 
             // Find current values to merge with partial updates
             let existing = prim_query.iter().find(|(_, p, _)| p.id == prim_id);
-            let (cur_name, cur_shape, cur_pos, cur_scale, cur_color, cur_geom) = match existing {
-                Some((_, p, t)) => {
-                    let lin = p.color.to_linear();
-                    (
-                        p.name.clone(),
-                        format!("{:?}", p.shape).to_lowercase(),
-                        t.translation,
-                        t.scale,
-                        [lin.red, lin.green, lin.blue],
-                        PrimGeom::from_prim(p),
-                    )
-                }
-                None => return format!("Error: prim {} not found", prim_id),
-            };
+            let (cur_name, cur_pos, cur_scale, cur_color, cur_geom, cur_texture, cur_surface) =
+                match existing {
+                    Some((_, p, t)) => {
+                        let lin = p.color.to_linear();
+                        (
+                            p.name.clone(),
+                            t.translation,
+                            t.scale,
+                            [lin.red, lin.green, lin.blue],
+                            PrimGeom::from_prim(p),
+                            p.texture_id.clone(),
+                            p.surface,
+                        )
+                    }
+                    None => return format!("Error: prim {} not found", prim_id),
+                };
             let new_geom = cur_geom.merged_with(input);
 
             let new_name = input["name"].as_str().unwrap_or(&cur_name).to_string();
-            let new_shape = input["shape"].as_str().unwrap_or(&cur_shape).to_string();
+            // NOTE: UpdatePrim carries no shape field (ADR-017), so an online
+            // update can't change a prim's shape — only its transform/material.
             let new_pos = if input.get("position").is_some() {
                 vec3_from(input, "position")
             } else {
@@ -631,61 +619,30 @@ fn run_tool(
             let new_texture_id = if input.get("texture_id").is_some() {
                 input["texture_id"].as_str().map(|s| s.to_string())
             } else {
-                prim_query
-                    .iter()
-                    .find(|(_, p, _)| p.id == prim_id)
-                    .and_then(|(_, p, _)| p.texture_id.clone())
+                cur_texture
             };
 
-            // Persist to DB
-            if let Some(db) = db {
-                let conn = db.conn.lock().unwrap();
-                let _ = prim_ops::db_update_prim(
-                    &conn,
-                    prim_id,
-                    &new_name,
-                    &new_shape,
-                    [new_pos.x as f64, new_pos.y as f64, new_pos.z as f64],
-                    [0.0, 0.0, 0.0],
-                    [new_scale.x as f64, new_scale.y as f64, new_scale.z as f64],
-                    [new_color[0] as f64, new_color[1] as f64, new_color[2] as f64],
-                    new_texture_id.as_deref(),
-                    new_geom.path_cut_begin as f64,
-                    new_geom.path_cut_end as f64,
-                    new_geom.hollow as f64,
-                    new_geom.warp(),
-                    prim_query
-                        .iter()
-                        .find(|(_, p, _)| p.id == prim_id)
-                        .map(|(_, p, _)| p.surface)
-                        .unwrap_or_default(),
-                );
-            }
-
-            // Update the Bevy entity
-            if let Some((entity, existing_prim, _)) =
-                prim_query.iter().find(|(_, p, _)| p.id == prim_id)
-            {
-                let region_id = existing_prim.region_id;
-                commands.entity(entity).insert((
-                    new_geom.into_prim(
-                        prim_id,
-                        region_id,
-                        new_name.clone(),
-                        &new_shape,
-                        new_color,
-                        new_texture_id,
-                    ),
-                    Transform::from_xyz(new_pos.x, new_pos.y, new_pos.z)
-                        .with_scale(Vec3::new(new_scale.x, new_scale.y, new_scale.z)),
-                ));
-                // Rebuild the mesh when shape or procedural geometry changed.
-                if input.get("shape").is_some() || input.get("geometry").is_some() {
-                    commands.entity(entity).insert(NeedsMeshRebuild);
-                }
-            }
-
-            format!("Updated prim {}", prim_id)
+            // ADR-029: send the authoritative update; the PrimUpsert echo applies it.
+            let Some(session) = online else {
+                return "Failed: prims require an online session".to_string();
+            };
+            let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, new_pos) else {
+                return "Failed: world not anchored yet".to_string();
+            };
+            let _ = session.intent_tx.send(NetMessage::UpdatePrim {
+                request_id: 0,
+                prim_id,
+                position: new_pos,
+                rotation: Vec3::ZERO,
+                scale: new_scale,
+                color: new_color,
+                texture_id: new_texture_id,
+                name: new_name,
+                surface: cur_surface,
+                geometry: new_geom.geometry(),
+                geo,
+            });
+            format!("Updated prim {} (sent to server)", prim_id)
         }
 
         "delete_prim" => {
@@ -694,19 +651,13 @@ fn run_tool(
                 None => return "Error: missing prim_id".to_string(),
             };
 
-            if let Some(db) = db {
-                let conn = db.conn.lock().unwrap();
-                let _ = prim_ops::db_delete_prim(&conn, prim_id);
-            }
-
-            for (entity, prim, _) in prim_query.iter() {
-                if prim.id == prim_id {
-                    commands.entity(entity).despawn();
-                    break;
-                }
-            }
-
-            format!("Deleted prim {}", prim_id)
+            let Some(session) = online else {
+                return "Failed: prims require an online session".to_string();
+            };
+            let _ = session
+                .intent_tx
+                .send(NetMessage::DeletePrim { request_id: 0, prim_id });
+            format!("Deleted prim {} (sent to server)", prim_id)
         }
 
         other => format!("Unknown tool: {}", other),
@@ -808,28 +759,9 @@ impl PrimGeom {
         }
     }
 
-    fn warp(&self) -> prim_ops::WarpParams {
-        prim_ops::WarpParams {
-            twist_begin: self.twist_begin as f64,
-            twist_end: self.twist_end as f64,
-            taper_x: self.taper_x as f64,
-            taper_y: self.taper_y as f64,
-            top_shear_x: self.top_shear_x as f64,
-            top_shear_y: self.top_shear_y as f64,
-            slice_begin: self.slice_begin as f64,
-            slice_end: self.slice_end as f64,
-        }
-    }
-
-    /// Build the prim component fields for this geometry.
-    fn into_prim(self, id: i64, region_id: i64, name: String, shape: &str, color: [f32; 3], texture_id: Option<String>) -> Prim {
-        Prim {
-            id,
-            region_id,
-            name,
-            shape: PrimShape::from_str(shape),
-            color: Color::srgb(color[0], color[1], color[2]),
-            texture_id,
+    /// Build the wire geometry payload (ADR-018) for a Create/UpdatePrim message.
+    fn geometry(&self) -> vibe_core::PrimGeometry {
+        vibe_core::PrimGeometry {
             path_cut_begin: self.path_cut_begin,
             path_cut_end: self.path_cut_end,
             hollow: self.hollow,
@@ -841,7 +773,6 @@ impl PrimGeom {
             top_shear_y: self.top_shear_y,
             slice_begin: self.slice_begin,
             slice_end: self.slice_end,
-            surface: vibe_core::PrimSurface::default(),
         }
     }
 }

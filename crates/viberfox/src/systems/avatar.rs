@@ -5,13 +5,81 @@ use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
+use crate::systems::user_store::{AvatarAppearance, AvatarSex, ClothingTheme, UserStore};
 use vibe_core::wrap_angle_pi;
 
-// Official Bevy fox model (models/animated/Fox.glb)
-const FOX_GLB: &str = "models/animated/Fox.glb";
-// Bevy fox animations: 0=Survey (idle), 1=Walk, 2=Run
-const IDLE_ANIMATION_INDEX: usize = 0;
-const RUN_ANIMATION_INDEX: usize = 2;
+/// A concrete, loadable avatar: the glTF scene to spawn, the file its animation
+/// clips come from (a separate library for the humanoids; the same file for the
+/// fox), the scale that fits it into the world (metres), the idle/run clip
+/// indices, and the speed those clips read best at. Centralizes what used to be
+/// three hard-coded `Fox.glb` / `scale 0.02` / `speed 1.5` sites.
+pub(crate) struct AvatarModel {
+    scene: &'static str,
+    anims: &'static str,
+    scale: f32,
+    idle_ix: usize,
+    run_ix: usize,
+    anim_speed: f32,
+}
+
+/// Quaternius Universal Animation Library (CC0). Clips bind to any body sharing
+/// the universal `Armature → root → pelvis` rig (the base bodies and outfits do).
+const UAL: &str = "models/avatar/anims/UAL1_Standard.glb";
+// Clip indices within UAL1_Standard.glb (see `jq '.animations'`).
+const UAL_IDLE: usize = 9; // Idle_Loop
+const UAL_JOG: usize = 13; // Jog_Fwd_Loop (used as the "moving" gait)
+
+/// The Bevy sample fox — kept as the fallback if a humanoid glTF is ever missing.
+/// Animations live in the same file (0=Survey/idle, 2=Run).
+const FOX_MODEL: AvatarModel = AvatarModel {
+    scene: "models/animated/Fox.glb",
+    anims: "models/animated/Fox.glb",
+    scale: 0.02,
+    idle_ix: 0,
+    run_ix: 2,
+    anim_speed: 1.5,
+};
+
+/// Build a humanoid model for a given base/outfit scene. Bodies are authored in
+/// metres (~1.8 m tall), so world scale is 1.0; animations come from the UAL.
+const fn humanoid(scene: &'static str) -> AvatarModel {
+    AvatarModel {
+        scene,
+        anims: UAL,
+        scale: 1.0,
+        idle_ix: UAL_IDLE,
+        run_ix: UAL_JOG,
+        anim_speed: 1.0,
+    }
+}
+
+/// Resolve the model for an appearance: a Quaternius base body (Casual) or a
+/// complete clothed outfit (Peasant/Ranger), per sex. Falls back to the fox only
+/// if a humanoid glTF is missing on disk, so a stripped asset dir still runs.
+pub(crate) fn resolve_avatar_model(appearance: AvatarAppearance) -> AvatarModel {
+    use AvatarSex::*;
+    use ClothingTheme::*;
+    let scene: &str = match (appearance.sex, appearance.theme) {
+        (Man, Casual) => "models/avatar/base/Superhero_Male_FullBody.gltf",
+        (Woman, Casual) => "models/avatar/base/Superhero_Female_FullBody.gltf",
+        (Man, Peasant) => "models/avatar/outfits/Male_Peasant.gltf",
+        (Woman, Peasant) => "models/avatar/outfits/Female_Peasant.gltf",
+        (Man, Ranger) => "models/avatar/outfits/Male_Ranger.gltf",
+        (Woman, Ranger) => "models/avatar/outfits/Female_Ranger.gltf",
+    };
+    if avatar_asset_exists(scene) {
+        humanoid(scene)
+    } else {
+        FOX_MODEL
+    }
+}
+
+/// Whether an avatar glTF is present under the runtime `assets/` root. Lets the
+/// client fall back to the fox instead of spawning an invisible avatar when the
+/// (large, gitignored) Quaternius packs haven't been fetched.
+fn avatar_asset_exists(scene_rel: &str) -> bool {
+    std::path::Path::new("assets").join(scene_rel).is_file()
+}
 
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
 const ONLINE_DISPLAY_SMOOTHING: f32 = 14.0;
@@ -65,9 +133,9 @@ pub(crate) fn wish_dir_camera_relative(
     }
 }
 
-/// World yaw for the fox to face camera-forward on the ground (W walks “into” the view; S walks back without turning).
+/// World yaw for the avatar to face camera-forward on the ground (W walks “into” the view; S walks back without turning).
 #[inline]
-pub(crate) fn fox_facing_yaw_from_camera(azimuth: f32) -> f32 {
+pub(crate) fn avatar_facing_yaw_from_camera(azimuth: f32) -> f32 {
     let f = camera_plane_forward(azimuth);
     wrap_angle_pi(f32::atan2(f.x, f.z))
 }
@@ -76,57 +144,77 @@ const AVATAR_HEIGHT: f32 = 0.8; // Fox model height (scaled)
 const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent y)
 
 #[derive(Component)]
-pub struct AvatarFoxLoaded;
+pub struct AvatarModelLoaded;
 
-/// Component storing animation data for the fox, used when scene is ready
+/// Animation data attached to an avatar, read once its scene is ready.
 #[derive(Component)]
-pub(crate) struct FoxAnimationToPlay {
+pub(crate) struct AvatarAnimations {
     graph_handle: Handle<AnimationGraph>,
     idle_index: AnimationNodeIndex,
     run_index: AnimationNodeIndex,
+    /// Playback speed for this model's clips (`AvatarModel::anim_speed`).
+    speed: f32,
 }
 
 pub fn spawn_avatar(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
-    avatar_query: Query<Entity, (Without<AvatarFoxLoaded>, Or<(With<Avatar>, With<RemoteAvatar>)>)>,
+    store: Res<UserStore>,
+    mut avatar_query: Query<
+        (Entity, Has<Avatar>, &mut Transform),
+        (Without<AvatarModelLoaded>, Or<(With<Avatar>, With<RemoteAvatar>)>),
+    >,
 ) {
-    for entity in avatar_query.iter() {
+    for (entity, is_local, mut transform) in avatar_query.iter_mut() {
+        // The local player uses the chosen appearance; remotes use the default
+        // until appearance is replicated over the wire (future protocol change).
+        let appearance = if is_local {
+            store.data.appearance
+        } else {
+            AvatarAppearance::default()
+        };
+        let model = resolve_avatar_model(appearance);
+
         let (graph, indices) = AnimationGraph::from_clips([
-            asset_server.load(GltfAssetLabel::Animation(IDLE_ANIMATION_INDEX).from_asset(FOX_GLB)),
-            asset_server.load(GltfAssetLabel::Animation(RUN_ANIMATION_INDEX).from_asset(FOX_GLB)),
+            asset_server.load(GltfAssetLabel::Animation(model.idle_ix).from_asset(model.anims)),
+            asset_server.load(GltfAssetLabel::Animation(model.run_ix).from_asset(model.anims)),
         ]);
         let graph_handle = graphs.add(graph);
 
         let mesh_scene = WorldAssetRoot(
-            asset_server.load(GltfAssetLabel::Scene(0).from_asset(FOX_GLB)),
+            asset_server.load(GltfAssetLabel::Scene(0).from_asset(model.scene)),
         );
 
+        // Scale lives with the model, not the spawn site. Set it before the scene
+        // instantiates (no mesh is attached yet) so it never flashes at 1.0.
+        transform.scale = Vec3::splat(model.scale);
+
         commands.entity(entity).insert((
-            AvatarFoxLoaded,
-            FoxAnimationToPlay {
+            AvatarModelLoaded,
+            AvatarAnimations {
                 graph_handle,
                 idle_index: indices[0],
                 run_index: indices[1],
+                speed: model.anim_speed,
             },
             mesh_scene,
-        )).observe(play_fox_animation_when_ready);
+        )).observe(play_avatar_animation_when_ready);
     }
 }
 
-fn play_fox_animation_when_ready(
+fn play_avatar_animation_when_ready(
     trigger: On<WorldInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
-    animations_to_play: Query<&FoxAnimationToPlay>,
+    animations_to_play: Query<&AvatarAnimations>,
     mut players: Query<&mut AnimationPlayer>,
 ) {
     if let Ok(animation_to_play) = animations_to_play.get(trigger.event_target()) {
         for child in children.iter_descendants(trigger.event_target()) {
             if let Ok(mut player) = players.get_mut(child) {
-                // Start with idle; update_fox_animation will switch based on movement
-                player.play(animation_to_play.idle_index).repeat().set_speed(1.5);
+                // Start with idle; update_avatar_animation switches on movement.
+                player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
                 commands
                     .entity(child)
                     .insert(AnimationGraphHandle(animation_to_play.graph_handle.clone()));
@@ -135,11 +223,11 @@ fn play_fox_animation_when_ready(
     }
 }
 
-/// Switch fox animation between idle and run based on movement
-pub fn update_fox_animation(
+/// Switch the local avatar's animation between idle and run based on movement.
+pub fn update_avatar_animation(
     avatar_state: Res<AvatarState>,
     children: Query<&Children>,
-    animations_to_play: Query<&FoxAnimationToPlay, With<Avatar>>,
+    animations_to_play: Query<&AvatarAnimations, With<Avatar>>,
     mut players: Query<&mut AnimationPlayer>,
     avatar_query: Query<Entity, With<Avatar>>,
 ) {
@@ -152,12 +240,12 @@ pub fn update_fox_animation(
                 if avatar_state.is_walking {
                     player.stop(animation_to_play.idle_index);
                     if !player.is_playing_animation(animation_to_play.run_index) {
-                        player.play(animation_to_play.run_index).repeat().set_speed(1.5);
+                        player.play(animation_to_play.run_index).repeat().set_speed(animation_to_play.speed);
                     }
                 } else {
                     player.stop(animation_to_play.run_index);
                     if !player.is_playing_animation(animation_to_play.idle_index) {
-                        player.play(animation_to_play.idle_index).repeat().set_speed(1.5);
+                        player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
                     }
                 }
             }
@@ -209,11 +297,11 @@ pub fn tick_remote_avatar_motion_hint(
     }
 }
 
-/// Run / idle for other players’ foxes based on [`RemoteAvatarMotionHint::horizontal_speed`].
-pub fn update_remote_fox_animation(
+/// Run / idle for other players’ avatars based on [`RemoteAvatarMotionHint::horizontal_speed`].
+pub fn update_remote_avatar_animation(
     online: Option<Res<crate::resources::OnlineSession>>,
     children: Query<&Children>,
-    animations_to_play: Query<&FoxAnimationToPlay, With<RemoteAvatar>>,
+    animations_to_play: Query<&AvatarAnimations, With<RemoteAvatar>>,
     hints: Query<&RemoteAvatarMotionHint, With<RemoteAvatar>>,
     mut players: Query<&mut AnimationPlayer>,
     remote_roots: Query<Entity, With<RemoteAvatar>>,
@@ -233,12 +321,12 @@ pub fn update_remote_fox_animation(
                 if is_walking {
                     player.stop(animation_to_play.idle_index);
                     if !player.is_playing_animation(animation_to_play.run_index) {
-                        player.play(animation_to_play.run_index).repeat().set_speed(1.5);
+                        player.play(animation_to_play.run_index).repeat().set_speed(animation_to_play.speed);
                     }
                 } else {
                     player.stop(animation_to_play.run_index);
                     if !player.is_playing_animation(animation_to_play.idle_index) {
-                        player.play(animation_to_play.idle_index).repeat().set_speed(1.5);
+                        player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
                     }
                 }
             }
@@ -313,7 +401,7 @@ pub fn handle_avatar_movement(
         avatar_state.is_walking =
             move_forward || move_backward || move_left || move_right;
         let az = camera_state.azimuth;
-        let face = fox_facing_yaw_from_camera(az);
+        let face = avatar_facing_yaw_from_camera(az);
         let pi = std::f32::consts::PI;
         avatar_state.online_tank_yaw = wrap_angle_pi(face - pi);
         transform.rotation = Quat::from_rotation_y(face);
@@ -371,7 +459,7 @@ pub fn handle_avatar_movement(
         }
     }
 
-    let face = fox_facing_yaw_from_camera(az);
+    let face = avatar_facing_yaw_from_camera(az);
     let pi = std::f32::consts::PI;
     avatar_state.rotation = wrap_angle_pi(face - pi);
     transform.rotation = Quat::from_rotation_y(face);

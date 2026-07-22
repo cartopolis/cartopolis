@@ -4,3 +4,10 @@ data
 
 # Local OSM tile/building cache
 /cache/
+
+# ADR-016 solo/dev credentials (never commit)
+data/dev-login.toml
+
+# Quaternius avatar packs (CC0, ~119MB) — fetched manually from itch.io, not committed.
+# See assets/README.md for the download + extract steps.
+assets/models/avatar/

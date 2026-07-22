@@ -2,7 +2,7 @@ use anyhow::Context;
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
 use vibe_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
-use vibe_core::{PrimDto, PrimGeometry, PrimSurface, RegionDto};
+use vibe_core::{GeoAnchor, PrimDto, PrimGeometry, PrimSurface, RegionDto};
 
 /// Column list (in order) for selecting a full [`PrimDto`]; consumed by [`row_to_prim`].
 const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
@@ -14,7 +14,8 @@ const PRIM_COLUMNS: &str = "id, region_id, name, shape, \
      twist_begin, twist_end, taper_x, taper_y, \
      top_shear_x, top_shear_y, slice_begin, slice_end, \
      alpha, glow, full_bright, repeat_u, repeat_v, flip_u, flip_v, \
-     texture_rotation, offset_u, offset_v";
+     texture_rotation, offset_u, offset_v, \
+     latitude, longitude";
 
 /// Maps a row selected with [`PRIM_COLUMNS`] (in order) into a [`PrimDto`].
 fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
@@ -50,6 +51,11 @@ fn row_to_prim(row: &rusqlite::Row) -> rusqlite::Result<PrimDto> {
             rotation: row.get(35)?,
             offset_u: row.get(36)?,
             offset_v: row.get(37)?,
+        },
+        // ADR-029: every prim is geo-anchored.
+        geo: GeoAnchor {
+            latitude: row.get(38)?,
+            longitude: row.get(39)?,
         },
     })
 }
@@ -133,6 +139,7 @@ pub fn insert_prim(
     region_id: i64,
     position: Vec3,
     shape: &str,
+    geo: GeoAnchor,
 ) -> anyhow::Result<PrimDto> {
     // Validate that the region exists
     let region_exists: bool = conn.query_row(
@@ -149,8 +156,9 @@ pub fn insert_prim(
     conn.execute(
         "INSERT INTO prims (region_id, name, shape, position_x, position_y, position_z,
                             rotation_x, rotation_y, rotation_z, scale_x, scale_y, scale_z,
-                            color_r, color_g, color_b, texture_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), datetime('now'))",
+                            color_r, color_g, color_b, texture_id, latitude, longitude,
+                            created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, datetime('now'), datetime('now'))",
         rusqlite::params![
             region_id,
             "Prim",                   // default name
@@ -168,6 +176,8 @@ pub fn insert_prim(
             0.5_f32,
             0.5_f32,
             None::<String>,           // no texture by default
+            geo.latitude,             // ADR-029: geo-anchored placement
+            geo.longitude,
         ],
     )?;
 
@@ -194,6 +204,7 @@ pub fn update_prim(
     name: &str,
     surface: PrimSurface,
     geometry: PrimGeometry,
+    geo: GeoAnchor,
 ) -> anyhow::Result<Option<PrimDto>> {
     // Check if prim exists first
     let exists: bool = conn.query_row(
@@ -221,6 +232,7 @@ pub fn update_prim(
             path_cut_begin = ?26, path_cut_end = ?27, hollow = ?28,
             twist_begin = ?29, twist_end = ?30, taper_x = ?31, taper_y = ?32,
             top_shear_x = ?33, top_shear_y = ?34, slice_begin = ?35, slice_end = ?36,
+            latitude = ?37, longitude = ?38,
             updated_at = datetime('now')
          WHERE id = ?1",
         rusqlite::params![
@@ -232,6 +244,7 @@ pub fn update_prim(
             geometry.path_cut_begin, geometry.path_cut_end, geometry.hollow,
             geometry.twist_begin, geometry.twist_end, geometry.taper_x, geometry.taper_y,
             geometry.top_shear_x, geometry.top_shear_y, geometry.slice_begin, geometry.slice_end,
+            geo.latitude, geo.longitude,
         ],
     )?;
 
@@ -289,7 +302,7 @@ mod tests {
             conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create a prim
-        let prim = insert_prim(&conn, region_id, Vec3::new(10.0, 5.0, 20.0), "box")?;
+        let prim = insert_prim(&conn, region_id, Vec3::new(10.0, 5.0, 20.0), "box", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
 
         // Verify the prim was created
         assert!(prim.id > 0);
@@ -318,7 +331,7 @@ mod tests {
         let (conn, _temp) = test_db()?;
 
         // Try to create a prim with non-existent region
-        let result = insert_prim(&conn, 9999, Vec3::ZERO, "box");
+        let result = insert_prim(&conn, 9999, Vec3::ZERO, "box", GeoAnchor { latitude: 0.0, longitude: 0.0 });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
 
@@ -333,7 +346,7 @@ mod tests {
             conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create a prim
-        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "box")?;
+        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "box", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
 
         // Update it
         let updated = update_prim(
@@ -370,6 +383,7 @@ mod tests {
                 slice_begin: 0.05,
                 slice_end: 0.95,
             },
+            GeoAnchor { latitude: 0.0, longitude: 0.0 },
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found after update"))?;
 
@@ -424,6 +438,7 @@ mod tests {
             "test",
             PrimSurface::default(),
             PrimGeometry::default(),
+            GeoAnchor { latitude: 0.0, longitude: 0.0 },
         )?;
 
         assert!(result.is_none());
@@ -439,7 +454,7 @@ mod tests {
             conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create a prim
-        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "box")?;
+        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "box", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
 
         // Delete it
         let deleted = delete_prim(&conn, prim.id)?;
@@ -475,7 +490,7 @@ mod tests {
             conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create a prim with a texture
-        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "sphere")?;
+        let prim = insert_prim(&conn, region_id, Vec3::ZERO, "sphere", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
 
         // Update it with a texture
         let updated = update_prim(
@@ -489,6 +504,7 @@ mod tests {
             "Prim",
             PrimSurface::default(),
             PrimGeometry::default(),
+            GeoAnchor { latitude: 0.0, longitude: 0.0 },
         )?
         .ok_or_else(|| anyhow::anyhow!("prim not found"))?;
 
@@ -512,8 +528,8 @@ mod tests {
             conn.query_row("SELECT id FROM regions LIMIT 1", [], |row| row.get(0))?;
 
         // Create two prims
-        let prim1 = insert_prim(&conn, region_id, Vec3::new(0.0, 0.0, 0.0), "box")?;
-        let prim2 = insert_prim(&conn, region_id, Vec3::new(10.0, 0.0, 0.0), "sphere")?;
+        let prim1 = insert_prim(&conn, region_id, Vec3::new(0.0, 0.0, 0.0), "box", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
+        let prim2 = insert_prim(&conn, region_id, Vec3::new(10.0, 0.0, 0.0), "sphere", GeoAnchor { latitude: 0.0, longitude: 0.0 })?;
 
         // Update one
         update_prim(
@@ -527,6 +543,7 @@ mod tests {
             "Red Box",
             PrimSurface::default(),
             PrimGeometry::default(),
+            GeoAnchor { latitude: 0.0, longitude: 0.0 },
         )?;
 
         // Delete the other

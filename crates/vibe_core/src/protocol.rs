@@ -11,7 +11,9 @@ use crate::error::ProtocolError;
 /// v8: prim texture surface params (alpha/glow/full-bright/repeats/rotation/offset).
 /// v9: authenticated handshake — `ClientHello.auth`, `ServerHelloAck.principal_id`
 ///     + `session_token` (ADR-016).
-pub const PROTOCOL_VERSION: u16 = 9;
+/// v10: geo-anchored prims — `PrimDto.geo`, `CreatePrim`/`UpdatePrim` carry a
+///      mandatory `GeoAnchor`; prim horizontal placement is lat/lng (ADR-029).
+pub const PROTOCOL_VERSION: u16 = 10;
 
 const APP_HEADER_LEN: usize = 8;
 
@@ -159,12 +161,27 @@ impl Default for PrimGeometry {
     }
 }
 
+/// Absolute geographic placement of a prim's horizontal position (ADR-029).
+///
+/// This is the anchor-independent ground truth: the client derives the
+/// render-space `GridCell` + local `Transform` from it via the *current* OSM
+/// anchor (`lat_lng_to_world`), so a prim keeps its real-world location across a
+/// re-anchor. Altitude is carried separately in `PrimDto::position.y`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct GeoAnchor {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PrimDto {
     pub id: i64,
     pub region_id: i64,
     pub name: String,
     pub shape: String,
+    /// Sim-space position (metres). `position.y` is the authoritative altitude;
+    /// horizontal placement (x/z) is derived from `geo` (ADR-029), so x/z here are
+    /// only a transient echo of the last render frame.
     pub position: Vec3,
     pub rotation: Vec3,
     pub scale: Vec3,
@@ -197,6 +214,9 @@ pub struct PrimDto {
     /// Texture surface params (ADR-017 / protocol v8).
     #[serde(default)]
     pub surface: PrimSurface,
+    /// Absolute geographic placement (ADR-029 / protocol v10). Every prim is
+    /// geo-anchored — there is no legacy fixed-origin placement.
+    pub geo: GeoAnchor,
 }
 
 fn default_path_cut_end() -> f32 {
@@ -238,6 +258,8 @@ pub enum NetMessage {
         your_avatar_id: u64,
         /// ADR-016: stable account id bound to this connection.
         principal_id: Uuid,
+        /// ADR-016: authoritative account name for this principal (display/UI).
+        username: String,
         /// ADR-016: opaque session token to persist for silent reconnect.
         session_token: String,
         /// ADR-014: operator tile URL; `{z}/{x}/{y}` placeholders. Empty = client default.
@@ -286,6 +308,8 @@ pub enum NetMessage {
         surface: PrimSurface,
         #[serde(default)]
         geometry: PrimGeometry,
+        /// Absolute geo placement (ADR-029).
+        geo: GeoAnchor,
     },
     /// ADR-017: client sends updated prim state (position, rotation, scale, color, texture, name).
     UpdatePrim {
@@ -303,6 +327,8 @@ pub enum NetMessage {
         /// Geometry deformation params (ADR-018 / protocol v8).
         #[serde(default)]
         geometry: PrimGeometry,
+        /// Absolute geo placement (ADR-029).
+        geo: GeoAnchor,
     },
     /// ADR-017: client requests deletion of a prim by id.
     DeletePrim {
@@ -448,6 +474,7 @@ mod tests {
             tick_hz: 20.0,
             your_avatar_id: 7,
             principal_id: Uuid::nil(),
+            username: "dev".into(),
             session_token: "deadbeef".into(),
             osm_tile_url_template: String::new(),
         };
@@ -483,6 +510,7 @@ mod tests {
             shape: "box".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
+            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -502,6 +530,7 @@ mod tests {
             name: "My Prim".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
+            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -543,6 +572,7 @@ mod tests {
             slice_begin: 0.0,
             slice_end: 1.0,
             surface: PrimSurface::default(),
+            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

@@ -26,6 +26,72 @@ const AUTOSAVE_INTERVAL: f32 = 5.0;
 pub struct UserData {
     pub last_location: Option<SavedLocation>,
     pub bookmarks: Vec<Bookmark>,
+    /// ADR-016: session tokens keyed by server address, so an external sim only
+    /// asks for a password once. Not stored for solo mode (ephemeral port).
+    #[serde(default)]
+    pub session_tokens: std::collections::HashMap<String, String>,
+    /// The local player's chosen avatar body + clothing. `#[serde(default)]`
+    /// keeps pre-appearance files loadable (they get Man/Casual).
+    #[serde(default)]
+    pub appearance: AvatarAppearance,
+}
+
+/// The local player's avatar choice, persisted and shown in the chooser UI. Kept
+/// deliberately small for now (body + clothing theme); grows into full
+/// customization later. Only the local avatar reads this — remote avatars use the
+/// default until appearance is replicated over the wire (a future protocol/ADR
+/// change).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct AvatarAppearance {
+    #[serde(default)]
+    pub sex: AvatarSex,
+    #[serde(default)]
+    pub theme: ClothingTheme,
+}
+
+/// Body model. `Man`/`Woman` map to the two Quaternius Universal Base Characters
+/// (CC0) the client ships; more body types can be added later.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AvatarSex {
+    #[default]
+    Man,
+    Woman,
+}
+
+impl AvatarSex {
+    pub const ALL: [AvatarSex; 2] = [AvatarSex::Man, AvatarSex::Woman];
+    pub fn label(self) -> &'static str {
+        match self {
+            AvatarSex::Man => "Man",
+            AvatarSex::Woman => "Woman",
+        }
+    }
+}
+
+/// Clothing theme layered over the base body. `Casual` is the bare base body
+/// (Universal Base Characters); the others are complete clothed variants from the
+/// Quaternius Modular Character Outfits – Fantasy pack (CC0). More themes/packs
+/// can be added as their outfit glTFs are dropped in.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClothingTheme {
+    #[default]
+    Casual,
+    Peasant,
+    Ranger,
+}
+
+impl ClothingTheme {
+    pub const ALL: [ClothingTheme; 3] =
+        [ClothingTheme::Casual, ClothingTheme::Peasant, ClothingTheme::Ranger];
+    pub fn label(self) -> &'static str {
+        match self {
+            ClothingTheme::Casual => "Casual",
+            ClothingTheme::Peasant => "Peasant",
+            ClothingTheme::Ranger => "Ranger",
+        }
+    }
 }
 
 /// Where the user was when Viberfox closed, camera included.
@@ -100,6 +166,21 @@ impl UserStore {
                 self.dirty = false;
             }
             Err(e) => tracing::warn!(error = %e, path = %self.path.display(), "user.json write failed"),
+        }
+    }
+
+    /// Session token previously issued by `server`, if any (ADR-016).
+    pub fn session_token(&self, server: &str) -> Option<String> {
+        self.data.session_tokens.get(server).cloned()
+    }
+
+    /// Remember the session token for `server`; saved on the next autosave.
+    pub fn set_session_token(&mut self, server: &str, token: &str) {
+        if self.data.session_tokens.get(server).map(String::as_str) != Some(token) {
+            self.data
+                .session_tokens
+                .insert(server.to_string(), token.to_string());
+            self.dirty = true;
         }
     }
 
@@ -213,5 +294,28 @@ mod tests {
         // Missing pose defaults to empty (→ keeps the current view on jump).
         assert_eq!(data.bookmarks[0].pose.mode, "");
         assert_eq!(data.last_location.unwrap().pose.mode, "");
+        // Missing session_tokens defaults to empty (ADR-016 rollout).
+        assert!(data.session_tokens.is_empty());
+        // Missing appearance defaults to the base man in casual clothes.
+        assert_eq!(data.appearance.sex, AvatarSex::Man);
+        assert_eq!(data.appearance.theme, ClothingTheme::Casual);
+    }
+
+    #[test]
+    fn session_token_get_set_is_idempotent() {
+        let mut store = UserStore {
+            data: UserData::default(),
+            dirty: false,
+            path: PathBuf::from("/tmp/viberfox-test-user.json"),
+            last_written: String::new(),
+        };
+        assert_eq!(store.session_token("host:4747"), None);
+        store.set_session_token("host:4747", "abc");
+        assert_eq!(store.session_token("host:4747"), Some("abc".to_string()));
+        assert!(store.dirty, "storing a new token marks the store dirty");
+        // Re-storing the same token does not re-dirty.
+        store.dirty = false;
+        store.set_session_token("host:4747", "abc");
+        assert!(!store.dirty, "unchanged token is a no-op");
     }
 }

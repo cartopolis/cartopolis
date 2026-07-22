@@ -10,8 +10,9 @@ edition = "2021"
 [workspace.dependencies]
 anyhow = "1.0"
 approx = "0.5"
-# Password hashing for server-side auth (ADR-016). Pulls `password-hash` + `rand_core`.
-argon2 = "0.5"
+# Password hashing for server-side auth (ADR-016). `std` enables OsRng via
+# password-hash/getrandom (salt + session-token generation).
+argon2 = { version = "0.5", features = ["std"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 # Slimmer than `default`: drops UI, 2D sprite stack, audio, gamepads, gizmos, picking — less LLVM work per build.
 bevy = { version = "0.19", default-features = false, features = [

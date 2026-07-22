@@ -8,7 +8,30 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use vibe_core::{decode_app_frame, encode_app_frame, NetMessage, ProtocolError, PROTOCOL_VERSION};
+use vibe_core::{
+    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, ProtocolError,
+    PROTOCOL_VERSION,
+};
+
+/// Resolve a hello credential to `(principal, username)` (ADR-016). `None` = reject.
+fn authenticate(
+    conn: &Arc<Mutex<rusqlite::Connection>>,
+    sessions: &crate::auth::Sessions,
+    auth: &AuthCredential,
+) -> Option<(uuid::Uuid, String)> {
+    match auth {
+        AuthCredential::Token(token) => sessions.resolve(token),
+        AuthCredential::Password { username, password } => {
+            // argon2 verify is CPU-bound (~tens of ms) but happens once per
+            // connection at a low rate; acceptable inline for v0.
+            let guard = conn.lock().ok()?;
+            let principal = crate::auth::verify_credentials(&guard, username, password)
+                .ok()
+                .flatten()?;
+            Some((principal, username.clone()))
+        }
+    }
+}
 
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// ADR-012: simple per-connection rate limits (token-bucket style, fixed interval).
@@ -21,7 +44,8 @@ pub async fn handle_connection(
     config: Arc<SimConfig>,
     mut snap_rx: broadcast::Receiver<Vec<u8>>,
     tx_snap: broadcast::Sender<Vec<u8>>,
-    _conn: Arc<Mutex<rusqlite::Connection>>,
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    sessions: Arc<crate::auth::Sessions>,
 ) -> anyhow::Result<()> {
     let mut framed = Framed::new(
         stream,
@@ -39,7 +63,7 @@ pub async fn handle_connection(
     let msg = decode_app_frame(&first)?;
     let NetMessage::ClientHello {
         protocol_version,
-        client_token,
+        auth,
     } = msg
     else {
         return Err(ProtocolError::ExpectedHello(format!("{msg:?}").into()).into());
@@ -53,15 +77,35 @@ pub async fn handle_connection(
         framed.send(Bytes::from(err)).await?;
         return Err(ProtocolError::UnsupportedVersion(protocol_version).into());
     }
+
+    // ADR-016: authenticate before any world traffic. No snapshot or mutating
+    // message is served until this succeeds.
+    let (principal, username) = match authenticate(&conn, &sessions, &auth) {
+        Some(p) => p,
+        None => {
+            let err = encode_app_frame(&NetMessage::ServerError {
+                request_id: 0,
+                code: 401,
+                message: "authentication failed".into(),
+            })?;
+            framed.send(Bytes::from(err)).await?;
+            return Err(anyhow::anyhow!("authentication failed"));
+        }
+    };
+    let session_token = sessions.issue(principal, &username);
+
     let avatar_id = {
         let mut w = world.write().await;
         w.spawn_avatar()
     };
-    tracing::info!(token = %client_token, avatar_id, "client hello");
+    tracing::info!(%principal, %username, avatar_id, "client authenticated");
     let ack = encode_app_frame(&NetMessage::ServerHelloAck {
         session_id: uuid::Uuid::new_v4(),
         tick_hz: config.tick_hz,
         your_avatar_id: avatar_id,
+        principal_id: principal,
+        username,
+        session_token,
         osm_tile_url_template: config.osm_tile_url_template.clone(),
     })?;
     if let Err(e) = framed.send(Bytes::from(ack)).await {
@@ -119,15 +163,15 @@ pub async fn handle_connection(
                             }
                             NetMessage::CreatePrim {
                                 request_id, region_id, name, position, rotation, scale,
-                                color, texture_id, shape, surface, geometry,
+                                color, texture_id, shape, surface, geometry, geo,
                             } => {
                                 let mut w = world.write().await;
                                 // Insert with a server-assigned id, then apply the full initial
                                 // authoring state in one update so it is persisted and broadcast.
-                                let created = w.add_prim(region_id, position, &shape).and_then(|prim| {
+                                let created = w.add_prim(region_id, position, &shape, geo).and_then(|prim| {
                                     w.update_prim(
                                         prim.id, position, rotation, scale, color, texture_id,
-                                        &name, surface, geometry,
+                                        &name, surface, geometry, geo,
                                     )
                                 });
                                 match created {
@@ -150,9 +194,9 @@ pub async fn handle_connection(
                                     }
                                 }
                             }
-                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry } => {
+                            NetMessage::UpdatePrim { request_id, prim_id, position, rotation, scale, color, texture_id, name, surface, geometry, geo } => {
                                 let mut w = world.write().await;
-                                match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry) {
+                                match w.update_prim(prim_id, position, rotation, scale, color, texture_id, &name, surface, geometry, geo) {
                                     Ok(prim) => {
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
@@ -327,7 +371,7 @@ mod tests {
         // Create a prim
         let prim_result = {
             let mut w = world.write().await;
-            w.add_prim(region_id, Vec3::new(10.0, 5.0, 20.0), "box")
+            w.add_prim(region_id, Vec3::new(10.0, 5.0, 20.0), "box", vibe_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
         };
 
         assert!(prim_result.is_ok(), "prim creation should succeed");
@@ -360,7 +404,7 @@ mod tests {
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
-                .add_prim(region_id, Vec3::ZERO, "sphere")
+                .add_prim(region_id, Vec3::ZERO, "sphere", vibe_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
         };
@@ -378,6 +422,7 @@ mod tests {
                 "Updated Prim",
                 vibe_core::PrimSurface::default(),
                 vibe_core::PrimGeometry::default(),
+                vibe_core::GeoAnchor { latitude: 0.0, longitude: 0.0 },
             )
         };
 
@@ -407,7 +452,7 @@ mod tests {
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
-                .add_prim(region_id, Vec3::ZERO, "cube")
+                .add_prim(region_id, Vec3::ZERO, "cube", vibe_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
         };

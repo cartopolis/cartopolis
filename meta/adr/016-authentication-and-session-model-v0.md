@@ -81,6 +81,15 @@ solo-only code path:
   reuse the token.
 - **Lifecycle.** In-process teardown is tied to Bevy `AppExit`: dropping `SimHandle`
   aborts the accept/tick tasks. (The `SimHandle` Drop already does this.)
+- **Identity feedback.** `ServerHelloAck` echoes the authoritative `username`
+  alongside `principal_id`; the client stores it in an `AuthIdentity` resource and
+  the HUD shows a profile chip (avatar initial + name). This is the seed the chat
+  presence UI (ADR-028) builds on.
+- **Token persistence + fallback.** On a successful ack the client persists the
+  issued `session_token` per server in the user store (external sims only — solo's
+  loopback port is ephemeral). Reconnects present the token first and fall back to
+  the password if it is stale (e.g. the sim restarted and dropped its in-memory
+  sessions), so a stale token never locks the user out.
 
 ## Rationale
 
