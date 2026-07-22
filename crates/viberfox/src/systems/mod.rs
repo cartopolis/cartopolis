@@ -23,3 +23,4 @@ pub mod transit_live;
 pub mod transit_vehicles;
 pub mod ui;
 pub mod user_store;
+pub mod weather;

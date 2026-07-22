@@ -1,0 +1,276 @@
+//! Live weather from the MET Norway (Yr) location-forecast API.
+//!
+//! `api.met.no/weatherapi/locationforecast/2.0/complete` is a free, keyless,
+//! **global** governmental source (the Norwegian Meteorological Institute; the
+//! worldwide fields are ECMWF's HRES model interpolated to the point). It wants
+//! two things and no money: a descriptive `User-Agent` identifying the app, and
+//! coordinates truncated to ~4 decimals (finer just defeats their edge cache).
+//!
+//! We fetch for the current map anchor (`MapStream::geo_anchor`), re-fetching on
+//! a re-anchor or every [`REFRESH`], and fold the sample onto the three knobs the
+//! renderer already exposes — `DevPanelState::cloud_cover / fog_density /
+//! precipitation`. It only writes those while [`WeatherState::live`] is on, so the
+//! dev-panel sliders stay authoritative when the user is A/B'ing by hand.
+//!
+//! Same shape as `transit_live::poll_transit_live`: one blocking `ureq` fetch on a
+//! worker thread, results pushed through an `Arc<Mutex<Vec<_>>>` and folded on the
+//! main thread. See [[../CLAUDE.md]] for the cloud/fog/rain plumbing this feeds.
+
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use bevy::prelude::*;
+
+use crate::resources::DevPanelState;
+use crate::systems::map_stream::MapStream;
+
+/// MET terms of service require a real, identifying User-Agent with a contact.
+const USER_AGENT: &str =
+    "viberfox/0.1 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)";
+
+/// Re-fetch cadence. MET updates the global forecast ~4×/day and asks callers not
+/// to poll faster than the data changes; 10 min is well within etiquette and keeps
+/// the scene responsive after a re-anchor (which refetches immediately regardless).
+const REFRESH: Duration = Duration::from_secs(600);
+
+/// Hourly rainfall (mm) that maps to `precipitation = 1.0` (a heavy shower).
+pub const RAIN_FULL_MM: f32 = 4.0;
+
+/// Baseline atmospheric haze kept even on a clear, dry day so the sky doesn't go
+/// glassy (matches the old fixed `fog_density` default of 0.15's low end).
+const HAZE_FLOOR: f32 = 0.05;
+
+/// One weather sample, already normalised to the scene's 0..1 knobs.
+#[derive(Clone, Copy, Debug)]
+pub struct Observation {
+    pub cloud_cover: f32,
+    pub fog_density: f32,
+    pub precipitation: f32,
+    pub air_temp_c: f32,
+    pub wind_ms: f32,
+    pub lat: f64,
+    pub lng: f64,
+}
+
+type FetchResult = Result<Observation, String>;
+
+/// Live-weather polling state plus the most recent sample (for the HUD).
+#[derive(Resource, Default)]
+pub struct WeatherState {
+    /// When true, each fetch drives cloud/fog/rain; when false, the dev-panel
+    /// sliders stay in charge and we still keep `latest` fresh for the readout.
+    pub live: bool,
+    jobs: Option<Sender<(f64, f64)>>,
+    results: Arc<Mutex<Vec<FetchResult>>>,
+    in_flight: bool,
+    last_poll: Option<Instant>,
+    /// Anchor generation the current sample was fetched for; a bump forces a refetch.
+    fetched_gen: Option<u32>,
+    pub latest: Option<Observation>,
+}
+
+impl WeatherState {
+    /// Construct with live application on/off (from the `--weather-live` flag).
+    pub fn with_live(live: bool) -> Self {
+        Self { live, ..Default::default() }
+    }
+
+    /// True once a sample has landed — the shot harness waits on this so a
+    /// `--weather-live` capture reflects real conditions, not the defaults.
+    pub fn ready(&self) -> bool {
+        self.latest.is_some()
+    }
+}
+
+/// Fetch the anchor's weather on a worker thread and (when live) apply it.
+pub fn poll_weather(
+    mut weather: ResMut<WeatherState>,
+    mut dev: ResMut<DevPanelState>,
+    stream: Res<MapStream>,
+) {
+    // Start the fetch worker once.
+    if weather.jobs.is_none() {
+        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64)>();
+        weather.jobs = Some(tx);
+        let results = weather.results.clone();
+        std::thread::spawn(move || {
+            while let Ok((lat, lng)) = rx.recv() {
+                let fetched = fetch_weather(lat, lng);
+                if let Ok(mut g) = results.lock() {
+                    g.push(fetched);
+                }
+            }
+        });
+    }
+
+    // Fold in completed fetches.
+    let done: Vec<FetchResult> = weather
+        .results
+        .lock()
+        .map(|mut g| g.drain(..).collect())
+        .unwrap_or_default();
+    for result in done {
+        weather.in_flight = false;
+        match result {
+            Ok(obs) => {
+                weather.latest = Some(obs);
+                if weather.live {
+                    apply(&obs, &mut dev);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "met.no weather fetch failed"),
+        }
+    }
+
+    // Keep the live knobs matched to the latest sample while live is on — every
+    // frame, not just when a fresh fetch lands. Ticking "Live" on then applies
+    // the reading we already have (the `latest` readout) instead of leaving the
+    // sliders stale until the next refresh cadence. Guarded so it only marks the
+    // resource changed when a value actually moves.
+    if weather.live {
+        if let Some(obs) = weather.latest {
+            if dev.cloud_cover != obs.cloud_cover
+                || dev.fog_density != obs.fog_density
+                || dev.precipitation != obs.precipitation
+            {
+                apply(&obs, &mut dev);
+            }
+        }
+    }
+
+    let Some((lat, lng, _zoom)) = stream.geo_anchor() else {
+        return;
+    };
+
+    // Refetch when the anchor moved, on the refresh cadence, or on the first tick.
+    let anchor_moved = weather.fetched_gen != Some(stream.anchor_generation);
+    let stale = weather
+        .last_poll
+        .is_none_or(|t| t.elapsed() >= REFRESH);
+    if weather.in_flight || !(anchor_moved || stale) {
+        return;
+    }
+
+    weather.last_poll = Some(Instant::now());
+    weather.fetched_gen = Some(stream.anchor_generation);
+    weather.in_flight = true;
+    if let Some(jobs) = &weather.jobs {
+        let _ = jobs.send((lat, lng));
+    }
+}
+
+/// Write a sample onto the renderer's live knobs.
+fn apply(obs: &Observation, dev: &mut DevPanelState) {
+    dev.cloud_cover = obs.cloud_cover;
+    dev.fog_density = obs.fog_density;
+    dev.precipitation = obs.precipitation;
+}
+
+/// Blocking fetch + parse of one MET `complete` forecast (worker thread).
+fn fetch_weather(lat: f64, lng: f64) -> FetchResult {
+    // MET asks for ≤4-decimal coordinates to keep their cache effective.
+    let url = format!(
+        "https://api.met.no/weatherapi/locationforecast/2.0/complete?lat={lat:.4}&lon={lng:.4}"
+    );
+    let body = ureq::get(&url)
+        .set("User-Agent", USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    parse_weather(&body, lat, lng)
+}
+
+/// Parse a MET `locationforecast/2.0/complete` body into an [`Observation`].
+///
+/// The first `timeseries` entry is "now": `instant.details` carries the point-in-
+/// time fields (cloud %, fog %, humidity, temp, wind); `next_1_hours` (falling back
+/// to `next_6_hours`) carries the accumulated `precipitation_amount` in mm.
+fn parse_weather(text: &str, lat: f64, lng: f64) -> FetchResult {
+    let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let now = &json["properties"]["timeseries"][0]["data"];
+    let inst = &now["instant"]["details"];
+    if inst.is_null() {
+        return Err("met.no response has no instant details".into());
+    }
+
+    let cloud_frac = inst["cloud_area_fraction"].as_f64().unwrap_or(0.0) / 100.0;
+    let fog_frac = inst["fog_area_fraction"].as_f64().unwrap_or(0.0) / 100.0;
+    let humidity = inst["relative_humidity"].as_f64().unwrap_or(0.0);
+    let air_temp_c = inst["air_temperature"].as_f64().unwrap_or(0.0) as f32;
+    let wind_ms = inst["wind_speed"].as_f64().unwrap_or(0.0) as f32;
+
+    let precip_mm = now["next_1_hours"]["details"]["precipitation_amount"]
+        .as_f64()
+        .or_else(|| now["next_6_hours"]["details"]["precipitation_amount"].as_f64())
+        .unwrap_or(0.0) as f32;
+
+    // Fog is usually reported 0 even in visible haze, so back it with humidity:
+    // RH 70%→0, 100%→full haze contribution.
+    let humid_haze = (((humidity - 70.0) / 30.0).clamp(0.0, 1.0) * 0.20) as f32;
+    let fog_density = (HAZE_FLOOR + (fog_frac as f32).max(humid_haze)).clamp(0.0, 1.0);
+
+    Ok(Observation {
+        cloud_cover: (cloud_frac as f32).clamp(0.0, 1.0),
+        fog_density,
+        precipitation: (precip_mm / RAIN_FULL_MM).clamp(0.0, 1.0),
+        air_temp_c,
+        wind_ms,
+        lat,
+        lng,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_clear_dry_sample() {
+        let body = r#"{"properties":{"timeseries":[{"data":{
+            "instant":{"details":{
+                "cloud_area_fraction":12.5,"fog_area_fraction":0.0,
+                "relative_humidity":55.0,"air_temperature":21.0,"wind_speed":3.2}},
+            "next_1_hours":{"details":{"precipitation_amount":0.0}}
+        }}]}}"#;
+        let o = parse_weather(body, 53.2194, 6.5665).unwrap();
+        assert!((o.cloud_cover - 0.125).abs() < 1e-4);
+        assert_eq!(o.precipitation, 0.0);
+        // Clear + dry ⇒ just the haze floor.
+        assert!((o.fog_density - HAZE_FLOOR).abs() < 1e-4);
+        assert_eq!(o.air_temp_c, 21.0);
+    }
+
+    #[test]
+    fn wet_overcast_humid_sample_maxes_the_knobs() {
+        let body = r#"{"properties":{"timeseries":[{"data":{
+            "instant":{"details":{
+                "cloud_area_fraction":100.0,"fog_area_fraction":40.0,
+                "relative_humidity":100.0,"air_temperature":9.0,"wind_speed":8.0}},
+            "next_1_hours":{"details":{"precipitation_amount":6.0}}
+        }}]}}"#;
+        let o = parse_weather(body, 0.0, 0.0).unwrap();
+        assert_eq!(o.cloud_cover, 1.0);
+        assert_eq!(o.precipitation, 1.0); // 6 mm > RAIN_FULL_MM, clamped
+        // fog_area_fraction 0.40 dominates the humidity haze, plus the floor.
+        assert!((o.fog_density - (HAZE_FLOOR + 0.40)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn falls_back_to_six_hour_precip() {
+        let body = r#"{"properties":{"timeseries":[{"data":{
+            "instant":{"details":{"cloud_area_fraction":50.0}},
+            "next_6_hours":{"details":{"precipitation_amount":2.0}}
+        }}]}}"#;
+        let o = parse_weather(body, 0.0, 0.0).unwrap();
+        assert!((o.precipitation - 0.5).abs() < 1e-4); // 2.0 / 4.0
+    }
+
+    #[test]
+    fn rejects_empty_timeseries() {
+        let body = r#"{"properties":{"timeseries":[]}}"#;
+        assert!(parse_weather(body, 0.0, 0.0).is_err());
+    }
+}
