@@ -1,43 +1,42 @@
 name: CI
 
 # Build and test viberfox on every push / PR.
-# Runs on the self-hosted Forgejo runner (code.garage44.eu), Docker executor.
+# Runs on the self-hosted Forgejo runner (code.garage44.eu) in the prebuilt
+# `viberfox-ci` image, which already carries the Rust toolchain + Bevy build
+# deps (clang/lld/wayland/xkbcommon), so no per-run apt/rustup setup.
 on:
   push:
   pull_request:
 
+env:
+  # CI-tuned compile: no incremental (useless on fresh runners), and
+  # line-tables-only debuginfo — keeps panic backtraces but cuts LLVM codegen
+  # work and shrinks target/ a lot (faster cache save/restore).
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+
 jobs:
-  build-test:
+  # Fast lane: fails within ~1 min on obvious compile errors. Runs in parallel
+  # with build-test (runner capacity = 2).
+  check:
+    name: cargo check
     runs-on: ubuntu-latest
-    env:
-      # CI-tuned compile: no incremental (useless on fresh runners), and
-      # line-tables-only debuginfo — keeps panic backtraces but cuts LLVM
-      # codegen work and shrinks target/ a lot (faster cache save/restore).
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_TERM_COLOR: always
-      CARGO_NET_RETRY: "3"
+    container:
+      image: viberfox-ci:latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: https://github.com/Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
 
-      # Bevy 0.19 links with clang + lld (see .cargo/config.toml) and the
-      # wayland/x11 features need the wayland + xkbcommon dev headers.
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            clang lld pkg-config \
-            libwayland-dev libxkbcommon-dev libx11-dev
-
-      - name: Install Rust toolchain
-        uses: https://github.com/dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry + build artifacts
-        uses: https://github.com/Swatinem/rust-cache@v2
-
-      # `cargo test` compiles the crate and runs its tests in one pass — a
-      # separate `cargo build` would recompile viberfox a second time (test vs
-      # non-test cfg) for no extra coverage, so we do just this.
-      - name: Build & test viberfox
-        run: cargo test -p viberfox --bin viberfox
+  build-test:
+    name: build & test viberfox
+    runs-on: ubuntu-latest
+    container:
+      image: viberfox-ci:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/Swatinem/rust-cache@v2
+      # `cargo test` compiles the crate and runs its tests in one pass.
+      - run: cargo test -p viberfox --bin viberfox
