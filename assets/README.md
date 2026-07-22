@@ -2,36 +2,26 @@
 
 `viberfox` loads these from the **workspace root** `assets/` directory (see `AssetPlugin` in `crates/viberfox/src/main.rs`).
 
-- **`models/animated/Fox.glb`** — Bevy’s sample fox mesh and animations (idle / run). Source: [bevyengine/bevy `assets/models/animated`](https://github.com/bevyengine/bevy/tree/main/assets/models/animated).
+## Avatar characters (`models/avatar/characters/`) — committed via Git LFS
 
-If the file is missing, restore it with:
+The player avatars are **CC0** Quaternius *Ultimate Modular* characters (~62 MB,
+20 glТFs). They are committed to the repo through **Git LFS** (`.gitattributes`
+tracks `models/avatar/characters/*.gltf`), so a normal clone checks them out
+automatically — **you need `git lfs` installed** (`git lfs install`), otherwise you
+get pointer files and the chooser falls back to the fox.
 
-```bash
-mkdir -p assets/models/animated
-curl -fsSL -o assets/models/animated/Fox.glb \
-  https://raw.githubusercontent.com/bevyengine/bevy/main/assets/models/animated/Fox.glb
-```
-
-## Avatar characters (`models/avatar/characters/`) — not committed
-
-The player avatars are **CC0** Quaternius *Ultimate Modular* characters, gitignored
-(~31 MB). Each is a self-contained glTF (embedded buffers + solid-colour materials)
-that includes its own 24-clip animation set — one complete, clothed, self-animated
-character per file. The chooser falls back to the fox when they're absent.
-
-Files expected by `avatar::resolve_avatar_model` (style ∈ {Casual, Suit,
-Adventurer, Worker, Punk}):
+Each file is a self-contained glTF (embedded buffers + solid-colour materials) with
+its own embedded 24-clip animation set and 4 slot-named meshes (`*_Head`, `*_Body`,
+`*_Legs`, `*_Feet`) — see `avatar::CHARACTER_STYLES` for the catalog. Files:
 
 ```
-models/avatar/characters/{Man,Woman}_{Casual,Suit,Adventurer,Worker,Punk}.gltf
+models/avatar/characters/{Man,Woman}_<Style>.gltf
 ```
 
-Source (Quaternius, CC0): *Ultimate Modular Men* and *Ultimate Modular Women* →
-`Individual Characters/glTF/`. Download those glTFs and rename to `Man_<Style>` /
-`Woman_<Style>` (the men's "Casual Hoodie" is used for `Man_Casual`). More styles
-exist in the packs (Adventurer, King, Punk, Space Suit, Swat, Farmer, Beach /
-Formal, Medieval, SciFi, Soldier, Witch …) — add a `ClothingTheme` variant + a
-`resolve_avatar_model` arm to expose them.
+Source (Quaternius, CC0): *Ultimate Modular Men* / *Women* → `Individual
+Characters/glTF/`, renamed to `Man_<Style>` / `Woman_<Style>`. To add a style: drop
+its glTF in (LFS tracks it automatically) and add a `man!`/`woman!` row to
+`avatar::CHARACTER_STYLES`.
 
 > The earlier approach (Universal Base Characters + Modular Character Outfits –
 > Fantasy + Universal Animation Library, under `base/`, `outfits/`, `anims/`) is
