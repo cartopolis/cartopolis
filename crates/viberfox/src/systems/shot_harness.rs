@@ -248,13 +248,28 @@ pub fn place_camera(
     progress.quiet = 0.0;
     progress.frames = 0;
     progress.frame_time = 0.0;
+    // `--shot-mode avatar`: third-person follow — the camera frames the avatar
+    // (teleported to `--at`) instead of sitting at a fixed point. `--at` altitude
+    // becomes the follow distance and `--look` (pitch°, yaw°) the orbit
+    // elevation/azimuth around the avatar. This is the right mode for checking
+    // avatars (free/earth put the camera somewhere the avatar may not be).
+    let avatar_follow = harness.mode == "avatar";
+    let (azimuth, pitch, distance) = if avatar_follow {
+        (
+            shot.yaw_deg.to_radians(),
+            shot.pitch_deg.to_radians(),
+            (shot.alt as f32).clamp(1.5, 25.0),
+        )
+    } else {
+        (0.0, 0.5, 5.0)
+    };
     let pose = CameraPose {
         mode: harness.mode.clone(),
         // free_camera_rotation is (pitch, yaw), in radians.
         free_rotation: [shot.pitch_deg.to_radians(), shot.yaw_deg.to_radians()],
-        azimuth: 0.0,
-        pitch: 0.5,
-        distance: 5.0,
+        azimuth,
+        pitch,
+        distance,
         // Earth mode: apply_teleport recomputes the orbit distance from
         // `altitude`, so this only needs to be non-zero.
         orbit_distance: shot.alt,

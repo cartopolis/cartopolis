@@ -36,17 +36,53 @@ pub struct UserData {
     pub appearance: AvatarAppearance,
 }
 
-/// The local player's avatar choice, persisted and shown in the chooser UI. Kept
-/// deliberately small for now (body + clothing theme); grows into full
-/// customization later. Only the local avatar reads this — remote avatars use the
-/// default until appearance is replicated over the wire (a future protocol/ADR
-/// change).
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// The local player's avatar choice. Each clothing slot holds the display label of
+/// a [`crate::systems::avatar`] character style (e.g. "Casual", "Business",
+/// "Witch") available for `sex`; the renderer mixes the matching slot mesh from
+/// each style's character glTF. `head` covers face/hair/headwear. A "preset" just
+/// sets all four slots to one style. Only the local avatar reads this — remotes
+/// use the default until appearance is replicated (a future protocol/ADR).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct AvatarAppearance {
     #[serde(default)]
     pub sex: AvatarSex,
+    #[serde(default = "default_style")]
+    pub head: String,
+    #[serde(default = "default_style")]
+    pub top: String,
+    #[serde(default = "default_style")]
+    pub legs: String,
+    #[serde(default = "default_style")]
+    pub feet: String,
+    /// Optional non-weapon accessory: the style whose accessory mesh to show (e.g.
+    /// "Adventurer" for its backpack), or `None`.
     #[serde(default)]
-    pub theme: ClothingTheme,
+    pub accessory: Option<String>,
+}
+
+fn default_style() -> String {
+    "Casual".to_string()
+}
+
+impl Default for AvatarAppearance {
+    fn default() -> Self {
+        Self {
+            sex: AvatarSex::default(),
+            head: default_style(),
+            top: default_style(),
+            legs: default_style(),
+            feet: default_style(),
+            accessory: None,
+        }
+    }
+}
+
+impl AvatarAppearance {
+    /// The single style shared by all four clothing slots, or `None` if it's a mix.
+    pub fn uniform_style(&self) -> Option<&str> {
+        (self.head == self.top && self.top == self.legs && self.legs == self.feet)
+            .then_some(self.head.as_str())
+    }
 }
 
 /// Body model. `Man`/`Woman` map to the two Quaternius Universal Base Characters
@@ -69,30 +105,6 @@ impl AvatarSex {
     }
 }
 
-/// Clothing theme layered over the base body. `Casual` is the bare base body
-/// (Universal Base Characters); the others are complete clothed variants from the
-/// Quaternius Modular Character Outfits – Fantasy pack (CC0). More themes/packs
-/// can be added as their outfit glTFs are dropped in.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ClothingTheme {
-    #[default]
-    Casual,
-    Peasant,
-    Ranger,
-}
-
-impl ClothingTheme {
-    pub const ALL: [ClothingTheme; 3] =
-        [ClothingTheme::Casual, ClothingTheme::Peasant, ClothingTheme::Ranger];
-    pub fn label(self) -> &'static str {
-        match self {
-            ClothingTheme::Casual => "Casual",
-            ClothingTheme::Peasant => "Peasant",
-            ClothingTheme::Ranger => "Ranger",
-        }
-    }
-}
 
 /// Where the user was when Viberfox closed, camera included.
 #[derive(Serialize, Deserialize, Clone)]
@@ -296,9 +308,10 @@ mod tests {
         assert_eq!(data.last_location.unwrap().pose.mode, "");
         // Missing session_tokens defaults to empty (ADR-016 rollout).
         assert!(data.session_tokens.is_empty());
-        // Missing appearance defaults to the base man in casual clothes.
+        // Missing appearance defaults to a casual man (all slots "Casual").
         assert_eq!(data.appearance.sex, AvatarSex::Man);
-        assert_eq!(data.appearance.theme, ClothingTheme::Casual);
+        assert_eq!(data.appearance.uniform_style(), Some("Casual"));
+        assert_eq!(data.appearance.accessory, None);
     }
 
     #[test]

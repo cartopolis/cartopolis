@@ -104,6 +104,11 @@ struct Cli {
     /// cloud deck fills. 0 = clear sky. Handy for A/B'ing weather in `--shot`.
     #[arg(long, value_name = "COVERAGE")]
     clouds: Option<f32>,
+
+    /// Rain intensity to start at (0–1): density of the screen-space rain
+    /// streaks. 0 = dry. Pairs with `--clouds` for an overcast, wet scene.
+    #[arg(long, value_name = "INTENSITY")]
+    rain: Option<f32>,
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -257,6 +262,8 @@ fn main() {
     .add_plugins(MaterialPlugin::<MoonMaterial>::default())
     .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
     .add_plugins(MaterialPlugin::<CloudMaterial>::default())
+    .add_plugins(MaterialPlugin::<GlobeCloudMaterial>::default())
+    .add_plugins(MaterialPlugin::<RainMaterial>::default())
     .init_resource::<GameState>()
     .init_resource::<AvatarState>()
     .init_resource::<LocalAvatarSimId>()
@@ -283,6 +290,7 @@ fn main() {
         time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
         fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
         cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),
+        precipitation: cli.rain.unwrap_or(0.0).clamp(0.0, 1.0),
         ..default()
     })
     .init_resource::<StatsState>()
@@ -397,6 +405,8 @@ fn main() {
             setup_moon,
             setup_horizon_haze,
             setup_clouds,
+            setup_globe_clouds,
+            setup_rain,
         ),
     )
     .add_systems(
@@ -529,6 +539,7 @@ fn main() {
             avatar::spawn_avatar,
             avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
+            avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
             systems::debug::debug_region_entities.after(rendering::spawn_regions),
         ),
     )
@@ -612,6 +623,8 @@ fn main() {
             (
                 update_horizon_haze.after(systems::free_camera::camera_controls),
                 update_clouds.after(systems::free_camera::camera_controls),
+                update_globe_clouds.after(systems::free_camera::camera_controls),
+                update_rain.after(systems::free_camera::camera_controls),
             ),
             systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
@@ -854,6 +867,9 @@ const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
 /// it; this is that adaptation. Gated on `horizon_proximity`, so it fades out
 /// well before midnight and leaves the night floor untouched.
 const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
+/// Stops of exposure lift at full overcast, so an overcast scene reads dim but
+/// legible after the direct sun is pulled down (see the `overcast` term).
+const OVERCAST_EXPOSURE_LIFT: f32 = 0.4;
 
 /// How saturated the sun's *light* colour is (1 = full transmittance colour,
 /// 0 = white). Kept well below 1 because the built-in atmosphere already reddens
@@ -1438,6 +1454,13 @@ fn apply_day_night_cycle(
         return;
     }
     *was_space = space;
+
+    // Overcast: thick cloud (and, a little, rain) dims and flattens the ground
+    // lighting — the direct sun drops, the sky's fill light rises, colours grey
+    // out. Ground tier only (space has its own lighting model, and the planet
+    // cloud sphere shades the globe there), so it fades out with `space`.
+    let overcast = dev.cloud_cover.max(dev.precipitation * 0.9) * (1.0 - space);
+
     let sun_dir = sun_direction(dev.time_of_day);
 
     // Adapt exposure to the light level (eye/camera adaptation): brighten toward
@@ -1448,7 +1471,10 @@ fn apply_day_night_cycle(
     let day = utils::sun::daylight(dev.time_of_day);
     let ground_ev = DAY_EXPOSURE_EV100
         - NIGHT_EXPOSURE_LIFT * (1.0 - day)
-        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day);
+        - TWILIGHT_EXPOSURE_LIFT * utils::sun::horizon_proximity(dev.time_of_day)
+        // A small lift so an overcast scene reads dim-but-legible rather than
+        // being crushed once the direct sun is pulled down.
+        - OVERCAST_EXPOSURE_LIFT * overcast;
     if let Ok((_, _, mut exp, mut bloom)) = camera.single_mut() {
         // The globe's map imagery is bright (near-white paper); from orbit the
         // sunlit hemisphere blows out, so stop the camera down as you climb. This
@@ -1478,10 +1504,19 @@ fn apply_day_night_cycle(
     // fully sunlit day side and a dark night side, terminator between. Crossfaded
     // rather than switched, or climbing out at dusk changed the light in a step.
     let (ground_color, ground_lux) = sun_light(dev.time_of_day, dev.fog_density);
-    let sun_color = Color::from(LinearRgba::from_vec4(
+    let mut sun_color = Color::from(LinearRgba::from_vec4(
         LinearRgba::from(ground_color).to_vec4().lerp(LinearRgba::WHITE.to_vec4(), space),
     ));
-    let illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
+    let mut illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
+    if overcast > 0.0 {
+        // Cloud thins the direct beam and greys its colour toward the sky.
+        illuminance *= 1.0 - 0.72 * overcast;
+        let c = LinearRgba::from(sun_color).to_vec4();
+        let lum = c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
+        sun_color = Color::from(LinearRgba::from_vec4(
+            c.lerp(Vec4::new(lum, lum, lum, 1.0), 0.6 * overcast),
+        ));
+    }
     for (mut tf, mut light) in sun.iter_mut() {
         *tf = Transform::from_translation(Vec3::ZERO).looking_to(-sun_dir, Vec3::Y);
         light.color = sun_color;
@@ -1507,11 +1542,18 @@ fn apply_day_night_cycle(
         // ambient falls off toward Earthshine scale — just enough that the night
         // side reads as unlit land rather than a hole cut out of the starfield.
         let ground = ambient_light(dev.time_of_day, dev.moon_age_days);
-        let ground_rgb = LinearRgba::from(ground.color).to_vec4();
+        let mut ground_rgb = LinearRgba::from(ground.color).to_vec4();
+        // Overcast fills shadows: the diffuse sky light rises and greys, so an
+        // overcast day is flat and cool rather than sunlit-and-shadowed.
+        let ground_brightness = ground.brightness * (1.0 + 0.8 * overcast);
+        if overcast > 0.0 {
+            let lum = ground_rgb.x * 0.2126 + ground_rgb.y * 0.7152 + ground_rgb.z * 0.0722;
+            ground_rgb = ground_rgb.lerp(Vec4::new(lum, lum, lum, 1.0), 0.5 * overcast);
+        }
         let space_rgb = LinearRgba::rgb(0.55, 0.62, 0.85).to_vec4();
         *a = AmbientLight {
             color: Color::from(LinearRgba::from_vec4(ground_rgb.lerp(space_rgb, space))),
-            brightness: ground.brightness.lerp(SPACE_AMBIENT_BRIGHTNESS, space),
+            brightness: ground_brightness.lerp(SPACE_AMBIENT_BRIGHTNESS, space),
             affects_lightmapped_meshes: true,
         };
     }
@@ -1842,6 +1884,9 @@ struct Clouds;
 
 /// Height of the cloud layer above the camera, in metres — a mid-level deck.
 const CLOUD_LAYER_HEIGHT: f32 = 2_500.0;
+/// Noise frequency (m⁻¹) — must match `FREQ` in `shaders/clouds.wgsl` so the
+/// CPU-side world-anchor offset lands in the same units as the shader's sample.
+const CLOUD_FREQ: f32 = 0.00034;
 /// Overall cloud opacity before the coverage/altitude/space fades.
 const CLOUD_OPACITY: f32 = 0.92;
 /// Edge softness of the coverage cutoff (0 = hard, higher = wispier margins).
@@ -1875,6 +1920,10 @@ struct CloudMaterial {
     /// Shadowed underside colour.
     #[uniform(4)]
     shadow_color: LinearRgba,
+    /// xy: world-anchor offset in UV units (camera displacement from the anchor
+    /// × the shader's FREQ), so the deck stays fixed over the ground.
+    #[uniform(5)]
+    params2: Vec4,
 }
 
 impl Material for CloudMaterial {
@@ -1919,6 +1968,7 @@ fn setup_clouds(
         sun_dir: Vec4::Y,
         lit_color: LinearRgba::WHITE,
         shadow_color: LinearRgba::BLACK,
+        params2: Vec4::ZERO,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -1997,5 +2047,278 @@ fn update_clouds(
         mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::from_vec4(shadow);
+        // World-anchor: the camera's horizontal position in the local anchor
+        // frame (× FREQ, matching the shader) so the deck stays fixed over the
+        // ground as you fly under it, rather than sliding with the camera.
+        let edge = systems::free_camera::WORLD_CELL_EDGE as f32;
+        let world_x = cell.x as f32 * edge + cam_local.translation.x;
+        let world_z = cell.z as f32 * edge + cam_local.translation.z;
+        mat.params2 = Vec4::new(world_x * CLOUD_FREQ, world_z * CLOUD_FREQ, 0.0, 0.0);
+    }
+}
+
+/// Marker for the screen-space rain quad (see `shaders/rain.wgsl`).
+#[derive(Component)]
+struct Rain;
+
+/// Wind slant of the rain streaks (screen-space shear).
+const RAIN_SLANT: f32 = 0.12;
+/// Overall opacity of the rain streaks.
+const RAIN_OPACITY: f32 = 0.5;
+/// Rain is full-strength up to this altitude, then fades (you climb out of it).
+const RAIN_FADE_LOW: f32 = 1_500.0;
+/// Camera altitude past which the rain has fully faded out.
+const RAIN_FADE_HIGH: f32 = 6_000.0;
+
+/// Screen-space rain: an animated streak overlay on a small camera-centred shell
+/// (`update_rain` keeps it on the camera). The shell's interior sits ~5 m out —
+/// nearer than any world geometry — so with depth-write off the streaks draw over
+/// the whole scene; the egui HUD still draws in its own later pass. The pattern is
+/// keyed off the framebuffer coordinate, so the mesh shape only has to cover view.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct RainMaterial {
+    /// x: intensity 0–1, y: time (fall clock), z: wind slant, w unused.
+    #[uniform(0)]
+    params: Vec4,
+    /// Streak colour; alpha carries the overall opacity.
+    #[uniform(1)]
+    tint: LinearRgba,
+}
+
+impl Material for RainMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/rain.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
+}
+
+/// Spawns the rain overlay quad. `VIBERFOX_NO_RAIN` leaves it out for `--shot`
+/// bisecting.
+fn setup_rain(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<RainMaterial>>,
+) {
+    if env_flag("VIBERFOX_NO_RAIN") {
+        return;
+    }
+    let mesh = meshes.add(Cuboid::from_length(10.0).mesh());
+    let material = materials.add(RainMaterial {
+        params: Vec4::ZERO,
+        tint: LinearRgba::rgb(0.72, 0.78, 0.88),
+    });
+    commands.spawn((
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::default(),
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
+        Rain,
+    ));
+}
+
+/// Keeps the rain shell centred on the camera, drives intensity from the dev
+/// panel's precipitation slider, and fades it out with altitude.
+#[allow(clippy::type_complexity)]
+fn update_rain(
+    dev: Res<DevPanelState>,
+    time: Res<Time>,
+    globe: Res<systems::globe::GlobeState>,
+    camera: Query<
+        (&GridCell, &GlobalTransform, &Transform),
+        (With<Camera3d>, Without<Rain>),
+    >,
+    mut rain: Query<(&mut Transform, &MeshMaterial3d<RainMaterial>), With<Rain>>,
+    mut materials: ResMut<Assets<RainMaterial>>,
+) {
+    let Ok((cell, cam, cam_local)) = camera.single() else {
+        return;
+    };
+    let Ok((mut tf, mat_handle)) = rain.single_mut() else {
+        return;
+    };
+
+    let altitude = globe.altitude_m(cell, cam_local) as f32;
+    let alt_fade = (1.0
+        - ((altitude - RAIN_FADE_LOW) / (RAIN_FADE_HIGH - RAIN_FADE_LOW)))
+        .clamp(0.0, 1.0);
+    let intensity = dev.precipitation * alt_fade;
+
+    tf.translation = cam.translation();
+
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+        mat.params = Vec4::new(intensity, time.elapsed_secs(), RAIN_SLANT, 0.0);
+        mat.tint = LinearRgba::new(0.72, 0.78, 0.88, RAIN_OPACITY);
+    }
+}
+
+/// Marker for the planet-wrapping cloud sphere (see `shaders/globe_clouds.wgsl`).
+#[derive(Component)]
+struct GlobeClouds;
+
+/// Height of the planet cloud shell above the globe surface, in metres.
+const GLOBE_CLOUD_ALT: f32 = 8_000.0;
+/// 3D noise frequency for the planet cloud sphere (feature scale on the globe).
+const GLOBE_CLOUD_FREQ: f32 = 4.5;
+/// Overall opacity of the planet cloud sphere.
+const GLOBE_CLOUD_OPACITY: f32 = 0.85;
+
+/// Planet-scale cloud layer for the globe / space tier: a sphere just above the
+/// surface, sampled by a 3D noise field and shaded by the sun terminator. Fades
+/// in with `space_factor` (absent on the ground, where the ceiling shell rules).
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct GlobeCloudMaterial {
+    /// xyz: sphere centre in render space, w: radius (m).
+    #[uniform(0)]
+    centre: Vec4,
+    /// World direction to the sun (local anchor frame).
+    #[uniform(1)]
+    sun_dir: Vec4,
+    /// x: coverage, y: opacity (space fade), z: time, w: noise frequency.
+    #[uniform(2)]
+    params: Vec4,
+    /// Sunlit cloud colour; alpha carries the overall opacity.
+    #[uniform(3)]
+    lit_color: LinearRgba,
+    /// Night-side cloud colour.
+    #[uniform(4)]
+    shadow_color: LinearRgba,
+}
+
+impl Material for GlobeCloudMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/globe_clouds.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Seen from outside in orbit: keep back-face culling (draw the outer
+        // shell) but don't write depth, so it blends over the globe surface.
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
+}
+
+/// Spawns the planet cloud sphere (hidden until the globe/space tier). A unit
+/// sphere scaled to the shell radius each frame in `update_globe_clouds`.
+fn setup_globe_clouds(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GlobeCloudMaterial>>,
+) {
+    if env_flag("VIBERFOX_NO_CLOUDS") {
+        return;
+    }
+    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(6).unwrap());
+    let material = materials.add(GlobeCloudMaterial {
+        centre: Vec4::ZERO,
+        sun_dir: Vec4::Y,
+        params: Vec4::ZERO,
+        lit_color: LinearRgba::WHITE,
+        shadow_color: LinearRgba::BLACK,
+    });
+    commands.spawn((
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::default(),
+        Visibility::Hidden,
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
+        GlobeClouds,
+    ));
+}
+
+/// Positions the planet cloud sphere at Earth's render-space centre (like
+/// `globe::update_atmosphere_origin`), sizes it to the shell radius, and drives
+/// coverage / lighting / space fade. Hidden below the globe threshold.
+#[allow(clippy::type_complexity)]
+fn update_globe_clouds(
+    dev: Res<DevPanelState>,
+    time: Res<Time>,
+    globe: Res<systems::globe::GlobeState>,
+    camera: Query<
+        (&GridCell, &Transform),
+        (With<systems::free_camera::FreeCamera>, Without<GlobeClouds>),
+    >,
+    mut clouds: Query<
+        (&mut Transform, &mut Visibility, &MeshMaterial3d<GlobeCloudMaterial>),
+        With<GlobeClouds>,
+    >,
+    mut materials: ResMut<Assets<GlobeCloudMaterial>>,
+) {
+    let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
+        return;
+    };
+    let Ok((cell, cam_local)) = camera.single() else {
+        return;
+    };
+    let space = if globe.ready {
+        globe.space_factor(cell, cam_local)
+    } else {
+        0.0
+    };
+
+    // Absent on the ground; the camera-relative ceiling shell covers that tier.
+    let want = if space <= 0.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
+    if space <= 0.0 {
+        return;
+    }
+
+    // Earth's centre in render coords (camera is the floating origin), same as
+    // the planet atmosphere entity.
+    let edge = systems::free_camera::WORLD_CELL_EDGE as f64;
+    let centre = globe.center_local.as_dvec3()
+        - bevy::math::DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * edge;
+    let centre = centre.as_vec3();
+    let radius = globe.radius + GLOBE_CLOUD_ALT;
+    tf.translation = centre;
+    tf.scale = Vec3::splat(radius);
+
+    // Sunlit cloud colour is white lightly warmed by the current sun tint; the
+    // shader's terminator handles the day→night falloff across the sphere.
+    let (sun_c, _) = sun_light(dev.time_of_day, dev.fog_density);
+    let sun_v = LinearRgba::from(sun_c).to_vec4();
+    let mut lit = Vec4::splat(1.0).lerp(sun_v, 0.35);
+    lit.w = GLOBE_CLOUD_OPACITY;
+
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+        mat.centre = centre.extend(radius);
+        mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
+        mat.params = Vec4::new(dev.cloud_cover, space, time.elapsed_secs(), GLOBE_CLOUD_FREQ);
+        mat.lit_color = LinearRgba::from_vec4(lit);
+        mat.shadow_color = LinearRgba::rgb(0.06, 0.09, 0.16);
     }
 }

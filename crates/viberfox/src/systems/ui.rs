@@ -231,10 +231,15 @@ pub fn render_dev_panel(
                     .step_by(0.01),
             );
             ui.separator();
-            ui.label("Clouds");
+            ui.label("Weather");
             ui.add(
                 egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
-                    .text("coverage")
+                    .text("cloud cover")
+                    .step_by(0.01),
+            );
+            ui.add(
+                egui::Slider::new(&mut dev.precipitation, 0.0..=1.0)
+                    .text("rain")
                     .step_by(0.01),
             );
             ui.separator();
@@ -307,45 +312,85 @@ pub fn render_avatar_chooser(
     mut chooser: ResMut<crate::resources::AvatarChooserState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
 ) {
-    use crate::systems::user_store::{AvatarSex, ClothingTheme};
+    use crate::systems::avatar::{accessory_styles_for, styles_for};
+    use crate::systems::user_store::AvatarSex;
     if !chooser.open {
         return;
     }
     // Seed the draft from the saved appearance the first time the window opens.
     if !chooser.seeded {
-        chooser.draft = store.data.appearance;
+        chooser.draft = store.data.appearance.clone();
         chooser.seeded = true;
     }
-    let saved = store.data.appearance;
+    let saved = store.data.appearance.clone();
     let ctx = egui.ctx_mut();
     let mut open = true;
     let mut apply = false;
     egui::Window::new("Choose Avatar")
         .open(&mut open)
-        .default_width(240.0)
+        .default_width(260.0)
         .show(ctx, |ui| {
+            let d = &mut chooser.draft;
             ui.label("Body");
             ui.horizontal(|ui| {
                 for sex in AvatarSex::ALL {
-                    if ui
-                        .selectable_label(chooser.draft.sex == sex, sex.label())
-                        .clicked()
-                    {
-                        chooser.draft.sex = sex;
+                    if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
+                        d.sex = sex;
+                        fix_styles_for_sex(d, sex);
                     }
                 }
             });
+            let sex = d.sex;
+
             ui.add_space(6.0);
-            ui.label("Clothing");
-            egui::ComboBox::from_id_salt("avatar_theme")
-                .selected_text(chooser.draft.theme.label())
+            // Preset: set all four clothing slots at once (quick whole-look pick).
+            ui.label("Preset");
+            let preset = d.uniform_style().unwrap_or("Custom").to_string();
+            egui::ComboBox::from_id_salt("avatar_preset")
+                .selected_text(preset)
                 .show_ui(ui, |ui| {
-                    for theme in ClothingTheme::ALL {
-                        ui.selectable_value(&mut chooser.draft.theme, theme, theme.label());
+                    for style in styles_for(sex) {
+                        if ui
+                            .selectable_label(d.uniform_style() == Some(style), style)
+                            .clicked()
+                        {
+                            d.head = style.to_string();
+                            d.top = style.to_string();
+                            d.legs = style.to_string();
+                            d.feet = style.to_string();
+                        }
                     }
                 });
+
             ui.separator();
-            let changed = chooser.draft != saved;
+            ui.label("Customize");
+            slot_combo(ui, "Head", sex, &mut d.head);
+            slot_combo(ui, "Top", sex, &mut d.top);
+            slot_combo(ui, "Legs", sex, &mut d.legs);
+            slot_combo(ui, "Shoes", sex, &mut d.feet);
+
+            // Accessory (optional, non-weapon).
+            egui::ComboBox::from_id_salt("avatar_accessory")
+                .selected_text(format!(
+                    "Accessory: {}",
+                    d.accessory.as_deref().unwrap_or("None")
+                ))
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
+                        d.accessory = None;
+                    }
+                    for acc in accessory_styles_for(sex) {
+                        if ui
+                            .selectable_label(d.accessory.as_deref() == Some(acc), acc)
+                            .clicked()
+                        {
+                            d.accessory = Some(acc.to_string());
+                        }
+                    }
+                });
+
+            ui.separator();
+            let changed = *d != saved;
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(changed, egui::Button::new("Apply"))
@@ -359,11 +404,47 @@ pub fn render_avatar_chooser(
             });
         });
     if apply {
-        store.data.appearance = chooser.draft;
+        store.data.appearance = chooser.draft.clone();
         store.dirty = true;
     }
     if !open && chooser.open {
         chooser.open = false;
+    }
+}
+
+/// One labelled per-slot style dropdown (Head / Top / Legs / Shoes).
+fn slot_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    sex: crate::systems::user_store::AvatarSex,
+    value: &mut String,
+) {
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(format!("{label}: {value}"))
+        .show_ui(ui, |ui| {
+            for style in crate::systems::avatar::styles_for(sex) {
+                ui.selectable_value(value, style.to_string(), style);
+            }
+        });
+}
+
+/// After a body (sex) change, reset any slot/accessory style not available for the
+/// new sex to a valid one, so the mix never references a missing character.
+fn fix_styles_for_sex(
+    d: &mut crate::systems::user_store::AvatarAppearance,
+    sex: crate::systems::user_store::AvatarSex,
+) {
+    let avail: Vec<&str> = crate::systems::avatar::styles_for(sex).collect();
+    let first = avail.first().copied().unwrap_or("Casual").to_string();
+    for slot in [&mut d.head, &mut d.top, &mut d.legs, &mut d.feet] {
+        if !avail.contains(&slot.as_str()) {
+            *slot = first.clone();
+        }
+    }
+    if let Some(acc) = &d.accessory {
+        if !crate::systems::avatar::accessory_styles_for(sex).any(|a| a == acc) {
+            d.accessory = None;
+        }
     }
 }
 

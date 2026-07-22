@@ -6,22 +6,17 @@ use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
-use crate::systems::user_store::{AvatarAppearance, AvatarSex, ClothingTheme, UserStore};
+use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
 use vibe_core::wrap_angle_pi;
 
-/// A concrete, loadable avatar as one or two glTF scenes on the same rig, driven
-/// by clips from `anims`. Which scenes are present depends on how a Quaternius
-/// outfit is authored (see `resolve_avatar_model`):
-/// - `body` only — a bare base body (Casual), or the fox.
-/// - `body` + `outfit` — the outfit has no head mesh (Peasant), so the base body
-///   supplies the head. Caveat: these outfits are partial-coverage (bare-torso +
-///   sleeveless), so the base body's bare back still shows — an asset limitation.
-/// - `outfit` only — a self-complete outfit (Ranger: bare-chested + hood). A base
-///   body here would double the torso and poke through the clothing.
-pub(crate) struct AvatarModel {
-    body: Option<&'static str>,
-    outfit: Option<&'static str>,
+/// One glTF scene to spawn for an avatar, showing only the meshes for the slots in
+/// `mask`. Complete Quaternius characters embed their own clips, so `anims` is the
+/// same file. Several holders (different character files, different slot masks)
+/// compose one mixed avatar on the shared rig.
+struct Holder {
+    scene: &'static str,
     anims: &'static str,
+    mask: SlotMask,
     scale: f32,
     idle_ix: usize,
     run_ix: usize,
@@ -29,74 +24,209 @@ pub(crate) struct AvatarModel {
     anim_speed: f32,
 }
 
-/// Quaternius Universal Animation Library (CC0). Clips bind to any body sharing
-/// the universal `Armature → root → pelvis` rig (the base bodies and outfits do).
-const UAL: &str = "models/avatar/anims/UAL1_Standard.glb";
-// Clip indices within UAL1_Standard.glb (see `jq '.animations'`).
-const UAL_IDLE: usize = 9; // Idle_Loop
-const UAL_JOG: usize = 13; // Jog_Fwd_Loop (used as the "moving" gait)
-const UAL_FLY: usize = 16; // Jump_Loop — a mid-air pose, reused as the flying stance
+/// A customization slot within a Quaternius character (identified by mesh-node
+/// suffix). `Head` includes face/hair/headwear.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Head,
+    Top,
+    Legs,
+    Feet,
+    Accessory,
+}
 
-/// The Bevy sample fox — the fallback if the humanoid glTFs are missing. Its
-/// clips live in the same file (0=Survey/idle, 2=Run); it has no fly pose, so
-/// idle stands in.
-const FOX_MODEL: AvatarModel = AvatarModel {
-    body: Some("models/animated/Fox.glb"),
-    outfit: None,
-    anims: "models/animated/Fox.glb",
-    scale: 0.02,
-    idle_ix: 0,
-    run_ix: 2,
-    fly_ix: 0,
-    anim_speed: 1.5,
-};
+/// Which slots a holder contributes; meshes for other slots are hidden on spawn.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct SlotMask {
+    head: bool,
+    top: bool,
+    legs: bool,
+    feet: bool,
+    accessory: bool,
+}
 
-/// Build a humanoid model from an optional base body + optional outfit (at least
-/// one must be present). Bodies are authored in metres (~1.8 m tall), so world
-/// scale is 1.0; clips come from the UAL.
-const fn humanoid(body: Option<&'static str>, outfit: Option<&'static str>) -> AvatarModel {
-    AvatarModel {
-        body,
-        outfit,
-        anims: UAL,
+impl SlotMask {
+    const ALL: Self = Self { head: true, top: true, legs: true, feet: true, accessory: true };
+    fn shows(&self, slot: Slot) -> bool {
+        match slot {
+            Slot::Head => self.head,
+            Slot::Top => self.top,
+            Slot::Legs => self.legs,
+            Slot::Feet => self.feet,
+            Slot::Accessory => self.accessory,
+        }
+    }
+    fn set(&mut self, slot: Slot) {
+        match slot {
+            Slot::Head => self.head = true,
+            Slot::Top => self.top = true,
+            Slot::Legs => self.legs = true,
+            Slot::Feet => self.feet = true,
+            Slot::Accessory => self.accessory = true,
+        }
+    }
+}
+
+/// Classify a character mesh-node name into its slot by suffix, or `None` for nodes
+/// we don't slot — weapons are hidden separately (see `is_weapon_node`), and the
+/// fox's unslotted meshes return `None` so they always show.
+fn classify_slot(name: &str) -> Option<Slot> {
+    if name.ends_with("_Head") {
+        Some(Slot::Head)
+    } else if name.ends_with("_Body") {
+        Some(Slot::Top)
+    } else if name.ends_with("_Legs") || name.ends_with("_Pants") {
+        Some(Slot::Legs)
+    } else if name.ends_with("_Feet") {
+        Some(Slot::Feet)
+    } else if name.contains("Backpack") {
+        Some(Slot::Accessory)
+    } else {
+        None
+    }
+}
+
+// Clip indices shared by every Quaternius "Ultimate Modular" character glTF (they
+// all embed the same 24-clip set — see `jq '.animations'`).
+const CHAR_IDLE: usize = 4; // Idle
+const CHAR_RUN: usize = 16; // Run
+// The set has no jump/fly clip, so Idle doubles as the airborne pose.
+
+/// The Bevy sample fox — the fallback (whole model shown) if the character glTFs
+/// aren't fetched. Its clips are embedded (0=Survey/idle, 2=Run; no fly pose).
+fn fox_holder() -> Holder {
+    Holder {
+        scene: "models/animated/Fox.glb",
+        anims: "models/animated/Fox.glb",
+        mask: SlotMask::ALL,
+        scale: 0.02,
+        idle_ix: 0,
+        run_ix: 2,
+        fly_ix: 0,
+        anim_speed: 1.5,
+    }
+}
+
+/// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
+/// showing the slots in `mask`.
+fn character_holder(scene: &'static str, mask: SlotMask) -> Holder {
+    Holder {
+        scene,
+        anims: scene,
+        mask,
         scale: 1.0,
-        idle_ix: UAL_IDLE,
-        run_ix: UAL_JOG,
-        fly_ix: UAL_FLY,
+        idle_ix: CHAR_IDLE,
+        run_ix: CHAR_RUN,
+        fly_ix: CHAR_IDLE,
         anim_speed: 1.0,
     }
 }
 
-/// Resolve the model for an appearance. Which scenes are used depends on how the
-/// outfit is authored (the Quaternius packs are not uniform):
-/// - Casual → base body only.
-/// - Peasant → base body + outfit: the outfit has no head mesh, so the base body
-///   provides the head. The peasant clothing is only partial (sleeveless, open
-///   back), so the base's bare back still shows — a limitation of that asset.
-/// - Ranger → outfit only: it's a self-complete, bare-chested + hooded character;
-///   a base body underneath would double the torso and show through the skin.
-/// Falls back to the fox if the needed glTFs are missing.
-pub(crate) fn resolve_avatar_model(appearance: AvatarAppearance) -> AvatarModel {
-    use AvatarSex::*;
-    use ClothingTheme::*;
-    let base = match appearance.sex {
-        Man => "models/avatar/base/Superhero_Male_FullBody.gltf",
-        Woman => "models/avatar/base/Superhero_Female_FullBody.gltf",
+/// A selectable avatar: a display `label` (also the stored `style` id) for a given
+/// `sex`, mapped to the complete self-animated character glTF it loads.
+pub(crate) struct CharacterStyle {
+    pub sex: AvatarSex,
+    pub label: &'static str,
+    pub file: &'static str,
+}
+
+macro_rules! man {
+    ($label:literal, $file:literal) => {
+        CharacterStyle { sex: AvatarSex::Man, label: $label, file: concat!("models/avatar/characters/", $file) }
     };
-    let (body, outfit): (Option<&str>, Option<&str>) = match (appearance.sex, appearance.theme) {
-        (_, Casual) => (Some(base), None),
-        (Man, Peasant) => (Some(base), Some("models/avatar/outfits/Male_Peasant.gltf")),
-        (Woman, Peasant) => (Some(base), Some("models/avatar/outfits/Female_Peasant.gltf")),
-        (Man, Ranger) => (None, Some("models/avatar/outfits/Male_Ranger.gltf")),
-        (Woman, Ranger) => (None, Some("models/avatar/outfits/Female_Ranger.gltf")),
+}
+macro_rules! woman {
+    ($label:literal, $file:literal) => {
+        CharacterStyle { sex: AvatarSex::Woman, label: $label, file: concat!("models/avatar/characters/", $file) }
     };
-    // Keep only scenes that are actually on disk.
-    let body = body.filter(|s| avatar_asset_exists(s));
-    let outfit = outfit.filter(|s| avatar_asset_exists(s));
-    if body.is_none() && outfit.is_none() {
-        FOX_MODEL // assets not fetched
+}
+
+/// Catalog of Quaternius "Ultimate Modular" characters (CC0), grouped by sex in
+/// chooser-dropdown order. Add a row (and drop the glTF in) to expose a style.
+pub(crate) const CHARACTER_STYLES: &[CharacterStyle] = &[
+    man!("Casual", "Man_Casual.gltf"),
+    man!("Business", "Man_Suit.gltf"),
+    man!("Adventurer", "Man_Adventurer.gltf"),
+    man!("Worker", "Man_Worker.gltf"),
+    man!("Farmer", "Man_Farmer.gltf"),
+    man!("Beach", "Man_Beach.gltf"),
+    man!("King", "Man_King.gltf"),
+    man!("Space Suit", "Man_Spacesuit.gltf"),
+    man!("Swat", "Man_Swat.gltf"),
+    man!("Punk", "Man_Punk.gltf"),
+    woman!("Casual", "Woman_Casual.gltf"),
+    woman!("Business", "Woman_Suit.gltf"),
+    woman!("Formal", "Woman_Formal.gltf"),
+    woman!("Adventurer", "Woman_Adventurer.gltf"),
+    woman!("Worker", "Woman_Worker.gltf"),
+    woman!("Medieval", "Woman_Medieval.gltf"),
+    woman!("Sci-Fi", "Woman_SciFi.gltf"),
+    woman!("Soldier", "Woman_Soldier.gltf"),
+    woman!("Witch", "Woman_Witch.gltf"),
+    woman!("Punk", "Woman_Punk.gltf"),
+];
+
+/// Style labels available for a sex, in catalog order (drives the chooser dropdown).
+pub(crate) fn styles_for(sex: AvatarSex) -> impl Iterator<Item = &'static str> {
+    CHARACTER_STYLES
+        .iter()
+        .filter(move |c| c.sex == sex)
+        .map(|c| c.label)
+}
+
+/// Styles that contribute a wearable (non-weapon) accessory mesh — currently only
+/// the Adventurer's backpack. The chooser lists these (plus "None") for `sex`.
+const ACCESSORY_STYLES: &[(AvatarSex, &str)] = &[(AvatarSex::Man, "Adventurer")];
+
+pub(crate) fn accessory_styles_for(sex: AvatarSex) -> impl Iterator<Item = &'static str> {
+    ACCESSORY_STYLES
+        .iter()
+        .filter(move |(s, _)| *s == sex)
+        .map(|(_, label)| *label)
+}
+
+/// The character file for a (sex, style) that is present on disk, or `None`.
+fn style_file(sex: AvatarSex, style: &str) -> Option<&'static str> {
+    CHARACTER_STYLES
+        .iter()
+        .find(|c| c.sex == sex && c.label == style)
+        .map(|c| c.file)
+        .filter(|f| avatar_asset_exists(f))
+}
+
+/// Add `slot` to the holder group for `file` (creating it), if the file exists.
+fn add_slot(groups: &mut Vec<(&'static str, SlotMask)>, file: Option<&'static str>, slot: Slot) {
+    let Some(f) = file else { return };
+    match groups.iter_mut().find(|(g, _)| *g == f) {
+        Some((_, mask)) => mask.set(slot),
+        None => {
+            let mut mask = SlotMask::default();
+            mask.set(slot);
+            groups.push((f, mask));
+        }
+    }
+}
+
+/// Resolve an appearance into the holders to spawn: one per distinct character glTF
+/// used across the slots, each carrying the slots it contributes. A preset (all
+/// slots one style) collapses to a single holder. Falls back to the fox if none of
+/// the needed files are present.
+fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
+    let mut groups: Vec<(&'static str, SlotMask)> = Vec::new();
+    add_slot(&mut groups, style_file(a.sex, &a.head), Slot::Head);
+    add_slot(&mut groups, style_file(a.sex, &a.top), Slot::Top);
+    add_slot(&mut groups, style_file(a.sex, &a.legs), Slot::Legs);
+    add_slot(&mut groups, style_file(a.sex, &a.feet), Slot::Feet);
+    if let Some(acc) = &a.accessory {
+        add_slot(&mut groups, style_file(a.sex, acc), Slot::Accessory);
+    }
+    if groups.is_empty() {
+        vec![fox_holder()]
     } else {
-        humanoid(body, outfit)
+        groups
+            .into_iter()
+            .map(|(f, mask)| character_holder(f, mask))
+            .collect()
     }
 }
 
@@ -197,60 +327,63 @@ pub fn spawn_avatar(
         // The local player uses the chosen appearance; remotes use the default
         // until appearance is replicated over the wire (future protocol change).
         let appearance = if is_local {
-            store.data.appearance
+            store.data.appearance.clone()
         } else {
             AvatarAppearance::default()
         };
-        let model = resolve_avatar_model(appearance);
-
-        let (graph, indices) = AnimationGraph::from_clips([
-            asset_server.load(GltfAssetLabel::Animation(model.idle_ix).from_asset(model.anims)),
-            asset_server.load(GltfAssetLabel::Animation(model.run_ix).from_asset(model.anims)),
-            asset_server.load(GltfAssetLabel::Animation(model.fly_ix).from_asset(model.anims)),
-        ]);
-        let graph_handle = graphs.add(graph);
-        let anims = AvatarAnimations {
-            graph_handle,
-            idle_index: indices[0],
-            run_index: indices[1],
-            fly_index: indices[2],
-            speed: model.anim_speed,
-        };
+        let holders = resolve_avatar_holders(&appearance);
 
         // Scale lives with the model, not the spawn site. Set it before the scenes
         // instantiate (no mesh is attached yet) so they never flash at 1.0.
-        transform.scale = Vec3::splat(model.scale);
+        transform.scale = Vec3::splat(holders.first().map_or(1.0, |h| h.scale));
 
-        // The body and (optional) outfit are separate glTF scenes on the SAME rig.
-        // Each goes in its own child "holder" so a per-scene `WorldInstanceReady`
-        // observer only walks its own subtree when binding the shared UAL clips —
-        // otherwise the body's observer would wander into the outfit's skeleton.
-        // Both holders play the same graph, so body and clothing move in lockstep.
-        // `AvatarAnimations` is also kept on the avatar entity for the idle/run/fly
-        // driver (`update_avatar_animation`) to read the clip indices.
-        commands.entity(entity).insert((AvatarModelLoaded, anims.clone()));
-        if let Some(body) = model.body {
-            spawn_model_holder(&mut commands, &asset_server, entity, body, anims.clone());
+        // One child "holder" per distinct character glTF: it shows only its masked
+        // slots (the others are hidden on ready) and plays its own embedded clips.
+        // All holders play the identical clip set on the identical rig and are
+        // phase-locked by `sync_avatar_animations`, so a mixed head/body/legs moves
+        // as one. A representative `AvatarAnimations` is kept on the avatar entity so
+        // `update_avatar_animation` can read the (shared) clip indices.
+        commands.entity(entity).insert(AvatarModelLoaded);
+        let mut entity_anims: Option<AvatarAnimations> = None;
+        for h in &holders {
+            let (graph, indices) = AnimationGraph::from_clips([
+                asset_server.load(GltfAssetLabel::Animation(h.idle_ix).from_asset(h.anims)),
+                asset_server.load(GltfAssetLabel::Animation(h.run_ix).from_asset(h.anims)),
+                asset_server.load(GltfAssetLabel::Animation(h.fly_ix).from_asset(h.anims)),
+            ]);
+            let anims = AvatarAnimations {
+                graph_handle: graphs.add(graph),
+                idle_index: indices[0],
+                run_index: indices[1],
+                fly_index: indices[2],
+                speed: h.anim_speed,
+            };
+            if entity_anims.is_none() {
+                entity_anims = Some(anims.clone());
+            }
+            spawn_slot_holder(&mut commands, &asset_server, entity, h.scene, h.mask, anims);
         }
-        if let Some(outfit) = model.outfit {
-            spawn_model_holder(&mut commands, &asset_server, entity, outfit, anims);
+        if let Some(a) = entity_anims {
+            commands.entity(entity).insert(a);
         }
     }
 }
 
-/// Spawn one glTF scene as a child holder of `parent`, with its own animation
-/// data + ready observer. Identity transform, so it inherits the avatar's pose
-/// and scale exactly.
-fn spawn_model_holder(
+/// Spawn one character glTF as a child holder of `parent`, tagged with its slot
+/// mask + animation data + ready observer. Identity transform, so it inherits the
+/// avatar's pose and scale exactly.
+fn spawn_slot_holder(
     commands: &mut Commands,
     asset_server: &AssetServer,
     parent: Entity,
     scene: &'static str,
+    mask: SlotMask,
     anims: AvatarAnimations,
 ) {
     commands
         .spawn((
             anims,
+            mask,
             WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(scene))),
             Transform::default(),
             Visibility::default(),
@@ -270,16 +403,15 @@ pub fn respawn_avatar_on_appearance_change(
     children: Query<&Children>,
     avatars: Query<Entity, (With<Avatar>, With<AvatarModelLoaded>)>,
 ) {
-    let current = store.data.appearance;
-    match *last {
-        None => {
-            *last = Some(current);
-            return;
-        }
-        Some(prev) if prev == current => return,
-        _ => {}
+    let current = &store.data.appearance;
+    if last.as_ref() == Some(current) {
+        return;
     }
-    *last = Some(current);
+    let first_run = last.is_none();
+    *last = Some(current.clone());
+    if first_run {
+        return; // don't rebuild the just-spawned avatar on startup
+    }
     for entity in avatars.iter() {
         // Despawn the instantiated scene (all descendants), then drop the markers
         // and the scene root so `spawn_avatar` treats the entity as fresh.
@@ -295,6 +427,15 @@ pub fn respawn_avatar_on_appearance_change(
     }
 }
 
+/// Character-glTF accessory nodes to hide on spawn (weapons the avatar shouldn't
+/// carry). Matched against the glTF node name.
+fn is_weapon_node(name: &str) -> bool {
+    matches!(
+        name,
+        "Pistol" | "Sword" | "Rifle" | "Gun" | "Knife" | "Axe" | "Bow" | "Spear" | "Weapon"
+    )
+}
+
 /// glTF node name of the shared skeleton root in every Quaternius rig (base
 /// bodies, outfits, and the UAL animation library). It is the scene's top-level
 /// node, so the loader roots animation-target paths at it — see
@@ -306,6 +447,7 @@ pub fn play_avatar_animation_when_ready(
     mut commands: Commands,
     children: Query<&Children>,
     names: Query<&Name>,
+    masks: Query<&SlotMask>,
     animations_to_play: Query<&AvatarAnimations>,
     mut players: Query<&mut AnimationPlayer>,
 ) {
@@ -313,6 +455,20 @@ pub fn play_avatar_animation_when_ready(
     let Ok(anim) = animations_to_play.get(root) else {
         return;
     };
+
+    // Keep only this holder's masked slots visible, and always hide weapons (e.g.
+    // the Suit/Swat `Pistol`, Medieval `Sword`) — no business avatar brandishing a
+    // gun. Unslotted meshes (the fox) fall through and stay. `iter_descendants`
+    // walks the whole subtree; hiding a node hides its mesh children too.
+    let mask = masks.get(root).copied().unwrap_or(SlotMask::ALL);
+    for child in children.iter_descendants(root) {
+        let Ok(name) = names.get(child) else { continue };
+        let hide = is_weapon_node(name.as_str())
+            || classify_slot(name.as_str()).is_some_and(|s| !mask.shows(s));
+        if hide {
+            commands.entity(child).insert(Visibility::Hidden);
+        }
+    }
 
     // Case 1 — the model's own glTF embeds its clips (the fox), so Bevy already
     // spawned an `AnimationPlayer`. Play the idle clip on it directly.
@@ -427,6 +583,44 @@ pub fn update_avatar_animation(
         for child in children.iter_descendants(avatar_entity) {
             if let Ok(mut player) = players.get_mut(child) {
                 play_gait(&mut player, anim, gait);
+            }
+        }
+    }
+}
+
+/// Phase-lock a mixed avatar's per-slot holders: force every holder's active clips
+/// to the first holder's seek time, so a head from one style and a body from
+/// another (separate skeletons/players that started at slightly different frames)
+/// don't drift apart. No-op for a single-holder avatar (a preset or the fox).
+pub fn sync_avatar_animations(
+    avatars: Query<Entity, Or<(With<Avatar>, With<RemoteAvatar>)>>,
+    children: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    for avatar in avatars.iter() {
+        let holder_players: Vec<Entity> = children
+            .iter_descendants(avatar)
+            .filter(|&e| players.get(e).is_ok())
+            .collect();
+        if holder_players.len() < 2 {
+            continue;
+        }
+        let seeks: Vec<(AnimationNodeIndex, f32)> = {
+            let Ok(leader) = players.get(holder_players[0]) else {
+                continue;
+            };
+            leader
+                .playing_animations()
+                .map(|(&node, active)| (node, active.seek_time()))
+                .collect()
+        };
+        for &follower in &holder_players[1..] {
+            if let Ok(mut player) = players.get_mut(follower) {
+                for &(node, t) in &seeks {
+                    if let Some(active) = player.animation_mut(node) {
+                        active.seek_to(t);
+                    }
+                }
             }
         }
     }

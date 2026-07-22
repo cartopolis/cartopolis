@@ -12,38 +12,28 @@ curl -fsSL -o assets/models/animated/Fox.glb \
   https://raw.githubusercontent.com/bevyengine/bevy/main/assets/models/animated/Fox.glb
 ```
 
-## Avatar packs (`models/avatar/`) — not committed
+## Avatar characters (`models/avatar/characters/`) — not committed
 
-The player avatars use three **CC0** Quaternius packs (~119 MB total), gitignored
-and fetched by hand from itch.io (their download is JS-gated, so there's no direct
-`curl`). The avatar chooser falls back to the fox when they're absent, so the
-client still runs without them.
+The player avatars are **CC0** Quaternius *Ultimate Modular* characters, gitignored
+(~31 MB). Each is a self-contained glTF (embedded buffers + solid-colour materials)
+that includes its own 24-clip animation set — one complete, clothed, self-animated
+character per file. The chooser falls back to the fox when they're absent.
 
-Download the **glTF (Godot/UE)** exports of each and extract as shown:
+Files expected by `avatar::resolve_avatar_model` (style ∈ {Casual, Suit,
+Adventurer, Worker, Punk}):
 
-| Pack | itch.io | Extract into |
-|------|---------|--------------|
-| Universal Base Characters | <https://quaternius.itch.io/universal-base-characters> | `models/avatar/base/` |
-| Modular Character Outfits – Fantasy | <https://quaternius.itch.io/modular-character-outfits-fantasy> | `models/avatar/outfits/` |
-| Universal Animation Library | <https://quaternius.itch.io/universal-animation-library> | `models/avatar/anims/` |
-
-Flatten each pack's glTF folder into the target dir (the `.gltf` reference their
-`.bin`/textures by bare filename), e.g.:
-
-```bash
-unzip -j 'Universal Base Characters[Standard].zip' \
-  'Universal Base Characters\[Standard\]/Base Characters/Godot - UE/*' \
-  -d assets/models/avatar/base
-unzip -j 'Modular Character Outfits - Fantasy[Standard].zip' \
-  'Modular Character Outfits - Fantasy\[Standard\]/Exports/glTF (Godot-Unreal)/Outfits/*' \
-  -d assets/models/avatar/outfits
-unzip -j 'Universal Animation Library[Standard].zip' \
-  'Universal Animation Library\[Standard\]/Unreal-Godot/UAL1_Standard.glb' \
-  -d assets/models/avatar/anims
+```
+models/avatar/characters/{Man,Woman}_{Casual,Suit,Adventurer,Worker,Punk}.gltf
 ```
 
-The expected files (see `avatar::resolve_avatar_model`): bodies
-`base/Superhero_{Male,Female}_FullBody.gltf`; outfits
-`outfits/{Male,Female}_{Peasant,Ranger}.gltf`; clips `anims/UAL1_Standard.glb`.
-All three packs share one `Armature → root → pelvis` rig, so the UAL clips drive
-the bodies and outfits (see `avatar::bind_external_animations`).
+Source (Quaternius, CC0): *Ultimate Modular Men* and *Ultimate Modular Women* →
+`Individual Characters/glTF/`. Download those glTFs and rename to `Man_<Style>` /
+`Woman_<Style>` (the men's "Casual Hoodie" is used for `Man_Casual`). More styles
+exist in the packs (Adventurer, King, Punk, Space Suit, Swat, Farmer, Beach /
+Formal, Medieval, SciFi, Soldier, Witch …) — add a `ClothingTheme` variant + a
+`resolve_avatar_model` arm to expose them.
+
+> The earlier approach (Universal Base Characters + Modular Character Outfits –
+> Fantasy + Universal Animation Library, under `base/`, `outfits/`, `anims/`) is
+> retired — the free base pack only shipped the broad *Superhero* body, which
+> poked out of the Regular-sized outfits. Those dirs, if present, are unused.
