@@ -1,0 +1,94 @@
+name: Release
+
+# Native Linux (x86_64) build, published as a downloadable tarball on a Forgejo
+# release. Two ways in:
+#   1. push a tag  v*        -> a versioned release for that tag
+#   2. manual "Run workflow" -> the rolling `continuous` prerelease (asset is
+#                               replaced each run, so exactly one lives at a time)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    container:
+      image: viberfox-ci:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          # Release profile (fat LTO) artifacts are distinct from the CI debug cache.
+          key: release
+
+      - name: Build release binary
+        run: cargo build -p viberfox --release
+
+      - name: Package tarball (binary + assets)
+        run: |
+          set -euo pipefail
+          PKG=viberfox-linux-x86_64
+          rm -rf "$PKG" dist && mkdir -p "$PKG" dist
+          cp target/release/viberfox "$PKG/"
+          cp -r assets "$PKG/"
+          [ -f README.md ] && cp README.md "$PKG/" || true
+          cat > "$PKG/run.sh" <<'SH'
+          #!/usr/bin/env bash
+          # Run viberfox from its own directory so it finds ./assets.
+          cd "$(dirname "$0")"
+          exec ./viberfox "$@"
+          SH
+          chmod +x "$PKG/run.sh"
+          tar -czf "dist/$PKG.tar.gz" "$PKG"
+          ( cd dist && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
+          ls -la dist
+
+      - name: Publish to Forgejo release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          PAGE: ${{ github.server_url }}/${{ github.repository }}/releases
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          auth="Authorization: token $TOKEN"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"; PRE=false; TITLE="$GITHUB_REF_NAME"
+          else
+            TAG=continuous; PRE=true; TITLE="Continuous build (latest main)"
+          fi
+          echo "Publishing tag=$TAG prerelease=$PRE"
+
+          # Look up an existing release for this tag.
+          rid=$(curl -s -H "$auth" "$API/releases/tags/$TAG" | jq -r '.id // empty')
+
+          # Rolling `continuous`: drop the old release + tag so it re-points to HEAD.
+          if [ "$TAG" = continuous ] && [ -n "$rid" ]; then
+            curl -s -X DELETE -H "$auth" "$API/releases/$rid" || true
+            curl -s -X DELETE -H "$auth" "$API/tags/$TAG" || true
+            rid=""
+          fi
+
+          # Create the release if it doesn't exist yet.
+          if [ -z "$rid" ]; then
+            body=$(jq -n --arg tag "$TAG" --arg name "$TITLE" --arg sha "$SHA" --argjson pre "$PRE" \
+              '{tag_name:$tag, name:$name, target_commitish:$sha, prerelease:$pre, draft:false}')
+            rid=$(curl -sf -X POST -H "$auth" -H "Content-Type: application/json" -d "$body" "$API/releases" | jq -r '.id')
+          fi
+          echo "release id: $rid"
+
+          # Upload assets, replacing any same-named asset (idempotent re-runs).
+          for f in dist/*; do
+            name=$(basename "$f")
+            old=$(curl -s -H "$auth" "$API/releases/$rid/assets" | jq -r ".[] | select(.name==\"$name\") | .id")
+            [ -n "$old" ] && curl -s -X DELETE -H "$auth" "$API/releases/$rid/assets/$old" >/dev/null || true
+            curl -sf -X POST -H "$auth" -F "attachment=@$f;filename=$name" "$API/releases/$rid/assets?name=$name" >/dev/null
+            echo "uploaded $name"
+          done
+          echo "Done -> $PAGE/tag/$TAG"
