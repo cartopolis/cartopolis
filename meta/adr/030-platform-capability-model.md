@@ -1,8 +1,8 @@
-# ADR-029: Platform Capability Model (Substitutable Providers + Additive Plugins)
+# ADR-030: Platform Capability Model (Substitutable Providers + Additive Plugins)
 
 ---
 **Metadata:**
-- **ID**: ADR-029
+- **ID**: ADR-030
 - **Status**: Proposed
 - **Date**: 2026-07-22
 - **Tags**: [architecture, platform, wasm, web, capabilities, portability, plugins]

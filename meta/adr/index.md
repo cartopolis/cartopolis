@@ -31,4 +31,5 @@
 | [027](./027-3dbag-buildings.md) | Self-Hosted 3DBAG Buildings for Covered Areas | Accepted | buildings, osm, 3dbag, rendering, import, dependency, ops |
 | [028](./028-proximity-chat.md) | Proximity Chat with Place-Derived Channels | Proposed | chat, social, geo, places, protocol, networking, privacy, persistence |
 | [029](./029-geo-anchored-prim-storage.md) | Geo-Anchored Prim Storage | Proposed | prims, coordinates, storage, protocol, precision, large-world, persistence |
-| [029](./029-platform-capability-model.md) | Platform Capability Model (Substitutable Providers + Additive Plugins) | Proposed | architecture, platform, wasm, web, capabilities, portability, plugins |
+| [030](./030-platform-capability-model.md) | Platform Capability Model (Substitutable Providers + Additive Plugins) | Proposed | architecture, platform, wasm, web, capabilities, portability, plugins |
+| [031](./031-layered-access-model.md) | Layered Access Model (Anonymous Viewer → Login → ACL Layers) | Proposed | architecture, layers, session, auth, authz, acl, viewer, entitlements |

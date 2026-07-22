@@ -79,7 +79,10 @@ impl SimWorld {
         self.avatars.insert(
             id,
             AvatarSim {
-                position: start + Vec3::new(0.0, 1.0, 0.0),
+                // Feet on the ground: the client avatar models are authored with
+                // their origin at the feet, so the standing height is y=0 (the sim
+                // clamps y>=0 below). The old +1.0 floated the humanoids a metre up.
+                position: start,
                 // Match client tank convention: yaw π ↔ tank 0 ↔ travel −Z when pressing W.
                 yaw: std::f32::consts::PI,
                 velocity: Vec3::ZERO,
@@ -121,18 +124,25 @@ impl SimWorld {
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
-        let speed = 8.0_f32;
+        // Horizontal speed is the intent *magnitude* scaled by the walk speed,
+        // capped. A grounded client sends a unit wish-dir (→ WALK_SPEED); a flying
+        // client sends a larger magnitude (→ up to MAX_SPEED) so flying traverses
+        // faster without a separate protocol field.
+        const WALK_SPEED: f32 = 8.0;
+        const MAX_SPEED: f32 = 32.0;
         let mut v = Vec3::new(move_x, 0.0, move_z);
-        if v.length_squared() > 1.0 {
-            v = v.normalize() * speed;
+        let mag = v.length();
+        if mag > 1e-4 {
+            v = v / mag * (mag * WALK_SPEED).min(MAX_SPEED);
         } else {
-            v *= speed;
+            v = Vec3::ZERO;
         }
         av.velocity.x = v.x;
         av.velocity.z = v.z;
         // Always apply facing so remotes see orbit-camera rotation while idle (not only when moving).
         av.yaw = snap_yaw_continuation(av.yaw, display_yaw);
-        let fly_speed = 5.0_f32;
+        // Vertical (Space/Shift) is quicker while flying so ascents aren't sluggish.
+        let fly_speed = 12.0_f32;
         av.fly_vertical = if fly_up {
             fly_speed
         } else if fly_down {

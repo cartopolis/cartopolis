@@ -96,6 +96,12 @@ const MIN_CAMERA_HEIGHT: f32 = 0.5;
 // ── Earth (orbit) mode tuning ───────────────────────────────────────────────
 /// Closest the orbit camera may sit to its ground focus (metres).
 const ORBIT_MIN_DISTANCE: f64 = 15.0;
+/// Third-person follow-camera zoom range (metres from the ~1.8 m avatar). Min lets
+/// you get close; max keeps the avatar readable rather than a distant speck.
+const AVATAR_CAM_MIN: f32 = 1.5;
+const AVATAR_CAM_MAX: f32 = 25.0;
+/// Default follow distance — a comfortable third-person framing of the avatar.
+pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
 /// exponential so the step scales with altitude, like Google Earth. Kept gentle —
 /// the glide (`ZOOM_GLIDE_RATE`) supplies the sense of speed, so per-notch this
@@ -298,7 +304,7 @@ pub fn setup_camera(
     dev: Res<crate::resources::DevPanelState>,
 ) {
     camera_state.mode = CameraMode::Avatar;
-    camera_state.distance = 5.0;
+    camera_state.distance = AVATAR_CAM_DEFAULT;
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
 
@@ -421,31 +427,48 @@ pub fn setup_camera(
     }
 }
 
+/// Arm the per-mode entry behaviour when switching *into* `next`. Called from both
+/// the Tab cycle and the Camera menu so the two paths stay identical:
+/// - **Follow** snaps onto the avatar next frame (reposition reliably).
+/// - **Fly** restores its last saved pose, or seeds the look from the live view if
+///   it has none yet.
+/// - **Earth** restores its remembered pose if it has one, else seeds from the view.
+///
+/// The camera transform itself is untouched here — `camera_controls` does the
+/// placement — so this only flips the intent flags in [`CameraState`].
+pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
+    match next {
+        CameraMode::Avatar => camera_state.avatar_initialized = false,
+        CameraMode::Free => camera_state.free_initialized = false,
+        CameraMode::Orbit => camera_state.orbit_initialized = camera_state.orbit_has_pose,
+    }
+}
+
 pub fn camera_mode_toggle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut camera_state: ResMut<CameraState>,
-    camera_query: Query<&Transform, With<FreeCamera>>,
+    avatars: Query<(), With<crate::components::Avatar>>,
 ) {
-    if keyboard_input.just_pressed(KeyCode::Tab) {
-        // Cycle Avatar → Free → Earth (orbit) → Avatar.
-        camera_state.mode = match camera_state.mode {
-            CameraMode::Avatar => {
-                // Initialize free camera rotation from current camera orientation
-                if let Ok(camera_transform) = camera_query.single() {
-                    let euler = camera_transform.rotation.to_euler(EulerRot::YXZ);
-                    camera_state.free_camera_rotation = Vec2::new(euler.1, euler.0);
-                }
-                CameraMode::Free
-            }
-            CameraMode::Free => {
-                // Re-seed the orbit focus from the current view next frame.
-                camera_state.orbit_initialized = false;
-                CameraMode::Orbit
-            }
-            CameraMode::Orbit => CameraMode::Avatar,
-        };
-        println!("Camera mode: {:?}", camera_state.mode);
+    // Follow (Avatar) is avatar-only — it exists only in the logged-in viewer that
+    // has a local avatar. In anonymous mode there is none, so never offer or remain
+    // in Follow; Fly and Earth stay available.
+    let has_avatar = !avatars.is_empty();
+    if !has_avatar && camera_state.mode == CameraMode::Avatar {
+        camera_state.mode = CameraMode::Free;
     }
+    if !keyboard_input.just_pressed(KeyCode::Tab) {
+        return;
+    }
+    // Cycle Follow → Fly → Earth → Follow, skipping Follow when there's no avatar.
+    let next = match camera_state.mode {
+        CameraMode::Avatar => CameraMode::Free,
+        CameraMode::Free => CameraMode::Orbit,
+        CameraMode::Orbit if has_avatar => CameraMode::Avatar,
+        CameraMode::Orbit => CameraMode::Free,
+    };
+    enter_mode(&mut camera_state, next);
+    camera_state.mode = next;
+    println!("Camera mode: {:?}", camera_state.mode);
 }
 
 pub fn camera_controls(
@@ -465,6 +488,10 @@ pub fn camera_controls(
     // Read-only view of the same camera for viewport→ray conversion (disjoint
     // components from the mutable query above).
     cam_render: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
+    // Follow mode places the camera in the avatar's `GridCell` (its
+    // `display_position` is cell-local). `Without<FreeCamera>` proves disjoint
+    // access from the mutable camera query's `&mut GridCell`.
+    avatar_cells: Query<&GridCell, (With<crate::components::Avatar>, Without<FreeCamera>)>,
 ) {
     if camera_query.is_empty() {
         return;
@@ -497,11 +524,17 @@ pub fn camera_controls(
             // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
             let avatar_pos = avatar_state.display_position;
 
-            // Handle mouse wheel zoom
+            // Proportional wheel zoom by notch *sign* — robust to line- vs
+            // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
+            // others; scaling it directly made one notch jump tens of metres). Sane
+            // range for a ~1.8 m avatar; scroll in/out from the default.
             for event in mouse_wheel_events.read() {
-                camera_state.distance += event.y * 0.1;
-                camera_state.distance = camera_state.distance.max(2.0).min(100.0);
+                if event.y != 0.0 {
+                    let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
+                    camera_state.distance *= factor;
+                }
             }
+            camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
 
             // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
             let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
@@ -547,19 +580,55 @@ pub fn camera_controls(
                 target_position.y = min_height;
             }
 
-            // Framerate-independent smoothing so orbit matches the follow target
-            let cam_alpha = 1.0 - (-12.0_f32 * delta_time).exp();
-            camera_transform.translation = camera_transform.translation.lerp(target_position, cam_alpha);
-            // Snap once essentially settled: the lerp only approaches the target
-            // asymptotically, so without this the transform (and thus the whole-scene
-            // propagation) would keep changing by a hair forever while standing still.
-            if camera_transform.translation.distance_squared(target_position) < 1e-6 {
-                camera_transform.translation = target_position;
-            }
-            camera_transform.look_at(avatar_pos + Vec3::Y * 1.5, Vec3::Y);
+            // Place the rig in *absolute* space rather than lerping the raw
+            // `Transform.translation`. The avatar's `display_position` is local to
+            // the avatar's `GridCell`; the camera, being the big_space floating
+            // origin, can sit in a completely different cell (Orbit pushes it far).
+            // Working through world metres — pivot the follow on the avatar's cell,
+            // split the result back to a cell — is what makes "switch back to
+            // Follow" reliably re-frame the avatar instead of stranding the camera a
+            // grid cell away (the old code only rewrote `translation`, never the
+            // cell). geo_nav's teleport uses the same avatar-cell convention.
+            let avatar_cell = avatar_cells.single().copied().unwrap_or(prev_cell);
+            let avatar_origin = cell_origin(&avatar_cell);
+            let target_world = avatar_origin + target_position.as_dvec3();
+            let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
+            let new_world = if camera_state.avatar_initialized {
+                // Framerate-independent follow smoothing, in world space.
+                let cam_alpha = 1.0 - (-12.0_f32 * delta_time).exp();
+                let w = cam_world.lerp(target_world, cam_alpha as f64);
+                // Snap once essentially settled, else the floating origin (and the
+                // whole-scene propagation) keeps changing by a hair while standing.
+                if w.distance_squared(target_world) < 1e-6 { target_world } else { w }
+            } else {
+                // Entering Follow: snap straight onto the avatar (the reposition).
+                camera_state.avatar_initialized = true;
+                target_world
+            };
+            let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+            let (new_cell, local) = grid.translation_to_grid(new_world);
+            camera_cell = new_cell;
+            camera_transform.translation = local;
+            let look_world = avatar_origin + (avatar_pos + Vec3::Y * 1.5).as_dvec3();
+            camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
         }
         CameraMode::Free => {
             // Free camera mode - simple FPS style
+            // On entry, either restore the last fly pose (return to where you left
+            // Fly, since Orbit/Follow clobber the shared camera transform) or, the
+            // first time ever, keep the current position and seed the look from the
+            // live view so there's no jump.
+            if !camera_state.free_initialized {
+                if let Some((cell, translation, rotation)) = camera_state.free_saved {
+                    camera_cell = cell;
+                    camera_transform.translation = translation;
+                    camera_state.free_camera_rotation = rotation;
+                } else {
+                    let euler = camera_transform.rotation.to_euler(EulerRot::YXZ);
+                    camera_state.free_camera_rotation = Vec2::new(euler.1, euler.0);
+                }
+                camera_state.free_initialized = true;
+            }
             let mut rotation_delta = Vec2::ZERO;
 
             // Mouse look (left mouse button — right is reserved for context menu).
@@ -667,6 +736,10 @@ pub fn camera_controls(
             if camera_transform.translation.y < min_height {
                 camera_transform.translation.y = min_height;
             }
+
+            // Remember this pose so re-entering Fly returns here.
+            camera_state.free_saved =
+                Some((camera_cell, camera_transform.translation, camera_state.free_camera_rotation));
         }
         CameraMode::Orbit => {
             // "Earth" mode: a Google-Earth-style orbit. Near the ground it pivots
@@ -1063,6 +1136,10 @@ pub fn camera_controls(
             camera_transform.translation = local;
             let pivot_local = (pivot - cell_origin(&new_cell)).as_vec3();
             camera_transform.look_at(pivot_local, look_up);
+
+            // Earth now holds a real pose; re-entering restores it instead of
+            // reseeding from the current view (see `enter_mode`).
+            camera_state.orbit_has_pose = true;
         }
     }
 

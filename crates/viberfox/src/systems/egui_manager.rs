@@ -82,12 +82,18 @@ impl EguiManager {
     /// is open, or a Ctrl chord is held (e.g. Ctrl+Shift+A toggling the AI panel).
     /// Pass `edit_dialog_open = false` for actions that should stay live while editing
     /// a prim (e.g. the gizmo Move/Rotate/Scale keys).
+    ///
+    /// Uses `text_edit_focused()`, NOT `egui_wants_keyboard_input()`: the latter is
+    /// `memory.focused().is_some()`, i.e. true whenever *any* widget has focus — so a
+    /// button/selectable in a window (e.g. the avatar chooser) kept focus after a
+    /// click and swallowed WASD **and Space** (avatar movement + fly). We only want
+    /// to yield the keyboard when text is actually being typed.
     pub fn ui_owns_keyboard(
         &self,
         edit_dialog_open: bool,
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
-        self.ctx.egui_wants_keyboard_input()
+        self.ctx.text_edit_focused()
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)

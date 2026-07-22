@@ -21,6 +21,11 @@ bevy = { version = "0.19", default-features = false, features = [
     # without it, spawning panics on the first unregistered component type.
     "reflect_auto_register",
     "bevy_animation",
+    # `bevy_animation` only enables the animation crate; the glTF *loader's*
+    # clip parsing is behind bevy_gltf's own `bevy_animation` feature, wired via
+    # this umbrella feature. Without it `GltfAssetLabel::Animation(n)` loads zero
+    # `AnimationClip`s and every glТF (fox + Quaternius avatars) stays in rest pose.
+    "gltf_animation",
     "async_executor",
     "bevy_asset",
     "bevy_core_pipeline",

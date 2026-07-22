@@ -193,11 +193,17 @@ pub fn render_bookmarks_panel(
                                     ))
                                     .clicked()
                                 {
+                                    // Keep the *current* camera mode and move it to
+                                    // the bookmark's spot, rather than snapping back
+                                    // to the mode the bookmark was saved in (`pose:
+                                    // None` skips `CameraPose::apply`, so
+                                    // `apply_teleport` repositions the mode you're in
+                                    // — in Follow that means the avatar walks there).
                                     teleport = Some(Teleport {
                                         lat: b.lat,
                                         lng: b.lng,
                                         altitude: Some(b.altitude),
-                                        pose: Some(b.pose.clone()),
+                                        pose: None,
                                     });
                                 }
                                 ui.with_layout(

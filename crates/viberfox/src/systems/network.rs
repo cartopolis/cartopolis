@@ -599,10 +599,15 @@ pub fn create_egui_texture_handles(
     }
 }
 
+/// Wish-dir magnitude sent while flying: the sim reads magnitude as a speed
+/// scalar (capped), so flying traverses this many times faster than walking.
+const FLY_MOVE_MULT: f32 = 4.0;
+
 pub fn send_network_intent(
     online: Option<Res<OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     camera_state: Res<crate::resources::CameraState>,
+    avatar_state: Res<AvatarState>,
     egui_manager: Res<super::egui_manager::EguiManager>,
     edit_dialog: Res<crate::resources::EditDialogState>,
 ) {
@@ -631,7 +636,12 @@ pub fn send_network_intent(
             || keyboard_input.pressed(KeyCode::ShiftRight));
 
     let az = camera_state.azimuth;
-    let v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    let mut v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    // Flying sends a larger magnitude so the sim moves the avatar faster (see
+    // `FLY_MOVE_MULT` / `apply_intent`). Grounded stays a unit wish-dir.
+    if avatar_state.is_flying {
+        v *= FLY_MOVE_MULT;
+    }
     let display_yaw = avatar_facing_yaw_from_camera(az);
 
     let _ = sess.intent_tx.send(NetMessage::ClientIntent {

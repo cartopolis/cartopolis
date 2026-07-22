@@ -26,7 +26,8 @@ mod utils;
 
 use components::Avatar;
 use resources::{
-    AiAssistantState, AiConfig, AuthIdentity, AvatarState, CameraState, ConnectAddr, ConnectAuth,
+    AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
+    ConnectAddr, ConnectAuth,
     ContextMenuState, Database, DevPanelState, EditDialogState, GameState, LocalAvatarSimId,
     MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
 };
@@ -98,6 +99,11 @@ struct Cli {
     /// how much of a washed-out frame is the fog and how much is the lighting.
     #[arg(long, value_name = "DENSITY")]
     fog: Option<f32>,
+
+    /// Cloud coverage to start at (0–1): fraction of the sky the procedural
+    /// cloud deck fills. 0 = clear sky. Handy for A/B'ing weather in `--shot`.
+    #[arg(long, value_name = "COVERAGE")]
+    clouds: Option<f32>,
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -250,6 +256,7 @@ fn main() {
     .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
     .add_plugins(MaterialPlugin::<MoonMaterial>::default())
     .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
+    .add_plugins(MaterialPlugin::<CloudMaterial>::default())
     .init_resource::<GameState>()
     .init_resource::<AvatarState>()
     .init_resource::<LocalAvatarSimId>()
@@ -271,9 +278,11 @@ fn main() {
             .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
     })
     .init_resource::<AiAssistantState>()
+    .init_resource::<AvatarChooserState>()
     .insert_resource(DevPanelState {
         time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
         fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
+        cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),
         ..default()
     })
     .init_resource::<StatsState>()
@@ -387,6 +396,7 @@ fn main() {
             setup_stars,
             setup_moon,
             setup_horizon_haze,
+            setup_clouds,
         ),
     )
     .add_systems(
@@ -515,6 +525,7 @@ fn main() {
             // camera cell (correct sky altitude in every tier — see its doc).
             systems::globe::update_atmosphere_origin
                 .after(systems::free_camera::camera_controls),
+            avatar::respawn_avatar_on_appearance_change.before(avatar::spawn_avatar),
             avatar::spawn_avatar,
             avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
@@ -562,6 +573,7 @@ fn main() {
             (
                 systems::ui::render_dev_panel,
                 systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
+                systems::ui::render_avatar_chooser.after(systems::ui::render_menu_bar),
             ),
             systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
             // The right-hand panels draw into the shared root `Ui`, so their call
@@ -597,7 +609,10 @@ fn main() {
             // Track the camera after it has been positioned this frame.
             update_star_sky.after(systems::free_camera::camera_controls),
             update_moon.after(systems::free_camera::camera_controls),
-            update_horizon_haze.after(systems::free_camera::camera_controls),
+            (
+                update_horizon_haze.after(systems::free_camera::camera_controls),
+                update_clouds.after(systems::free_camera::camera_controls),
+            ),
             systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
                 .after(systems::ai_assistant::render_ai_panel),
@@ -1818,5 +1833,169 @@ fn update_star_sky(
             space_shell.is_some() as u32 as f32,
             0.0,
         );
+    }
+}
+
+/// Marker for the procedural cloud-ceiling shell (see `shaders/clouds.wgsl`).
+#[derive(Component)]
+struct Clouds;
+
+/// Height of the cloud layer above the camera, in metres — a mid-level deck.
+const CLOUD_LAYER_HEIGHT: f32 = 2_500.0;
+/// Overall cloud opacity before the coverage/altitude/space fades.
+const CLOUD_OPACITY: f32 = 0.92;
+/// Edge softness of the coverage cutoff (0 = hard, higher = wispier margins).
+const CLOUD_SOFTNESS: f32 = 0.18;
+/// Wind velocity in the shader's UV units per second (drifts the deck).
+const CLOUD_WIND: Vec2 = Vec2::new(0.004, 0.0015);
+/// Clouds are at full strength up to this camera altitude, then fade out so a
+/// high flight or orbit view sees clear sky (the shell is a ceiling seen from
+/// below; flying *above* the deck to look down on the tops is a follow-up).
+const CLOUD_FADE_LOW: f32 = 2_000.0;
+/// Camera altitude past which the cloud deck has fully faded out.
+const CLOUD_FADE_HIGH: f32 = 9_000.0;
+
+/// Camera-centred procedural cloud ceiling, alpha-blended over the sky. Coverage
+/// is driven by the dev panel (`DevPanelState::cloud_cover`); lit/shadow colours
+/// track the day/night cycle so the deck matches the sun (see `update_clouds`).
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct CloudMaterial {
+    /// x: coverage 0–1, y: softness, z: time (wind clock), w: layer height (m).
+    #[uniform(0)]
+    params0: Vec4,
+    /// xy: wind velocity, z: space fade (1 = hidden), w: altitude fade.
+    #[uniform(1)]
+    params1: Vec4,
+    /// World direction to the sun (for the self-shadow tap).
+    #[uniform(2)]
+    sun_dir: Vec4,
+    /// Sunlit cloud-top colour; alpha carries the overall opacity.
+    #[uniform(3)]
+    lit_color: LinearRgba,
+    /// Shadowed underside colour.
+    #[uniform(4)]
+    shadow_color: LinearRgba,
+}
+
+impl Material for CloudMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/clouds.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Camera is inside the shell; draw its interior and don't occlude the
+        // world behind it (depth test still lets geometry cover the clouds).
+        descriptor.primitive.cull_mode = None;
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
+}
+
+/// Spawns the cloud shell (mirrors `setup_horizon_haze`). `VIBERFOX_NO_CLOUDS`
+/// leaves it out for bisecting a render problem with `--shot`.
+fn setup_clouds(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<CloudMaterial>>,
+) {
+    if env_flag("VIBERFOX_NO_CLOUDS") {
+        return;
+    }
+    let mesh = meshes.add(Cuboid::from_length(360_000.0).mesh());
+    let material = materials.add(CloudMaterial {
+        params0: Vec4::ZERO, // set each frame from the dev panel
+        params1: Vec4::ZERO,
+        sun_dir: Vec4::Y,
+        lit_color: LinearRgba::WHITE,
+        shadow_color: LinearRgba::BLACK,
+    });
+    commands.spawn((
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        Transform::default(),
+        bevy::light::NotShadowCaster,
+        bevy::light::NotShadowReceiver,
+        Clouds,
+    ));
+}
+
+/// Keeps the cloud shell centred on the camera, drives coverage from the dev
+/// panel and lit/shadow colours from the day/night cycle, and fades the deck out
+/// with altitude (high flight / orbit) and the space tier.
+#[allow(clippy::type_complexity)]
+fn update_clouds(
+    dev: Res<DevPanelState>,
+    time: Res<Time>,
+    globe: Res<systems::globe::GlobeState>,
+    camera: Query<
+        (&GridCell, &GlobalTransform, &Transform),
+        (With<Camera3d>, Without<Clouds>),
+    >,
+    mut clouds: Query<
+        (&mut Transform, &mut Visibility, &MeshMaterial3d<CloudMaterial>),
+        With<Clouds>,
+    >,
+    mut materials: ResMut<Assets<CloudMaterial>>,
+) {
+    let Ok((cell, cam, cam_local)) = camera.single() else {
+        return;
+    };
+    let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
+        return;
+    };
+    tf.translation = cam.translation();
+
+    let altitude = globe.altitude_m(cell, cam_local) as f32;
+    let alt_fade = (1.0
+        - ((altitude - CLOUD_FADE_LOW) / (CLOUD_FADE_HIGH - CLOUD_FADE_LOW)))
+        .clamp(0.0, 1.0);
+    let space = globe.space_factor(cell, cam_local);
+
+    // Drop the shell out of the frame entirely once it carries no cloud, rather
+    // than blending a fully transparent 360 km box over the whole view.
+    let want = if dev.cloud_cover <= 0.0 || alt_fade <= 0.0 || space >= 1.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
+
+    // Lit tops and shadowed undersides track the day/night cycle: sun-tinted and
+    // bright by day, deep blue-grey at night (the deck goes with the sky).
+    let day = utils::sun::daylight(dev.time_of_day);
+    let (sun_c, _) = sun_light(dev.time_of_day, dev.fog_density);
+    let sun_v = LinearRgba::from(sun_c).to_vec4();
+    let day_lit = Vec4::splat(1.0).lerp(sun_v, 0.5);
+    let night_lit = Vec4::new(0.06, 0.08, 0.13, 1.0);
+    let mut lit = night_lit.lerp(day_lit, day);
+    lit.w = CLOUD_OPACITY;
+    let day_shadow = Vec4::new(0.45, 0.50, 0.60, 1.0).lerp(sun_v, 0.2);
+    let night_shadow = Vec4::new(0.02, 0.03, 0.06, 1.0);
+    let shadow = night_shadow.lerp(day_shadow, day);
+
+    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+        mat.params0 = Vec4::new(
+            dev.cloud_cover,
+            CLOUD_SOFTNESS,
+            time.elapsed_secs(),
+            CLOUD_LAYER_HEIGHT,
+        );
+        mat.params1 = Vec4::new(CLOUD_WIND.x, CLOUD_WIND.y, space, alt_fade);
+        mat.sun_dir = sun_direction(dev.time_of_day).extend(0.0);
+        mat.lit_color = LinearRgba::from_vec4(lit);
+        mat.shadow_color = LinearRgba::from_vec4(shadow);
     }
 }

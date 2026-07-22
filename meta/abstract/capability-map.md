@@ -18,7 +18,8 @@ Themes connect **vision goals** to **ADRs**. Rows **without** ADRs are **intenti
 | Persistence & migrations | G-01, G-02 | P0 | R2+ | partial | 002, 013 | |
 | Runtime & ops | P-03 | P1 | R2 | partial | 014 | |
 | Workspace boundaries | P-05 | P0 | R2 | partial | 015 | |
-| Platform portability & web target | G-02, G-03, P-05 | P1 | R2 | proposed | 029 | Substitutable providers + additive plugins; wasm online-only |
+| Platform portability & web target | G-02, G-03, P-05 | P1 | R2 | proposed | 030 | Substitutable providers + additive plugins; wasm online-only |
+| Layered access & entitlements | G-04, G-02, G-05, P-04 | P1 | R2 | proposed | 031 | Anonymous viewer → login (sim layer) → ACL layers; server-enforced |
 | Rendering & client UX | G-01, G-03 | P2 | R2 | partial | 001, 003, 005 | |
 | Asset pipeline & storage | G-01, G-05 | P0 | R2+ | gap | — | Add ADR(s) per roadmap before rich assets |
 | AuthN | G-05, P-04 | P0 | R2+ | partial | 016 | Session / identity; authorization in a later ADR |

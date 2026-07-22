@@ -21,14 +21,17 @@ pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
     mut ai_state: ResMut<AiAssistantState>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
+    mut avatar_chooser: ResMut<crate::resources::AvatarChooserState>,
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut camera_state: ResMut<crate::resources::CameraState>,
-    camera: Query<&Transform, With<crate::systems::free_camera::FreeCamera>>,
+    avatars: Query<(), With<crate::components::Avatar>>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut app_exit: MessageWriter<AppExit>,
 ) {
+    // Follow is avatar-only (logged-in viewer); greyed out in anonymous mode.
+    let has_avatar = !avatars.is_empty();
     let ui_root = egui.ui_mut();
     // Symmetric top/bottom margin makes the panel size to its content with equal
     // padding above and below, so the row is vertically centred (unlike
@@ -67,6 +70,16 @@ pub fn render_menu_bar(
                     dev_state.open = !dev_state.open;
                     ui.close();
                 }
+                let avatar_label = if avatar_chooser.open {
+                    "Hide Avatar Chooser"
+                } else {
+                    "Choose Avatar…"
+                };
+                if ui.button(avatar_label).clicked() {
+                    avatar_chooser.open = !avatar_chooser.open;
+                    avatar_chooser.seeded = false; // re-seed the draft on next open
+                    ui.close();
+                }
             });
             // Camera mode picker (also cyclable with Tab).
             {
@@ -83,7 +96,15 @@ pub fn render_menu_bar(
                         (CameraMode::Free, "Fly (free camera)"),
                         (CameraMode::Orbit, "Earth (orbit the globe)"),
                     ] {
-                        if ui.selectable_label(camera_state.mode == mode, name).clicked() {
+                        // Follow needs an avatar (logged-in viewer only).
+                        let enabled = has_avatar || mode != CameraMode::Avatar;
+                        let mut clicked = false;
+                        ui.add_enabled_ui(enabled, |ui| {
+                            clicked = ui
+                                .selectable_label(camera_state.mode == mode, name)
+                                .clicked();
+                        });
+                        if clicked {
                             pick = Some(mode);
                         }
                     }
@@ -95,22 +116,9 @@ pub fn render_menu_bar(
                             whole_earth = true;
                         }
                     }
-                    ui.separator();
-                    ui.weak("Tab cycles modes · scroll to zoom");
-
                     if let Some(mode) = pick {
-                        match mode {
-                            // Seed fly rotation from the live view, as Tab does.
-                            CameraMode::Free => {
-                                if let Ok(tf) = camera.single() {
-                                    let e = tf.rotation.to_euler(EulerRot::YXZ);
-                                    camera_state.free_camera_rotation = Vec2::new(e.1, e.0);
-                                }
-                            }
-                            // Re-seed the orbit focus from the current view.
-                            CameraMode::Orbit => camera_state.orbit_initialized = false,
-                            CameraMode::Avatar => {}
-                        }
+                        // Same entry behaviour as the Tab cycle (restore/seed per mode).
+                        crate::systems::free_camera::enter_mode(&mut camera_state, mode);
                         camera_state.mode = mode;
                         ui.close();
                     }
@@ -119,6 +127,7 @@ pub fn render_menu_bar(
                         let cs = &mut *camera_state;
                         cs.mode = CameraMode::Orbit;
                         cs.orbit_initialized = true;
+                        cs.orbit_has_pose = true;
                         cs.orbit_space = true;
                         cs.orbit_focus = DVec3::ZERO;
                         cs.orbit_distance = globe.radius as f64 * 3.0;
@@ -222,6 +231,13 @@ pub fn render_dev_panel(
                     .step_by(0.01),
             );
             ui.separator();
+            ui.label("Clouds");
+            ui.add(
+                egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
+                    .text("coverage")
+                    .step_by(0.01),
+            );
+            ui.separator();
             ui.label("Moon");
             ui.add(
                 egui::Slider::new(
@@ -280,6 +296,74 @@ pub fn render_dev_panel(
     // marking the resource changed every frame (which would re-run the lighting update).
     if !open && dev.open {
         dev.open = false;
+    }
+}
+
+/// Avatar chooser (View ▸ Choose Avatar): pick body (Man/Woman) and clothing
+/// theme. Edits a draft; Apply commits it to the persisted store, which
+/// `avatar::respawn_avatar_on_appearance_change` watches to rebuild the model.
+pub fn render_avatar_chooser(
+    mut egui: ResMut<EguiManager>,
+    mut chooser: ResMut<crate::resources::AvatarChooserState>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+) {
+    use crate::systems::user_store::{AvatarSex, ClothingTheme};
+    if !chooser.open {
+        return;
+    }
+    // Seed the draft from the saved appearance the first time the window opens.
+    if !chooser.seeded {
+        chooser.draft = store.data.appearance;
+        chooser.seeded = true;
+    }
+    let saved = store.data.appearance;
+    let ctx = egui.ctx_mut();
+    let mut open = true;
+    let mut apply = false;
+    egui::Window::new("Choose Avatar")
+        .open(&mut open)
+        .default_width(240.0)
+        .show(ctx, |ui| {
+            ui.label("Body");
+            ui.horizontal(|ui| {
+                for sex in AvatarSex::ALL {
+                    if ui
+                        .selectable_label(chooser.draft.sex == sex, sex.label())
+                        .clicked()
+                    {
+                        chooser.draft.sex = sex;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.label("Clothing");
+            egui::ComboBox::from_id_salt("avatar_theme")
+                .selected_text(chooser.draft.theme.label())
+                .show_ui(ui, |ui| {
+                    for theme in ClothingTheme::ALL {
+                        ui.selectable_value(&mut chooser.draft.theme, theme, theme.label());
+                    }
+                });
+            ui.separator();
+            let changed = chooser.draft != saved;
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(changed, egui::Button::new("Apply"))
+                    .clicked()
+                {
+                    apply = true;
+                }
+                if !changed {
+                    ui.weak("This is your current avatar.");
+                }
+            });
+        });
+    if apply {
+        store.data.appearance = chooser.draft;
+        store.dirty = true;
+    }
+    if !open && chooser.open {
+        chooser.open = false;
     }
 }
 

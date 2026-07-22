@@ -1,4 +1,5 @@
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
+use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::ecs::query::Or;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
@@ -8,17 +9,23 @@ use crate::resources::AvatarState;
 use crate::systems::user_store::{AvatarAppearance, AvatarSex, ClothingTheme, UserStore};
 use vibe_core::wrap_angle_pi;
 
-/// A concrete, loadable avatar: the glTF scene to spawn, the file its animation
-/// clips come from (a separate library for the humanoids; the same file for the
-/// fox), the scale that fits it into the world (metres), the idle/run clip
-/// indices, and the speed those clips read best at. Centralizes what used to be
-/// three hard-coded `Fox.glb` / `scale 0.02` / `speed 1.5` sites.
+/// A concrete, loadable avatar as one or two glTF scenes on the same rig, driven
+/// by clips from `anims`. Which scenes are present depends on how a Quaternius
+/// outfit is authored (see `resolve_avatar_model`):
+/// - `body` only — a bare base body (Casual), or the fox.
+/// - `body` + `outfit` — the outfit has no head mesh (Peasant), so the base body
+///   supplies the head. Caveat: these outfits are partial-coverage (bare-torso +
+///   sleeveless), so the base body's bare back still shows — an asset limitation.
+/// - `outfit` only — a self-complete outfit (Ranger: bare-chested + hood). A base
+///   body here would double the torso and poke through the clothing.
 pub(crate) struct AvatarModel {
-    scene: &'static str,
+    body: Option<&'static str>,
+    outfit: Option<&'static str>,
     anims: &'static str,
     scale: f32,
     idle_ix: usize,
     run_ix: usize,
+    fly_ix: usize,
     anim_speed: f32,
 }
 
@@ -28,49 +35,68 @@ const UAL: &str = "models/avatar/anims/UAL1_Standard.glb";
 // Clip indices within UAL1_Standard.glb (see `jq '.animations'`).
 const UAL_IDLE: usize = 9; // Idle_Loop
 const UAL_JOG: usize = 13; // Jog_Fwd_Loop (used as the "moving" gait)
+const UAL_FLY: usize = 16; // Jump_Loop — a mid-air pose, reused as the flying stance
 
-/// The Bevy sample fox — kept as the fallback if a humanoid glTF is ever missing.
-/// Animations live in the same file (0=Survey/idle, 2=Run).
+/// The Bevy sample fox — the fallback if the humanoid glTFs are missing. Its
+/// clips live in the same file (0=Survey/idle, 2=Run); it has no fly pose, so
+/// idle stands in.
 const FOX_MODEL: AvatarModel = AvatarModel {
-    scene: "models/animated/Fox.glb",
+    body: Some("models/animated/Fox.glb"),
+    outfit: None,
     anims: "models/animated/Fox.glb",
     scale: 0.02,
     idle_ix: 0,
     run_ix: 2,
+    fly_ix: 0,
     anim_speed: 1.5,
 };
 
-/// Build a humanoid model for a given base/outfit scene. Bodies are authored in
-/// metres (~1.8 m tall), so world scale is 1.0; animations come from the UAL.
-const fn humanoid(scene: &'static str) -> AvatarModel {
+/// Build a humanoid model from an optional base body + optional outfit (at least
+/// one must be present). Bodies are authored in metres (~1.8 m tall), so world
+/// scale is 1.0; clips come from the UAL.
+const fn humanoid(body: Option<&'static str>, outfit: Option<&'static str>) -> AvatarModel {
     AvatarModel {
-        scene,
+        body,
+        outfit,
         anims: UAL,
         scale: 1.0,
         idle_ix: UAL_IDLE,
         run_ix: UAL_JOG,
+        fly_ix: UAL_FLY,
         anim_speed: 1.0,
     }
 }
 
-/// Resolve the model for an appearance: a Quaternius base body (Casual) or a
-/// complete clothed outfit (Peasant/Ranger), per sex. Falls back to the fox only
-/// if a humanoid glTF is missing on disk, so a stripped asset dir still runs.
+/// Resolve the model for an appearance. Which scenes are used depends on how the
+/// outfit is authored (the Quaternius packs are not uniform):
+/// - Casual → base body only.
+/// - Peasant → base body + outfit: the outfit has no head mesh, so the base body
+///   provides the head. The peasant clothing is only partial (sleeveless, open
+///   back), so the base's bare back still shows — a limitation of that asset.
+/// - Ranger → outfit only: it's a self-complete, bare-chested + hooded character;
+///   a base body underneath would double the torso and show through the skin.
+/// Falls back to the fox if the needed glTFs are missing.
 pub(crate) fn resolve_avatar_model(appearance: AvatarAppearance) -> AvatarModel {
     use AvatarSex::*;
     use ClothingTheme::*;
-    let scene: &str = match (appearance.sex, appearance.theme) {
-        (Man, Casual) => "models/avatar/base/Superhero_Male_FullBody.gltf",
-        (Woman, Casual) => "models/avatar/base/Superhero_Female_FullBody.gltf",
-        (Man, Peasant) => "models/avatar/outfits/Male_Peasant.gltf",
-        (Woman, Peasant) => "models/avatar/outfits/Female_Peasant.gltf",
-        (Man, Ranger) => "models/avatar/outfits/Male_Ranger.gltf",
-        (Woman, Ranger) => "models/avatar/outfits/Female_Ranger.gltf",
+    let base = match appearance.sex {
+        Man => "models/avatar/base/Superhero_Male_FullBody.gltf",
+        Woman => "models/avatar/base/Superhero_Female_FullBody.gltf",
     };
-    if avatar_asset_exists(scene) {
-        humanoid(scene)
+    let (body, outfit): (Option<&str>, Option<&str>) = match (appearance.sex, appearance.theme) {
+        (_, Casual) => (Some(base), None),
+        (Man, Peasant) => (Some(base), Some("models/avatar/outfits/Male_Peasant.gltf")),
+        (Woman, Peasant) => (Some(base), Some("models/avatar/outfits/Female_Peasant.gltf")),
+        (Man, Ranger) => (None, Some("models/avatar/outfits/Male_Ranger.gltf")),
+        (Woman, Ranger) => (None, Some("models/avatar/outfits/Female_Ranger.gltf")),
+    };
+    // Keep only scenes that are actually on disk.
+    let body = body.filter(|s| avatar_asset_exists(s));
+    let outfit = outfit.filter(|s| avatar_asset_exists(s));
+    if body.is_none() && outfit.is_none() {
+        FOX_MODEL // assets not fetched
     } else {
-        FOX_MODEL
+        humanoid(body, outfit)
     }
 }
 
@@ -140,18 +166,19 @@ pub(crate) fn avatar_facing_yaw_from_camera(azimuth: f32) -> f32 {
     wrap_angle_pi(f32::atan2(f.x, f.z))
 }
 const GRAVITY: f32 = -9.8;
-const AVATAR_HEIGHT: f32 = 0.8; // Fox model height (scaled)
 const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent y)
 
 #[derive(Component)]
 pub struct AvatarModelLoaded;
 
-/// Animation data attached to an avatar, read once its scene is ready.
-#[derive(Component)]
+/// Animation data attached to an avatar (and each of its model "holder" children),
+/// read once a scene is ready. `Clone` so the body and outfit holders can share it.
+#[derive(Component, Clone)]
 pub(crate) struct AvatarAnimations {
     graph_handle: Handle<AnimationGraph>,
     idle_index: AnimationNodeIndex,
     run_index: AnimationNodeIndex,
+    fly_index: AnimationNodeIndex,
     /// Playback speed for this model's clips (`AvatarModel::anim_speed`).
     speed: f32,
 }
@@ -179,51 +206,206 @@ pub fn spawn_avatar(
         let (graph, indices) = AnimationGraph::from_clips([
             asset_server.load(GltfAssetLabel::Animation(model.idle_ix).from_asset(model.anims)),
             asset_server.load(GltfAssetLabel::Animation(model.run_ix).from_asset(model.anims)),
+            asset_server.load(GltfAssetLabel::Animation(model.fly_ix).from_asset(model.anims)),
         ]);
         let graph_handle = graphs.add(graph);
+        let anims = AvatarAnimations {
+            graph_handle,
+            idle_index: indices[0],
+            run_index: indices[1],
+            fly_index: indices[2],
+            speed: model.anim_speed,
+        };
 
-        let mesh_scene = WorldAssetRoot(
-            asset_server.load(GltfAssetLabel::Scene(0).from_asset(model.scene)),
-        );
-
-        // Scale lives with the model, not the spawn site. Set it before the scene
-        // instantiates (no mesh is attached yet) so it never flashes at 1.0.
+        // Scale lives with the model, not the spawn site. Set it before the scenes
+        // instantiate (no mesh is attached yet) so they never flash at 1.0.
         transform.scale = Vec3::splat(model.scale);
 
-        commands.entity(entity).insert((
-            AvatarModelLoaded,
-            AvatarAnimations {
-                graph_handle,
-                idle_index: indices[0],
-                run_index: indices[1],
-                speed: model.anim_speed,
-            },
-            mesh_scene,
-        )).observe(play_avatar_animation_when_ready);
-    }
-}
-
-fn play_avatar_animation_when_ready(
-    trigger: On<WorldInstanceReady>,
-    mut commands: Commands,
-    children: Query<&Children>,
-    animations_to_play: Query<&AvatarAnimations>,
-    mut players: Query<&mut AnimationPlayer>,
-) {
-    if let Ok(animation_to_play) = animations_to_play.get(trigger.event_target()) {
-        for child in children.iter_descendants(trigger.event_target()) {
-            if let Ok(mut player) = players.get_mut(child) {
-                // Start with idle; update_avatar_animation switches on movement.
-                player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
-                commands
-                    .entity(child)
-                    .insert(AnimationGraphHandle(animation_to_play.graph_handle.clone()));
-            }
+        // The body and (optional) outfit are separate glTF scenes on the SAME rig.
+        // Each goes in its own child "holder" so a per-scene `WorldInstanceReady`
+        // observer only walks its own subtree when binding the shared UAL clips —
+        // otherwise the body's observer would wander into the outfit's skeleton.
+        // Both holders play the same graph, so body and clothing move in lockstep.
+        // `AvatarAnimations` is also kept on the avatar entity for the idle/run/fly
+        // driver (`update_avatar_animation`) to read the clip indices.
+        commands.entity(entity).insert((AvatarModelLoaded, anims.clone()));
+        if let Some(body) = model.body {
+            spawn_model_holder(&mut commands, &asset_server, entity, body, anims.clone());
+        }
+        if let Some(outfit) = model.outfit {
+            spawn_model_holder(&mut commands, &asset_server, entity, outfit, anims);
         }
     }
 }
 
-/// Switch the local avatar's animation between idle and run based on movement.
+/// Spawn one glTF scene as a child holder of `parent`, with its own animation
+/// data + ready observer. Identity transform, so it inherits the avatar's pose
+/// and scale exactly.
+fn spawn_model_holder(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    parent: Entity,
+    scene: &'static str,
+    anims: AvatarAnimations,
+) {
+    commands
+        .spawn((
+            anims,
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(scene))),
+            Transform::default(),
+            Visibility::default(),
+            ChildOf(parent),
+        ))
+        .observe(play_avatar_animation_when_ready);
+}
+
+/// Rebuild the local avatar's model when the chosen appearance changes (from the
+/// avatar chooser). Strips the instantiated scene and the loaded markers so
+/// `spawn_avatar` re-runs next frame with the newly resolved model. Remotes are
+/// untouched — they don't read the local appearance.
+pub fn respawn_avatar_on_appearance_change(
+    mut commands: Commands,
+    store: Res<UserStore>,
+    mut last: Local<Option<AvatarAppearance>>,
+    children: Query<&Children>,
+    avatars: Query<Entity, (With<Avatar>, With<AvatarModelLoaded>)>,
+) {
+    let current = store.data.appearance;
+    match *last {
+        None => {
+            *last = Some(current);
+            return;
+        }
+        Some(prev) if prev == current => return,
+        _ => {}
+    }
+    *last = Some(current);
+    for entity in avatars.iter() {
+        // Despawn the instantiated scene (all descendants), then drop the markers
+        // and the scene root so `spawn_avatar` treats the entity as fresh.
+        let descendants: Vec<Entity> = children.iter_descendants(entity).collect();
+        for d in descendants {
+            commands.entity(d).despawn();
+        }
+        commands
+            .entity(entity)
+            .remove::<AvatarModelLoaded>()
+            .remove::<AvatarAnimations>()
+            .remove::<WorldAssetRoot>();
+    }
+}
+
+/// glTF node name of the shared skeleton root in every Quaternius rig (base
+/// bodies, outfits, and the UAL animation library). It is the scene's top-level
+/// node, so the loader roots animation-target paths at it — see
+/// [`bind_external_animations`].
+const ARMATURE_NODE: &str = "Armature";
+
+pub fn play_avatar_animation_when_ready(
+    trigger: On<WorldInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    animations_to_play: Query<&AvatarAnimations>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    let root = trigger.event_target();
+    let Ok(anim) = animations_to_play.get(root) else {
+        return;
+    };
+
+    // Case 1 — the model's own glTF embeds its clips (the fox), so Bevy already
+    // spawned an `AnimationPlayer`. Play the idle clip on it directly.
+    if let Some(player_entity) = children
+        .iter_descendants(root)
+        .find(|&e| players.get(e).is_ok())
+    {
+        if let Ok(mut player) = players.get_mut(player_entity) {
+            player.play(anim.idle_index).repeat().set_speed(anim.speed);
+            commands
+                .entity(player_entity)
+                .insert(AnimationGraphHandle(anim.graph_handle.clone()));
+        }
+        return;
+    }
+
+    // Case 2 — the humanoid bodies carry no clips of their own, so the glTF
+    // loader created neither an `AnimationPlayer` nor the per-bone
+    // `AnimationTargetId`/`AnimatedBy` that the external UAL clips bind to. Rebuild
+    // both by hand, exactly as `bevy_gltf` would for an animated file: root a
+    // player on the "Armature" node and hash each bone's name-path into the target
+    // id it was authored against. Both the bodies and the UAL share the same
+    // `Armature → root → pelvis → …` rig, so the ids line up and the clips play.
+    let Some(armature) = children
+        .iter_descendants(root)
+        .find(|&e| names.get(e).is_ok_and(|n| n.as_str() == ARMATURE_NODE))
+    else {
+        tracing::warn!(scene_root = ?root, "avatar: no `Armature` node found; animations will not play");
+        return;
+    };
+    let mut path: Vec<Name> = Vec::new();
+    bind_external_animations(&mut commands, armature, armature, &mut path, &children, &names);
+
+    let mut player = AnimationPlayer::default();
+    player.play(anim.idle_index).repeat().set_speed(anim.speed);
+    commands
+        .entity(armature)
+        .insert((player, AnimationGraphHandle(anim.graph_handle.clone())));
+}
+
+/// Tag `entity` and every named descendant with the `AnimationTargetId` its
+/// name-path hashes to (rooted at `player`), plus `AnimatedBy(player)`, mirroring
+/// `bevy_gltf`'s animation-target setup. This lets clips from a *separate* glTF
+/// bind to a skeleton whose own file had no animations. Unnamed entities (skinned
+/// mesh leaves) are skipped along with their subtrees — bones are always named.
+fn bind_external_animations(
+    commands: &mut Commands,
+    entity: Entity,
+    player: Entity,
+    path: &mut Vec<Name>,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+) {
+    let Ok(name) = names.get(entity) else {
+        return;
+    };
+    path.push(name.clone());
+    commands
+        .entity(entity)
+        .insert((AnimationTargetId::from_names(path.iter()), AnimatedBy(player)));
+    if let Ok(kids) = children.get(entity) {
+        for child in kids.iter() {
+            bind_external_animations(commands, child, player, path, children, names);
+        }
+    }
+    path.pop();
+}
+
+/// The locomotion clip an avatar should currently loop.
+#[derive(Clone, Copy)]
+enum Gait {
+    Idle,
+    Run,
+    Fly,
+}
+
+/// Drive one `AnimationPlayer` to loop the clip for `gait`, stopping the others.
+/// Applied to every player under an avatar (body + outfit holders) so they stay
+/// in lockstep.
+fn play_gait(player: &mut AnimationPlayer, anim: &AvatarAnimations, gait: Gait) {
+    let (want, stop_a, stop_b) = match gait {
+        Gait::Idle => (anim.idle_index, anim.run_index, anim.fly_index),
+        Gait::Run => (anim.run_index, anim.idle_index, anim.fly_index),
+        Gait::Fly => (anim.fly_index, anim.idle_index, anim.run_index),
+    };
+    player.stop(stop_a);
+    player.stop(stop_b);
+    if !player.is_playing_animation(want) {
+        player.play(want).repeat().set_speed(anim.speed);
+    }
+}
+
+/// Switch the local avatar's animation between idle, run, and fly based on state.
 pub fn update_avatar_animation(
     avatar_state: Res<AvatarState>,
     children: Query<&Children>,
@@ -231,23 +413,20 @@ pub fn update_avatar_animation(
     mut players: Query<&mut AnimationPlayer>,
     avatar_query: Query<Entity, With<Avatar>>,
 ) {
+    let gait = if avatar_state.is_flying {
+        Gait::Fly
+    } else if avatar_state.is_walking {
+        Gait::Run
+    } else {
+        Gait::Idle
+    };
     for avatar_entity in avatar_query.iter() {
-        let Ok(animation_to_play) = animations_to_play.get(avatar_entity) else {
+        let Ok(anim) = animations_to_play.get(avatar_entity) else {
             continue;
         };
         for child in children.iter_descendants(avatar_entity) {
             if let Ok(mut player) = players.get_mut(child) {
-                if avatar_state.is_walking {
-                    player.stop(animation_to_play.idle_index);
-                    if !player.is_playing_animation(animation_to_play.run_index) {
-                        player.play(animation_to_play.run_index).repeat().set_speed(animation_to_play.speed);
-                    }
-                } else {
-                    player.stop(animation_to_play.run_index);
-                    if !player.is_playing_animation(animation_to_play.idle_index) {
-                        player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
-                    }
-                }
+                play_gait(&mut player, anim, gait);
             }
         }
     }
@@ -313,22 +492,18 @@ pub fn update_remote_avatar_animation(
         let Ok(animation_to_play) = animations_to_play.get(avatar_entity) else {
             continue;
         };
-        let is_walking = hints
+        // Remotes only replicate horizontal motion, so idle/run (no fly state).
+        let gait = if hints
             .get(avatar_entity)
-            .is_ok_and(|h| h.horizontal_speed > REMOTE_RUN_SPEED_THRESH);
+            .is_ok_and(|h| h.horizontal_speed > REMOTE_RUN_SPEED_THRESH)
+        {
+            Gait::Run
+        } else {
+            Gait::Idle
+        };
         for child in children.iter_descendants(avatar_entity) {
             if let Ok(mut player) = players.get_mut(child) {
-                if is_walking {
-                    player.stop(animation_to_play.idle_index);
-                    if !player.is_playing_animation(animation_to_play.run_index) {
-                        player.play(animation_to_play.run_index).repeat().set_speed(animation_to_play.speed);
-                    }
-                } else {
-                    player.stop(animation_to_play.run_index);
-                    if !player.is_playing_animation(animation_to_play.idle_index) {
-                        player.play(animation_to_play.idle_index).repeat().set_speed(animation_to_play.speed);
-                    }
-                }
+                play_gait(&mut player, animation_to_play, gait);
             }
         }
     }
@@ -438,24 +613,23 @@ pub fn handle_avatar_movement(
         avatar_state.is_walking = false;
     }
 
-    // Handle vertical movement
+    // Handle vertical movement. The avatar models are authored origin-at-feet, so
+    // the standing height is the ground surface itself (`GROUND_HEIGHT`) — the old
+    // `+ AVATAR_HEIGHT/2` suited only the fox, whose origin is its centre, and it
+    // floated the humanoids ~0.45 m.
     if avatar_state.is_flying {
         if fly_up {
             transform.translation.y += FLY_SPEED * delta_time;
         } else if fly_down {
-            let min_height = GROUND_HEIGHT + AVATAR_HEIGHT / 2.0;
-            if transform.translation.y > min_height + 0.1 {
+            if transform.translation.y > GROUND_HEIGHT + 0.1 {
                 transform.translation.y -= FLY_SPEED * delta_time;
             }
         }
     } else {
-        // Walking mode: apply gravity
+        // Walking mode: apply gravity, then rest the feet on the ground.
         transform.translation.y += GRAVITY * delta_time;
-
-        // Enforce minimum height
-        let min_height = GROUND_HEIGHT + AVATAR_HEIGHT / 2.0;
-        if transform.translation.y < min_height {
-            transform.translation.y = min_height;
+        if transform.translation.y < GROUND_HEIGHT {
+            transform.translation.y = GROUND_HEIGHT;
         }
     }
 

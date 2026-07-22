@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use big_space::prelude::GridCell;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -68,6 +69,19 @@ pub struct HeadlessSurface {
     pub scale: f32,
 }
 
+/// Avatar chooser window (View ▸ Avatar). Edits a `draft` copy of the appearance
+/// so dragging the controls doesn't respawn the mesh every frame; Apply commits it
+/// to the persisted [`crate::systems::user_store::UserStore`], which the avatar
+/// systems watch to rebuild the model.
+#[derive(Resource, Default)]
+pub struct AvatarChooserState {
+    pub open: bool,
+    /// Working copy edited by the UI, committed to the store on Apply.
+    pub draft: crate::systems::user_store::AvatarAppearance,
+    /// Whether `draft` has been seeded from the saved appearance since opening.
+    pub seeded: bool,
+}
+
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
 /// exposes a day/night slider that drives the sun, and a distance-fog slider.
 #[derive(Resource)]
@@ -82,6 +96,9 @@ pub struct DevPanelState {
     /// Atmospheric distance-fog density, 0.0–1.0: higher pulls the visibility
     /// distance in (see `free_camera::distance_fog`). 0.0 = off.
     pub fog_density: f32,
+    /// Cloud coverage, 0.0–1.0: fraction of the sky the procedural cloud deck
+    /// fills (see `main::update_clouds`). 0.0 = clear sky.
+    pub cloud_cover: f32,
     /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
     /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
     pub moon_age_days: f32,
@@ -111,6 +128,7 @@ impl Default for DevPanelState {
             auto_cycle: false,
             cycle_seconds: 10.0,
             fog_density: 0.15,
+            cloud_cover: 0.0,
             moon_age_days: 14.8, // full moon
             show_stats: false,
             shadows_enabled: true,
@@ -373,6 +391,19 @@ pub struct CameraState {
     pub pitch: f32,
     pub pan_offset: Option<Vec2>, // Last mouse position for delta calculation
     pub free_camera_rotation: Vec2, // pitch, yaw
+    /// Follow (Avatar) mode is *derived* from the avatar, so it has no saved pose:
+    /// cleared on entry so the first frame snaps the rig straight onto the avatar
+    /// (reposition reliably even when returning from a distant Orbit `GridCell`),
+    /// then the follow lerp takes over.
+    pub avatar_initialized: bool,
+    /// Fly (Free) mode remembers where you left it. Cleared on entry; the first
+    /// frame then restores [`Self::free_saved`] if present (return to the last fly
+    /// spot) or seeds the look from the live view (first-ever entry, no jump).
+    pub free_initialized: bool,
+    /// Last Fly placement — `(GridCell, local translation, pitch/yaw)` — written
+    /// every frame in Fly mode so switching to another mode and back returns here
+    /// instead of inheriting wherever Orbit/Follow last moved the shared camera.
+    pub free_saved: Option<(GridCell, Vec3, Vec2)>,
     // ── Earth (orbit) mode ──────────────────────────────────────────────────
     /// Ground point the orbit camera pivots around, in absolute world metres
     /// (the anchored Web Mercator frame `map_stream` uses). y ≈ 0 (the ground).
@@ -405,6 +436,11 @@ pub struct CameraState {
     /// Cleared on entering the mode so the first frame seeds the focus/distance
     /// from wherever the camera was looking.
     pub orbit_initialized: bool,
+    /// True once Earth mode has ever held a real pose (seeded, restored, or set by
+    /// "View Whole Earth"). Re-entering Earth restores that pose instead of
+    /// reseeding from the current view, so switching away and back returns you to
+    /// the same globe location. The first-ever entry (this false) still seeds.
+    pub orbit_has_pose: bool,
     /// True once zoomed far enough out that the orbit pivots the Earth's centre
     /// (space tier, ADR-025) instead of a ground focus. Reconstruction is the
     /// same spherical offset; only the pivot and the zoom clamps differ.
@@ -451,11 +487,14 @@ impl Default for CameraState {
     fn default() -> Self {
         Self {
             mode: CameraMode::Avatar,
-            distance: 5.0,
+            distance: 6.0,
             azimuth: 0.0,
             pitch: std::f32::consts::PI / 6.0,
             pan_offset: None,
             free_camera_rotation: Vec2::new(0.0, 0.0),
+            avatar_initialized: false,
+            free_initialized: false,
+            free_saved: None,
             orbit_focus: bevy::math::DVec3::ZERO,
             orbit_distance: 1500.0,
             orbit_distance_target: 1500.0,
@@ -465,6 +504,7 @@ impl Default for CameraState {
             orbit_yaw: 0.0,
             orbit_pitch: std::f32::consts::FRAC_PI_2 * 0.85,
             orbit_initialized: false,
+            orbit_has_pose: false,
             orbit_space: false,
             reanchor_request: None,
             orbit_north_reset: false,

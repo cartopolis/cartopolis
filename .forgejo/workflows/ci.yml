@@ -28,7 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: https://github.com/Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      # Libs + bins across the workspace. Not --all-targets: that pulls in the
+      # vendored big_space fork's test/bench targets, which reference the `bevy`
+      # umbrella crate (not a dep) and don't compile — a normal build never
+      # touches them, and build-test already compiles viberfox's own tests.
+      - run: cargo check --workspace
 
   build-test:
     name: build & test viberfox

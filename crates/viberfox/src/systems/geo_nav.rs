@@ -58,9 +58,11 @@ static MIN_REQUEST_INTERVAL: LazyLock<Duration> = LazyLock::new(|| {
 });
 const MIN_QUERY_LEN: usize = 2;
 const MAX_SUGGESTIONS: usize = 8;
-/// Avatar rest height after a teleport (ground top + half fox height; offline
-/// gravity clamps to the same value).
-const AVATAR_GROUND_Y: f64 = 0.45;
+/// Avatar rest height after a teleport. The humanoid models are authored
+/// origin-at-feet, so this is the ground/tile surface (`avatar::GROUND_HEIGHT`);
+/// the offline gravity clamp rests the feet at the same value. (Was 0.45 = ground
+/// + half fox height, which floated the humanoids ~0.4 m.)
+const AVATAR_GROUND_Y: f64 = 0.05;
 /// Minimum free-camera altitude after a teleport, so the destination is visible.
 const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
 
