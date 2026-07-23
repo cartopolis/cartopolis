@@ -10,7 +10,7 @@
 - **Aligns with**: [G-04, G-02, G-05, P-04, P-01, P-05]
 - **Roadmap tier**: P1
 - **Doc resolution**: R2
-- **Related**: [ADR-016, ADR-020, ADR-023, ADR-030, ADR-007]
+- **Related**: [ADR-016, ADR-020, ADR-023, ADR-030, ADR-034, ADR-007]
 - **Supersedes**: []
 - **Superseded By**: []
 ---
@@ -49,9 +49,14 @@ different question from *is the user allowed it*.
 Model the viewer as a **stack of layers**, each declaring an **access tier**; the session
 carries a monotonically growing set of **entitlements** that selects which layers are active.
 
-**Two tiers are primary today — the `Viewer` (no login) and the `Simulation` (login)** — with a
-future **Authorized** sub-tier for per-user ACL grants. **Avatars and chat live behind the
-Simulation tier**: they require a logged-in session.
+**Two tiers are primary today — the `Viewer` (no login) and the `Simulation` (login)** — with an
+**Authorized** sub-tier for per-user ACL grants. **Avatars and chat live behind the Simulation
+tier**: they require a logged-in session.
+
+The Authorized tier has its **first concrete case**: the **AI assistant is admin-only**. It holds
+a server-side secret (the Anthropic API key) and spends real money per request, so it is gated on
+an `ai` capability granted only to admin users — not merely on being logged in. See ADR-034,
+which routes it through `vibe_sim` over `NetMessage` rather than the anonymous data relay.
 
 **Access tiers** (a layer declares exactly one):
 
@@ -59,7 +64,7 @@ Simulation tier**: they require a logged-in session.
 |------|--------------|-------------|----------|-------------|
 | **Public** | **Viewer** | nothing (anonymous) | map tiles, place lookup, routing, public POI/transit data layers | none — external services hit directly by the client |
 | **Authenticated** | **Simulation** | any logged-in session | the sim tier (ADR-020): **avatars, prims, editing, chat** | server: sim only serves/accepts for authenticated sessions |
-| **Authorized(cap)** | *(future)* | a specific ACL/role grant | restricted layers (private worlds, moderator overlays, org data) | server: sim withholds data / rejects intents unless the session holds `cap` |
+| **Authorized(cap)** | *(first case: `ai`)* | a specific ACL/role grant | **AI assistant (admin-only)**; later: private worlds, moderator overlays, org data | server: sim withholds data / rejects intents unless the session holds `cap` |
 
 **Session entitlements** grow, never shrink within a session:
 `{Public}` (anonymous) → `+Authenticated` on login → `+Authorized(cap)` per granted capability.

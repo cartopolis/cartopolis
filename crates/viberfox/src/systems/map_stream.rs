@@ -23,7 +23,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::tile_loader::load_tile_image;
+use crate::systems::tile_loader::load_tile_rgba;
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 use vibe_core::TileKey;
 
@@ -296,30 +296,20 @@ pub fn init_map_stream(
             }
             // Fetch, decode, and build the mip chain here on the worker thread so
             // the main thread only has to hand the finished pixels to the GPU.
-            let decoded = match load_tile_image(&key, &template) {
-                Ok(b) => match image::load_from_memory(&b) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (width, height) = (rgba.width(), rgba.height());
-                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
-                            width,
-                            height,
-                            rgba.into_raw(),
-                        );
-                        Some(DecodedTile {
-                            data,
-                            width,
-                            height,
-                            mip_count,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::warn!(tile = %key.to_path(), error = %e, "map tile decode failed");
-                        None
-                    }
-                },
+            let decoded = match load_tile_rgba(&key, &template) {
+                Ok(rgba) => {
+                    let (width, height) = (rgba.width(), rgba.height());
+                    let (data, mip_count) =
+                        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
+                    Some(DecodedTile {
+                        data,
+                        width,
+                        height,
+                        mip_count,
+                    })
+                }
                 Err(e) => {
-                    tracing::warn!(tile = %key.to_path(), error = %e, "map tile fetch failed");
+                    tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
                     None
                 }
             };

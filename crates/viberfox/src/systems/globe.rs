@@ -34,7 +34,7 @@ use big_space::prelude::{BigSpace, GridCell};
 
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::map_stream::MapStream;
-use crate::systems::tile_loader::load_tile_image;
+use crate::systems::tile_loader::load_tile_rgba;
 use vibe_core::geo::TangentFrame;
 use vibe_core::world::tile_to_meters;
 use vibe_core::TileKey;
@@ -341,19 +341,18 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 }
 
 /// Does tile `a` cover (is an ancestor of, or equal) tile `b`?
-/// Decode a fetched tile image to RGBA8 and build its mipmap chain. Pure CPU work,
-/// called on the fetch workers. `None` on a corrupt/undecodable payload.
-fn decode_globe_tile(bytes: &[u8]) -> Option<DecodedTile> {
-    let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+/// Build a decoded tile's mipmap chain. Pure CPU work, called on the fetch workers
+/// (the fetch + decode/render itself is `tile_loader::load_tile_rgba`).
+fn decode_globe_tile(rgba: image::RgbaImage) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
     let (data, mip_count) =
         crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
-    Some(DecodedTile {
+    DecodedTile {
         data,
         width,
         height,
         mip_count,
-    })
+    }
 }
 
 fn covers(a: &TileKey, b: &TileKey) -> bool {
@@ -540,11 +539,8 @@ pub fn setup_globe(
                 } else {
                     // Decode + mip generation happen here, on the worker, so the
                     // main thread only assembles and uploads (see `DecodedTile`).
-                    match load_tile_image(&key, &template) {
-                        Ok(bytes) => match decode_globe_tile(&bytes) {
-                            Some(tile) => TileFetch::Ok(tile),
-                            None => TileFetch::Failed,
-                        },
+                    match load_tile_rgba(&key, &template) {
+                        Ok(rgba) => TileFetch::Ok(decode_globe_tile(rgba)),
                         Err(_) => TileFetch::Failed,
                     }
                 };

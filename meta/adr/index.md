@@ -34,3 +34,7 @@
 | [030](./030-platform-capability-model.md) | Platform Capability Model (Substitutable Providers + Additive Plugins) | Proposed | architecture, platform, wasm, web, capabilities, portability, plugins |
 | [031](./031-layered-access-model.md) | Layered Access Model (Anonymous Viewer → Login → ACL Layers) | Proposed | architecture, layers, session, auth, authz, acl, viewer, entitlements |
 | [032](./032-global-cloud-cover-data.md) | Global Cloud Cover from GFS (Real Weather Driving Procedural Clouds) | Accepted | rendering, globe, weather, live-data, dependency, clouds |
+| [033](./033-build-targets-and-wasm-packaging.md) | Build Targets — Standalone (Native) and Web (wasm32) | Proposed | architecture, platform, wasm, web, build, packaging, ops, cors, dependency |
+| [034](./034-public-data-relay.md) | Public Data Relay (Standardised Upstream Adapters) | Proposed | ops, networking, cache, data-layers, live-data, architecture, crates, upstreams |
+| [035](./035-self-hosted-map-tiles.md) | Self-Hosted Vector Map Tiles | Proposed | osm, tiles, vector, mvt, map, ops, rendering, dependency, hosting, web |
+| [036](./036-input-sequenced-client-prediction.md) | Input-Sequenced Client Prediction and Reconciliation | Proposed | networking, protocol, prediction, avatar, latency, replication |

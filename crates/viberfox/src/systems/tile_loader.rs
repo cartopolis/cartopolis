@@ -69,31 +69,23 @@ impl TileCache {
                 }) else {
                     break;
                 };
-                let outcome = match load_tile_image(&key, &template) {
-                    Ok(bytes) => match image::load_from_memory(&bytes) {
-                        Ok(img) => {
-                            let rgba = img.to_rgba8();
-                            let (width, height) = (rgba.width(), rgba.height());
-                            let (data, mip_count) =
-                                crate::systems::rendering::build_mip_chain(
-                                    width,
-                                    height,
-                                    rgba.into_raw(),
-                                );
-                            Some(TileImageData {
-                                data,
-                                width,
-                                height,
-                                mip_count,
-                            })
-                        }
-                        Err(e) => {
-                            tracing::error!(tile = %key.to_path(), error = %e, "failed to decode tile image");
-                            None
-                        }
-                    },
+                let outcome = match load_tile_rgba(&key, &template) {
+                    Ok(rgba) => {
+                        let (width, height) = (rgba.width(), rgba.height());
+                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
+                            width,
+                            height,
+                            rgba.into_raw(),
+                        );
+                        Some(TileImageData {
+                            data,
+                            width,
+                            height,
+                            mip_count,
+                        })
+                    }
                     Err(e) => {
-                        tracing::error!(tile = %key.to_path(), error = %e, "failed to fetch OSM tile");
+                        tracing::error!(tile = %key.to_path(), error = %e, "failed to load map tile");
                         None
                     }
                 };
@@ -130,23 +122,73 @@ pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
         .replace("{y}", &key.y.to_string())
 }
 
+/// What a tile endpoint serves. Raster payloads are decoded by the `image` crate;
+/// vector payloads are drawn by [`crate::systems::vector_tiles`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileSourceKind {
+    Raster,
+    Vector,
+}
+
+/// Classify a URL template by the tail after its `{y}` placeholder: `.png`/`.webp`
+/// → raster, nothing at all → vector (VersaTiles serves `/tiles/osm/{z}/{x}/{y}`
+/// with no extension). `VIBE_TILE_FORMAT=vector|raster` overrides.
+///
+/// This has to be decided *before* the fetch rather than sniffed from the bytes,
+/// because a vector source caps out at `MAX_SOURCE_ZOOM` and the deeper tiles the
+/// map streamer asks for must be redirected to an ancestor — which changes which
+/// URL we request. The byte sniff in `looks_like_raster` still runs afterwards as
+/// a backstop, so a misclassified source degrades to "no overzoom" rather than to
+/// a decode failure.
+#[must_use]
+pub fn tile_source_kind(template: &str) -> TileSourceKind {
+    if let Ok(v) = std::env::var("VIBE_TILE_FORMAT") {
+        match v.to_ascii_lowercase().as_str() {
+            "vector" | "mvt" | "pbf" => return TileSourceKind::Vector,
+            "raster" | "png" | "webp" | "jpeg" => return TileSourceKind::Raster,
+            _ => {}
+        }
+    }
+    match template.rsplit_once("{y}") {
+        // An extension right after `{y}` means pre-rendered pixels.
+        Some((_, tail)) => {
+            let tail = tail.split('?').next().unwrap_or("");
+            if tail.starts_with('.') {
+                TileSourceKind::Raster
+            } else {
+                TileSourceKind::Vector
+            }
+        }
+        // Empty/!templated → the built-in `tile.openstreetmap.org` PNG default.
+        None => TileSourceKind::Raster,
+    }
+}
+
 /// On-disk cache path for a tile, under the app's `cache/` folder (persists across
 /// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
-fn tile_cache_path(key: &TileKey) -> PathBuf {
+/// The extension tracks the source kind so a raster and a vector cache can coexist
+/// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
+fn tile_cache_path(key: &TileKey, kind: TileSourceKind) -> PathBuf {
+    let ext = match kind {
+        TileSourceKind::Raster => "png",
+        TileSourceKind::Vector => "mvt",
+    };
     PathBuf::from("cache")
         .join("tiles")
         .join(key.z.to_string())
         .join(key.x.to_string())
-        .join(format!("{}.png", key.y))
+        .join(format!("{}.{ext}", key.y))
 }
 
-/// Load a single OSM tile image, using the on-disk cache first and falling back
-/// to a network fetch (which is then cached).
+/// Fetch a single tile's raw bytes, using the on-disk cache first and falling back
+/// to the network (which is then cached). The payload may be a raster image or an
+/// MVT body — see [`load_tile_rgba`] for the decoded form.
 pub fn load_tile_image(
     key: &TileKey,
     template: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let path = tile_cache_path(key);
+    let kind = tile_source_kind(template);
+    let path = tile_cache_path(key, kind);
     if let Ok(bytes) = std::fs::read(&path) {
         if !bytes.is_empty() {
             return Ok(bytes);
@@ -167,6 +209,41 @@ pub fn load_tile_image(
     let _ = std::fs::write(&path, &bytes);
 
     Ok(bytes)
+}
+
+/// Fetch a tile and hand back finished RGBA pixels, whatever the source serves.
+///
+/// This is the single seam between "where map pixels come from" and everyone who
+/// wants them (the region loader here, `map_stream`, and `globe`). For a raster
+/// source it is a fetch plus an `image` decode, exactly as before. For a vector
+/// source it also resolves overzoom — a request deeper than
+/// [`vector_tiles::MAX_SOURCE_ZOOM`] fetches the z14 ancestor and renders the
+/// matching sub-rectangle, so the streamer's z15–z17 requests keep working against
+/// a source that stops at z14.
+pub fn load_tile_rgba(
+    key: &TileKey,
+    template: &str,
+) -> Result<image::RgbaImage, Box<dyn std::error::Error>> {
+    use crate::systems::vector_tiles;
+
+    if tile_source_kind(template) == TileSourceKind::Raster {
+        let bytes = load_tile_image(key, template)?;
+        return Ok(image::load_from_memory(&bytes)?.to_rgba8());
+    }
+
+    let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
+    let source = TileKey::new(x, y, z);
+    let bytes = load_tile_image(&source, template)?;
+
+    // Backstop for a misclassified template (see `tile_source_kind`): if the body
+    // is actually an image, decode it and skip the overzoom entirely.
+    if vector_tiles::looks_like_raster(&bytes) {
+        return Ok(image::load_from_memory(&bytes)?.to_rgba8());
+    }
+
+    let rgba = vector_tiles::render_mvt(&bytes, sub)?;
+    image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
+        .ok_or_else(|| "rendered tile had the wrong buffer size".into())
 }
 
 /// System to load OSM tiles for regions.
@@ -255,4 +332,42 @@ pub fn load_region_tiles(
 #[derive(Component)]
 pub struct RegionTileTexture {
     pub handle: Handle<Image>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_raster_and_vector_templates() {
+        // Raster: an extension right after {y}.
+        for t in [
+            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            "https://tiles.versatiles.org/tiles/satellite/{z}/{x}/{y}.webp",
+            "https://example.org/{z}/{x}/{y}.jpg?key=abc",
+        ] {
+            assert_eq!(tile_source_kind(t), TileSourceKind::Raster, "{t}");
+        }
+
+        // Vector: nothing after {y}, query string or not.
+        for t in [
+            "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}",
+            "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}?v=1",
+        ] {
+            assert_eq!(tile_source_kind(t), TileSourceKind::Vector, "{t}");
+        }
+
+        // An empty template means the built-in OSM PNG default.
+        assert_eq!(tile_source_kind(""), TileSourceKind::Raster);
+    }
+
+    #[test]
+    fn cache_paths_separate_by_kind() {
+        let key = TileKey::new(8490, 5319, 14);
+        let raster = tile_cache_path(&key, TileSourceKind::Raster);
+        let vector = tile_cache_path(&key, TileSourceKind::Vector);
+        assert_ne!(raster, vector, "a source switch must not reuse cached bytes");
+        assert!(raster.to_string_lossy().ends_with("5319.png"));
+        assert!(vector.to_string_lossy().ends_with("5319.mvt"));
+    }
 }

@@ -18,7 +18,9 @@ Themes connect **vision goals** to **ADRs**. Rows **without** ADRs are **intenti
 | Persistence & migrations | G-01, G-02 | P0 | R2+ | partial | 002, 013 | |
 | Runtime & ops | P-03 | P1 | R2 | partial | 014 | |
 | Workspace boundaries | P-05 | P0 | R2 | partial | 015 | |
-| Platform portability & web target | G-02, G-03, P-05 | P1 | R2 | proposed | 030 | Substitutable providers + additive plugins; wasm online-only |
+| Platform portability & web target | G-02, G-03, P-05 | P1 | R2 | proposed | 030, 033 | 030 = provider/plugin pattern; 033 = standalone + wasm32 targets, phased (Viewer first, no server change) |
+| Public data relay & upstream policy | G-04, P-03, P-05 | P1 | R2 | proposed | 034 | `vibe_relay` upstream registry (L0 direct / L1 path-mount / L2 adapter); single origin, shared cache, one UA |
+| Map tile hosting | G-04, P-03 | P1 | R2 | proposed | 035 | Self-hosted **vector** tiles (MVT via planetiler → PMTiles); client-side styling responds to day/night + weather; overzoom past ~z14 |
 | Layered access & entitlements | G-04, G-02, G-05, P-04 | P1 | R2 | proposed | 031 | Two tiers: **Viewer** (no login) / **Simulation** (login: avatars, prims, editing, chat); + future ACL; server-enforced |
 | Rendering & client UX | G-01, G-03 | P2 | R2 | partial | 001, 003, 005 | |
 | Asset pipeline & storage | G-01, G-05 | P0 | R2+ | gap | — | Add ADR(s) per roadmap before rich assets |

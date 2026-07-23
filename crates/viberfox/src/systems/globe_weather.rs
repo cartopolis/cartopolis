@@ -236,6 +236,13 @@ fn fetch_tcdc() -> FetchResult {
 }
 
 /// Decode the GRIB2 TCDC message into `R8` texels (percent → 0..255 fraction).
+///
+/// NOMADS packs this field with **DRS template 5.3** (complex packing + spatial
+/// differencing), which `gribberish` handles with no optional feature — which is why
+/// we build it with `default-features = false` and keep `openjpeg-sys` (a cmake'd C
+/// lib that doesn't target wasm32, ADR-033) out of the tree. If NCEP ever repacks to
+/// JPEG2000/PNG (5.40/5.41) this returns a template error rather than bad pixels, and
+/// the fix is the `jpeg`/`png` feature — check the template before assuming otherwise.
 fn decode_tcdc(bytes: &[u8]) -> FetchResult {
     let messages: Vec<_> = gribberish::message::read_messages(bytes).collect();
     let msg = messages.first().ok_or_else(|| "no GRIB messages".to_string())?;

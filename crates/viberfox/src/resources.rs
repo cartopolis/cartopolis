@@ -418,6 +418,11 @@ pub struct AvatarState {
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
     /// at frame rate so movement is smooth between 20 Hz snapshots.
     pub predicted_velocity: Vec3,
+    /// Online prediction: seconds since the last authoritative pose was applied.
+    /// The reconcile target is extrapolated forward by this much, so the 20 Hz
+    /// snapshot staircase doesn't drag the predicted display backwards on every
+    /// frame between snapshots (see `smooth_online_avatar_display`).
+    pub snapshot_age: f32,
     /// Offline / local yaw for tank controls (radians).
     pub rotation: f32,
     /// Online: replicated world yaw from snapshots (authoritative for reconciliation).
@@ -435,6 +440,7 @@ impl Default for AvatarState {
             position: p,
             display_position: p,
             predicted_velocity: Vec3::ZERO,
+            snapshot_age: 0.0,
             rotation: 0.0,
             sim_facing_yaw: 0.0,
             online_tank_yaw: 0.0,
@@ -580,8 +586,25 @@ pub struct OsmTileUrlTemplate(pub Arc<Mutex<String>>);
 
 impl Default for OsmTileUrlTemplate {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(String::new())))
+        Self(Arc::new(Mutex::new(tile_url_override().unwrap_or_default())))
     }
+}
+
+/// `VIBE_TILE_URL` — a `{z}/{x}/{y}` template overriding the tile source, matching
+/// the `VIBE_OVERPASS_URL` / `VIBE_3DBAG_URL` convention. This is how the offline
+/// and `--shot` paths (which never see a server handshake) reach a non-default
+/// source, e.g. the VersaTiles vector basemap:
+///
+/// ```text
+/// VIBE_TILE_URL=https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}
+/// ```
+///
+/// Vector vs raster is inferred from the template — see `tile_loader::tile_source_kind`.
+#[must_use]
+pub fn tile_url_override() -> Option<String> {
+    std::env::var("VIBE_TILE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// When set, client connects to `vibe_sim` instead of loading local SQLite world.

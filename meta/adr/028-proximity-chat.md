@@ -290,7 +290,7 @@ somewhere to land, and the client needs no per-country knowledge.
 
 ## Related
 
-- [ADR-009](./009-application-protocol-envelope-v0.md): Envelope reused unchanged; this adds message kinds 17–19 and bumps `PROTOCOL_VERSION` (currently 10).
+- [ADR-009](./009-application-protocol-envelope-v0.md): Envelope reused unchanged; this adds message kinds 17–19 and shipped as wire revision **v11** (see `PROTOCOL_HISTORY`).
 - [ADR-012](./012-interest-management-and-osm-tiles.md): Tier 0 needs the same entity proximity query as observer AOI; one index should serve both.
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Scrollback writes go through the single server writer; this is also why a shared-SQLite chat bus was rejected.
 - [ADR-015](./015-workspace-module-boundaries.md): Adds the `vibe_geo` crate.

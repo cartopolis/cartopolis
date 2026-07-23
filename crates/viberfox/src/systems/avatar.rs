@@ -225,6 +225,14 @@ const ONLINE_DISPLAY_SMOOTHING: f32 = 14.0;
 /// integrates the same velocity the sim does, the residual error is small, so
 /// this can be brisk without the tick-rate pulsing the old ease-to-latest had.
 const ONLINE_RECONCILE_RATE: f32 = 9.0;
+/// Cap on how far the authoritative pose is extrapolated while waiting for the
+/// next snapshot (see `smooth_online_avatar_display`). Just over one 20 Hz
+/// snapshot period: enough to bridge the normal gap, short enough that a stalled
+/// connection parks the avatar instead of flying it off on a stale velocity.
+const ONLINE_MAX_EXTRAPOLATION: f32 = 0.15;
+/// Prediction error (metres) beyond which the display snaps instead of easing —
+/// a teleport, a server correction or a resumed connection, not drift.
+const ONLINE_SNAP_ERROR: f32 = 8.0;
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
@@ -700,21 +708,42 @@ pub fn smooth_online_avatar_display(
     let dt = time.delta_secs();
     if online.is_some() {
         // Client-side prediction: advance the display by the velocity we're
-        // sending to the sim (frame-rate integration), then reconcile gently
-        // toward the authoritative position. The sim only reports position at
-        // 20 Hz; easing straight toward that coarse target (the old behaviour)
-        // decelerated between snapshots and pulsed — worst flying straight up.
-        // Reconciliation still corrects any drift, ground clamp, or server-side
-        // difference. `predicted_velocity` already reflects collision steering.
-        let target = avatar_state.position;
+        // sending to the sim (frame-rate integration), then reconcile toward the
+        // authoritative position. `predicted_velocity` already reflects collision
+        // steering.
+        //
+        // The reconcile target is the last snapshot **extrapolated by its own
+        // age**, not the raw snapshot. `AvatarState::position` only advances at
+        // the 20 Hz tick, so it is a staircase: reconciling against it directly
+        // meant that between two snapshots the prediction ran forward at v while
+        // the correction pulled it back toward a target that was standing still.
+        // The pull reaches ONLINE_RECONCILE_RATE · v · 0.05 ≈ 3.6 m/s against a
+        // 8 m/s walk just before each snapshot lands, then resets — a 20 Hz
+        // sawtooth in the apparent speed, and (since the follow camera tracks
+        // `display_position`) in the whole view. Extrapolating the target by
+        // `snapshot_age` compares like with like: the error signal is smooth, so
+        // reconciliation only corrects genuine divergence.
+        avatar_state.snapshot_age =
+            (avatar_state.snapshot_age + dt).min(ONLINE_MAX_EXTRAPOLATION);
+        let mut target =
+            avatar_state.position + avatar_state.predicted_velocity * avatar_state.snapshot_age;
         let mut display = avatar_state.display_position + avatar_state.predicted_velocity * dt;
         // Match the sim's ground clamp (`state::step`, y >= 0) so a fly-down
         // prediction doesn't dip through the floor and bounce back.
         if display.y < 0.0 {
             display.y = 0.0;
         }
-        let reconcile = 1.0 - (-ONLINE_RECONCILE_RATE * dt).exp();
-        avatar_state.display_position = display.lerp(target, reconcile);
+        if target.y < 0.0 {
+            target.y = 0.0;
+        }
+        avatar_state.display_position = if display.distance(target) > ONLINE_SNAP_ERROR {
+            // Teleport / correction / resumed stream: ease-in would visibly slide
+            // the avatar across the map instead of arriving.
+            target
+        } else {
+            let reconcile = 1.0 - (-ONLINE_RECONCILE_RATE * dt).exp();
+            display.lerp(target, reconcile)
+        };
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }

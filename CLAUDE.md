@@ -143,7 +143,7 @@ This is a **Cargo workspace** with four crates:
 
 ### Shared (`vibe_core`)
 
-- `protocol.rs` — `NetMessage` enum, `encode/decode_app_frame`, `PROTOCOL_VERSION` (currently **8**)
+- `protocol.rs` — `NetMessage` enum, `encode/decode_app_frame`, and `PROTOCOL_HISTORY`: the wire changelog, one `ProtocolRevision { version, adr, summary }` per revision. `PROTOCOL_VERSION` is *derived* from its last entry, so **bumping the version means appending a row** — don't write the number anywhere else (three docs drifted to "currently 8" while the wire was at 11). A unit test enforces the run stays gapless.
 - `world.rs` — `TileKey`, lat/lng ↔ tile math, `REGION_SIZE_METERS`
 - `yaw.rs` — angle helpers for avatar direction continuity
 

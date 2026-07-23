@@ -348,6 +348,7 @@ fn main() {
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
+    .init_resource::<systems::map_geometry::MapSurfaces>()
     .init_resource::<systems::globe::GlobeState>()
     .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
     // Space background: the atmosphere skybox covers this everywhere in the local
@@ -543,7 +544,15 @@ fn main() {
             systems::user_store::autosave_user_store
                 .run_if(not(systems::shot_harness::harness_active)),
             systems::bookmarks::poll_bookmark_addresses,
-            systems::map_stream::apply_stream_textures.after(systems::map_stream::update_map_stream),
+            // Nested to stay under the per-tuple system limit.
+            (
+                systems::map_stream::apply_stream_textures
+                    .after(systems::map_stream::update_map_stream),
+                // Vector surfaces as geometry (ADR-035 option B): water and landuse
+                // meshes over the textured tiles. No-op on a raster tile source.
+                systems::map_geometry::update_map_surfaces
+                    .after(systems::map_stream::update_map_stream),
+            ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the
             // per-tuple system limit.

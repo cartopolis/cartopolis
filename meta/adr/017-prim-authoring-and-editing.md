@@ -40,7 +40,7 @@
 | `PrimRemoved` | S→C | 7 | Emitted on delete |
 | `TextureCatalog*` / `TextureRequest` / `TextureData` | C↔S | 12–16 | Standard texture library, streamed from the sim |
 
-`PrimDto` gained `texture_id: Option<String>` and (later, ADR-018) the `PrimSurface` + `PrimGeometry` fields, all `#[serde(default)]` for rollout. Current `PROTOCOL_VERSION` is **8** (this ADR introduced the CRUD kinds; ADR-018/v8 added surface + geometry).
+`PrimDto` gained `texture_id: Option<String>` and (later, ADR-018) the `PrimSurface` + `PrimGeometry` fields, all `#[serde(default)]` for rollout. This ADR introduced the CRUD kinds; ADR-018 (v8) added surface + geometry. The current wire version and the full revision log live in `PROTOCOL_HISTORY` (`crates/vibe_core/src/protocol.rs`).
 
 **Server** (`vibe_sim`): `SimWorld` holds an `Arc<Mutex<Connection>>` (connection kept alive past `load_world`) and gains `add_prim`/`update_prim`/`remove_prim`, each persisting via `db.rs` and returning the authoritative `PrimDto`. `net.rs` handles the CRUD messages and broadcasts `PrimUpsert`/`PrimRemoved` **immediately** on mutation (not at the next tick); the full `WorldSnapshot` remains the consistency fallback. Migration `V2` added the `texture_id` column.
 

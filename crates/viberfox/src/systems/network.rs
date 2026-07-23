@@ -44,7 +44,11 @@ pub fn spawn_network_thread(
     auth: Option<Res<ConnectAuth>>,
     user_store: Res<UserStore>,
 ) {
-    let tile_template = Arc::new(Mutex::new(String::new()));
+    // A local `VIBE_TILE_URL` wins over whatever the server advertises — it exists
+    // precisely to point a dev client at a different basemap than the sim's default.
+    let tile_template = Arc::new(Mutex::new(
+        crate::resources::tile_url_override().unwrap_or_default(),
+    ));
     let tile_for_thread = tile_template.clone();
     commands.insert_resource(OsmTileUrlTemplate(tile_template));
 
@@ -142,8 +146,10 @@ async fn client_loop(
                 osm_tile_url_template,
                 ..
             } => {
-                if let Ok(mut g) = tile_template.lock() {
-                    *g = osm_tile_url_template.clone();
+                if crate::resources::tile_url_override().is_none() {
+                    if let Ok(mut g) = tile_template.lock() {
+                        *g = osm_tile_url_template.clone();
+                    }
                 }
                 tracing::info!(tick_hz, your_avatar_id, "handshake ok");
                 authed = Some((framed, ack_msg));
@@ -410,6 +416,7 @@ fn apply_local_avatar_pose(
         return;
     };
     avatar_state.position = a.position;
+    avatar_state.snapshot_age = 0.0;
     avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
 }
 
@@ -426,6 +433,7 @@ fn apply_local_avatar_pose_full(
     let pi = std::f32::consts::PI;
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
+    avatar_state.snapshot_age = 0.0;
     avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
     let face = avatar_facing_yaw_from_camera(camera_azimuth);
     avatar_state.online_tank_yaw = wrap_angle_pi(face - pi);
@@ -623,6 +631,27 @@ const SIM_WALK_SPEED: f32 = 8.0;
 const SIM_MAX_SPEED: f32 = 32.0;
 const SIM_FLY_VERTICAL: f32 = 12.0;
 
+/// Resend interval for an unchanged intent. The intent is absolute state, so it
+/// only has to be *re*sent to cover a dropped/stale reading; changes go out the
+/// frame they happen. The window runs `AutoNoVsync`, so the old per-frame send
+/// pushed several hundred `ClientIntent` frames a second at a 20 Hz sim — one
+/// socket write each, and (the client loop's `select!` is `biased` toward the
+/// intent channel) enough to starve the branch that reads snapshots back.
+const INTENT_KEEPALIVE: f32 = 1.0 / 30.0;
+/// Wish-dir / yaw deltas below these count as "unchanged" for the resend test.
+const INTENT_EPS_DIR: f32 = 1e-3;
+const INTENT_EPS_YAW: f32 = 0.01;
+
+/// Last intent handed to the sim, for the change test above.
+#[derive(Clone, Copy)]
+pub struct SentIntent {
+    move_x: f32,
+    move_z: f32,
+    display_yaw: f32,
+    fly_up: bool,
+    fly_down: bool,
+}
+
 pub fn send_network_intent(
     online: Option<Res<OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -632,6 +661,9 @@ pub fn send_network_intent(
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
+    time: Res<Time>,
+    mut last_sent: Local<Option<SentIntent>>,
+    mut since_send: Local<f32>,
 ) {
     let Some(sess) = online else {
         return;
@@ -639,6 +671,8 @@ pub fn send_network_intent(
     if camera_state.mode != crate::resources::CameraMode::Avatar {
         // Not driving the avatar: stop predicting so it doesn't drift.
         avatar_state.predicted_velocity = Vec3::ZERO;
+        // Force a send when the avatar camera comes back, whatever the state then.
+        *last_sent = None;
         return;
     }
 
@@ -697,6 +731,29 @@ pub fn send_network_intent(
         0.0
     };
     avatar_state.predicted_velocity = Vec3::new(horizontal.x, vy, horizontal.y);
+
+    // Send on change (so a key edge reaches the sim the frame it happens) or on
+    // the keepalive tick — not every frame; see `INTENT_KEEPALIVE`.
+    *since_send += time.delta_secs();
+    let intent = SentIntent {
+        move_x: v.x,
+        move_z: v.z,
+        display_yaw,
+        fly_up,
+        fly_down,
+    };
+    let changed = last_sent.map_or(true, |p| {
+        (p.move_x - intent.move_x).abs() > INTENT_EPS_DIR
+            || (p.move_z - intent.move_z).abs() > INTENT_EPS_DIR
+            || wrap_angle_pi(p.display_yaw - intent.display_yaw).abs() > INTENT_EPS_YAW
+            || p.fly_up != intent.fly_up
+            || p.fly_down != intent.fly_down
+    });
+    if !changed && *since_send < INTENT_KEEPALIVE {
+        return;
+    }
+    *since_send = 0.0;
+    *last_sent = Some(intent);
 
     let _ = sess.intent_tx.send(NetMessage::ClientIntent {
         request_id: 0,

@@ -27,8 +27,8 @@
 Every TCP frame body (ADR-008 length-delimited) is an **app frame**: an 8-byte header + postcard payload.
 
 **Header** (`crates/vibe_core/src/protocol.rs`, all little-endian):
-- `protocol_version: u16` — `PROTOCOL_VERSION`, currently **8**; `decode_app_frame` rejects mismatches (`ProtocolError::UnsupportedVersion`).
-- `message_kind: u16` — discriminant of the `MessageKind` enum (`#[repr(u16)]`, values 1–16, `ClientHello`…`TextureNotFound`); mismatch vs the decoded body is rejected.
+- `protocol_version: u16` — `PROTOCOL_VERSION`, derived from the `PROTOCOL_HISTORY` changelog in `crates/vibe_core/src/protocol.rs` (**the** record of what each revision changed — this doc deliberately does not repeat the number); `decode_app_frame` rejects mismatches (`ProtocolError::UnsupportedVersion`).
+- `message_kind: u16` — discriminant of the `MessageKind` enum (`#[repr(u16)]`, `ClientHello`…); mismatch vs the decoded body is rejected.
 - `request_id: u32` — correlation id (echoed in `ServerError`); 0 when unused.
 
 **Body**: postcard-encoded `NetMessage` (the rest of the frame — the transport already delimits length, so no inner length prefix). `serde` derives on every message; `uuid::Uuid` for session ids; `thiserror` (`ProtocolError`) for typed decode errors.
@@ -57,7 +57,7 @@ Every TCP frame body (ADR-008 length-delimited) is an **app frame**: an 8-byte h
 - Testable with golden vectors per message kind
 
 **Negative**:
-- Every new kind needs versioning discipline (mitigation: bump `PROTOCOL_VERSION`)
+- Every new kind needs versioning discipline (mitigation: append a `ProtocolRevision` to `PROTOCOL_HISTORY`, which *is* the version bump — a test enforces the run stays gapless)
 - Wire schema lives in one `vibe_core` module; roundtrip tests per kind guard it
 
 ## Related

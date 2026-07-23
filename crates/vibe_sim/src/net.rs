@@ -60,7 +60,12 @@ fn authenticate(
 
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// ADR-012: simple per-connection rate limits (token-bucket style, fixed interval).
-const MIN_INTENT_INTERVAL: Duration = Duration::from_millis(50);
+/// Intents are *dropped* over this rate, not queued — and they carry absolute
+/// state, so a dropped one loses a key edge outright. At the old 50 ms (one full
+/// tick) a press or release could sit unapplied for a whole tick on top of the
+/// tick quantisation itself, which read as input lag and stutter. 10 ms still
+/// caps a flooding client at 100 `world.write()` locks a second.
+const MIN_INTENT_INTERVAL: Duration = Duration::from_millis(10);
 const MIN_OBSERVER_INTERVAL: Duration = Duration::from_millis(100);
 
 pub async fn handle_connection(
@@ -463,12 +468,31 @@ pub async fn tick_loop(
 ) {
     let period = std::time::Duration::from_secs_f32((1.0 / config.tick_hz).max(0.001));
     let mut interval = tokio::time::interval(period);
+    // `Burst` (the default) fires missed ticks back-to-back to catch up, which
+    // lands two or three steps' worth of motion in one instant and then leaves a
+    // gap — an uneven snapshot cadence the client's prediction can only read as a
+    // jump. Delay the schedule instead and let the measured `dt` below account
+    // for the lost time.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A stalled runtime shouldn't teleport every avatar on the next tick.
+    let max_step = period.as_secs_f32() * 5.0;
+    let mut last_step = Instant::now();
     let mut tick: u64 = 0;
     loop {
         interval.tick().await;
         tick += 1;
+        // Step by *measured* elapsed time, not the nominal period. Solo mode runs
+        // this loop in-process alongside the Bevy render loop, so ticks routinely
+        // land late; advancing a fixed 50 ms per tick let simulated time fall
+        // behind wall-clock time, and the client — predicting against a real
+        // clock — then ran permanently ahead of the authority it was reconciling
+        // toward. The gap is proportional to speed, so it was invisible at an
+        // 8 m/s walk and obvious at the 32 m/s fly.
+        let now = Instant::now();
+        let dt = (now - last_step).as_secs_f32().min(max_step);
+        last_step = now;
         let mut w = world.write().await;
-        w.step(period.as_secs_f32());
+        w.step(dt);
         let snap = w.snapshot(tick);
         drop(w);
         match encode_app_frame(&snap) {

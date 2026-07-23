@@ -22,6 +22,12 @@
 > real-world position**. The map-vs-content separation and the shared floating-origin
 > frame still hold; wherever this ADR says "region", read "server-authoritative content
 > anchored by lat/lng". A forthcoming ADR specifies the capacity-bounded asset model.
+>
+> **Update 2 (ADR-035).** The map tier is moving from **raster** tiles to **self-hosted vector
+> tiles (MVT)**, so wherever this ADR calls the map tier a "stack of photos" or read-only
+> "wallpaper", read **streamed geometry styled on the client** — which is what lets the basemap
+> respond to the day/night cycle and weather. The two-tier split, the map/sim decoupling and the
+> one-shared-ruler principle are unchanged.
 
 ## Context
 

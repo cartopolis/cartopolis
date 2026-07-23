@@ -66,7 +66,8 @@ prim state, and every prim carries an absolute `GeoAnchor`.
 **Approach**:
 - **`vibe_core`** — `GeoAnchor { latitude: f64, longitude: f64 }` and a mandatory
   `geo: GeoAnchor` field on `PrimDto`, `CreatePrim`, and `UpdatePrim`.
-  `PROTOCOL_VERSION` is 10.
+  Shipped as wire revision **v10** (see `PROTOCOL_HISTORY`; the current version
+  is derived from that log, not pinned here).
 - **`vibe_sim`** — the `prims` table carries `latitude`/`longitude REAL NOT NULL`;
   `db.rs` round-trips them as required `f64`. The sim stores whatever geo the
   client authored — it never converts, having no anchor of its own.

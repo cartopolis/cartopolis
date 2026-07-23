@@ -7,15 +7,52 @@ use uuid::Uuid;
 
 use crate::error::ProtocolError;
 
-/// Bump when the app-frame layout or postcard schema changes incompatibly.
-/// v8: prim texture surface params (alpha/glow/full-bright/repeats/rotation/offset).
-/// v9: authenticated handshake — `ClientHello.auth`, `ServerHelloAck.principal_id`
-///     + `session_token` (ADR-016).
-/// v10: geo-anchored prims — `PrimDto.geo`, `CreatePrim`/`UpdatePrim` carry a
-///      mandatory `GeoAnchor`; prim horizontal placement is lat/lng (ADR-029).
-/// v11: chat — `ChatSend` / `ChatMessage` / `ChatSubscribe` (ADR-028, Simulation
-///      tier). Local (proximity), Global, and Room scopes; geo tiers land later.
-pub const PROTOCOL_VERSION: u16 = 11;
+/// One wire-protocol revision: what changed and which ADR decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtocolRevision {
+    pub version: u16,
+    /// Deciding ADR ("ADR-028"), or `""` for a change with no ADR of its own.
+    pub adr: &'static str,
+    pub summary: &'static str,
+}
+
+/// **The** protocol changelog — the single place a wire revision is recorded.
+///
+/// [`PROTOCOL_VERSION`] is derived from the last entry, so bumping the version
+/// *is* appending a row here: the number can't move without a note saying why,
+/// and no other file needs to carry a copy of it. Prose (CLAUDE.md, the ADRs)
+/// points at this constant rather than repeating the number — three docs claimed
+/// "currently 8" while the wire had already moved to 11.
+///
+/// Entries start at v8, the oldest revision with a written record (ADR-018);
+/// v1–v7 predate the log and no client speaking them exists.
+pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
+    ProtocolRevision {
+        version: 8,
+        adr: "ADR-018",
+        summary: "prim texture surface params (alpha/glow/full-bright/repeats/rotation/offset)",
+    },
+    ProtocolRevision {
+        version: 9,
+        adr: "ADR-016",
+        summary: "authenticated handshake — ClientHello.auth, ServerHelloAck.principal_id + session_token",
+    },
+    ProtocolRevision {
+        version: 10,
+        adr: "ADR-029",
+        summary: "geo-anchored prims — PrimDto.geo; CreatePrim/UpdatePrim carry a mandatory GeoAnchor",
+    },
+    ProtocolRevision {
+        version: 11,
+        adr: "ADR-028",
+        summary: "chat — ChatSend / ChatMessage / ChatSubscribe; Local (proximity), Global and Room scopes",
+    },
+];
+
+/// Current wire version, sent in every app frame; `decode_app_frame` rejects
+/// mismatches (`ProtocolError::UnsupportedVersion`). Derived from
+/// [`PROTOCOL_HISTORY`] — append there to bump it.
+pub const PROTOCOL_VERSION: u16 = PROTOCOL_HISTORY[PROTOCOL_HISTORY.len() - 1].version;
 
 const APP_HEADER_LEN: usize = 8;
 
@@ -498,6 +535,30 @@ pub fn decode_app_frame(bytes: &[u8]) -> Result<NetMessage, ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The changelog is the source of truth for the wire version, so it has to
+    /// stay a gapless ascending run — a duplicated or skipped number would let
+    /// two different schemas answer to one version.
+    #[test]
+    fn protocol_history_is_contiguous_and_current() {
+        assert!(!PROTOCOL_HISTORY.is_empty());
+        for pair in PROTOCOL_HISTORY.windows(2) {
+            assert_eq!(
+                pair[1].version,
+                pair[0].version + 1,
+                "gap or duplicate between v{} and v{}",
+                pair[0].version,
+                pair[1].version
+            );
+        }
+        for rev in PROTOCOL_HISTORY {
+            assert!(!rev.summary.is_empty(), "v{} has no summary", rev.version);
+        }
+        assert_eq!(
+            PROTOCOL_VERSION,
+            PROTOCOL_HISTORY[PROTOCOL_HISTORY.len() - 1].version
+        );
+    }
 
     #[test]
     fn roundtrip_hello_app_frame() {
