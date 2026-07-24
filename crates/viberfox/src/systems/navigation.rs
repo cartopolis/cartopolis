@@ -79,6 +79,13 @@ const CASING_HALF_WIDTH: f32 = 4.8;
 /// Radius of the start/finish discs.
 const MARKER_RADIUS: f32 = 7.0;
 
+/// Half-width of the thin connector drawn from a pin to where the route joins the
+/// road, and the gap below which no connector is drawn at all (the pin is on the
+/// road already). A long connector — the pin snapped across water to a drivable
+/// road — then reads as a thin lead-in, not a fat route line through a canal.
+const CONNECTOR_HALF_WIDTH: f32 = 1.0;
+const CONNECTOR_MIN_M: f32 = 4.0;
+
 /// The panel's symbols, resolved against the font that is actually loaded.
 ///
 /// egui bundles Ubuntu-Light plus a small emoji subset, and a character outside
@@ -671,28 +678,33 @@ pub fn update_route_visuals(
         }
     };
 
-    // Build the line in metres relative to its own first point: the route can be
-    // tens of kilometres from the anchor, and f32 mesh coordinates that far out lose
-    // the centimetres the line's own width is measured in.
-    let world: Vec<DVec3> = r
-        .points
-        .iter()
-        .map(|p| {
-            let (x, z) = lat_lng_to_world(anchor, p[0], p[1]);
-            DVec3::new(x, 0.0, z)
-        })
-        .collect();
-    let Some(&origin) = world.first() else {
-        return;
-    };
-    let local: Vec<Vec2> = dedupe(
-        world
-            .iter()
-            .map(|p| Vec2::new((p.x - origin.x) as f32, (p.z - origin.z) as f32)),
-    );
-    if local.len() < 2 {
+    // `r.points` is `[start pin, road node, …, road node, end pin]`. The pins are
+    // where the user aimed; the road nodes are where the route actually joins the
+    // network. Drawing the full-width ribbon straight from a pin to the first road
+    // node is what put a fat line across a canal when the pin sat on a quay and the
+    // nearest *drivable* node was on the far bank — so the road path is drawn at full
+    // width and each pin-to-road gap as a thin connector instead.
+    let n = r.points.len();
+    if n < 2 {
         return;
     }
+    let to_world = |p: &[f64; 2]| {
+        let (x, z) = lat_lng_to_world(anchor, p[0], p[1]);
+        DVec3::new(x, 0.0, z)
+    };
+    // Road portion is everything between the two pins; with ≥ 2 graph nodes always
+    // present (start ≠ goal), that is at least two points.
+    let road_world: Vec<DVec3> = r.points[1..n - 1].iter().map(to_world).collect();
+    let Some(&origin) = road_world.first() else {
+        return;
+    };
+    let to_local = |w: DVec3| Vec2::new((w.x - origin.x) as f32, (w.z - origin.z) as f32);
+    let road: Vec<Vec2> = dedupe(road_world.iter().map(|w| to_local(*w)));
+    if road.len() < 2 {
+        return;
+    }
+    let from_pin = to_local(to_world(&r.points[0]));
+    let to_pin = to_local(to_world(&r.points[n - 1]));
 
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
     let mut spawn = |mesh: Mesh, material: Handle<StandardMaterial>, at: DVec3| {
@@ -712,20 +724,23 @@ pub fn update_route_visuals(
     };
 
     let base = DVec3::new(origin.x, f64::from(ROUTE_Y), origin.z);
-    let casing = ribbon(&local, CASING_HALF_WIDTH);
-    tracing::info!(
-        points = local.len(),
-        casing_verts = casing.count_vertices(),
-        "route ribbon built"
-    );
-    spawn(casing, palette.casing, base);
-    spawn(ribbon(&local, ROUTE_HALF_WIDTH), palette.fill, base);
+    spawn(ribbon(&road, CASING_HALF_WIDTH), palette.casing.clone(), base);
+    spawn(ribbon(&road, ROUTE_HALF_WIDTH), palette.fill.clone(), base);
+
+    // Pin-to-road connectors, drawn thin so a long one (the pin snapped across
+    // water to reach a drivable road) reads as "get to the road", not as the route.
+    // Skipped when the pin already sits on the road, the ordinary case.
+    for (pin, road_end, material) in [
+        (from_pin, road[0], palette.casing.clone()),
+        (to_pin, *road.last().unwrap(), palette.casing.clone()),
+    ] {
+        if pin.distance(road_end) > CONNECTOR_MIN_M {
+            spawn(ribbon(&[pin, road_end], CONNECTOR_HALF_WIDTH), material, base);
+        }
+    }
 
     // Start / finish discs, at the coordinates the user actually asked for.
-    for (point, material) in [
-        (local[0], palette.start),
-        (*local.last().unwrap(), palette.finish),
-    ] {
+    for (point, material) in [(from_pin, palette.start), (to_pin, palette.finish)] {
         spawn(
             disc(MARKER_RADIUS),
             material,
@@ -871,11 +886,11 @@ pub fn render_route_panel(
     let mut open = true;
     let mut actions = PanelActions::default();
     let icons = Icons::resolve(egui.ctx_mut());
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
     let ui_root = egui.ui_mut();
 
-    egui::Panel::right("route_panel")
-        .resizable(true)
-        .default_size(320.0)
+    crate::systems::egui_manager::responsive_right_panel("route_panel", compact, viewport_w, 320.0)
         .show_collapsible(ui_root, &mut open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Route");
@@ -1333,14 +1348,14 @@ mod tests {
     /// `dump_png` is the manual check for the styling.
     ///
     /// ```text
-    /// VIBE_TILE_URL=https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y} \
+    /// VIBE_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y} \
     ///   cargo test -p viberfox --bin viberfox solves_a_real_route -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]
     fn solves_a_real_route() {
         let template = std::env::var("VIBE_TILE_URL")
-            .unwrap_or_else(|_| "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}".to_string());
+            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
         // Two points ~1 km apart in the fixture city, by coordinate.
         let from = (53.2194, 6.5665);
         let to = (53.2109, 6.5642);
@@ -1379,17 +1394,22 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_drops_repeated_points() {
+    fn dedupe_merges_sub_segment_points() {
+        // Exact duplicates and points closer than MIN_SEGMENT_M collapse; points
+        // further apart survive. Here: a cluster near the origin (all within the
+        // threshold of each other) → one point, then a distant one → two total.
         let pts = dedupe(
             [
                 Vec2::new(0.0, 0.0),
                 Vec2::new(0.0, 0.0),
-                Vec2::new(1.0, 0.0),
-                Vec2::new(1.0, 0.0),
+                Vec2::new(MIN_SEGMENT_M * 0.5, 0.0), // sub-segment: merges
+                Vec2::new(50.0, 0.0),               // far: kept
             ]
             .into_iter(),
         );
-        assert_eq!(pts.len(), 2);
+        assert_eq!(pts.len(), 2, "got {pts:?}");
+        assert_eq!(pts[0], Vec2::new(0.0, 0.0));
+        assert_eq!(pts[1], Vec2::new(50.0, 0.0));
     }
 
     #[test]
