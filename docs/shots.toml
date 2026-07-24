@@ -20,7 +20,7 @@
 # server handshake, and the built-in fallback is the *raster* OSM basemap — on
 # which the `route` shot has no graph to solve against (ADR-037). `VIBE_TILE_URL`
 # still overrides this, so a local mirror needs no edit to this file.
-tile_url = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}"
+tile_url = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}"
 size = "1600x900"
 out_dir = "img"
 # Documentation images are chrome-free; the two that document the UI opt back in.

@@ -30,17 +30,21 @@ const EARTH_CIRCUMFERENCE: f64 = 2.0 * std::f64::consts::PI * EARTH_RADIUS;
 pub const REGION_ZOOM_LEVEL: u32 = 17;
 pub const REGION_SIZE_METERS: f64 = 256.0;
 
-/// Default map tile source: VersaTiles **vector** (Shortbread MVT), the client-side
-/// tessellated-and-lit basemap of ADR-035. Shared so the sim's advertised default
-/// (`vibe_sim::config`) and the client's offline/`--shot` fallback
-/// (`viberfox::systems::tile_loader`) cannot drift apart — a mismatch there is how
-/// solo mode silently renders the old raster tiles instead of the vector map.
+/// Default map tile source: our **self-hosted** VersaTiles **vector** (Shortbread
+/// MVT) server, the client-side tessellated-and-lit basemap of ADR-035. This is a
+/// garage44 mirror of `download.versatiles.org`'s planet archive (z0–14), served by
+/// the `versatiles` server behind Caddy — same schema and URL shape as the public
+/// `tiles.versatiles.org`, so it is a drop-in origin swap off their hosting.
+/// Shared so the sim's advertised default (`vibe_sim::config`) and the client's
+/// offline/`--shot` fallback (`viberfox::systems::tile_loader`) cannot drift apart —
+/// a mismatch there is how solo mode silently renders the old raster tiles instead
+/// of the vector map.
 ///
 /// A `{z}/{x}/{y}` template with **no extension**, which `tile_source_kind`
 /// classifies as vector. Override per-run with `VIBE_TILE_URL` (client) or the
 /// sim's `osm_tile_url_template` config; a raster template (e.g. one ending
 /// `.png`) still works and falls back to the pre-rendered path.
-pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}";
+pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}";
 
 /// WGS84 → OSM tile index (Web Mercator).
 #[must_use]

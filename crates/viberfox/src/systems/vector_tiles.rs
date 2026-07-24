@@ -1416,7 +1416,8 @@ pub fn looks_like_raster(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    /// A real z14 tile over Groningen, fetched from tiles.versatiles.org.
+    /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
+    /// (now self-hosted at tiles.garage44.eu; the archive is identical).
     const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
 
     #[test]

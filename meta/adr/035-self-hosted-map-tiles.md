@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-035
-- **Status**: Proposed (implementation underway in a separate workstream)
+- **Status**: Accepted — server implemented 2026-07-24 (see *Implementation* below)
 - **Date**: 2026-07-23
 - **Tags**: [osm, tiles, vector, mvt, map, ops, rendering, dependency, hosting, web]
 - **Decision Type**: technology_choice
@@ -40,9 +40,38 @@ garage44 Caddy, so this follows an established pattern rather than starting one.
 
 ## Decision
 
-**Serve our own OSM *vector* tiles** (Mapbox Vector Tile / MVT) from our origin at
-`/tiles/{z}/{x}/{y}.mvt`, generated offline with **planetiler** and stored as **PMTiles**. The
-client decodes MVT and renders the map as geometry; styling happens client-side.
+**Serve our own OSM *vector* tiles** (Mapbox Vector Tile / MVT) from our origin, in the
+**Shortbread** schema the client already tessellates and lights. The client decodes MVT and
+renders the map as geometry; styling happens client-side.
+
+> **Implementation (2026-07-24) — how the server was actually built.** The mechanism below
+> (planetiler → PMTiles → a `vibe_relay` handler) was the *plan*; the shipped server takes a
+> simpler path that reaches the same end. The client's whole vector path — `vector_tiles.rs`,
+> `routing.rs`, the styling — is written against the **Shortbread** schema, which is what
+> `tiles.versatiles.org` serves and what this ADR's default already pointed at. Rather than run
+> planetiler (whose default profile is *not* Shortbread, and whose planet build needs far more RAM
+> than the 22 GB VPS has), we **mirror VersaTiles' prebuilt planet archive** and serve it ourselves:
+>
+> - **Data**: `https://download.versatiles.org/osm.versatiles` — one 62 GB `.versatiles` container,
+>   z0–14, Shortbread. Downloaded once to `/srv/versatiles/osm.versatiles` on the garage44.eu VPS
+>   (on `/`, not `/data` — the 62 GB doesn't fit the smaller volume). Refresh = re-download.
+> - **Serving**: the Rust `versatiles` server (`ghcr.io/versatiles-org/versatiles`) as a `tiles`
+>   service in the existing `geo` Docker Compose stack, exposing `/tiles/osm/{z}/{x}/{y}`. It
+>   already emits `Access-Control-Allow-Origin: *` and a 28-day `Cache-Control`, so no relay logic
+>   is needed — this replaces the "small `pmtiles` handler in `vibe_relay`" design.
+> - **Origin**: Caddy fronts it at **`tiles.garage44.eu`** (its own subdomain, the overpass /
+>   nominatim / 3dbag pattern), not the same-origin `/tiles/*` path ADR-034 sketched. The
+>   single-origin relay of ADR-033/034 (for the wasm build) can still front this upstream later.
+> - **Client**: a pure origin swap. `DEFAULT_TILE_URL_TEMPLATE` moved from
+>   `tiles.versatiles.org` to `tiles.garage44.eu` — same schema, same URL shape, no decode/render
+>   change. `VIBE_TILE_URL` still overrides.
+>
+> The rest of this ADR (why vector, coverage, client work, downstream consolidation) stands as
+> written; only the generation-and-serving mechanism changed. Planetiler → PMTiles remains the path
+> to a *custom* viberfox-styled or non-Shortbread tileset if we ever outgrow the mirror.
+
+The original plan — kept for the record and as the fallback for a custom tileset — was to serve at
+`/tiles/{z}/{x}/{y}.mvt`, generated offline with **planetiler** and stored as **PMTiles**:
 
 ### Why vector rather than raster
 

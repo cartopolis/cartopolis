@@ -594,10 +594,10 @@ impl Default for OsmTileUrlTemplate {
 /// `VIBE_TILE_URL` — a `{z}/{x}/{y}` template overriding the tile source, matching
 /// the `VIBE_OVERPASS_URL` / `VIBE_3DBAG_URL` convention. This is how the offline
 /// and `--shot` paths (which never see a server handshake) reach a non-default
-/// source, e.g. the VersaTiles vector basemap:
+/// source, e.g. our self-hosted VersaTiles vector basemap (the default already):
 ///
 /// ```text
-/// VIBE_TILE_URL=https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}
+/// VIBE_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
 /// ```
 ///
 /// Vector vs raster is inferred from the template — see `tile_loader::tile_source_kind`.
