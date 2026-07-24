@@ -469,10 +469,15 @@ pub fn render_avatar_chooser(
     let saved = store.data.appearance.clone();
     let mut apply = false;
     let mut close = false;
-    egui::Panel::right("appearance_panel")
-        .resizable(true)
-        .default_size(280.0)
-        .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    crate::systems::egui_manager::responsive_right_panel(
+        "appearance_panel",
+        compact,
+        viewport_w,
+        280.0,
+    )
+    .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Appearance");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

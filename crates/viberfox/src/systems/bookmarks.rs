@@ -131,6 +131,8 @@ pub fn render_bookmarks_panel(
         },
     );
 
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
     let ui_root = egui.ui_mut();
     let mut close = false;
     let mut delete: Option<u64> = None;
@@ -138,10 +140,13 @@ pub fn render_bookmarks_panel(
     let mut teleport: Option<Teleport> = None;
     let mut commit_rename: Option<(u64, String)> = None;
 
-    egui::Panel::right("bookmarks_panel")
-        .resizable(true)
-        .default_size(280.0)
-        .show_collapsible(ui_root, &mut open, |ui| {
+    crate::systems::egui_manager::responsive_right_panel(
+        "bookmarks_panel",
+        compact,
+        viewport_w,
+        280.0,
+    )
+    .show_collapsible(ui_root, &mut open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Places");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

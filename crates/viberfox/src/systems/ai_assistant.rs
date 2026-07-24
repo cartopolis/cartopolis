@@ -267,9 +267,9 @@ pub fn render_ai_panel(
 ) {
     let mut open = right_panel.is(crate::resources::RightPanel::Assistant);
 
-    egui::Panel::right("ai_panel")
-        .resizable(true)
-        .default_size(320.0)
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    crate::systems::egui_manager::responsive_right_panel("ai_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             // Header
             ui.horizontal(|ui| {

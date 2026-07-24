@@ -144,6 +144,11 @@ pub fn render_chat_panel(
 
     // --- Bottom bar: dark strip along the bottom (floating Area, doesn't disturb
     //     the existing panel layout). ---
+    // Responsive: on a narrow (phone-ish) viewport the strip is too wide for one
+    // row, so bound it to the viewport and let the controls wrap onto several rows
+    // instead of clipping off both screen edges.
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
     let ctx = egui.ctx_mut();
     egui::Area::new(egui::Id::new("sl_bottom_bar"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -6.0))
@@ -153,7 +158,20 @@ pub fn render_chat_panel(
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    let row = |ui: &mut egui::Ui,
+                               add: &mut dyn FnMut(&mut egui::Ui)| {
+                        if compact {
+                            // Bound the bar to the viewport (minus a small margin)
+                            // so the wrapped row has an edge to wrap against.
+                            ui.set_max_width((viewport_w - 24.0).max(200.0));
+                            ui.horizontal_wrapped(add);
+                        } else {
+                            // Wide screens: unbounded content-sized single row,
+                            // exactly as before.
+                            ui.horizontal(add);
+                        }
+                    };
+                    row(ui, &mut |ui| {
                         // Chat history toggle (drives the right-panel slot).
                         if ui
                             .selectable_label(right_panel.is(RightPanel::Chat), "💬 Chat")
@@ -174,10 +192,17 @@ pub fn render_chat_panel(
                         if is_local {
                             ui.checkbox(&mut chat.shout, "Shout");
                         }
-                        // Nearby-chat input (SL's persistent "say" line).
+                        // Nearby-chat input (SL's persistent "say" line). Narrow it
+                        // on a phone so the 280 pt default doesn't force the strip
+                        // wider than the screen before wrapping can even help.
+                        let input_w = if compact {
+                            (viewport_w - 60.0).clamp(120.0, 280.0)
+                        } else {
+                            280.0
+                        };
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut chat.input)
-                                .desired_width(280.0)
+                                .desired_width(input_w)
                                 .hint_text("Say something…"),
                         );
                         let entered =
@@ -216,9 +241,7 @@ pub fn render_chat_panel(
 
     // --- Chat history as an animated right panel (mutually exclusive slot). ---
     let mut chat_open = right_panel.is(RightPanel::Chat);
-    egui::Panel::right("chat_panel")
-        .resizable(true)
-        .default_size(320.0)
+    crate::systems::egui_manager::responsive_right_panel("chat_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut chat_open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Nearby Chat");

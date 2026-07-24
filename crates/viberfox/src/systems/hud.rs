@@ -88,8 +88,9 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
     // Amber, the same "held" accent the locked ring and glyph share.
     let lock_color = egui::Color32::from_rgb(240, 190, 90);
     egui::Area::new(egui::Id::new("compass_overlay"))
-        // Below the top menu bar, tucked into the right margin.
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 52.0))
+        // Top-left: the status HUD moved into the top-right corner, so the compass
+        // takes the opposite one to keep both clear of the docked panels.
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
         .show(ctx, |ui| {
             let sense = if interactive {
                 egui::Sense::click()
@@ -182,10 +183,10 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
         );
     };
 
-    // Bottom-left: every panel (AI, Layers, Bookmarks) docks on the right, so
-    // the left corner is the one place the overlay never collides with them.
+    // Top-right: keeps clear of the bottom chat/action bar. The caller drops the
+    // whole HUD while a right-docked panel is open, so the two never coexist here.
     egui::Area::new(egui::Id::new("status_hud"))
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(egui::Color32::from_rgba_unmultiplied(10, 14, 22, 200))
@@ -447,7 +448,22 @@ pub fn render_hud(
         user: identity.username.clone(),
     };
 
-    let actions = hud_area(egui.ctx_mut(), &data);
+    // Any docked right-hand panel covers this corner; `RightPanel` is the shared
+    // state the newer panels use, the booleans the older ones do.
+    let right_panel_open = data_layers.panel_open
+        || bookmarks.panel_open
+        || ai.open
+        || !right_panel.is(crate::resources::RightPanel::None);
+
+    // The status HUD now lives in the top-right corner (see `hud_area`), which any
+    // right-docked panel covers — and while routing especially we want an
+    // uncluttered map. So drop the HUD whenever a right panel is open, at any
+    // width; egui paints floating Areas above panels, so it can't hide behind one.
+    let actions = if right_panel_open {
+        HudActions::default()
+    } else {
+        hud_area(egui.ctx_mut(), &data)
+    };
 
     // Top-right compass. Clicking it toggles the north-up lock in globe (Orbit)
     // mode only; fly/avatar are free-form, so there it is a passive indicator.
@@ -457,12 +473,6 @@ pub fn render_hud(
     // on the bottom-most background layer, and even `Order::Background` Areas
     // paint above it), so the only way to keep the compass *behind* the panel
     // is to drop it while one is open.
-    // Any docked right-hand panel covers this corner; `RightPanel` is the shared
-    // state the newer panels use, the booleans the older ones do.
-    let right_panel_open = data_layers.panel_open
-        || bookmarks.panel_open
-        || ai.open
-        || !right_panel.is(crate::resources::RightPanel::None);
     if let Some(heading) = data.heading.filter(|_| !right_panel_open) {
         let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
         let locked = orbit && camera_state.orbit_north_lock;

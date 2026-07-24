@@ -49,6 +49,43 @@ pub struct EguiManager {
     /// keeps the cooperative panel layout the old ctx-based panels had.
     root_ui: Option<egui::Ui>,
     elapsed_time: f64,
+    /// Logical viewport size in **points** (physical pixels ÷ scale), refreshed
+    /// each frame in [`begin_egui_frame`]. UI systems read [`Self::compact`] off
+    /// this to lay out responsively — egui has no media queries, so "responsive"
+    /// is just branching on the live viewport width every frame.
+    viewport_pts: egui::Vec2,
+}
+
+/// Viewport widths (in points) below this are treated as "compact" (phone-ish):
+/// the bottom bar wraps and the right-side panels expand to fill the screen
+/// instead of docking beside the map at a fixed 320 pt.
+pub const COMPACT_WIDTH_PTS: f32 = 640.0;
+
+/// Build a right-docked [`egui::Panel`] that adapts to the viewport: on a wide
+/// screen it docks beside the map at `wide_width` pt and stays resizable; on a
+/// compact (phone-ish) screen it fills the viewport and is fixed, since a resize
+/// handle is unusable on touch and a 320 pt dock would leave no map visible.
+///
+/// Takes `compact` / `viewport_w` as plain values (not `&EguiManager`) so it can
+/// be called after a caller has already taken `egui.ui_mut()` — building the
+/// panel then borrows nothing.
+pub fn responsive_right_panel(
+    id: impl Into<egui::Id>,
+    compact: bool,
+    viewport_w: f32,
+    wide_width: f32,
+) -> egui::Panel {
+    if compact {
+        egui::Panel::right(id)
+            .resizable(false)
+            // Fill the whole viewport — any inset leaves a strip of map peeking
+            // down the left edge of the docked panel.
+            .exact_size(viewport_w.max(240.0))
+    } else {
+        egui::Panel::right(id)
+            .resizable(true)
+            .default_size(wide_width)
+    }
 }
 
 impl Default for EguiManager {
@@ -76,6 +113,7 @@ impl Default for EguiManager {
             ctx,
             root_ui: None,
             elapsed_time: 0.0,
+            viewport_pts: egui::vec2(1280.0, 720.0),
         }
     }
 }
@@ -86,6 +124,18 @@ impl EguiManager {
     /// windows/areas (`egui::Window`, `egui::Area`), which still take `&Context`.
     pub fn ctx_mut(&mut self) -> &mut egui::Context {
         &mut self.ctx
+    }
+
+    /// Logical viewport size in points (physical pixels ÷ display scale), as egui
+    /// lays out against it this frame.
+    pub fn viewport_pts(&self) -> egui::Vec2 {
+        self.viewport_pts
+    }
+
+    /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
+    /// systems branch on this for a responsive layout.
+    pub fn compact(&self) -> bool {
+        self.viewport_pts.x < COMPACT_WIDTH_PTS
     }
 
     /// Borrow this frame's shared root `Ui`, for showing panels
@@ -167,7 +217,12 @@ impl Plugin for EguiPlugin {
         app.init_resource::<EguiManager>()
             .init_resource::<EguiRenderOutput>()
             .add_plugins(ExtractResourcePlugin::<EguiRenderOutput>::default())
-            .add_systems(PreUpdate, begin_egui_frame)
+            // MUST run after Bevy has written this frame's input: begin_egui_frame
+            // reads `ButtonInput`, cursor position and the keyboard/mouse events to
+            // build egui's `RawInput`. Unordered, it can run *before* `InputSystem`
+            // and collect stale/partial input, which corrupts click and keyboard-
+            // focus handling (fields lose focus on keypress).
+            .add_systems(PreUpdate, begin_egui_frame.after(bevy::input::InputSystems))
             .add_systems(PostUpdate, end_egui_frame);
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -219,6 +274,7 @@ pub fn begin_egui_frame(
 
     let logical_w = physical.x as f32 / scale;
     let logical_h = physical.y as f32 / scale;
+    egui_manager.viewport_pts = egui::vec2(logical_w, logical_h);
 
     let mut events: Vec<egui::Event> = Vec::new();
 
