@@ -18,23 +18,21 @@
 //! procedural fallback. Fetch/decode failures are logged and simply leave the
 //! weight where it is — the shader keeps using its procedural bands.
 
-use std::io::Read;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::tasks::IoTaskPool;
+
+use crate::platform::http;
 
 /// GFS 1.0° grid: 360 longitudes (0°→359°E) × 181 latitudes (+90°→−90°).
 const GRID_W: u32 = 360;
 const GRID_H: u32 = 181;
-
-/// NOMADS etiquette: identify the app (mirrors [`super::weather`]).
-const USER_AGENT: &str =
-    "viberfox/0.1 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)";
 
 /// Re-fetch cadence. GFS runs 00/06/12/18 UTC; a 3 h check comfortably picks up a
 /// new cycle soon after it posts without hammering NOMADS.
@@ -61,7 +59,6 @@ pub struct GlobeCloudData {
     pub weight: f32,
     have_data: bool,
     results: Arc<Mutex<Vec<FetchResult>>>,
-    worker: Option<Sender<()>>,
     in_flight: bool,
     last_poll: Option<Instant>,
 }
@@ -73,7 +70,6 @@ impl GlobeCloudData {
             weight: 0.0,
             have_data: false,
             results: Arc::new(Mutex::new(Vec::new())),
-            worker: None,
             in_flight: false,
             last_poll: None,
         }
@@ -126,7 +122,9 @@ pub fn poll_globe_clouds(
     // async path below + the weight ramp otherwise land after the frame is
     // captured). Set `VIBERFOX_CLOUD_DATA_SYNC=1`. Like `VIBERFOX_CLOUD_TIME`.
     if !data.have_data && std::env::var("VIBERFOX_CLOUD_DATA_SYNC").is_ok() {
-        match fetch_tcdc() {
+        // Native-only verification aid; block on the async fetch (no awaits on the
+        // native path, so it completes inline).
+        match futures_lite::future::block_on(fetch_tcdc()) {
             Ok(grid) => {
                 if let Some(mut image) = images.get_mut(&data.image) {
                     image.data = Some(grid.texels);
@@ -138,21 +136,6 @@ pub fn poll_globe_clouds(
             }
             Err(e) => tracing::warn!(error = %e, "sync GFS cloud fetch failed"),
         }
-    }
-
-    // Start the fetch worker once.
-    if data.worker.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        data.worker = Some(tx);
-        let results = data.results.clone();
-        std::thread::spawn(move || {
-            while rx.recv().is_ok() {
-                let fetched = fetch_tcdc();
-                if let Ok(mut g) = results.lock() {
-                    g.push(fetched);
-                }
-            }
-        });
     }
 
     // Fold in completed fetches: overwrite the texture's pixels in place.
@@ -187,9 +170,15 @@ pub fn poll_globe_clouds(
     }
     data.last_poll = Some(Instant::now());
     data.in_flight = true;
-    if let Some(worker) = &data.worker {
-        let _ = worker.send(());
-    }
+    let results = data.results.clone();
+    IoTaskPool::get()
+        .spawn(async move {
+            let fetched = fetch_tcdc().await;
+            if let Ok(mut g) = results.lock() {
+                g.push(fetched);
+            }
+        })
+        .detach();
 }
 
 /// The most recent GFS cycle guaranteed to have posted its `f000` file: floor "now
@@ -208,8 +197,8 @@ fn latest_cycle() -> (String, String) {
     )
 }
 
-/// Blocking fetch of one global `TCDC:entire atmosphere` field (worker thread).
-fn fetch_tcdc() -> FetchResult {
+/// Fetch one global `TCDC:entire atmosphere` field (on an `IoTaskPool` task).
+async fn fetch_tcdc() -> FetchResult {
     let (date, hh) = latest_cycle();
     // NOMADS GRIB filter, 1.0° product: subset server-side to just this one field
     // over the whole globe (omit `subregion`). ~70 KB.
@@ -219,15 +208,7 @@ fn fetch_tcdc() -> FetchResult {
          &file=gfs.t{hh}z.pgrb2.1p00.f000\
          &var_TCDC=on&lev_entire_atmosphere=on"
     );
-    let resp = ureq::get(&url)
-        .set("User-Agent", USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .call()
-        .map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    let bytes = http::fetch(http::Request::get(url).timeout(Duration::from_secs(30))).await?;
     if bytes.len() < 4 || &bytes[0..4] != b"GRIB" {
         // A missing cycle / bad params returns an HTML error, not GRIB.
         return Err(format!("not a GRIB2 body ({} bytes)", bytes.len()));

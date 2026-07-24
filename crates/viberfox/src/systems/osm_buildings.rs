@@ -20,17 +20,19 @@
 //! scale until the real-metre frame (ADR-019) lands.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::work::Dispatcher;
+use crate::platform::{http, storage};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
@@ -41,12 +43,6 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 const CACHE_ZOOM: u32 = 14;
 /// Throttle between live Overpass queries so we don't trip its rate limit (429).
 pub(crate) const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
-
-/// Identifying User-Agent — Overpass is a free shared service and its usage
-/// policy asks callers to identify themselves; anonymous clients get throttled
-/// or refused first when the service is under load.
-const OVERPASS_USER_AGENT: &str =
-    "viberfox/0.1 (map data; https://github.com/garage44/viberfox)";
 
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
@@ -84,11 +80,13 @@ struct Coverage {
 
 static COVERAGE: OnceLock<Coverage> = OnceLock::new();
 static COVERAGE_LOD22: OnceLock<Coverage> = OnceLock::new();
+/// Guards the one-time coverage prefetch (see `ensure_coverage_prefetch`).
+static COVERAGE_PREFETCH_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Lazily fetch a 3DBAG coverage manifest (once per process, on whichever
-/// background fetch thread reaches it first). A missing/unreachable host yields an
-/// empty coverage, so the client silently uses OSM buildings everywhere.
-fn fetch_coverage(sub: &str) -> Coverage {
+/// Fetch a 3DBAG coverage manifest via the http seam. A missing/unreachable host
+/// (or an empty tile URL) yields empty coverage, so the client silently uses OSM
+/// buildings everywhere.
+async fn fetch_coverage(sub: &str) -> Coverage {
     let empty = Coverage {
         zoom: CACHE_ZOOM,
         cells: HashSet::new(),
@@ -99,11 +97,8 @@ fn fetch_coverage(sub: &str) -> Coverage {
         return empty;
     }
     let url = format!("{base}{sub}");
-    let text = match ureq::get(&url).call() {
-        Ok(r) => match r.into_string() {
-            Ok(t) => t,
-            Err(_) => return empty,
-        },
+    let text = match http::fetch_string(http::Request::get(url.clone())).await {
+        Ok(t) => t,
         Err(e) => {
             tracing::info!(%url, error = %e, "no 3DBAG coverage reachable; using OSM buildings");
             return empty;
@@ -142,28 +137,39 @@ fn fetch_coverage(sub: &str) -> Coverage {
     }
 }
 
-/// LoD1.2 (Overpass-shaped footprint) coverage.
-fn coverage() -> &'static Coverage {
-    COVERAGE.get_or_init(|| fetch_coverage("/coverage.json"))
+/// Kick off the one-time async fetch of both coverage manifests. Idempotent and
+/// cheap to call every frame. Until they land, [`tdbag_covers`] / [`lod22_covers`]
+/// report `false`, so the client falls back to Overpass footprints and far
+/// extrusions, then switches to 3DBAG once coverage arrives. This replaces the old
+/// blocking `get_or_init`, which stalled whichever fetch first touched it on the
+/// network (and could not run on wasm at all).
+fn ensure_coverage_prefetch() {
+    if COVERAGE_PREFETCH_STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    IoTaskPool::get()
+        .spawn(async {
+            let _ = COVERAGE.set(fetch_coverage("/coverage.json").await);
+            let _ = COVERAGE_LOD22.set(fetch_coverage("/lod22/coverage.json").await);
+        })
+        .detach();
 }
 
-/// LoD2.2 (real triangulated roof mesh) coverage — served by `lod22.rs`.
-fn coverage_lod22() -> &'static Coverage {
-    COVERAGE_LOD22.get_or_init(|| fetch_coverage("/lod22/coverage.json"))
-}
-
-/// True if the 3DBAG host serves this cell's LoD1.2 footprints.
+/// True if the 3DBAG host serves this cell's LoD1.2 footprints. `false` until the
+/// coverage manifest has loaded (see [`ensure_coverage_prefetch`]).
 fn tdbag_covers(cx: i64, cy: i64) -> bool {
-    let cov = coverage();
-    cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy))
+    COVERAGE
+        .get()
+        .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
 /// True if the 3DBAG host serves this cell as a real LoD2.2 mesh (rendered by
-/// `lod22.rs`). The OSM/LoD1.2 building layers skip these cells so the real
-/// meshes render without overlapping simplified extrusions.
+/// `lod22.rs`). The OSM/LoD1.2 building layers skip these cells so the real meshes
+/// render without overlapping simplified extrusions. `false` until coverage loads.
 pub(crate) fn lod22_covers(cx: i64, cy: i64) -> bool {
-    let cov = coverage_lod22();
-    cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy))
+    COVERAGE_LOD22
+        .get()
+        .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
 /// The 3DBAG attribution string, if any 3DBAG coverage (LoD2.2 or LoD1.2) is
@@ -253,8 +259,9 @@ pub struct OsmBuildings {
     fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
     /// Detail-ring mesh entities (buildings + windows), despawned on re-fetch.
     detail_entities: Vec<Entity>,
-    /// Far LOD cell worker: job queue of CACHE_ZOOM cell coords.
-    far_jobs: Option<Sender<(i64, i64)>>,
+    /// Far LOD cell dispatcher (CACHE_ZOOM cell coords) — replaces the worker
+    /// thread + channel; serial, spacing comes from the throttle in the fetch.
+    far_dispatch: Dispatcher<(i64, i64)>,
     /// Completed far cells from the worker: meshes + their BigSpace cell (None
     /// for cells with no buildings).
     #[allow(clippy::type_complexity)]
@@ -406,11 +413,16 @@ pub fn update_buildings(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
+    time: Res<Time>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
 ) {
+    // Fire the 3DBAG coverage prefetch once (async, off the main thread) — the
+    // coverage predicates report "uncovered" until it lands, then upgrade.
+    ensure_coverage_prefetch();
+
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
     };
@@ -436,7 +448,6 @@ pub fn update_buildings(
         osm.last_center = None;
         osm.last_fetch = None;
         osm.in_flight = false;
-        osm.far_jobs = None;
         osm.far_results = Arc::new(Mutex::new(Vec::new()));
         osm.anchor = None;
     }
@@ -449,18 +460,7 @@ pub fn update_buildings(
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         osm.anchor = Some((ax, ay, z, lat));
-
-        let (tx, rx) = std::sync::mpsc::channel::<(i64, i64)>();
-        osm.far_jobs = Some(tx);
-        let results = osm.far_results.clone();
-        std::thread::spawn(move || {
-            while let Ok((cx, cy)) = rx.recv() {
-                let built = build_far_cell(cx, cy, ax, ay, z, lat);
-                if let Ok(mut g) = results.lock() {
-                    g.push(((cx, cy), built));
-                }
-            }
-        });
+        osm.far_dispatch = Dispatcher::new(1, 0.0);
     }
     let (ax, ay, z, lat) = osm.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -534,10 +534,10 @@ pub fn update_buildings(
         // the patch's BigSpace cell so f32 stays precise at any range.
         let (patch_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
-        std::thread::spawn(move || {
+        IoTaskPool::get().spawn(async move {
             let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
             let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-            let result = fetch_patch(d_south, d_west, d_north, d_east).map(|buildings| {
+            let result = fetch_patch(d_south, d_west, d_north, d_east).await.map(|buildings| {
                 // Deduped: with consistent windings the fan-triangulated flat caps
                 // and shared footprint corners collapse to one vertex each.
                 let mut bld = MeshData::with_dedup();
@@ -575,7 +575,8 @@ pub fn update_buildings(
             if let Ok(mut g) = slot.lock() {
                 *g = Some(result);
             }
-        });
+        })
+        .detach();
     }
 
     let Ok(root) = bigspace.single() else {
@@ -583,7 +584,7 @@ pub fn update_buildings(
     };
 
     // --- Far LOD cells: stream one CACHE_ZOOM cell at a time (like map tiles) ---
-    if let Some(jobs) = osm.far_jobs.clone() {
+    {
         // Camera's CACHE_ZOOM cell from its base-zoom tile coords.
         let shift = z.saturating_sub(CACHE_ZOOM);
         let (ccx, ccy) = (
@@ -613,7 +614,23 @@ pub fn update_buildings(
         to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
         for cell in to_request {
             osm.far_requested.insert(cell);
-            let _ = jobs.send(cell);
+            osm.far_dispatch.queue(cell);
+        }
+
+        // Dispatch queued far cells (serial; the throttle inside the Overpass fetch
+        // spaces them) as detached tasks (ADR-033 seam) — no worker thread.
+        let now_secs = time.elapsed_secs_f64();
+        let results = osm.far_results.clone();
+        while let Some((cx, cy)) = osm.far_dispatch.next(now_secs) {
+            let results = results.clone();
+            IoTaskPool::get()
+                .spawn(async move {
+                    let built = build_far_cell(cx, cy, ax, ay, z, lat).await;
+                    if let Ok(mut g) = results.lock() {
+                        g.push(((cx, cy), built));
+                    }
+                })
+                .detach();
         }
 
         // Apply completed cells.
@@ -622,6 +639,9 @@ pub fn update_buildings(
             .lock()
             .map(|mut g| g.drain(..).collect())
             .unwrap_or_default();
+        for _ in 0..done.len() {
+            osm.far_dispatch.completed();
+        }
         for (cell, built) in done {
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
@@ -782,7 +802,7 @@ type FarCellBuild = (GridCell, Mesh, [Option<Mesh>; 4]);
 /// (buildings + windows), anchored to the cell's own BigSpace grid cell for f32
 /// precision. Runs on the far-cell worker thread. Returns `None` for cells with
 /// no buildings.
-fn build_far_cell(
+async fn build_far_cell(
     cx: i64,
     cy: i64,
     ax: i64,
@@ -790,7 +810,7 @@ fn build_far_cell(
     z: u32,
     lat: f64,
 ) -> Result<Option<FarCellBuild>, String> {
-    let buildings = fetch_cell(cx, cy, CACHE_ZOOM)?;
+    let buildings = fetch_cell(cx, cy, CACHE_ZOOM).await?;
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -1561,18 +1581,14 @@ fn ridged_roof(
 
 /// On-disk cache path for a fixed CACHE_ZOOM cell (independent of patch size, so
 /// changing the patch radius never invalidates the cache).
-fn cell_cache_path(cx: i64, cy: i64, zoom: u32) -> PathBuf {
-    crate::utils::cache::cache_root()
-        .join("buildings")
-        .join(zoom.to_string())
-        .join(cx.to_string())
-        .join(format!("{}.json", cy))
+fn cell_cache_key(cx: i64, cy: i64, zoom: u32) -> String {
+    format!("buildings/{}/{}/{}.json", zoom, cx, cy)
 }
 
 /// Assemble a patch's buildings from the fixed CACHE_ZOOM cells covering its bbox:
 /// each cell is served from disk cache or fetched once, then deduped by OSM way id
 /// (a building straddling a cell edge is returned by both cells).
-fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Building>, String> {
+async fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Building>, String> {
     // NW corner → min tile (x,y); SE corner → max tile (y grows southward).
     let (cx0, cy0) = lat_lng_to_tile(north, west, CACHE_ZOOM);
     let (cx1, cy1) = lat_lng_to_tile(south, east, CACHE_ZOOM);
@@ -1581,7 +1597,7 @@ fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Build
     let mut seen = HashSet::new();
     for cy in cy0..=cy1 {
         for cx in cx0..=cx1 {
-            match fetch_cell(cx, cy, CACHE_ZOOM) {
+            match fetch_cell(cx, cy, CACHE_ZOOM).await {
                 Ok(cell) => {
                     for b in cell {
                         if seen.insert(b.id) {
@@ -1606,77 +1622,59 @@ fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Build
 /// 3DBAG host (real Dutch BAG heights); everything else — and any 3DBAG miss (a
 /// 404 or transport error) — falls back to Overpass/OSM. Both paths return the
 /// same `Building` shape via `parse_buildings`.
-fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+async fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
     if zoom == CACHE_ZOOM && tdbag_covers(cx, cy) {
-        match fetch_cell_3dbag(cx, cy) {
+        match fetch_cell_3dbag(cx, cy).await {
             Ok(buildings) => return Ok(buildings),
             Err(e) => {
                 tracing::debug!(cx, cy, error = %e, "3DBAG cell fetch failed; falling back to OSM");
             }
         }
     }
-    fetch_cell_overpass(cx, cy, zoom)
+    fetch_cell_overpass(cx, cy, zoom).await
 }
 
 /// On-disk cache path for a 3DBAG cell — namespaced apart from the Overpass cache
 /// (`cache/buildings/3dbag/…`) so a cell whose source flips never serves stale
 /// geometry cached from the other source.
-fn cell_cache_path_3dbag(cx: i64, cy: i64) -> PathBuf {
-    crate::utils::cache::cache_root()
-        .join("buildings")
-        .join("3dbag")
-        .join(CACHE_ZOOM.to_string())
-        .join(cx.to_string())
-        .join(format!("{}.json", cy))
+fn cell_cache_key_3dbag(cx: i64, cy: i64) -> String {
+    format!("buildings/3dbag/{}/{}/{}.json", CACHE_ZOOM, cx, cy)
 }
 
-/// Fetch one cell from the 3DBAG static host (disk-cached). The host serves
-/// Overpass-shaped JSON, so `parse_buildings` handles it unchanged. A 404 (cell
-/// not actually covered) or any transport error is returned as `Err`, letting the
-/// caller fall back to Overpass.
-fn fetch_cell_3dbag(cx: i64, cy: i64) -> Result<Vec<Building>, String> {
-    let path = cell_cache_path_3dbag(cx, cy);
-    if let Ok(cached) = std::fs::read_to_string(&path) {
+/// Fetch one cell from the 3DBAG static host (cached via the storage seam). The
+/// host serves Overpass-shaped JSON, so `parse_buildings` handles it unchanged. A
+/// 404 (cell not actually covered) or any transport error is returned as `Err`,
+/// letting the caller fall back to Overpass.
+async fn fetch_cell_3dbag(cx: i64, cy: i64) -> Result<Vec<Building>, String> {
+    let key = cell_cache_key_3dbag(cx, cy);
+    if let Some(cached) = storage::get_string(&key).await {
         match parse_buildings(&cached) {
             Ok(buildings) => return Ok(buildings),
             // Truncated/partial cached write — drop it and re-fetch.
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
-            }
+            Err(_) => storage::remove(&key).await,
         }
     }
     let url = format!("{}/buildings/{}/{}/{}.json", tdbag_url(), CACHE_ZOOM, cx, cy);
-    // Read the body directly (bounded) rather than `into_string`, whose 10 MB cap
-    // a dense cell can exceed once decompressed.
-    let mut text = String::new();
-    ureq::get(&url)
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_reader()
-        .take(64 * 1024 * 1024)
-        .read_to_string(&mut text)
-        .map_err(|e| e.to_string())?;
+    let bytes = http::fetch(http::Request::get(url)).await?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     let buildings = parse_buildings(&text)?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    write_cache_atomic(&path, &text);
+    storage::put(&key, text.as_bytes()).await;
     Ok(buildings)
 }
 
 /// One fixed cell's buildings from disk cache or a single Overpass query (cached).
 /// Cache hits skip the network (and the throttle) entirely.
-fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
-    let path = cell_cache_path(cx, cy, zoom);
-    if let Ok(cached) = std::fs::read_to_string(&path) {
+async fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+    let key = cell_cache_key(cx, cy, zoom);
+    if let Some(cached) = storage::get_string(&key).await {
         match parse_buildings(&cached) {
             Ok(buildings) => return Ok(buildings),
             // A cached file that no longer parses — a truncated write, or a stale
             // `remark`/error body cached before validate-on-write existed. Drop it
             // and re-fetch rather than failing this cell forever.
             Err(e) => {
-                tracing::warn!(?path, error = %e, "re-fetching unparseable cached cell");
-                let _ = std::fs::remove_file(&path);
+                tracing::warn!(key, error = %e, "re-fetching unparseable cached cell");
+                storage::remove(&key).await;
             }
         }
     }
@@ -1686,48 +1684,40 @@ fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, Str
     let query = format!(
         "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
     );
-    let fetched = overpass_query(&query)?;
-    // Space out live queries so a multi-cell patch doesn't burst-trip the limit
-    // (every live query, even one we end up rejecting below).
+    let fetched = overpass_query(&query).await?;
+    // Space out live queries so a multi-cell patch doesn't burst-trip the limit.
+    // Native only: a blocking sleep on the pool thread (as the old worker did); the
+    // wasm build skips it (it cannot block) and leans on cache + the far dispatcher.
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::sleep(OVERPASS_THROTTLE);
     // Validate *before* persisting: `parse_buildings` rejects a `remark` response
     // (Overpass's 200-status error channel), so a transient timeout is never cached
     // as a permanently-empty cell.
     let buildings = parse_buildings(&fetched)?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    write_cache_atomic(&path, &fetched);
+    storage::put(&key, fetched.as_bytes()).await;
     Ok(buildings)
-}
-
-/// Persist a cache cell via a temp file + rename, so a crash mid-write can't leave
-/// a truncated JSON that would parse-fail on every later run. The temp name is
-/// per-thread because the detail-patch thread and the far-cell worker can fetch the
-/// same cell concurrently.
-fn write_cache_atomic(path: &Path, contents: &str) {
-    let tid = std::thread::current().id();
-    let tmp = path.with_extension(format!("{tid:?}.tmp"));
-    if std::fs::write(&tmp, contents).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
-    }
 }
 
 /// POST an Overpass query, retrying a couple of times with backoff on failure
 /// (429/504 are common under load).
-pub(crate) fn overpass_query(query: &str) -> Result<String, String> {
+pub(crate) async fn overpass_query(query: &str) -> Result<String, String> {
     let url = overpass_url();
+    let body = format!("data={}", crate::systems::geo_nav::percent_encode(query)).into_bytes();
     let mut last_err = String::new();
     for attempt in 0..3 {
         if attempt > 0 {
+            // Backoff between attempts. Native only: a blocking sleep on the pool
+            // thread; the wasm build cannot block, so it retries immediately (cache
+            // + caller backoff cover the difference until an async timer lands).
+            #[cfg(not(target_arch = "wasm32"))]
             std::thread::sleep(Duration::from_secs(3));
         }
-        match ureq::post(&url)
-            .set("User-Agent", OVERPASS_USER_AGENT)
-            .send_form(&[("data", query)])
-        {
-            Ok(resp) => return resp.into_string().map_err(|e| e.to_string()),
-            Err(e) => last_err = e.to_string(),
+        let req = http::Request::post(url.as_str())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body.clone());
+        match http::fetch_string(req).await {
+            Ok(text) => return Ok(text),
+            Err(e) => last_err = e,
         }
     }
     Err(last_err)

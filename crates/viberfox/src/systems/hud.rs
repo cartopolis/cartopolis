@@ -14,7 +14,7 @@
 //! text off the top. So the content is pinned to [`HUD_WIDTH`] up front, which
 //! bounds every inner row and keeps the box a fixed size.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -165,6 +165,81 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
                     "Lock the view north-up"
                 });
             }
+            clicked = resp.clicked();
+        });
+    clicked
+}
+
+/// Diameter (points) of the GPS / locate button, stacked under the compass.
+const LOCATE_SIZE: f32 = 40.0;
+
+/// Locate-button state, mirroring Organic Maps' location-button cycle. Derived
+/// from the camera each frame; a click advances it (see `render_hud`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LocateState {
+    /// Not following the avatar (Fly/Earth camera) — a click recenters onto it.
+    Off,
+    /// Following the avatar (Avatar mode), free orbit.
+    Follow,
+    /// Following *and* rotating with the avatar's heading (chase cam).
+    FollowRotate,
+}
+
+/// Draws the GPS/locate button beneath the compass (Organic-Maps style) and
+/// returns true when clicked. The icon is a navigation "location arrow": a hollow
+/// grey outline when off, a filled blue arrow while following, and a filled amber
+/// arrow while follow-and-rotate (the amber echoes the compass's north-up lock).
+/// Drawn from primitives, like the compass — egui's bundled font carries few
+/// emoji, so a glyph would risk rendering as tofu.
+fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
+    let mut clicked = false;
+    let accent = egui::Color32::from_rgb(90, 170, 240);
+    let rotate_accent = egui::Color32::from_rgb(240, 190, 90);
+    egui::Area::new(egui::Id::new("locate_overlay"))
+        // Directly under the compass (46 pt tall, anchored at (12, 12)), centred on
+        // its column.
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(12.0 + (COMPASS_SIZE - LOCATE_SIZE) * 0.5, 12.0 + COMPASS_SIZE + 8.0),
+        )
+        .show(ctx, |ui| {
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(LOCATE_SIZE, LOCATE_SIZE), egui::Sense::click());
+            let hovered = resp.hovered();
+            let p = ui.painter();
+            let c = rect.center();
+            let r = LOCATE_SIZE * 0.5 - 2.0;
+            p.circle_filled(c, r, egui::Color32::from_rgba_unmultiplied(10, 14, 22, 210));
+            let (mark, ring, filled) = match state {
+                LocateState::Off => (
+                    egui::Color32::from_gray(if hovered { 220 } else { 175 }),
+                    egui::Color32::from_gray(if hovered { 210 } else { 130 }),
+                    false,
+                ),
+                LocateState::Follow => (accent, accent, true),
+                LocateState::FollowRotate => (rotate_accent, rotate_accent, true),
+            };
+            p.circle_stroke(c, r, egui::Stroke::new(if filled { 2.0 } else { 1.5 }, ring));
+            // Navigation "location arrow" (a kite), pointing up.
+            let s = LOCATE_SIZE * 0.30;
+            let arrow = vec![
+                c + egui::vec2(0.0, -s),
+                c + egui::vec2(-0.62 * s, 0.72 * s),
+                c + egui::vec2(0.0, 0.30 * s),
+                c + egui::vec2(0.62 * s, 0.72 * s),
+            ];
+            if filled {
+                p.add(egui::Shape::convex_polygon(arrow, mark, egui::Stroke::NONE));
+            } else {
+                let mut outline = arrow;
+                outline.push(outline[0]);
+                p.add(egui::Shape::line(outline, egui::Stroke::new(1.6, mark)));
+            }
+            resp.clone().on_hover_text(match state {
+                LocateState::Off => "Center on my location",
+                LocateState::Follow => "Following — click to rotate with heading",
+                LocateState::FollowRotate => "Follow & rotate — click to stop rotating",
+            });
             clicked = resp.clicked();
         });
     clicked
@@ -402,9 +477,11 @@ pub fn render_hud(
     ai: Res<crate::resources::AiAssistantState>,
     identity: Res<crate::resources::AuthIdentity>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    avatars: Query<(), With<crate::components::Avatar>>,
     right_panel: Res<crate::resources::RightPanel>,
-    mut copied_at: Local<Option<Instant>>,
-    mut home_set_at: Local<Option<Instant>>,
+    // (copy "✔", set-home "✔") flash timers, bundled into one `Local` to stay
+    // within Bevy's 16-system-param limit.
+    mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
 ) {
     let ((h, m, s), is_local) = clock.hms();
     let cam = camera.single().ok();
@@ -443,8 +520,8 @@ pub fn render_hud(
                 view_heading(tf)
             }
         }),
-        copied: copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
-        home_set: home_set_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
+        copied: flash_at.0.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
+        home_set: flash_at.1.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
         user: identity.username.clone(),
     };
 
@@ -484,10 +561,34 @@ pub fn render_hud(
         }
     }
 
+    // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
+    // the viewer that owns a local avatar — Follow doesn't exist otherwise — and
+    // dropped alongside the compass when a right panel covers the map.
+    if !avatars.is_empty() && !right_panel_open {
+        use crate::resources::CameraMode;
+        let state = match (camera_state.mode, camera_state.follow_rotate) {
+            (CameraMode::Avatar, true) => LocateState::FollowRotate,
+            (CameraMode::Avatar, false) => LocateState::Follow,
+            _ => LocateState::Off,
+        };
+        if locate_overlay(egui.ctx_mut(), state) {
+            match state {
+                // Recenter: enter Follow and snap the rig onto the avatar (the same
+                // proven path Tab / the Camera menu use).
+                LocateState::Off => {
+                    crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
+                    camera_state.mode = CameraMode::Avatar;
+                }
+                LocateState::Follow => camera_state.follow_rotate = true,
+                LocateState::FollowRotate => camera_state.follow_rotate = false,
+            }
+        }
+    }
+
     if actions.copy {
         if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
             crate::utils::clipboard::set_text(&format!("{lat:.5}, {lng:.5}, {alt:.0}"));
-            *copied_at = Some(Instant::now());
+            flash_at.0 = Some(Instant::now());
         }
     }
     if actions.bookmark {
@@ -503,7 +604,7 @@ pub fn render_hud(
         if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
             // Capture the current view so Home returns to it exactly.
             store.set_home(lat, lng, alt, CameraPose::capture(&camera_state));
-            *home_set_at = Some(Instant::now());
+            flash_at.1 = Some(Instant::now());
         }
     }
     if actions.toggle_utc {

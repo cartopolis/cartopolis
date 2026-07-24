@@ -14,22 +14,22 @@
 //! identifying User-Agent.
 
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{Grid, GridCell};
 use serde::{Deserialize, Serialize};
 
 use crate::components::Avatar;
+use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use vibe_core::world::tile_to_meters;
 
-/// Identifying User-Agent — Nominatim's policy blocks requests without one.
-const NAV_USER_AGENT: &str =
-    "viberfox/0.1 (geocoding; https://github.com/garage44/viberfox)";
 
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract — see `meta/guides/server.md`). Override with
@@ -419,41 +419,43 @@ pub(crate) fn percent_encode(s: &str) -> String {
 }
 
 fn spawn_geocode(query: String, results: Arc<Mutex<Option<GeocodeReply>>>) {
-    std::thread::spawn(move || {
-        let url = format!(
-            "{}/search?format=jsonv2&limit={}&q={}",
-            nominatim_base_url(),
-            MAX_SUGGESTIONS,
-            percent_encode(&query)
-        );
-        let result = (|| -> Result<Vec<GeoSuggestion>, String> {
-            let body = ureq::get(&url)
-                .set("User-Agent", NAV_USER_AGENT)
-                .call()
-                .map_err(|e| e.to_string())?
-                .into_string()
-                .map_err(|e| e.to_string())?;
-            let json: serde_json::Value =
-                serde_json::from_str(&body).map_err(|e| e.to_string())?;
-            let items = json.as_array().ok_or("unexpected Nominatim response")?;
-            Ok(items
-                .iter()
-                .filter_map(|it| {
-                    Some(GeoSuggestion {
-                        label: it.get("display_name")?.as_str()?.to_string(),
-                        lat: it.get("lat")?.as_str()?.parse().ok()?,
-                        lng: it.get("lon")?.as_str()?.parse().ok()?,
-                    })
-                })
-                .collect())
-        })();
-        if let Err(ref e) = result {
-            tracing::warn!(query = %query, error = %e, "geocoding lookup failed");
-        }
-        if let Ok(mut guard) = results.lock() {
-            *guard = Some(GeocodeReply { query, result });
-        }
-    });
+    // Detached fetch on the IoTaskPool (ADR-033 seam): no OS thread, so it works
+    // on the wasm build too. The `results` slot + `drive_geocode`'s drain are
+    // unchanged; only the fetch mechanism moved.
+    IoTaskPool::get()
+        .spawn(async move {
+            let url = format!(
+                "{}/search?format=jsonv2&limit={}&q={}",
+                nominatim_base_url(),
+                MAX_SUGGESTIONS,
+                percent_encode(&query)
+            );
+            let result = geocode_fetch(url).await;
+            if let Err(ref e) = result {
+                tracing::warn!(query = %query, error = %e, "geocoding lookup failed");
+            }
+            if let Ok(mut guard) = results.lock() {
+                *guard = Some(GeocodeReply { query, result });
+            }
+        })
+        .detach();
+}
+
+/// Fetch and parse a Nominatim `/search` response into suggestions.
+async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
+    let body = http::fetch_string(http::Request::get(url)).await?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let items = json.as_array().ok_or("unexpected Nominatim response")?;
+    Ok(items
+        .iter()
+        .filter_map(|it| {
+            Some(GeoSuggestion {
+                label: it.get("display_name")?.as_str()?.to_string(),
+                lat: it.get("lat")?.as_str()?.parse().ok()?,
+                lng: it.get("lon")?.as_str()?.parse().ok()?,
+            })
+        })
+        .collect())
 }
 
 /// Poll finished lookups into the UI state and send the debounced next query.

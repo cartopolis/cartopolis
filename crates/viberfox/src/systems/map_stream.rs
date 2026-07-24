@@ -11,10 +11,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
+use web_time::Instant;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -129,14 +130,10 @@ pub struct MapStream {
     /// re-streamed tile grey forever.
     requested: HashSet<TileKey>,
     /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
-    failed: HashMap<TileKey, (u32, std::time::Instant)>,
+    failed: HashMap<TileKey, (u32, Instant)>,
     results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
-    /// Fetch jobs, tagged with the anchor generation they were queued for so the
-    /// workers can drop jobs from a previous anchor instead of grinding through
-    /// hundreds of stale fetches before the new anchor's tiles get a turn.
-    jobs: Option<Sender<(TileKey, u32)>>,
-    /// The live generation the workers compare against (main thread stores,
-    /// workers load).
+    /// The live anchor generation a fetch task compares against (main thread
+    /// stores, task loads) — a re-anchor's stale in-flight fetches drop themselves.
     gen_shared: Arc<AtomicU32>,
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
@@ -227,7 +224,6 @@ impl Default for MapStream {
             requested: HashSet::new(),
             failed: HashMap::new(),
             results: Arc::new(Mutex::new(HashMap::new())),
-            jobs: None,
             gen_shared: Arc::new(AtomicU32::new(0)),
             quads: HashMap::new(),
             placeholder: None,
@@ -246,7 +242,7 @@ const DEFAULT_ANCHOR_ZOOM: u32 = 17;
 pub fn init_map_stream(
     mut stream: ResMut<MapStream>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    tile_url: Res<OsmTileUrlTemplate>,
+    _tile_url: Res<OsmTileUrlTemplate>,
 ) {
     if stream.anchor.is_some() {
         return;
@@ -271,54 +267,52 @@ pub fn init_map_stream(
         ..default()
     }));
 
-    let (tx, rx) = std::sync::mpsc::channel::<(TileKey, u32)>();
-    stream.jobs = Some(tx);
-    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-    // A few parallel fetchers: the initial pyramid is ~400 tiles, which takes
-    // minutes serially on a cold cache.
-    let rx = Arc::new(Mutex::new(rx));
-    for _ in 0..4 {
-        let rx = rx.clone();
-        let template = template.clone();
-        let results = stream.results.clone();
-        let live_gen = stream.gen_shared.clone();
-        std::thread::spawn(move || loop {
-            let Ok((key, gen)) = ({
-                let Ok(guard) = rx.lock() else { break };
-                guard.recv()
-            }) else {
-                break;
-            };
-            // Skip jobs queued for a previous anchor (re-anchor happened while
-            // this was waiting) so the fresh anchor's tiles load immediately.
-            if gen != live_gen.load(Ordering::Relaxed) {
-                continue;
-            }
-            // Fetch, decode, and build the mip chain here on the worker thread so
-            // the main thread only has to hand the finished pixels to the GPU.
-            let decoded = match load_tile_rgba(&key, &template) {
-                Ok(rgba) => {
-                    let (width, height) = (rgba.width(), rgba.height());
-                    let (data, mip_count) =
-                        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
-                    Some(DecodedTile {
-                        data,
-                        width,
-                        height,
-                        mip_count,
-                    })
-                }
-                Err(e) => {
-                    tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
-                    None
+    tracing::info!("map streaming initialized");
+}
+
+/// Spawn one ground-tile fetch+decode task (ADR-033 seam): gen-tagged so a
+/// re-anchor's stale in-flight fetch drops itself, then decode + mip-chain off the
+/// main thread and hand the finished pixels back for the render loop to upload.
+fn spawn_map_tile(
+    key: TileKey,
+    gen: u32,
+    template: String,
+    results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
+    live_gen: Arc<AtomicU32>,
+) {
+    IoTaskPool::get()
+        .spawn(async move {
+            let decoded = if gen != live_gen.load(Ordering::Relaxed) {
+                // Stale (re-anchored while queued); insert a miss so `requested`
+                // clears and a still-wanted tile re-queues on the fresh anchor.
+                None
+            } else {
+                match load_tile_rgba(&key, &template).await {
+                    Ok(rgba) => {
+                        let (width, height) = (rgba.width(), rgba.height());
+                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
+                            width,
+                            height,
+                            rgba.into_raw(),
+                        );
+                        Some(DecodedTile {
+                            data,
+                            width,
+                            height,
+                            mip_count,
+                        })
+                    }
+                    Err(e) => {
+                        tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
+                        None
+                    }
                 }
             };
             if let Ok(mut g) = results.lock() {
                 g.insert(key, decoded);
             }
-        });
-    }
-    tracing::info!("map streaming initialized");
+        })
+        .detach();
 }
 
 /// Spawn ground tiles within `LOAD_RADIUS` of the camera; despawn the rest.
@@ -326,6 +320,7 @@ pub fn update_map_stream(
     mut commands: Commands,
     mut stream: ResMut<MapStream>,
     mut meshes: ResMut<Assets<Mesh>>,
+    tile_url: Res<OsmTileUrlTemplate>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -333,9 +328,10 @@ pub fn update_map_stream(
     let Some((clat, clng, base_zoom)) = stream.anchor else {
         return;
     };
-    let (Some(placeholder), Some(jobs)) = (stream.placeholder.clone(), stream.jobs.clone()) else {
+    let Some(placeholder) = stream.placeholder.clone() else {
         return;
     };
+    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
     let Ok((cell, tf)) = camera.single() else {
         return;
     };
@@ -460,7 +456,13 @@ pub fn update_map_stream(
             .id();
         stream.loaded.insert(key.clone(), entity);
         if stream.requested.insert(key.clone()) {
-            let _ = jobs.send((key.clone(), gen));
+            spawn_map_tile(
+                key.clone(),
+                gen,
+                template.clone(),
+                stream.results.clone(),
+                stream.gen_shared.clone(),
+            );
             queued += 1;
         }
     }
@@ -472,7 +474,7 @@ pub fn update_map_stream(
 
     // Re-queue failed fetches after a short backoff (bounded attempts, so a
     // transient network error or rate limit doesn't leave permanent grey tiles).
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     let retry: Vec<TileKey> = stream
         .failed
         .iter()
@@ -487,7 +489,13 @@ pub fn update_map_stream(
         if let Some((_, last)) = stream.failed.get_mut(&key) {
             *last = now;
         }
-        let _ = jobs.send((key, gen));
+        spawn_map_tile(
+            key,
+            gen,
+            template.clone(),
+            stream.results.clone(),
+            stream.gen_shared.clone(),
+        );
     }
 
     // Despawn tiles that drifted out of range or left the pyramid after a LOD
@@ -555,9 +563,9 @@ pub fn apply_stream_textures(
                     let entry = stream
                         .failed
                         .entry(tile.key.clone())
-                        .or_insert((0, std::time::Instant::now()));
+                        .or_insert((0, Instant::now()));
                     entry.0 += 1;
-                    entry.1 = std::time::Instant::now();
+                    entry.1 = Instant::now();
                     entry.0
                 };
                 if attempts >= MAX_FETCH_ATTEMPTS {

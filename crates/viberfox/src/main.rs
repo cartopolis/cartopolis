@@ -17,6 +17,7 @@ use std::time::Duration;
 
 mod components;
 mod login;
+mod platform;
 mod resources;
 #[cfg(feature = "solo")]
 mod solo;
@@ -296,6 +297,13 @@ fn main() {
     // for egui to lay out against but this.
     let shot_size = harness.as_ref().map(|h| h.size);
     let scripted = harness.is_some();
+    // Self-install the Linux desktop file + themed icon before the window exists,
+    // so Wayland compositors (where set_window_icon is a no-op) can resolve the
+    // app icon on first map. Idempotent, best-effort, no-op off Linux and for
+    // windowless scripted captures. See `systems::desktop_integration`.
+    if !scripted {
+        systems::desktop_integration::ensure_desktop_integration();
+    }
     let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .display()
@@ -307,6 +315,11 @@ fn main() {
             // No window at all for a scripted run — see the headless block below.
             primary_window: (shot_size.is_none()).then(|| Window {
                 title: "Viberfox".into(),
+                // Stable app-id: Wayland `app_id` / X11 `WM_CLASS`. The compositor
+                // keys the taskbar/titlebar icon off this, matching the
+                // `viberfox.desktop` entry that `systems::desktop_integration`
+                // self-installs at startup.
+                name: Some("viberfox".into()),
                 resolution: WindowResolution::new(1280, 720),
                 // NOT vsync (FIFO): on Wayland, when this window is occluded the
                 // compositor stops releasing swapchain images, FIFO's acquire then
@@ -512,6 +525,11 @@ fn main() {
                 ),
             );
     }
+
+    // Per-window OS icon via winit (Windows + Linux/X11; a no-op on Wayland and
+    // macOS, which use the desktop file / .app bundle respectively). See
+    // `systems::window_icon`.
+    app.add_systems(Update, systems::window_icon::set_window_icon);
 
     app.add_systems(
         Startup,

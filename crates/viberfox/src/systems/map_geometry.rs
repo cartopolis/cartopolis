@@ -23,12 +23,12 @@
 //! default, or the VersaTiles satellite layer) this module does nothing at all.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::resources::OsmTileUrlTemplate;
@@ -61,14 +61,8 @@ const MAX_BUILDS_PER_FRAME: usize = 2;
 /// Cells despawned per frame — the mass-despawn twin of the build cap.
 const MAX_DESPAWNS_PER_FRAME: usize = 4;
 
-/// Number of background tessellation workers.
-const WORKERS: usize = 2;
-
 /// A z14 cell coordinate (absolute Web Mercator tile x/y at [`GEOMETRY_ZOOM`]).
 type Cell = (i64, i64);
-
-/// A tessellation job: which cell, its ground size in metres, and the tile template.
-type Job = (Cell, f32, String);
 
 /// A finished tessellation (`None` = fetch or tessellation failed), plus the
 /// cell's distance-to-shore field when it holds any water (`systems::water`).
@@ -87,8 +81,6 @@ pub struct MapSurfaces {
     requested: HashSet<Cell>,
     /// Entities retired but not yet despawned (drained under the per-frame cap).
     despawn_queue: Vec<Entity>,
-    /// Job queue to the tessellation workers.
-    jobs: Option<Sender<Job>>,
     /// Finished tessellations, drained on the main thread.
     results: Arc<Mutex<Vec<Tessellated>>>,
     /// One material per surface group, created on first use.
@@ -97,29 +89,21 @@ pub struct MapSurfaces {
     generation: u32,
 }
 
-impl MapSurfaces {
-    /// Lazily spawn the worker pool. Workers fetch the MVT body (shared on-disk
-    /// cache with the texture path — the same bytes serve both) and tessellate it
-    /// off the main thread, which only uploads the finished buffers.
-    fn jobs_sender(&mut self) -> Sender<Job> {
-        if let Some(tx) = &self.jobs {
-            return tx.clone();
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
-        let rx = Arc::new(Mutex::new(rx));
-        for _ in 0..WORKERS {
-            let rx = rx.clone();
-            let results = self.results.clone();
-            std::thread::spawn(move || loop {
-                let Ok((cell, tile_m, template)) = ({
-                    let Ok(guard) = rx.lock() else { break };
-                    guard.recv()
-                }) else {
-                    break;
-                };
+/// Spawn one surface-tessellation task (ADR-033 seam): fetch the MVT body (shared
+/// cache with the texture path — same bytes serve both), tessellate areas + roads +
+/// trees + the water shore field off the main thread, and hand the finished buffers
+/// back for the render loop to upload. Replaces one worker of the old pool.
+fn spawn_geometry_task(
+    cell: Cell,
+    tile_m: f32,
+    template: String,
+    results: Arc<Mutex<Vec<Tessellated>>>,
+) {
+    IoTaskPool::get()
+        .spawn(async move {
                 let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
                 let mut shore = None;
-                let outcome = match load_tile_image(&key, &template) {
+                let outcome = match load_tile_image(&key, &template).await {
                     Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
                         Ok(mut meshes) => {
                             // Roads share the fetch, the worker and the per-cell
@@ -172,12 +156,11 @@ impl MapSurfaces {
                 if let Ok(mut g) = results.lock() {
                     g.push((cell, outcome, shore));
                 }
-            });
-        }
-        self.jobs = Some(tx.clone());
-        tx
-    }
+        })
+        .detach();
+}
 
+impl MapSurfaces {
     /// The shared material for a surface group, once some cell has created it.
     /// `systems::vegetation` ramps the canopy, trunk and forest colours through
     /// these handles — one write per group repaints every live cell, which is the
@@ -279,14 +262,13 @@ pub fn update_map_surfaces(
         surfaces.requested.remove(&c);
     }
 
-    // 2. Queue cells not yet fetched.
-    let jobs = surfaces.jobs_sender();
+    // 2. Queue cells not yet fetched as detached tessellation tasks.
     for c in &wanted {
         if surfaces.loaded.contains_key(c) || surfaces.requested.contains(c) {
             continue;
         }
         surfaces.requested.insert(*c);
-        let _ = jobs.send((*c, tile_m, template.clone()));
+        spawn_geometry_task(*c, tile_m, template.clone(), surfaces.results.clone());
     }
 
     // 3. Upload finished tessellations, capped per frame.

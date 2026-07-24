@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::sync::mpsc::UnboundedSender;
+use futures_channel::mpsc::UnboundedSender;
 use vibe_core::{NetMessage, PrimSurface, TextureEntry};
 
 // ---------------------------------------------------------------------------
@@ -528,6 +528,12 @@ pub struct CameraState {
     /// re-armed toward north every frame, so the polar axis stays vertical on
     /// screen no matter how the globe is spun. Toggled by clicking the compass.
     pub orbit_north_lock: bool,
+    /// Follow-and-rotate (Organic-Maps style): while true *and* in Avatar mode, the
+    /// follow camera's [`Self::azimuth`] tracks the avatar's facing yaw, so the
+    /// camera stays behind the avatar and swings with it like a chase cam. Toggled
+    /// by the GPS/locate button; cleared when the user manually left-drags to orbit
+    /// (matching OM, where touching the map drops the rotate-follow).
+    pub follow_rotate: bool,
 }
 
 #[derive(Resource, Default)]
@@ -577,6 +583,7 @@ impl Default for CameraState {
             reanchor_request: None,
             orbit_north_reset: false,
             orbit_north_lock: false,
+            follow_rotate: false,
         }
     }
 }

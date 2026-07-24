@@ -3,6 +3,13 @@ name = "viberfox"
 version.workspace = true
 edition.workspace = true
 
+# macOS `.app` Dock icon: `cargo bundle` builds an `.icns` from these PNGs
+# (macOS has no per-window icon, so `set_window_icon` can't apply it at runtime).
+[package.metadata.bundle]
+name = "Viberfox"
+identifier = "eu.garage44.viberfox"
+icon = ["assets/icon/viberfox.png"]
+
 [features]
 # `solo`: one-command dev — run an in-process vibe_sim and connect to it (ADR-016).
 # On by default for dev; turn off for lean/release client builds (then `--connect`
@@ -14,7 +21,6 @@ fast-dev = ["bevy/dynamic_linking"]
 
 [dependencies]
 anyhow.workspace = true
-arboard.workspace = true
 bevy.workspace = true
 bevy_image.workspace = true
 big_space.workspace = true
@@ -28,11 +34,8 @@ tiny-skia.workspace = true
 geo-types.workspace = true
 postcard.workspace = true
 serde.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-ureq.workspace = true
 uuid.workspace = true
 dotenvy.workspace = true
 serde_json.workspace = true
@@ -45,8 +48,23 @@ bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+# The client-intent channel behind `OnlineSession` — pure-Rust and wasm-safe,
+# unlike tokio's `sync::mpsc`, so the online session type compiles on the web
+# build (the transport itself, `network.rs`, stays native). ADR-033.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+# `poll_once`/`block_on` for draining `IoTaskPool` fetch tasks without blocking the
+# schedule (platform::http). Already in the tree via Bevy's async_executor.
+futures-lite = "2"
+# Portable `Instant`/`SystemTime` (ADR-033): plain `std` on native, JS-backed on
+# wasm where `std::time::Instant::now()` panics. Already in the tree via Bevy.
+web-time = "1"
 tzf-rs = "1.3.6"
 jiff = "0.2.34"
+# Direct handle on winit purely to build a `window::Icon` for the runtime OS
+# window icon (Bevy 0.19's `Window` has no icon field). Version-matched to
+# bevy_winit so Cargo unifies to the one compiled winit — `default-features =
+# false` adds nothing bevy hasn't already enabled. See `systems::window_icon`.
+winit = { version = "0.30", default-features = false }
 # GRIB2 decode for live GFS global cloud cover (ADR-032). Default features off:
 # `jpeg` pulls openjpeg-sys (a cmake-built C lib that does not build for wasm32,
 # ADR-033) and `png` pulls the png crate — both only decode DRS templates 5.40/5.41,
@@ -62,3 +80,34 @@ gribberish = { version = "1.5", default-features = false }
 # main `bevy.workspace = true` entry above, so on Linux the feature set is unchanged.
 [target.'cfg(target_os = "linux")'.dependencies]
 bevy = { workspace = true, features = ["wayland"] }
+
+# Web build (ADR-033): the browser `fetch` backend for `platform::http`. wasm-only
+# so native builds never see it — native HTTP is `ureq`. Not yet compiled here (no
+# wasm toolchain in the dev image); the seam is in place for when it is.
+# Native-only deps whose crates don't build for wasm (or are meaningless there).
+# Their call sites are cfg-gated to the matching target (ADR-030/033).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard.workspace = true
+# The sim transport (network.rs) + solo sim are tokio/TCP — native only. The web
+# build is Phase-1 Viewer with no sim (ADR-031/033); `OnlineSession`'s channel is
+# futures-channel, so nothing wasm-side needs tokio.
+tokio.workspace = true
+tokio-util.workspace = true
+ureq.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ehttp = "0.5"
+# Web render backend (ADR-033): `webgl2` turns on wgpu's web-sys/WebGL2 path, which
+# egui-wgpu's shared wgpu also needs on wasm. Features union, so this only adds to
+# the base bevy set for the wasm target.
+bevy = { workspace = true, features = ["webgl2"] }
+# `getrandom` (via uuid v4 + others) needs its JS backend on wasm, where there is
+# no OS RNG (ADR-033). Feature-unifies with the graph's 0.2 instance.
+getrandom = { version = "0.2", features = ["js"] }
+
+# Embeds the app icon (assets/icon/viberfox.ico) into the Windows .exe via
+# `build.rs`. NOT host-gated: cross-compiling to Windows from the Linux CI needs
+# winresource on the Linux host so build.rs (which gates on the *target* OS) can
+# invoke it. For any non-Windows target build.rs never calls it. See `build.rs`.
+[build-dependencies]
+winresource = "0.1"

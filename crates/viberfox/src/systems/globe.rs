@@ -19,12 +19,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -168,7 +169,6 @@ pub struct GlobeState {
     /// Finished fetches from the workers.
     results: Arc<Mutex<Vec<(TileKey, TileFetch)>>>,
     /// Fetch jobs, tagged with the build generation so workers drop stale ones.
-    jobs: Option<Sender<(TileKey, u32)>>,
     gen_shared: Arc<AtomicU32>,
     /// The current desired set, shared with the workers: a queued job whose
     /// tile has since left the view (zoom/pan moved on) is cancelled before it
@@ -399,7 +399,7 @@ pub fn setup_globe(
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     stream: Res<MapStream>,
     bigspace: Query<Entity, With<BigSpace>>,
-    tile_url: Res<OsmTileUrlTemplate>,
+    _tile_url: Res<OsmTileUrlTemplate>,
 ) {
     let Some((clat, clng, _)) = stream.geo_anchor() else {
         return;
@@ -514,53 +514,6 @@ pub fn setup_globe(
     globe.built_gen = gen;
     globe.gen_shared.store(gen, Ordering::Relaxed);
     globe.ready = true;
-
-    // Fetch workers (once): generation-tagged jobs, so a re-anchor's queued
-    // fetches are dropped instead of blocking the fresh build's tiles.
-    if globe.jobs.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel::<(TileKey, u32)>();
-        globe.jobs = Some(tx);
-        let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-        let rx = Arc::new(Mutex::new(rx));
-        for _ in 0..3 {
-            let rx = rx.clone();
-            let template = template.clone();
-            let results = globe.results.clone();
-            let live_gen = globe.gen_shared.clone();
-            let wanted = globe.wanted_shared.clone();
-            std::thread::spawn(move || loop {
-                let Ok((key, job_gen)) = ({
-                    let Ok(guard) = rx.lock() else { break };
-                    guard.recv()
-                }) else {
-                    break;
-                };
-                if job_gen != live_gen.load(Ordering::Relaxed) {
-                    continue;
-                }
-                // Cancel jobs whose tile has since left the view — a zoom
-                // sweep queues intermediate levels that are stale before the
-                // worker reaches them; don't spend network on those.
-                let still_wanted = wanted
-                    .lock()
-                    .map(|w| w.contains(&key))
-                    .unwrap_or(true);
-                let outcome = if !still_wanted {
-                    TileFetch::Cancelled
-                } else {
-                    // Decode + mip generation happen here, on the worker, so the
-                    // main thread only assembles and uploads (see `DecodedTile`).
-                    match load_globe_tile_rgba(&key, &template) {
-                        Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
-                        Err(_) => TileFetch::Failed,
-                    }
-                };
-                if let Ok(mut g) = results.lock() {
-                    g.push((key, outcome));
-                }
-            });
-        }
-    }
 
     tracing::info!(radius = globe.radius, "globe placed");
 }
@@ -902,12 +855,46 @@ pub fn update_globe_albedo(
 /// missing ones (coarse first), and swap tiles in/out without holes — a parent
 /// stays until all four children are ready, and vice versa on zoom-out.
 #[allow(clippy::too_many_arguments)]
+/// Spawn one globe tile fetch+decode task (ADR-033 seam), replacing an iteration
+/// of the old worker pool: gen-tagged (a re-anchor drops stale jobs) and wanted-
+/// checked (a tile that left the view is cancelled before hitting the network).
+#[allow(clippy::too_many_arguments)]
+fn spawn_globe_tile(
+    key: TileKey,
+    job_gen: u32,
+    template: String,
+    results: Arc<Mutex<Vec<(TileKey, TileFetch)>>>,
+    live_gen: Arc<AtomicU32>,
+    wanted: Arc<Mutex<HashSet<TileKey>>>,
+) {
+    IoTaskPool::get()
+        .spawn(async move {
+            if job_gen != live_gen.load(Ordering::Relaxed) {
+                return;
+            }
+            let still_wanted = wanted.lock().map(|w| w.contains(&key)).unwrap_or(true);
+            let outcome = if !still_wanted {
+                TileFetch::Cancelled
+            } else {
+                match load_globe_tile_rgba(&key, &template).await {
+                    Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
+                    Err(_) => TileFetch::Failed,
+                }
+            };
+            if let Ok(mut g) = results.lock() {
+                g.push((key, outcome));
+            }
+        })
+        .detach();
+}
+
 pub fn update_globe_tiles(
     mut commands: Commands,
     mut globe: ResMut<GlobeState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
+    tile_url: Res<OsmTileUrlTemplate>,
     camera: Query<
         (&GridCell, &Transform, &Projection),
         With<crate::systems::free_camera::FreeCamera>,
@@ -1250,8 +1237,12 @@ pub fn update_globe_tiles(
     let queue_order: Vec<TileKey> = queue_order.into_iter().map(|(k, _)| k).collect();
     let mut budget = QT_FETCH_BUDGET.saturating_sub(globe.pending.len());
     let mut queued = 0u32;
-    if let Some(jobs) = globe.jobs.clone() {
+    {
         let gen = globe.built_gen;
+        let results = globe.results.clone();
+        let live_gen = globe.gen_shared.clone();
+        let wanted = globe.wanted_shared.clone();
+        let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
         for key in &queue_order {
             if budget == 0 {
                 break;
@@ -1268,7 +1259,14 @@ pub fn update_globe_tiles(
                 }
             }
             globe.pending.insert(key.clone());
-            let _ = jobs.send((key.clone(), gen));
+            spawn_globe_tile(
+                key.clone(),
+                gen,
+                template.clone(),
+                results.clone(),
+                live_gen.clone(),
+                wanted.clone(),
+            );
             queued += 1;
             budget -= 1;
         }

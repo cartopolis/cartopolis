@@ -3,16 +3,15 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy_image::{Image, ImageSampler};
 use std::collections::HashMap;
-use std::io::Read;
-use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+
+use bevy::tasks::IoTaskPool;
+
+use crate::platform::work::Dispatcher;
+use crate::platform::{http, storage};
 pub use vibe_core::TileKey;
 
-/// Identifying User-Agent — OSM's tile policy blocks requests without a real one.
-const TILE_USER_AGENT: &str = "viberfox/0.1 (OSM map client; https://github.com/garage44/viberfox)";
-
-/// Number of background tile-fetch workers (matches the globe's fetch pool).
+/// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
 
 /// Decoded, mipmapped tile image handed back from a worker thread. Decoding and
@@ -32,8 +31,9 @@ pub struct TileCache {
     pub handles: Arc<Mutex<HashMap<TileKey, Handle<Image>>>>,
     /// Cache of loading states (tiles currently being loaded)
     pub loading: Arc<Mutex<HashMap<TileKey, bool>>>,
-    /// Job queue to the background fetch workers (created on first use).
-    jobs: Option<Sender<(TileKey, String)>>,
+    /// Frame-gated fetch+decode dispatcher (TileKey, url-template), bounded to
+    /// `TILE_WORKERS` concurrent tasks — replaces the worker pool + channel.
+    dispatch: Dispatcher<(TileKey, String)>,
     /// Completed fetches drained on the main thread (`None` = fetch/decode failed).
     results: Arc<Mutex<Vec<(TileKey, Option<TileImageData>)>>>,
 }
@@ -43,60 +43,44 @@ impl Default for TileCache {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
             loading: Arc::new(Mutex::new(HashMap::new())),
-            jobs: None,
+            dispatch: Dispatcher::new(TILE_WORKERS, 0.0),
             results: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
 
-impl TileCache {
-    /// Lazily spawn the fetch worker pool and return the job sender. Workers pull
-    /// `(tile, url-template)` jobs, do the blocking network/disk fetch + PNG decode
-    /// off the main thread, and push results back for the main thread to upload.
-    fn jobs_sender(&mut self) -> Sender<(TileKey, String)> {
-        if let Some(tx) = &self.jobs {
-            return tx.clone();
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<(TileKey, String)>();
-        let rx: Arc<Mutex<Receiver<(TileKey, String)>>> = Arc::new(Mutex::new(rx));
-        for _ in 0..TILE_WORKERS {
-            let rx = rx.clone();
-            let results = self.results.clone();
-            std::thread::spawn(move || loop {
-                let Ok((key, template)) = ({
-                    let Ok(guard) = rx.lock() else { break };
-                    guard.recv()
-                }) else {
-                    break;
-                };
-                let outcome = match load_tile_rgba(&key, &template) {
-                    Ok(rgba) => {
-                        let (width, height) = (rgba.width(), rgba.height());
-                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
-                            width,
-                            height,
-                            rgba.into_raw(),
-                        );
-                        Some(TileImageData {
-                            data,
-                            width,
-                            height,
-                            mip_count,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::error!(tile = %key.to_path(), error = %e, "failed to load map tile");
-                        None
-                    }
-                };
-                if let Ok(mut r) = results.lock() {
-                    r.push((key, outcome));
+/// Spawn one tile fetch+decode task on the `IoTaskPool` (ADR-033 seam): fetch via
+/// the http/storage seams, decode + mip-chain off the main thread, push the result
+/// back for the render loop to upload. Replaces one iteration of the old worker pool.
+fn spawn_tile_task(
+    key: TileKey,
+    template: String,
+    results: Arc<Mutex<Vec<(TileKey, Option<TileImageData>)>>>,
+) {
+    IoTaskPool::get()
+        .spawn(async move {
+            let outcome = match load_tile_rgba(&key, &template).await {
+                Ok(rgba) => {
+                    let (width, height) = (rgba.width(), rgba.height());
+                    let (data, mip_count) =
+                        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
+                    Some(TileImageData {
+                        data,
+                        width,
+                        height,
+                        mip_count,
+                    })
                 }
-            });
-        }
-        self.jobs = Some(tx.clone());
-        tx
-    }
+                Err(e) => {
+                    tracing::error!(tile = %key.to_path(), error = %e, "failed to load map tile");
+                    None
+                }
+            };
+            if let Ok(mut r) = results.lock() {
+                r.push((key, outcome));
+            }
+        })
+        .detach();
 }
 
 /// Component to mark regions that need tile textures
@@ -171,46 +155,30 @@ pub fn tile_source_kind(template: &str) -> TileSourceKind {
 /// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
 /// The extension tracks the source kind so a raster and a vector cache can coexist
 /// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
-fn tile_cache_path(key: &TileKey, kind: TileSourceKind) -> PathBuf {
+fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
     let ext = match kind {
         TileSourceKind::Raster => "png",
         TileSourceKind::Vector => "mvt",
     };
-    crate::utils::cache::cache_root()
-        .join("tiles")
-        .join(key.z.to_string())
-        .join(key.x.to_string())
-        .join(format!("{}.{ext}", key.y))
+    format!("tiles/{}/{}/{}.{ext}", key.z, key.x, key.y)
 }
 
 /// Fetch a single tile's raw bytes, using the on-disk cache first and falling back
 /// to the network (which is then cached). The payload may be a raster image or an
 /// MVT body — see [`load_tile_rgba`] for the decoded form.
-pub fn load_tile_image(
-    key: &TileKey,
-    template: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub async fn load_tile_image(key: &TileKey, template: &str) -> Result<Vec<u8>, String> {
     let kind = tile_source_kind(template);
-    let path = tile_cache_path(key, kind);
-    if let Ok(bytes) = std::fs::read(&path) {
+    let cache_key = tile_cache_key(key, kind);
+    if let Some(bytes) = storage::get(&cache_key).await {
         if !bytes.is_empty() {
             return Ok(bytes);
         }
     }
 
     let url = format_osm_tile_url(template, key);
-    let response = ureq::get(&url)
-        .set("User-Agent", TILE_USER_AGENT)
-        .call()?;
-    let mut bytes = Vec::new();
-    response.into_reader().read_to_end(&mut bytes)?;
-
+    let bytes = http::fetch(http::Request::get(url)).await?;
     // Best-effort write-through to the cache.
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&path, &bytes);
-
+    storage::put(&cache_key, &bytes).await;
     Ok(bytes)
 }
 
@@ -223,30 +191,31 @@ pub fn load_tile_image(
 /// [`vector_tiles::MAX_SOURCE_ZOOM`] fetches the z14 ancestor and renders the
 /// matching sub-rectangle, so the streamer's z15–z17 requests keep working against
 /// a source that stops at z14.
-pub fn load_tile_rgba(
-    key: &TileKey,
-    template: &str,
-) -> Result<image::RgbaImage, Box<dyn std::error::Error>> {
+pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::RgbaImage, String> {
     use crate::systems::vector_tiles;
 
     if tile_source_kind(template) == TileSourceKind::Raster {
-        let bytes = load_tile_image(key, template)?;
-        return Ok(image::load_from_memory(&bytes)?.to_rgba8());
+        let bytes = load_tile_image(key, template).await?;
+        return image::load_from_memory(&bytes)
+            .map(|img| img.to_rgba8())
+            .map_err(|e| e.to_string());
     }
 
     let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
     let source = TileKey::new(x, y, z);
-    let bytes = load_tile_image(&source, template)?;
+    let bytes = load_tile_image(&source, template).await?;
 
     // Backstop for a misclassified template (see `tile_source_kind`): if the body
     // is actually an image, decode it and skip the overzoom entirely.
     if vector_tiles::looks_like_raster(&bytes) {
-        return Ok(image::load_from_memory(&bytes)?.to_rgba8());
+        return image::load_from_memory(&bytes)
+            .map(|img| img.to_rgba8())
+            .map_err(|e| e.to_string());
     }
 
-    let rgba = vector_tiles::render_mvt(&bytes, sub)?;
+    let rgba = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
     image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
-        .ok_or_else(|| "rendered tile had the wrong buffer size".into())
+        .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -267,30 +236,34 @@ pub fn load_tile_rgba(
 ///   is), so `blue − red` separates them where a hue test would trip over the
 ///   green end. A misread here costs a little gloss in the wrong place, not a
 ///   wrong shape, which is why the heuristic is acceptable at all.
-pub fn load_globe_tile_rgba(
+pub async fn load_globe_tile_rgba(
     key: &TileKey,
     template: &str,
-) -> Result<(image::RgbaImage, bool), Box<dyn std::error::Error>> {
+) -> Result<(image::RgbaImage, bool), String> {
     use crate::systems::vector_tiles;
 
     if tile_source_kind(template) == TileSourceKind::Raster {
-        let bytes = load_tile_image(key, template)?;
-        let mut rgba = image::load_from_memory(&bytes)?.to_rgba8();
+        let bytes = load_tile_image(key, template).await?;
+        let mut rgba = image::load_from_memory(&bytes)
+            .map_err(|e| e.to_string())?
+            .to_rgba8();
         paint_water_alpha_by_colour(&mut rgba);
         return Ok((rgba, true));
     }
 
     let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
     let source = TileKey::new(x, y, z);
-    let bytes = load_tile_image(&source, template)?;
+    let bytes = load_tile_image(&source, template).await?;
 
     if vector_tiles::looks_like_raster(&bytes) {
-        let mut rgba = image::load_from_memory(&bytes)?.to_rgba8();
+        let mut rgba = image::load_from_memory(&bytes)
+            .map_err(|e| e.to_string())?
+            .to_rgba8();
         paint_water_alpha_by_colour(&mut rgba);
         return Ok((rgba, true));
     }
 
-    let pixels = vector_tiles::render_mvt(&bytes, sub)?;
+    let pixels = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
     let mut rgba = image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, pixels)
         .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
     match vector_tiles::ocean_mask(&bytes, sub) {
@@ -333,6 +306,7 @@ pub fn load_region_tiles(
     mut images: ResMut<Assets<Image>>,
     mut tile_cache: ResMut<TileCache>,
     tile_url: Res<OsmTileUrlTemplate>,
+    time: Res<Time>,
     region_query: Query<(Entity, &RegionTile), Without<RegionTileTexture>>,
 ) {
     // 1. Drain finished fetches: upload the texture and publish its handle.
@@ -341,6 +315,9 @@ pub fn load_region_tiles(
         .lock()
         .map(|mut r| std::mem::take(&mut *r))
         .unwrap_or_default();
+    for _ in 0..finished.len() {
+        tile_cache.dispatch.completed();
+    }
     for (tile_key, outcome) in finished {
         match outcome {
             Some(tile) => {
@@ -369,9 +346,8 @@ pub fn load_region_tiles(
         }
     }
 
-    // 2. Attach ready textures / enqueue missing ones for the background workers.
+    // 2. Attach ready textures / enqueue missing ones onto the dispatcher.
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-    let mut sender: Option<Sender<(TileKey, String)>> = None;
     for (entity, region_tile) in region_query.iter() {
         let tile_key = region_tile.tile_key.clone();
 
@@ -393,15 +369,15 @@ pub fn load_region_tiles(
             loading.insert(tile_key.clone(), true);
         }
 
-        let tx = sender.get_or_insert_with(|| tile_cache.jobs_sender());
         tracing::info!(tile = %tile_key.to_path(), "queued OSM tile fetch");
-        if tx.send((tile_key.clone(), template.clone())).is_err() {
-            // Worker pool gone (shouldn't happen) — undo the loading flag so a
-            // later frame can retry.
-            if let Ok(mut loading) = tile_cache.loading.lock() {
-                loading.remove(&tile_key);
-            }
-        }
+        tile_cache.dispatch.queue((tile_key, template.clone()));
+    }
+
+    // 3. Dispatch queued tiles up to the concurrency cap as fetch+decode tasks.
+    let now = time.elapsed_secs_f64();
+    let results = tile_cache.results.clone();
+    while let Some((key, template)) = tile_cache.dispatch.next(now) {
+        spawn_tile_task(key, template, results.clone());
     }
 }
 
@@ -449,12 +425,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_paths_separate_by_kind() {
+    fn cache_keys_separate_by_kind() {
         let key = TileKey::new(8490, 5319, 14);
-        let raster = tile_cache_path(&key, TileSourceKind::Raster);
-        let vector = tile_cache_path(&key, TileSourceKind::Vector);
+        let raster = tile_cache_key(&key, TileSourceKind::Raster);
+        let vector = tile_cache_key(&key, TileSourceKind::Vector);
         assert_ne!(raster, vector, "a source switch must not reuse cached bytes");
-        assert!(raster.to_string_lossy().ends_with("5319.png"));
-        assert!(vector.to_string_lossy().ends_with("5319.mvt"));
+        assert!(raster.ends_with("5319.png"));
+        assert!(vector.ends_with("5319.mvt"));
     }
 }

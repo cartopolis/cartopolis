@@ -24,12 +24,16 @@ use crate::systems::avatar::{avatar_facing_yaw_from_camera, wish_dir_camera_rela
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
+#[cfg(not(target_arch = "wasm32"))]
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::sync::{mpsc, Arc, Mutex};
+use futures_channel::mpsc::UnboundedReceiver;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::UnboundedReceiver;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use vibe_core::{
     decode_app_frame, encode_app_frame, snap_yaw_continuation, wrap_angle_pi, AuthCredential,
@@ -53,7 +57,7 @@ pub fn spawn_network_thread(
     commands.insert_resource(OsmTileUrlTemplate(tile_template));
 
     let (out_tx, out_rx) = mpsc::channel::<NetMessage>();
-    let (intent_tx, intent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (intent_tx, intent_rx) = futures_channel::mpsc::unbounded();
     let connect_to = addr.0.clone();
 
     // Credential resolved by `login::resolve` in main; default to the solo `dev`
@@ -76,6 +80,10 @@ pub fn spawn_network_thread(
         None => (auth.credential, None),
     };
 
+    // The sim transport is tokio/TCP — native only. The web build is Phase-1
+    // Viewer (no sim; ADR-031/033), so on wasm this never runs (there is no
+    // `ConnectAddr`); the moved values are consumed below so setup still compiles.
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -98,6 +106,9 @@ pub fn spawn_network_thread(
             eprintln!("network client ended: {e:#}");
         }
     });
+    #[cfg(target_arch = "wasm32")]
+    let _ = (connect_to, primary, fallback, out_tx, intent_rx, tile_for_thread);
+
     commands.insert_resource(NetworkMailbox {
         rx: Mutex::new(out_rx),
     });
@@ -105,6 +116,7 @@ pub fn spawn_network_thread(
     commands.insert_resource(NetworkSyncState::default());
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn client_loop(
     addr: String,
     primary: AuthCredential,
@@ -175,7 +187,7 @@ async fn client_loop(
     loop {
         tokio::select! {
             biased;
-            msg = intent_rx.recv() => {
+            msg = intent_rx.next() => {
                 match msg {
                     Some(m) => {
                         let b = encode_app_frame(&m)?;
@@ -362,7 +374,7 @@ pub fn apply_network_snapshot(
                             && !texture_cache.pending.contains(&entry.id)
                         {
                             texture_cache.pending.insert(entry.id.clone());
-                            let _ = sess.intent_tx.send(NetMessage::TextureRequest {
+                            let _ = sess.intent_tx.unbounded_send(NetMessage::TextureRequest {
                                 request_id: 0,
                                 texture_id: entry.id.clone(),
                             });
@@ -755,7 +767,7 @@ pub fn send_network_intent(
     *since_send = 0.0;
     *last_sent = Some(intent);
 
-    let _ = sess.intent_tx.send(NetMessage::ClientIntent {
+    let _ = sess.intent_tx.unbounded_send(NetMessage::ClientIntent {
         request_id: 0,
         move_x: v.x,
         move_z: v.z,
@@ -776,7 +788,7 @@ pub fn send_observer_update(
     if camera_state.mode != crate::resources::CameraMode::Avatar {
         return;
     }
-    let _ = sess.intent_tx.send(NetMessage::ObserverUpdate {
+    let _ = sess.intent_tx.unbounded_send(NetMessage::ObserverUpdate {
         position: avatar_state.position,
     });
 }

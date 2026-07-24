@@ -12,22 +12,19 @@
 //! precipitation`. It only writes those while [`WeatherState::live`] is on, so the
 //! dev-panel sliders stay authoritative when the user is A/B'ing by hand.
 //!
-//! Same shape as `transit_live::poll_transit_live`: one blocking `ureq` fetch on a
-//! worker thread, results pushed through an `Arc<Mutex<Vec<_>>>` and folded on the
-//! main thread. See [[../CLAUDE.md]] for the cloud/fog/rain plumbing this feeds.
+//! One async fetch spawned on Bevy's `IoTaskPool` (via `platform::http`), drained
+//! on the main thread — the same fetch seam every other upstream now uses (ADR-033).
+//! See [[../CLAUDE.md]] for the cloud/fog/rain plumbing this feeds.
 
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task};
 
+use crate::platform::http;
 use crate::resources::DevPanelState;
 use crate::systems::map_stream::MapStream;
-
-/// MET terms of service require a real, identifying User-Agent with a contact.
-const USER_AGENT: &str =
-    "viberfox/0.1 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)";
 
 /// Re-fetch cadence. MET updates the global forecast ~4×/day and asks callers not
 /// to poll faster than the data changes; 10 min is well within etiquette and keeps
@@ -61,8 +58,8 @@ pub struct WeatherState {
     /// When true, each fetch drives cloud/fog/rain; when false, the dev-panel
     /// sliders stay in charge and we still keep `latest` fresh for the readout.
     pub live: bool,
-    jobs: Option<Sender<(f64, f64)>>,
-    results: Arc<Mutex<Vec<FetchResult>>>,
+    /// The in-flight fetch, if any; polled each frame and cleared on completion.
+    task: Option<Task<FetchResult>>,
     in_flight: bool,
     last_poll: Option<Instant>,
     /// Anchor generation the current sample was fetched for; a bump forces a refetch.
@@ -89,37 +86,20 @@ pub fn poll_weather(
     mut dev: ResMut<DevPanelState>,
     stream: Res<MapStream>,
 ) {
-    // Start the fetch worker once.
-    if weather.jobs.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel::<(f64, f64)>();
-        weather.jobs = Some(tx);
-        let results = weather.results.clone();
-        std::thread::spawn(move || {
-            while let Ok((lat, lng)) = rx.recv() {
-                let fetched = fetch_weather(lat, lng);
-                if let Ok(mut g) = results.lock() {
-                    g.push(fetched);
+    // Fold in the completed fetch, if this frame's poll finds it ready.
+    if let Some(task) = weather.task.as_mut() {
+        if let Some(result) = http::poll_task(task) {
+            weather.task = None;
+            weather.in_flight = false;
+            match result {
+                Ok(obs) => {
+                    weather.latest = Some(obs);
+                    if weather.live {
+                        apply(&obs, &mut dev);
+                    }
                 }
+                Err(e) => tracing::warn!(error = %e, "met.no weather fetch failed"),
             }
-        });
-    }
-
-    // Fold in completed fetches.
-    let done: Vec<FetchResult> = weather
-        .results
-        .lock()
-        .map(|mut g| g.drain(..).collect())
-        .unwrap_or_default();
-    for result in done {
-        weather.in_flight = false;
-        match result {
-            Ok(obs) => {
-                weather.latest = Some(obs);
-                if weather.live {
-                    apply(&obs, &mut dev);
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "met.no weather fetch failed"),
         }
     }
 
@@ -155,9 +135,7 @@ pub fn poll_weather(
     weather.last_poll = Some(Instant::now());
     weather.fetched_gen = Some(stream.anchor_generation);
     weather.in_flight = true;
-    if let Some(jobs) = &weather.jobs {
-        let _ = jobs.send((lat, lng));
-    }
+    weather.task = Some(IoTaskPool::get().spawn(fetch_weather(lat, lng)));
 }
 
 /// Write a sample onto the renderer's live knobs.
@@ -167,19 +145,14 @@ fn apply(obs: &Observation, dev: &mut DevPanelState) {
     dev.precipitation = obs.precipitation;
 }
 
-/// Blocking fetch + parse of one MET `complete` forecast (worker thread).
-fn fetch_weather(lat: f64, lng: f64) -> FetchResult {
+/// Fetch and parse one MET `complete` forecast. Runs inside an `IoTaskPool` task;
+/// the shared [`http::USER_AGENT`] carries the contact MET's terms require.
+async fn fetch_weather(lat: f64, lng: f64) -> FetchResult {
     // MET asks for ≤4-decimal coordinates to keep their cache effective.
     let url = format!(
         "https://api.met.no/weatherapi/locationforecast/2.0/complete?lat={lat:.4}&lon={lng:.4}"
     );
-    let body = ureq::get(&url)
-        .set("User-Agent", USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())?;
+    let body = http::fetch_string(http::Request::get(url).timeout(Duration::from_secs(15))).await?;
     parse_weather(&body, lat, lng)
 }
 

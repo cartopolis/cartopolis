@@ -2,6 +2,7 @@
 //!
 //! Renders context menus and edit dialogs using egui.
 
+use web_time::Instant;
 use super::egui_manager::EguiManager;
 use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region, Selected};
 use crate::resources::{
@@ -256,7 +257,7 @@ pub fn render_dev_panel(
         (&big_space::prelude::GridCell, &Transform),
         With<crate::systems::free_camera::FreeCamera>,
     >,
-    mut copied_at: Local<Option<std::time::Instant>>,
+    mut copied_at: Local<Option<Instant>>,
 ) {
     if !dev.open {
         return;
@@ -417,7 +418,7 @@ pub fn render_dev_panel(
                                 dev.cloud_cover,
                             ),
                         );
-                        *copied_at = Some(std::time::Instant::now());
+                        *copied_at = Some(Instant::now());
                     }
                 }
                 if copied {
@@ -1658,7 +1659,7 @@ pub fn send_prim_mutations(
                 tracing::warn!("cannot create prim: offline or world not anchored yet");
                 return;
             };
-            let _ = sess.intent_tx.send(NetMessage::CreatePrim {
+            let _ = sess.intent_tx.unbounded_send(NetMessage::CreatePrim {
                 request_id: 0,
                 region_id,
                 name: dialog_state.name.clone(),
@@ -1695,7 +1696,7 @@ pub fn send_prim_mutations(
                 online.as_ref(),
                 crate::systems::prim_geo::geo_from_world(&stream, pos),
             ) {
-                let _ = sess.intent_tx.send(NetMessage::UpdatePrim {
+                let _ = sess.intent_tx.unbounded_send(NetMessage::UpdatePrim {
                     request_id: 0,
                     prim_id,
                     position: pos,
@@ -1838,7 +1839,7 @@ pub fn send_prim_mutations(
         if let Some(sess) = online.as_ref() {
             let _ = sess
                 .intent_tx
-                .send(NetMessage::DeletePrim { request_id: 0, prim_id });
+                .unbounded_send(NetMessage::DeletePrim { request_id: 0, prim_id });
         }
         for (entity, prim, _, _, _) in prim_query.iter() {
             if prim.id == prim_id {

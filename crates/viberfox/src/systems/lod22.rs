@@ -19,14 +19,14 @@
 //! CLAUDE.md).
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::work::Dispatcher;
+use crate::platform::{http, storage};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::{GlobeState, HideInSpace, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
@@ -38,6 +38,10 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 /// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
 /// the server binned into, and the cells `osm_buildings` skips).
 const LOD22_ZOOM: u32 = 14;
+
+/// Concurrent cell fetch+mesh tasks. Our own 3DBAG host has no external rate limit,
+/// so this is a citizenship/throughput cap, not a throttle (min-interval 0).
+const LOD22_CONCURRENCY: usize = 3;
 /// CACHE_ZOOM cells streamed around the camera at full LoD2.2 detail (radius 2 →
 /// 5×5 ≈ ±3.5 km). Covered cells *beyond* this fall back to the simplified,
 /// inset, non-shadow far-cell extrusion in `osm_buildings` (a distance LOD): the
@@ -90,8 +94,9 @@ pub struct Lod22Buildings {
     /// `MapStream::anchor_generation` this streamer is built for; a change resets it.
     synced_gen: u32,
     established: bool,
-    /// Worker job queue of CACHE_ZOOM cell coords.
-    jobs: Option<Sender<(i64, i64)>>,
+    /// Frame-gated cell fetch+mesh dispatcher (ADR-033), replacing the old worker
+    /// thread + channel.
+    dispatch: Dispatcher<(i64, i64)>,
     /// Completed cells from the worker (None for cells with no buildings).
     #[allow(clippy::type_complexity)]
     results: Arc<Mutex<Vec<((i64, i64), Result<Option<Lod22Build>, String>)>>>,
@@ -119,14 +124,15 @@ pub fn update_lod22(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<GlobeState>,
+    time: Res<Time>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
     };
 
-    // Re-anchor (ADR-025): tear down and re-establish at the new origin. Dropping
-    // `jobs` ends the old worker; a fresh `results` orphans any in-flight push.
+    // Re-anchor (ADR-025): tear down and re-establish at the new origin. A fresh
+    // `results` orphans any in-flight push; `established` re-inits the dispatcher.
     if lod.synced_gen != stream.anchor_generation {
         lod.synced_gen = stream.anchor_generation;
         for (_, e) in lod.cells.drain() {
@@ -136,29 +142,18 @@ pub fn update_lod22(
         lod.no_shadow.clear();
         lod.requested.clear();
         lod.failed.clear();
-        lod.jobs = None;
         lod.results = Arc::new(Mutex::new(Vec::new()));
         lod.anchor = None;
         lod.established = false;
     }
 
-    // Establish the anchor and start the cell worker (fetch + mesh off-thread).
+    // Establish the anchor and reset the fetch+mesh dispatcher.
     if !lod.established {
         let z = base_zoom;
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
         lod.anchor = Some((ax, ay, z, clat));
         lod.established = true;
-        let (tx, rx) = std::sync::mpsc::channel::<(i64, i64)>();
-        lod.jobs = Some(tx);
-        let results = lod.results.clone();
-        std::thread::spawn(move || {
-            while let Ok((cx, cy)) = rx.recv() {
-                let built = build_lod22_cell(cx, cy, ax, ay, z, clat);
-                if let Ok(mut g) = results.lock() {
-                    g.push(((cx, cy), built));
-                }
-            }
-        });
+        lod.dispatch = Dispatcher::new(LOD22_CONCURRENCY, 0.0);
     }
     let (ax, ay, z, lat) = lod.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -179,9 +174,6 @@ pub fn update_lod22(
     );
 
     let Ok(root) = bigspace.single() else {
-        return;
-    };
-    let Some(jobs) = lod.jobs.clone() else {
         return;
     };
 
@@ -208,7 +200,23 @@ pub fn update_lod22(
     to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
     for c in to_request {
         lod.requested.insert(c);
-        let _ = jobs.send(c);
+        lod.dispatch.queue(c);
+    }
+
+    // Dispatch queued cells up to the concurrency cap: each becomes a detached
+    // fetch+mesh task (ADR-033 seam) pushing to `results` — no OS thread.
+    let now = time.elapsed_secs_f64();
+    let results = lod.results.clone();
+    while let Some((cx, cy)) = lod.dispatch.next(now) {
+        let results = results.clone();
+        IoTaskPool::get()
+            .spawn(async move {
+                let built = build_lod22_cell(cx, cy, ax, ay, z, lat).await;
+                if let Ok(mut g) = results.lock() {
+                    g.push(((cx, cy), built));
+                }
+            })
+            .detach();
     }
 
     // Apply completed cells — at most MAX_BUILDS_PER_FRAME uploads per frame.
@@ -220,6 +228,10 @@ pub fn update_lod22(
             g.drain(..n).collect()
         })
         .unwrap_or_default();
+    // Each drained result frees one concurrency slot.
+    for _ in 0..done.len() {
+        lod.dispatch.completed();
+    }
     for (c, built) in done {
         match built {
             Ok(Some((grid_cell, mesh, footprints))) => {
@@ -301,7 +313,7 @@ pub fn update_lod22(
 
 /// Fetch one cell (disk-cached) and build its merged LoD2.2 mesh, anchored to the
 /// cell's own BigSpace grid cell. Runs on the worker thread. `None` if empty.
-fn build_lod22_cell(
+async fn build_lod22_cell(
     cx: i64,
     cy: i64,
     ax: i64,
@@ -309,7 +321,7 @@ fn build_lod22_cell(
     z: u32,
     lat: f64,
 ) -> Result<Option<Lod22Build>, String> {
-    let elements = fetch_lod22_cell(cx, cy)?;
+    let elements = fetch_lod22_cell(cx, cy).await?;
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LOD22_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -377,44 +389,27 @@ fn build_lod22_cell(
     Ok(buf.into_mesh().map(|m| (grid_cell, m, footprints)))
 }
 
-/// On-disk cache path for a LoD2.2 cell (its own namespace).
-fn cell_cache_path(cx: i64, cy: i64) -> PathBuf {
-    crate::utils::cache::cache_root()
-        .join("buildings")
-        .join("lod22")
-        .join(LOD22_ZOOM.to_string())
-        .join(cx.to_string())
-        .join(format!("{}.json", cy))
+/// Cache key for a LoD2.2 cell (its own namespace under the cache root).
+fn cell_cache_key(cx: i64, cy: i64) -> String {
+    format!("buildings/lod22/{}/{}/{}.json", LOD22_ZOOM, cx, cy)
 }
 
-/// Fetch one LoD2.2 cell from the host (disk-cached).
-fn fetch_lod22_cell(cx: i64, cy: i64) -> Result<Vec<Bldg>, String> {
-    let path = cell_cache_path(cx, cy);
-    if let Ok(cached) = std::fs::read_to_string(&path) {
+/// Fetch one LoD2.2 cell from the host, cached through the storage seam. Runs on
+/// an `IoTaskPool` task — no thread, no `ureq`, no `std::fs` (ADR-033), so it is
+/// wasm-buildable.
+async fn fetch_lod22_cell(cx: i64, cy: i64) -> Result<Vec<Bldg>, String> {
+    let key = cell_cache_key(cx, cy);
+    if let Some(cached) = storage::get_string(&key).await {
         if let Ok(b) = parse_lod22(&cached) {
             return Ok(b);
         }
-        let _ = std::fs::remove_file(&path);
+        storage::remove(&key).await;
     }
     let url = format!("{}/lod22/{}/{}/{}.json", tdbag_url(), LOD22_ZOOM, cx, cy);
-    // A dense cell decompresses to >10 MB — past ureq's `into_string` cap — so
-    // read the body directly (bounded at 64 MB) instead.
-    let mut text = String::new();
-    ureq::get(&url)
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_reader()
-        .take(64 * 1024 * 1024)
-        .read_to_string(&mut text)
-        .map_err(|e| e.to_string())?;
+    let bytes = http::fetch(http::Request::get(url)).await?;
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     let buildings = parse_lod22(&text)?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::File::create(&path) {
-        use std::io::Write;
-        let _ = f.write_all(text.as_bytes());
-    }
+    storage::put(&key, text.as_bytes()).await;
     Ok(buildings)
 }
 

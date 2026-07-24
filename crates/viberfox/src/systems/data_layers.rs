@@ -17,10 +17,9 @@
 //! First layer: public transport stops (rail stations, tram stops, bus stops).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -30,8 +29,11 @@ use bevy::render::mesh::MeshVertexBufferLayoutRef;
 use bevy::render::render_resource::{
     AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::storage;
+use crate::platform::work::Dispatcher;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{
@@ -320,8 +322,9 @@ pub struct DataLayers {
     /// The `MapStream::anchor_generation` the loaded cells belong to; a change
     /// resets them for the new origin.
     synced_gen: u32,
-    /// Worker job queue: (layer index, cell x, cell y).
-    jobs: Option<Sender<(usize, i64, i64)>>,
+    /// Frame-gated cell dispatcher (layer index, cell x, cell y), throttled to the
+    /// Overpass rate policy — replaces the worker thread + `thread::sleep`.
+    dispatch: Dispatcher<(usize, i64, i64)>,
     results: Arc<Mutex<Vec<CellResult>>>,
     /// One unlit material shared by all depth-tested marker geometry (hue is
     /// per-vertex): poles, pin stems, pin ground discs.
@@ -369,7 +372,7 @@ impl Default for DataLayers {
             popup: None,
             anchor: None,
             synced_gen: 0,
-            jobs: None,
+            dispatch: Dispatcher::default(),
             results: Arc::default(),
             material: None,
             head_material: None,
@@ -423,6 +426,7 @@ pub fn update_data_layers(
     mut head_materials: ResMut<Assets<PinHeadMaterial>>,
     stream: Res<crate::systems::map_stream::MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
+    time: Res<Time>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
 ) {
@@ -447,29 +451,18 @@ pub fn update_data_layers(
             layer.retry_at.clear();
         }
         dl.popup = None;
-        dl.jobs = None;
         dl.results = Arc::default();
         dl.anchor = None;
     }
 
-    // Establish the anchor (from the map origin) and start the cell worker.
+    // Establish the anchor (from the map origin) and reset the cell dispatcher.
     if dl.anchor.is_none() {
         let z = base_zoom;
         let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         dl.anchor = Some((ax, ay, z, lat));
-
-        let (tx, rx) = std::sync::mpsc::channel::<(usize, i64, i64)>();
-        dl.jobs = Some(tx);
-        let results = dl.results.clone();
-        std::thread::spawn(move || {
-            while let Ok((li, cx, cy)) = rx.recv() {
-                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat);
-                if let Ok(mut g) = results.lock() {
-                    g.push((li, (cx, cy), built));
-                }
-            }
-        });
+        // Serial (1 at a time), spaced by the Overpass throttle.
+        dl.dispatch = Dispatcher::new(1, OVERPASS_THROTTLE.as_secs_f64());
     }
     let (ax, ay, z, lat) = dl.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -499,30 +492,50 @@ pub fn update_data_layers(
     // Queue missing cells for enabled layers, nearest first. A cell that failed
     // waits out its backoff first: Overpass 504s come in bursts, and retrying
     // straight away just burns the attempt budget while it is still overloaded.
-    if let Some(jobs) = dl.jobs.clone() {
-        let now = Instant::now();
-        for li in 0..dl.layers.len() {
-            if !dl.layers[li].enabled {
-                continue;
-            }
-            let rt = &mut dl.layers[li];
-            let mut to_request: Vec<(i64, i64)> = Vec::new();
-            for dy in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
-                for dx in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
-                    let c = (ccx + dx, ccy + dy);
-                    let attempts = rt.failed.get(&c).copied().unwrap_or(0);
-                    let ready = rt.retry_at.get(&c).is_none_or(|t| now >= *t);
-                    if !rt.requested.contains(&c) && attempts < MAX_CELL_ATTEMPTS && ready {
-                        to_request.push(c);
-                    }
+    // Collect first (the loop mutably borrows `dl.layers`), then enqueue onto the
+    // dispatcher, so the two mutable borrows of `dl` don't overlap.
+    let now = Instant::now();
+    let mut enqueue: Vec<(usize, i64, i64)> = Vec::new();
+    for li in 0..dl.layers.len() {
+        if !dl.layers[li].enabled {
+            continue;
+        }
+        let rt = &mut dl.layers[li];
+        let mut to_request: Vec<(i64, i64)> = Vec::new();
+        for dy in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
+            for dx in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
+                let c = (ccx + dx, ccy + dy);
+                let attempts = rt.failed.get(&c).copied().unwrap_or(0);
+                let ready = rt.retry_at.get(&c).is_none_or(|t| now >= *t);
+                if !rt.requested.contains(&c) && attempts < MAX_CELL_ATTEMPTS && ready {
+                    to_request.push(c);
                 }
             }
-            to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
-            for c in to_request {
-                rt.requested.insert(c);
-                let _ = jobs.send((li, c.0, c.1));
-            }
         }
+        to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+        for c in to_request {
+            rt.requested.insert(c);
+            enqueue.push((li, c.0, c.1));
+        }
+    }
+    for job in enqueue {
+        dl.dispatch.queue(job);
+    }
+
+    // Dispatch queued cells (serial, Overpass-throttled) as detached fetch+build
+    // tasks (ADR-033 seam) — no worker thread.
+    let now_secs = time.elapsed_secs_f64();
+    let results = dl.results.clone();
+    while let Some((li, cx, cy)) = dl.dispatch.next(now_secs) {
+        let results = results.clone();
+        IoTaskPool::get()
+            .spawn(async move {
+                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat).await;
+                if let Ok(mut g) = results.lock() {
+                    g.push((li, (cx, cy), built));
+                }
+            })
+            .detach();
     }
 
     // Apply completed cells.
@@ -531,6 +544,9 @@ pub fn update_data_layers(
         .lock()
         .map(|mut g| g.drain(..).collect())
         .unwrap_or_default();
+    for _ in 0..done.len() {
+        dl.dispatch.completed();
+    }
     for (li, cell, built) in done {
         match built {
             Ok(Some(build)) => {
@@ -899,6 +915,13 @@ fn open_url(url: &str) {
     let result = std::process::Command::new("open").arg(&url).spawn();
     #[cfg(target_os = "windows")]
     let result = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+    // Web: opening a real link in a new tab is the browser's job (ADR-030). Wired
+    // to `web-sys` `window.open` later; a compiling no-op keeps the click harmless.
+    #[cfg(target_arch = "wasm32")]
+    let result: std::io::Result<()> = {
+        tracing::info!(%url, "in-world link open not yet wired on the web build");
+        Ok(())
+    };
     if let Err(e) = result {
         tracing::warn!(error = %e, "could not open browser");
     }
@@ -1219,7 +1242,7 @@ struct Poi {
 /// Fetch one layer cell (disk-cached Overpass) and build its merged marker
 /// mesh, anchored to the cell centre's BigSpace grid cell for f32 precision.
 /// Returns `None` for cells without matching POIs.
-fn build_layer_cell(
+async fn build_layer_cell(
     li: usize,
     cx: i64,
     cy: i64,
@@ -1229,7 +1252,7 @@ fn build_layer_cell(
     lat: f64,
 ) -> Result<Option<CellBuild>, String> {
     let def = &LAYER_DEFS[li];
-    let pois = fetch_cell(def, cx, cy)?;
+    let pois = fetch_cell(def, cx, cy).await?;
     if pois.is_empty() {
         return Ok(None);
     }
@@ -1281,33 +1304,26 @@ fn build_layer_cell(
     }))
 }
 
-/// On-disk cache path for one layer cell.
-fn cell_cache_path(key: &str, cx: i64, cy: i64) -> PathBuf {
-    crate::utils::cache::cache_root()
-        .join("layers")
-        .join(key)
-        .join(LAYER_ZOOM.to_string())
-        .join(cx.to_string())
-        .join(format!("{}.json", cy))
+/// Cache key for one layer cell.
+fn cell_cache_key(key: &str, cx: i64, cy: i64) -> String {
+    format!("layers/{}/{}/{}/{}.json", key, LAYER_ZOOM, cx, cy)
 }
 
-/// One cell's POIs, from disk cache or a single throttled Overpass query.
-fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String> {
-    let path = cell_cache_path(def.key, cx, cy);
-    if let Ok(cached) = std::fs::read_to_string(&path) {
+/// One cell's POIs, from the storage cache or a single Overpass query. Runs on an
+/// `IoTaskPool` task; dispatch spacing (the old `thread::sleep` throttle) now lives
+/// in the caller's [`Dispatcher`]. `overpass_query` is still synchronous — it goes
+/// through the http seam in the final Overpass-group step.
+async fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String> {
+    let key = cell_cache_key(def.key, cx, cy);
+    if let Some(cached) = storage::get_string(&key).await {
         return parse_pois(def, &cached);
     }
 
     let (north, west) = tile_to_lat_lng(cx, cy, LAYER_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LAYER_ZOOM);
     let bbox = format!("{south},{west},{north},{east}");
-    let fetched = overpass_query(&def.query.replace("{bbox}", &bbox))?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&path, &fetched);
-    // Space out live queries so a burst of cells doesn't trip the rate limit.
-    std::thread::sleep(OVERPASS_THROTTLE);
+    let fetched = overpass_query(&def.query.replace("{bbox}", &bbox)).await?;
+    storage::put(&key, fetched.as_bytes()).await;
     parse_pois(def, &fetched)
 }
 

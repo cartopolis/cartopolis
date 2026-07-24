@@ -295,7 +295,7 @@ pub fn render_chat_panel(
     if join_now {
         let room = chat.join_input.trim().to_string();
         let key = format!("room:{room}");
-        let _ = online.intent_tx.send(NetMessage::ChatSubscribe {
+        let _ = online.intent_tx.unbounded_send(NetMessage::ChatSubscribe {
             room: room.clone(),
             join: true,
         });
@@ -308,7 +308,7 @@ pub fn render_chat_panel(
         if let Some((key, _)) = tabs.get(active) {
             let scope = scope_for(key, chat.shout);
             let body = chat.input.trim().to_string();
-            let _ = online.intent_tx.send(NetMessage::ChatSend {
+            let _ = online.intent_tx.unbounded_send(NetMessage::ChatSend {
                 request_id: 0,
                 scope,
                 body,

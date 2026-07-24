@@ -438,7 +438,11 @@ pub fn setup_camera(
 /// placement — so this only flips the intent flags in [`CameraState`].
 pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
     match next {
-        CameraMode::Avatar => camera_state.avatar_initialized = false,
+        CameraMode::Avatar => {
+            camera_state.avatar_initialized = false;
+            // Land in plain follow; the GPS/locate button owns the rotate sub-state.
+            camera_state.follow_rotate = false;
+        }
         CameraMode::Free => camera_state.free_initialized = false,
         CameraMode::Orbit => camera_state.orbit_initialized = camera_state.orbit_has_pose,
     }
@@ -490,8 +494,10 @@ pub fn camera_controls(
     cam_render: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
     // Follow mode places the camera in the avatar's `GridCell` (its
     // `display_position` is cell-local). `Without<FreeCamera>` proves disjoint
-    // access from the mutable camera query's `&mut GridCell`.
-    avatar_cells: Query<&GridCell, (With<crate::components::Avatar>, Without<FreeCamera>)>,
+    // access from the mutable camera query's `&mut GridCell`/`&mut Transform`.
+    // The `Transform` gives the avatar's authoritative render yaw for the
+    // follow-and-rotate chase (valid in both online and offline run modes).
+    avatar_cells: Query<(&GridCell, &Transform), (With<crate::components::Avatar>, Without<FreeCamera>)>,
 ) {
     if camera_query.is_empty() {
         return;
@@ -549,6 +555,12 @@ pub fn camera_controls(
                 for event in cursor_moved_events.read() {
                     if let Some(last_pos) = camera_state.pan_offset {
                         let delta = event.position - last_pos;
+                        if delta != Vec2::ZERO {
+                            // Manually orbiting drops follow-and-rotate — the same as
+                            // Organic Maps stopping heading-follow the moment you drag
+                            // the map yourself.
+                            camera_state.follow_rotate = false;
+                        }
                         camera_state.azimuth -= delta.x * 0.005;
                         camera_state.pitch -= delta.y * 0.005;
                         camera_state.pitch = camera_state.pitch
@@ -559,6 +571,29 @@ pub fn camera_controls(
                 }
             } else if mouse_input.just_released(MouseButton::Left) {
                 camera_state.pan_offset = None;
+            }
+
+            // Follow-and-rotate (GPS button state 3): glue the camera behind the
+            // avatar's heading so it swings around as the avatar turns. The avatar's
+            // render yaw `face` is authoritative in every run mode (the movement
+            // systems write `Quat::from_rotation_y(face)` each frame), so read it off
+            // the avatar transform rather than the mode-specific yaw fields. The camera
+            // sits directly behind when `azimuth ≡ face + π` (its look direction then
+            // equals the avatar's facing). Ease along the shortest arc so a turn glides.
+            if camera_state.follow_rotate {
+                if let Ok((_, avatar_tf)) = avatar_cells.single() {
+                    let face = avatar_tf.rotation.to_euler(EulerRot::YXZ).0;
+                    let target = face + std::f32::consts::PI;
+                    let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
+                    if d > std::f32::consts::PI {
+                        d -= std::f32::consts::TAU;
+                    }
+                    let a = 1.0 - (-8.0_f32 * delta_time).exp();
+                    // Snap the last sliver so azimuth (and thus the whole follow rig)
+                    // actually settles when standing still, instead of creeping toward
+                    // the target forever and pinning the floating-origin propagation.
+                    camera_state.azimuth += if d.abs() < 1e-3 { d } else { d * a };
+                }
             }
 
             // Calculate camera position
@@ -589,7 +624,7 @@ pub fn camera_controls(
             // Follow" reliably re-frame the avatar instead of stranding the camera a
             // grid cell away (the old code only rewrote `translation`, never the
             // cell). geo_nav's teleport uses the same avatar-cell convention.
-            let avatar_cell = avatar_cells.single().copied().unwrap_or(prev_cell);
+            let avatar_cell = avatar_cells.single().map(|(c, _)| *c).unwrap_or(prev_cell);
             let avatar_origin = cell_origin(&avatar_cell);
             let target_world = avatar_origin + target_position.as_dvec3();
             let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();

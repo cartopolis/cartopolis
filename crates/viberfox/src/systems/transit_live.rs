@@ -23,23 +23,22 @@
 //! local offset so clocks can show local wall time.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, GridCell};
 
+use crate::platform::http;
 use crate::systems::data_layers::{DataLayers, PoiInstance, LAYER_DEFS, TRANSIT_LAYER};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
 
-/// Identifying User-Agent (OVapi is a free community service, like Nominatim).
-const OVAPI_USER_AGENT: &str =
-    "viberfox/0.1 (transit boards; https://github.com/garage44/viberfox)";
 /// Refresh cadence for the departure data.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Early poll when stops enter range that have no data yet.
@@ -180,7 +179,6 @@ struct BoardEntry {
 /// Live transit polling state, cached departures, and spawned boards.
 #[derive(Resource, Default)]
 pub struct TransitLive {
-    jobs: Option<Sender<Vec<String>>>,
     results: Arc<Mutex<Vec<FetchResult>>>,
     in_flight: bool,
     last_poll: Option<Instant>,
@@ -201,21 +199,6 @@ pub fn poll_transit_live(
     dl: Res<DataLayers>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
-    // Start the fetch worker once.
-    if live.jobs.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<String>>();
-        live.jobs = Some(tx);
-        let results = live.results.clone();
-        std::thread::spawn(move || {
-            while let Ok(codes) = rx.recv() {
-                let fetched = fetch_departures(&codes);
-                if let Ok(mut g) = results.lock() {
-                    g.push(fetched);
-                }
-            }
-        });
-    }
-
     // Fold in completed fetches.
     let done: Vec<FetchResult> = live
         .results
@@ -277,9 +260,15 @@ pub fn poll_transit_live(
     let batch: Vec<String> = codes.into_iter().map(|(_, c)| c).collect();
     live.last_poll = Some(Instant::now());
     live.in_flight = true;
-    if let Some(jobs) = &live.jobs {
-        let _ = jobs.send(batch);
-    }
+    let results = live.results.clone();
+    IoTaskPool::get()
+        .spawn(async move {
+            let fetched = fetch_departures(&batch).await;
+            if let Ok(mut g) = results.lock() {
+                g.push(fetched);
+            }
+        })
+        .detach();
 }
 
 /// Mount, repaint, and billboard the in-world departure boards: one textured
@@ -724,15 +713,12 @@ fn fit(painter: &BoardPainter, text: &str, size: f32, max_w: f32) -> String {
 // --- Worker-thread fetch + parse ---
 
 /// Fetch one batched `/tpc/` request and parse it into per-stop boards.
-fn fetch_departures(codes: &[String]) -> FetchResult {
+///
+/// The OVapi host is plain `http://`, so the web build cannot reach it directly
+/// (mixed content); it will route through the relay per ADR-034.
+async fn fetch_departures(codes: &[String]) -> FetchResult {
     let url = format!("http://v0.ovapi.nl/tpc/{}", codes.join(","));
-    let body = ureq::get(&url)
-        .set("User-Agent", OVAPI_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())?;
+    let body = http::fetch_string(http::Request::get(url).timeout(Duration::from_secs(15))).await?;
     parse_departures(&body)
 }
 

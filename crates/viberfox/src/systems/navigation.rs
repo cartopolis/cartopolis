@@ -19,14 +19,17 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::http;
 use crate::resources::{OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -41,8 +44,6 @@ use crate::systems::routing::{
 };
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
 use vibe_core::TileKey;
-
-const NAV_USER_AGENT: &str = "viberfox/0.1 (routing; https://code.garage44.eu/garage44/viberfox)";
 
 /// Typing pause before an endpoint field is geocoded — the search bar's value, so
 /// the two feel the same.
@@ -321,64 +322,65 @@ pub fn drive_route_geocoding(mut route: ResMut<RouteState>) {
 type SearchSink = Arc<Mutex<Option<(String, Result<Vec<GeoSuggestion>, String>)>>>;
 
 fn spawn_search(query: String, sink: SearchSink) {
-    std::thread::spawn(move || {
-        let url = format!(
-            "{}/search?format=jsonv2&limit={}&q={}",
-            nominatim_base_url(),
-            MAX_SUGGESTIONS,
-            percent_encode(&query)
-        );
-        let result = (|| -> Result<Vec<GeoSuggestion>, String> {
-            let body = ureq::get(&url)
-                .set("User-Agent", NAV_USER_AGENT)
-                .call()
-                .map_err(|e| e.to_string())?
-                .into_string()
-                .map_err(|e| e.to_string())?;
-            let json: serde_json::Value =
-                serde_json::from_str(&body).map_err(|e| e.to_string())?;
-            Ok(json
-                .as_array()
-                .ok_or("unexpected Nominatim response")?
-                .iter()
-                .filter_map(|it| {
-                    Some(GeoSuggestion {
-                        label: it.get("display_name")?.as_str()?.to_string(),
-                        lat: it.get("lat")?.as_str()?.parse().ok()?,
-                        lng: it.get("lon")?.as_str()?.parse().ok()?,
-                    })
-                })
-                .collect())
-        })();
-        if let Ok(mut g) = sink.lock() {
-            *g = Some((query, result));
-        }
-    });
+    // Detached fetch on the IoTaskPool (ADR-033 seam): wasm-safe, no OS thread.
+    IoTaskPool::get()
+        .spawn(async move {
+            let url = format!(
+                "{}/search?format=jsonv2&limit={}&q={}",
+                nominatim_base_url(),
+                MAX_SUGGESTIONS,
+                percent_encode(&query)
+            );
+            let result = search_fetch(url).await;
+            if let Ok(mut g) = sink.lock() {
+                *g = Some((query, result));
+            }
+        })
+        .detach();
+}
+
+/// Fetch and parse a Nominatim `/search` response for the routing endpoint fields.
+async fn search_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
+    let body = http::fetch_string(http::Request::get(url)).await?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    Ok(json
+        .as_array()
+        .ok_or("unexpected Nominatim response")?
+        .iter()
+        .filter_map(|it| {
+            Some(GeoSuggestion {
+                label: it.get("display_name")?.as_str()?.to_string(),
+                lat: it.get("lat")?.as_str()?.parse().ok()?,
+                lng: it.get("lon")?.as_str()?.parse().ok()?,
+            })
+        })
+        .collect())
 }
 
 /// Name a map-picked point, so the field reads a place name rather than a pair of
 /// decimals. Best-effort: a failure just leaves the coordinates showing.
 fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoint, String)>>>) {
-    std::thread::spawn(move || {
-        let url = format!(
-            "{}/reverse?format=jsonv2&lat={lat}&lon={lng}",
-            nominatim_base_url()
-        );
-        let name = ureq::get(&url)
-            .set("User-Agent", NAV_USER_AGENT)
-            .call()
-            .ok()
-            .and_then(|r| r.into_string().ok())
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-            .and_then(|json| {
-                json.get("display_name")
-                    .and_then(|v| v.as_str())
-                    .map(|n| n.split(',').map(str::trim).take(3).collect::<Vec<_>>().join(", "))
-            });
-        if let (Some(name), Ok(mut g)) = (name, sink.lock()) {
-            g.push((end, name));
-        }
-    });
+    // Detached fetch on the IoTaskPool (ADR-033 seam): wasm-safe, no OS thread.
+    IoTaskPool::get()
+        .spawn(async move {
+            let url = format!(
+                "{}/reverse?format=jsonv2&lat={lat}&lon={lng}",
+                nominatim_base_url()
+            );
+            let name = http::fetch_string(http::Request::get(url))
+                .await
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .and_then(|json| {
+                    json.get("display_name")
+                        .and_then(|v| v.as_str())
+                        .map(|n| n.split(',').map(str::trim).take(3).collect::<Vec<_>>().join(", "))
+                });
+            if let (Some(name), Ok(mut g)) = (name, sink.lock()) {
+                g.push((end, name));
+            }
+        })
+        .detach();
 }
 
 // ─── Solving ─────────────────────────────────────────────────────────────────
@@ -439,16 +441,19 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
     progress.0.store(0, Ordering::Relaxed);
     progress.1.store(0, Ordering::Relaxed);
 
-    std::thread::spawn(move || {
-        let result = solve(from, to, mode, &template, &progress, &cache);
-        if let Ok(mut g) = sink.lock() {
-            *g = Some(SolveJob { seq, result });
-        }
-    });
+    IoTaskPool::get()
+        .spawn(async move {
+            let result = solve(from, to, mode, &template, &progress, &cache).await;
+            if let Ok(mut g) = sink.lock() {
+                *g = Some(SolveJob { seq, result });
+            }
+        })
+        .detach();
 }
 
-/// The blocking half: corridor → tiles → graph → A*. Runs on a worker thread.
-fn solve(
+/// Corridor → tiles → graph → A*. Runs on an `IoTaskPool` task (ADR-033 seam); the
+/// per-tile fetch goes through `load_tile_image`, the graph build stays CPU-side.
+async fn solve(
     from: (f64, f64),
     to: (f64, f64),
     mode: TravelMode,
@@ -476,7 +481,7 @@ fn solve(
             let mut failures = 0usize;
             for (i, tile) in tiles.iter().enumerate() {
                 let key = TileKey::new(tile.0, tile.1, routing::ROUTING_ZOOM);
-                match load_tile_image(&key, template) {
+                match load_tile_image(&key, template).await {
                     Ok(bytes) => {
                         if let Err(e) = graph.add_tile(&bytes, *tile) {
                             tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");
@@ -605,15 +610,22 @@ pub fn update_route_visuals(
     mut materials: ResMut<Assets<StandardMaterial>>,
     route: Res<RouteState>,
     stream: Res<MapStream>,
+    right_panel: Res<RightPanel>,
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32)>>,
+    mut drawn: Local<Option<(u32, u32, bool)>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
     };
-    let key = (route.generation, stream.anchor_generation);
+    // The drawn route is shown only while routing mode (the Route panel) is open.
+    // Navigating away hides it, but `RouteState::route` is left untouched, so
+    // returning to routing redraws the same route without recomputing it. Folding
+    // the open-state into the rebuild key despawns the line on close and rebuilds
+    // it on reopen through the existing generation/anchor machinery.
+    let routing_open = right_panel.is(RightPanel::Route);
+    let key = (route.generation, stream.anchor_generation, routing_open);
     if *drawn == Some(key) {
         return;
     }
@@ -624,6 +636,9 @@ pub fn update_route_visuals(
 
     for e in existing.iter() {
         commands.entity(e).despawn();
+    }
+    if !routing_open {
+        return;
     }
     let Some(r) = &route.route else {
         return;
@@ -1364,8 +1379,9 @@ mod tests {
 
         for mode in TravelMode::ALL {
             let t0 = Instant::now();
-            let route = solve(from, to, mode, &template, &progress, &cache)
-                .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            let route =
+                futures_lite::future::block_on(solve(from, to, mode, &template, &progress, &cache))
+                    .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             println!(
                 "{:<5} {:>8} {:>10} in {:>5} ms  ({} steps, {} tiles)",
                 mode.label(),

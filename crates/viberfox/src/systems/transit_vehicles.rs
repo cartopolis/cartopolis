@@ -30,17 +30,18 @@
 //! being in range — the same discipline the boards and building streaming use.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::{http, storage};
 use crate::systems::data_layers::{DataLayers, TRANSIT_LAYER};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
@@ -49,9 +50,6 @@ use crate::systems::osm_buildings::lat_lng_to_local;
 use crate::systems::transit_live::WorldClock;
 use vibe_core::world::tile_to_meters;
 
-/// Identifying User-Agent (OVapi is a free community service, like Nominatim).
-const OVAPI_USER_AGENT: &str =
-    "viberfox/0.1 (live vehicles; https://github.com/garage44/viberfox)";
 /// OVapi's GTFS-Realtime vehicle-position feed (all live Dutch vehicles).
 const FEED_URL: &str = "https://gtfs.ovapi.nl/nl/vehiclePositions.pb";
 /// Refresh cadence; also the interval a vehicle glides across between fixes.
@@ -172,7 +170,9 @@ struct VehicleState {
 /// Live vehicle polling state, tracked vehicles, and their spawned boxes.
 #[derive(Resource, Default)]
 pub struct TransitVehicles {
-    jobs: Option<Sender<()>>,
+    /// OVapi line list (public number + mode per line), loaded once and shared by
+    /// every feed fetch. `Arc` so a fetch task can hold it without re-loading.
+    lines: Arc<Mutex<Option<Arc<LineMap>>>>,
     results: Arc<Mutex<Vec<FetchResult>>>,
     in_flight: bool,
     last_poll: Option<Instant>,
@@ -223,23 +223,6 @@ pub fn poll_transit_vehicles(
     stream: Res<MapStream>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
-    // Start the fetch worker once.
-    if tv.jobs.is_none() {
-        let (txr, rx) = std::sync::mpsc::channel::<()>();
-        tv.jobs = Some(txr);
-        let results = tv.results.clone();
-        std::thread::spawn(move || {
-            // Load the line list once (public number + mode per line); an empty
-            // map just means vehicles show without labels / as plain buses.
-            let lines = load_line_map();
-            while rx.recv().is_ok() {
-                let fetched = fetch_feed(&lines);
-                if let Ok(mut g) = results.lock() {
-                    g.push(fetched);
-                }
-            }
-        });
-    }
 
     // Re-anchor: the flat frame moved, so the frame-relative track is stale.
     // In-flight/queued fixes are absolute lat/lng and re-fold correctly.
@@ -327,9 +310,32 @@ pub fn poll_transit_vehicles(
     }
     tv.last_poll = Some(Instant::now());
     tv.in_flight = true;
-    if let Some(jobs) = &tv.jobs {
-        let _ = jobs.send(());
+    // Detached fetch (ADR-033 seam): the line map loads once into the shared slot
+    // on the first fetch, then every feed fetch reuses it. `in_flight` serialises
+    // these, so there is no double-load race.
+    let results = tv.results.clone();
+    let lines = tv.lines.clone();
+    IoTaskPool::get()
+        .spawn(async move {
+            let map = get_or_load_lines(&lines).await;
+            let fetched = fetch_feed(&map).await;
+            if let Ok(mut g) = results.lock() {
+                g.push(fetched);
+            }
+        })
+        .detach();
+}
+
+/// Return the shared line map, loading (and caching) it once on first use.
+async fn get_or_load_lines(slot: &Arc<Mutex<Option<Arc<LineMap>>>>) -> Arc<LineMap> {
+    if let Some(map) = slot.lock().ok().and_then(|g| g.clone()) {
+        return map;
     }
+    let map = Arc::new(load_line_map().await);
+    if let Ok(mut g) = slot.lock() {
+        *g = Some(map.clone());
+    }
+    map
 }
 
 /// Spawn / move / retire the vehicle boxes and their line-number labels:
@@ -523,61 +529,41 @@ pub fn update_transit_vehicles(
 
 /// Fetch and parse the vehicle-position feed (raw protobuf bytes over HTTP),
 /// resolving each vehicle's public line + mode against the line list.
-fn fetch_feed(lines: &LineMap) -> FetchResult {
-    let resp = ureq::get(FEED_URL)
-        .set("User-Agent", OVAPI_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .call()
-        .map_err(|e| e.to_string())?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut buf)
-        .map_err(|e| e.to_string())?;
+async fn fetch_feed(lines: &LineMap) -> FetchResult {
+    let buf = http::fetch(http::Request::get(FEED_URL).timeout(Duration::from_secs(15))).await?;
     Ok(parse_vehicle_positions(&buf, lines))
 }
 
 /// Load OVapi's line list (public number + `TransportType` per line-planning
 /// number), from the disk cache when fresh, else fetched once and cached. A
 /// failure yields an empty map — vehicles then show without labels, as buses.
-fn load_line_map() -> LineMap {
-    let path = LINES_CACHE
-        .iter()
-        .fold(crate::utils::cache::cache_root(), |p, seg| p.join(seg));
-    let fresh = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
-        .is_some_and(|age| age < LINES_TTL);
+async fn load_line_map() -> LineMap {
+    let key = LINES_CACHE.join("/");
+    let fresh = storage::age_secs(&key)
+        .await
+        .is_some_and(|age| age < LINES_TTL.as_secs_f64());
     let body = if fresh {
-        std::fs::read_to_string(&path).ok()
+        storage::get_string(&key).await
     } else {
-        match fetch_line_list() {
+        match fetch_line_list().await {
             Ok(text) => {
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&path, &text);
+                storage::put(&key, text.as_bytes()).await;
                 Some(text)
             }
             // On a fetch error, fall back to a stale cache if we have one.
             Err(e) => {
                 tracing::warn!(error = %e, "OVapi line list fetch failed");
-                std::fs::read_to_string(&path).ok()
+                storage::get_string(&key).await
             }
         }
     };
     body.as_deref().map(parse_line_map).unwrap_or_default()
 }
 
-/// GET the OVapi `/line/` JSON.
-fn fetch_line_list() -> Result<String, String> {
-    ureq::get(LINES_URL)
-        .set("User-Agent", OVAPI_USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())
+/// GET the OVapi `/line/` JSON. Plain `http://`, so the web build reaches it via
+/// the relay (ADR-034), not directly.
+async fn fetch_line_list() -> Result<String, String> {
+    http::fetch_string(http::Request::get(LINES_URL).timeout(Duration::from_secs(30))).await
 }
 
 /// Parse the `/line/` object into a planning-number → (public number, mode) map.

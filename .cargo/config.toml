@@ -3,6 +3,13 @@ linker = "clang"
 # lld: `pacman -S lld clang`. For faster links on large binaries, try mold instead of lld (`pacman -S mold`).
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
+# Cross-compile to Windows from Linux (CI: the `viberfox-ci` image carries the
+# mingw-w64 toolchain + `rustup target add x86_64-pc-windows-gnu`). Link with the
+# mingw gcc; `build.rs` embeds the .exe icon via winresource, which uses the
+# matching `x86_64-w64-mingw32-windres` from the same package.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
 [build]
 incremental = true
 

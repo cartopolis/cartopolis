@@ -10,8 +10,10 @@
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use big_space::prelude::GridCell;
 
+use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
@@ -20,9 +22,6 @@ use crate::systems::geo_nav::{
 };
 use crate::systems::map_stream::MapStream;
 use crate::systems::user_store::UserStore;
-
-const NAV_USER_AGENT: &str =
-    "viberfox/0.1 (geocoding; https://github.com/garage44/viberfox)";
 
 /// Bookmarks UI state + the reverse-geocode result channel.
 #[derive(Resource, Default)]
@@ -43,25 +42,27 @@ impl BookmarksState {
     /// coordinates rather than leaving the name stuck on the placeholder.
     pub fn request_address(&self, id: u64, lat: f64, lng: f64) {
         let resolved = self.resolved.clone();
-        std::thread::spawn(move || {
-            let url = format!(
-                "{}/reverse?format=jsonv2&lat={lat}&lon={lng}",
-                nominatim_base_url()
-            );
-            let name = ureq::get(&url)
-                .set("User-Agent", NAV_USER_AGENT)
-                .call()
-                .ok()
-                .and_then(|r| r.into_string().ok())
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-                .and_then(|json| {
-                    json.get("display_name").and_then(|v| v.as_str()).map(short_address)
-                })
-                .unwrap_or_else(|| coord_label(lat, lng));
-            if let Ok(mut g) = resolved.lock() {
-                g.push((id, name));
-            }
-        });
+        // Detached fetch on the IoTaskPool (ADR-033 seam) — no OS thread, so it
+        // works on wasm; the `resolved` channel and its drain are unchanged.
+        IoTaskPool::get()
+            .spawn(async move {
+                let url = format!(
+                    "{}/reverse?format=jsonv2&lat={lat}&lon={lng}",
+                    nominatim_base_url()
+                );
+                let name = http::fetch_string(http::Request::get(url))
+                    .await
+                    .ok()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                    .and_then(|json| {
+                        json.get("display_name").and_then(|v| v.as_str()).map(short_address)
+                    })
+                    .unwrap_or_else(|| coord_label(lat, lng));
+                if let Ok(mut g) = resolved.lock() {
+                    g.push((id, name));
+                }
+            })
+            .detach();
     }
 }
 

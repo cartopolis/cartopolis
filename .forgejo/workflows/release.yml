@@ -15,7 +15,10 @@ env:
   CARGO_NET_RETRY: "3"
 
 jobs:
-  linux-x86_64:
+  # One job builds every target, so the `continuous` publish (which recreates the
+  # release) runs once — two publishing jobs would race and clobber each other's
+  # assets. Cross-compiles to Windows via the mingw-w64 toolchain in the image.
+  release:
     runs-on: ubuntu-latest
     container:
       image: viberfox-ci:latest
@@ -27,10 +30,13 @@ jobs:
           # Release profile (fat LTO) artifacts are distinct from the CI debug cache.
           key: release
 
-      - name: Build release binary
+      - name: Build release binary (Linux x86_64)
         run: cargo build -p viberfox --release
 
-      - name: Package tarball (binary + assets)
+      - name: Build release binary (Windows x86_64, cross)
+        run: cargo build -p viberfox --release --target x86_64-pc-windows-gnu
+
+      - name: Package Linux tarball (binary + assets)
         run: |
           set -euo pipefail
           PKG=viberfox-linux-x86_64
@@ -47,6 +53,17 @@ jobs:
           chmod +x "$PKG/run.sh"
           tar -czf "dist/$PKG.tar.gz" "$PKG"
           ( cd dist && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256" )
+
+      - name: Package Windows zip (binary + assets)
+        run: |
+          set -euo pipefail
+          PKG=viberfox-windows-x86_64
+          rm -rf "$PKG" && mkdir -p "$PKG"
+          cp target/x86_64-pc-windows-gnu/release/viberfox.exe "$PKG/"
+          cp -r assets "$PKG/"
+          [ -f README.md ] && cp README.md "$PKG/" || true
+          zip -qr "dist/$PKG.zip" "$PKG"
+          ( cd dist && sha256sum "$PKG.zip" > "$PKG.zip.sha256" )
           ls -la dist
 
       - name: Publish to Forgejo release

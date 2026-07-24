@@ -214,14 +214,28 @@ fn fire_request(
     messages: Vec<serde_json::Value>,
 ) -> PendingAiResponse {
     let cell: PendingAiResponse = Arc::new(Mutex::new(None));
-    let cell_clone = cell.clone();
-    std::thread::spawn(move || {
-        let result = call_anthropic(&api_key, &model, &messages);
-        *cell_clone.lock().unwrap() = Some(result);
-    });
+    // The Anthropic call holds a server secret and is admin-only + server-side on
+    // the web build (ADR-034); native calls it directly on a worker thread, wasm
+    // returns an unavailable result.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cell_clone = cell.clone();
+        std::thread::spawn(move || {
+            let result = call_anthropic(&api_key, &model, &messages);
+            *cell_clone.lock().unwrap() = Some(result);
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&api_key, &model, &messages);
+        if let Ok(mut g) = cell.lock() {
+            *g = Some(Err("AI assistant is not available on the web build".to_string()));
+        }
+    }
     cell
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn call_anthropic(
     api_key: &str,
     model: &str,
@@ -553,7 +567,7 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, pos) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.send(NetMessage::CreatePrim {
+            let _ = session.intent_tx.unbounded_send(NetMessage::CreatePrim {
                 request_id: 0,
                 region_id,
                 name: prim_name.clone(),
@@ -627,7 +641,7 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, new_pos) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.send(NetMessage::UpdatePrim {
+            let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
                 request_id: 0,
                 prim_id,
                 position: new_pos,
@@ -654,7 +668,7 @@ fn run_tool(
             };
             let _ = session
                 .intent_tx
-                .send(NetMessage::DeletePrim { request_id: 0, prim_id });
+                .unbounded_send(NetMessage::DeletePrim { request_id: 0, prim_id });
             format!("Deleted prim {} (sent to server)", prim_id)
         }
 
