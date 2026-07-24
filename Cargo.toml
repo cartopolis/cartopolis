@@ -50,7 +50,8 @@ bevy = { version = "0.19", default-features = false, features = [
     "smaa_luts",
     "std",
     "tonemapping_luts",
-    "wayland",
+    # NOTE: the Linux-only `wayland` windowing feature is added per-target in
+    # crates/viberfox/Cargo.toml so macOS/Windows never resolve the wayland stack.
 ] }
 # bevy_atmosphere removed in the 0.19 migration — replaced by Bevy's built-in
 # bevy_pbr atmosphere (Atmosphere/AtmosphereSettings on the camera).

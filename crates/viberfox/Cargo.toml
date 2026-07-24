@@ -55,3 +55,10 @@ jiff = "0.2.34"
 # decodes unconditionally. Everything left is pure Rust. If a future field 404s with a
 # template error, check the DRS template before adding the feature back.
 gribberish = { version = "1.5", default-features = false }
+
+# Wayland windowing is Linux-only. Kept off the shared bevy feature list (see the
+# workspace Cargo.toml) so macOS/Windows builds never pull the wayland stack; winit
+# uses the native AppKit/Win32 backend there. Cargo unions these features with the
+# main `bevy.workspace = true` entry above, so on Linux the feature set is unchanged.
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { workspace = true, features = ["wayland"] }
