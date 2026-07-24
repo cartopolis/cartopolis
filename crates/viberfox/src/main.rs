@@ -59,6 +59,18 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     shot: Option<PathBuf>,
 
+    /// Run the remembered camera positions from a preset manifest (default
+    /// `docs/shots.toml`): every named view captured in one launch, each to its
+    /// own file, with its own camera mode, panels and time of day. This is the
+    /// documentation-image build step — see `cargo shots`. Bare `--shots` (the
+    /// common case) parses to `Some(None)` and uses the checked-in manifest.
+    #[arg(long, value_name = "FILE", num_args = 0..=1)]
+    shots: Option<Option<PathBuf>>,
+
+    /// Restrict a `--shots` run to these preset names (comma-separated).
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    only: Vec<String>,
+
     /// Camera position for `--shot`, as "lat,lng,altitude_m". Repeat for a
     /// sweep: one capture each, all in a single launch.
     #[arg(long, value_name = "LAT,LNG,ALT")]
@@ -69,26 +81,29 @@ struct Cli {
     #[arg(long, value_name = "PITCH,YAW")]
     look: Vec<String>,
 
-    /// Offscreen render size for `--shot`.
-    #[arg(long, value_name = "WxH", default_value = "1280x720")]
-    size: String,
+    /// Offscreen render size for `--shot` (default 1280x720). Overrides the
+    /// manifest's `size` in a `--shots` run.
+    #[arg(long, value_name = "WxH")]
+    size: Option<String>,
 
-    /// Seconds of quiet tile streaming required before a `--shot` capture.
-    #[arg(long, default_value_t = 0.8)]
-    settle: f32,
+    /// Seconds of quiet tile streaming required before a `--shot` capture
+    /// (default 0.8; overrides the manifest's `settle`).
+    #[arg(long)]
+    settle: Option<f32>,
 
-    /// Hard cap on the settle wait per `--shot` capture, in seconds.
-    #[arg(long, default_value_t = 15.0)]
-    wait: f32,
+    /// Hard cap on the settle wait per capture, in seconds (default 15).
+    #[arg(long)]
+    wait: Option<f32>,
 
     /// Leave the egui overlay (menu bar, HUD) out of `--shot` captures.
     #[arg(long)]
     hide_ui: bool,
 
     /// Open UI panels in `--shot` captures, comma-separated: `dev`, `layers`,
-    /// `bookmarks`, `ai`, `avatar`, `stats`, or `all`. The menu bar and HUD
-    /// already show (unless `--hide-ui`); this documents a panel too, e.g.
-    /// `--ui dev` to capture the lighting/weather controls.
+    /// `bookmarks`, `ai`, `avatar`, `stats`, `route`, or `all`. The menu bar and
+    /// HUD already show (unless `--hide-ui`); this documents a panel too, e.g.
+    /// `--ui dev` to capture the lighting/weather controls. `route` also seeds a
+    /// demo route, so the planner is captured with a result in it.
     #[arg(long, value_name = "LIST", value_delimiter = ',')]
     ui: Vec<String>,
 
@@ -138,6 +153,58 @@ struct Cli {
     /// In `--shot` mode the capture waits for the first sample (capped by `--wait`).
     #[arg(long)]
     weather_live: bool,
+}
+
+/// Resolve the scripted capture the CLI asked for, if any.
+///
+/// Two ways in, and they don't mix: `--shots` runs the remembered camera
+/// positions from a preset manifest (the documentation build step), `--shot`
+/// places one or more ad-hoc viewpoints from `--at`/`--look`. Both are built
+/// here, before the app, because the result decides whether the run gets a
+/// window at all and how big its surface is.
+fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHarness>, String> {
+    use systems::shot_harness::{ShotHarness, DEFAULT_SETTLE, DEFAULT_SIZE, DEFAULT_WAIT};
+
+    if let Some(manifest) = cli.shots.clone() {
+        if cli.shot.is_some() {
+            return Err("--shots and --shot are alternatives; pass one".into());
+        }
+        // `--shots` with no value falls back to the checked-in manifest.
+        let path = manifest.unwrap_or_else(systems::shot_presets::default_manifest_path);
+        return ShotHarness::from_manifest(
+            &path,
+            &cli.only,
+            cli.size.as_deref(),
+            cli.settle,
+            cli.wait,
+            cli.csv.clone(),
+            cli.dump_state.clone(),
+        )
+        .map(Some)
+        .map_err(|e| format!("--shots: {e}"));
+    }
+    if !cli.only.is_empty() {
+        return Err("--only names presets from a --shots manifest".into());
+    }
+    let Some(path) = cli.shot.clone() else {
+        return Ok(None);
+    };
+    ShotHarness::from_cli(
+        path,
+        &cli.at,
+        &cli.look,
+        cli.size.as_deref().unwrap_or(DEFAULT_SIZE),
+        cli.settle.unwrap_or(DEFAULT_SETTLE),
+        cli.wait.unwrap_or(DEFAULT_WAIT),
+        cli.hide_ui,
+        cli.ui.clone(),
+        cli.shot_mode.clone(),
+        cli.frames,
+        cli.csv.clone(),
+        cli.dump_state.clone(),
+    )
+    .map(Some)
+    .map_err(|e| format!("--shot: {e}"))
 }
 
 /// Force Bevy onto the stable CPU light-clustering path.
@@ -213,13 +280,22 @@ fn main() {
         .init();
 
     let mut app = App::new();
+    // The scripted capture is configured *before* the app is built: a preset
+    // manifest can set the render size, and a windowless run needs that size to
+    // stand a `HeadlessSurface` in for the missing `Window`. A bad manifest or
+    // `--at` therefore fails here with a message, not as a black run.
+    let harness = match build_shot_harness(&cli) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
     // A scripted run is windowless (see `HeadlessSurface`): it renders into an
-    // offscreen image, so `--size` is the whole surface — there is nothing for
-    // egui to lay out against but this.
-    let shot_size = cli
-        .shot
-        .as_ref()
-        .and_then(|_| systems::shot_harness::parse_size(&cli.size));
+    // offscreen image, so the shot size is the whole surface — there is nothing
+    // for egui to lay out against but this.
+    let shot_size = harness.as_ref().map(|h| h.size);
+    let scripted = harness.is_some();
     let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .display()
@@ -293,13 +369,24 @@ fn main() {
     .add_plugins(MaterialPlugin::<CloudMaterial>::default())
     .add_plugins(MaterialPlugin::<GlobeCloudMaterial>::default())
     .add_plugins(MaterialPlugin::<RainMaterial>::default())
+    .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+    .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
     .init_resource::<GameState>()
     .init_resource::<AvatarState>()
     .init_resource::<LocalAvatarSimId>()
     .init_resource::<CameraState>()
     .init_resource::<MouseState>()
     .init_resource::<systems::tile_loader::TileCache>()
-    .init_resource::<OsmTileUrlTemplate>()
+    // A scripted run never sees the server handshake that normally supplies the
+    // tile template, and the built-in fallback is the raster OSM basemap — which
+    // the route planner cannot solve against. A preset manifest may therefore pin
+    // its own source; `VIBE_TILE_URL` still wins over it (see `shot_presets`).
+    .insert_resource(match harness.as_ref().and_then(|h| h.tile_url.clone()) {
+        Some(url) if resources::tile_url_override().is_none() => {
+            OsmTileUrlTemplate(std::sync::Arc::new(std::sync::Mutex::new(url)))
+        }
+        _ => OsmTileUrlTemplate::default(),
+    })
     .init_resource::<ContextMenuState>()
     .init_resource::<EditDialogState>()
     .init_resource::<systems::gizmo::GizmoState>()
@@ -320,7 +407,7 @@ fn main() {
         // A `--shot` capture must be deterministic, and an explicit `--time`
         // pins the clock, so both start in Manual; a normal launch tracks the
         // real local time of wherever the map opens.
-        sun_mode: if cli.shot.is_some() || cli.time.is_some() {
+        sun_mode: if scripted || cli.time.is_some() {
             resources::SunMode::Manual
         } else {
             resources::SunMode::Auto
@@ -341,16 +428,22 @@ fn main() {
     // Default to Auto (live met.no) in interactive runs; keep scripted captures
     // deterministic — no network wait — unless `--weather-live` asks for it.
     .insert_resource(systems::weather::WeatherState::with_live(
-        cli.shot.is_none() || cli.weather_live,
+        !scripted || cli.weather_live,
     ))
     .init_resource::<systems::transit_vehicles::TransitVehicles>()
     .init_resource::<systems::geo_nav::GeoNavState>()
+    .init_resource::<systems::navigation::RouteState>()
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
     .init_resource::<systems::map_geometry::MapSurfaces>()
+    // Must come after the `WaterMaterial` plugin above: it mints the shared
+    // handle out of `Assets<WaterMaterial>`.
+    .init_resource::<systems::water::WaterSeaState>()
+    .init_resource::<systems::vegetation::VegetationLod>()
     .init_resource::<systems::globe::GlobeState>()
     .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
+    .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
     // Space background: the atmosphere skybox covers this everywhere in the local
     // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
     .insert_resource(ClearColor(Color::BLACK))
@@ -368,7 +461,7 @@ fn main() {
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
     app.init_resource::<resources::RightPanel>();
-    let offline = cli.offline || cli.shot.is_some();
+    let offline = cli.offline || scripted;
     if !offline {
         let login = login::resolve(cli.login.as_deref());
         let external = cli.connect.or(login.server);
@@ -389,58 +482,35 @@ fn main() {
         }
     }
 
-    // Scripted capture mode (`--shot`): the harness owns the camera and ends the
-    // run, and the user store stays out of it (no restore, no autosave).
-    if let Some(path) = cli.shot.clone() {
-        match systems::shot_harness::ShotHarness::from_cli(
-            path,
-            &cli.at,
-            &cli.look,
-            &cli.size,
-            cli.settle,
-            cli.wait,
-            cli.hide_ui,
-            cli.ui.clone(),
-            cli.shot_mode.clone(),
-            cli.frames,
-            cli.csv.clone(),
-            cli.dump_state.clone(),
-        ) {
-            Ok(harness) => {
-                app.insert_resource(resources::HeadlessSurface {
-                    size: harness.size,
-                    scale: 1.0,
-                })
-                    .insert_resource(harness)
-                    .init_resource::<systems::shot_harness::ShotProgress>()
-                    .add_systems(
-                        Startup,
-                        systems::shot_harness::setup_offscreen_target
-                            .after(systems::free_camera::setup_camera),
-                    )
-                    .add_systems(
-                        Update,
-                        (
-                            systems::shot_harness::open_scripted_ui,
-                            systems::shot_harness::place_camera
-                                .before(systems::geo_nav::apply_teleport),
-                            systems::shot_harness::place_space_orbit
-                                .after(systems::geo_nav::apply_teleport)
-                                .before(systems::free_camera::camera_controls),
-                            // After drive_screenshots so the `hide_ui` it clears
-                            // each frame isn't cleared again before PostUpdate's
-                            // egui suppression reads it.
-                            systems::shot_harness::drive_capture
-                                .after(systems::free_camera::camera_controls)
-                                .after(systems::ui::drive_screenshots),
-                        ),
-                    );
-            }
-            Err(e) => {
-                eprintln!("--shot: {e}");
-                std::process::exit(2);
-            }
-        }
+    // Scripted capture mode (`--shot` / `--shots`): the harness owns the camera
+    // and ends the run, and the user store stays out of it (no restore, no
+    // autosave). It was already built and validated above.
+    if let Some(harness) = harness {
+        app.insert_resource(resources::HeadlessSurface { size: harness.size, scale: 1.0 })
+            .insert_resource(harness)
+            .init_resource::<systems::shot_harness::ShotProgress>()
+            .add_systems(
+                Startup,
+                systems::shot_harness::setup_offscreen_target
+                    .after(systems::free_camera::setup_camera),
+            )
+            .add_systems(
+                Update,
+                (
+                    systems::shot_harness::open_scripted_ui,
+                    systems::shot_harness::place_camera
+                        .before(systems::geo_nav::apply_teleport),
+                    systems::shot_harness::place_space_orbit
+                        .after(systems::geo_nav::apply_teleport)
+                        .before(systems::free_camera::camera_controls),
+                    // After drive_screenshots so the `hide_ui` it clears
+                    // each frame isn't cleared again before PostUpdate's
+                    // egui suppression reads it.
+                    systems::shot_harness::drive_capture
+                        .after(systems::free_camera::camera_controls)
+                        .after(systems::ui::drive_screenshots),
+                ),
+            );
     }
 
     app.add_systems(
@@ -552,6 +622,13 @@ fn main() {
                 // meshes over the textured tiles. No-op on a raster tile source.
                 systems::map_geometry::update_map_surfaces
                     .after(systems::map_stream::update_map_stream),
+                // Sea state from the live wind (cheap: skips unless the wind moved).
+                systems::water::update_water_waves,
+                // Ramp the scattered trees into the flat fill with altitude. Must
+                // follow the surface build, which is what creates the materials it
+                // repaints. Skips unless the ramp actually moved.
+                systems::vegetation::update_vegetation_lod
+                    .after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the
@@ -711,6 +788,26 @@ fn main() {
             systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
                 .after(systems::ai_assistant::render_ai_panel),
+        ),
+    )
+    // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
+    // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
+    .add_systems(
+        Update,
+        (
+            // Draws into the same root `Ui` as the other right-hand panels, so its
+            // call order fixes its placement — keep it last in that chain.
+            systems::navigation::render_route_panel
+                .after(systems::bookmarks::render_bookmarks_panel),
+            systems::navigation::drive_route_geocoding,
+            systems::navigation::drive_route_solver
+                .after(systems::navigation::render_route_panel),
+            // After the camera has moved, so the cursor ray matches the frame the
+            // user actually clicked on.
+            systems::navigation::handle_route_map_pick
+                .after(systems::free_camera::camera_controls),
+            systems::navigation::update_route_visuals
+                .after(systems::navigation::drive_route_solver),
         ),
     )
     // Phase 6: Transform gizmos
@@ -2058,7 +2155,8 @@ const CLOUD_SOFTNESS: f32 = 0.18;
 /// Wind velocity in the shader's UV units per second (drifts the deck). The
 /// visible field spans ~1.7 UV units, so ~0.04/s crosses it in ~40 s — a clear
 /// drift without racing (the old 0.004 was imperceptible).
-const CLOUD_WIND: Vec2 = Vec2::new(0.04, 0.015);
+/// (`systems::water` reuses the direction so the waves travel with the clouds.)
+pub const CLOUD_WIND: Vec2 = Vec2::new(0.04, 0.015);
 /// Clouds are at full strength up to this camera altitude, then fade out so a
 /// high flight or orbit view sees clear sky (the shell is a ceiling seen from
 /// below; flying *above* the deck to look down on the tops is a follow-up).

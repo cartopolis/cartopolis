@@ -34,7 +34,8 @@ use big_space::prelude::{BigSpace, GridCell};
 
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::map_stream::MapStream;
-use crate::systems::tile_loader::load_tile_rgba;
+use crate::systems::globe_ocean::{GlobeOcean, GlobeOceanGloss, GlobeSurfaceMaterial};
+use crate::systems::tile_loader::load_globe_tile_rgba;
 use vibe_core::geo::TangentFrame;
 use vibe_core::world::tile_to_meters;
 use vibe_core::TileKey;
@@ -343,7 +344,7 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 /// Does tile `a` cover (is an ancestor of, or equal) tile `b`?
 /// Build a decoded tile's mipmap chain. Pure CPU work, called on the fetch workers
 /// (the fetch + decode/render itself is `tile_loader::load_tile_rgba`).
-fn decode_globe_tile(rgba: image::RgbaImage) -> DecodedTile {
+fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
     let (data, mip_count) =
         crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
@@ -352,6 +353,7 @@ fn decode_globe_tile(rgba: image::RgbaImage) -> DecodedTile {
         width,
         height,
         mip_count,
+        has_ocean_mask,
     }
 }
 
@@ -373,6 +375,9 @@ struct DecodedTile {
     width: u32,
     height: u32,
     mip_count: u32,
+    /// Whether the alpha channel carries a real ocean mask (`systems::globe_ocean`)
+    /// rather than the opaque 255s a source without one leaves behind.
+    has_ocean_mask: bool,
 }
 
 /// Outcome of one worker fetch.
@@ -391,7 +396,7 @@ pub fn setup_globe(
     mut commands: Commands,
     mut globe: ResMut<GlobeState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     stream: Res<MapStream>,
     bigspace: Query<Entity, With<BigSpace>>,
     tile_url: Res<OsmTileUrlTemplate>,
@@ -474,13 +479,19 @@ pub fn setup_globe(
             // side is bright and the night side is softly filled by the ambient
             // light (not a void). The water tone backstops the polar caps beyond
             // Mercator's ±85° and still-loading tiles.
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.67, 0.80, 0.85),
-                perceptual_roughness: 1.0,
-                reflectance: 0.0,
-                double_sided: true,
-                cull_mode: None,
-                ..default()
+            MeshMaterial3d(materials.add(GlobeSurfaceMaterial {
+                base: StandardMaterial {
+                    base_color: Color::srgb(0.67, 0.80, 0.85),
+                    perceptual_roughness: 1.0,
+                    reflectance: 0.0,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                },
+                // The backstop carries no imagery, so it has no ocean mask — and
+                // an unbound base-colour texture samples as opaque white, which
+                // would read as "all ocean" and gloss the entire planet.
+                extension: GlobeOcean::unmasked(),
             })),
             Transform::default(),
             GridCell::default(),
@@ -539,8 +550,8 @@ pub fn setup_globe(
                 } else {
                     // Decode + mip generation happen here, on the worker, so the
                     // main thread only assembles and uploads (see `DecodedTile`).
-                    match load_tile_rgba(&key, &template) {
-                        Ok(rgba) => TileFetch::Ok(decode_globe_tile(rgba)),
+                    match load_globe_tile_rgba(&key, &template) {
+                        Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
                         Err(_) => TileFetch::Failed,
                     }
                 };
@@ -734,6 +745,11 @@ pub fn update_globe_visibility(
             Without<crate::systems::rendering::RegionMesh>,
             Without<crate::systems::osm_buildings::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
+            // Trees are owned by `vegetation::update_vegetation_lod`, which hides
+            // them at the top of its altitude ramp — far below the space tier, so
+            // they are already gone by the time this system would care. Two
+            // visibility writers on one entity is the documented race.
+            Without<crate::systems::vegetation::VegetationSurface>,
         ),
     >,
 ) {
@@ -841,6 +857,11 @@ pub fn update_globe_visibility(
 /// it replaces there, darkening to a planetary tone as you climb to orbit. Writes
 /// the shared [`GlobeSurfaceAlbedo`] (read at tile spawn) and rewrites the live
 /// tile + backstop materials when it drifts past [`ALBEDO_UPDATE_STEP`].
+///
+/// The ocean gloss (`systems::globe_ocean`) rides the same ramp and the same
+/// throttle: both are functions of `space_factor`, and they must reach the tier
+/// boundary together — the flat map tiles just below it are matte and at full
+/// albedo, so anything that arrives early puts a step in the middle of a climb.
 pub fn update_globe_albedo(
     globe: Res<GlobeState>,
     camera: Query<
@@ -848,22 +869,30 @@ pub fn update_globe_albedo(
         With<crate::systems::free_camera::FreeCamera>,
     >,
     mut albedo: ResMut<GlobeSurfaceAlbedo>,
-    tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<StandardMaterial>), With<GlobeMesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut gloss: ResMut<GlobeOceanGloss>,
+    tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<GlobeSurfaceMaterial>), With<GlobeMesh>>,
+    mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     mut applied: Local<Option<f32>>,
 ) {
     let Ok((cell, tf)) = camera.single() else {
         return;
     };
-    let a = 1.0f32.lerp(GLOBE_DEEP_ALBEDO, globe.space_factor(cell, tf));
+    let space = globe.space_factor(cell, tf);
+    let a = 1.0f32.lerp(GLOBE_DEEP_ALBEDO, space);
     albedo.0 = a;
+    gloss.0 = space;
     if applied.is_some_and(|p| (a - p).abs() < ALBEDO_UPDATE_STEP) {
         return;
     }
     *applied = Some(a);
     for (tint, mat) in tinted.iter() {
         if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.base_color = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
+            m.base.base_color = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
+            // Only the masked surfaces have an ocean at all; leave the backstop
+            // sphere's inert extension alone.
+            if m.extension.ocean.y > 0.0 {
+                m.extension.ocean.x = space;
+            }
         }
     }
 }
@@ -878,7 +907,7 @@ pub fn update_globe_tiles(
     mut globe: ResMut<GlobeState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     camera: Query<
         (&GridCell, &Transform, &Projection),
         With<crate::systems::free_camera::FreeCamera>,
@@ -887,6 +916,7 @@ pub fn update_globe_tiles(
     headless: Option<Res<crate::resources::HeadlessSurface>>,
     bigspace: Query<Entity, With<BigSpace>>,
     surface_albedo: Res<GlobeSurfaceAlbedo>,
+    ocean_gloss: Res<GlobeOceanGloss>,
     time: Res<Time>,
 ) {
     let headless = headless.map(|h| *h);
@@ -957,6 +987,7 @@ pub fn update_globe_tiles(
             continue;
         }
         globe.pending.remove(&key);
+        let has_ocean_mask = tile.has_ocean_mask;
         // Decode + mips already done on the worker; just assemble and upload.
         let image = crate::systems::rendering::image_from_mip_chain(
             tile.width,
@@ -1031,19 +1062,29 @@ pub fn update_globe_tiles(
                 // Lit (matte) to match the base sphere: an unlit tile tonemaps to
                 // near-black under the camera's physical exposure (see the base
                 // sphere note). Sunlit day side bright, night side ambient-filled.
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    // Current ramped albedo, so a tile streaming in while parked
-                    // in orbit starts at the right tint instead of popping bright
-                    // (the throttled `update_globe_albedo` won't re-touch it if
-                    // the camera isn't moving). White base tone (see the tint).
-                    base_color: {
-                        let a = surface_albedo.0;
-                        Color::srgb(a, a, a)
+                MeshMaterial3d(materials.add(GlobeSurfaceMaterial {
+                    base: StandardMaterial {
+                        // Current ramped albedo, so a tile streaming in while
+                        // parked in orbit starts at the right tint instead of
+                        // popping bright (the throttled `update_globe_albedo`
+                        // won't re-touch it if the camera isn't moving). White
+                        // base tone (see the tint).
+                        base_color: {
+                            let a = surface_albedo.0;
+                            Color::srgb(a, a, a)
+                        },
+                        base_color_texture: Some(texture),
+                        perceptual_roughness: 1.0,
+                        reflectance: 0.0,
+                        ..default()
                     },
-                    base_color_texture: Some(texture),
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.0,
-                    ..default()
+                    // Same contract as the albedo above: come up at the ocean
+                    // gloss the rest of the globe is already showing.
+                    extension: if has_ocean_mask {
+                        GlobeOcean::masked(ocean_gloss.0)
+                    } else {
+                        GlobeOcean::unmasked()
+                    },
                 })),
                 Transform::from_translation(origin),
                 GridCell::default(),

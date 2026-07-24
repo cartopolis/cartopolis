@@ -107,15 +107,17 @@ pub struct RegionTile {
     pub lod_level: u32, // 0 = high-res (2x2), 1 = medium-res (1x1), 2 = low-res (1x1)
 }
 
-/// Build tile URL from template (`{z}`, `{x}`, `{y}`) or default OSM (ADR-004 / ADR-014).
+/// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
+/// ([`vibe_core::world::DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
+/// only reaches here offline / under `--shot`; solo and split mode fill it from the
+/// sim handshake first.
 #[must_use]
 pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
-    if template.is_empty() {
-        return format!(
-            "https://tile.openstreetmap.org/{}/{}/{}.png",
-            key.z, key.x, key.y
-        );
-    }
+    let template = if template.is_empty() {
+        vibe_core::world::DEFAULT_TILE_URL_TEMPLATE
+    } else {
+        template
+    };
     template
         .replace("{z}", &key.z.to_string())
         .replace("{x}", &key.x.to_string())
@@ -159,8 +161,9 @@ pub fn tile_source_kind(template: &str) -> TileSourceKind {
                 TileSourceKind::Vector
             }
         }
-        // Empty/!templated → the built-in `tile.openstreetmap.org` PNG default.
-        None => TileSourceKind::Raster,
+        // Empty/!templated → the built-in default, which is now the VersaTiles
+        // vector source (`DEFAULT_TILE_URL_TEMPLATE`), so classify it as such.
+        None => TileSourceKind::Vector,
     }
 }
 
@@ -245,6 +248,80 @@ pub fn load_tile_rgba(
     image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
         .ok_or_else(|| "rendered tile had the wrong buffer size".into())
 }
+
+/// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
+/// (255 = water), and whether that mask means anything.
+///
+/// Alpha is free real estate here: the globe's tile materials are opaque, so the
+/// channel is otherwise wasted, and riding along in the same texture costs no
+/// extra binding, no extra upload and no extra memory — which matters because the
+/// globe holds a whole quadtree of these. The mip chain averages the mask along
+/// with the colour, so a coastline softens with distance instead of aliasing.
+///
+/// Two ways to get the mask, because the basemap can be either kind of source:
+///
+/// * **Vector** — rasterise the water layers ([`vector_tiles::ocean_mask`]). Exact,
+///   and by construction it agrees with what the local water shader calls water.
+/// * **Raster** — no geometry to ask, so classify by colour. Every map style paints
+///   water markedly bluer than its land (and on satellite imagery the sea really
+///   is), so `blue − red` separates them where a hue test would trip over the
+///   green end. A misread here costs a little gloss in the wrong place, not a
+///   wrong shape, which is why the heuristic is acceptable at all.
+pub fn load_globe_tile_rgba(
+    key: &TileKey,
+    template: &str,
+) -> Result<(image::RgbaImage, bool), Box<dyn std::error::Error>> {
+    use crate::systems::vector_tiles;
+
+    if tile_source_kind(template) == TileSourceKind::Raster {
+        let bytes = load_tile_image(key, template)?;
+        let mut rgba = image::load_from_memory(&bytes)?.to_rgba8();
+        paint_water_alpha_by_colour(&mut rgba);
+        return Ok((rgba, true));
+    }
+
+    let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
+    let source = TileKey::new(x, y, z);
+    let bytes = load_tile_image(&source, template)?;
+
+    if vector_tiles::looks_like_raster(&bytes) {
+        let mut rgba = image::load_from_memory(&bytes)?.to_rgba8();
+        paint_water_alpha_by_colour(&mut rgba);
+        return Ok((rgba, true));
+    }
+
+    let pixels = vector_tiles::render_mvt(&bytes, sub)?;
+    let mut rgba = image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, pixels)
+        .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
+    match vector_tiles::ocean_mask(&bytes, sub) {
+        Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
+            for (px, m) in rgba.pixels_mut().zip(mask) {
+                px.0[3] = m;
+            }
+            Ok((rgba, true))
+        }
+        Ok(_) => Ok((rgba, false)),
+        Err(e) => {
+            tracing::warn!(error = %e, "ocean mask failed; globe tile stays matte");
+            Ok((rgba, false))
+        }
+    }
+}
+
+/// Classify water by colour into the alpha channel, for basemaps that arrive as
+/// pixels. Soft-edged (a ramp, not a threshold) so coastlines blend.
+fn paint_water_alpha_by_colour(rgba: &mut image::RgbaImage) {
+    for px in rgba.pixels_mut() {
+        let (r, b) = (f32::from(px.0[0]), f32::from(px.0[2]));
+        let water = ((b - r - WATER_BLUE_BIAS) / WATER_BLUE_RANGE).clamp(0.0, 1.0);
+        px.0[3] = (water * 255.0) as u8;
+    }
+}
+
+/// How much bluer than red a texel must be before it counts as water at all.
+const WATER_BLUE_BIAS: f32 = 10.0;
+/// The span over which that excess ramps up to fully water.
+const WATER_BLUE_RANGE: f32 = 30.0;
 
 /// System to load OSM tiles for regions.
 ///
@@ -357,8 +434,18 @@ mod tests {
             assert_eq!(tile_source_kind(t), TileSourceKind::Vector, "{t}");
         }
 
-        // An empty template means the built-in OSM PNG default.
-        assert_eq!(tile_source_kind(""), TileSourceKind::Raster);
+        // An empty template means the built-in default, which is now vector.
+        assert_eq!(tile_source_kind(""), TileSourceKind::Vector);
+    }
+
+    #[test]
+    fn empty_template_resolves_to_the_default_vector_source() {
+        let key = TileKey::new(8490, 5319, 14);
+        assert_eq!(
+            format_osm_tile_url("", &key),
+            "https://tiles.versatiles.org/tiles/osm/14/8490/5319",
+            "an empty template must fall back to the default vector source, not raster OSM"
+        );
     }
 
     #[test]

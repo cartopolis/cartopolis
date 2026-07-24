@@ -137,7 +137,9 @@ pub fn render_menu_bar(
             }
             ui.separator();
             // Browser-style geo search: place names via Nominatim, or pasted
-            // "lat, lng(, altitude)" coordinates.
+            // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
+            // reached from the always-visible bottom bar (🧭 Route), alongside the
+            // other right-hand panels, rather than this auto-hiding strip.
             crate::systems::geo_nav::nav_bar_ui(ui, &mut nav);
         });
         });
@@ -241,11 +243,20 @@ pub fn toggle_dev_panel_shortcut(
 
 /// Developer panel (View ▸ Dev Panel or Ctrl+Shift+D): a day/night slider that drives
 /// the sun position so the lighting can be tested at any time of day.
+#[allow(clippy::too_many_arguments)]
 pub fn render_dev_panel(
     mut egui: ResMut<EguiManager>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
     mut shot: ResMut<crate::resources::ScreenshotState>,
+    // For "📋 Copy as preset": the same camera fix the HUD reads.
+    stream: Res<crate::systems::map_stream::MapStream>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<
+        (&big_space::prelude::GridCell, &Transform),
+        With<crate::systems::free_camera::FreeCamera>,
+    >,
+    mut copied_at: Local<Option<std::time::Instant>>,
 ) {
     if !dev.open {
         return;
@@ -372,6 +383,47 @@ pub fn render_dev_panel(
             ui.checkbox(&mut dev.show_stats, "Show stats overlay (FPS)");
             ui.separator();
             ui.label("README screenshots");
+            // The documentation set is generated from the remembered camera
+            // positions in `docs/shots.toml` (`cargo shots`), not from this
+            // button — but a *new* position has to be found by flying to it, so
+            // this copies the current camera out as a pasteable `[[shot]]` block.
+            // That is the whole handoff from "looks good here" to reproducible.
+            ui.horizontal(|ui| {
+                let fix = camera.single().ok().zip(stream.geo_anchor()).map(|((cell, tf), anchor)| {
+                    let (lat, lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
+                    // (yaw, pitch, roll) — the same decomposition free_camera
+                    // uses to seed its look angles from the live view, so a
+                    // pasted preset reproduces this exact framing.
+                    let euler = tf.rotation.to_euler(EulerRot::YXZ);
+                    (lat, lng, globe.altitude_m(cell, tf), euler.1.to_degrees(), euler.0.to_degrees())
+                });
+                let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
+                if ui
+                    .add_enabled(fix.is_some(), egui::Button::new("📋 Copy as preset"))
+                    .on_hover_text("Copies this camera as a [[shot]] block for docs/shots.toml")
+                    .clicked()
+                {
+                    if let Some((lat, lng, alt, pitch, yaw)) = fix {
+                        crate::utils::clipboard::set_text(
+                            &crate::systems::shot_presets::preset_toml(
+                                "new-view",
+                                lat,
+                                lng,
+                                alt,
+                                pitch,
+                                yaw,
+                                dev.time_of_day,
+                                dev.fog_density,
+                                dev.cloud_cover,
+                            ),
+                        );
+                        *copied_at = Some(std::time::Instant::now());
+                    }
+                }
+                if copied {
+                    ui.label("copied");
+                }
+            });
             ui.horizontal(|ui| {
                 // Clicking captures a chrome-free shot into the next slot, cycling
                 // docs/img/screenshot-{1..N}.png. The `capture_requested` guard stops

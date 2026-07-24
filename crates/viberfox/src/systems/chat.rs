@@ -202,6 +202,7 @@ pub fn render_chat_panel(
                         for (panel, label) in [
                             (RightPanel::Appearance, "🧍 Appearance"),
                             (RightPanel::Layers, "🗺 Layers"),
+                            (RightPanel::Route, "🧭 Route"),
                             (RightPanel::Places, "★ Places"),
                             (RightPanel::Assistant, "🤖 Assistant"),
                         ] {

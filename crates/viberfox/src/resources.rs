@@ -85,6 +85,7 @@ pub enum RightPanel {
     None,
     Layers,
     Places,
+    Route,
     Assistant,
     Chat,
     Appearance,

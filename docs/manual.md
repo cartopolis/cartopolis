@@ -13,6 +13,8 @@ developer tools. For build/run instructions and system requirements, see the
 - [Panels and layers](#panels-and-layers)
 - [Developer panel](#developer-panel)
 - [Taking screenshots](#taking-screenshots)
+  - [The documentation set (`cargo shots`)](#the-documentation-set-cargo-shots)
+  - [One-off captures from the dev panel](#one-off-captures-from-the-dev-panel)
 - [AI assistant](#ai-assistant)
 - [Troubleshooting](#troubleshooting)
 
@@ -125,8 +127,45 @@ inspecting and tuning the scene:
 
 ## Taking screenshots
 
-The dev panel has a one-click screenshot tool for capturing clean, chrome-free
-images (for the README, docs, or sharing):
+### The documentation set (`cargo shots`)
+
+The images in the README are **generated from remembered camera positions**, not
+captured by hand. [`docs/shots.toml`](shots.toml) lists them — each entry is a
+name, a lat/lng/altitude, a look direction, and the camera mode, open panels,
+time of day and weather that view should be shot in. One command regenerates the
+whole set, headless, in a single launch (no window opens):
+
+```bash
+cargo shots                      # every preset → docs/img/<name>.png
+cargo shots --only globe,route   # just these two
+cargo shots --size 2560x1440     # override the manifest's size
+```
+
+`cargo shots` is an alias for `cargo run -p viberfox --profile dev-bevy --
+--shots`, so it accepts the rest of the scripted-shot flags too (`--csv`,
+`--dump-state`, `--settle`, … — see [`CLAUDE.md`](../CLAUDE.md)). Because it
+needs no display, it is a build step: it works over SSH and in CI.
+
+**Adding or moving a view.** Fly there in the app, open the dev panel
+(**Ctrl + Shift + D**) and click **📋 Copy as preset** — the current camera lands
+on the clipboard as a `[[shot]]` block (position, look angles, time of day, fog,
+cloud) ready to paste into `docs/shots.toml` under a new name. From then on that
+viewpoint is reproducible instead of something to re-find every release.
+
+Per-shot manifest keys: `name`, `description`, `at = [lat, lng, alt_m]`,
+`look = [pitch, yaw]`, `mode` (`free` / `earth` / `avatar`), `time`, `fog`,
+`clouds`, `rain`, `ui` (panels to open, as `--ui`), `hide_ui`, `out`. The
+top-level `size`, `out_dir`, `settle`, `wait`, `mode`, `hide_ui` and `tile_url`
+apply to every shot that doesn't override them. (`tile_url` pins the basemap:
+a scripted run never gets one from a server handshake, and the built-in fallback
+is raster — which the route planner can't solve against. `VIBE_TILE_URL` still
+wins over it.) Unknown keys are a hard error, so a typo fails the run instead of
+quietly doing nothing.
+
+### One-off captures from the dev panel
+
+The dev panel also has a one-click screenshot tool for capturing clean,
+chrome-free images from wherever the camera is (for sharing or a quick look):
 
 1. Open the dev panel (**Ctrl + Shift + D**).
 2. Frame the shot — pick a camera mode, position, and time of day.
@@ -134,9 +173,10 @@ images (for the README, docs, or sharing):
 
 On click, the UI is hidden for a single frame and a screenshot of the world (no
 panels, menus, or overlays) is saved to `docs/img/screenshot-N.png`. The button
-**cycles through three slots** — `screenshot-1.png`, `screenshot-2.png`,
-`screenshot-3.png` — so repeated clicks fill the three README images in turn and
-then wrap back to slot 1. **Reset to 1** sends the next capture back to slot 1.
+**cycles through three scratch slots** — `screenshot-1.png` … `screenshot-3.png`
+— and then wraps back to slot 1; **Reset to 1** sends the next capture back to
+the first. These are scratch files: the images the README links to come from
+`cargo shots` above, so a stray click here can't overwrite them.
 
 The `docs/img/` directory is created automatically if it doesn't exist. Each save
 is confirmed in the console with a `Screenshot saved to docs/img/screenshot-N.png`

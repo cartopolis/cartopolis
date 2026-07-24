@@ -405,7 +405,7 @@ pub fn parse_location(input: &str) -> Option<(f64, f64, Option<f64>)> {
 // ─── Nominatim lookup (background thread) ────────────────────────────────────
 
 /// Percent-encode a URL query component (RFC 3986 unreserved set kept).
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
         match b {

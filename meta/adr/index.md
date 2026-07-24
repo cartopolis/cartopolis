@@ -38,3 +38,5 @@
 | [034](./034-public-data-relay.md) | Public Data Relay (Standardised Upstream Adapters) | Proposed | ops, networking, cache, data-layers, live-data, architecture, crates, upstreams |
 | [035](./035-self-hosted-map-tiles.md) | Self-Hosted Vector Map Tiles | Proposed | osm, tiles, vector, mvt, map, ops, rendering, dependency, hosting, web |
 | [036](./036-input-sequenced-client-prediction.md) | Input-Sequenced Client Prediction and Reconciliation | Proposed | networking, protocol, prediction, avatar, latency, replication |
+| [037](./037-vector-tile-routing.md) | Routing on the Vector Tiles | Accepted | routing, navigation, map, vector, mvt, ui, offline, data-layers |
+| [038](./038-pluggable-terrain-elevation.md) | Pluggable Terrain Elevation (Height-Field Sources, AHN First) | Proposed | terrain, elevation, dem, ahn, pdok, map, vector, rendering, geometry, collision, providers, dependency, ops |

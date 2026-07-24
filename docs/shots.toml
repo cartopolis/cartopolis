@@ -1,0 +1,97 @@
+# Remembered camera positions for the documentation screenshots.
+#
+# Regenerate every image (one app launch, headless, no window):
+#
+#     cargo shots                     # → docs/img/<name>.png
+#     cargo shots --only globe,route  # just these
+#
+# `cargo shots` is an alias for
+# `cargo run -p viberfox --profile dev-bevy -- --shots`, so it takes the rest of
+# the harness's flags too (`--csv /tmp/shots.csv`, `--size 2560x1440`, …).
+#
+# To add or move a view: fly there in the app, then Dev panel ▸ README
+# screenshots ▸ "📋 Copy as preset" and paste the block it puts on the clipboard.
+# That is the whole point of this file — a viewpoint that was found by hand once
+# stays reproducible, instead of being re-flown and re-eyeballed every release.
+
+# Applies to every [[shot]] below unless it says otherwise.
+#
+# The tile source is pinned here because a scripted run never gets one from the
+# server handshake, and the built-in fallback is the *raster* OSM basemap — on
+# which the `route` shot has no graph to solve against (ADR-037). `VIBE_TILE_URL`
+# still overrides this, so a local mirror needs no edit to this file.
+tile_url = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}"
+size = "1600x900"
+out_dir = "img"
+# Documentation images are chrome-free; the two that document the UI opt back in.
+hide_ui = true
+mode = "free"
+# Cached tiles settle in about a second; give the detail patches longer than the
+# interactive default so no image lands mid-stream. In practice the ground shots
+# hit the `wait` cap rather than going quiet — the vector-tile streamer keeps
+# trickling at city altitude — so `wait` is what actually sets how much of the
+# city has arrived. Lower it for a quick iteration, raise it for a fuller frame.
+settle = 1.5
+wait = 45.0
+
+[[shot]]
+name = "city"
+description = "Groningen city centre, oblique morning view over the 3DBAG roofs"
+at = [53.2194, 6.5665, 420]
+look = [-22.0, 35.0]
+time = 9.5
+fog = 0.10
+clouds = 0.25
+
+[[shot]]
+name = "city-dusk"
+description = "The same streets at sunset — the day/night curves and warm sun"
+at = [53.2160, 6.5680, 550]
+look = [-22.0, 285.0]
+# 20:30 is already night here; sunset light lives around 18:00–19:00.
+time = 18.6
+fog = 0.18
+clouds = 0.45
+
+[[shot]]
+name = "avatar"
+description = "Third-person avatar on the ground (follow camera frames the avatar)"
+mode = "avatar"
+# Altitude is the follow distance in avatar mode; 6 m put the camera inside the
+# building behind the avatar, so back off and look down a little more.
+at = [53.2194, 6.5665, 12]
+look = [-15.0, 110.0]
+time = 12.0
+fog = 0.08
+clouds = 0.2
+
+[[shot]]
+name = "route"
+description = "Planned route across town with the navigation panel open (ADR-037)"
+# Centred east of the route's midpoint: the planner panel covers the right third
+# of the frame, so the line has to sit left of centre to stay visible.
+at = [53.2145, 6.5715, 1300]
+look = [-50.0, 0.0]
+time = 11.0
+fog = 0.10
+clouds = 0.15
+hide_ui = false
+ui = ["route"]
+
+[[shot]]
+name = "horizon"
+description = "Tilted view from 120 km — atmosphere limb over the map tier"
+at = [53.0000, 6.5665, 120000]
+look = [-8.0, 0.0]
+time = 15.0
+fog = 0.05
+clouds = 0.3
+
+[[shot]]
+name = "globe"
+description = "The space tier: whole Earth from orbit, north-up"
+mode = "earth"
+at = [30.0000, 6.5665, 14000000]
+look = [-90.0, 0.0]
+time = 12.0
+clouds = 0.4

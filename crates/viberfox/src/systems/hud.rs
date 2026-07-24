@@ -401,6 +401,7 @@ pub fn render_hud(
     ai: Res<crate::resources::AiAssistantState>,
     identity: Res<crate::resources::AuthIdentity>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    right_panel: Res<crate::resources::RightPanel>,
     mut copied_at: Local<Option<Instant>>,
     mut home_set_at: Local<Option<Instant>>,
 ) {
@@ -456,7 +457,12 @@ pub fn render_hud(
     // on the bottom-most background layer, and even `Order::Background` Areas
     // paint above it), so the only way to keep the compass *behind* the panel
     // is to drop it while one is open.
-    let right_panel_open = data_layers.panel_open || bookmarks.panel_open || ai.open;
+    // Any docked right-hand panel covers this corner; `RightPanel` is the shared
+    // state the newer panels use, the booleans the older ones do.
+    let right_panel_open = data_layers.panel_open
+        || bookmarks.panel_open
+        || ai.open
+        || !right_panel.is(crate::resources::RightPanel::None);
     if let Some(heading) = data.heading.filter(|_| !right_panel_open) {
         let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
         let locked = orbit && camera_state.orbit_north_lock;

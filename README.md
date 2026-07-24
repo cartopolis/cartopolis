@@ -16,9 +16,12 @@ What's in the box:
 
 | | | |
 |---|---|---|
-| ![Viberfox screenshot 1](docs/img/screenshot-1.png) | ![Viberfox screenshot 2](docs/img/screenshot-2.png) | ![Viberfox screenshot 3](docs/img/screenshot-3.png) |
+| ![Groningen city centre](docs/img/city.png) | ![The same streets at dusk](docs/img/city-dusk.png) | ![Third-person avatar](docs/img/avatar.png) |
+| ![Planned route](docs/img/route.png) | ![Atmosphere limb from 120 km](docs/img/horizon.png) | ![Earth from orbit](docs/img/globe.png) |
 
-_Captured in-app from the developer panel (see the [manual](docs/manual.md#taking-screenshots))._
+_Generated with `cargo shots` from the remembered camera positions in
+[`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every
+time (see the [manual](docs/manual.md#taking-screenshots))._
 
 ## Prerequisites
 

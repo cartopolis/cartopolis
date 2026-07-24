@@ -87,8 +87,34 @@ use crate::systems::globe::{GlobeMesh, GlobeState, GlobeSurfaceAlbedo};
 use crate::systems::map_stream::MapStream;
 use crate::systems::weather::WeatherState;
 
+/// The world state a viewpoint wants to be shot in — the parts of "what does it
+/// look like from there" that aren't the camera. Set per shot by a preset
+/// manifest (`--shots`); a plain `--shot` run leaves them `None` and the whole
+/// run keeps whatever `--time` / `--fog` / `--clouds` / `--rain` seeded.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct ShotEnv {
+    /// Hour of day, 0–24.
+    pub time: Option<f32>,
+    pub fog: Option<f32>,
+    pub clouds: Option<f32>,
+    pub rain: Option<f32>,
+}
+
+impl ShotEnv {
+    /// Nothing to apply — the run-wide state stands.
+    fn is_empty(&self) -> bool {
+        *self == ShotEnv::default()
+    }
+}
+
+/// Defaults shared by the CLI flags and the preset manifest, so a manifest that
+/// omits a key and a command line that omits the flag land on the same value.
+pub const DEFAULT_SIZE: &str = "1280x720";
+pub const DEFAULT_SETTLE: f32 = 0.8;
+pub const DEFAULT_WAIT: f32 = 15.0;
+
 /// One scripted viewpoint.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ShotSpec {
     pub lat: f64,
     pub lng: f64,
@@ -98,6 +124,22 @@ pub struct ShotSpec {
     pub pitch_deg: f32,
     /// Degrees: 0 = north, clockwise.
     pub yaw_deg: f32,
+    /// Preset name, when this viewpoint came from a `--shots` manifest. Names
+    /// the file and labels the metrics row.
+    pub name: Option<String>,
+    /// What the shot is for — logged so a run reads as a list of intents.
+    pub description: Option<String>,
+    /// Explicit output path (presets name their own file instead of taking an
+    /// index-and-altitude suffix off the base `--shot` path).
+    pub out: Option<PathBuf>,
+    /// Per-shot camera mode, overriding `--shot-mode`.
+    pub mode: Option<String>,
+    /// Per-shot `--hide-ui`.
+    pub hide_ui: Option<bool>,
+    /// Per-shot `--ui` panel list.
+    pub ui: Option<Vec<String>>,
+    /// Time of day and weather for this shot.
+    pub env: ShotEnv,
 }
 
 impl ShotSpec {
@@ -120,6 +162,16 @@ impl ShotSpec {
             alt,
             pitch_deg: lin(a.pitch_deg as f64, b.pitch_deg as f64) as f32,
             yaw_deg: lin(a.yaw_deg as f64, b.yaw_deg as f64) as f32,
+            // An interpolated frame is not a named preset: it takes the leading
+            // waypoint's mode/UI/world state, but gets the indexed sweep filename
+            // (a shared `out` would have every frame overwrite one file).
+            name: None,
+            description: None,
+            out: None,
+            mode: a.mode.clone(),
+            hide_ui: a.hide_ui,
+            ui: a.ui.clone(),
+            env: a.env.clone(),
         }
     }
 }
@@ -172,6 +224,9 @@ pub struct ShotHarness {
     /// Write a [`ShotMetrics`] row per capture to this CSV (the sweep analysis
     /// artifact). Header + one row per shot, written when the run completes.
     pub csv: Option<PathBuf>,
+    /// Tile source for the run, from a preset manifest's `tile_url` (env
+    /// `VIBE_TILE_URL` still wins). Applied in `main` when the resource is built.
+    pub tile_url: Option<String>,
     /// Dump the full per-capture [`ShotMetrics`] as JSON on exit — a single
     /// object for one shot, an array for a sweep. The "inspect the settled world
     /// from a shell" snapshot.
@@ -188,6 +243,9 @@ pub struct ShotHarness {
 pub struct ShotMetrics {
     /// 1-based index within the run.
     pub shot: usize,
+    /// Preset name for a `--shots` run — without it a six-row CSV is six
+    /// anonymous viewpoints.
+    pub name: Option<String>,
     pub lat: f64,
     pub lng: f64,
     /// Seconds from placement to the settled capture.
@@ -206,23 +264,35 @@ pub struct ShotMetrics {
     pub bloom: f32,
     /// Globe imagery tint (1.0 near the threshold → `GLOBE_DEEP_ALBEDO` in space).
     pub globe_albedo: f32,
+    /// How far the scattered trees have merged into the flat landuse fill
+    /// (`systems::vegetation`): 0 = individual trees, 1 = merged and hidden. The
+    /// column to watch in a `--frames` sweep through 500–2000 m — a jump between
+    /// adjacent rows is the seam a single still cannot show.
+    pub veg_factor: f32,
     pub globe_entities: usize,
     pub globe_visible: usize,
     pub globe_rendered: usize,
+    /// Drawn-route entities (ADR-037) and how many the view actually rendered.
+    /// The same "black image vs black scene" question the globe counts answer: a
+    /// route that is built but not rendered is a visibility or culling problem,
+    /// one that is rendered but unseen is a depth or colour problem.
+    pub route_meshes: usize,
+    pub route_rendered: usize,
 }
 
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
 /// so the two never drift; a mismatch would silently mislabel columns.
-const CSV_HEADER: &str = "shot,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
-orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,globe_entities,globe_visible,\
-globe_rendered";
+const CSV_HEADER: &str = "shot,name,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
+orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,globe_entities,\
+globe_visible,globe_rendered,route_meshes,route_rendered";
 
 impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{},{},{}",
+            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{},{},{},{},{}",
             self.shot,
+            self.name.as_deref().unwrap_or(""),
             self.lat,
             self.lng,
             self.settled_s,
@@ -236,9 +306,12 @@ impl ShotMetrics {
             self.exposure_ev100,
             self.bloom,
             self.globe_albedo,
+            self.veg_factor,
             self.globe_entities,
             self.globe_visible,
             self.globe_rendered,
+            self.route_meshes,
+            self.route_rendered,
         )
     }
 }
@@ -289,6 +362,7 @@ impl ShotHarness {
                 alt: p[2],
                 pitch_deg: angles[0] as f32,
                 yaw_deg: angles[1] as f32,
+                ..default()
             });
         }
         if shots.is_empty() {
@@ -299,7 +373,97 @@ impl ShotHarness {
         }
         let shots = densify_path(&shots, frames);
         let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
-        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode, csv, dump_state })
+        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode, tile_url: None, csv, dump_state })
+    }
+
+    /// Build from a preset manifest (`--shots`): every remembered camera
+    /// position, or the subset named by `--only`, each with its own output file,
+    /// camera mode, open panels and time-of-day/weather.
+    ///
+    /// This is the "regenerate the docs images" path — it exists so the six
+    /// README views are data in `docs/shots.toml` rather than six hand-flown
+    /// camera moves that nobody can reproduce.
+    pub fn from_manifest(
+        manifest_path: &std::path::Path,
+        only: &[String],
+        size_override: Option<&str>,
+        settle_override: Option<f32>,
+        wait_override: Option<f32>,
+        csv: Option<PathBuf>,
+        dump_state: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        use crate::systems::shot_presets::Manifest;
+
+        let manifest = Manifest::load(manifest_path)?;
+        let selected = manifest.select(only)?;
+        let shots: Vec<ShotSpec> = selected
+            .iter()
+            .map(|p| {
+                let look = p.look.unwrap_or([-90.0, 0.0]);
+                ShotSpec {
+                    lat: p.at[0],
+                    lng: p.at[1],
+                    alt: p.at[2],
+                    pitch_deg: look[0],
+                    yaw_deg: look[1],
+                    name: Some(p.name.clone()),
+                    description: p.description.clone(),
+                    out: Some(manifest.out_path(manifest_path, p)),
+                    mode: p.mode.clone().or_else(|| manifest.mode.clone()),
+                    hide_ui: p.hide_ui.or(manifest.hide_ui),
+                    ui: p.ui.clone(),
+                    env: ShotEnv {
+                        time: p.time,
+                        fog: p.fog,
+                        clouds: p.clouds,
+                        rain: p.rain,
+                    },
+                }
+            })
+            .collect();
+        // The CLI wins over the manifest so a one-off "same shots, bigger" needs
+        // no file edit; the manifest wins over the plain defaults.
+        let size = size_override
+            .map(str::to_owned)
+            .or_else(|| manifest.size.clone())
+            .unwrap_or_else(|| DEFAULT_SIZE.to_string());
+        let size = parse_size(&size).ok_or_else(|| format!("size wants WxH, got {size:?}"))?;
+        Ok(Self {
+            // Never used for a manifest run (every shot carries its own `out`),
+            // but it keeps `path_for`'s fallback honest.
+            path: manifest_path.with_extension("png"),
+            shots,
+            size,
+            settle: settle_override.or(manifest.settle).unwrap_or(DEFAULT_SETTLE),
+            wait: wait_override.or(manifest.wait).unwrap_or(DEFAULT_WAIT),
+            hide_ui: manifest.hide_ui.unwrap_or(false),
+            ui: Vec::new(),
+            mode: manifest.mode.clone().unwrap_or_else(|| "free".to_string()),
+            tile_url: manifest.tile_url.clone(),
+            csv,
+            dump_state,
+        })
+    }
+
+    /// Camera mode for shot `i` — the preset's own, else the run-wide one.
+    pub fn mode_for(&self, i: usize) -> String {
+        self.shots
+            .get(i)
+            .and_then(|s| s.mode.clone())
+            .unwrap_or_else(|| self.mode.clone())
+    }
+
+    /// Whether shot `i` drops the egui overlay.
+    pub fn hide_ui_for(&self, i: usize) -> bool {
+        self.shots.get(i).and_then(|s| s.hide_ui).unwrap_or(self.hide_ui)
+    }
+
+    /// Panels to open for shot `i`.
+    pub fn ui_for(&self, i: usize) -> Vec<String> {
+        self.shots
+            .get(i)
+            .and_then(|s| s.ui.clone())
+            .unwrap_or_else(|| self.ui.clone())
     }
 
     /// Write the accumulated per-capture metrics to whichever sinks were
@@ -341,6 +505,11 @@ impl ShotHarness {
     /// non-monotonic across a polyline and collides when interpolated frames round
     /// to the same metre near the ground), the altitude keeps a frame legible.
     fn path_for(&self, i: usize) -> PathBuf {
+        // A named preset owns its filename — `docs/img/globe.png` stays that
+        // file every run, which is what lets the README link to it.
+        if let Some(out) = self.shots.get(i).and_then(|s| s.out.clone()) {
+            return out;
+        }
         if self.shots.len() == 1 {
             return self.path.clone();
         }
@@ -408,50 +577,68 @@ pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
 /// panels — not just the always-on HUD and menu bar. These panels are normally
 /// closed at startup and toggled by hand, which a headless run can't do. Runs
 /// once. Unknown names are ignored (and logged) rather than aborting the run.
+/// A preset manifest gives each shot its own `ui` list, so this re-applies on
+/// every shot rather than once per run: panels the current shot doesn't ask for
+/// are closed again, or a `--ui route` preset would leave the planner open over
+/// every image after it.
 pub fn open_scripted_ui(
     harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut ai: ResMut<crate::resources::AiAssistantState>,
     mut avatar: ResMut<crate::resources::AvatarChooserState>,
     mut layers: ResMut<crate::systems::data_layers::DataLayers>,
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
-    mut done: Local<bool>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+    mut route: ResMut<crate::systems::navigation::RouteState>,
+    mut done: Local<Option<usize>>,
 ) {
-    if *done {
+    if *done == Some(progress.index) {
         return;
     }
-    *done = true;
-    if harness.ui.is_empty() {
+    *done = Some(progress.index);
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    let want = |k: &str| all || panels.iter().any(|u| u == k);
+    // Written unconditionally (not only when opening) so each shot starts from
+    // exactly the chrome it asked for.
+    dev.open = want("dev");
+    dev.show_stats = want("stats");
+    ai.open = want("ai");
+    avatar.open = want("avatar");
+    layers.panel_open = want("layers");
+    bookmarks.panel_open = want("bookmarks");
+    if !want("route") {
+        *right_panel = crate::resources::RightPanel::None;
+    }
+    if panels.is_empty() {
         return;
     }
-    let all = harness.ui.iter().any(|u| u == "all");
-    let want = |k: &str| all || harness.ui.iter().any(|u| u == k);
-    if want("dev") {
-        dev.open = true;
-    }
-    if want("stats") {
-        dev.show_stats = true;
-    }
-    if want("ai") {
-        ai.open = true;
-    }
-    if want("avatar") {
-        avatar.open = true;
-    }
-    if want("layers") {
-        layers.panel_open = true;
-    }
-    if want("bookmarks") {
-        bookmarks.panel_open = true;
+    // The route planner needs endpoints to show anything worth capturing, so
+    // `--ui route` also seeds a demo route — the shot is of a *planned* route, not
+    // of an empty form. Two coordinates ~1 km apart in the fixture city, with
+    // neutral labels (no addresses in the captured chrome). `VIBE_ROUTE_FROM` /
+    // `VIBE_ROUTE_TO` ("lat,lng") override the pair, so a specific route can be
+    // reproduced headlessly for debugging (the `VIBE_*` env convention).
+    if want("route") {
+        *right_panel = crate::resources::RightPanel::Route;
+        let seed = |var: &str, default: (f64, f64)| {
+            std::env::var(var)
+                .ok()
+                .and_then(|s| crate::systems::geo_nav::parse_lat_lng(&s))
+                .unwrap_or(default)
+        };
+        route.from.set("Route start", seed("VIBE_ROUTE_FROM", (53.2194, 6.5665)));
+        route.to.set("Route end", seed("VIBE_ROUTE_TO", (53.2109, 6.5642)));
     }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
-    let known = ["dev", "stats", "ai", "avatar", "layers", "bookmarks", "all"];
-    for u in &harness.ui {
+    let known = ["dev", "stats", "ai", "avatar", "layers", "bookmarks", "route", "all"];
+    for u in &panels {
         if !known.contains(&u.as_str()) {
             tracing::warn!(name = %u, "shot harness: unknown --ui element (ignored)");
         }
     }
-    tracing::info!(ui = ?harness.ui, "shot harness: opened scripted UI panels");
+    tracing::info!(shot = progress.index + 1, ui = ?panels, "shot harness: opened scripted UI panels");
 }
 
 /// Point the camera at an offscreen image of the requested size, so the run
@@ -495,6 +682,7 @@ pub fn place_camera(
     mut progress: ResMut<ShotProgress>,
     stream: Res<MapStream>,
     mut nav: ResMut<GeoNavState>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
 ) {
     if progress.placed || stream.geo_anchor().is_none() {
         return;
@@ -512,7 +700,32 @@ pub fn place_camera(
     // becomes the follow distance and `--look` (pitch°, yaw°) the orbit
     // elevation/azimuth around the avatar. This is the right mode for checking
     // avatars (free/earth put the camera somewhere the avatar may not be).
-    let avatar_follow = harness.mode == "avatar";
+    // Time of day and weather are per-shot in a preset manifest: the same city
+    // is a different picture at 09:30 and at dusk, and pinning them here is what
+    // makes a regenerated set look identical to the last one. Written only when
+    // the shot names them (`DevPanelState` is change-detected — an unconditional
+    // write would re-run the lighting recompute for nothing).
+    let env = &shot.env;
+    if !env.is_empty() {
+        if let Some(t) = env.time {
+            // A scripted run is already in Manual (see `main`), but a preset that
+            // names an hour must pin the clock even if that ever changes.
+            dev.sun_mode = crate::resources::SunMode::Manual;
+            dev.time_of_day = t.rem_euclid(24.0);
+        }
+        if let Some(f) = env.fog {
+            dev.fog_density = f.clamp(0.0, 1.0);
+        }
+        if let Some(c) = env.clouds {
+            dev.cloud_cover = c.clamp(0.0, 1.0);
+        }
+        if let Some(r) = env.rain {
+            dev.precipitation = r.clamp(0.0, 1.0);
+        }
+    }
+
+    let mode = harness.mode_for(progress.index);
+    let avatar_follow = mode == "avatar";
     let (azimuth, pitch, distance) = if avatar_follow {
         (
             shot.yaw_deg.to_radians(),
@@ -523,7 +736,7 @@ pub fn place_camera(
         (0.0, 0.5, 5.0)
     };
     let pose = CameraPose {
-        mode: harness.mode.clone(),
+        mode: mode.clone(),
         // free_camera_rotation is (pitch, yaw), in radians.
         free_rotation: [shot.pitch_deg.to_radians(), shot.yaw_deg.to_radians()],
         azimuth,
@@ -544,10 +757,12 @@ pub fn place_camera(
     tracing::info!(
         shot = progress.index + 1,
         of = harness.shots.len(),
+        name = shot.name.as_deref().unwrap_or("-"),
+        about = shot.description.as_deref().unwrap_or(""),
         lat = shot.lat,
         lng = shot.lng,
         alt = shot.alt,
-        mode = %harness.mode,
+        mode = %mode,
         "shot harness: camera placed"
     );
 }
@@ -569,7 +784,11 @@ pub fn place_space_orbit(
         return;
     };
     // Once per shot, and only for an earth-mode run that wants to be in space.
-    if !progress.placed || *done > progress.index || harness.mode != "earth" || !globe.ready {
+    if !progress.placed
+        || *done > progress.index
+        || harness.mode_for(progress.index) != "earth"
+        || !globe.ready
+    {
         return;
     }
     *done = progress.index + 1;
@@ -598,10 +817,21 @@ pub fn drive_capture(
     globe: Res<GlobeState>,
     stream: Res<MapStream>,
     weather: Res<WeatherState>,
+    route: Res<crate::systems::navigation::RouteState>,
     cam_state: Res<CameraState>,
-    surface_albedo: Res<GlobeSurfaceAlbedo>,
+    // The altitude-driven ramps, tupled into one `SystemParam`: this system is at
+    // Bevy's 16-parameter ceiling, and a ramp is exactly the kind of thing that
+    // keeps getting added here.
+    ramps: (
+        Res<GlobeSurfaceAlbedo>,
+        Res<crate::systems::vegetation::VegetationLod>,
+    ),
     camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
+    route_meshes: Query<
+        &bevy::camera::visibility::ViewVisibility,
+        With<crate::systems::navigation::RouteVisual>,
+    >,
 ) {
     if let Some(frames) = progress.exit_in.as_mut() {
         *frames = frames.saturating_sub(1);
@@ -645,8 +875,19 @@ pub fn drive_capture(
     // Settle: capture once both tile streams have been quiet for `--settle`
     // seconds, or when `--wait` runs out (whichever comes first). A
     // `--weather-live` run also holds until the first met.no sample lands, so the
-    // capture shows real conditions rather than the default clear sky.
-    if globe.streaming_busy() || stream.streaming_busy() || (weather.live && !weather.ready()) {
+    // capture shows real conditions rather than the default clear sky, and a
+    // `--ui route` run holds until the solve lands — otherwise the shot documents
+    // an empty planner and a map with no line on it (ADR-037).
+    let routing = matches!(
+        route.status,
+        crate::systems::navigation::SolveStatus::Fetching(..)
+            | crate::systems::navigation::SolveStatus::Solving
+    );
+    if globe.streaming_busy()
+        || stream.streaming_busy()
+        || routing
+        || (weather.live && !weather.ready())
+    {
         progress.quiet = 0.0;
     } else {
         progress.quiet += time.delta_secs();
@@ -666,6 +907,7 @@ pub fn drive_capture(
         let shot = &harness.shots[progress.index];
         let m = ShotMetrics {
             shot: progress.index + 1,
+            name: shot.name.clone(),
             lat: shot.lat,
             lng: shot.lng,
             settled_s: progress.elapsed,
@@ -678,13 +920,17 @@ pub fn drive_capture(
             far_m: far as i64,
             exposure_ev100: exposure.ev100,
             bloom: bloom.intensity,
-            globe_albedo: surface_albedo.0,
+            globe_albedo: ramps.0 .0,
+            veg_factor: ramps.1.factor,
+            route_meshes: route_meshes.iter().count(),
+            route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
             globe_entities: globe_meshes.iter().count(),
             globe_visible: globe_meshes.iter().filter(|(_, v)| **v == Visibility::Visible).count(),
             globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
         };
         tracing::info!(
             shot = m.shot,
+            name = m.name.as_deref().unwrap_or("-"),
             settled_in = format!("{:.1}s", m.settled_s),
             frame_ms = format!("{:.1}", m.frame_ms),
             alt_m = m.alt_m,
@@ -696,6 +942,9 @@ pub fn drive_capture(
             exposure_ev100 = format!("{:.2}", m.exposure_ev100),
             bloom = format!("{:.3}", m.bloom),
             globe_albedo = format!("{:.3}", m.globe_albedo),
+            veg_factor = format!("{:.3}", m.veg_factor),
+            route_meshes = m.route_meshes,
+            route_rendered = m.route_rendered,
             globe_entities = m.globe_entities,
             globe_visible = m.globe_visible,
             globe_rendered = m.globe_rendered,
@@ -706,7 +955,7 @@ pub fn drive_capture(
 
     // `--hide-ui`: drop this frame's egui geometry (ui::suppress_egui_for_screenshot
     // reads `hide_ui` in PostUpdate; ui::drive_screenshots clears it next frame).
-    shot_state.hide_ui = harness.hide_ui;
+    shot_state.hide_ui = harness.hide_ui_for(progress.index);
     progress.fired = true;
     let saved = progress.saved.clone();
     let path = harness.path_for(progress.index);
@@ -718,6 +967,11 @@ pub fn drive_capture(
         .spawn(screenshot)
         .observe(move |captured: On<ScreenshotCaptured>| {
             let (saved, path) = (saved.clone(), path.clone());
+            // A preset writes to a named directory (`docs/img/`); create it so a
+            // fresh checkout doesn't lose the run to a missing folder.
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                let _ = std::fs::create_dir_all(dir);
+            }
             match captured.image.clone().try_into_dynamic() {
                 // Alpha carries HDR brightness rather than transparency here
                 // (as in the README capture path), so drop it.
@@ -740,7 +994,7 @@ mod tests {
     use super::*;
 
     fn spec(lat: f64, lng: f64, alt: f64) -> ShotSpec {
-        ShotSpec { lat, lng, alt, pitch_deg: -90.0, yaw_deg: 0.0 }
+        ShotSpec { lat, lng, alt, pitch_deg: -90.0, yaw_deg: 0.0, ..default() }
     }
 
     #[test]
@@ -825,9 +1079,46 @@ mod tests {
     }
 
     #[test]
+    fn manifest_run_names_its_own_files_and_carries_per_shot_state() {
+        // The checked-in manifest is the docs' source of truth — if it stops
+        // loading, `cargo shots` silently stops regenerating the README images.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
+        let h = ShotHarness::from_manifest(&path, &[], None, Some(0.1), Some(1.0), None, None)
+            .expect("checked-in docs/shots.toml must load");
+        assert!(h.shots.len() >= 2, "manifest should describe a set of views");
+        for (i, s) in h.shots.iter().enumerate() {
+            let name = s.name.clone().expect("preset shots are named");
+            let out = h.path_for(i);
+            assert!(
+                out.to_string_lossy().contains(&name),
+                "{name} should own its filename, got {}",
+                out.display()
+            );
+            // The docs images live beside the manifest, not in the CWD.
+            assert!(out.starts_with(path.parent().unwrap()), "{}", out.display());
+        }
+        // `--only` narrows the same set without changing anything else.
+        let first = h.shots[0].name.clone().unwrap();
+        let one =
+            ShotHarness::from_manifest(&path, &[first.clone()], None, None, None, None, None)
+                .unwrap();
+        assert_eq!(one.shots.len(), 1);
+        assert_eq!(one.shots[0].name.as_deref(), Some(first.as_str()));
+    }
+
+    #[test]
+    fn manifest_size_can_be_overridden_from_the_cli() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
+        let h = ShotHarness::from_manifest(&path, &[], Some("640x360"), None, None, None, None)
+            .unwrap();
+        assert_eq!(h.size, UVec2::new(640, 360));
+    }
+
+    #[test]
     fn csv_header_and_row_have_matching_arity() {
         let m = ShotMetrics {
             shot: 1,
+            name: Some("city".into()),
             lat: 0.0,
             lng: 0.0,
             settled_s: 1.0,
@@ -841,9 +1132,12 @@ mod tests {
             exposure_ev100: 14.0,
             bloom: 0.15,
             globe_albedo: 1.0,
+            veg_factor: 0.0,
             globe_entities: 0,
             globe_visible: 0,
             globe_rendered: 0,
+            route_meshes: 0,
+            route_rendered: 0,
         };
         assert_eq!(
             CSV_HEADER.split(',').count(),

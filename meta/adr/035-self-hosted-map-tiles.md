@@ -105,6 +105,16 @@ The tile URL template becomes **configuration** (ADR-014 layering) rather than s
 sim supplies, so the anonymous Viewer (ADR-031) has a base map with no session. `ServerHelloAck`
 may still override it, letting a deployment point clients at its own tile source.
 
+The **default is now the vector source**: `vibe_core::world::DEFAULT_TILE_URL_TEMPLATE`
+(`https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}`), shared by the sim's advertised default
+(`vibe_sim/src/config.rs`) and the client's offline/`--shot` fallback (`tile_loader`) so the two
+cannot drift. This replaces the original raster `tile.openstreetmap.org/{z}/{x}/{y}.png` default:
+with the tessellated-and-lit client path real, leaving raster as the out-of-the-box source meant
+solo mode silently rendered the old pre-baked tiles (labels, dashed carto, static lighting) instead
+of the vector map this ADR exists to deliver. A raster template still works — `tile_source_kind`
+classifies by the tail after `{y}`, and `VIBE_TILE_URL` / `VIBE_TILE_FORMAT` override per run — it
+is just no longer the default.
+
 ### Downstream consolidation (noted, not decided)
 
 MVT tiles carry buildings, roads, landuse and POIs — overlapping what we currently fetch from

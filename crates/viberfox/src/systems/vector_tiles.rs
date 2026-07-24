@@ -27,6 +27,8 @@ use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
 };
 
+use crate::systems::road_texture::{road_class, road_width_m, RoadClass};
+
 /// Edge length in pixels of a rendered tile. Larger than the 256 px raster tiles
 /// we used to fetch: the texture is stretched across a whole region on the ground,
 /// and re-rendering costs us CPU rather than bandwidth, so we may as well take the
@@ -84,11 +86,27 @@ impl SubTile {
 /// is a texture on the ground of a 3D world, not a map you read at arm's length —
 /// high-contrast cartography reads as noise once it is lit and viewed at a grazing
 /// angle. Sits under the same lighting as everything else.
-mod palette {
+pub mod palette {
     pub const PAPER: u32 = 0xEE_EA_E2;
     pub const WATER: u32 = 0xA8_C4_DA;
     pub const FOREST: u32 = 0xC3_D3_BB;
     pub const GRASS: u32 = 0xD2_DE_C6;
+    /// Canopy tone: one step down the [`FOREST`] hue ramp. The map is pale
+    /// cartographic paper, so a saturated green here reads as confetti scattered
+    /// on a pastel drawing rather than as trees — see `systems::vegetation`.
+    pub const CANOPY: u32 = 0xA9_BF_9E;
+    /// Second canopy tone, alternated per instance. Two tones buy depth without
+    /// costing a light.
+    pub const CANOPY_DEEP: u32 = 0x93_AC_8A;
+    /// Trunks are a warm grey in the [`BUILDING_EDGE`] family, deliberately *not*
+    /// brown: at walking distance a saturated brown is the loudest colour on the
+    /// whole map.
+    pub const TRUNK: u32 = 0xB0_A5_94;
+    /// What a forest polygon looks like from far enough that the individual trees
+    /// have merged: [`FOREST`] ground seen through ~65% [`CANOPY`] cover. The
+    /// fill ramps to this as the trees fade out, so the aggregate brightness does
+    /// not step when the geometry goes away.
+    pub const FOREST_CANOPIED: u32 = 0xB2_C6_A8;
     pub const SAND: u32 = 0xE6_DC_C2;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
@@ -217,7 +235,7 @@ fn shader(rgb: u32) -> Shader<'static> {
 }
 
 /// Read a feature's `kind` (Shortbread's discriminator for almost every layer).
-fn kind_of(feature: &Feature) -> Option<&str> {
+pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
     match feature.properties.as_ref()?.get("kind")? {
         Value::String(s) => Some(s.as_str()),
         _ => None,
@@ -423,6 +441,15 @@ pub enum SurfaceGroup {
     Grass,
     Sand,
     Built,
+    /// A road ribbon. Textured rather than flat-coloured — see
+    /// [`road_texture`](crate::systems::road_texture).
+    Road(RoadClass),
+    /// Merged tree canopies (`systems::vegetation`). Per-instance tone and luma
+    /// variation ride in the mesh's vertex colours, so this stays **one** group,
+    /// one material and one mesh per cell like every other group here.
+    Canopy,
+    /// Merged tree trunks.
+    Trunk,
 }
 
 impl SurfaceGroup {
@@ -436,6 +463,13 @@ impl SurfaceGroup {
             Self::Grass => palette::GRASS,
             Self::Sand => palette::SAND,
             Self::Built => palette::RESIDENTIAL,
+            // Roads carry their surface in a texture; tinting it would only fight
+            // the paint values chosen there, so the material multiplies by white.
+            Self::Road(_) => 0xFF_FF_FF,
+            // Vertex colours multiply this, and they are centred on 1.0 — so the
+            // palette entry stays the one place the canopy tone is written down.
+            Self::Canopy => palette::CANOPY,
+            Self::Trunk => palette::TRUNK,
         };
         [
             ((rgb >> 16) & 0xFF) as f32 / 255.0,
@@ -463,6 +497,12 @@ impl SurfaceGroup {
             Self::Grass => -0.007,
             Self::Forest | Self::Sand => -0.006,
             Self::Water => -0.004,
+            // Roads go on top of every natural surface — a street crosses a park,
+            // never the other way round.
+            Self::Road(_) => -0.003,
+            // Trees are real 3D geometry standing *on* the ground, not another
+            // sheet in the coplanar stack, so they take the ground plane itself.
+            Self::Canopy | Self::Trunk => 0.0,
         }
     }
 
@@ -481,6 +521,32 @@ impl SurfaceGroup {
             Self::Grass => 2.0,
             Self::Forest | Self::Sand => 3.0,
             Self::Water => 4.0,
+            // Road classes are separated from each other as well as from the
+            // ground: ribbons genuinely overlap at every junction, and equal
+            // biases there would z-fight in exactly the places you look at. The
+            // order is the road hierarchy, so a motorway crosses a service road.
+            Self::Road(RoadClass::Path) => 5.0,
+            Self::Road(RoadClass::Minor) => 6.0,
+            Self::Road(RoadClass::Major) => 7.0,
+            Self::Road(RoadClass::Motorway) => 8.0,
+            // Rails sit above their own crossings, so a level crossing shows the
+            // track rather than the tarmac.
+            Self::Road(RoadClass::Rail) => 9.0,
+            // Above the whole coplanar ground stack. Trees resolve against it by
+            // honest depth — they stand a metre or ten above the plane — but the
+            // ground sheets are biased *forward* to settle their own z-fight, and
+            // a grass sheet at 2.0 would otherwise punch through a trunk base.
+            Self::Canopy | Self::Trunk => 10.0,
+        }
+    }
+
+    /// Roughness for the group's material. Water is excluded — it has its own
+    /// shader (`systems::water`), which owns all of its surface parameters.
+    #[must_use]
+    pub fn perceptual_roughness(self) -> f32 {
+        match self {
+            Self::Road(class) => class.perceptual_roughness(),
+            _ => 0.95,
         }
     }
 }
@@ -498,6 +564,131 @@ fn land_group(kind: &str) -> Option<SurfaceGroup> {
     })
 }
 
+/// Open an MVT body. Shared with `systems::vegetation`, which reads the same
+/// `land` layer for a different purpose and should not re-derive the error text.
+pub(crate) fn mvt_reader(bytes: &[u8]) -> Result<Reader, String> {
+    Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))
+}
+
+/// Clip one ring to the square `[0, extent]²` (Sutherland–Hodgman), returning it
+/// **open** — no repeated last point — with consecutive duplicates dropped.
+///
+/// This exists instead of a per-vertex `clamp` because clamping is not a clip: it
+/// projects every outside vertex onto the border and throws away the order in
+/// which the ring left and re-entered. A canal that runs out through the tile's
+/// west edge and back comes home as a *fold* — the outbound and return banks both
+/// collapse onto `x = 0` and cross each other — and earcut on a self-intersecting
+/// ring emits bow-ties: finite-area triangles outside the polygon. On the ground
+/// those are the dark water wedges lying across a lawn or a carriageway a hundred
+/// metres from the nearest canal, and the pale spikes over the water beside them.
+/// Measured over the cached Groningen z14 tiles, the clamp produced 145 such
+/// triangles (23,000 m² of misplaced water) across 4,970 water polygons; the clip
+/// produces none.
+///
+/// Sutherland–Hodgman inserts the true border crossings and walks the border
+/// between an exit and the next entry, so a concave shape comes back with
+/// zero-width connectors along the seam rather than a fold. Those degenerate into
+/// zero-area triangles, which cost a little raster time and are invisible — the
+/// trade the clamp was reaching for.
+fn clip_ring(points: &[[f32; 2]], extent: f32) -> Vec<[f32; 2]> {
+    // Each pass clips against one half-plane of the square, feeding the next.
+    let mut ring: Vec<[f32; 2]> = points.to_vec();
+    // Rings arrive closed; the walk below re-closes implicitly via the modulo.
+    if ring.len() >= 2 && ring[0] == ring[ring.len() - 1] {
+        ring.pop();
+    }
+    for edge in 0..4 {
+        if ring.len() < 3 {
+            return Vec::new();
+        }
+        let inside = |p: &[f32; 2]| match edge {
+            0 => p[0] >= 0.0,
+            1 => p[0] <= extent,
+            2 => p[1] >= 0.0,
+            _ => p[1] <= extent,
+        };
+        // Where segment a→b crosses this edge. Only called when the two ends sit
+        // on opposite sides, so the denominator cannot be zero.
+        let crossing = |a: &[f32; 2], b: &[f32; 2]| -> [f32; 2] {
+            match edge {
+                0 | 1 => {
+                    let at = if edge == 0 { 0.0 } else { extent };
+                    let t = (at - a[0]) / (b[0] - a[0]);
+                    [at, a[1] + t * (b[1] - a[1])]
+                }
+                _ => {
+                    let at = if edge == 2 { 0.0 } else { extent };
+                    let t = (at - a[1]) / (b[1] - a[1]);
+                    [a[0] + t * (b[0] - a[0]), at]
+                }
+            }
+        };
+        let src = std::mem::take(&mut ring);
+        for i in 0..src.len() {
+            let prev = src[(i + src.len() - 1) % src.len()];
+            let cur = src[i];
+            match (inside(&prev), inside(&cur)) {
+                (true, true) => ring.push(cur),
+                (true, false) => ring.push(crossing(&prev, &cur)),
+                (false, true) => {
+                    ring.push(crossing(&prev, &cur));
+                    ring.push(cur);
+                }
+                (false, false) => {}
+            }
+        }
+    }
+
+    // The clip lands successive vertices on the same border point whenever the
+    // ring grazes a corner; earcut turns a duplicate into a degenerate ear.
+    let mut out: Vec<[f32; 2]> = Vec::with_capacity(ring.len());
+    for p in ring {
+        if out
+            .last()
+            .is_none_or(|q: &[f32; 2]| (p[0] - q[0]).abs() > 1e-5 || (p[1] - q[1]).abs() > 1e-5)
+        {
+            out.push(p);
+        }
+    }
+    while out.len() >= 2 && out[0] == out[out.len() - 1] {
+        out.pop();
+    }
+    if out.len() < 3 {
+        return Vec::new();
+    }
+    out
+}
+
+/// A polygon's rings in tile-local metres, clipped to the tile exactly the way
+/// [`tessellate_polygon`] clips them, and **closed** (last point repeats the
+/// first) so `windows(2)` walks every edge.
+///
+/// This is the boundary the vegetation scatter insets from. It has to come from
+/// the same clip as the fill, or the trees would stand off an edge the visible
+/// green does not have.
+pub(crate) fn clipped_rings(
+    poly: &geo_types::Polygon<f32>,
+    scale: f32,
+    extent: f32,
+) -> Vec<Vec<[f32; 2]>> {
+    let ring = |r: &geo_types::LineString<f32>| -> Vec<[f32; 2]> {
+        let raw: Vec<[f32; 2]> = r.0.iter().map(|c| [c.x, c.y]).collect();
+        let mut pts: Vec<[f32; 2]> = clip_ring(&raw, extent)
+            .into_iter()
+            .map(|p| [p[0] * scale, p[1] * scale])
+            .collect();
+        if pts.len() >= 3 {
+            pts.push(pts[0]);
+        }
+        pts
+    };
+    std::iter::once(poly.exterior())
+        .chain(poly.interiors())
+        .map(ring)
+        .filter(|r| r.len() >= 4)
+        .collect()
+}
+
 /// A tessellated surface ready to become a Bevy mesh. Positions are **tile-local
 /// metres**: origin at the tile's north-west corner, +x east, +z south — which is
 /// the same convention `map_stream` places its ground quads in, so the caller only
@@ -507,6 +698,21 @@ pub struct SurfaceMesh {
     pub group: SurfaceGroup,
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
+    /// Texture coordinates, **empty for the flat-coloured area surfaces** (their
+    /// material has no texture to sample). Roads fill it: `u` runs 0→1 straight
+    /// across the carriageway so the markings register with the geometry, and `v`
+    /// is metres travelled along the road over
+    /// [`RoadClass::texture_length_m`](crate::systems::road_texture::RoadClass::texture_length_m).
+    pub uvs: Vec<[f32; 2]>,
+    /// Vertex normals, **empty for the flat ground surfaces** — the caller then
+    /// fills in a straight-up normal per vertex. Only the vegetation meshes, which
+    /// are the one thing here with actual volume, supply their own.
+    pub normals: Vec<[f32; 3]>,
+    /// Linear RGBA multiplied onto the material's `base_color`, **empty for
+    /// everything but vegetation**. This is how thousands of trees get per-instance
+    /// tone and brightness variation out of a single shared material: a forest of
+    /// one exact green is the giveaway of a procedural scatter.
+    pub colors: Vec<[f32; 4]>,
 }
 
 /// Tessellate a tile's area layers into one mesh per [`SurfaceGroup`].
@@ -572,12 +778,341 @@ pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>
             group,
             positions,
             indices,
+            uvs: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
         })
         .collect())
 }
 
+/// Fraction of its own half-width that a ribbon is extended past each end of its
+/// centre line. Streets arrive as separate features that merely *share an
+/// endpoint*, so without this every junction is a notch of missing tarmac.
+///
+/// A full half-width (`1.0`) is what a square cap needs to fill a right-angled
+/// corner exactly: the stub reaches the far edge of the road it tees into. The
+/// earlier `0.5` left the outer half of the corner bare, which is the little dark
+/// notch on the outside of a path junction.
+const JUNCTION_EXTEND: f32 = 1.0;
+
+/// Vertical spacing, in metres, between successive road features within one tile.
+///
+/// Ribbons **overlap by construction** — [`JUNCTION_EXTEND`] pushes a stub across
+/// whatever it tees into, a clipped run's stub crosses the tile seam into the
+/// neighbour's copy of the same street, and Shortbread's merged ways cross each
+/// other freely. Two coplanar overlapping triangles have depth values that agree
+/// only to the last few bits, so which one wins flips per pixel as the camera
+/// moves: the flicker along a junction. `depth_bias` cannot settle it, being a
+/// per-material constant while the fight is between two features sharing a
+/// material.
+///
+/// Stepping each feature up by a fraction of a millimetre makes the winner
+/// deterministic. The step has to clear the depth buffer's resolution at ground
+/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the 10 mm window
+/// `SurfaceGroup::y_offset` documents — at [`ROAD_LAYERS`] rungs the ladder is
+/// under 1 mm tall, so roads stay below the buildings' base at y = 0.
+const ROAD_LAYER_STEP: f32 = 6.0e-5;
+
+/// How many rungs the [`ROAD_LAYER_STEP`] ladder has before it wraps. Two features
+/// that land on the same rung z-fight again, but they have to be the 16th apart in
+/// one tile *and* overlap, which the ordering of a Shortbread `streets` layer
+/// (grouped by kind) makes rare.
+const ROAD_LAYERS: u32 = 16;
+
+/// Miter limit: how far a join may push a vertex out relative to the half-width,
+/// before it is allowed to pinch instead. Unbounded miters spike to infinity at a
+/// hairpin, which OSM has plenty of (motorway sliproads, switchbacks).
+const MITER_LIMIT: f32 = 2.5;
+
+/// Tessellate a tile's `streets` layer into textured road ribbons, one mesh per
+/// [`RoadClass`].
+///
+/// The companion to [`tessellate_surfaces`]: same tile bytes, same tile-local
+/// metre convention, same one-mesh-per-group batching. Roads are lines rather
+/// than areas, so the work is different in three ways:
+///
+/// * **Width is real.** [`road_width_m`] is metres of carriageway, not the raster
+///   path's exaggerated stroke weight.
+/// * **Lines must be clipped, not clamped.** [`tessellate_polygon`] can flatten a
+///   polygon's overhang against the tile border because the neighbour continues
+///   the same surface; doing that to a line would drag a road along the seam.
+///   [`clip_polyline`] cuts instead, so the neighbouring tile's copy of the same
+///   street meets it edge to edge.
+/// * **UVs matter.** They are what puts the centre line down the centre.
+pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
+    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+    let layers = reader
+        .get_layer_metadata()
+        .map_err(|e| format!("mvt layers: {e:?}"))?;
+
+    let Some(meta) = layers.iter().find(|l| l.name == "streets") else {
+        return Ok(Vec::new());
+    };
+    let features = reader
+        .get_features(meta.layer_index)
+        .map_err(|e| format!("mvt features: {e:?}"))?;
+    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let scale = tile_m / extent;
+
+    let mut builders: Vec<(RoadClass, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+
+    for (fi, feature) in features.iter().enumerate() {
+        let kind = kind_of(feature).unwrap_or("");
+        let Some(class) = road_class(kind) else {
+            continue;
+        };
+        let half = road_width_m(kind) * 0.5;
+        // This feature's rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`).
+        let y = (fi as u32 % ROAD_LAYERS) as f32 * ROAD_LAYER_STEP;
+
+        let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
+            Some(i) => i,
+            None => {
+                builders.push((class, Vec::new(), Vec::new(), Vec::new()));
+                builders.len() - 1
+            }
+        };
+        let (_, positions, uvs, indices) = &mut builders[slot];
+
+        let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => lines.push(ls),
+            Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+            // The `streets` layer is lines; a stray polygon belongs to
+            // `street_polygons`, which the raster path fills.
+            _ => continue,
+        }
+
+        for ls in lines {
+            let pts: Vec<[f32; 2]> = ls
+                .0
+                .iter()
+                .filter(|c| c.x.is_finite() && c.y.is_finite())
+                .map(|c| [c.x, c.y])
+                .collect();
+            for run in clip_polyline(&pts, 0.0, extent) {
+                // Tile units → metres, once, before any geometry is built.
+                let metres: Vec<[f32; 2]> =
+                    run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
+                ribbon(
+                    &metres,
+                    half,
+                    y,
+                    class.texture_length_m(),
+                    positions,
+                    uvs,
+                    indices,
+                );
+            }
+        }
+    }
+
+    Ok(builders
+        .into_iter()
+        .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
+        .map(|(class, positions, uvs, indices)| SurfaceMesh {
+            group: SurfaceGroup::Road(class),
+            positions,
+            uvs,
+            indices,
+            normals: Vec::new(),
+            colors: Vec::new(),
+        })
+        .collect())
+}
+
+/// Extrude a centre line into a flat ribbon of `2 × half` metres at height `y`,
+/// writing positions, UVs and indices into shared buffers.
+///
+/// Joins are mitered from the average of the two adjacent segment normals, which
+/// keeps the carriageway a constant width around a bend — the naive
+/// quad-per-segment alternative leaves a wedge of gap on the outside of every
+/// corner, and OSM road geometry is nothing but corners.
+///
+/// `y` is the feature's rung on the [`ROAD_LAYER_STEP`] ladder — sub-millimetre,
+/// and the only thing that keeps two overlapping ribbons from flickering against
+/// each other at a junction.
+fn ribbon(
+    points: &[[f32; 2]],
+    half: f32,
+    y: f32,
+    tex_len_m: f32,
+    positions: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    indices: &mut Vec<u32>,
+) {
+    // Consecutive duplicates have no direction and would produce NaN normals.
+    let mut pts: Vec<[f32; 2]> = Vec::with_capacity(points.len());
+    for p in points {
+        if pts
+            .last()
+            .is_none_or(|q: &[f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) > 1e-4)
+        {
+            pts.push(*p);
+        }
+    }
+    if pts.len() < 2 || half <= 0.0 {
+        return;
+    }
+
+    // Stubs past each end, to fill the notch at a junction.
+    let extend = half * JUNCTION_EXTEND;
+    let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy).max(1e-6);
+        [dx / len, dy / len]
+    };
+    let head = dir(pts[1], pts[0]);
+    let first = pts[0];
+    pts.insert(0, [first[0] + head[0] * extend, first[1] + head[1] * extend]);
+    let tail = dir(pts[pts.len() - 2], pts[pts.len() - 1]);
+    let last = pts[pts.len() - 1];
+    pts.push([last[0] + tail[0] * extend, last[1] + tail[1] * extend]);
+
+    let base = positions.len() as u32;
+    let mut travelled = 0.0f32;
+
+    for i in 0..pts.len() {
+        if i > 0 {
+            travelled += (pts[i][0] - pts[i - 1][0]).hypot(pts[i][1] - pts[i - 1][1]);
+        }
+        let d_in = if i > 0 { dir(pts[i - 1], pts[i]) } else { dir(pts[0], pts[1]) };
+        let d_out = if i + 1 < pts.len() {
+            dir(pts[i], pts[i + 1])
+        } else {
+            d_in
+        };
+        // Left normal of a direction in tile space (x east, y south).
+        let n_in = [-d_in[1], d_in[0]];
+        let n_out = [-d_out[1], d_out[0]];
+        let mut m = [n_in[0] + n_out[0], n_in[1] + n_out[1]];
+        let m_len = m[0].hypot(m[1]);
+        // A perfect reversal (a spike in the source geometry) cancels the two
+        // normals; fall back to the incoming one rather than dividing by zero.
+        if m_len < 1e-4 {
+            m = n_in;
+        } else {
+            m = [m[0] / m_len, m[1] / m_len];
+        }
+        // Lengthen the miter so the *edge* stays `half` from the centre line
+        // through the join, capped so a hairpin pinches instead of spiking.
+        let cos_half = (m[0] * n_out[0] + m[1] * n_out[1]).abs().max(1e-3);
+        let ext = half * (1.0 / cos_half).min(MITER_LIMIT);
+
+        let v = travelled / tex_len_m;
+        positions.push([pts[i][0] - m[0] * ext, y, pts[i][1] - m[1] * ext]);
+        uvs.push([0.0, v]);
+        positions.push([pts[i][0] + m[0] * ext, y, pts[i][1] + m[1] * ext]);
+        uvs.push([1.0, v]);
+
+        if i > 0 {
+            let (a, b) = (base + (i as u32 - 1) * 2, base + i as u32 * 2);
+            push_triangle_up(positions, indices, a, b, b + 1);
+            push_triangle_up(positions, indices, a, b + 1, a + 1);
+        }
+    }
+}
+
+/// Append a triangle wound so its face points **+Y**, whatever order the caller
+/// supplies. Ground geometry is single-sided and every surface here faces up, so
+/// the winding is derived rather than reasoned about at each call site (the same
+/// rule [`tessellate_polygon`] applies to its earcut output).
+fn push_triangle_up(positions: &[[f32; 3]], indices: &mut Vec<u32>, a: u32, b: u32, c: u32) {
+    let (pa, pb, pc) = (
+        positions[a as usize],
+        positions[b as usize],
+        positions[c as usize],
+    );
+    let cross = (pb[0] - pa[0]) * (pc[2] - pa[2]) - (pb[2] - pa[2]) * (pc[0] - pa[0]);
+    if cross.abs() < f32::EPSILON {
+        return; // degenerate — a zero-area triangle only costs raster time
+    }
+    if cross < 0.0 {
+        indices.extend([a, b, c]);
+    } else {
+        indices.extend([a, c, b]);
+    }
+}
+
+/// Clip a polyline to the square `[lo, hi]²`, returning the runs that survive.
+///
+/// MVT geometry runs past the tile edge into a buffer zone so that a stroked line
+/// has something to join to; kept as-is, both neighbours would draw the same
+/// stretch of road and the overlap z-fights. Clipping cuts each crossing at the
+/// border, so the two tiles' ribbons abut. A run breaks whenever a segment leaves
+/// and re-enters, which is why the result is a list rather than one line.
+fn clip_polyline(points: &[[f32; 2]], lo: f32, hi: f32) -> Vec<Vec<[f32; 2]>> {
+    let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut cur: Vec<[f32; 2]> = Vec::new();
+    let flush = |cur: &mut Vec<[f32; 2]>, runs: &mut Vec<Vec<[f32; 2]>>| {
+        if cur.len() >= 2 {
+            runs.push(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
+
+    for seg in points.windows(2) {
+        match clip_segment(seg[0], seg[1], lo, hi) {
+            None => flush(&mut cur, &mut runs),
+            Some((a, b)) => {
+                let continues = cur
+                    .last()
+                    .is_some_and(|q| (q[0] - a[0]).hypot(q[1] - a[1]) <= 1e-4);
+                if !continues {
+                    flush(&mut cur, &mut runs);
+                    cur.push(a);
+                }
+                cur.push(b);
+            }
+        }
+    }
+    flush(&mut cur, &mut runs);
+    runs
+}
+
+/// Liang–Barsky segment clip against the square `[lo, hi]²`. `None` if the
+/// segment misses the square entirely.
+fn clip_segment(a: [f32; 2], b: [f32; 2], lo: f32, hi: f32) -> Option<([f32; 2], [f32; 2])> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [
+        (-dx, a[0] - lo),
+        (dx, hi - a[0]),
+        (-dy, a[1] - lo),
+        (dy, hi - a[1]),
+    ] {
+        if p == 0.0 {
+            // Parallel to this edge: inside or entirely out, no clipping to do.
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 {
+            if r > t1 {
+                return None;
+            }
+            t0 = t0.max(r);
+        } else {
+            if r < t0 {
+                return None;
+            }
+            t1 = t1.min(r);
+        }
+    }
+    if t1 <= t0 {
+        return None;
+    }
+    Some((
+        [a[0] + dx * t0, a[1] + dy * t0],
+        [a[0] + dx * t1, a[1] + dy * t1],
+    ))
+}
+
 /// Earcut one polygon (exterior + holes) into an existing position/index buffer.
-fn tessellate_polygon(
+pub(crate) fn tessellate_polygon(
     poly: &geo_types::Polygon<f32>,
     scale: f32,
     extent: f32,
@@ -585,25 +1120,16 @@ fn tessellate_polygon(
     indices: &mut Vec<u32>,
 ) {
     // MVT geometry runs past the tile edge into a buffer zone, so neighbouring
-    // tiles would overlap — and coplanar overlapping ground z-fights. Clamping to
-    // the tile bounds is an approximation of a real polygon clip: it flattens the
-    // overhang against the border, which is invisible because the adjacent tile
-    // continues the same surface. A true Sutherland–Hodgman clip is the refinement
-    // if a shape ever visibly kinks at a seam.
-    let clamp = |v: f32| v.clamp(0.0, extent);
-
-    // Rings arrive closed (last point repeats the first); earcut wants it open, and
-    // a duplicated vertex there produces degenerate triangles.
+    // tiles would overlap — and coplanar overlapping ground z-fights. [`clip_ring`]
+    // cuts the overhang off against the border, which is invisible because the
+    // adjacent tile continues the same surface. It returns the ring open (earcut
+    // wants it open; a repeated vertex there produces degenerate triangles) and
+    // deduplicated.
     let ring_coords = |ring: &geo_types::LineString<f32>| -> Vec<f64> {
-        let pts = ring.0.as_slice();
-        let n = if pts.len() >= 2 && pts[0] == pts[pts.len() - 1] {
-            pts.len() - 1
-        } else {
-            pts.len()
-        };
-        pts[..n]
+        let raw: Vec<[f32; 2]> = ring.0.iter().map(|c| [c.x, c.y]).collect();
+        clip_ring(&raw, extent)
             .iter()
-            .flat_map(|c| [f64::from(clamp(c.x)), f64::from(clamp(c.y))])
+            .flat_map(|p| [f64::from(p[0]), f64::from(p[1])])
             .collect()
     };
 
@@ -648,6 +1174,230 @@ fn tessellate_polygon(
         } else {
             indices.extend([base + t[0] as u32, base + t[2] as u32, base + t[1] as u32]);
         }
+    }
+}
+
+/// Layers whose polygons are water. Shared by [`tessellate_surfaces`],
+/// [`water_shore_field`] and [`ocean_mask`] so the meshes, the shore field and
+/// the globe's ocean can never disagree about what counts as water — a mismatch
+/// would put a shoreline in open water.
+pub const WATER_LAYERS: [&str; 2] = ["ocean", "water_polygons"];
+
+/// Rasterise just the water coverage of a tile: `TILE_PX²` bytes, 255 where the
+/// surface is water and 0 where it is land, in the same frame (and under the same
+/// overzoom [`SubTile`]) as [`render_mvt`].
+///
+/// This is the globe tier's half of the water story (`systems::globe_ocean`).
+/// From orbit a wave is many orders of magnitude below a pixel, so nothing about
+/// the local wave shader transfers — what makes an ocean read as an ocean from
+/// space is that it is *glossy and dark* where the land is matte, and that needs
+/// one bit per texel, not a height field.
+///
+/// Anti-aliased on purpose: the mask feeds a roughness blend, and a hard-edged
+/// coastline would put a stair-stepped gloss boundary along every shore.
+pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
+    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+    let layers = reader
+        .get_layer_metadata()
+        .map_err(|e| format!("mvt layers: {e:?}"))?;
+
+    let mut pixmap =
+        Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    let paint = Paint {
+        anti_alias: true,
+        shader: Shader::SolidColor(tiny_skia::Color::WHITE),
+        ..Paint::default()
+    };
+
+    let f = sub.factor as f32;
+    let px = TILE_PX as f32;
+    for meta in &layers {
+        if !WATER_LAYERS.contains(&meta.name.as_str()) {
+            continue;
+        }
+        let Ok(features) = reader.get_features(meta.layer_index) else {
+            continue;
+        };
+        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let scale = px * f / extent;
+        let transform = Transform::from_row(
+            scale,
+            0.0,
+            0.0,
+            scale,
+            -(sub.x as f32) * px,
+            -(sub.y as f32) * px,
+        );
+        for feature in &features {
+            fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
+        }
+    }
+
+    Ok(pixmap.pixels().iter().map(|p| p.alpha()).collect())
+}
+
+/// Edge length of the shore-distance field. At a z14 tile's ~1.5 km this is
+/// ~1.5 m per texel, which is what a 10 m city canal needs: at half that
+/// resolution its entire width is three texels and the shoreline treatment reads
+/// as a blocky stripe instead of a bank.
+pub const SHORE_FIELD_PX: u32 = 1024;
+
+/// Distance from shore at which the field saturates. Everything past this is
+/// simply "open water", and 60 m is comfortably more than the width of the
+/// canals and harbour basins the near-field treatment is for.
+pub const SHORE_MAX_DIST_M: f32 = 60.0;
+
+/// A tile's distance-to-shore field: `SHORE_FIELD_PX²` bytes, 0 at the bank and
+/// 255 at [`SHORE_MAX_DIST_M`] or beyond, in the same tile-local frame as
+/// [`tessellate_surfaces`]' output (origin north-west, +x east, +y south).
+#[derive(Debug, Clone)]
+pub struct ShoreField {
+    pub size: u32,
+    pub data: Vec<u8>,
+}
+
+/// Rasterise the tile's water polygons and turn them into a distance-to-shore
+/// field, or `None` when the tile holds no water at all.
+///
+/// This is the piece of information the geometry alone cannot give the water
+/// shader. Earcut emits nothing but the polygon's own boundary vertices, so
+/// every triangle corner sits *on* the shore and a per-vertex distance would be
+/// identically zero; the answer has to come from the interior of the shape,
+/// which means rasterising it. With it, the shader can shelter a canal from the
+/// swell, colour the shallows and lap a foam line against the bank — the three
+/// things that separate "a blue surface with waves on it" from water in a place.
+///
+/// Distances are measured only against land **inside this tile**. That is not an
+/// approximation of the truth, it *is* the truth for the interior: in MVT, land
+/// is the absence of a water polygon. It only overestimates within a tile's
+/// width of the border, where the nearest bank may sit in the neighbouring tile
+/// — which is why nothing is padded around the raster. Treating the border as
+/// land instead (the obvious padding) would draw a shoreline straight down the
+/// middle of every river that crosses a tile edge.
+pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>, String> {
+    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+    let layers = reader
+        .get_layer_metadata()
+        .map_err(|e| format!("mvt layers: {e:?}"))?;
+
+    let size = SHORE_FIELD_PX;
+    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    let paint = Paint {
+        anti_alias: false,
+        shader: Shader::SolidColor(tiny_skia::Color::WHITE),
+        ..Paint::default()
+    };
+
+    let mut any_water = false;
+    for meta in &layers {
+        if !WATER_LAYERS.contains(&meta.name.as_str()) {
+            continue;
+        }
+        let Ok(features) = reader.get_features(meta.layer_index) else {
+            continue;
+        };
+        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let transform = Transform::from_scale(size as f32 / extent, size as f32 / extent);
+        for feature in &features {
+            if area_path(&feature.geometry).is_some() {
+                any_water = true;
+            }
+            fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
+        }
+    }
+    if !any_water {
+        return Ok(None);
+    }
+
+    // Seed the transform from every *land* texel, then measure each water texel's
+    // distance to the nearest one.
+    // "Unreached" is a large *finite* squared distance, not infinity: the
+    // envelope below subtracts one sample's value from another's, and ∞ − ∞ is a
+    // NaN that quietly poisons a whole scanline. Four texel-grids squared is
+    // past any real answer while staying exactly representable in f32.
+    let unreached = (4 * size * size) as f32;
+    let n = (size * size) as usize;
+    let mut sq = vec![0.0f32; n];
+    for (i, px) in pixmap.pixels().iter().enumerate() {
+        sq[i] = if px.alpha() > 127 { unreached } else { 0.0 };
+    }
+    squared_distance_transform(&mut sq, size as usize);
+
+    let m_per_texel = tile_m / size as f32;
+    let data = sq
+        .iter()
+        .map(|d2| {
+            let m = d2.sqrt() * m_per_texel;
+            (m / SHORE_MAX_DIST_M).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8
+        })
+        .collect();
+    Ok(Some(ShoreField { size, data }))
+}
+
+/// Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher),
+/// in place over a `size × size` grid of `0` (seed) and `∞` (to be measured).
+///
+/// Exact and O(n) — the same cost as the chamfer approximation people reach for
+/// first, without its error, which here would show up as a shoreline band whose
+/// width visibly depends on the bank's angle.
+fn squared_distance_transform(grid: &mut [f32], size: usize) {
+    let mut f = vec![0.0f32; size];
+    let mut d = vec![0.0f32; size];
+    // Parabola vertices and the breakpoints between them; both need one extra slot.
+    let mut v = vec![0usize; size];
+    let mut z = vec![0.0f32; size + 1];
+
+    for x in 0..size {
+        for y in 0..size {
+            f[y] = grid[y * size + x];
+        }
+        lower_envelope(&f, &mut d, &mut v, &mut z);
+        for y in 0..size {
+            grid[y * size + x] = d[y];
+        }
+    }
+    for y in 0..size {
+        f.copy_from_slice(&grid[y * size..(y + 1) * size]);
+        lower_envelope(&f, &mut d, &mut v, &mut z);
+        grid[y * size..(y + 1) * size].copy_from_slice(&d);
+    }
+}
+
+/// One-dimensional squared distance transform: the lower envelope of the
+/// parabolas rooted at each sample.
+fn lower_envelope(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32]) {
+    let n = f.len();
+    let mut k: usize = 0;
+    v[0] = 0;
+    z[0] = f32::NEG_INFINITY;
+    z[1] = f32::INFINITY;
+    for q in 1..n {
+        loop {
+            let p = v[k];
+            let s = ((f[q] + (q * q) as f32) - (f[p] + (p * p) as f32))
+                / (2.0 * q as f32 - 2.0 * p as f32);
+            if s <= z[k] && k > 0 {
+                k -= 1;
+            } else {
+                k += 1;
+                v[k] = q;
+                z[k] = s;
+                z[k + 1] = f32::INFINITY;
+                break;
+            }
+        }
+    }
+    k = 0;
+    // `q` walks the samples while `k` walks the envelope's segments — the two
+    // advance independently, so this is not an iteration over `d`.
+    #[allow(clippy::needless_range_loop)]
+    for q in 0..n {
+        while z[k + 1] < q as f32 {
+            k += 1;
+        }
+        let p = v[k];
+        let dq = q as f32 - p as f32;
+        d[q] = dq * dq + f[p];
     }
 }
 
@@ -697,6 +1447,53 @@ mod tests {
             seen.len()
         );
         assert!(rgba.chunks_exact(4).all(|p| p[3] == 255), "alpha must be opaque");
+    }
+
+    #[test]
+    fn shore_field_measures_distance_into_the_water() {
+        let tile_m = 1500.0;
+        let field = water_shore_field(GRONINGEN_Z14, tile_m)
+            .expect("shore field")
+            .expect("fixture has water");
+        assert_eq!(field.data.len(), (field.size * field.size) as usize);
+
+        // A canal city: some texels are dry land (0) and some sit far enough from
+        // any bank to read as open water. A field that is all one value means the
+        // rasterisation or the transform silently did nothing.
+        assert!(field.data.iter().any(|&d| d == 0), "no land texels");
+        assert!(
+            field.data.iter().any(|&d| d > 8),
+            "no texel more than a few metres from shore"
+        );
+    }
+
+    #[test]
+    fn shore_field_is_none_without_water() {
+        // An empty MVT body parses to zero layers, so there is nothing to measure
+        // against — the caller must get `None` rather than an all-shore field,
+        // which would wrap the whole tile in foam.
+        assert!(matches!(water_shore_field(&[], 1500.0), Ok(None)));
+    }
+
+    #[test]
+    fn distance_transform_is_exact_for_a_single_seed() {
+        // 1D-separable transforms are easy to get subtly wrong (off-by-one in the
+        // breakpoints shows up as a distance field that leans one way), so check
+        // against the closed form rather than against a golden image.
+        let size = 16;
+        let far = (4 * size * size) as f32;
+        let mut grid = vec![far; size * size];
+        grid[5 * size + 6] = 0.0;
+        squared_distance_transform(&mut grid, size);
+        for y in 0..size {
+            for x in 0..size {
+                let (dx, dy) = ((x as f32) - 6.0, (y as f32) - 5.0);
+                assert!(
+                    (grid[y * size + x] - (dx * dx + dy * dy)).abs() < 1e-3,
+                    "wrong distance at ({x}, {y})"
+                );
+            }
+        }
     }
 
     #[test]
@@ -910,6 +1707,108 @@ mod tests {
         );
     }
 
+    /// Even–odd point-in-polygon over a set of closed rings.
+    fn point_in_rings(px: f32, pz: f32, rings: &[Vec<[f32; 2]>]) -> bool {
+        let mut inside = false;
+        for r in rings {
+            for w in r.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if (a[1] > pz) != (b[1] > pz) {
+                    let t = (pz - a[1]) / (b[1] - a[1]);
+                    if px < a[0] + t * (b[0] - a[0]) {
+                        inside = !inside;
+                    }
+                }
+            }
+        }
+        inside
+    }
+
+    #[test]
+    fn a_ring_that_leaves_the_tile_and_returns_stays_inside_its_own_outline() {
+        // A canal running out through the west edge and back — a thin U whose two
+        // banks both lie outside the tile. Clamping folds those banks onto x = 0,
+        // the ring self-intersects, and earcut answers with bow-ties: finite-area
+        // triangles *outside* the polygon. On screen those are the dark water
+        // wedges lying across a lawn or a carriageway well away from any water.
+        let ring = geo_types::LineString::from(vec![
+            (-200.0f32, 1000.0),
+            (600.0, 1000.0),
+            (600.0, 1100.0),
+            (-200.0, 1100.0),
+            (-200.0, 2000.0),
+            (600.0, 2000.0),
+            (600.0, 2100.0),
+            (-200.0, 2100.0),
+        ]);
+        let poly = geo_types::Polygon::new(ring, vec![]);
+        let (scale, extent) = (1000.0 / 4096.0, 4096.0);
+
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        tessellate_polygon(&poly, scale, extent, &mut positions, &mut indices);
+        assert!(!indices.is_empty(), "the clipped polygon still has area");
+
+        let rings = clipped_rings(&poly, scale, extent);
+        for t in indices.chunks_exact(3) {
+            let (a, b, c) = (
+                positions[t[0] as usize],
+                positions[t[1] as usize],
+                positions[t[2] as usize],
+            );
+            let area =
+                (((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])) * 0.5).abs();
+            if area <= 1.0 {
+                continue; // a zero-width connector along the seam — invisible
+            }
+            let (cx, cz) = (
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            );
+            assert!(
+                point_in_rings(cx, cz, &rings),
+                "triangle of {area:.0} m² at ({cx:.0}, {cz:.0}) lies outside the polygon"
+            );
+        }
+    }
+
+    #[test]
+    fn clipping_cuts_the_overhang_rather_than_folding_it() {
+        // The clip keeps what is inside, inserts the two border crossings, and
+        // hands back an open, duplicate-free ring.
+        let out = clip_ring(
+            &[[-10.0, 10.0], [50.0, 10.0], [50.0, 50.0], [-10.0, 50.0]],
+            100.0,
+        );
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert!(out.iter().all(|p| p[0] >= 0.0 && p[0] <= 100.0));
+        assert_eq!(out.iter().filter(|p| p[0] == 0.0).count(), 2);
+        // Entirely outside the tile: nothing survives.
+        assert!(clip_ring(&[[-50.0, -50.0], [-10.0, -50.0], [-10.0, -10.0]], 100.0).is_empty());
+    }
+
+    #[test]
+    fn overlapping_road_features_are_separated_in_depth() {
+        // Ribbons overlap at every junction and tile seam; equal heights there
+        // z-fight, which is the flicker along a joint. Successive features must
+        // land on different rungs, and the whole ladder must stay inside the
+        // millimetre window `SurfaceGroup::y_offset` leaves under the buildings.
+        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0).expect("tessellate");
+        let heights: std::collections::BTreeSet<u32> = meshes
+            .iter()
+            .flat_map(|m| m.positions.iter().map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32))
+            .collect();
+        assert!(
+            heights.len() > 1,
+            "every road at one height — overlaps would z-fight"
+        );
+        let top = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
+        assert!(
+            SurfaceGroup::Road(RoadClass::Minor).y_offset() + top < 0.0,
+            "the ladder pushes roads through the buildings' base"
+        );
+    }
+
     #[test]
     fn tessellates_water_and_landuse() {
         let tile_m = 1000.0;
@@ -989,6 +1888,107 @@ mod tests {
         );
     }
 
+    /// The real tile must produce ribbons for several classes, and every one of
+    /// them must be a well-formed textured mesh.
+    #[test]
+    fn roads_tessellate_into_textured_ribbons() {
+        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0).expect("tessellate");
+        assert!(
+            meshes.len() >= 3,
+            "a city tile should yield several road classes, got {}",
+            meshes.len()
+        );
+        for m in &meshes {
+            assert!(matches!(m.group, SurfaceGroup::Road(_)), "{:?}", m.group);
+            assert_eq!(
+                m.uvs.len(),
+                m.positions.len(),
+                "every road vertex needs a UV or the markings cannot register"
+            );
+            assert!(m.indices.len() % 3 == 0 && !m.indices.is_empty());
+            assert!(
+                m.indices.iter().all(|i| (*i as usize) < m.positions.len()),
+                "index out of range"
+            );
+            // `u` is the across-road axis and must span the full carriageway.
+            assert!(m.uvs.iter().any(|uv| uv[0] == 0.0));
+            assert!(m.uvs.iter().any(|uv| uv[0] == 1.0));
+            // Ground geometry: flat to within the anti-z-fight ladder, and inside
+            // the tile plus the junction stubs.
+            let ladder = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
+            assert!(m.positions.iter().all(|p| p[1] >= 0.0 && p[1] < ladder));
+            assert!(m
+                .positions
+                .iter()
+                .all(|p| p[0] > -40.0 && p[0] < 1040.0 && p[2] > -40.0 && p[2] < 1040.0));
+        }
+    }
+
+    /// A straight run of road must come out exactly its class's width — this is
+    /// the number that decides whether a street looks like a street from the
+    /// pavement, and the miter maths is the easiest place to lose it.
+    #[test]
+    fn a_straight_ribbon_is_the_road_width_across() {
+        let mut positions = Vec::new();
+        let mut uvs = Vec::new();
+        let mut indices = Vec::new();
+        // 100 m due east, 7 m wide (a residential street).
+        ribbon(
+            &[[0.0, 0.0], [100.0, 0.0]],
+            3.5,
+            0.0,
+            12.0,
+            &mut positions,
+            &mut uvs,
+            &mut indices,
+        );
+        assert!(!indices.is_empty());
+        for p in &positions {
+            assert!(
+                (p[2].abs() - 3.5).abs() < 1e-3,
+                "edge at {:?} is not 3.5 m from the centre line",
+                p
+            );
+        }
+        // `v` counts metres travelled over the class's texture length, so the far
+        // end of a 100 m street (plus a half-width junction stub at each end) is
+        // ~8.9 repeats in.
+        let v_max = uvs.iter().fold(0.0f32, |a, uv| a.max(uv[1]));
+        assert!((v_max - 107.0 / 12.0).abs() < 1e-2, "v_max {v_max}");
+    }
+
+    /// Clipping, not clamping: geometry in the MVT buffer zone must be *cut* at
+    /// the tile border, or both neighbours draw the same overlapping tarmac.
+    #[test]
+    fn polylines_are_clipped_at_the_tile_border() {
+        // Enters at x = 0, leaves at x = 100, having started and ended outside.
+        let runs = clip_polyline(&[[-50.0, 10.0], [150.0, 10.0]], 0.0, 100.0);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].first().unwrap()[0], 0.0);
+        assert_eq!(runs[0].last().unwrap()[0], 100.0);
+
+        // Out, in, out again → one run, and it is the middle stretch only.
+        let runs = clip_polyline(
+            &[[-10.0, 50.0], [50.0, 50.0], [110.0, 50.0]],
+            0.0,
+            100.0,
+        );
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len(), 3);
+
+        // A line that leaves and re-enters breaks into two runs rather than
+        // cutting the corner across the tile.
+        let runs = clip_polyline(
+            &[[50.0, 50.0], [150.0, 50.0], [150.0, 80.0], [50.0, 80.0]],
+            0.0,
+            100.0,
+        );
+        assert_eq!(runs.len(), 2, "re-entry must start a new run");
+
+        // Entirely outside: nothing at all.
+        assert!(clip_polyline(&[[-10.0, -10.0], [-5.0, -5.0]], 0.0, 100.0).is_empty());
+    }
+
     #[test]
     fn raster_sniffing() {
         assert!(looks_like_raster(b"\x89PNG\r\n\x1a\n____"));
@@ -996,3 +1996,4 @@ mod tests {
         assert!(!looks_like_raster(GRONINGEN_Z14));
     }
 }
+
