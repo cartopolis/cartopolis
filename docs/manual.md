@@ -44,17 +44,25 @@ ground with imported 3D buildings around you.
 
 ## Getting around
 
-Movement is camera-relative. The full input reference lives in the
-[README controls table](../README.md#controls); the essentials:
+Movement is camera-relative. The full input reference:
 
 | Input | Action |
 |-------|--------|
-| W / S / A / D (or arrows) | Move / strafe |
+| W / S (or ↑ / ↓) | Move forward / backward (camera-relative) |
+| A / D (or ← / →) | Strafe left / right |
 | Space / Shift | Fly up / down (while flying) |
 | F | Toggle fly / walk |
-| Tab | Cycle the camera mode |
-| Left-drag | Orbit / look |
+| Tab | Cycle camera: Avatar → Free → Orbit (Earth) |
 | Scroll | Zoom |
+| Left-drag | Orbit camera / look |
+| Left-click | Select a prim |
+| Shift + Left-click | Add / remove a prim from the selection |
+| Ctrl + Left-drag | Marquee (rubber-band) multi-select |
+| Right-click | Context menu (create / edit / delete prims) |
+| T / R / S | Gizmo mode: translate / rotate / scale |
+| Delete / Backspace | Delete selected prims |
+| Ctrl + Shift + D | Toggle the developer panel (day/night slider, etc.) |
+| Ctrl + Shift + A | Toggle the AI assistant panel |
 
 ### Camera modes
 
