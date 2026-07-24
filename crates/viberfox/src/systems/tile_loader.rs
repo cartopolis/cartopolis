@@ -176,7 +176,7 @@ fn tile_cache_path(key: &TileKey, kind: TileSourceKind) -> PathBuf {
         TileSourceKind::Raster => "png",
         TileSourceKind::Vector => "mvt",
     };
-    PathBuf::from("cache")
+    crate::utils::cache::cache_root()
         .join("tiles")
         .join(key.z.to_string())
         .join(key.x.to_string())
@@ -443,7 +443,7 @@ mod tests {
         let key = TileKey::new(8490, 5319, 14);
         assert_eq!(
             format_osm_tile_url("", &key),
-            "https://tiles.versatiles.org/tiles/osm/14/8490/5319",
+            "https://tiles.garage44.eu/tiles/osm/14/8490/5319",
             "an empty template must fall back to the default vector source, not raster OSM"
         );
     }

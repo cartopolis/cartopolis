@@ -379,7 +379,7 @@ fn build_lod22_cell(
 
 /// On-disk cache path for a LoD2.2 cell (its own namespace).
 fn cell_cache_path(cx: i64, cy: i64) -> PathBuf {
-    PathBuf::from("cache")
+    crate::utils::cache::cache_root()
         .join("buildings")
         .join("lod22")
         .join(LOD22_ZOOM.to_string())

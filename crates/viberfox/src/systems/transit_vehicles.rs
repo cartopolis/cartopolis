@@ -31,7 +31,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -95,8 +94,9 @@ const LABEL_LIFT: f32 = 2.2;
 
 /// OVapi's line list — a map of every line's public number + mode.
 const LINES_URL: &str = "http://v0.ovapi.nl/line/";
-/// Disk cache for the line list; refetched when older than [`LINES_TTL`].
-const LINES_CACHE: &str = "cache/transit/lines.json";
+/// Disk cache for the line list (under the shared cache root); refetched when
+/// older than [`LINES_TTL`].
+const LINES_CACHE: [&str; 2] = ["transit", "lines.json"];
 const LINES_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Transport mode, from OVapi's `TransportType` — drives the box/label colour.
@@ -540,7 +540,9 @@ fn fetch_feed(lines: &LineMap) -> FetchResult {
 /// number), from the disk cache when fresh, else fetched once and cached. A
 /// failure yields an empty map — vehicles then show without labels, as buses.
 fn load_line_map() -> LineMap {
-    let path = PathBuf::from(LINES_CACHE);
+    let path = LINES_CACHE
+        .iter()
+        .fold(crate::utils::cache::cache_root(), |p, seg| p.join(seg));
     let fresh = std::fs::metadata(&path)
         .and_then(|m| m.modified())
         .ok()

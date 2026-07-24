@@ -1562,7 +1562,7 @@ fn ridged_roof(
 /// On-disk cache path for a fixed CACHE_ZOOM cell (independent of patch size, so
 /// changing the patch radius never invalidates the cache).
 fn cell_cache_path(cx: i64, cy: i64, zoom: u32) -> PathBuf {
-    PathBuf::from("cache")
+    crate::utils::cache::cache_root()
         .join("buildings")
         .join(zoom.to_string())
         .join(cx.to_string())
@@ -1622,7 +1622,7 @@ fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
 /// (`cache/buildings/3dbag/…`) so a cell whose source flips never serves stale
 /// geometry cached from the other source.
 fn cell_cache_path_3dbag(cx: i64, cy: i64) -> PathBuf {
-    PathBuf::from("cache")
+    crate::utils::cache::cache_root()
         .join("buildings")
         .join("3dbag")
         .join(CACHE_ZOOM.to_string())

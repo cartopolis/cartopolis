@@ -2,8 +2,10 @@ target
 data
 .env
 
-# Local OSM tile/building cache
-/cache/
+# Local OSM tile/building cache. Unanchored (no leading slash) so it matches at
+# any depth — the cache path is cwd-relative (`PathBuf::from("cache")`), so running
+# the client from a crate dir writes `crates/viberfox/cache/`, not just repo-root.
+cache/
 
 # ADR-016 solo/dev credentials (never commit)
 data/dev-login.toml
