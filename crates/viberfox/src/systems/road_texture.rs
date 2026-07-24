@@ -65,6 +65,24 @@ impl RoadClass {
         }
     }
 
+    /// The flat surface colour for this class, used when road textures are
+    /// switched off (`DataLayers::roads_textured`): the texture's base tarmac/grit
+    /// tone, without markings. Linear-space rgb, as `Color::srgb` expects.
+    #[must_use]
+    pub fn flat_color(self) -> [f32; 3] {
+        let rgb = match self {
+            Self::Motorway | Self::Major => TARMAC_DARK,
+            Self::Minor => TARMAC_LIGHT,
+            Self::Path => GRIT,
+            Self::Rail => BALLAST,
+        };
+        [
+            rgb[0] as f32 / 255.0,
+            rgb[1] as f32 / 255.0,
+            rgb[2] as f32 / 255.0,
+        ]
+    }
+
     /// Surface roughness for the material. Tarmac is not quite matte — a wet-ish
     /// sheen at a grazing angle is most of what separates it from painted ground.
     #[must_use]

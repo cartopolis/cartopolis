@@ -421,6 +421,46 @@ fn road_surface_image(class: RoadClass) -> Image {
     )
 }
 
+/// Apply the "Road textures" toggle (`DataLayers::roads_textured`). Roads share one
+/// cached [`StandardMaterial`] per class (`MapSurfaces::materials`), so toggling here
+/// touches a handful of materials and **no** entities — every road cell, present or
+/// future, rides the shared handle. Textured = generated tarmac + markings on white;
+/// flat = the class's base tarmac colour with no texture.
+///
+/// Reconciles every frame but only reads (`get`) unless a material is on the wrong
+/// side of the toggle, so a steady state costs nothing and a newly-streamed class
+/// (created textured by the spawner) is corrected on the next frame.
+pub fn apply_road_texture(
+    dl: Res<crate::systems::data_layers::DataLayers>,
+    surfaces: Res<MapSurfaces>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let want_textured = dl.roads_textured;
+    for (group, handle) in &surfaces.materials {
+        let SurfaceGroup::Road(class) = group else {
+            continue;
+        };
+        let has_texture = materials
+            .get(handle)
+            .is_some_and(|m| m.base_color_texture.is_some());
+        if has_texture == want_textured {
+            continue;
+        }
+        let Some(mut material) = materials.get_mut(handle) else {
+            continue;
+        };
+        if want_textured {
+            material.base_color_texture = Some(images.add(road_surface_image(*class)));
+            material.base_color = Color::WHITE;
+        } else {
+            material.base_color_texture = None;
+            let [r, g, b] = class.flat_color();
+            material.base_color = Color::srgb(r, g, b);
+        }
+    }
+}
+
 /// Turn a tessellated surface into a Bevy mesh. Flat ground, so every normal is up.
 ///
 /// UV0 means one of two things, decided by the tessellator:

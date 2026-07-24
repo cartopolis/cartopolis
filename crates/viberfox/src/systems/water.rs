@@ -243,15 +243,30 @@ fn sea_state(wind_ms: f32) -> (Vec4, Vec4, Vec4) {
 /// the wind has actually moved, which is a handful of times an hour.
 pub fn update_water_waves(
     weather: Res<WeatherState>,
+    dl: Res<crate::systems::data_layers::DataLayers>,
     mut state: ResMut<WaterSeaState>,
     mut materials: ResMut<Assets<WaterMaterial>>,
-    mut applied: Local<Option<f32>>,
+    mut applied: Local<Option<(f32, bool)>>,
 ) {
-    let wind_ms = weather.latest.map_or(UNKNOWN_WIND, |o| o.wind_ms).max(0.0);
-    if applied.is_some_and(|prev| (prev - wind_ms).abs() < WIND_EPSILON) {
+    // The "Water shading" toggle (`DataLayers::water_shading`) flattens the sea to a
+    // still sheet: hold the wind at calm and zero the wave steepness + foam. New
+    // cells read `state.wave`, so they come up flat too.
+    let shading = dl.water_shading;
+    let wind_ms = if shading {
+        weather.latest.map_or(UNKNOWN_WIND, |o| o.wind_ms).max(0.0)
+    } else {
+        0.0
+    };
+    if applied.is_some_and(|(prev_wind, prev_shading)| {
+        (prev_wind - wind_ms).abs() < WIND_EPSILON && prev_shading == shading
+    }) {
         return;
     }
-    let (wave, surface, wind) = sea_state(wind_ms);
+    let (mut wave, mut surface, wind) = sea_state(wind_ms);
+    if !shading {
+        wave.x = 0.0; // steepness → no ripples in the normal
+        surface.w = 0.0; // no crest foam
+    }
     state.wave = wave;
     state.surface = surface;
     state.wind = wind;
@@ -264,8 +279,8 @@ pub fn update_water_waves(
             material.extension.wind = wind;
         }
     }
-    *applied = Some(wind_ms);
-    tracing::debug!(wind_ms, "water sea state updated");
+    *applied = Some((wind_ms, shading));
+    tracing::debug!(wind_ms, shading, "water sea state updated");
 }
 
 #[cfg(test)]

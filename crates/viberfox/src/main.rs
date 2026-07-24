@@ -560,11 +560,19 @@ fn main() {
             systems::data_layers::update_data_layers.after(rendering::spawn_regions),
             systems::data_layers::animate_stop_rings
                 .after(systems::data_layers::update_data_layers),
-            // After the spawners, so new entities get this frame's toggle state.
-            systems::data_layers::apply_feature_toggles
-                .after(systems::osm_buildings::update_buildings)
-                .after(systems::map_stream::update_map_stream)
-                .after(rendering::spawn_regions),
+            // "Minimal mode" forces the layer + weather toggles off before they're
+            // applied (so opening the Route panel strips the map the same frame),
+            // then apply_feature_toggles writes visibility. Nested as one element
+            // to stay under Bevy's per-tuple system limit.
+            (
+                systems::data_layers::apply_minimal_mode
+                    .before(systems::data_layers::apply_feature_toggles),
+                // After the spawners, so new entities get this frame's toggle state.
+                systems::data_layers::apply_feature_toggles
+                    .after(systems::osm_buildings::update_buildings)
+                    .after(systems::map_stream::update_map_stream)
+                    .after(rendering::spawn_regions),
+            ),
             systems::data_layers::handle_poi_click
                 .after(systems::data_layers::update_data_layers),
             // Transit polling, nested to stay under the per-tuple system limit.
@@ -624,6 +632,10 @@ fn main() {
                     .after(systems::map_stream::update_map_stream),
                 // Sea state from the live wind (cheap: skips unless the wind moved).
                 systems::water::update_water_waves,
+                // "Road textures" toggle: retexture/flatten the shared road
+                // materials (cheap: reads unless a material is on the wrong side).
+                systems::map_geometry::apply_road_texture
+                    .after(systems::map_geometry::update_map_surfaces),
                 // Ramp the scattered trees into the flat fill with altitude. Must
                 // follow the surface build, which is what creates the materials it
                 // repaints. Skips unless the ramp actually moved.

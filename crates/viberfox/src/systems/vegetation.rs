@@ -639,16 +639,27 @@ fn unit_canopy() -> UnitCanopy {
 /// How far the trees have merged into the flat fill: 0 = individual trees, 1 =
 /// fully merged. Read at spawn by [`crate::systems::map_geometry`] so a cell that
 /// streams in above the band does not flash a forest for one frame.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct VegetationLod {
     pub factor: f32,
+    /// Mirror of `DataLayers::trees_enabled`, so [`Self::visibility`] (read at
+    /// spawn) reflects the Trees toggle and a new cell doesn't flash a forest
+    /// that the user has switched off.
+    pub enabled: bool,
+}
+
+impl Default for VegetationLod {
+    fn default() -> Self {
+        Self { factor: 0.0, enabled: true }
+    }
 }
 
 impl VegetationLod {
-    /// Whether newly spawned vegetation should be visible at all.
+    /// Whether newly spawned vegetation should be visible at all: off if the Trees
+    /// layer is disabled, or if the altitude LOD has fully merged the canopy away.
     #[must_use]
     pub fn visibility(&self) -> Visibility {
-        if self.factor >= 1.0 {
+        if !self.enabled || self.factor >= 1.0 {
             Visibility::Hidden
         } else {
             Visibility::Inherited
@@ -680,12 +691,13 @@ pub struct VegetationSurface;
 /// sort order and a pass, to fade something that is by then sub-pixel anyway.
 pub fn update_vegetation_lod(
     mut lod: ResMut<VegetationLod>,
+    dl: Res<crate::systems::data_layers::DataLayers>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     surfaces: Res<MapSurfaces>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut veg: Query<&mut Visibility, With<VegetationSurface>>,
-    mut last: Local<Option<f32>>,
+    mut last: Local<Option<(f32, bool)>>,
 ) {
     let Ok((cell, tf)) = camera.single() else {
         return;
@@ -695,13 +707,17 @@ pub fn update_vegetation_lod(
     // Smoothstep: the ends of the band matter more than its middle, because that
     // is where a linear ramp shows its corners.
     let factor = t * t * (3.0 - 2.0 * t);
+    let enabled = dl.trees_enabled;
 
     let previous = *last;
-    if previous.is_some_and(|p| (p - factor).abs() < 0.002) {
+    // Re-run when the ramp moves *or* the Trees toggle flips (same altitude, but
+    // the geometry has to appear/disappear).
+    if previous.is_some_and(|(p, e)| (p - factor).abs() < 0.002 && e == enabled) {
         return;
     }
-    *last = Some(factor);
+    *last = Some((factor, enabled));
     lod.factor = factor;
+    lod.enabled = enabled;
 
     let fill = mix(palette::FOREST, palette::FOREST_CANOPIED, factor);
     set_base_color(&mut materials, &surfaces, SurfaceGroup::Forest, fill);
@@ -718,10 +734,10 @@ pub fn update_vegetation_lod(
         mix_rgb(srgb_to_linear_rgb(palette::TRUNK), fill, factor),
     );
 
-    // Only touch visibility when the far end of the band is actually crossed —
-    // every other frame in the ramp leaves thousands of entities alone.
-    let was_hidden = previous.is_some_and(|p| p >= 1.0);
-    let is_hidden = factor >= 1.0;
+    // Only touch visibility when the hidden state actually flips — the far end of
+    // the band, or the Trees toggle — leaving thousands of entities alone otherwise.
+    let was_hidden = previous.is_some_and(|(p, e)| !e || p >= 1.0);
+    let is_hidden = !enabled || factor >= 1.0;
     if previous.is_none() || was_hidden != is_hidden {
         let v = if is_hidden {
             Visibility::Hidden

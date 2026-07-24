@@ -303,6 +303,15 @@ pub struct DataLayers {
     pub map_enabled: bool,
     /// Feature toggle: live moving vehicles on the transit layer (ADR-026).
     pub vehicles_enabled: bool,
+    /// Feature toggle (under Map): the merged tree canopies/trunks
+    /// (`systems::vegetation`). Gates their visibility on top of the altitude LOD.
+    pub trees_enabled: bool,
+    /// Feature toggle (under Map): textured road surfaces (generated tarmac +
+    /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
+    pub roads_textured: bool,
+    /// Feature toggle (under Map): the animated water surface shader (waves, foam,
+    /// chop). Off = calm flat water (`water::update_water_waves`).
+    pub water_shading: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
@@ -325,6 +334,26 @@ pub struct DataLayers {
     /// alpha is pulsed by [`animate_stop_rings`].
     ring_materials: HashMap<(usize, usize), Handle<StandardMaterial>>,
     pub layers: Vec<LayerRuntime>,
+    /// State captured when the Route panel opened, so "minimal mode" — stripping
+    /// the map to just the vector tiles + the route while planning — can restore
+    /// exactly what the user had when the panel closes. `None` when not routing.
+    minimal: Option<MinimalSave>,
+}
+
+/// Snapshot of everything minimal mode turns off, taken on route-open, so leaving
+/// the Route panel puts the map back exactly as it was. Weather lives in other
+/// resources ([`DevPanelState`], [`WeatherState`]) but is restored together here.
+struct MinimalSave {
+    buildings: bool,
+    vehicles: bool,
+    trees: bool,
+    roads_textured: bool,
+    water_shading: bool,
+    layers: Vec<bool>,
+    fog_density: f32,
+    cloud_cover: f32,
+    precipitation: f32,
+    weather_live: bool,
 }
 
 impl Default for DataLayers {
@@ -334,6 +363,9 @@ impl Default for DataLayers {
             buildings_enabled: true,
             map_enabled: true,
             vehicles_enabled: false,
+            trees_enabled: true,
+            roads_textured: true,
+            water_shading: true,
             popup: None,
             anchor: None,
             synced_gen: 0,
@@ -347,6 +379,7 @@ impl Default for DataLayers {
             // map tiles and 3D buildings are on at startup; the rest are opt-in
             // from the Layers panel.
             layers: LAYER_DEFS.iter().map(|_| LayerRuntime::default()).collect(),
+            minimal: None,
         }
     }
 }
@@ -871,6 +904,73 @@ fn open_url(url: &str) {
     }
 }
 
+/// "Minimal mode": while the Route panel is open, strip the map to just the vector
+/// tiles + the route so the planned line reads clearly. Off go the 3D buildings,
+/// trees, live vehicles, every streamed overlay (transit stops, shops), and the
+/// weather (clouds, fog, rain — and live weather is frozen so it can't re-apply).
+/// The vector tiles (`map_enabled`) are deliberately kept.
+///
+/// The user's state is snapshotted on open and restored verbatim on close, so this
+/// never destroys their settings. It only *sets* at the open/close edges (cached in
+/// `minimal`), so a user can still re-enable something mid-route from the panel; the
+/// snapshot, not the mid-route edit, is what's restored. Writes nothing when idle.
+pub fn apply_minimal_mode(
+    right_panel: Res<crate::resources::RightPanel>,
+    mut dl: ResMut<DataLayers>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
+    mut weather: ResMut<crate::systems::weather::WeatherState>,
+) {
+    let routing = right_panel.is(crate::resources::RightPanel::Route);
+    match (routing, dl.minimal.is_some()) {
+        // Entering: snapshot everything minimal mode dims, then dim it.
+        (true, false) => {
+            dl.minimal = Some(MinimalSave {
+                buildings: dl.buildings_enabled,
+                vehicles: dl.vehicles_enabled,
+                trees: dl.trees_enabled,
+                roads_textured: dl.roads_textured,
+                water_shading: dl.water_shading,
+                layers: dl.layers.iter().map(|l| l.enabled).collect(),
+                fog_density: dev.fog_density,
+                cloud_cover: dev.cloud_cover,
+                precipitation: dev.precipitation,
+                weather_live: weather.live,
+            });
+            dl.buildings_enabled = false;
+            dl.vehicles_enabled = false;
+            dl.trees_enabled = false;
+            dl.roads_textured = false;
+            dl.water_shading = false;
+            for l in &mut dl.layers {
+                l.enabled = false;
+            }
+            // Clear the sky and freeze live weather so a poll can't re-cloud it.
+            weather.live = false;
+            dev.fog_density = 0.0;
+            dev.cloud_cover = 0.0;
+            dev.precipitation = 0.0;
+        }
+        // Leaving: restore the snapshot exactly.
+        (false, true) => {
+            if let Some(saved) = dl.minimal.take() {
+                dl.buildings_enabled = saved.buildings;
+                dl.vehicles_enabled = saved.vehicles;
+                dl.trees_enabled = saved.trees;
+                dl.roads_textured = saved.roads_textured;
+                dl.water_shading = saved.water_shading;
+                for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
+                    l.enabled = was;
+                }
+                weather.live = saved.weather_live;
+                dev.fog_density = saved.fog_density;
+                dev.cloud_cover = saved.cloud_cover;
+                dev.precipitation = saved.precipitation;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Apply the Buildings / Map feature toggles by writing entity visibility.
 /// Runs every frame with compare-before-write, so it is cheap when nothing
 /// changed and newly streamed-in entities pick up the current toggle state.
@@ -883,6 +983,10 @@ pub fn apply_feature_toggles(
         Or<(
             With<crate::systems::osm_buildings::OsmBuildingMesh>,
             With<crate::systems::osm_buildings::WindowGlow>,
+            // The 3DBAG LOD2.2 buildings are a *separate* entity type from the OSM
+            // detail patches; without them here, unchecking Buildings hid the OSM
+            // meshes but left the 3DBAG soup standing.
+            With<crate::systems::lod22::Lod22Mesh>,
         )>,
     >,
     stream: Res<crate::systems::map_stream::MapStream>,
@@ -893,6 +997,7 @@ pub fn apply_feature_toggles(
             Without<crate::systems::rendering::RegionMesh>,
             Without<crate::systems::osm_buildings::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
+            Without<crate::systems::lod22::Lod22Mesh>,
         ),
     >,
     mut region_quads: Query<
@@ -902,6 +1007,7 @@ pub fn apply_feature_toggles(
             Without<crate::systems::map_stream::StreamTile>,
             Without<crate::systems::osm_buildings::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
+            Without<crate::systems::lod22::Lod22Mesh>,
         ),
     >,
 ) {
@@ -1003,9 +1109,9 @@ pub fn render_data_layers_panel(
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
     let mut close = false;
-    egui::Panel::right("layers_panel")
-        .resizable(true)
-        .default_size(260.0)
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    crate::systems::egui_manager::responsive_right_panel("layers_panel", compact, viewport_w, 260.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Layers");
@@ -1066,6 +1172,19 @@ pub fn render_data_layers_panel(
             ui.checkbox(&mut dl.map_enabled, egui::RichText::new("Map").size(14.0));
             ui.indent("map", |ui| {
                 ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
+                ui.add_space(2.0);
+                ui.checkbox(
+                    &mut dl.trees_enabled,
+                    egui::RichText::new("Trees").size(13.0),
+                );
+                ui.checkbox(
+                    &mut dl.roads_textured,
+                    egui::RichText::new("Road textures").size(13.0),
+                );
+                ui.checkbox(
+                    &mut dl.water_shading,
+                    egui::RichText::new("Water shading").size(13.0),
+                );
             });
             ui.add_space(4.0);
             ui.separator();
@@ -1164,7 +1283,7 @@ fn build_layer_cell(
 
 /// On-disk cache path for one layer cell.
 fn cell_cache_path(key: &str, cx: i64, cy: i64) -> PathBuf {
-    PathBuf::from("cache")
+    crate::utils::cache::cache_root()
         .join("layers")
         .join(key)
         .join(LAYER_ZOOM.to_string())
