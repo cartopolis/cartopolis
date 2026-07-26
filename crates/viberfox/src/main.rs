@@ -1,4 +1,5 @@
 use bevy::asset::AssetPlugin;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::log::LogPlugin;
 use bevy::camera::Exposure;
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
@@ -18,6 +19,7 @@ use std::time::Duration;
 mod components;
 mod login;
 mod platform;
+mod simd_baseline;
 mod resources;
 #[cfg(feature = "solo")]
 mod solo;
@@ -230,6 +232,19 @@ impl Plugin for ForceCpuClusteringPlugin {
     // DefaultPlugins guarantees it runs after `PbrPlugin::finish` has inserted
     // `GlobalClusterSettings` into the main world.
     fn finish(&self, app: &mut App) {
+        // Native only. The device-loss this avoids is the Intel iGPU's
+        // command-buffer timeout on the cluster readback during a zoom-out — a
+        // native-driver failure. The browser build reaches the GPU through
+        // WebGPU's own submission and timeout handling, and there CPU clustering
+        // is not a safety net but the single most expensive thing in the frame:
+        // it is one of the fallbacks that made the web build cost seconds per
+        // frame. Forcing it on where the hazard doesn't apply would spend that
+        // cost for nothing. `VIBERFOX_FORCE_CPU_CLUSTERING=1` restores it anywhere.
+        let force = cfg!(not(target_arch = "wasm32"))
+            || crate::env_flag("VIBERFOX_FORCE_CPU_CLUSTERING");
+        if !force {
+            return;
+        }
         if let Some(mut settings) = app
             .world_mut()
             .get_resource_mut::<bevy::light::cluster::GlobalClusterSettings>()
@@ -264,8 +279,24 @@ fn start_solo_sim() -> Option<String> {
 fn main() {
     dotenvy::dotenv().ok();
 
+    // Start the CPU worker pool before anything streams (ADR-033). A no-op
+    // natively — `AsyncComputeTaskPool` is already a thread pool — and on the web
+    // it spawns the Web Workers that keep tile decoding off the render thread.
+    // One core is left for the main thread, which still renders and fetches.
+    platform::workers::start(
+        std::thread::available_parallelism()
+            .map(|n| n.get().saturating_sub(1))
+            .unwrap_or(4)
+            .max(1),
+    );
+
     let cli = Cli::parse();
 
+    // Native: our own `tracing_subscriber` (env-filtered fmt to stderr). On wasm we
+    // don't init it — its default timer calls `SystemTime::now`, which panics on
+    // wasm, and its writer targets stdout; Bevy's `LogPlugin` (kept enabled on wasm
+    // below) routes logs/panics to the browser console instead. ADR-033.
+    #[cfg(not(target_arch = "wasm32"))]
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -304,13 +335,24 @@ fn main() {
     if !scripted {
         systems::desktop_integration::ensure_desktop_integration();
     }
+    // Native: assets live at a repo-relative path resolved from the manifest dir.
+    // Wasm: `CARGO_MANIFEST_DIR` is a build-machine absolute path meaningless in a
+    // browser — Bevy fetches assets over HTTP relative to the served page, so use a
+    // plain `assets` URL (trunk copies `assets/` alongside the wasm). ADR-033.
+    #[cfg(not(target_arch = "wasm32"))]
     let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .display()
         .to_string();
-    let default_plugins = DefaultPlugins
-        .build()
-        .disable::<LogPlugin>()
+    #[cfg(target_arch = "wasm32")]
+    let asset_dir = "assets".to_string();
+    let plugins = DefaultPlugins.build();
+    // Native uses the custom `tracing_subscriber` above, so drop Bevy's LogPlugin
+    // there. On wasm keep it: it wires logs + panics to the browser console and does
+    // not call `SystemTime::now` (which panics on wasm). ADR-033.
+    #[cfg(not(target_arch = "wasm32"))]
+    let plugins = plugins.disable::<LogPlugin>();
+    let default_plugins = plugins
         .set(WindowPlugin {
             // No window at all for a scripted run — see the headless block below.
             primary_window: (shot_size.is_none()).then(|| Window {
@@ -346,6 +388,11 @@ fn main() {
         })
         .set(AssetPlugin {
             file_path: asset_dir,
+            // No `.meta` sidecars are shipped, so don't look for them. On the web
+            // build the server answers each missing `<asset>.meta` request with
+            // non-meta content, which otherwise spams "failed to deserialize meta"
+            // (harmless — Bevy falls back to defaults — but noisy). ADR-033.
+            meta_check: bevy::asset::AssetMetaCheck::Never,
             ..default()
         })
         // big_space owns transform propagation (ADR-019); Bevy's TransformPlugin
@@ -919,6 +966,18 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
 /// Spawn the sun's directional light. Shadows follow the dev panel toggle
 /// (`dev.shadows_enabled`), applied at spawn — the toggle respawns the light
 /// rather than mutating `shadow_maps_enabled`, which panics bevy_light.
+/// Shadow cascades for the sun *and* the moon.
+///
+/// One constant rather than two literals because bevy_light panics outright if the
+/// two directional lights disagree (see CLAUDE.md) — a shared value makes that
+/// class of mistake unrepresentable rather than merely avoided.
+///
+/// The web gets 1: WebGPU reports a supported cascade limit of 1 here, and Bevy
+/// clamps to it while warning. Asking for 4 anyway does not buy four cascades, it
+/// just builds a config the backend then discards — so this asks for what the
+/// platform can actually deliver.
+const SHADOW_CASCADES: usize = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
+
 fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
     let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
@@ -931,7 +990,7 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
         CascadeShadowConfigBuilder {
-            num_cascades: 4,
+            num_cascades: SHADOW_CASCADES,
             minimum_distance: 2.0,
             maximum_distance: 3000.0,
             first_cascade_far_bound: 60.0,
@@ -988,7 +1047,7 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         // the whole light (rather than toggling `shadow_maps_enabled`, which also
         // panics) keeps the two live lights' cascade counts equal at all times.
         CascadeShadowConfigBuilder {
-            num_cascades: 4,
+            num_cascades: SHADOW_CASCADES,
             minimum_distance: 2.0,
             maximum_distance: 1200.0,
             first_cascade_far_bound: 80.0,
@@ -1527,29 +1586,37 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 /// Sleeping — not spinning: the point is to leave the GPU idle, so burning a core
 /// for sub-millisecond deadline precision would defeat it.
 fn frame_limiter(mut deadline: Local<Option<std::time::Instant>>, mut period: Local<Option<Duration>>) {
-    let period = *period.get_or_insert_with(|| {
-        let fps: f64 = std::env::var("VIBERFOX_FPS_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60.0);
-        if fps <= 0.0 {
-            Duration::ZERO
-        } else {
-            Duration::from_secs_f64(1.0 / fps)
+    // Native only: a `thread::sleep`-based FPS cap. The browser paces frames itself
+    // (requestAnimationFrame), and `Instant::now()`/`thread::sleep` would panic on
+    // wasm, so this is a no-op there.
+    #[cfg(target_arch = "wasm32")]
+    let _ = (&mut deadline, &mut period);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let period = *period.get_or_insert_with(|| {
+            let fps: f64 = std::env::var("VIBERFOX_FPS_CAP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60.0);
+            if fps <= 0.0 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64(1.0 / fps)
+            }
+        });
+        if period.is_zero() {
+            return;
         }
-    });
-    if period.is_zero() {
-        return;
+        let now = std::time::Instant::now();
+        // A deadline in the past means we're already running below the cap (a hitch,
+        // or a genuinely heavy frame). Re-base on `now` rather than sleeping zero for
+        // a burst of frames trying to "catch up" to a schedule we can't meet.
+        let target = deadline.filter(|d| *d > now).unwrap_or(now);
+        if let Some(wait) = target.checked_duration_since(now) {
+            std::thread::sleep(wait);
+        }
+        *deadline = Some(target + period);
     }
-    let now = std::time::Instant::now();
-    // A deadline in the past means we're already running below the cap (a hitch, or
-    // a genuinely heavy frame). Re-base on `now` rather than sleeping zero for a
-    // burst of frames trying to "catch up" to a schedule we can't meet.
-    let target = deadline.filter(|d| *d > now).unwrap_or(now);
-    if let Some(wait) = target.checked_duration_since(now) {
-        std::thread::sleep(wait);
-    }
-    *deadline = Some(target + period);
 }
 
 /// Opt-in per-second frame stats (`VIBERFOX_FPS_LOG=1`): sustained FPS, worst

@@ -321,6 +321,10 @@ pub fn setup_camera(
     // resources and hangs the device — see `globe::update_globe_visibility`). The
     // dev-panel checkboxes seed these but only take effect on the next launch; the
     // env flags force them off. Env-map IBL requires the atmosphere it bakes from.
+    // The atmosphere is compute-based (bevy_pbr) and needs a fragment storage
+    // buffer. That ruled it out under WebGL2, which has neither — but the web build
+    // targets WebGPU now (ADR-033), where both exist, so this is no longer
+    // platform-gated at all.
     let want_atmosphere =
         dev.atmosphere_enabled && !crate::env_flag("VIBERFOX_NO_ATMOSPHERE");
     let want_envmap =
@@ -337,7 +341,28 @@ pub fn setup_camera(
                 // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
                 // main-pass multisample cost for a marginal edge-quality change at
                 // this scene's geometric density.
-                Msaa::Sample2,
+                //
+                // Except on the web, where 2× is not a tuning choice but an invalid
+                // one: WebGPU permits a sample count of only 1 or 4, so requesting 2
+                // fails to create `main_texture_sampled` — and the failure is silent
+                // in the worst way. Nothing renders (black canvas) and every queued
+                // command is then dropped un-applied, so the console fills with
+                // `CommandQueue has un-applied commands` warnings that describe the
+                // symptom and never the cause. 4× is therefore the only anti-aliased
+                // option on WebGPU; `Msaa::Off` is the cheaper one if the extra
+                // resolve shows up in frame times.
+                // ...and on the web that leaves no cheap anti-aliased option at all,
+                // so take none. WebGPU's jump from 2× to 4× doubles the samples
+                // rasterised for every triangle in a scene that is already hundreds
+                // of tiles plus a thousand-odd buildings, and the browser build has
+                // no frame budget to spend on edge quality yet. Raise this to
+                // `Msaa::Sample4` once frame times allow — those are the only two
+                // legal values here.
+                if cfg!(target_arch = "wasm32") {
+                    Msaa::Off
+                } else {
+                    Msaa::Sample2
+                },
                 // Bevy's default far plane (1 km) clips the streamed tile pyramid
                 // and the horizon ground disc; reversed-z depth keeps precision
                 // fine at this range.
@@ -346,14 +371,6 @@ pub fn setup_camera(
                     ..default()
                 }),
                 Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-                // Bevy 0.19 built-in atmosphere: the camera carries only the render
-                // settings; the sky is derived from the sun DirectionalLight direction
-                // and the camera's altitude above the planet entity spawned below.
-                // Kept even when the atmosphere is disabled — `update_globe_visibility`
-                // queries it, and without an `Atmosphere` entity it renders nothing.
-                // AmbientLight is per-camera now; apply_day_night_cycle drives its
-                // color/brightness from utils::sun.
-                AtmosphereSettings::default(),
                 // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
                 // scene isn't blown out while the sky is lit correctly.
                 Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
@@ -371,10 +388,19 @@ pub fn setup_camera(
                 AmbientLight::default(),
                 FreeCamera,
                 FloatingOrigin,
-                // Atmospheric distance fog: distant buildings fade into haze, with a
-                // sun-side glow. Driven by the dev panel slider (apply_distance_fog).
-                distance_fog(dev.fog_density, dev.time_of_day, dev.sun_declination_rad),
             ));
+            // Atmospheric distance fog: distant buildings fade into haze, sun-side
+            // glow, driven by the dev panel (apply_distance_fog). It is one more
+            // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
+            // — reached there because clustering fell back to uniforms. On WebGPU
+            // clustering uses storage buffers, so the budget is no longer contested.
+            cam.insert(distance_fog(dev.fog_density, dev.time_of_day, dev.sun_declination_rad));
+            // Bevy 0.19 built-in atmosphere: the camera carries only the render
+            // settings; the sky derives from the sun direction + camera altitude
+            // over the planet entity below. `update_globe_visibility` no-ops
+            // without it, which is what made dropping it a safe web workaround —
+            // and what makes restoring it here uneventful.
+            cam.insert(AtmosphereSettings::default());
             if want_envmap {
                 // Sky-driven image-based lighting: surfaces are lit by and reflect
                 // the actual atmosphere. 256² IBL cubemap instead of the 512²

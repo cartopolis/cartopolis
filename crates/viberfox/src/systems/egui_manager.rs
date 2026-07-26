@@ -101,6 +101,14 @@ impl Default for EguiManager {
         //    shift their neighbours' auto-ids) trip constantly, so it reads as red
         //    boxes all over the chat panel and bottom bar.
         // Force the whole debug overlay off so none of it leaks in, in any build.
+        //
+        // `Style::debug` is itself `#[cfg(debug_assertions)]` in egui, so this must
+        // be gated the same way: with assertions off the field does not exist and
+        // naming it is a compile error, not a no-op. That is why this only surfaced
+        // on the first optimised build — and it would have broken a native
+        // `--release` just as surely. There is nothing to turn off in that case;
+        // egui compiles the overlay out entirely.
+        #[cfg(debug_assertions)]
         ctx.all_styles_mut(|style| {
             style.debug.show_unaligned = false;
             style.debug.warn_if_rect_changes_id = false;
@@ -203,7 +211,12 @@ pub struct EguiRenderOutput {
 /// can detect and handle MSAA changes (e.g. camera settings changed), plus the
 /// [`EguiRenderOutput::generation`] whose geometry/textures are currently resident
 /// on the GPU (`None` until the first upload).
-#[derive(Resource, Default)]
+// On wasm `egui_wgpu::Renderer` holds WebGL handles that are `!Send + !Sync` (the
+// browser GPU is main-thread-only), so it cannot be a normal Bevy `Resource` there
+// — it is stored as a **non-send** resource instead (ADR-033). On native it stays a
+// regular `Resource`. The `egui_pass` accessor and its registration mirror this.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Resource))]
+#[derive(Default)]
 pub struct EguiWgpuRenderer(
     pub Mutex<Option<(egui_wgpu::Renderer, TextureFormat, u32, Option<u64>)>>,
 );
@@ -229,7 +242,13 @@ impl Plugin for EguiPlugin {
             return;
         };
 
-        render_app.init_resource::<EguiWgpuRenderer>().add_systems(
+        #[cfg(not(target_arch = "wasm32"))]
+        render_app.init_resource::<EguiWgpuRenderer>();
+        #[cfg(target_arch = "wasm32")]
+        render_app
+            .world_mut()
+            .init_non_send::<EguiWgpuRenderer>();
+        render_app.add_systems(
             Core3d,
             // Draw egui AFTER upscaling, onto the final presented output — a stable,
             // single-sampled, sRGB swapchain texture. Drawing before upscaling (on the
@@ -512,7 +531,8 @@ pub fn end_egui_frame(
 pub fn egui_pass(
     view: ViewQuery<&'static ViewTarget>,
     render_data: Res<EguiRenderOutput>,
-    egui_renderer_res: Res<EguiWgpuRenderer>,
+    #[cfg(not(target_arch = "wasm32"))] egui_renderer_res: Res<EguiWgpuRenderer>,
+    #[cfg(target_arch = "wasm32")] egui_renderer_res: bevy::ecs::system::NonSend<EguiWgpuRenderer>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     mut render_context: RenderContext,
