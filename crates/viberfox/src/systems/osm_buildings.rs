@@ -47,7 +47,7 @@ pub(crate) const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
 
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
-/// load — see `meta/guides/server.md`). Override with `VIBE_OVERPASS_URL`, e.g.
+/// load — see `docs/guides/server.md`). Override with `VIBE_OVERPASS_URL`, e.g.
 /// the public `https://overpass-api.de/api/interpreter`.
 const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter";
 
@@ -529,53 +529,59 @@ pub fn update_buildings(
         let (d_north, d_west) = tile_to_lat_lng(center.0 - rd, center.1 - rd, z);
         let (d_south, d_east) = tile_to_lat_lng(center.0 + rd + 1, center.1 + rd + 1, z);
 
-        // Everything below runs on the worker: the Overpass fetch AND the mesh
-        // building (merging thousands of extrusions into shared vertex buffers
-        // used to hitch the main thread for a frame). Vertices are relative to
-        // the patch's BigSpace cell so f32 stays precise at any range.
+        // The fetch is awaited on the task pool; the parse and the mesh build
+        // (merging thousands of extrusions into shared vertex buffers) go to
+        // `platform::workers`. This comment used to claim all of it already ran
+        // "on the worker" — it did not, and that was the bug: `IoTaskPool` is the
+        // main thread on wasm, so the hitch it describes was every frame, not an
+        // occasional one. Vertices stay relative to the patch's BigSpace cell so
+        // f32 remains precise at any range.
         let (patch_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
         IoTaskPool::get().spawn(async move {
-            let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
-            let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-            let result = fetch_patch(d_south, d_west, d_north, d_east).await.map(|buildings| {
-                // Deduped: with consistent windings the fan-triangulated flat caps
-                // and shared footprint corners collapse to one vertex each.
-                let mut bld = MeshData::with_dedup();
-                let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
-                for b in &buildings {
-                    let ring: Vec<Vec2> = b
-                        .ring
-                        .iter()
-                        .map(|&(la, lo)| {
-                            let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
-                            Vec2::new(w.x - cell_ox, w.y - cell_oz)
-                        })
-                        .collect();
-                    push_building(
-                        &mut bld,
-                        &mut wins,
-                        b.id as u64,
-                        &ring,
-                        b.height_m,
-                        b.height_is_eaves,
-                        b.wall_color,
-                        b.roof_color,
-                        b.roof_shape,
-                        b.roof_height,
-                        b.roof_across,
-                    );
+            let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
+            crate::platform::workers::submit(Box::new(move || {
+                let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
+                let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
+                let result = Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east)).map(|buildings| {
+                    // Deduped: with consistent windings the fan-triangulated flat caps
+                    // and shared footprint corners collapse to one vertex each.
+                    let mut bld = MeshData::with_dedup();
+                    let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+                    for b in &buildings {
+                        let ring: Vec<Vec2> = b
+                            .ring
+                            .iter()
+                            .map(|&(la, lo)| {
+                                let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                                Vec2::new(w.x - cell_ox, w.y - cell_oz)
+                            })
+                            .collect();
+                        push_building(
+                            &mut bld,
+                            &mut wins,
+                            b.id as u64,
+                            &ring,
+                            b.height_m,
+                            b.height_is_eaves,
+                            b.wall_color,
+                            b.roof_color,
+                            b.roof_shape,
+                            b.roof_height,
+                            b.roof_across,
+                        );
+                    }
+                    BuiltPatch {
+                        buildings,
+                        patch_cell,
+                        detail: bld.into_mesh(),
+                        windows: wins.map(MeshData::into_mesh),
+                    }
+                });
+                if let Ok(mut g) = slot.lock() {
+                    *g = Some(result);
                 }
-                BuiltPatch {
-                    buildings,
-                    patch_cell,
-                    detail: bld.into_mesh(),
-                    windows: wins.map(MeshData::into_mesh),
-                }
-            });
-            if let Ok(mut g) = slot.lock() {
-                *g = Some(result);
-            }
+            }));
         })
         .detach();
     }
@@ -624,11 +630,25 @@ pub fn update_buildings(
         let results = osm.far_results.clone();
         while let Some((cx, cy)) = osm.far_dispatch.next(now_secs) {
             let results = results.clone();
+            // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
+            // on wasm `IoTaskPool` is the main thread, so this whole thing used to
+            // run on the frame loop.
             IoTaskPool::get()
                 .spawn(async move {
-                    let built = build_far_cell(cx, cy, ax, ay, z, lat).await;
-                    if let Ok(mut g) = results.lock() {
-                        g.push(((cx, cy), built));
+                    match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
+                        Ok(text) => {
+                            crate::platform::workers::submit(Box::new(move || {
+                                let built = build_far_from_text(&text, cx, cy, ax, ay, z, lat);
+                                if let Ok(mut g) = results.lock() {
+                                    g.push(((cx, cy), built));
+                                }
+                            }));
+                        }
+                        Err(e) => {
+                            if let Ok(mut g) = results.lock() {
+                                g.push(((cx, cy), Err(e)));
+                            }
+                        }
                     }
                 })
                 .detach();
@@ -803,7 +823,11 @@ type FarCellBuild = (GridCell, Mesh, [Option<Mesh>; 4]);
 /// (buildings + windows), anchored to the cell's own BigSpace grid cell for f32
 /// precision. Runs on the far-cell worker thread. Returns `None` for cells with
 /// no buildings.
-async fn build_far_cell(
+/// The CPU half of a far cell: response text in, meshes out. Pure and owned, so
+/// it is `Send` and runs on `platform::workers` rather than on the thread that
+/// renders — see `build_lod22_from_text` for the measurement that motivated it.
+fn build_far_from_text(
+    text: &str,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -811,7 +835,7 @@ async fn build_far_cell(
     z: u32,
     lat: f64,
 ) -> Result<Option<FarCellBuild>, String> {
-    let buildings = fetch_cell(cx, cy, CACHE_ZOOM).await?;
+    let buildings = parse_buildings(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, CACHE_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -1645,25 +1669,39 @@ fn cell_cache_key(cx: i64, cy: i64, zoom: u32) -> String {
 /// Assemble a patch's buildings from the fixed CACHE_ZOOM cells covering its bbox:
 /// each cell is served from disk cache or fetched once, then deduped by OSM way id
 /// (a building straddling a cell edge is returned by both cells).
-async fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Building>, String> {
+/// The network half: every covering cell's response text, nothing parsed.
+async fn fetch_patch_texts(south: f64, west: f64, north: f64, east: f64) -> Vec<String> {
     // NW corner → min tile (x,y); SE corner → max tile (y grows southward).
     let (cx0, cy0) = lat_lng_to_tile(north, west, CACHE_ZOOM);
     let (cx1, cy1) = lat_lng_to_tile(south, east, CACHE_ZOOM);
 
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    let mut texts = Vec::new();
     for cy in cy0..=cy1 {
         for cx in cx0..=cx1 {
-            match fetch_cell(cx, cy, CACHE_ZOOM).await {
-                Ok(cell) => {
-                    for b in cell {
-                        if seen.insert(b.id) {
-                            out.push(b);
-                        }
-                    }
-                }
+            match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
+                Ok(text) => texts.push(text),
                 Err(e) => tracing::warn!(cx, cy, error = %e, "building cell fetch failed"),
             }
+        }
+    }
+    texts
+}
+
+/// The CPU half: parse each cell, dedupe by OSM way id (a building straddling a
+/// cell edge is returned by both cells), and clip to the requested bbox.
+fn parse_patch(texts: &[String], south: f64, west: f64, north: f64, east: f64) -> Vec<Building> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for text in texts {
+        match parse_buildings(text) {
+            Ok(cell) => {
+                for b in cell {
+                    if seen.insert(b.id) {
+                        out.push(b);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "building cell parse failed"),
         }
     }
     // The cache cells are coarser than the patch; keep only buildings whose first
@@ -1672,23 +1710,43 @@ async fn fetch_patch(south: f64, west: f64, north: f64, east: f64) -> Result<Vec
         let (lat, lng) = b.ring[0];
         lat >= south && lat <= north && lng >= west && lng <= east
     });
-    Ok(out)
+    out
 }
 
 /// One fixed cell's buildings. Covered cells (ADR-027) come from the self-hosted
 /// 3DBAG host (real Dutch BAG heights); everything else — and any 3DBAG miss (a
 /// 404 or transport error) — falls back to Overpass/OSM. Both paths return the
 /// same `Building` shape via `parse_buildings`.
-async fn fetch_cell(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+async fn fetch_cell_text(cx: i64, cy: i64, zoom: u32) -> Result<String, String> {
     if zoom == CACHE_ZOOM && tdbag_covers(cx, cy) {
-        match fetch_cell_3dbag(cx, cy).await {
-            Ok(buildings) => return Ok(buildings),
+        match fetch_cell_3dbag_text(cx, cy).await {
+            Ok(text) => return Ok(text),
             Err(e) => {
                 tracing::debug!(cx, cy, error = %e, "3DBAG cell fetch failed; falling back to OSM");
             }
         }
     }
-    fetch_cell_overpass(cx, cy, zoom).await
+    fetch_cell_overpass_text(cx, cy, zoom).await
+}
+
+/// Overpass reports timeouts, rate limits and runtime errors as HTTP 200 with a
+/// `remark` field, so a response has to be checked before it is cached or it is
+/// remembered as a permanently-empty cell.
+///
+/// The check deserialises *only* that field. `parse_buildings` would answer the
+/// same question, but it builds a `serde_json::Value` tree of the entire response
+/// to do it, and that tree — specifically dropping it — was the single largest
+/// entry in the web build's main-thread profile. Serde skips `elements` here
+/// without allocating, which keeps validate-before-persist on the network half
+/// while the real parse moves to a worker.
+#[derive(serde::Deserialize)]
+struct OverpassRemark {
+    #[serde(default)]
+    remark: Option<String>,
+}
+
+fn overpass_remark(text: &str) -> Option<String> {
+    serde_json::from_str::<OverpassRemark>(text).ok()?.remark
 }
 
 /// On-disk cache path for a 3DBAG cell — namespaced apart from the Overpass cache
@@ -1702,35 +1760,35 @@ fn cell_cache_key_3dbag(cx: i64, cy: i64) -> String {
 /// host serves Overpass-shaped JSON, so `parse_buildings` handles it unchanged. A
 /// 404 (cell not actually covered) or any transport error is returned as `Err`,
 /// letting the caller fall back to Overpass.
-async fn fetch_cell_3dbag(cx: i64, cy: i64) -> Result<Vec<Building>, String> {
+async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key_3dbag(cx, cy);
     if let Some(cached) = storage::get_string(&key).await {
-        match parse_buildings(&cached) {
-            Ok(buildings) => return Ok(buildings),
-            // Truncated/partial cached write — drop it and re-fetch.
-            Err(_) => storage::remove(&key).await,
-        }
+        return Ok(cached);
     }
     let url = format!("{}/buildings/{}/{}/{}.json", tdbag_url(), CACHE_ZOOM, cx, cy);
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    let buildings = parse_buildings(&text)?;
+    // No validating parse here, unlike the Overpass path: this is our own static
+    // host with no 200-status error channel to guard against, and a truncated
+    // cache entry is caught when the worker fails to parse it (the caller then
+    // evicts the key). Parsing on this thread is the cost being removed.
     storage::put(&key, text.as_bytes()).await;
-    Ok(buildings)
+    Ok(text)
 }
 
 /// One fixed cell's buildings from disk cache or a single Overpass query (cached).
 /// Cache hits skip the network (and the throttle) entirely.
-async fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building>, String> {
+async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String, String> {
     let key = cell_cache_key(cx, cy, zoom);
     if let Some(cached) = storage::get_string(&key).await {
-        match parse_buildings(&cached) {
-            Ok(buildings) => return Ok(buildings),
-            // A cached file that no longer parses — a truncated write, or a stale
-            // `remark`/error body cached before validate-on-write existed. Drop it
-            // and re-fetch rather than failing this cell forever.
-            Err(e) => {
-                tracing::warn!(key, error = %e, "re-fetching unparseable cached cell");
+        // A stale `remark`/error body cached before validate-on-write existed is
+        // still worth catching, and costs nothing to check. A truncated write is
+        // not caught here any more — the worker's parse fails and the caller
+        // evicts the key, which is the same outcome one frame later.
+        match overpass_remark(&cached) {
+            None => return Ok(cached),
+            Some(remark) => {
+                tracing::warn!(key, %remark, "re-fetching cached Overpass error body");
                 storage::remove(&key).await;
             }
         }
@@ -1750,9 +1808,11 @@ async fn fetch_cell_overpass(cx: i64, cy: i64, zoom: u32) -> Result<Vec<Building
     // Validate *before* persisting: `parse_buildings` rejects a `remark` response
     // (Overpass's 200-status error channel), so a transient timeout is never cached
     // as a permanently-empty cell.
-    let buildings = parse_buildings(&fetched)?;
+    if let Some(remark) = overpass_remark(&fetched) {
+        return Err(format!("Overpass remark: {}", remark.trim()));
+    }
     storage::put(&key, fetched.as_bytes()).await;
-    Ok(buildings)
+    Ok(fetched)
 }
 
 /// POST an Overpass query, retrying a couple of times with backoff on failure
