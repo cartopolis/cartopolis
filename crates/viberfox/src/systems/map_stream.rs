@@ -24,7 +24,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::tile_loader::load_tile_rgba;
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 use vibe_core::TileKey;
 
@@ -280,36 +279,56 @@ fn spawn_map_tile(
     results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
     live_gen: Arc<AtomicU32>,
 ) {
+    // Two halves on two kinds of executor (ADR-033): the fetch is awaited here on
+    // the `IoTaskPool` — on wasm that is the main thread, but awaiting a browser
+    // fetch costs it nothing — while the decode + mip chain, which is pure
+    // arithmetic and *does* cost a core, is handed to `platform::workers`. Doing
+    // the decode inline is what made the web build fill the map at a crawl.
     IoTaskPool::get()
         .spawn(async move {
-            let decoded = if gen != live_gen.load(Ordering::Relaxed) {
+            if gen != live_gen.load(Ordering::Relaxed) {
                 // Stale (re-anchored while queued); insert a miss so `requested`
                 // clears and a still-wanted tile re-queues on the fresh anchor.
-                None
-            } else {
-                match load_tile_rgba(&key, &template).await {
-                    Ok(rgba) => {
-                        let (width, height) = (rgba.width(), rgba.height());
-                        let (data, mip_count) = crate::systems::rendering::build_mip_chain(
-                            width,
-                            height,
-                            rgba.into_raw(),
-                        );
-                        Some(DecodedTile {
-                            data,
-                            width,
-                            height,
-                            mip_count,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
-                        None
+                if let Ok(mut g) = results.lock() {
+                    g.insert(key, None);
+                }
+                return;
+            }
+            match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
+                Ok(payload) => {
+                    crate::platform::workers::submit(Box::new(move || {
+                        let decoded = match payload.decode() {
+                            Ok(rgba) => {
+                                let (width, height) = (rgba.width(), rgba.height());
+                                let (data, mip_count) =
+                                    crate::systems::rendering::build_mip_chain(
+                                        width,
+                                        height,
+                                        rgba.into_raw(),
+                                    );
+                                Some(DecodedTile {
+                                    data,
+                                    width,
+                                    height,
+                                    mip_count,
+                                })
+                            }
+                            Err(e) => {
+                                tracing::warn!(tile = %key.to_path(), error = %e, "map tile decode failed");
+                                None
+                            }
+                        };
+                        if let Ok(mut g) = results.lock() {
+                            g.insert(key, decoded);
+                        }
+                    }));
+                }
+                Err(e) => {
+                    tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
+                    if let Ok(mut g) = results.lock() {
+                        g.insert(key, None);
                     }
                 }
-            };
-            if let Ok(mut g) = results.lock() {
-                g.insert(key, decoded);
             }
         })
         .detach();
@@ -529,11 +548,33 @@ pub fn apply_stream_textures(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     tiles: Query<(Entity, &StreamTile), Without<StreamTileReady>>,
+    time: Res<Time>,
+    mut next_report: Local<f64>,
 ) {
     let results_arc = stream.results.clone();
     let Ok(mut results) = results_arc.lock() else {
         return;
     };
+
+    // Decode and upload run on different clocks now (worker pool vs. the render
+    // frame), so "the map is filling slowly" has two very different causes and the
+    // fix differs: a small `decoded` backlog with tiles still awaiting means the
+    // CPU side is behind, while a large backlog means uploads are — capped at
+    // MAX_UPLOADS_PER_FRAME *per frame*, so a slow frame rate throttles the map
+    // even when every tile has long since decoded. Reporting one number could not
+    // tell those apart, and guessing wrong sent us optimising the wrong half.
+    // Throttle on the clock, not on a frame count: the whole point is to diagnose a
+    // build whose frames are seconds long, where "every N frames" is minutes apart.
+    let now = time.elapsed_secs_f64();
+    if now >= *next_report {
+        *next_report = now + 2.0;
+        tracing::info!(
+            decoded_pending = results.len(),
+            awaiting_upload = tiles.iter().count(),
+            loaded = stream.loaded.len(),
+            "tile fill"
+        );
+    }
     // Drop results for tiles that were retired before their fetch landed. Nobody
     // will ever consume them (the entity is gone) and they hold a full decoded mip
     // chain each, so roaming would grow this map without bound. A tile re-entering

@@ -191,14 +191,50 @@ pub async fn load_tile_image(key: &TileKey, template: &str) -> Result<Vec<u8>, S
 /// [`vector_tiles::MAX_SOURCE_ZOOM`] fetches the z14 ancestor and renders the
 /// matching sub-rectangle, so the streamer's z15–z17 requests keep working against
 /// a source that stops at z14.
-pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::RgbaImage, String> {
+/// A fetched tile body, still undecoded, tagged with what it turned out to be.
+///
+/// This is the seam between the two halves of tile loading, and they want
+/// different machinery. Fetching is I/O the browser already runs off the main
+/// thread; decoding is arithmetic that needs a core of its own (ADR-033). Holding
+/// only owned bytes plus a `Copy` sub-tile keeps the payload `Send`, so
+/// [`TilePayload::decode`] can be handed to [`platform::workers`] verbatim.
+///
+/// [`platform::workers`]: crate::platform::workers
+pub enum TilePayload {
+    /// An encoded image (PNG/JPEG/WebP) — either a raster source, or a vector
+    /// template that answered with an image anyway (see `looks_like_raster`).
+    Raster(Vec<u8>),
+    /// A Mapbox Vector Tile plus the sub-rectangle of it we actually want.
+    Vector {
+        bytes: Vec<u8>,
+        sub: crate::systems::vector_tiles::SubTile,
+    },
+}
+
+impl TilePayload {
+    /// The CPU half: parse/rasterise into RGBA. Pure computation — no I/O, no
+    /// globals — which is what lets it run on a worker.
+    pub fn decode(self) -> Result<image::RgbaImage, String> {
+        use crate::systems::vector_tiles;
+        match self {
+            TilePayload::Raster(bytes) => image::load_from_memory(&bytes)
+                .map(|img| img.to_rgba8())
+                .map_err(|e| e.to_string()),
+            TilePayload::Vector { bytes, sub } => {
+                let rgba = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
+                image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
+                    .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
+            }
+        }
+    }
+}
+
+/// The network half: fetch the tile body and classify it, decoding nothing.
+pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePayload, String> {
     use crate::systems::vector_tiles;
 
     if tile_source_kind(template) == TileSourceKind::Raster {
-        let bytes = load_tile_image(key, template).await?;
-        return image::load_from_memory(&bytes)
-            .map(|img| img.to_rgba8())
-            .map_err(|e| e.to_string());
+        return Ok(TilePayload::Raster(load_tile_image(key, template).await?));
     }
 
     let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
@@ -208,14 +244,14 @@ pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::Rgba
     // Backstop for a misclassified template (see `tile_source_kind`): if the body
     // is actually an image, decode it and skip the overzoom entirely.
     if vector_tiles::looks_like_raster(&bytes) {
-        return image::load_from_memory(&bytes)
-            .map(|img| img.to_rgba8())
-            .map_err(|e| e.to_string());
+        return Ok(TilePayload::Raster(bytes));
     }
 
-    let rgba = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
-    image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
-        .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
+    Ok(TilePayload::Vector { bytes, sub })
+}
+
+pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::RgbaImage, String> {
+    fetch_tile_payload(key, template).await?.decode()
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -284,17 +320,22 @@ pub async fn load_globe_tile_rgba(
 /// Classify water by colour into the alpha channel, for basemaps that arrive as
 /// pixels. Soft-edged (a ramp, not a threshold) so coastlines blend.
 fn paint_water_alpha_by_colour(rgba: &mut image::RgbaImage) {
-    for px in rgba.pixels_mut() {
-        let (r, b) = (f32::from(px.0[0]), f32::from(px.0[2]));
-        let water = ((b - r - WATER_BLUE_BIAS) / WATER_BLUE_RANGE).clamp(0.0, 1.0);
-        px.0[3] = (water * 255.0) as u8;
+    // Integer throughout, on a flat byte slice. The inputs are `u8`, so `b - r`
+    // and the ramp are exact in integers and the `f32` round trip bought nothing
+    // — but it did cost the vectoriser: a per-pixel widen, divide and `clamp`
+    // over an `RgbaImage` pixel iterator will not lower to a SIMD loop, while
+    // this does (~2.5x, and it is the whole cost of a raster globe tile).
+    for px in rgba.chunks_exact_mut(4) {
+        let excess = i32::from(px[2]) - i32::from(px[0]) - WATER_BLUE_BIAS;
+        let ramp = excess.clamp(0, WATER_BLUE_RANGE);
+        px[3] = ((ramp * 255) / WATER_BLUE_RANGE) as u8;
     }
 }
 
 /// How much bluer than red a texel must be before it counts as water at all.
-const WATER_BLUE_BIAS: f32 = 10.0;
+const WATER_BLUE_BIAS: i32 = 10;
 /// The span over which that excess ramps up to fully water.
-const WATER_BLUE_RANGE: f32 = 30.0;
+const WATER_BLUE_RANGE: i32 = 30;
 
 /// System to load OSM tiles for regions.
 ///
@@ -390,6 +431,25 @@ pub struct RegionTileTexture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The water ramp was rewritten from `f32` into integers so it would
+    /// vectorise. Both channels are bytes, so the domain is small enough to
+    /// simply check the whole of it: every `(red, blue)` pair must land on the
+    /// alpha the float version produced, or coastlines move.
+    #[test]
+    fn integer_water_ramp_matches_the_float_one() {
+        for r in 0..=255u8 {
+            for b in 0..=255u8 {
+                let want = {
+                    let (rf, bf) = (f32::from(r), f32::from(b));
+                    ((((bf - rf - 10.0) / 30.0).clamp(0.0, 1.0)) * 255.0) as u8
+                };
+                let mut img = image::RgbaImage::from_pixel(1, 1, image::Rgba([r, 0, b, 0]));
+                paint_water_alpha_by_colour(&mut img);
+                assert_eq!(img.get_pixel(0, 0).0[3], want, "red {r}, blue {b}");
+            }
+        }
+    }
 
     #[test]
     fn classifies_raster_and_vector_templates() {

@@ -64,6 +64,11 @@ const MAX_DESPAWNS_PER_FRAME: usize = 4;
 /// A z14 cell coordinate (absolute Web Mercator tile x/y at [`GEOMETRY_ZOOM`]).
 type Cell = (i64, i64);
 
+/// Max concurrent tessellation tasks. Small so single-threaded wasm spreads the
+/// heavy per-tile work (MVT decode + earcut + road raster + vegetation) across
+/// frames instead of freezing on a 400-tile burst; native threads it anyway.
+const SURFACE_MAX_IN_FLIGHT: usize = 4;
+
 /// A finished tessellation (`None` = fetch or tessellation failed), plus the
 /// cell's distance-to-shore field when it holds any water (`systems::water`).
 type Tessellated = (Cell, Option<Vec<SurfaceMesh>>, Option<ShoreField>);
@@ -83,6 +88,11 @@ pub struct MapSurfaces {
     despawn_queue: Vec<Entity>,
     /// Finished tessellations, drained on the main thread.
     results: Arc<Mutex<Vec<Tessellated>>>,
+    /// Tessellation tasks spawned but not yet drained. Bounded to
+    /// [`SURFACE_MAX_IN_FLIGHT`] so a burst of cells doesn't spawn hundreds of heavy
+    /// earcut/raster tasks at once — which, on single-threaded wasm (no worker
+    /// threads), stalls the frame loop. ADR-033.
+    in_flight: usize,
     /// One material per surface group, created on first use.
     materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
     /// Anchor generation these cells belong to; a re-anchor clears everything.
@@ -177,6 +187,9 @@ impl MapSurfaces {
             self.despawn_queue.extend(entities);
         }
         self.requested.clear();
+        // In-flight tasks push to the (retained) results and drain harmlessly next
+        // frame; reset the count so the new anchor starts with a full slot budget.
+        self.in_flight = 0;
     }
 }
 
@@ -262,12 +275,18 @@ pub fn update_map_surfaces(
         surfaces.requested.remove(&c);
     }
 
-    // 2. Queue cells not yet fetched as detached tessellation tasks.
+    // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
+    // SURFACE_MAX_IN_FLIGHT concurrent. Unqueued cells are re-evaluated next frame as
+    // slots free (the `requested` set already de-dups), so nothing is dropped.
     for c in &wanted {
+        if surfaces.in_flight >= SURFACE_MAX_IN_FLIGHT {
+            break;
+        }
         if surfaces.loaded.contains_key(c) || surfaces.requested.contains(c) {
             continue;
         }
         surfaces.requested.insert(*c);
+        surfaces.in_flight += 1;
         spawn_geometry_task(*c, tile_m, template.clone(), surfaces.results.clone());
     }
 
@@ -279,6 +298,8 @@ pub fn update_map_surfaces(
         let n = guard.len().min(MAX_BUILDS_PER_FRAME);
         guard.drain(..n).collect()
     };
+    // Each drained result is one finished task — free its concurrency slot.
+    surfaces.in_flight = surfaces.in_flight.saturating_sub(ready.len());
     for (c, outcome, shore) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
