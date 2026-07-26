@@ -28,11 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: https://github.com/Swatinem/rust-cache@v2
-      # Libs + bins across the workspace. Not --all-targets: that pulls in the
-      # vendored big_space fork's test/bench targets, which reference the `bevy`
-      # umbrella crate (not a dep) and don't compile — a normal build never
-      # touches them, and build-test already compiles viberfox's own tests.
-      - run: cargo check --workspace
+      # `--all-targets` now that the vendored big_space fork's test target
+      # compiles again (it gained the `bevy` dev-dependency the vendor drop had
+      # removed), so its tests are type-checked here rather than rotting unseen.
+      - run: cargo check --workspace --all-targets
 
   build-test:
     name: build & test viberfox
@@ -42,5 +41,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: https://github.com/Swatinem/rust-cache@v2
+      # `.cargo/config.toml` builds x86_64 at `target-cpu=x86-64-v3` (AVX2+FMA)
+      # to light up the SIMD already present in tiny-skia and the pixel loops.
+      # Cross-compiling to it is always fine, but this job *runs* what it builds,
+      # so a runner older than Haswell would die on an illegal instruction
+      # somewhere deep in a test. Fail here instead, with a legible reason.
+      - name: Runner supports the x86-64-v3 baseline
+        run: |
+          grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo || {
+            echo "::error::Runner CPU lacks AVX2/FMA, but .cargo/config.toml builds for x86-64-v3."
+            echo "Either move the runner to newer hardware or drop the target-cpu flag."
+            exit 1
+          }
       # `cargo test` compiles the crate and runs its tests in one pass.
       - run: cargo test -p viberfox --bin viberfox
+      # The vendored fork carries the floating-origin correctness tests; they are
+      # the reason a `big_space` change can be trusted at all.
+      - run: cargo test -p big_space --lib
