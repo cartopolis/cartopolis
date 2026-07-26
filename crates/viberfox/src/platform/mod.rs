@@ -12,3 +12,4 @@
 pub mod http;
 pub mod storage;
 pub mod work;
+pub mod workers;
