@@ -63,6 +63,22 @@ bevy_input = { version = "0.19.0", default-features = false, optional = true }
 bevy_time = { version = "0.19.0", default-features = false, optional = true }
 libm = { version = "0.2", default-features = false, optional = true }
 
+# The vendor drop removed upstream's dev-dependencies along with its examples and
+# benches, which silently took the crate's own test suite with it — every
+# `mod tests` in here reaches for `bevy::prelude`, so `cargo test -p big_space`
+# stopped compiling entirely. The umbrella crate is already built for the
+# workspace, so depending on it here costs no extra build.
+[dev-dependencies]
+# Deliberately not `workspace = true`: that profile carries `bevy_winit`, whose
+# platform backend is selected per-target in viberfox's own manifest, so it will
+# not build from here. The tests need the ECS, an `App` to run it in, and
+# `Visibility` — nothing that opens a window.
+bevy = { version = "0.19", default-features = false, features = [
+    "bevy_render",
+    "async_executor",
+    "std",
+] }
+
 [lints.clippy]
 doc_markdown = "warn"
 manual_let_else = "warn"
