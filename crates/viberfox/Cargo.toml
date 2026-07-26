@@ -133,7 +133,30 @@ getrandom = { version = "0.2", features = ["js"] }
 # Read the page's query string, which is where `env_flag` gets its switches on a
 # platform with no environment (ADR-033). Already in the graph via bevy/wgpu, so
 # naming it here costs no build time — only these three features.
-web-sys = { version = "0.3", features = ["Window", "Location", "UrlSearchParams"] }
+# `Navigator`/`Geolocation*`/`PositionOptions` are the device-location seam
+# (`platform::location`), which driver mode uses on the web; `Clipboard` is the
+# copy half of `utils::clipboard` (the paste half can't use it — see that
+# module); the rest read the page's query string.
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Location",
+    "UrlSearchParams",
+    "Navigator",
+    "Clipboard",
+    "Geolocation",
+    "GeolocationPosition",
+    "GeolocationCoordinates",
+    "GeolocationPositionError",
+    "PositionOptions",
+] }
+# Await the `writeText` promise so a rejected clipboard write is logged rather
+# than left as an unhandled rejection (`utils::clipboard`). Already in the graph
+# under bevy — naming it here only makes the import legal.
+wasm-bindgen-futures = "0.4"
+# `Closure`, to hand `watchPosition` a Rust callback it can keep calling
+# (`platform::location`). Already in the graph under web-sys; named here for the
+# import.
+wasm-bindgen = "0.2"
 # jiff (timezone/local-time) needs its `js` backend on wasm — `Timestamp::now()`
 # otherwise panics ("current time not possible with just std"). ADR-033.
 jiff = { version = "0.2.34", features = ["js"] }

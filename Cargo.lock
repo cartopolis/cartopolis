@@ -6946,6 +6946,8 @@ dependencies = [
  "uuid",
  "vibe_core",
  "vibe_sim",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm_thread",
  "web-sys",
  "web-time",
