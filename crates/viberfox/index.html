@@ -194,6 +194,29 @@
       }
       #loader[data-state="failed"] #bar { background: #e88b7d; animation: none; }
       #loader[data-state="failed"] #status { color: #e88b7d; }
+      #checks {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        width: min(30rem, 90vw);
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #checks li { display: flex; gap: 0.6rem; align-items: baseline; }
+      /* Fixed-width mark so the labels line up while rows are still settling. */
+      #checks .mark { flex: none; width: 1ch; text-align: center; color: #6d818b; }
+      #checks .label { flex: none; }
+      #checks .note { color: #6d818b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* No green in the brand palette (systems::theme has no success colour), so
+         "passed" is just ordinary text — the eye is meant to catch the failures. */
+      #checks li[data-ok="yes"] .mark { color: #dce6e8; }
+      #checks li[data-ok="warn"] .mark,
+      #checks li[data-ok="warn"] .note { color: #d8c07a; }
+      #checks li[data-ok="no"] .mark,
+      #checks li[data-ok="no"] .note,
+      #checks li[data-ok="no"] .label { color: #e88b7d; }
       #bootlog {
         width: min(64rem, 100%);
         height: 9rem;
@@ -217,8 +240,134 @@
     <div id="loader" data-state="loading">
       <div id="track"><div id="bar"></div></div>
       <div id="status">Downloading engine…</div>
+      <ul id="checks"></ul>
       <pre id="bootlog"></pre>
     </div>
+    <script>
+      // Sanity checks, run in parallel with the download.
+      //
+      // The `navigator.gpu` gate in <head> is a *pre-download* abort, and its own
+      // comment explains why it can only ever answer "is there a WebGPU API at
+      // all": awaiting anything there hands control back to the parser, which is
+      // the one thing it must not do. These run after the parse, so they can await
+      // — which is what the questions that actually matter require. Is there an
+      // adapter behind the API? Did the asset tree ship next to the page? Will the
+      // tile decode get real cores? On a phone with no console, this list is the
+      // whole diagnosis.
+      //
+      // A failure here is reported, not acted on: `window.stop()` would abort the
+      // in-flight module fetch and save the transfer, but trunk's own `onFailure`
+      // would then overwrite the explanation with the resulting fetch abort — a
+      // worse message for a better bandwidth bill.
+      (function () {
+        var CHECKS = [
+          {
+            label: "GPU adapter",
+            // The only fatal one. `navigator.gpu` present with nothing behind it
+            // is exactly the case the <head> gate cannot catch, and wgpu reports
+            // it as `canvas.getContext() returned null` from deep inside
+            // bevy_render — a canvas-shaped lie, arriving after 70 MB.
+            fatal: true,
+            run: async function () {
+              if (!navigator.gpu) return { ok: "no", note: "navigator.gpu missing" };
+              var adapter = await navigator.gpu.requestAdapter();
+              if (!adapter) return { ok: "no", note: "WebGPU present, no compatible adapter" };
+              // `adapter.info` is the current spec; `requestAdapterInfo()` is the
+              // older async spelling still shipping in some browsers. Either may
+              // report empty strings — the fields are privacy-gated, not missing.
+              var info = adapter.info ||
+                (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : null);
+              var desc = info && [info.vendor, info.architecture].filter(Boolean).join(" ");
+              return { ok: "yes", note: desc || "available" };
+            },
+          },
+          {
+            label: "Asset tree",
+            // Trunk copies `assets/` next to the page (`rel="copy-dir"`) and Bevy
+            // loads from that root. When the copy is missing the first symptom is
+            // a shader that never compiles, seconds later and nowhere near the
+            // cause. A text asset, deliberately: the binaries here are LFS-tracked
+            // and a pointer file would still answer 200.
+            run: async function () {
+              var r = await fetch("assets/shaders/water.wgsl", { cache: "no-store" });
+              if (!r.ok) return { ok: "no", note: "assets/ → HTTP " + r.status };
+              var head = (await r.text()).slice(0, 200);
+              if (head.indexOf("git-lfs") !== -1) {
+                return { ok: "no", note: "LFS pointer, not the asset — `git lfs pull`" };
+              }
+              return { ok: "yes", note: "reachable" };
+            },
+          },
+          {
+            label: "Worker threads",
+            // Not fatal — the single-threaded build is a supported target. But
+            // without shared memory `platform::workers` puts every tile decode on
+            // the main thread, between animation frames, and the map fills in at a
+            // crawl rather than not at all. That is worth naming before someone
+            // reports it as a performance bug.
+            run: async function () {
+              if (typeof SharedArrayBuffer === "undefined" || !self.crossOriginIsolated) {
+                return { ok: "warn", note: "single-threaded — no cross-origin isolation (COOP/COEP)" };
+              }
+              return { ok: "yes", note: (navigator.hardwareConcurrency || "?") + " cores" };
+            },
+          },
+          {
+            label: "Heap reservation",
+            // The boot failures on small devices are memory, not code: the module
+            // reserves a large 32-bit heap during instantiation, before any Rust
+            // logger exists, so a device that cannot back it fails silently. 256
+            // MiB is well under what the engine asks for, which makes a failure
+            // here conclusive and a pass merely encouraging — hence the wording.
+            run: async function () {
+              try {
+                var m = new WebAssembly.Memory({ initial: 4096 }); // 4096 × 64 KiB
+                m = null;
+                return { ok: "yes", note: "256 MiB probe reserved" };
+              } catch (e) {
+                return { ok: "warn", note: "could not reserve 256 MiB — the engine needs more" };
+              }
+            },
+          },
+        ];
+
+        var list = document.getElementById("checks");
+        CHECKS.forEach(function (check) {
+          var li = document.createElement("li");
+          li.dataset.ok = "pending";
+          ["mark", "label", "note"].forEach(function (cls) {
+            var span = document.createElement("span");
+            span.className = cls;
+            li.appendChild(span);
+          });
+          li.querySelector(".mark").textContent = "·";
+          li.querySelector(".label").textContent = check.label;
+          li.querySelector(".note").textContent = "checking…";
+          list.appendChild(li);
+
+          // Each check settles on its own; a slow adapter query must not hold up
+          // the asset fetch, and neither may reject into the boot recorder's
+          // `unhandledrejection` hook and fail the whole boot on its own.
+          Promise.resolve()
+            .then(check.run)
+            .catch(function (e) {
+              return { ok: check.fatal ? "no" : "warn", note: String((e && e.message) || e) };
+            })
+            .then(function (r) {
+              li.dataset.ok = r.ok;
+              li.querySelector(".mark").textContent =
+                { yes: "✓", warn: "!", no: "✕" }[r.ok] || "·";
+              li.querySelector(".note").textContent = r.note;
+              if (r.ok === "no" && check.fatal) {
+                window.__boot.failed = true;
+                var s = document.getElementById("status");
+                if (s) s.textContent = "Can't run here — " + check.label + ": " + r.note;
+                document.getElementById("loader").dataset.state = "failed";
+              }
+            });
+        });
+      })();
+    </script>
     <script>
       (function () {
         var loader = document.getElementById("loader");

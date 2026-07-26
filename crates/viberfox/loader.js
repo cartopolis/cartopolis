@@ -12,7 +12,13 @@
 // inventing a percentage it cannot know.
 export default function initializer() {
   const el = (id) => document.getElementById(id);
-  const set = (state, text) => {
+  // `force` is what keeps a diagnosis on screen. The sanity checks in index.html
+  // run concurrently with the transfer, so a fatal one (no GPU adapter) lands
+  // mid-download and the very next `onProgress` tick — a few hundred ms later —
+  // would paint "Downloading engine… 41.2 MB" back over it. Once the boot has
+  // failed, only the failure path may write here.
+  const set = (state, text, force) => {
+    if (window.__boot.failed && !force) return;
     const s = el("status");
     if (s) s.textContent = text;
     const root = el("loader");
@@ -61,7 +67,7 @@ export default function initializer() {
 
     onFailure: (error) => {
       window.__boot.failed = true;
-      set("failed", "Failed to start: " + (error && error.message ? error.message : error));
+      set("failed", "Failed to start: " + (error && error.message ? error.message : error), true);
       console.error("wasm initialization failed:", error);
     },
   };
