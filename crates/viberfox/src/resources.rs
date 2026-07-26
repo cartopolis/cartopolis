@@ -534,6 +534,17 @@ pub struct CameraState {
     /// by the GPS/locate button; cleared when the user manually left-drags to orbit
     /// (matching OM, where touching the map drops the rotate-follow).
     pub follow_rotate: bool,
+    /// Driver mode holds the chase rig itself (`systems::driver`): while this is
+    /// set, the Follow camera ignores the wheel and the rotate-drag, and takes its
+    /// distance, tilt and azimuth from the map orientation instead. A navigation
+    /// view that drifts because the pointer brushed the map is not one.
+    pub drive_locked: bool,
+    /// Metres ahead of the avatar the Follow camera *aims* while
+    /// [`Self::drive_locked`] is set. Looking straight at the avatar centres it, and
+    /// then half the screen is road already driven; moving the look target forward
+    /// drops the marker into the lower third, which is where every navigation device
+    /// puts it. Ignored when not locked.
+    pub drive_lookahead: f32,
 }
 
 #[derive(Resource, Default)]
@@ -584,6 +595,8 @@ impl Default for CameraState {
             orbit_north_reset: false,
             orbit_north_lock: false,
             follow_rotate: false,
+            drive_locked: false,
+            drive_lookahead: 0.0,
         }
     }
 }

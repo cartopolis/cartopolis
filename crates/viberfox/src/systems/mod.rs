@@ -6,6 +6,7 @@ pub mod collision;
 pub mod data_layers;
 pub mod debug;
 pub mod desktop_integration;
+pub mod driver;
 pub mod egui_manager;
 pub mod free_camera;
 pub mod geo_nav;

@@ -97,6 +97,45 @@ anchored in real geography, so moving the anchor re-streams the ground tiles,
 buildings, and data layers for wherever you land. Save spots you return to from
 the **Bookmarks** panel.
 
+### Planning a route
+
+The **Route** panel plans a route between two points for a car, a bike or on
+foot. Each end can be typed as a place name, taken from your current position, or
+picked straight off the map with the crosshair button. The result is a line drawn
+on the map plus a turn-by-turn list — click a turn to fly to it.
+
+Planning changes nothing else about the view: the buildings, trees and weather
+stay exactly as you had them, and the line stays on the map after you close the
+panel. **Clear** removes it.
+
+Routing needs a *vector* tile source; against a raster basemap the planner says so
+instead of returning a route.
+
+### Driver mode
+
+With a route solved, **▶ Driver mode** follows it. The map is stripped back to the
+basemap and the route (buildings, trees, overlays and weather go, and come back
+exactly as they were when you stop), your avatar is replaced by a heading arrow,
+and the camera locks into a chase view behind it — no zooming or dragging while it
+holds.
+
+The chrome is a satnav's:
+
+- **Top left** — the next manoeuvre and how far to it, with the street name.
+- **Under it, the compass** — click it to cycle the map orientation: **3D**
+  (tilted, turns with you), **heading up** (flat, turns with you) and **north up**
+  (flat, held to north; the arrow turns instead).
+- **Right edge** — the arrival clock, the distance left and the time left, plus
+  **✕ Stop** to leave.
+- **Bottom centre** — your current speed.
+
+Where the position comes from depends on the build. In the browser, driver mode
+asks for your device location and the arrow follows your real GPS fix. On the
+desktop there is no location source yet, so the arrow is your avatar: driver mode
+starts you at the route's beginning and narrates your own movement (W/A/S/D) —
+speed, remaining distance and ETA all come off that. If you stray more than about
+60 m from the route the card says so.
+
 ### Sharing a place
 
 The **⧉** button on the status overlay copies where you are *and* how you are

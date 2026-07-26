@@ -591,6 +591,7 @@ pub fn open_scripted_ui(
     mut bookmarks: ResMut<crate::systems::bookmarks::BookmarksState>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut route: ResMut<crate::systems::navigation::RouteState>,
+    mut driver: ResMut<crate::systems::driver::DriverState>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -607,21 +608,43 @@ pub fn open_scripted_ui(
     ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
-    bookmarks.panel_open = want("bookmarks");
-    if !want("route") {
-        *right_panel = crate::resources::RightPanel::None;
+    bookmarks.panel_open = want("bookmarks") || want("places");
+    // Driver mode is a *mode*, not a panel: it takes the map over (bare basemap,
+    // locked chase camera, navigation chrome). Written unconditionally like the
+    // panels, so a preset that doesn't ask for it also leaves it.
+    if want("driver") {
+        // Armed rather than entered: the endpoints seeded below still have to go
+        // through a worker solve, and driver mode needs the answer.
+        driver.arm();
+    } else {
+        driver.exit();
     }
+    // The right-hand dock holds one panel at a time (`RightPanel`), so asking for
+    // several picks the first. The legacy `*.panel_open` booleans above only tell
+    // the HUD to get out of the way — the panels themselves render off this.
+    *right_panel = if want("route") {
+        crate::resources::RightPanel::Route
+    } else if want("layers") {
+        crate::resources::RightPanel::Layers
+    } else if want("places") || want("bookmarks") {
+        crate::resources::RightPanel::Places
+    } else if want("ai") {
+        crate::resources::RightPanel::Assistant
+    } else {
+        crate::resources::RightPanel::None
+    };
     if panels.is_empty() {
         return;
     }
     // The route planner needs endpoints to show anything worth capturing, so
     // `--ui route` also seeds a demo route — the shot is of a *planned* route, not
-    // of an empty form. Two coordinates ~1 km apart in the fixture city, with
-    // neutral labels (no addresses in the captured chrome). `VIBE_ROUTE_FROM` /
-    // `VIBE_ROUTE_TO` ("lat,lng") override the pair, so a specific route can be
-    // reproduced headlessly for debugging (the `VIBE_*` env convention).
-    if want("route") {
-        *right_panel = crate::resources::RightPanel::Route;
+    // of an empty form. `--ui driver` needs one for the same reason, and needs it
+    // more: driver mode does not exist without a route. Two coordinates ~1 km apart
+    // in the fixture city, with neutral labels (no addresses in the captured
+    // chrome). `VIBE_ROUTE_FROM` / `VIBE_ROUTE_TO` ("lat,lng") override the pair, so
+    // a specific route can be reproduced headlessly for debugging (the `VIBE_*` env
+    // convention).
+    if want("route") || want("driver") {
         let seed = |var: &str, default: (f64, f64)| {
             std::env::var(var)
                 .ok()
@@ -632,7 +655,10 @@ pub fn open_scripted_ui(
         route.to.set("Route end", seed("VIBE_ROUTE_TO", (53.2109, 6.5642)));
     }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
-    let known = ["dev", "stats", "ai", "avatar", "layers", "bookmarks", "route", "all"];
+    let known = [
+        "dev", "stats", "ai", "avatar", "layers", "places", "bookmarks", "route", "driver",
+        "all",
+    ];
     for u in &panels {
         if !known.contains(&u.as_str()) {
             tracing::warn!(name = %u, "shot harness: unknown --ui element (ignored)");

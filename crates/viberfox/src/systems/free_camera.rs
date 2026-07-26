@@ -556,22 +556,32 @@ pub fn camera_controls(
             // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
             let avatar_pos = avatar_state.display_position;
 
-            // Proportional wheel zoom by notch *sign* — robust to line- vs
-            // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
-            // others; scaling it directly made one notch jump tens of metres). Sane
-            // range for a ~1.8 m avatar; scroll in/out from the default.
-            for event in mouse_wheel_events.read() {
-                if event.y != 0.0 {
-                    let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
-                    camera_state.distance *= factor;
+            // Driver mode owns the rig (`systems::driver`): distance, tilt and
+            // azimuth are written from the map orientation every frame, so the
+            // wheel, the drag *and* the third-person zoom clamp are all skipped —
+            // the clamp tops out at 25 m, a quarter of the chase distance a
+            // navigation view needs, and would drag it back in every frame.
+            let locked = camera_state.drive_locked;
+            if !locked {
+                // Proportional wheel zoom by notch *sign* — robust to line- vs
+                // pixel-delta scrolling (raw `event.y` is ±1 on some backends, ±120 on
+                // others; scaling it directly made one notch jump tens of metres). Sane
+                // range for a ~1.8 m avatar; scroll in/out from the default.
+                for event in mouse_wheel_events.read() {
+                    if event.y != 0.0 {
+                        let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
+                        camera_state.distance *= factor;
+                    }
                 }
+                camera_state.distance =
+                    camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
             }
-            camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
 
             // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
             let ctrl = keyboard_input.pressed(KeyCode::ControlLeft)
                 || keyboard_input.pressed(KeyCode::ControlRight);
-            if gizmo_state.active_axis.is_some()
+            if locked
+                || gizmo_state.active_axis.is_some()
                 || egui_manager.ctx.egui_wants_pointer_input()
                 || ctrl
             {
@@ -670,7 +680,17 @@ pub fn camera_controls(
             let (new_cell, local) = grid.translation_to_grid(new_world);
             camera_cell = new_cell;
             camera_transform.translation = local;
-            let look_world = avatar_origin + (avatar_pos + Vec3::Y * 1.5).as_dvec3();
+            // Driver mode aims down the road rather than at the vehicle, which is
+            // what puts the arrow in the lower third of the frame instead of dead
+            // centre (`CameraState::drive_lookahead`). The camera itself stays where
+            // the rig put it — only the look target moves.
+            let ahead = if camera_state.drive_locked {
+                crate::systems::avatar::camera_plane_forward(camera_state.azimuth)
+                    * camera_state.drive_lookahead
+            } else {
+                Vec3::ZERO
+            };
+            let look_world = avatar_origin + (avatar_pos + Vec3::Y * 1.5 + ahead).as_dvec3();
             camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
         }
         CameraMode::Free => {

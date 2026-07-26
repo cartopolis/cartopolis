@@ -508,6 +508,7 @@ fn main() {
     .init_resource::<systems::transit_vehicles::TransitVehicles>()
     .init_resource::<systems::geo_nav::GeoNavState>()
     .init_resource::<systems::navigation::RouteState>()
+    .init_resource::<systems::driver::DriverState>()
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
@@ -909,6 +910,34 @@ fn main() {
                 .after(systems::navigation::render_route_panel)
                 .after(systems::chat::render_chat_panel)
                 .after(systems::free_camera::camera_controls),
+        ),
+    )
+    // Phase 8b: Driver mode — following a solved route (`systems::driver`).
+    .add_systems(
+        Update,
+        (
+            // Measures the drive (position, speed, course, progress) before anything
+            // reads it. After the panel, so the button press that starts driving is
+            // acted on in the same frame it was captured.
+            systems::driver::drive_driver_mode
+                .after(systems::navigation::render_route_panel)
+                .after(avatar::handle_avatar_movement),
+            // Writes the chase rig into `CameraState`, so it must land before the
+            // camera consumes it — this is the whole mechanism by which driver mode
+            // holds the view still.
+            systems::driver::steady_driver_camera
+                .after(systems::driver::drive_driver_mode)
+                .before(systems::free_camera::camera_controls),
+            // After the avatar has been moved (and after the camera, so the arrow
+            // is placed against the same frame the view was built from).
+            systems::driver::update_driver_arrow
+                .after(systems::driver::drive_driver_mode)
+                .after(systems::free_camera::camera_controls),
+            systems::driver::render_driver_hud.after(systems::ui::render_menu_bar),
+            // The compass/locate column, which driver mode repurposes.
+            systems::hud::render_map_controls
+                .after(systems::ui::render_menu_bar)
+                .after(systems::driver::drive_driver_mode),
         ),
     )
     // Phase 6: Transform gizmos

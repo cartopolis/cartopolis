@@ -35,6 +35,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::storage;
 use crate::platform::work::Dispatcher;
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::theme;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{
     lat_lng_to_local, overpass_query, MeshData, OVERPASS_THROTTLE,
@@ -337,21 +338,19 @@ pub struct DataLayers {
     /// alpha is pulsed by [`animate_stop_rings`].
     ring_materials: HashMap<(usize, usize), Handle<StandardMaterial>>,
     pub layers: Vec<LayerRuntime>,
-    /// State captured when the Route panel opened, so "minimal mode" — stripping
-    /// the map to just the vector tiles + the route while planning — can restore
-    /// exactly what the user had when the panel closes. `None` when not routing.
+    /// State captured when driver mode started, so "minimal mode" — stripping the
+    /// map to just the vector tiles + the route while driving — can restore exactly
+    /// what the user had when they stop. `None` when not driving.
     minimal: Option<MinimalSave>,
 }
 
-/// Snapshot of everything minimal mode turns off, taken on route-open, so leaving
-/// the Route panel puts the map back exactly as it was. Weather lives in other
+/// Snapshot of everything minimal mode turns off, taken when driving starts, so
+/// stopping puts the map back exactly as it was. Weather lives in other
 /// resources ([`DevPanelState`], [`WeatherState`]) but is restored together here.
 struct MinimalSave {
     buildings: bool,
     vehicles: bool,
     trees: bool,
-    roads_textured: bool,
-    water_shading: bool,
     layers: Vec<bool>,
     fog_density: f32,
     cloud_cover: f32,
@@ -846,7 +845,7 @@ pub fn render_poi_popup(
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(egui.ctx_mut(), |ui| {
             egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_unmultiplied(12, 16, 24, 235))
+                .fill(theme::LABEL_CHIP)
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
@@ -856,7 +855,7 @@ pub fn render_poi_popup(
                             egui::RichText::new(&popup.title)
                                 .strong()
                                 .size(14.0)
-                                .color(egui::Color32::WHITE),
+                                .color(theme::CREAM),
                         );
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
@@ -870,7 +869,7 @@ pub fn render_poi_popup(
                     ui.label(
                         egui::RichText::new(&popup.subtitle)
                             .size(12.0)
-                            .color(egui::Color32::from_gray(170)),
+                            .color(theme::TEXT_DIM),
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -927,32 +926,41 @@ fn open_url(url: &str) {
     }
 }
 
-/// "Minimal mode": while the Route panel is open, strip the map to just the vector
-/// tiles + the route so the planned line reads clearly. Off go the 3D buildings,
-/// trees, live vehicles, every streamed overlay (transit stops, shops), and the
-/// weather (clouds, fog, rain — and live weather is frozen so it can't re-apply).
-/// The vector tiles (`map_enabled`) are deliberately kept.
+/// "Minimal mode": while **driver mode** is on, strip the map to just the vector
+/// tiles + the route so the line being driven reads clearly. Off go the 3D
+/// buildings, trees, live vehicles, every streamed overlay (transit stops, shops),
+/// and the weather (clouds, fog, rain — and live weather is frozen so it can't
+/// re-apply).
 ///
-/// The user's state is snapshotted on open and restored verbatim on close, so this
-/// never destroys their settings. It only *sets* at the open/close edges (cached in
-/// `minimal`), so a user can still re-enable something mid-route from the panel; the
-/// snapshot, not the mid-route edit, is what's restored. Writes nothing when idle.
+/// What stays is the basemap *and its legibility*: the vector tiles
+/// (`map_enabled`), the road textures and the water shading. Turning those off too
+/// — the first cut did — leaves a driver navigating a plain khaki field with the
+/// route line floating on it, which strips out exactly the thing being driven on.
+/// Clutter goes; the map does not.
+///
+/// **Planning a route no longer triggers this.** It used to key off the Route panel
+/// being open, which meant looking up a route tore down the view you were looking
+/// at — the planner is a form, and a form has no business turning the city off.
+/// Driving is the mode that wants a bare map, so driving is what gets one
+/// (`systems::driver`).
+///
+/// The user's state is snapshotted on entry and restored verbatim on exit, so this
+/// never destroys their settings. It only *sets* at the two edges (cached in
+/// `minimal`), so a user can still re-enable something mid-drive from the panel; the
+/// snapshot, not the mid-drive edit, is what's restored. Writes nothing when idle.
 pub fn apply_minimal_mode(
-    right_panel: Res<crate::resources::RightPanel>,
+    driver: Res<crate::systems::driver::DriverState>,
     mut dl: ResMut<DataLayers>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
 ) {
-    let routing = right_panel.is(crate::resources::RightPanel::Route);
-    match (routing, dl.minimal.is_some()) {
+    match (driver.active, dl.minimal.is_some()) {
         // Entering: snapshot everything minimal mode dims, then dim it.
         (true, false) => {
             dl.minimal = Some(MinimalSave {
                 buildings: dl.buildings_enabled,
                 vehicles: dl.vehicles_enabled,
                 trees: dl.trees_enabled,
-                roads_textured: dl.roads_textured,
-                water_shading: dl.water_shading,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
                 cloud_cover: dev.cloud_cover,
@@ -962,8 +970,6 @@ pub fn apply_minimal_mode(
             dl.buildings_enabled = false;
             dl.vehicles_enabled = false;
             dl.trees_enabled = false;
-            dl.roads_textured = false;
-            dl.water_shading = false;
             for l in &mut dl.layers {
                 l.enabled = false;
             }
@@ -979,8 +985,6 @@ pub fn apply_minimal_mode(
                 dl.buildings_enabled = saved.buildings;
                 dl.vehicles_enabled = saved.vehicles;
                 dl.trees_enabled = saved.trees;
-                dl.roads_textured = saved.roads_textured;
-                dl.water_shading = saved.water_shading;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
                 }

@@ -1,6 +1,7 @@
 //! Bottom-right status overlay: wall-clock time, the camera's geographic
 //! position and altitude, a compass, and two location actions — ⧉ copies the
-//! current location ("lat, lng, altitude", pasteable into the search bar) and
+//! current place ("lat, lng, altitude, pitch°, yaw°" — see [`format_place`];
+//! pasteable into the search bar, or into a `?place=` URL on the web) and
 //! ☆ bookmarks it (named by reverse-geocoded address; see `bookmarks`).
 //!
 //! The clock shows real local time once [`WorldClock`] has learned the
@@ -25,6 +26,7 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::FreeCamera;
 use crate::systems::geo_nav::{camera_geo, CameraPose};
 use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 use crate::systems::transit_live::WorldClock;
 use crate::systems::user_store::UserStore;
 
@@ -49,7 +51,6 @@ pub struct HudData {
     pub weather_info: Option<(String, String)>,
     pub geo: Option<(f64, f64)>,
     pub altitude: Option<f64>,
-    pub heading: Option<f32>,
     /// Show the copy button's "just copied" ✔ state.
     pub copied: bool,
     /// Show the Set Home button's "just set" ✔ state.
@@ -57,6 +58,22 @@ pub struct HudData {
     /// Authenticated username, if online (ADR-016). Drives the profile chip;
     /// grows into a chat/presence affordance later.
     pub user: Option<String>,
+}
+
+/// Render a place the way the ⧉ button copies it: "lat, lng, altm, pitch°, yaw°",
+/// with the view dropped when there is no camera to read it from.
+///
+/// One function because this string is a small interchange format — the search
+/// bar and the `?place=` launch URL both parse it back
+/// ([`crate::systems::geo_nav::parse_location`]) — and a format only round-trips
+/// if it has exactly one writer.
+pub fn format_place(lat: f64, lng: f64, alt: f64, look: Option<(f32, f32)>) -> String {
+    match look {
+        Some((pitch, yaw)) => {
+            format!("{lat:.5}, {lng:.5}, {alt:.0}m, {pitch:.1}°, {yaw:.1}°")
+        }
+        None => format!("{lat:.5}, {lng:.5}, {alt:.0}m"),
+    }
 }
 
 /// What the user clicked in the overlay this frame.
@@ -77,20 +94,39 @@ pub struct HudActions {
 /// Diameter (points) of the top-right compass overlay.
 const COMPASS_SIZE: f32 = 46.0;
 
-/// Draws the top-right compass rose (Organic-Maps style): the red needle and
-/// the "N" point to geographic north as it appears on screen. In globe (Orbit)
+/// How the rose behaves this frame — one compass with three jobs.
+struct Compass {
+    /// Clicking does something: Orbit's north-up lock, or driver mode's map
+    /// orientation cycle. Otherwise it is a passive indicator.
+    interactive: bool,
+    /// Held north-up — tints the ring amber and adds a padlock.
+    locked: bool,
+    /// Distance from the top of the screen. Driver mode stacks the rose *under*
+    /// its manoeuvre card, which takes the corner the compass usually has.
+    top: f32,
+    /// Caption under the rose (driver mode's orientation name). `None` leaves the
+    /// bare compass.
+    caption: Option<&'static str>,
+    hover: &'static str,
+}
+
+/// Draws the top-left compass rose (Organic-Maps style): the fox-orange needle
+/// and the "N" point to geographic north as it appears on screen. In globe (Orbit)
 /// mode it is a toggle — clicking locks the view north-up (and unlocking
-/// releases it); in the free-form fly/avatar modes it is a passive indicator.
-/// `locked` tints the ring and adds a lock glyph. Returns true when the user
-/// clicked it (only possible when `interactive`).
-fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, locked: bool) -> bool {
+/// releases it); while driving it steps through the map orientations; in the
+/// free-form fly/avatar modes it is a passive indicator. Returns true when the
+/// user clicked it (only possible when `cfg.interactive`).
+fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool {
+    let (interactive, locked) = (cfg.interactive, cfg.locked);
     let mut clicked = false;
-    // Amber, the same "held" accent the locked ring and glyph share.
-    let lock_color = egui::Color32::from_rgb(240, 190, 90);
+    // Amber, the same "held" accent the locked ring and glyph share — and the
+    // brand's second accent, so it can never be mistaken for the fox-orange
+    // hover/pressed states the rest of the UI uses.
+    let lock_color = theme::AMBER;
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Top-left: the status HUD moved into the top-right corner, so the compass
         // takes the opposite one to keep both clear of the docked panels.
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, cfg.top))
         .show(ctx, |ui| {
             let sense = if interactive {
                 egui::Sense::click()
@@ -103,13 +139,15 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
             let p = ui.painter();
             let c = rect.center();
             let r = COMPASS_SIZE * 0.5 - 2.0;
-            // Disc + ring (ring brightens on hover to signal it's clickable, and
-            // goes amber while the view is locked north-up).
-            p.circle_filled(c, r, egui::Color32::from_rgba_unmultiplied(10, 14, 22, 210));
+            // Disc + ring (the ring takes the fox accent on hover to signal it's
+            // clickable, and goes amber while the view is locked north-up).
+            p.circle_filled(c, r, theme::OVERLAY);
             let ring = if locked {
                 lock_color
+            } else if hovered {
+                theme::FOX
             } else {
-                egui::Color32::from_gray(if hovered { 210 } else { 130 })
+                theme::OVERLAY_LINE
             };
             p.circle_stroke(c, r, egui::Stroke::new(if locked { 2.0 } else { 1.5 }, ring));
             // Screen direction of north when screen-up is the view heading.
@@ -117,15 +155,17 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
             let north = egui::vec2(-th.sin(), -th.cos());
             let side = egui::vec2(north.y, -north.x); // 90° clockwise from north
             let w = side * 4.5;
-            // North half: red arrow; south half: light grey.
+            // North half: the fox accent (a compass needle is red by convention,
+            // and the brand's warm end is the closest thing to it we own); south
+            // half: the muted body tone.
             p.add(egui::Shape::convex_polygon(
                 vec![c + north * (r - 3.0), c + w, c - w],
-                egui::Color32::from_rgb(230, 80, 70),
+                theme::FOX,
                 egui::Stroke::NONE,
             ));
             p.add(egui::Shape::convex_polygon(
                 vec![c - north * (r - 7.0), c + w, c - w],
-                egui::Color32::from_gray(190),
+                theme::TEXT_DIM,
                 egui::Stroke::NONE,
             ));
             // "N" over the north tip.
@@ -134,7 +174,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
                 egui::Align2::CENTER_CENTER,
                 "N",
                 egui::FontId::proportional(10.0),
-                egui::Color32::WHITE,
+                theme::CREAM,
             );
             // Locked: a small padlock at the south edge, clear of the needle.
             // Drawn from primitives rather than an emoji — egui's bundled font
@@ -158,12 +198,20 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, interactive: bool, loc
                     egui::Stroke::new(1.2, lock_color),
                 ));
             }
+            // Orientation name under the rose while driving: the three views
+            // differ by tilt as much as by heading, and "which one am I in" is not
+            // a question a needle can answer.
+            if let Some(caption) = cfg.caption {
+                p.text(
+                    egui::pos2(c.x, rect.bottom() + 7.0),
+                    egui::Align2::CENTER_CENTER,
+                    caption,
+                    egui::FontId::proportional(10.0),
+                    theme::TEXT_DIM,
+                );
+            }
             if interactive {
-                resp.clone().on_hover_text(if locked {
-                    "North-up locked — click to release"
-                } else {
-                    "Lock the view north-up"
-                });
+                resp.clone().on_hover_text(cfg.hover);
             }
             clicked = resp.clicked();
         });
@@ -187,14 +235,15 @@ pub enum LocateState {
 
 /// Draws the GPS/locate button beneath the compass (Organic-Maps style) and
 /// returns true when clicked. The icon is a navigation "location arrow": a hollow
-/// grey outline when off, a filled blue arrow while following, and a filled amber
-/// arrow while follow-and-rotate (the amber echoes the compass's north-up lock).
+/// muted outline when off, a filled fox-orange arrow while following, and a filled
+/// amber arrow while follow-and-rotate (the amber echoes the compass's north-up
+/// lock — both are *held* states).
 /// Drawn from primitives, like the compass — egui's bundled font carries few
 /// emoji, so a glyph would risk rendering as tofu.
 fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
     let mut clicked = false;
-    let accent = egui::Color32::from_rgb(90, 170, 240);
-    let rotate_accent = egui::Color32::from_rgb(240, 190, 90);
+    let accent = theme::FOX;
+    let rotate_accent = theme::AMBER;
     egui::Area::new(egui::Id::new("locate_overlay"))
         // Directly under the compass (46 pt tall, anchored at (12, 12)), centred on
         // its column.
@@ -209,11 +258,11 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
             let p = ui.painter();
             let c = rect.center();
             let r = LOCATE_SIZE * 0.5 - 2.0;
-            p.circle_filled(c, r, egui::Color32::from_rgba_unmultiplied(10, 14, 22, 210));
+            p.circle_filled(c, r, theme::OVERLAY);
             let (mark, ring, filled) = match state {
                 LocateState::Off => (
-                    egui::Color32::from_gray(if hovered { 220 } else { 175 }),
-                    egui::Color32::from_gray(if hovered { 210 } else { 130 }),
+                    if hovered { theme::CREAM } else { theme::TEXT_DIM },
+                    if hovered { theme::FOX } else { theme::OVERLAY_LINE },
                     false,
                 ),
                 LocateState::Follow => (accent, accent, true),
@@ -245,17 +294,124 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
     clicked
 }
 
+/// The left-hand map controls: the compass rose, and the GPS/locate button under
+/// it.
+///
+/// Its own system rather than part of [`render_hud`] because it answers to a
+/// different owner in each mode — the Orbit camera's north lock normally, driver
+/// mode's orientation cycle while navigating — and because `render_hud` was
+/// already at Bevy's 16-parameter ceiling.
+#[allow(clippy::too_many_arguments)]
+pub fn render_map_controls(
+    mut egui: ResMut<EguiManager>,
+    mut camera_state: ResMut<CameraState>,
+    mut driver: ResMut<crate::systems::driver::DriverState>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    data_layers: Res<crate::systems::data_layers::DataLayers>,
+    bookmarks: Res<BookmarksState>,
+    ai: Res<crate::resources::AiAssistantState>,
+    right_panel: Res<crate::resources::RightPanel>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    avatars: Query<(), With<crate::components::Avatar>>,
+) {
+    // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
+    // always paints floating Areas on top of panels (panels live on the bottom-most
+    // background layer, and even `Order::Background` Areas paint above it), so the
+    // only way to keep these *behind* one is to drop them while it is open. Driver
+    // mode is the exception: the compass is part of its chrome, and the planner it
+    // was started from is closed anyway.
+    let panel_open = data_layers.panel_open
+        || bookmarks.panel_open
+        || ai.open
+        || !right_panel.is(crate::resources::RightPanel::None);
+    if panel_open && !driver.active {
+        return;
+    }
+    let Ok((cell, tf)) = camera.single() else {
+        return;
+    };
+    // Over the globe the bearing is measured against the spin axis, not the local
+    // flat frame (see `space_view_heading`).
+    let heading = if globe.in_space(cell, tf) {
+        space_view_heading(tf, globe.north_axis_local())
+    } else {
+        view_heading(tf)
+    };
+    let Some(heading) = heading else {
+        return;
+    };
+
+    if driver.active {
+        // Driving: the rose steps through Organic Maps' navigation orientations,
+        // and stacks under the manoeuvre card that has taken the corner.
+        use crate::systems::driver::{CARD_HEIGHT, CARD_MARGIN};
+        let cfg = Compass {
+            interactive: true,
+            locked: driver.orientation == crate::systems::driver::MapOrientation::NorthUp,
+            top: CARD_MARGIN + CARD_HEIGHT + 8.0,
+            caption: Some(driver.orientation.label()),
+            hover: "Change the map orientation (heading up / north up / 3D)",
+        };
+        if compass_overlay(egui.ctx_mut(), heading, &cfg) {
+            driver.orientation = driver.orientation.next();
+        }
+        return;
+    }
+
+    // Clicking toggles the north-up lock in globe (Orbit) mode only; fly/avatar are
+    // free-form, so there the rose is a passive indicator.
+    let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
+    let locked = orbit && camera_state.orbit_north_lock;
+    let cfg = Compass {
+        interactive: orbit,
+        locked,
+        top: 12.0,
+        caption: None,
+        hover: if locked {
+            "North-up locked — click to release"
+        } else {
+            "Lock the view north-up"
+        },
+    };
+    if compass_overlay(egui.ctx_mut(), heading, &cfg) {
+        // Toggle the lock; engaging it also eases the view back to north (the lock
+        // holds it there from then on).
+        camera_state.orbit_north_lock = !locked;
+        camera_state.orbit_north_reset = camera_state.orbit_north_lock;
+    }
+
+    // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
+    // the viewer that owns a local avatar — Follow doesn't exist otherwise. Not
+    // drawn while driving: the arrow is already centred and the camera is held, so
+    // there is nothing left for it to do.
+    if !avatars.is_empty() {
+        use crate::resources::CameraMode;
+        let state = match (camera_state.mode, camera_state.follow_rotate) {
+            (CameraMode::Avatar, true) => LocateState::FollowRotate,
+            (CameraMode::Avatar, false) => LocateState::Follow,
+            _ => LocateState::Off,
+        };
+        if locate_overlay(egui.ctx_mut(), state) {
+            match state {
+                // Recenter: enter Follow and snap the rig onto the avatar (the same
+                // proven path Tab / the Camera menu use).
+                LocateState::Off => {
+                    crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
+                    camera_state.mode = CameraMode::Avatar;
+                }
+                LocateState::Follow => camera_state.follow_rotate = true,
+                LocateState::FollowRotate => camera_state.follow_rotate = false,
+            }
+        }
+    }
+}
+
 /// Build the overlay's anchored box and return what was clicked. Pure UI over
 /// [`HudData`], so it can be exercised headless (see the test below).
 pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
     let mut actions = HudActions::default();
-    let mono = |ui: &mut egui::Ui, text: String, size: f32, gray: u8| {
-        ui.label(
-            egui::RichText::new(text)
-                .monospace()
-                .size(size)
-                .color(egui::Color32::from_gray(gray)),
-        );
+    let mono = |ui: &mut egui::Ui, text: String, size: f32, color: egui::Color32| {
+        ui.label(egui::RichText::new(text).monospace().size(size).color(color));
     };
 
     // Top-right: keeps clear of the bottom chat/action bar. The caller drops the
@@ -263,15 +419,19 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
     egui::Area::new(egui::Id::new("status_hud"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
         .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_unmultiplied(10, 14, 22, 200))
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(9, 6))
+            theme::overlay_frame()
                 .show(ui, |ui| {
                     // Pin the width first — this is what stops the runaway.
                     ui.set_width(HUD_WIDTH);
+                    // Overlay density. The theme's rhythm is sized for a panel of
+                    // place rows and layer toggles; in a 150 pt corner readout the
+                    // same values add ~40 pt of air to a box that is mostly
+                    // numbers. These switchers are chips, not buttons — so tighten
+                    // locally, while keeping a 20 pt hit target.
+                    ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                    ui.spacing_mut().interact_size.y = 20.0;
                     ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.spacing_mut().item_spacing.y = 3.0;
                         // Profile chip: a placeholder avatar dot with the account
                         // initial, plus the username. Extends into a presence/chat
                         // affordance later (ADR-016 / ADR-028).
@@ -282,25 +442,19 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                     egui::Sense::hover(),
                                 );
                                 let c = rect.center();
-                                ui.painter().circle_filled(
-                                    c,
-                                    7.0,
-                                    egui::Color32::from_rgb(86, 148, 232),
-                                );
+                                ui.painter().circle_filled(c, 7.0, theme::FOX);
                                 if let Some(ch) = user.chars().next() {
                                     ui.painter().text(
                                         c,
                                         egui::Align2::CENTER_CENTER,
                                         ch.to_uppercase().to_string(),
                                         egui::FontId::proportional(9.5),
-                                        egui::Color32::WHITE,
+                                        // Ink on the accent, not white — the same
+                                        // 6:1 pairing every filled orange uses.
+                                        theme::INK,
                                     );
                                 }
-                                ui.label(
-                                    egui::RichText::new(user)
-                                        .size(12.5)
-                                        .color(egui::Color32::from_gray(232)),
-                                );
+                                ui.label(egui::RichText::new(user).size(12.5).color(theme::CREAM));
                             });
                         }
                         // Clock + a small Local/UTC toggle, then the sun-mode
@@ -308,7 +462,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         // for the sky, the way a website theme toggle reads.
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            mono(ui, data.time.clone(), 15.0, 235);
+                            mono(ui, data.time.clone(), 15.0, theme::CREAM);
                             let zone = if data.utc { "UTC" } else { "Local" };
                             if ui
                                 .add(egui::Button::new(egui::RichText::new(zone).size(10.5)).small())
@@ -368,15 +522,15 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                 egui::RichText::new(short)
                                     .monospace()
                                     .size(11.0)
-                                    .color(egui::Color32::from_gray(170)),
+                                    .color(theme::TEXT_DIM),
                             )
                             .on_hover_text(full);
                         }
                         if let Some((lat, lng)) = data.geo {
                             let ns = if lat >= 0.0 { 'N' } else { 'S' };
                             let ew = if lng >= 0.0 { 'E' } else { 'W' };
-                            mono(ui, format!("{:.5}° {}", lat.abs(), ns), 11.5, 170);
-                            mono(ui, format!("{:.5}° {}", lng.abs(), ew), 11.5, 170);
+                            mono(ui, format!("{:.5}° {}", lat.abs(), ns), 11.5, theme::TEXT_DIM);
+                            mono(ui, format!("{:.5}° {}", lng.abs(), ew), 11.5, theme::TEXT_DIM);
                         }
                         if let Some(alt) = data.altitude {
                             let alt = alt.max(0.0);
@@ -385,7 +539,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                             } else {
                                 format!("alt {alt:.0} m")
                             };
-                            mono(ui, text, 11.5, 170);
+                            mono(ui, text, 11.5, theme::TEXT_DIM);
                         }
                         // Heading now lives in the top-right compass overlay.
                         // Location actions.
@@ -403,7 +557,8 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                 if ui
                                     .add(egui::Button::new(if data.copied { "✔" } else { "⧉" }))
                                     .on_hover_text(
-                                        "Copy location (paste in the search bar to return)",
+                                        "Copy place — position and view (paste in the \
+                                         search bar to return)",
                                     )
                                     .clicked()
                                 {
@@ -469,16 +624,16 @@ pub fn render_hud(
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
     stream: Res<MapStream>,
-    mut camera_state: ResMut<CameraState>,
+    camera_state: Res<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut store: ResMut<UserStore>,
     mut bookmarks: ResMut<BookmarksState>,
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     ai: Res<crate::resources::AiAssistantState>,
     identity: Res<crate::resources::AuthIdentity>,
+    driver: Res<crate::systems::driver::DriverState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    avatars: Query<(), With<crate::components::Avatar>>,
-    right_panel: Res<crate::resources::RightPanel>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
     // (copy "✔", set-home "✔") flash timers, bundled into one `Local` to stay
     // within Bevy's 16-system-param limit.
     mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
@@ -511,15 +666,8 @@ pub fn render_hud(
             .zip(stream.geo_anchor())
             .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
         altitude,
-        // Over the globe the bearing is measured against the spin axis, not the
-        // local flat frame (see `space_view_heading`).
-        heading: cam.and_then(|(cell, tf)| {
-            if globe.in_space(cell, tf) {
-                space_view_heading(tf, globe.north_axis_local())
-            } else {
-                view_heading(tf)
-            }
-        }),
+        // The heading is not here: it is the compass's, and the compass is
+        // `render_map_controls`, which reads the camera itself.
         copied: flash_at.0.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
         home_set: flash_at.1.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
         user: identity.username.clone(),
@@ -533,61 +681,26 @@ pub fn render_hud(
         || !right_panel.is(crate::resources::RightPanel::None);
 
     // The status HUD now lives in the top-right corner (see `hud_area`), which any
-    // right-docked panel covers — and while routing especially we want an
-    // uncluttered map. So drop the HUD whenever a right panel is open, at any
+    // right-docked panel covers — and while driving the map has to stay clear for
+    // the navigation chrome. So drop the HUD whenever a right panel is open, at any
     // width; egui paints floating Areas above panels, so it can't hide behind one.
-    let actions = if right_panel_open {
+    let actions = if right_panel_open || driver.active {
         HudActions::default()
     } else {
         hud_area(egui.ctx_mut(), &data)
     };
 
-    // Top-right compass. Clicking it toggles the north-up lock in globe (Orbit)
-    // mode only; fly/avatar are free-form, so there it is a passive indicator.
-    //
-    // A right-docked panel (Layers, Bookmarks, AI) sits opaque over this same
-    // corner. egui always paints floating Areas on top of panels (panels live
-    // on the bottom-most background layer, and even `Order::Background` Areas
-    // paint above it), so the only way to keep the compass *behind* the panel
-    // is to drop it while one is open.
-    if let Some(heading) = data.heading.filter(|_| !right_panel_open) {
-        let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
-        let locked = orbit && camera_state.orbit_north_lock;
-        if compass_overlay(egui.ctx_mut(), heading, orbit, locked) {
-            // Toggle the lock; engaging it also eases the view back to north
-            // (the lock holds it there from then on).
-            camera_state.orbit_north_lock = !locked;
-            camera_state.orbit_north_reset = camera_state.orbit_north_lock;
-        }
-    }
-
-    // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
-    // the viewer that owns a local avatar — Follow doesn't exist otherwise — and
-    // dropped alongside the compass when a right panel covers the map.
-    if !avatars.is_empty() && !right_panel_open {
-        use crate::resources::CameraMode;
-        let state = match (camera_state.mode, camera_state.follow_rotate) {
-            (CameraMode::Avatar, true) => LocateState::FollowRotate,
-            (CameraMode::Avatar, false) => LocateState::Follow,
-            _ => LocateState::Off,
-        };
-        if locate_overlay(egui.ctx_mut(), state) {
-            match state {
-                // Recenter: enter Follow and snap the rig onto the avatar (the same
-                // proven path Tab / the Camera menu use).
-                LocateState::Off => {
-                    crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
-                    camera_state.mode = CameraMode::Avatar;
-                }
-                LocateState::Follow => camera_state.follow_rotate = true,
-                LocateState::FollowRotate => camera_state.follow_rotate = false,
-            }
-        }
-    }
-
     if actions.copy {
         if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
-            crate::utils::clipboard::set_text(&format!("{lat:.5}, {lng:.5}, {alt:.0}"));
+            // Copy the view, not just the spot: the look angles come off the
+            // live camera transform (as `ui.rs`'s preset copy does), so they are
+            // right in any camera mode, and pasting the string back — into the
+            // search bar or a `?place=` URL — reproduces this exact framing.
+            let look = cam.map(|(_, tf)| {
+                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                (pitch.to_degrees(), yaw.to_degrees())
+            });
+            crate::utils::clipboard::set_text(&format_place(lat, lng, alt, look));
             flash_at.0 = Some(Instant::now());
         }
     }
@@ -597,7 +710,12 @@ pub fn render_hud(
             let pose = CameraPose::capture(&camera_state);
             let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
             bookmarks.request_address(id, lat, lng);
+            // Show the new place straight away — it lands at the top level and
+            // is usually dragged into a folder next. `panel_open` alone is the
+            // legacy flag that only tells the HUD to get out of the way; the
+            // panel itself renders off `RightPanel`.
             bookmarks.panel_open = true;
+            *right_panel = crate::resources::RightPanel::Places;
         }
     }
     if actions.set_home {
@@ -621,6 +739,27 @@ pub fn render_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The copy button's string is only useful if it parses back — this is the
+    /// contract between the ⧉ button, the search bar, and the `?place=` URL.
+    #[test]
+    fn copied_place_parses_back() {
+        use crate::systems::geo_nav::parse_location;
+
+        let text = format_place(53.2194, 6.5665, 120.0, Some((-12.5, 45.0)));
+        assert_eq!(text, "53.21940, 6.56650, 120m, -12.5°, 45.0°");
+        let fix = parse_location(&text).expect("copied place parses");
+        assert!((fix.lat - 53.2194).abs() < 1e-5 && (fix.lng - 6.5665).abs() < 1e-5);
+        assert_eq!(fix.altitude, Some(120.0));
+        assert_eq!(fix.look, Some((-12.5, 45.0)));
+
+        // Southern/western and view-less places too (negatives keep their sign;
+        // no camera means no look angles rather than zeroed ones).
+        let plain = format_place(-33.9249, -18.4241, 1500.0, None);
+        let fix = parse_location(&plain).expect("plain place parses");
+        assert!((fix.lat + 33.9249).abs() < 1e-5 && (fix.lng + 18.4241).abs() < 1e-5);
+        assert_eq!(fix.look, None);
+    }
 
     /// With the globe camera north-up over a part of the planet far from the
     /// anchor, the compass must read 0 — the lock holds that view, so anything
@@ -665,7 +804,10 @@ mod tests {
     #[test]
     fn hud_box_does_not_grow() {
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
+        // The real theme, not `Visuals::dark()`: the box's size is mostly spacing
+        // and padding, so measuring it under egui's stock style would guard a
+        // layout the app never renders.
+        theme::install(&ctx);
         let data = HudData {
             time: "08:14:11".to_string(),
             utc: false,
@@ -674,7 +816,6 @@ mod tests {
             weather_info: Some(("60% cloud · 16°C".to_string(), "60% cloud · 16°C".to_string())),
             geo: Some((53.21952, 6.58220)),
             altitude: Some(17.0),
-            heading: Some(247.0),
             copied: false,
             home_set: false,
             user: Some("dev".to_string()),
@@ -725,7 +866,12 @@ mod tests {
         let last = *sizes.last().unwrap();
         let prev = sizes[sizes.len() - 2];
         assert!(last.width() < 220.0, "HUD too wide: {}", last.width());
-        assert!(last.height() < 180.0, "HUD too tall: {}", last.height());
+        // 194 pt under the brand theme (was ~173 on egui's stock spacing — the
+        // roomier rhythm is the point, and `hud_area` already tightens the box's
+        // own padding back down). The bound is a compactness sanity check, not a
+        // pixel pin: it is the runaway, caught by the stability assert below,
+        // that this test exists for.
+        assert!(last.height() < 200.0, "HUD too tall: {}", last.height());
         assert!(last.min.y >= 0.0, "HUD grew off the top: {}", last.min.y);
         assert!(screen.contains_rect(last), "HUD outside the screen: {last:?}");
         assert!(

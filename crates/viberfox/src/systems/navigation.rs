@@ -39,6 +39,7 @@ use crate::systems::geo_nav::{
 };
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
 };
@@ -610,22 +611,21 @@ pub fn update_route_visuals(
     mut materials: ResMut<Assets<StandardMaterial>>,
     route: Res<RouteState>,
     stream: Res<MapStream>,
-    right_panel: Res<RightPanel>,
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32, bool)>>,
+    mut drawn: Local<Option<(u32, u32)>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
     };
-    // The drawn route is shown only while routing mode (the Route panel) is open.
-    // Navigating away hides it, but `RouteState::route` is left untouched, so
-    // returning to routing redraws the same route without recomputing it. Folding
-    // the open-state into the rebuild key despawns the line on close and rebuilds
-    // it on reopen through the existing generation/anchor machinery.
-    let routing_open = right_panel.is(RightPanel::Route);
-    let key = (route.generation, stream.anchor_generation, routing_open);
+    // A solved route stays drawn until it is cleared — closing the planner does not
+    // erase it. It used to: the line was gated on the Route panel being open, which
+    // meant you could not plan a route and then *look* at it, and it tied the drawn
+    // route to the same panel state that (wrongly) stripped the map. `Clear` and
+    // editing an endpoint both bump `generation`, so the line still goes away the
+    // moment the route it draws does.
+    let key = (route.generation, stream.anchor_generation);
     if *drawn == Some(key) {
         return;
     }
@@ -636,9 +636,6 @@ pub fn update_route_visuals(
 
     for e in existing.iter() {
         commands.entity(e).despawn();
-    }
-    if !routing_open {
-        return;
     }
     let Some(r) = &route.route else {
         return;
@@ -871,6 +868,7 @@ pub fn render_route_panel(
     mut route: ResMut<RouteState>,
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
+    mut driver: ResMut<crate::systems::driver::DriverState>,
     stream: Res<MapStream>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -960,7 +958,7 @@ pub fn render_route_panel(
                         Endpoint::To => "Click the map to set the destination…",
                     })
                     .size(12.0)
-                    .color(egui::Color32::from_rgb(120, 190, 255)),
+                    .color(theme::FOX_TEXT),
                 );
             }
 
@@ -991,7 +989,7 @@ pub fn render_route_panel(
                     ui.label(
                         egui::RichText::new(msg.as_str())
                             .size(12.5)
-                            .color(egui::Color32::from_rgb(235, 130, 120)),
+                            .color(theme::ERROR),
                     );
                 }
                 (SolveStatus::Idle, Some(r)) => {
@@ -1004,12 +1002,23 @@ pub fn render_route_panel(
                         ui.label(
                             egui::RichText::new(format!("· {}", format_distance(r.distance_m)))
                                 .size(14.0)
-                                .color(egui::Color32::from_gray(190)),
+                                .color(theme::TEXT_DIM),
                         );
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("Show on map").clicked() {
-                            actions.frame = true;
+                        // Driving is the thing a solved route is *for*, so it takes
+                        // the primary slot. It replaced "Show on map", which framed
+                        // the route from above — entering driver mode goes to the
+                        // route anyway, and does the rest of it too.
+                        if ui
+                            .button(egui::RichText::new("▶ Driver mode").strong())
+                            .on_hover_text(
+                                "Follow this route: strip the map, lock the camera \
+                                 behind the arrow, and show the next turn",
+                            )
+                            .clicked()
+                        {
+                            actions.drive = true;
                         }
                         if ui.button("Clear").clicked() {
                             actions.clear = true;
@@ -1022,7 +1031,7 @@ pub fn render_route_panel(
                             "Set a start and a destination to plan a route.",
                         )
                         .size(12.5)
-                        .color(egui::Color32::from_gray(160)),
+                        .color(theme::TEXT_DIM),
                     );
                 }
             }
@@ -1041,7 +1050,7 @@ pub fn render_route_panel(
                                         step.maneuver.icon_candidates(),
                                     ))
                                     .size(15.0)
-                                        .color(egui::Color32::from_rgb(120, 175, 235)),
+                                        .color(theme::FOX_TEXT),
                                 );
                                 ui.vertical(|ui| {
                                     ui.label(
@@ -1052,7 +1061,7 @@ pub fn render_route_panel(
                                         ui.label(
                                             egui::RichText::new(format_distance(step.distance_m))
                                                 .size(11.0)
-                                                .color(egui::Color32::from_gray(150)),
+                                                .color(theme::TEXT_DIM),
                                         );
                                     }
                                 });
@@ -1067,7 +1076,15 @@ pub fn render_route_panel(
             }
         });
 
+    let drive = actions.drive;
     apply_actions(actions, &mut route, &mut nav, here);
+    // Driving takes the whole screen over, so the planner that started it gets out
+    // of the way — the turn list is on the manoeuvre card now.
+    if drive && route.route.is_some() {
+        driver.enter();
+        *right_panel = RightPanel::None;
+        return;
+    }
     if !open {
         actions_close(&mut right_panel);
     }
@@ -1085,6 +1102,8 @@ struct PanelActions {
     swap: bool,
     clear: bool,
     frame: bool,
+    /// Start driving the solved route (`systems::driver`).
+    drive: bool,
     mode: Option<TravelMode>,
     goto_step: Option<usize>,
     /// Endpoint set to the current position.

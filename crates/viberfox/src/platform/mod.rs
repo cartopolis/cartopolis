@@ -10,6 +10,7 @@
 //! per-fetcher `std::thread::spawn` + blocking `ureq` pattern (ADR-033 Phase 1).
 
 pub mod http;
+pub mod location;
 pub mod storage;
 pub mod work;
 pub mod workers;
