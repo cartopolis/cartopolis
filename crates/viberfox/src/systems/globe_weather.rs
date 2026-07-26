@@ -202,11 +202,17 @@ async fn fetch_tcdc() -> FetchResult {
     let (date, hh) = latest_cycle();
     // NOMADS GRIB filter, 1.0° product: subset server-side to just this one field
     // over the whole globe (omit `subregion`). ~70 KB.
-    let url = format!(
-        "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl\
-         ?dir=%2Fgfs.{date}%2F{hh}%2Fatmos\
-         &file=gfs.t{hh}z.pgrb2.1p00.f000\
-         &var_TCDC=on&lev_entire_atmosphere=on"
+    // Reached same-origin on the web (ADR-034): NOMADS sends no CORS headers, so a
+    // direct browser fetch is refused before it ever leaves the tab.
+    let url = http::upstream_url(
+        "nomads",
+        "https://nomads.ncep.noaa.gov",
+        &format!(
+            "/cgi-bin/filter_gfs_1p00.pl\
+             ?dir=%2Fgfs.{date}%2F{hh}%2Fatmos\
+             &file=gfs.t{hh}z.pgrb2.1p00.f000\
+             &var_TCDC=on&lev_entire_atmosphere=on"
+        ),
     );
     let bytes = http::fetch(http::Request::get(url).timeout(Duration::from_secs(30))).await?;
     if bytes.len() < 4 || &bytes[0..4] != b"GRIB" {

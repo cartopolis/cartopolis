@@ -29,6 +29,36 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 /// LoD2.2 cell decompresses past 10 MB).
 const MAX_BODY: u64 = 64 * 1024 * 1024;
 
+/// Address a Public-tier upstream, direct natively and **same-origin** on the web.
+///
+/// A third party's server decides whether a browser may read its response, and a
+/// plain `fetch` to one that says nothing fails outright — NOAA's NOMADS sends no
+/// `Access-Control-Allow-Origin`, so the globe's cloud cover simply never arrived
+/// on the web build. Our own services are not the problem (`tiles`, `overpass`,
+/// `3dbag` and `nominatim` under `garage44.eu` all answer `*`); third parties are.
+///
+/// Rather than ask each one for permission we stop being a third party to them:
+/// the browser build requests `/up/<name>/…` on its **own** origin, where CORS
+/// does not apply at all, and something server-side does the outward fetch. That
+/// is ADR-034's position — the fix is one origin, not sprinkled CORS headers — and
+/// it also puts identification back in reach, since a browser silently drops the
+/// `User-Agent` that several upstreams require.
+///
+/// The server side is a deployment detail this function deliberately does not
+/// know: `trunk serve` mirrors these paths with `[[proxy]]` entries in
+/// `Trunk.toml`, and production path-mounts them in the same Caddy that already
+/// fronts the rest. Native builds skip the hop entirely and go straight out.
+///
+/// `path` must start with `/` and may carry a query string.
+#[must_use]
+pub fn upstream_url(name: &str, origin: &str, path: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("/up/{name}{path}")
+    } else {
+        format!("{origin}{path}")
+    }
+}
+
 /// HTTP method. Only the two the client uses.
 // `Post` (and the `post`/`body` builders) are the provider API for the byte/POST
 // fetchers still being migrated onto this seam; adopted incrementally per ADR-033.
