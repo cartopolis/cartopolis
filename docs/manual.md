@@ -9,6 +9,7 @@ developer tools. For build/run instructions and system requirements, see the
   - [Camera modes](#camera-modes)
   - [From the street to space](#from-the-street-to-space)
   - [Going somewhere specific](#going-somewhere-specific)
+  - [Sharing a place](#sharing-a-place)
 - [Authoring objects](#authoring-objects)
 - [Panels and layers](#panels-and-layers)
 - [Developer panel](#developer-panel)
@@ -40,7 +41,13 @@ cargo run -p viberfox -- --offline
 ```
 
 The world opens at street level, standing on a patch of OpenStreetMap-backed
-ground with imported 3D buildings around you.
+ground with imported 3D buildings around you — or where you left off, since the
+last location and camera are restored on startup. To open somewhere specific
+instead, name a place at launch (see [Sharing a place](#sharing-a-place)):
+
+```bash
+VIBERFOX_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°" cargo run -p viberfox
+```
 
 ## Getting around
 
@@ -89,6 +96,35 @@ Use the **search bar** in the top menu to jump to a place by name. The world is
 anchored in real geography, so moving the anchor re-streams the ground tiles,
 buildings, and data layers for wherever you land. Save spots you return to from
 the **Bookmarks** panel.
+
+### Sharing a place
+
+The **⧉** button on the status overlay copies where you are *and* how you are
+looking at it:
+
+```
+53.21940, 6.56650, 120m, -12.5°, 45.0°
+```
+
+That is latitude, longitude, altitude, and the camera's pitch and yaw. Paste it
+into the search bar to fly back to the exact framing (the degree signs and the
+`m` are optional on the way back in — a bare `53.2194, 6.5665` still works, and
+a pair without angles just keeps your current view).
+
+The same string opens a session somewhere:
+
+- **Web:** `?place=53.21940,6.56650,120,-12.5,45` on the page URL.
+- **Desktop:** `VIBERFOX_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°"` in the
+  environment.
+
+A launch place takes precedence over the restored last location, so a shared
+link always lands where it says. Everything after the coordinates is optional:
+`?place=53.2194,6.5665` picks the spot and leaves the rest alone.
+
+In the browser, ⧉ copies to the system clipboard as it does on the desktop (over
+https or on localhost — the browser's Clipboard API refuses a plain-http page).
+Pasting *into* the app is desktop-only for now, so on the web the way back to a
+place is the URL rather than the search bar.
 
 ## Authoring objects
 

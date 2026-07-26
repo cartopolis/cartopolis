@@ -692,12 +692,12 @@ fn main() {
             // camera_controls reads it this frame.
             // Both skipped under `--shot`: a scripted capture places its own
             // camera and must not overwrite the interactive session's location.
-            systems::user_store::restore_last_location
+            systems::user_store::restore_start_location
                 .after(systems::map_stream::init_map_stream)
                 .run_if(not(systems::shot_harness::harness_active)),
             systems::geo_nav::apply_teleport
                 .after(systems::geo_nav::drive_geocode)
-                .after(systems::user_store::restore_last_location)
+                .after(systems::user_store::restore_start_location)
                 .before(systems::free_camera::camera_controls),
             systems::user_store::autosave_user_store
                 .run_if(not(systems::shot_harness::harness_active)),
@@ -1008,18 +1008,36 @@ pub fn env_flag(name: &str) -> bool {
 /// the ways to say otherwise.
 #[cfg(target_arch = "wasm32")]
 fn query_flag(name: &str) -> bool {
-    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
-        return false;
-    };
-    let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
-        return false;
-    };
+    query_value(name)
+        .is_some_and(|v| v.is_empty() || (v != "0" && !v.eq_ignore_ascii_case("false")))
+}
+
+/// A settings *value* (not a switch), read from the environment on desktop and
+/// from the page's query string on the web — the same two sources, and the same
+/// naming rules, as [`env_flag`]. `VIBERFOX_PLACE="53.2, 6.5, 120m"` on desktop,
+/// `?place=53.2,6.5,120m` in the browser.
+pub fn env_value(name: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var(name).ok().filter(|v| !v.is_empty())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        query_value(name).filter(|v| !v.is_empty())
+    }
+}
+
+/// Look `name` up in `window.location.search`, accepting the `VIBERFOX_`-prefixed
+/// spelling and the bare one, in either case.
+#[cfg(target_arch = "wasm32")]
+fn query_value(name: &str) -> Option<String> {
+    let search = web_sys::window().and_then(|w| w.location().search().ok())?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
     let short = name.strip_prefix("VIBERFOX_").unwrap_or(name);
     [name, short]
         .iter()
         .flat_map(|k| [k.to_ascii_uppercase(), k.to_ascii_lowercase()])
         .find_map(|k| params.get(&k))
-        .is_some_and(|v| v.is_empty() || (v != "0" && !v.eq_ignore_ascii_case("false")))
 }
 
 fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {

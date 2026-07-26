@@ -185,6 +185,18 @@ impl Teleport {
     pub fn geo(lat: f64, lng: f64, altitude: Option<f64>) -> Self {
         Self { lat, lng, altitude, pose: None }
     }
+
+    /// A jump to a parsed location (pasted coordinates, or the `?place=` launch
+    /// URL). Restores the view too when the fix carries look angles — that is
+    /// what makes a copied place a shareable *view*, not just a spot.
+    pub fn fix(fix: LocationFix) -> Self {
+        Self {
+            lat: fix.lat,
+            lng: fix.lng,
+            altitude: fix.altitude,
+            pose: fix.look.map(|(pitch, yaw)| CameraPose::free_look(pitch, yaw)),
+        }
+    }
 }
 
 /// One visited location in the browser-style Back/Forward history. Records the
@@ -236,6 +248,30 @@ impl CameraPose {
             orbit_distance: cs.orbit_distance,
             orbit_yaw: cs.orbit_yaw,
             orbit_pitch: cs.orbit_pitch,
+        }
+    }
+
+    /// A free-flying camera looking in a given direction, from the (pitch, yaw)
+    /// degrees a copied place carries.
+    ///
+    /// Free mode whatever the copy was made in, because a copied place records a
+    /// *picture*, not a control scheme: the angles come off the live camera
+    /// transform, so a free camera put at that spot pointing that way reproduces
+    /// the view even if it was framed from the orbit camera. Restoring the mode
+    /// too would mean carrying its parameterisation (orbit focus, tier, heading)
+    /// through a five-number string — that is what bookmarks are for.
+    ///
+    /// The orbit fields get `CameraState`'s defaults rather than zeroes: `apply`
+    /// writes them unconditionally, and a zero follow distance would put the
+    /// camera inside the avatar's head the next time the user pressed Tab.
+    pub fn free_look(pitch_deg: f32, yaw_deg: f32) -> Self {
+        Self {
+            mode: "free".to_string(),
+            free_rotation: [pitch_deg.to_radians(), yaw_deg.to_radians()],
+            azimuth: 0.0,
+            pitch: std::f32::consts::PI / 6.0,
+            distance: 6.0,
+            ..Default::default()
         }
     }
 
@@ -358,24 +394,23 @@ pub fn camera_geo(
     }
 }
 
+/// One coordinate component, with an optional hemisphere letter ("6.5665W").
+fn coord(s: &str, pos: char, neg: char) -> Option<f64> {
+    let s = s.trim();
+    let (body, sign) = if let Some(b) = s.strip_suffix([pos, pos.to_ascii_lowercase()]) {
+        (b, 1.0)
+    } else if let Some(b) = s.strip_suffix([neg, neg.to_ascii_lowercase()]) {
+        (b, -1.0)
+    } else {
+        (s, 1.0)
+    };
+    body.trim().parse::<f64>().ok().map(|v| v * sign)
+}
+
 /// Parse a pasted coordinate pair: "53.21940, 6.56650", "53.2194 6.5665",
 /// "53.2194N, 6.5665E", "(-33.9, 18.4)". Returns (lat, lng) when both values
 /// are in range.
 pub fn parse_lat_lng(input: &str) -> Option<(f64, f64)> {
-    fn coord(s: &str, pos: char, neg: char) -> Option<f64> {
-        let s = s.trim();
-        let (body, sign) = if let Some(b) =
-            s.strip_suffix([pos, pos.to_ascii_lowercase()])
-        {
-            (b, 1.0)
-        } else if let Some(b) = s.strip_suffix([neg, neg.to_ascii_lowercase()]) {
-            (b, -1.0)
-        } else {
-            (s, 1.0)
-        };
-        body.trim().parse::<f64>().ok().map(|v| v * sign)
-    }
-
     let cleaned = input.trim().replace(['(', ')', '°'], " ");
     let parts: Vec<&str> = cleaned
         .split([',', ';'])
@@ -390,16 +425,87 @@ pub fn parse_lat_lng(input: &str) -> Option<(f64, f64)> {
         .then_some((lat, lng))
 }
 
-/// Like [`parse_lat_lng`], but also accepts a third altitude component
-/// ("53.2194, 6.5665, 120" or "… 120m"), as produced by the HUD copy button.
-pub fn parse_location(input: &str) -> Option<(f64, f64, Option<f64>)> {
-    if let Some((lat, lng)) = parse_lat_lng(input) {
-        return Some((lat, lng, None));
+/// A parsed location: a spot, and as much of the view as the text carried.
+/// Produced by [`parse_location`] from pasted text or the `?place=` launch URL.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LocationFix {
+    pub lat: f64,
+    pub lng: f64,
+    /// Free-camera altitude to arrive at; `None` keeps the current one.
+    pub altitude: Option<f64>,
+    /// Camera look angles in degrees, (pitch, yaw) — the `look` convention of
+    /// `docs/shots.toml`. `None` keeps the current orientation.
+    pub look: Option<(f32, f32)>,
+}
+
+/// Altitude range a pasted/launch fix may ask for, in metres. The floor keeps a
+/// "0" from burying the camera; the ceiling is well above the globe handoff.
+const FIX_ALT_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100_000.0;
+
+/// Like [`parse_lat_lng`], but also accepts the trailing altitude and camera
+/// look angles the HUD copy button writes:
+/// "53.21940, 6.56650", "53.21940, 6.56650, 120m",
+/// "53.21940, 6.56650, 120m, -12.5°, 45.0°".
+///
+/// The degree signs and the `m` are decoration — the string is meant to be
+/// readable in a chat message and pasteable into the search bar or a `?place=`
+/// URL, so every unit suffix is optional on the way back in.
+pub fn parse_location(input: &str) -> Option<LocationFix> {
+    let cleaned = input.trim().replace(['(', ')', '°'], " ");
+    let parts: Vec<&str> = cleaned
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    // A single segment is the whitespace-separated form ("53.2194N 6.5665E");
+    // anything else puts lat and lng in the first two segments.
+    let (lat, lng) = match parts.len() {
+        0 => return None,
+        1 => parse_lat_lng(parts[0])?,
+        _ => {
+            let lat = coord(parts[0], 'N', 'S')?;
+            let lng = coord(parts[1], 'E', 'W')?;
+            if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+                return None;
+            }
+            (lat, lng)
+        }
+    };
+    let altitude = match parts.get(2) {
+        Some(a) => Some(
+            a.trim_end_matches(['m', 'M'])
+                .trim()
+                .parse::<f64>()
+                .ok()?
+                .clamp(*FIX_ALT_RANGE.start(), *FIX_ALT_RANGE.end()),
+        ),
+        None => None,
+    };
+    // Look angles only count as a pair — half of one is a malformed string, not
+    // a fix with a pitch.
+    let look = match (parts.get(3), parts.get(4)) {
+        (Some(p), Some(y)) => Some((p.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?)),
+        (Some(_), None) => return None,
+        _ => None,
+    };
+    Some(LocationFix { lat, lng, altitude, look })
+}
+
+/// Where this session should start, if the launch asked for a specific place:
+/// `?place=53.21940,6.56650,120m,-12.5,45` on the web, `VIBERFOX_PLACE` in the
+/// environment on desktop. The value is exactly what the HUD's ⧉ button copies,
+/// so a shared place is a shareable URL.
+///
+/// Takes precedence over the persisted last location (see
+/// `user_store::restore_start_location`) — a link that names a place and then
+/// drops you where you left off would be no link at all.
+pub fn launch_place() -> Option<LocationFix> {
+    let raw = crate::env_value("VIBERFOX_PLACE")?;
+    let fix = parse_location(&raw);
+    if fix.is_none() {
+        tracing::warn!(place = %raw, "ignoring unparseable launch place");
     }
-    let (coords, alt) = input.trim().rsplit_once([',', ';'])?;
-    let alt: f64 = alt.trim().trim_end_matches(['m', 'M']).trim().parse().ok()?;
-    let (lat, lng) = parse_lat_lng(coords)?;
-    Some((lat, lng, Some(alt.clamp(1.0, 100_000.0))))
+    fix
 }
 
 // ─── Nominatim lookup (background thread) ────────────────────────────────────
@@ -564,8 +670,8 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
     let submitted =
         field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
-        if let Some((lat, lng, alt)) = parse_location(&nav.query) {
-            nav.pending_teleport = Some(Teleport::geo(lat, lng, alt));
+        if let Some(fix) = parse_location(&nav.query) {
+            nav.pending_teleport = Some(Teleport::fix(fix));
             nav.show_suggestions = false;
         } else if nav.query.trim() == nav.last_sent && !nav.suggestions.is_empty() {
             let first = nav.suggestions[0].clone();
@@ -584,14 +690,20 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
 
     // Suggestion dropdown under the field. Pasted coordinates get a single
     // direct "Go to" entry instead of a lookup.
-    let coord_alt = parse_location(&nav.query);
-    let coord_entry = coord_alt.map(|(lat, lng, alt)| GeoSuggestion {
-        label: match alt {
-            Some(a) => format!("Go to {:.5}, {:.5} at {:.0} m", lat, lng, a),
-            None => format!("Go to {:.5}, {:.5}", lat, lng),
+    let coord_fix = parse_location(&nav.query);
+    let coord_entry = coord_fix.map(|fix| GeoSuggestion {
+        label: {
+            let mut label = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
+            if let Some(a) = fix.altitude {
+                label.push_str(&format!(" at {a:.0} m"));
+            }
+            if fix.look.is_some() {
+                label.push_str(" (with view)");
+            }
+            label
         },
-        lat,
-        lng,
+        lat: fix.lat,
+        lng: fix.lng,
     });
     let has_content = coord_entry.is_some()
         || !nav.suggestions.is_empty()
@@ -634,11 +746,13 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
         });
 
     if let Some(s) = picked {
-        // The direct coordinate entry keeps its pasted altitude.
-        let alt = coord_alt
-            .filter(|(lat, lng, _)| *lat == s.lat && *lng == s.lng)
-            .and_then(|(_, _, a)| a);
-        nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, alt));
+        // The direct coordinate entry keeps its pasted altitude and view; a
+        // Nominatim hit is only a spot.
+        let fix = coord_fix.filter(|f| f.lat == s.lat && f.lng == s.lng);
+        nav.pending_teleport = Some(match fix {
+            Some(fix) => Teleport::fix(fix),
+            None => Teleport::geo(s.lat, s.lng, None),
+        });
         nav.query = s.label;
         nav.show_suggestions = false;
         nav.teleport_on_result = false;
@@ -972,19 +1086,56 @@ mod tests {
 
     #[test]
     fn parse_location_variants() {
-        assert_eq!(parse_location("53.2194, 6.5665"), Some((53.2194, 6.5665, None)));
+        let fix = |lat, lng, altitude, look| Some(LocationFix { lat, lng, altitude, look });
+        assert_eq!(parse_location("53.2194, 6.5665"), fix(53.2194, 6.5665, None, None));
         assert_eq!(
             parse_location("53.21940, 6.56650, 120"),
-            Some((53.2194, 6.5665, Some(120.0)))
+            fix(53.2194, 6.5665, Some(120.0), None)
         );
         assert_eq!(
             parse_location("53.2194, 6.5665, 120m"),
-            Some((53.2194, 6.5665, Some(120.0)))
+            fix(53.2194, 6.5665, Some(120.0), None)
         );
-        assert_eq!(parse_location("53.2194N 6.5665E"), Some((53.2194, 6.5665, None)));
+        assert_eq!(parse_location("53.2194N 6.5665E"), fix(53.2194, 6.5665, None, None));
         assert_eq!(parse_location("Groningen"), None);
         assert_eq!(parse_location("300, 4"), None); // latitude out of range
-        assert_eq!(parse_location("1, 2, 3, 4"), None);
+        assert_eq!(parse_location("1, 2, 3, 4"), None); // a lone pitch is malformed
+    }
+
+    #[test]
+    fn parse_location_with_camera_rotation() {
+        // What the HUD copy button writes, decoration and all.
+        assert_eq!(
+            parse_location("53.21940, 6.56650, 120m, -12.5°, 45.0°"),
+            Some(LocationFix {
+                lat: 53.2194,
+                lng: 6.5665,
+                altitude: Some(120.0),
+                look: Some((-12.5, 45.0)),
+            })
+        );
+        // And the same string as it survives a URL, without the units.
+        assert_eq!(
+            parse_location("53.2194,6.5665,120,-12.5,45"),
+            parse_location("53.21940, 6.56650, 120m, -12.5°, 45.0°")
+        );
+        assert_eq!(parse_location("53.2194, 6.5665, 120, x, 45"), None);
+    }
+
+    #[test]
+    fn location_fix_teleport_restores_the_view() {
+        let fix = parse_location("53.2194, 6.5665, 120, -12.5, 45").unwrap();
+        let tp = Teleport::fix(fix);
+        assert_eq!(tp.altitude, Some(120.0));
+        let mut cs = CameraState::default();
+        tp.pose.unwrap().apply(&mut cs);
+        assert!(matches!(cs.mode, CameraMode::Free));
+        assert!((cs.free_camera_rotation.x - (-12.5f32).to_radians()).abs() < 1e-6);
+        assert!((cs.free_camera_rotation.y - 45f32.to_radians()).abs() < 1e-6);
+        // A fix without angles leaves the camera alone.
+        assert!(Teleport::fix(parse_location("53.2194, 6.5665").unwrap())
+            .pose
+            .is_none());
     }
 
     #[test]
