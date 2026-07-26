@@ -143,8 +143,22 @@ panic = "abort"
 # Thin LTO over 16 codegen units rather than the shipped profile's fat LTO over
 # one: near-identical frame times for a fraction of the link, which is what makes
 # this usable as a dev loop when a rebuild already has to re-do std.
+# `debug = false` is not enough on its own: it drops DWARF, but the wasm `name`
+# section is not DWARF and survives it. Measured on the module as built, that
+# section was 43.4 MB of a 114.6 MB file — 38% of everything the browser
+# downloads, parses and hands to its compiler, to hold nothing but the mangled
+# names of 181k monomorphised functions. Stripping takes it to 71.3 MB (21.3 MB
+# gzipped to 17.5 MB).
+#
+# The cost is that a browser stack trace becomes a list of indices. That is a
+# real loss while the web build is still being debugged, so it is one env var to
+# get back for a single build, without editing this file or invalidating anyone
+# else's cache:
+#
+#     CARGO_PROFILE_WEB_RELEASE_STRIP=none ./crates/viberfox/serve-threads.sh
 [profile.web-release]
 inherits = "release"
 lto = "thin"
 codegen-units = 16
 debug = false
+strip = "symbols"

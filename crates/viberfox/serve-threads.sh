@@ -51,5 +51,13 @@ cd "$(dirname "$0")"
 # `dev-bevy` puts dependencies at opt-level 3 and leaves our own crate cheap to
 # rebuild. Not `--release`: that pulls `wasm-opt` from GitHub (and fat LTO), which
 # is a long detour for a dev loop.
-exec trunk "${@:-serve}" --cargo-profile "${PROFILE:-dev-bevy}" \
-    --port "${PORT:-8195}" --address 127.0.0.1
+#
+# `--port`/`--address` are serve-only flags — `trunk build` rejects them outright
+# rather than ignoring them, so a plain `./serve-threads.sh build` (which is what
+# a size or CI check wants) died on argument parsing before compiling anything.
+cmd="${1:-serve}"
+shift || true
+if [ "$cmd" = "serve" ]; then
+    set -- --port "${PORT:-8195}" --address 127.0.0.1 "$@"
+fi
+exec trunk "$cmd" --cargo-profile "${PROFILE:-dev-bevy}" "$@"
