@@ -209,12 +209,28 @@ pub fn update_lod22(
     let results = lod.results.clone();
     while let Some((cx, cy)) = lod.dispatch.next(now) {
         let results = results.clone();
+        // Two halves on two executors, matching the tile path (ADR-033): the fetch
+        // is awaited here — free on wasm, where this is the main thread but the
+        // browser does the transfer — while the parse and mesh, which are pure
+        // arithmetic and cost a core, go to `platform::workers`. Running them here
+        // is what put `serde_json` at ~46% of the main thread's non-idle time.
         IoTaskPool::get()
             .spawn(async move {
-                let built = build_lod22_cell(cx, cy, ax, ay, z, lat).await;
-                if let Ok(mut g) = results.lock() {
-                    g.push(((cx, cy), built));
-                }
+                let text = match fetch_lod22_text(cx, cy).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        if let Ok(mut g) = results.lock() {
+                            g.push(((cx, cy), Err(e)));
+                        }
+                        return;
+                    }
+                };
+                crate::platform::workers::submit(Box::new(move || {
+                    let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat);
+                    if let Ok(mut g) = results.lock() {
+                        g.push(((cx, cy), built));
+                    }
+                }));
             })
             .detach();
     }
@@ -270,6 +286,16 @@ pub fn update_lod22(
             Ok(None) => {} // empty cell; stays requested so it isn't re-queried
             Err(err) => {
                 tracing::warn!(cell = ?c, error = %err, "lod22 cell failed");
+                // Drop any cached copy. The fetch no longer validates a cache hit
+                // by parsing it (that parse moved to a worker), so this is what
+                // stops a corrupt entry being re-served forever: whatever failed,
+                // the stored text is the one thing we can invalidate. Harmless
+                // when the failure came from the network instead — the key simply
+                // isn't there.
+                let key = cell_cache_key(c.0, c.1);
+                IoTaskPool::get()
+                    .spawn(async move { storage::remove(&key).await })
+                    .detach();
                 *lod.failed.entry(c).or_insert(0) += 1;
                 lod.requested.remove(&c); // allow a bounded re-queue later
             }
@@ -313,7 +339,20 @@ pub fn update_lod22(
 
 /// Fetch one cell (disk-cached) and build its merged LoD2.2 mesh, anchored to the
 /// cell's own BigSpace grid cell. Runs on the worker thread. `None` if empty.
-async fn build_lod22_cell(
+/// The CPU half: JSON text in, finished mesh out. Pure — no I/O, no globals, and
+/// every input owned — which is what lets [`update_lod22`] hand it to
+/// [`platform::workers`] instead of running it on the thread that renders.
+///
+/// That split is the whole point of the function existing separately. Profiling
+/// the web build put `serde_json` at ~46% of the main thread's non-idle time,
+/// with `drop_glue::<Value>` the single largest entry, because this ran inside an
+/// `IoTaskPool` future — and on wasm `IoTaskPool` is the main thread, Bevy having
+/// no `multi_threaded` there. Awaiting a fetch on it costs nothing; parsing a
+/// megabyte of CityJSON and meshing it costs a frame.
+///
+/// [`platform::workers`]: crate::platform::workers
+fn build_lod22_from_text(
+    text: &str,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -321,7 +360,7 @@ async fn build_lod22_cell(
     z: u32,
     lat: f64,
 ) -> Result<Option<Lod22Build>, String> {
-    let elements = fetch_lod22_cell(cx, cy).await?;
+    let elements = parse_lod22(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LOD22_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -397,20 +436,22 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 /// Fetch one LoD2.2 cell from the host, cached through the storage seam. Runs on
 /// an `IoTaskPool` task — no thread, no `ureq`, no `std::fs` (ADR-033), so it is
 /// wasm-buildable.
-async fn fetch_lod22_cell(cx: i64, cy: i64) -> Result<Vec<Bldg>, String> {
+/// The network half: cache lookup, fetch, cache write — and no parsing.
+///
+/// It used to parse a cache hit to validate it, discarding the entry if that
+/// failed. That check has moved to the caller, which now knows a parse failed and
+/// evicts the key then; doing it here would mean parsing on this thread, which is
+/// exactly what [`build_lod22_from_text`] exists to avoid.
+async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key(cx, cy);
     if let Some(cached) = storage::get_string(&key).await {
-        if let Ok(b) = parse_lod22(&cached) {
-            return Ok(b);
-        }
-        storage::remove(&key).await;
+        return Ok(cached);
     }
     let url = format!("{}/lod22/{}/{}/{}.json", tdbag_url(), LOD22_ZOOM, cx, cy);
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    let buildings = parse_lod22(&text)?;
     storage::put(&key, text.as_bytes()).await;
-    Ok(buildings)
+    Ok(text)
 }
 
 /// Parse a LoD2.2 cell file: `{"elements":[{p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}`.
