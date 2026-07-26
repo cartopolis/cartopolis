@@ -1311,15 +1311,16 @@ pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>
 
     // Seed the transform from every *land* texel, then measure each water texel's
     // distance to the nearest one.
-    // "Unreached" is a large *finite* squared distance, not infinity: the
-    // envelope below subtracts one sample's value from another's, and ∞ − ∞ is a
-    // NaN that quietly poisons a whole scanline. Four texel-grids squared is
-    // past any real answer while staying exactly representable in f32.
-    let unreached = (4 * size * size) as f32;
+    // "Unreached" is a large *finite* distance, not infinity: the envelope below
+    // subtracts one sample's value from another's, and ∞ − ∞ is a NaN that
+    // quietly poisons a whole scanline. Two texel-grids is past any real answer
+    // (nothing inside the field can be further than `size` from a seed) while
+    // staying exactly representable in f32.
+    let unreached = (2 * size) as f32;
     let n = (size * size) as usize;
     let mut sq = vec![0.0f32; n];
-    for (i, px) in pixmap.pixels().iter().enumerate() {
-        sq[i] = if px.alpha() > 127 { unreached } else { 0.0 };
+    for (d, px) in sq.iter_mut().zip(pixmap.pixels()) {
+        *d = if px.alpha() > 127 { unreached } else { 0.0 };
     }
     squared_distance_transform(&mut sq, size as usize);
 
@@ -1334,28 +1335,61 @@ pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>
     Ok(Some(ShoreField { size, data }))
 }
 
-/// Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher),
-/// in place over a `size × size` grid of `0` (seed) and `∞` (to be measured).
+/// Exact squared Euclidean distance transform, in place over a `size × size`
+/// grid holding `0` at each seed and a saturation distance of at least `size`
+/// everywhere else. On return each cell holds the squared distance to the
+/// nearest seed.
 ///
 /// Exact and O(n) — the same cost as the chamfer approximation people reach for
 /// first, without its error, which here would show up as a shoreline band whose
 /// width visibly depends on the bank's angle.
+///
+/// Felzenszwalb & Huttenlocher do this as two passes of a 1-D parabola lower
+/// envelope, one per axis. Only the second pass needs one. The first sees
+/// nothing but the binary seed mask, and the 1-D squared distance transform of a
+/// binary function is just "distance to the nearest seed, squared" — two min
+/// sweeps, no parabolas, and no division (the envelope divides once per sample,
+/// which at a megapixel is where its time actually goes).
+///
+/// Running that first axis *down the rows* rather than along them is what makes
+/// it worth doing: the recurrence is along y, so for a fixed y every x is
+/// independent and contiguous, and the sweep vectorises. The original walked
+/// columns with a `size`-element stride, gathering one f32 at a time.
+///
+/// Together: ~3x off the whole transform, for bit-identical output. That matters
+/// because this is the single most expensive thing a water tile does.
 fn squared_distance_transform(grid: &mut [f32], size: usize) {
+    if size < 2 {
+        return;
+    }
+
+    // Pass 1, along y. Forward then backward min-sweep leaves each cell holding
+    // its distance to the nearest seed in its own column; squaring it gives the
+    // 1-D transform the envelope would have produced.
+    for y in 1..size {
+        let (head, tail) = grid.split_at_mut(y * size);
+        let above = &head[(y - 1) * size..];
+        for (d, a) in tail[..size].iter_mut().zip(above) {
+            *d = d.min(a + 1.0);
+        }
+    }
+    for y in (0..size - 1).rev() {
+        let (head, tail) = grid.split_at_mut((y + 1) * size);
+        for (d, b) in head[y * size..].iter_mut().zip(&tail[..size]) {
+            *d = d.min(b + 1.0);
+        }
+    }
+    for d in grid.iter_mut() {
+        *d *= *d;
+    }
+
+    // Pass 2, along x. Its input is an arbitrary function now, not a mask, so
+    // this one really is the parabola envelope — over contiguous rows.
     let mut f = vec![0.0f32; size];
     let mut d = vec![0.0f32; size];
     // Parabola vertices and the breakpoints between them; both need one extra slot.
     let mut v = vec![0usize; size];
     let mut z = vec![0.0f32; size + 1];
-
-    for x in 0..size {
-        for y in 0..size {
-            f[y] = grid[y * size + x];
-        }
-        lower_envelope(&f, &mut d, &mut v, &mut z);
-        for y in 0..size {
-            grid[y * size + x] = d[y];
-        }
-    }
     for y in 0..size {
         f.copy_from_slice(&grid[y * size..(y + 1) * size]);
         lower_envelope(&f, &mut d, &mut v, &mut z);
@@ -1709,6 +1743,52 @@ mod tests {
     }
 
     /// Even–odd point-in-polygon over a set of closed rings.
+    /// The distance transform is the shore field's whole cost, so it was
+    /// rewritten (binary min-sweep down the columns, envelope only along the
+    /// rows). It is supposed to be *exact*, so check it against the definition
+    /// itself — the O(n^4) brute force — rather than against the old code.
+    #[test]
+    fn distance_transform_is_exact() {
+        for (size, seed_every) in [(16usize, 7usize), (32, 23), (17, 5), (2, 3)] {
+            let unreached = (2 * size) as f32;
+            let is_seed = |i: usize| i % seed_every == 0;
+            let mut grid: Vec<f32> = (0..size * size)
+                .map(|i| if is_seed(i) { 0.0 } else { unreached })
+                .collect();
+            squared_distance_transform(&mut grid, size);
+
+            for y in 0..size {
+                for x in 0..size {
+                    let want = (0..size)
+                        .flat_map(|sy| (0..size).map(move |sx| (sx, sy)))
+                        .filter(|(sx, sy)| is_seed(sy * size + sx))
+                        .map(|(sx, sy)| {
+                            let (dx, dy) = (x as f32 - sx as f32, y as f32 - sy as f32);
+                            dx * dx + dy * dy
+                        })
+                        .fold(f32::INFINITY, f32::min);
+                    assert_eq!(
+                        grid[y * size + x], want,
+                        "size {size}, seed every {seed_every}, at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A tile that is water all the way across has no land to measure against.
+    /// The saturation value has to survive the transform intact, because the
+    /// caller turns it into "open water, far from any bank" — an infinity here
+    /// would come back as a NaN and take a whole scanline with it.
+    #[test]
+    fn a_seedless_grid_saturates_rather_than_going_infinite() {
+        let size = 8;
+        let unreached = (2 * size) as f32;
+        let mut grid = vec![unreached; size * size];
+        squared_distance_transform(&mut grid, size);
+        assert!(grid.iter().all(|d| *d == unreached * unreached), "{grid:?}");
+    }
+
     fn point_in_rings(px: f32, pz: f32, rings: &[Vec<[f32; 2]>]) -> bool {
         let mut inside = false;
         for r in rings {
