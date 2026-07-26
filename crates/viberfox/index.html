@@ -7,6 +7,58 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <title>Viberfox</title>
+    <!-- The WebGPU gate must come BEFORE the `rel="rust"` link below; see the
+         comment in it for why the order is load-bearing rather than stylistic. -->
+    <script>
+      // WebGPU is a hard requirement (ADR-033): bevy's `webgpu` feature overrides
+      // `webgl2`, so there is no fallback renderer left to degrade to — and we do
+      // not want one, since the WebGL2 path is what cost ~10 s per frame.
+      //
+      // Without this gate the failure is thoroughly misleading. wgpu reports
+      // `canvas.getContext() returned null; webgpu not available or canvas already
+      // in use`, which reads as a canvas bug, and it arrives as a Rust panic from
+      // deep inside bevy_render — after the browser has downloaded and compiled
+      // ~70 MB of wasm it was never going to be able to run.
+      //
+      // ORDER MATTERS. Trunk replaces the `<link data-trunk rel="rust"/>` element
+      // *in place* with its module loader, and emits the wasm `<link rel=preload>`
+      // at the end of <head>. Both must therefore come after this script: aborting
+      // the parser here means neither is ever reached, and nothing is fetched. Put
+      // this after the rust link and the loader is parsed first, at which point
+      // only `window.stop()`'s cancellation of already-queued work saves you —
+      // which is a coincidence, not a design.
+      //
+      // `document.write` + `window.stop()` rather than a nicer DOM build: both are
+      // synchronous, and anything deferred (DOMContentLoaded, an `await`) hands
+      // control back to the parser, which is precisely what must not happen.
+      //
+      // Scope: this catches "the browser has no WebGPU at all", which is the case
+      // actually seen in the wild (Firefox 153/Linux: `navigator.gpu` absent). It
+      // cannot catch "WebGPU exists but yields no adapter" — that needs
+      // `await navigator.gpu.requestAdapter()`, and awaiting anything here means
+      // letting the parser run on. Those still surface as the wgpu panic.
+      if (!navigator.gpu) {
+        document.write(
+          '<style>' +
+            'body{margin:0;background:#111}' +
+            '.u{color:#ddd;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
+            '.u h1{font-size:1.3rem;font-weight:600}' +
+            '.u code{background:#222;padding:.1em .4em;border-radius:3px}' +
+          '</style>' +
+          '<div class="u">' +
+            "<h1>This browser can't run Viberfox</h1>" +
+            '<p>Viberfox renders with <b>WebGPU</b>, which this browser does not ' +
+            'expose (<code>navigator.gpu</code> is missing). Nothing has been ' +
+            'downloaded.</p>' +
+            '<p>Chromium-based browsers support it. Firefox does too, but not yet ' +
+            'by default on every platform — check <code>about:support</code> under ' +
+            '<i>Graphics</i>, and <code>dom.webgpu.enabled</code> in ' +
+            '<code>about:config</code>.</p>' +
+          '</div>'
+        );
+        window.stop();
+      }
+    </script>
     <!-- Build this crate's `viberfox` bin for wasm, Phase-1 Viewer (no sim,
          so no default `solo` feature). ADR-031/033. -->
     <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features />
@@ -27,6 +79,21 @@
         width: 100%;
         height: 100%;
       }
+      .unsupported {
+        color: #ddd;
+        background: #111;
+        font: 15px/1.6 system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 12vh auto;
+        padding: 0 1.5rem;
+      }
+      .unsupported h1 { font-size: 1.3rem; font-weight: 600; }
+      .unsupported code {
+        background: #222;
+        padding: 0.1em 0.4em;
+        border-radius: 3px;
+      }
+      .unsupported a { color: #7ab7ff; }
     </style>
   </head>
   <body></body>
