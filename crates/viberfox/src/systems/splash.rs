@@ -52,13 +52,6 @@ pub struct BootSplash {
     fonts_ready: bool,
 }
 
-impl BootSplash {
-    /// True once the splash has fully gone. Cheap for other systems to gate on.
-    pub fn finished(&self) -> bool {
-        self.finished
-    }
-}
-
 /// Draw the splash until the first map tiles are up, then fade it out.
 pub fn boot_splash(
     mut splash: ResMut<BootSplash>,
@@ -96,6 +89,11 @@ pub fn boot_splash(
     };
 
     let ctx = egui.ctx_mut();
+    // Whether the custom family was already installed *before* this frame.
+    // `set_fonts` only takes effect from the next pass, so painting with the
+    // family on the frame that installs it panics in epaint with
+    // "FontFamily::Name(..) is not bound to any fonts".
+    let wordmark_bound = splash.fonts_ready;
     if !splash.fonts_ready {
         // Registered as its *own* family rather than pushed onto Proportional,
         // so the wordmark gets Jakarta and every other panel in the app keeps
@@ -160,7 +158,14 @@ pub fn boot_splash(
         egui::pos2(c.x, c.y + 24.0),
         egui::Align2::CENTER_CENTER,
         "Viberfox",
-        egui::FontId::new(40.0, egui::FontFamily::Name(WORDMARK_FAMILY.into())),
+        // Falls back for exactly one frame, and for the same reason the CSS
+        // keeps a `system-ui` fallback: better to draw the wordmark in the
+        // default face than not at all.
+        if wordmark_bound {
+            egui::FontId::new(40.0, egui::FontFamily::Name(WORDMARK_FAMILY.into()))
+        } else {
+            egui::FontId::proportional(40.0)
+        },
         egui::Color32::from_rgba_unmultiplied(232, 230, 225, a(1.0)),
     );
     painter.text(
