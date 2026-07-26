@@ -1,1 +1,55 @@
-assets/models/avatar/characters/*.gltf filter=lfs diff=lfs merge=lfs -text
+# Git LFS — binary assets go to LFS by default.
+#
+# The rule is "by extension, anywhere", not "by directory": the point is that
+# dropping a new texture, model or screenshot in needs no thought and no edit
+# here. `git add` applies the clean filter and the blob lands in LFS.
+#
+# Two things depend on this and fail *silently* if LFS is not fetched, so they
+# are worth knowing before adding a pattern:
+#
+#  1. **Some of these are `include_bytes!`-ed at compile time** — the brand font
+#     (`assets/fonts/*.ttf`, see `systems::theme`), the app icon
+#     (`assets/icon/viberfox.png`), the star catalog (`assets/sky/*.bin`) and the
+#     routing/tile/vegetation test fixture (`crates/viberfox/tests/fixtures/*.mvt`).
+#     Without the smudge filter those are 130-byte pointer files and the build
+#     happily embeds the pointer: the font panics in epaint, the icon doesn't
+#     decode, the fixture tests run on garbage. Every `actions/checkout` in
+#     `.forgejo/workflows/` therefore sets `lfs: true`, and a fresh clone needs
+#     `git lfs install` (see `assets/README.md`).
+#  2. **`docs/img/*.png` is regenerated wholesale** by `cargo shots`. That is the
+#     highest-churn binary in the repo — ~10 MB of screenshots rewritten whenever
+#     the chrome changes — and exactly what LFS exists for.
+#
+# Adding a pattern does not move blobs already in history; it applies from the
+# next commit that touches the file. `git add --renormalize .` converts the ones
+# already tracked, in one ordinary commit.
+
+# 3D models and their buffers
+*.gltf  filter=lfs diff=lfs merge=lfs -text
+*.glb   filter=lfs diff=lfs merge=lfs -text
+*.bin   filter=lfs diff=lfs merge=lfs -text
+
+# Images: source textures, the app icon, and the generated `docs/img` set
+*.png   filter=lfs diff=lfs merge=lfs -text
+*.jpg   filter=lfs diff=lfs merge=lfs -text
+*.jpeg  filter=lfs diff=lfs merge=lfs -text
+*.ico   filter=lfs diff=lfs merge=lfs -text
+*.webp  filter=lfs diff=lfs merge=lfs -text
+*.ktx2  filter=lfs diff=lfs merge=lfs -text
+*.dds   filter=lfs diff=lfs merge=lfs -text
+*.hdr   filter=lfs diff=lfs merge=lfs -text
+*.exr   filter=lfs diff=lfs merge=lfs -text
+
+# Fonts
+*.ttf   filter=lfs diff=lfs merge=lfs -text
+*.otf   filter=lfs diff=lfs merge=lfs -text
+*.woff2 filter=lfs diff=lfs merge=lfs -text
+
+# Audio
+*.ogg   filter=lfs diff=lfs merge=lfs -text
+*.wav   filter=lfs diff=lfs merge=lfs -text
+*.mp3   filter=lfs diff=lfs merge=lfs -text
+
+# Map data fixtures (a vector tile is protobuf, not text)
+*.mvt   filter=lfs diff=lfs merge=lfs -text
+*.pbf   filter=lfs diff=lfs merge=lfs -text

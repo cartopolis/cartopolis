@@ -65,7 +65,7 @@ The sim server runs standalone via `cargo run -p vibe_sim`; configure it with `v
 
 ## Assets
 
-Avatar models under `assets/models/avatar/characters/` are stored in **Git LFS** — run `git lfs install` before cloning, or you get pointer files and no avatars. See [`assets/README.md`](assets/README.md).
+Binary assets — models, textures, fonts, icons, audio, the `docs/img` screenshots — are stored in **Git LFS** by default (`.gitattributes` matches by extension, so a new one needs no setup). Run `git lfs install` before cloning: without it you get pointer files, and since the font, app icon and star catalog are compiled *into* the binary, the build fails at runtime rather than at `cargo build`. See [`assets/README.md`](assets/README.md).
 
 ## Architecture
 

@@ -24,6 +24,12 @@ jobs:
       image: viberfox-ci:latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Required, not an optimisation: the font, app icon, star catalog and
+          # map fixtures are `include_bytes!`-ed, so without the smudge filter
+          # this job compiles 130-byte LFS pointers into the binary and only
+          # finds out at runtime. See `.gitattributes`.
+          lfs: true
 
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:

@@ -40,6 +40,16 @@ or the building geometry.
 
 **Linker:** `.cargo/config.toml` uses `clang + lld` on Linux. If linking is slow, switch to `mold` (`fuse-ld=mold`).
 
+**Git LFS is a build prerequisite, and its failure mode is silent.** `.gitattributes`
+tracks binary assets by extension anywhere in the tree (models, images, fonts, audio,
+`.mvt` fixtures), so a new asset needs no setup — but four of them are
+`include_bytes!`-ed at *compile* time (the brand font in `systems::theme`, the app
+icon, `assets/sky/bright_stars.bin`, the tile fixtures). Clone without `git lfs
+install` and `cargo build` cheerfully embeds 130-byte pointer files: the font panics
+in epaint, the icon doesn't decode, the fixture tests assert against garbage. Every
+`actions/checkout` in `.forgejo/workflows/` sets `lfs: true` for the same reason —
+add it to any new job.
+
 ### The documentation image set (`cargo shots`)
 
 The README images are **data, not a manual ritual**: `docs/shots.toml` remembers
