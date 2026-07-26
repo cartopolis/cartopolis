@@ -109,7 +109,8 @@
     </script>
     <!-- Build this crate's `viberfox` bin for wasm, Phase-1 Viewer (no sim,
          so no default `solo` feature). ADR-031/033. -->
-    <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features />
+    <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features
+          data-initializer="loader.js" />
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
@@ -143,17 +144,10 @@
       }
       .unsupported a { color: #7ab7ff; }
 
-      @font-face {
-        font-family: "Plus Jakarta Sans";
-        src: url("assets/fonts/PlusJakartaSans-SemiBold.ttf") format("truetype");
-        font-weight: 600;
-        font-display: block;
-      }
-
-      /* Boot splash. Covers the canvas until the app has actually drawn — the
-         module is ~70 MB and takes real seconds to fetch and compile, which
-         without this is an unexplained black screen. */
-      #boot {
+      /* Loader, not a splash. The splash is Bevy's and cannot draw until the
+         engine is up; this covers the ~70 MB download and compile before that,
+         and its whole job is to report progress honestly. */
+      #loader {
         position: fixed;
         inset: 0;
         z-index: 10;
@@ -161,91 +155,87 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 1.1rem;
-        background: radial-gradient(120% 90% at 50% 20%, #1d2b34 0%, #0d1114 60%, #08090b 100%);
-        color: #e8e6e1;
-        font: 15px/1.5 system-ui, -apple-system, sans-serif;
-        transition: opacity 0.5s ease;
+        gap: 0.9rem;
+        background: #0d1114;
+        color: #9fb3bf;
+        font: 13px/1.5 system-ui, -apple-system, sans-serif;
+        transition: opacity 0.4s ease;
         padding: 6vh 1.5rem;
         box-sizing: border-box;
       }
-      #boot.done { opacity: 0; pointer-events: none; }
-      #boot img { width: 168px; height: 168px; image-rendering: auto; }
-      #boot h1 {
-        margin: 0;
-        /* Matches systems::splash's wordmark; the fallback matters because the
-           font is a 64 KB fetch and the splash draws before it can land. */
-        font-family: "Plus Jakarta Sans", system-ui, sans-serif;
-        font-size: 2.35rem;
-        font-weight: 600;
-        letter-spacing: 0.01em;
+      #loader.done { opacity: 0; pointer-events: none; }
+      #track {
+        width: min(22rem, 70vw);
+        height: 3px;
+        background: #1b262d;
+        border-radius: 2px;
+        overflow: hidden;
       }
-      #boot .motto {
-        margin: -0.6rem 0 0;
-        color: #9fb3bf;
-        font-size: 1rem;
-        letter-spacing: 0.04em;
+      #bar {
+        width: 0%;
+        height: 100%;
+        background: #5b9dc4;
+        border-radius: 2px;
+        transition: width 0.2s linear;
       }
-      /* Fixed height so the panel does not jump around as lines arrive. */
+      /* Used when the transfer reports no total: motion without a false number. */
+      #bar.indeterminate {
+        width: 35% !important;
+        animation: sweep 1.1s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        0% { margin-left: -35%; }
+        100% { margin-left: 100%; }
+      }
+      #loader[data-state="failed"] #bar { background: #e88b7d; animation: none; }
+      #loader[data-state="failed"] #status { color: #e88b7d; }
       #bootlog {
         width: min(64rem, 100%);
-        height: 12.5rem;
+        height: 9rem;
         overflow: hidden;
         margin: 0;
         padding: 0.6rem 0.8rem;
         box-sizing: border-box;
-        background: rgba(0, 0, 0, 0.35);
-        border: 1px solid #1e2a31;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid #1a242a;
         border-radius: 6px;
-        color: #8fa3ad;
+        color: #6d818b;
         font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: pre-wrap;
         word-break: break-word;
       }
       #bootlog .warn { color: #d8c07a; }
       #bootlog .error { color: #e88b7d; }
-      /* A boot that failed keeps the overlay up — the log is the whole point,
-         and fading it out would leave the user with the black screen again. */
-      #boot.failed { background: #140d0d; }
-      #boot.failed .motto { color: #e88b7d; }
     </style>
   </head>
   <body>
-    <div id="boot">
-      <img src="assets/icon/viberfox.png" alt="" />
-      <h1>Viberfox</h1>
-      <p class="motto">Explore our world</p>
+    <div id="loader" data-state="loading">
+      <div id="track"><div id="bar"></div></div>
+      <div id="status">Downloading engine…</div>
       <pre id="bootlog"></pre>
     </div>
     <script>
       (function () {
-        var boot = document.getElementById("boot");
+        var loader = document.getElementById("loader");
         var log = document.getElementById("bootlog");
-        var motto = boot.querySelector(".motto");
 
         function render() {
           var b = window.__boot;
-          // Only the tail fits, and the tail is the interesting part.
           log.textContent = "";
-          b.lines.slice(-14).forEach(function (l) {
+          b.lines.slice(-10).forEach(function (l) {
             var span = document.createElement("span");
             span.className = l.level;
             span.textContent = l.text + "\n";
             log.appendChild(span);
           });
-          if (b.failed && !boot.classList.contains("failed")) {
-            boot.classList.add("failed");
-            motto.textContent = "Startup failed — the log below is the reason";
-          }
+          if (b.failed) loader.dataset.state = "failed";
         }
         window.__boot.onLine = render;
         render();
 
-        // Hide on evidence of a drawn frame, not on a timer: winit creates the
-        // canvas well before anything is on it, so waiting for the element alone
-        // would swap a splash for a black screen. Two rAFs after the canvas has a
-        // backing buffer is the cheapest honest signal that a frame has gone
-        // through. `?log` keeps it up regardless, for reading the boot sequence.
+        // Hand over on the first drawn frame, not on `onSuccess`: the module
+        // instantiating is not the same as anything being on screen, and hiding
+        // early would show a blank canvas before Bevy's splash appears.
         var keep = /(^|[?&])(log|LOG)(=|&|$)/.test(location.search);
         (function wait() {
           if (window.__boot.failed) return;
@@ -254,8 +244,8 @@
             requestAnimationFrame(function () {
               requestAnimationFrame(function () {
                 if (window.__boot.failed || keep) return;
-                boot.classList.add("done");
-                setTimeout(function () { boot.remove(); }, 600);
+                loader.classList.add("done");
+                setTimeout(function () { loader.remove(); }, 500);
               });
             });
             return;
