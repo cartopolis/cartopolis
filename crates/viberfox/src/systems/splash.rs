@@ -33,14 +33,15 @@ const WORDMARK_TTF: &[u8] =
 /// egui font family name for [`WORDMARK_TTF`].
 const WORDMARK_FAMILY: &str = "jakarta";
 
-/// Shortest time the splash stays up. Without a floor, a warm cache dismisses it
-/// within a frame or two and it reads as a flash of noise rather than a screen.
-const MIN_VISIBLE_S: f32 = 1.4;
+/// Shortest time the splash stays up. Long enough to be read rather than
+/// glimpsed: a warm cache otherwise dismisses it within a frame or two, which
+/// reads as a flash of noise. This is the floor even when the world is ready.
+const MIN_VISIBLE_S: f32 = 3.2;
 /// Hard cap. If the world never becomes ready — no network, a failed tile host —
 /// the splash must still get out of the way rather than hiding the app forever.
-const MAX_VISIBLE_S: f32 = 12.0;
+const MAX_VISIBLE_S: f32 = 18.0;
 /// Fade duration once dismissal is decided.
-const FADE_S: f32 = 0.5;
+const FADE_S: f32 = 0.9;
 
 #[derive(Resource, Default)]
 pub struct BootSplash {
