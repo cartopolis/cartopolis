@@ -143,6 +143,13 @@
       }
       .unsupported a { color: #7ab7ff; }
 
+      @font-face {
+        font-family: "Plus Jakarta Sans";
+        src: url("assets/fonts/PlusJakartaSans-SemiBold.ttf") format("truetype");
+        font-weight: 600;
+        font-display: block;
+      }
+
       /* Boot splash. Covers the canvas until the app has actually drawn — the
          module is ~70 MB and takes real seconds to fetch and compile, which
          without this is an unexplained black screen. */
@@ -163,12 +170,15 @@
         box-sizing: border-box;
       }
       #boot.done { opacity: 0; pointer-events: none; }
-      #boot img { width: 96px; height: 96px; image-rendering: auto; }
+      #boot img { width: 168px; height: 168px; image-rendering: auto; }
       #boot h1 {
         margin: 0;
-        font-size: 1.9rem;
+        /* Matches systems::splash's wordmark; the fallback matters because the
+           font is a 64 KB fetch and the splash draws before it can land. */
+        font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+        font-size: 2.35rem;
         font-weight: 600;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.01em;
       }
       #boot .motto {
         margin: -0.6rem 0 0;
@@ -204,7 +214,7 @@
     <div id="boot">
       <img src="assets/icon/viberfox.png" alt="" />
       <h1>Viberfox</h1>
-      <p class="motto">Widen your horizon</p>
+      <p class="motto">Explore our world</p>
       <pre id="bootlog"></pre>
     </div>
     <script>

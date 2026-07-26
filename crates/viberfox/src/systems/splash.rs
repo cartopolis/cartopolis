@@ -25,6 +25,13 @@ use crate::systems::map_stream::MapStream;
 
 /// Baked in at compile time; see the module note on why this is not an asset.
 const LOGO_PNG: &[u8] = include_bytes!("../../../../assets/icon/viberfox.png");
+/// The wordmark face (SIL OFL — see `assets/fonts/README.md`). Embedded for the
+/// same reason as the logo: the splash draws on frame one, before any asset
+/// pipeline has run. egui reads TTF/OTF, not woff2, which is why this is a TTF.
+const WORDMARK_TTF: &[u8] =
+    include_bytes!("../../../../assets/fonts/PlusJakartaSans-SemiBold.ttf");
+/// egui font family name for [`WORDMARK_TTF`].
+const WORDMARK_FAMILY: &str = "jakarta";
 
 /// Shortest time the splash stays up. Without a floor, a warm cache dismisses it
 /// within a frame or two and it reads as a flash of noise rather than a screen.
@@ -42,6 +49,7 @@ pub struct BootSplash {
     /// Counts down through [`FADE_S`] once dismissal begins; `None` until then.
     fading: Option<f32>,
     finished: bool,
+    fonts_ready: bool,
 }
 
 impl BootSplash {
@@ -88,6 +96,23 @@ pub fn boot_splash(
     };
 
     let ctx = egui.ctx_mut();
+    if !splash.fonts_ready {
+        // Registered as its *own* family rather than pushed onto Proportional,
+        // so the wordmark gets Jakarta and every other panel in the app keeps
+        // egui's default face. `FontDefinitions::default()` is safe to start
+        // from because nothing else installs custom fonts.
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            WORDMARK_FAMILY.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(WORDMARK_TTF)),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Name(WORDMARK_FAMILY.into()),
+            vec![WORDMARK_FAMILY.to_owned()],
+        );
+        ctx.set_fonts(fonts);
+        splash.fonts_ready = true;
+    }
     if splash.texture.is_none() {
         if let Ok(img) = image::load_from_memory(LOGO_PNG) {
             let img = img.to_rgba8();
@@ -119,9 +144,9 @@ pub fn boot_splash(
 
     let c = rect.center();
     if let Some(tex) = &splash.texture {
-        let s = 96.0;
+        let s = 168.0;
         let logo = egui::Rect::from_center_size(
-            egui::pos2(c.x, c.y - 96.0),
+            egui::pos2(c.x, c.y - 104.0),
             egui::vec2(s, s),
         );
         painter.image(
@@ -132,16 +157,16 @@ pub fn boot_splash(
         );
     }
     painter.text(
-        egui::pos2(c.x, c.y - 18.0),
+        egui::pos2(c.x, c.y + 24.0),
         egui::Align2::CENTER_CENTER,
         "Viberfox",
-        egui::FontId::proportional(34.0),
+        egui::FontId::new(40.0, egui::FontFamily::Name(WORDMARK_FAMILY.into())),
         egui::Color32::from_rgba_unmultiplied(232, 230, 225, a(1.0)),
     );
     painter.text(
-        egui::pos2(c.x, c.y + 18.0),
+        egui::pos2(c.x, c.y + 66.0),
         egui::Align2::CENTER_CENTER,
-        "Widen your horizon",
+        "Explore our world",
         egui::FontId::proportional(16.0),
         egui::Color32::from_rgba_unmultiplied(159, 179, 191, a(0.9)),
     );
