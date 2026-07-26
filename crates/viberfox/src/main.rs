@@ -942,8 +942,14 @@ fn attach_avatar_to_bigspace(
 /// subsystems that can't be safely toggled at runtime (atmosphere, env-map IBL):
 /// removing those components mid-run tears down in-flight GPU resources and hangs
 /// the device, so they're chosen once at launch. `VIBERFOX_NO_ATMOSPHERE=1`,
-/// `VIBERFOX_NO_ENVMAP=1`. (Shadows are a live dev-panel toggle — they respawn
-/// entities cleanly instead.)
+/// `VIBERFOX_NO_ENVMAP=1`, `VIBERFOX_NO_SHADOWS=1`.
+///
+/// Shadows are also a live dev-panel toggle, so the flag looks redundant — it is
+/// not. The dev panel is unreachable in a scripted run, and shadows turned out to
+/// be the single largest slice of submitted geometry (~79% of triangles), which
+/// makes "measure it without them" the first question anyone profiling the web
+/// build wants to ask. The flag only forces them *off*; the panel still governs
+/// the rest.
 ///
 /// A browser has no environment, so on wasm these are read from the page's query
 /// string instead (ADR-033 already puts web configuration there). Without it every
@@ -1025,7 +1031,7 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: sun_color,
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled,
+            shadow_maps_enabled: dev.shadows_enabled && !env_flag("VIBERFOX_NO_SHADOWS"),
             ..default()
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
@@ -1078,7 +1084,7 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled,
+            shadow_maps_enabled: dev.shadows_enabled && !env_flag("VIBERFOX_NO_SHADOWS"),
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
