@@ -64,10 +64,22 @@ const MAX_DESPAWNS_PER_FRAME: usize = 4;
 /// A z14 cell coordinate (absolute Web Mercator tile x/y at [`GEOMETRY_ZOOM`]).
 type Cell = (i64, i64);
 
-/// Max concurrent tessellation tasks. Small so single-threaded wasm spreads the
-/// heavy per-tile work (MVT decode + earcut + road raster + vegetation) across
-/// frames instead of freezing on a 400-tile burst; native threads it anyway.
-const SURFACE_MAX_IN_FLIGHT: usize = 4;
+/// Max concurrent tessellation tasks.
+///
+/// This was 4, to keep a 400-cell burst of MVT decode + earcut + road raster +
+/// vegetation from freezing the frame loop — which it did, because that work ran
+/// on `IoTaskPool` and on wasm that is the main thread. It runs on
+/// `platform::workers` now, so the frame loop is no longer what a burst lands on,
+/// and a cap of 4 would instead leave most of the pool idle: the pool is sized to
+/// `hardware_concurrency - 1` (clamped to 8), so fewer in flight than workers is
+/// simply parallelism left unused.
+///
+/// Still bounded rather than unlimited: each finished cell holds meshes plus a
+/// shore field until the frame loop drains it at `MAX_BUILDS_PER_FRAME`, so an
+/// uncapped burst trades a frame-time problem for a memory one. Matching the
+/// pool's own ceiling keeps every worker fed without queueing results faster than
+/// they can be consumed.
+const SURFACE_MAX_IN_FLIGHT: usize = 8;
 
 /// A finished tessellation (`None` = fetch or tessellation failed), plus the
 /// cell's distance-to-shore field when it holds any water (`systems::water`).
@@ -109,11 +121,18 @@ fn spawn_geometry_task(
     template: String,
     results: Arc<Mutex<Vec<Tessellated>>>,
 ) {
+    // Fetch on the task pool, tessellate on the worker pool (ADR-033). The
+    // comments below already said this work "belongs on the worker" — it did not:
+    // on wasm `IoTaskPool` runs on the main thread, so every MVT decode, earcut,
+    // road raster, vegetation scatter and shore field landed on the frame loop.
+    // Awaiting the fetch there is free; the rest is what a core is for.
     IoTaskPool::get()
         .spawn(async move {
-                let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
+            let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
+            let fetched = load_tile_image(&key, &template).await;
+            crate::platform::workers::submit(Box::new(move || {
                 let mut shore = None;
-                let outcome = match load_tile_image(&key, &template).await {
+                let outcome = match fetched {
                     Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
                         Ok(mut meshes) => {
                             // Roads share the fetch, the worker and the per-cell
@@ -166,6 +185,7 @@ fn spawn_geometry_task(
                 if let Ok(mut g) = results.lock() {
                     g.push((cell, outcome, shore));
                 }
+            }));
         })
         .detach();
 }
