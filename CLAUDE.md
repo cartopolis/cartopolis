@@ -157,6 +157,7 @@ This is a **Cargo workspace** with four crates:
   - `tile_loader` — async OSM tile fetch → region texture
   - `picking` — raycasting for prim selection
   - `ui` — egui context menu + prim edit dialog
+  - `theme` — **the only place UI colour, spacing and type live.** The palette is read off the logo (dark teal `#0C2A33`–`#164652`, fox orange `#FD6012`, amber `#FD9212`, cream `#F2EFEA`); `theme::install` is called from `EguiManager::default` *before the first pass*, which is what binds the brand font family in time for the splash's wordmark. New UI code takes its colours from these constants and its box-over-the-map frame from `theme::overlay_frame()` — a fresh `Color32::from_rgb` in a panel is how the chrome drifted last time. Keep `index.html`'s loader CSS in step with it (same brand, drawn before any Rust exists). Contrast is unit-tested, including the non-obvious one: egui derives `RichText::strong()`'s colour from `widgets.active.fg_stroke`, so the pressed-button state and every bold value in the app are the same knob.
   - `gizmo` — transform gizmo toolbar and drag interaction
   - `egui_manager` — custom `EguiPlugin` (wraps `egui-wgpu`); renders egui as the `egui_pass` **system** in the `Core3d` render schedule (Bevy 0.19's schedule-based render graph replaced the old `ViewNode`/render-graph API), drawing onto the post-upscaling sRGB output. Panels use a shared root `Ui` (egui 0.35 shows panels inside a `Ui`, not the `Context`).
 

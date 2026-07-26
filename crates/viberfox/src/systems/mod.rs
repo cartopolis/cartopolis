@@ -28,6 +28,7 @@ pub mod routing;
 pub mod road_texture;
 pub mod shot_harness;
 pub mod shot_presets;
+pub mod theme;
 pub mod tile_loader;
 pub mod transit_live;
 pub mod splash;

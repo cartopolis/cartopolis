@@ -10,6 +10,7 @@ use vibe_core::{ChatScope, NetMessage};
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::theme;
 
 /// Per-channel scrollback cap on the client.
 const MAX_LINES: usize = 200;
@@ -153,10 +154,7 @@ pub fn render_chat_panel(
     egui::Area::new(egui::Id::new("sl_bottom_bar"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -6.0))
         .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_unmultiplied(12, 16, 24, 225))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(8, 6))
+            theme::overlay_frame()
                 .show(ui, |ui| {
                     let row = |ui: &mut egui::Ui,
                                add: &mut dyn FnMut(&mut egui::Ui)| {
@@ -271,7 +269,7 @@ pub fn render_chat_panel(
                                 ui.label(
                                     egui::RichText::new(format!("{who}:"))
                                         .strong()
-                                        .color(egui::Color32::from_rgb(120, 170, 235)),
+                                        .color(theme::FOX_TEXT),
                                 );
                                 ui.label(&line.body);
                             });

@@ -22,16 +22,10 @@ use bevy::window::PrimaryWindow;
 
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 
 /// Baked in at compile time; see the module note on why this is not an asset.
 const LOGO_PNG: &[u8] = include_bytes!("../../../../assets/icon/viberfox.png");
-/// The wordmark face (SIL OFL — see `assets/fonts/README.md`). Embedded for the
-/// same reason as the logo: the splash draws on frame one, before any asset
-/// pipeline has run. egui reads TTF/OTF, not woff2, which is why this is a TTF.
-const WORDMARK_TTF: &[u8] =
-    include_bytes!("../../../../assets/fonts/PlusJakartaSans-SemiBold.ttf");
-/// egui font family name for [`WORDMARK_TTF`].
-const WORDMARK_FAMILY: &str = "jakarta";
 
 /// Shortest time the splash stays up. Long enough to be read rather than
 /// glimpsed: a warm cache otherwise dismisses it within a frame or two, which
@@ -50,7 +44,6 @@ pub struct BootSplash {
     /// Counts down through [`FADE_S`] once dismissal begins; `None` until then.
     fading: Option<f32>,
     finished: bool,
-    fonts_ready: bool,
 }
 
 /// Draw the splash until the first map tiles are up, then fade it out.
@@ -90,28 +83,6 @@ pub fn boot_splash(
     };
 
     let ctx = egui.ctx_mut();
-    // Whether the custom family was already installed *before* this frame.
-    // `set_fonts` only takes effect from the next pass, so painting with the
-    // family on the frame that installs it panics in epaint with
-    // "FontFamily::Name(..) is not bound to any fonts".
-    let wordmark_bound = splash.fonts_ready;
-    if !splash.fonts_ready {
-        // Registered as its *own* family rather than pushed onto Proportional,
-        // so the wordmark gets Jakarta and every other panel in the app keeps
-        // egui's default face. `FontDefinitions::default()` is safe to start
-        // from because nothing else installs custom fonts.
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            WORDMARK_FAMILY.to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(WORDMARK_TTF)),
-        );
-        fonts.families.insert(
-            egui::FontFamily::Name(WORDMARK_FAMILY.into()),
-            vec![WORDMARK_FAMILY.to_owned()],
-        );
-        ctx.set_fonts(fonts);
-        splash.fonts_ready = true;
-    }
     if splash.texture.is_none() {
         if let Ok(img) = image::load_from_memory(LOGO_PNG) {
             let img = img.to_rgba8();
@@ -136,10 +107,15 @@ pub fn boot_splash(
         egui::vec2(win.width(), win.height()),
     );
     let a = |v: f32| (v * alpha * 255.0) as u8;
+    // Every colour here is a brand constant faded by the dismissal alpha, so the
+    // splash and the UI it uncovers are painted from the same palette.
+    let fade = |c: egui::Color32, v: f32| {
+        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a(v))
+    };
 
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
-    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(13, 17, 20, a(1.0)));
+    painter.rect_filled(rect, 0.0, fade(theme::SURFACE, 1.0));
 
     let c = rect.center();
     if let Some(tex) = &splash.texture {
@@ -159,21 +135,17 @@ pub fn boot_splash(
         egui::pos2(c.x, c.y + 24.0),
         egui::Align2::CENTER_CENTER,
         "Viberfox",
-        // Falls back for exactly one frame, and for the same reason the CSS
-        // keeps a `system-ui` fallback: better to draw the wordmark in the
-        // default face than not at all.
-        if wordmark_bound {
-            egui::FontId::new(40.0, egui::FontFamily::Name(WORDMARK_FAMILY.into()))
-        } else {
-            egui::FontId::proportional(40.0)
-        },
-        egui::Color32::from_rgba_unmultiplied(232, 230, 225, a(1.0)),
+        // Bound since `EguiManager::default` installed the theme, i.e. before
+        // this context's first pass — so there is no unbound-family frame to
+        // fall back for (`theme::install` documents why that ordering holds).
+        egui::FontId::new(40.0, theme::brand_family()),
+        fade(theme::CREAM, 1.0),
     );
     painter.text(
         egui::pos2(c.x, c.y + 66.0),
         egui::Align2::CENTER_CENTER,
         "Explore our world",
         egui::FontId::proportional(16.0),
-        egui::Color32::from_rgba_unmultiplied(159, 179, 191, a(0.9)),
+        fade(theme::TEXT_DIM, 0.9),
     );
 }

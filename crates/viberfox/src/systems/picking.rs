@@ -9,6 +9,7 @@
 use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::theme;
 use crate::systems::rendering::PrimMesh;
 use bevy::prelude::*;
 
@@ -282,8 +283,8 @@ pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>)
     );
     let rect = egui::Rect::from_min_max(min, max);
 
-    let fill = egui::Color32::from_rgba_premultiplied(100, 160, 255, 25);
-    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(140, 190, 255, 200));
+    let fill = egui::Color32::from_rgba_unmultiplied(theme::FOX.r(), theme::FOX.g(), theme::FOX.b(), 28);
+    let stroke = egui::Stroke::new(1.0_f32, theme::FOX_BRIGHT);
     painter.rect(rect, egui::CornerRadius::default(), fill, stroke, egui::StrokeKind::Outside);
 }
 

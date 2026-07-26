@@ -2,6 +2,7 @@ use super::egui_manager::EguiManager;
 use crate::components::{Prim, Region};
 use crate::resources::{AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse};
 use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
 use vibe_core::{NetMessage, PrimSurface};
@@ -298,7 +299,7 @@ pub fn render_ai_panel(
 
             if config.api_key.is_none() {
                 ui.colored_label(
-                    egui::Color32::YELLOW,
+                    theme::WARN,
                     "Set ANTHROPIC_API_KEY in .env to enable.",
                 );
                 return;
@@ -342,7 +343,7 @@ pub fn render_ai_panel(
             state.scroll_to_bottom = false;
 
             if let Some(err) = &state.error.clone() {
-                ui.colored_label(egui::Color32::RED, err);
+                ui.colored_label(theme::ERROR, err);
             }
 
             ui.separator();

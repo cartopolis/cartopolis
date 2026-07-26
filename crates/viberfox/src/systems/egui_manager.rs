@@ -91,6 +91,12 @@ pub fn responsive_right_panel(
 impl Default for EguiManager {
     fn default() -> Self {
         let ctx = egui::Context::default();
+        // The Viberfox look — palette, spacing, type scale, brand font family.
+        // Installed here, at construction, rather than from a startup system:
+        // `set_fonts` only takes effect from the next `begin_pass`, so doing it
+        // before the first one is what makes the brand family safe to paint with
+        // on frame one (the boot splash's wordmark).
+        crate::systems::theme::install(&ctx);
         // egui defaults *two* `DebugOptions` to `cfg!(debug_assertions)`, so every
         // debug build paints stray overlays over the real UI:
         //  - `show_unaligned` draws orange edges on widgets off the physical-pixel

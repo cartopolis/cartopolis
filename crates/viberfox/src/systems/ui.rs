@@ -13,6 +13,7 @@ use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 use egui::Window;
 use crate::resources::RightPanel;
+use crate::systems::theme;
 use vibe_core::NetMessage;
 
 /// Auto-hiding top bar: a browser-style address bar (`File` menu, Back /
@@ -737,24 +738,21 @@ pub fn render_stats_overlay(
     egui::Area::new(egui::Id::new("stats_overlay"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 40.0))
         .show(egui.ctx_mut(), |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_unmultiplied(10, 14, 22, 200))
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(9, 6))
-                .show(ui, |ui| {
-                    let mono = |ui: &mut egui::Ui, text: String, gray: u8| {
-                        ui.label(
-                            egui::RichText::new(text)
-                                .monospace()
-                                .size(12.5)
-                                .color(egui::Color32::from_gray(gray)),
-                        );
-                    };
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    mono(ui, format!("{fps:5.1} fps"), 235);
-                    mono(ui, format!("{frame_ms:5.2} ms/frame"), 170);
-                    mono(ui, format!("{entity_count} entities"), 170);
-                });
+            theme::overlay_frame().show(ui, |ui| {
+                let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
+                    ui.label(egui::RichText::new(text).monospace().size(12.5).color(color));
+                };
+                // Let the rows set the box's width instead of wrapping inside it.
+                // A size-to-content `Area` settles at the width of its widest
+                // *unwrapped* row, so the one long line ("27.80 ms/frame") folded
+                // in two while the box stayed narrow — a readout that changes
+                // line count as the number changes is unreadable at a glance.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                mono(ui, format!("{fps:5.1} fps"), theme::CREAM);
+                mono(ui, format!("{frame_ms:5.2} ms/frame"), theme::TEXT_DIM);
+                mono(ui, format!("{entity_count} entities"), theme::TEXT_DIM);
+            });
         });
 }
 

@@ -121,7 +121,10 @@
         padding: 0;
         height: 100%;
         overflow: hidden;
-        background: #000;
+        /* Brand teal, not black: this is what shows for the frames before the
+           loader paints, and a black flash reads as a broken page. Matches
+           `systems::theme::SURFACE`. */
+        background: #0c2a33;
       }
       canvas {
         display: block;
@@ -156,7 +159,9 @@
         align-items: center;
         justify-content: center;
         gap: 0.9rem;
-        background: #0d1114;
+        /* The loader, the Bevy splash and the app chrome all paint from
+           `systems::theme`'s palette — keep these in step with it. */
+        background: #0c2a33;
         color: #9fb3bf;
         font: 13px/1.5 system-ui, -apple-system, sans-serif;
         transition: opacity 0.4s ease;
@@ -167,14 +172,14 @@
       #track {
         width: min(22rem, 70vw);
         height: 3px;
-        background: #1b262d;
+        background: #123b46;
         border-radius: 2px;
         overflow: hidden;
       }
       #bar {
         width: 0%;
         height: 100%;
-        background: #5b9dc4;
+        background: #fd6012;
         border-radius: 2px;
         transition: width 0.2s linear;
       }
@@ -197,7 +202,7 @@
         padding: 0.6rem 0.8rem;
         box-sizing: border-box;
         background: rgba(0, 0, 0, 0.3);
-        border: 1px solid #1a242a;
+        border: 1px solid #1f5a69;
         border-radius: 6px;
         color: #6d818b;
         font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
