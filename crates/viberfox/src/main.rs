@@ -374,6 +374,21 @@ fn main() {
                 // overload (tiles/buildings/shadows/atmosphere) because crashes
                 // struck whenever the window sat covered while logs were read.
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
+                // On the web the canvas otherwise keeps the fixed `resolution`
+                // above forever — 1280x720 pinned in the corner of whatever size
+                // the browser window actually is, with dead space around it, and
+                // no response to resizing. This tracks the parent element instead.
+                //
+                // The field's documented hazard is a parent sized *by its
+                // children*, which feeds back into the canvas growing every
+                // resize. Ours is `<body>`, given an explicit `height: 100%` in
+                // index.html, so its size comes from the viewport and never from
+                // the canvas inside it.
+                //
+                // `resolution` still applies natively, and is the initial size on
+                // the web until the first fit.
+                #[cfg(target_arch = "wasm32")]
+                fit_canvas_to_parent: true,
                 ..default()
             }),
             // With no window there is nothing to close, and the harness writes its
