@@ -944,8 +944,48 @@ fn attach_avatar_to_bigspace(
 /// the device, so they're chosen once at launch. `VIBERFOX_NO_ATMOSPHERE=1`,
 /// `VIBERFOX_NO_ENVMAP=1`. (Shadows are a live dev-panel toggle — they respawn
 /// entities cleanly instead.)
+///
+/// A browser has no environment, so on wasm these are read from the page's query
+/// string instead (ADR-033 already puts web configuration there). Without it every
+/// one of these switches is silently dead on the web — `std::env::var_os` simply
+/// always returns `None` — and they are switches whose whole purpose is to bisect a
+/// slow or broken renderer, which is exactly the situation the web build is in.
+/// `?VIBERFOX_NO_ATMOSPHERE=1`, or the tidier `?no_atmosphere` (the `VIBERFOX_`
+/// prefix and the case are both optional in a URL, where there is no environment
+/// to collide with).
 pub fn env_flag(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        query_flag(name)
+    }
+}
+
+/// The wasm half of [`env_flag`]: look `name` up in `window.location.search`.
+///
+/// Deliberately *not* identical to the environment's rule about empty values. An
+/// empty environment variable is idiomatically unset, so `env_flag` treats it as
+/// false; a bare `?no_atmosphere` in a URL just as plainly means "on", and typing
+/// `=1` to satisfy a convention borrowed from a different platform would be a
+/// papercut on every debugging URL. Presence is truth here; `=0` and `=false` are
+/// the ways to say otherwise.
+#[cfg(target_arch = "wasm32")]
+fn query_flag(name: &str) -> bool {
+    let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) else {
+        return false;
+    };
+    let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+        return false;
+    };
+    let short = name.strip_prefix("VIBERFOX_").unwrap_or(name);
+    [name, short]
+        .iter()
+        .flat_map(|k| [k.to_ascii_uppercase(), k.to_ascii_lowercase()])
+        .find_map(|k| params.get(&k))
+        .is_some_and(|v| v.is_empty() || (v != "0" && !v.eq_ignore_ascii_case("false")))
 }
 
 fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
@@ -1630,7 +1670,10 @@ fn frame_stats(
     mut acc: Local<(f32, u32, f32, f32, f32)>,
     mut enabled: Local<Option<bool>>,
 ) {
-    if !*enabled.get_or_insert_with(|| std::env::var("VIBERFOX_FPS_LOG").is_ok()) {
+    // Through `env_flag`, not `std::env` directly, so `?fps_log` reaches it on the
+    // web — where a number for "how slow is slow" is harder to come by than
+    // anywhere else, there being no external profiler to point at the tab.
+    if !*enabled.get_or_insert_with(|| env_flag("VIBERFOX_FPS_LOG")) {
         return;
     }
     let ms = time.delta_secs() * 1000.0;

@@ -110,8 +110,13 @@ ehttp = "0.5"
 # exposes all of it, so the GPU paths light up and the workarounds below come out.
 #
 # The two are mutually exclusive: bevy's `webgpu` feature *overrides* `webgl2`, so
-# this build requires a WebGPU browser (Chrome/Edge ≥113, Firefox ≥141,
-# Safari ≥26) — there is no automatic WebGL2 fallback to inherit.
+# this build requires a browser that exposes WebGPU, and there is no automatic
+# WebGL2 fallback left to inherit. Chromium-based browsers have it; **Firefox on
+# Linux does not necessarily**, and its failure mode is worth recognising —
+# `canvas.getContext()` returns null and wgpu reports "webgpu not available or
+# canvas already in use", which reads like a canvas bug rather than a missing
+# feature. Observed on Firefox 153 here with no `dom.webgpu.enabled` user pref;
+# check `about:support` under Graphics before suspecting the build.
 #
 # `web` is not optional and not cosmetic: `bevy_platform::time::Instant` resolves to
 # `web_time` only under `cfg(all(target_arch = "wasm32", feature = "web"))` and
@@ -125,6 +130,10 @@ bevy = { workspace = true, features = ["webgpu", "web"] }
 # `getrandom` (via uuid v4 + others) needs its JS backend on wasm, where there is
 # no OS RNG (ADR-033). Feature-unifies with the graph's 0.2 instance.
 getrandom = { version = "0.2", features = ["js"] }
+# Read the page's query string, which is where `env_flag` gets its switches on a
+# platform with no environment (ADR-033). Already in the graph via bevy/wgpu, so
+# naming it here costs no build time — only these three features.
+web-sys = { version = "0.3", features = ["Window", "Location", "UrlSearchParams"] }
 # jiff (timezone/local-time) needs its `js` backend on wasm — `Timestamp::now()`
 # otherwise panics ("current time not possible with just std"). ADR-033.
 jiff = { version = "0.2.34", features = ["js"] }
