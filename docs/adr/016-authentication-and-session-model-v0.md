@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-016
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2025-03-21
 - **Tags**: [auth, session, security, networking, protocol, cli, ops]
 - **Decision Type**: architecture_pattern

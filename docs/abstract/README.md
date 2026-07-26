@@ -1,8 +1,8 @@
 # Abstract (strategic foundation)
 
-This directory holds **slow-moving** product and engineering intent. **[`docs/meta/adr/`](../adr/)** holds **point-in-time** decisions. Together: **abstract constrains and prioritizes; ADRs record what we chose.**
+This directory holds **slow-moving** product and engineering intent. **[`docs/adr/`](../adr/)** holds **point-in-time** decisions. Together: **abstract constrains and prioritizes; ADRs record what we chose.**
 
-**Canonical layout:** [`docs/meta/`](../README.md) → **`abstract/`** (here) + **`adr/`** (decision log).
+**Canonical layout:** [`docs/`](../README.md) → **`abstract/`** (here) + **`adr/`** (decision log).
 
 ## Read order (humans and agents)
 

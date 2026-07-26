@@ -177,23 +177,23 @@ This is a **Cargo workspace** with four crates:
 
 **Wire format (ADR-008–009):** TCP length-delimited frames, little-endian `u32` length; frame body = `protocol_version` (u8) + `message_kind` (u8) + `request_id` (u64) + postcard payload.
 
-## Architecture docs (meta → ADR → code)
+## Architecture docs (abstract → ADR → code)
 
-Architecture documentation lives under `meta/` (not `docs/`):
+Architecture documentation lives under `docs/`:
 
-- `meta/abstract/` — **why**: vision (`G-*` goals), principles (`P-*`), roadmap tiers (P0–P2), ADR resolution depth (R0–R3), capability map
-- `meta/adr/` — **what we chose**: one file per decision; `index.md` lists all ADRs
+- `docs/abstract/` — **why**: vision (`G-*` goals), principles (`P-*`), roadmap tiers (P0–P2), ADR resolution depth (R0–R3), capability map
+- `docs/adr/` — **what we chose**: one file per decision; `index.md` lists all ADRs
 
 **Before large or cross-cutting changes**, read in this order:
-1. `meta/abstract/vision.md` — goals G-01…G-08
-2. `meta/abstract/principles.md` — principles P-01…P-07
-3. `meta/abstract/roadmap.md` — P0/P1/P2 priorities
-4. `meta/abstract/adr-resolution.md` — R0–R3 depth guide
-5. `meta/adr/index.md` — existing decisions
+1. `docs/abstract/vision.md` — goals G-01…G-09
+2. `docs/abstract/principles.md` — principles P-01…P-07
+3. `docs/abstract/roadmap.md` — P0/P1/P2 priorities
+4. `docs/abstract/adr-resolution.md` — R0–R3 depth guide
+5. `docs/adr/index.md` — existing decisions
 
 **Create or supersede an ADR** for: wire protocol changes, storage schema, security boundaries, major new dependencies, sim/client process boundary changes. Skip for bug fixes or refactors within an existing ADR's scope.
 
-New ADR checklist: copy `meta/adr/template.md`, set `Aligns with: G-*, P-*`, add a row to `meta/adr/index.md` in the same commit. Match depth to R0–R3 (not every change needs a full R2 ADR).
+New ADR checklist: copy `docs/adr/template.md`, set `Aligns with: G-*, P-*`, add a row to `docs/adr/index.md` in the same commit. Match depth to R0–R3 (not every change needs a full R2 ADR).
 
 ## Known issues / workarounds
 

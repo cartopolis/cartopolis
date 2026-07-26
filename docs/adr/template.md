@@ -8,8 +8,8 @@
 - **Tags**: [tag1, tag2]
 - **Decision Type**: technology_choice | architecture_pattern | tool_adoption
 - **Aligns with**: [G-01, P-02] | N/A — [one-line reason, e.g. local refactor under ADR-NNN]
-- **Roadmap tier** (optional): P0 | P1 | P2 — see `docs/meta/abstract/roadmap.md`
-- **Doc resolution** (optional): R0 | R1 | R2 | R3 — see `docs/meta/abstract/adr-resolution.md`
+- **Roadmap tier** (optional): P0 | P1 | P2 — see `docs/abstract/roadmap.md`
+- **Doc resolution** (optional): R0 | R1 | R2 | R3 — see `docs/abstract/adr-resolution.md`
 - **Related**: [ADR-YYY, ADR-ZZZ]
 - **Supersedes**: [] | [ADR-XXX]
 - **Superseded By**: [] | [ADR-XXX]

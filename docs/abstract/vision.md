@@ -2,7 +2,7 @@
 
 ## Mission
 
-Vibe-rs is a **networked 3D place** where people **author, share, and visit** spatial environments—**grounded in real geography** (e.g. map tiles / OSM-backed context)—so that proposing and experiencing **layouts at civic or public scale** feels **social and immediate**, not like a solo modelling tool.
+Viberfox is a **networked 3D place** where people **author, share, and visit** spatial environments—**grounded in real geography** (e.g. map tiles / OSM-backed context)—so that proposing and experiencing **layouts at civic or public scale** feels **social and immediate**, not like a solo modelling tool.
 
 We want to **shorten the authoring loop**: 3D work is traditionally slow; we use **modern tooling (Rust, Bevy, the current crate ecosystem)** and **LLM-assisted development** to move faster, and over time **embed LLM capability in the product** so **world building** can keep pace with ideas—without abandoning **permissions, safety, and reproducibility**.
 
@@ -21,11 +21,12 @@ Stable IDs for traceability. New ADRs should cite relevant goals in **Aligns wit
 | **G-01** | **Authoring:** Creators can define or evolve a **shared 3D environment** in line with the world model faster than a purely manual asset-only pipeline. |
 | **G-02** | **Visiting:** Others can **enter the same environment** and **see a consistent world** (replication, interest, persistence as needed). |
 | **G-03** | **Social:** Users can **interact as people** in-world (e.g. chat early; voice and shared media as later layers on the same trust model). |
-| **G-04** | **Geo context:** Experiences can be **situated** using **map-derived or geographic anchoring** where the product uses it. |
+| **G-04** | **Geography as substrate:** The world **is** the real planet — one **continuous space from street to orbit**, with **map-derived geometry and live real-world data** (buildings, layers, transit, weather) as the ground everything else is authored on top of, not as a backdrop. |
 | **G-05** | **Governance:** **Authentication and authorization** prevent **unauthorized edits** and support **evolving roles**. |
-| **G-06** | **LLM in the product:** The system can **use LLMs to assist creation or operation** of worlds under **explicit constraints** (scoped actions, validation, oversight as deployments require). |
+| **G-06** | **LLM in the product:** The system can **use LLMs to assist creation or operation** of worlds under **explicit constraints** (scoped actions, validation, oversight as deployments require). *Partially delivered:* an in-client copilot authors prims through scoped tool calls; the constraint and oversight model is not yet recorded in an ADR. |
 | **G-07** | **Real-world coupling (roadmap):** **Headless or companion clients** can relate **real-world position** (e.g. GNSS) to **in-world or map representation** where privacy and accuracy policies allow. |
 | **G-08** | **Integrations:** **Defined behaviors** (e.g. scripting) can **connect to external systems** under **capability and permission** rules. |
+| **G-09** | **Reach:** Visiting should cost **as little as opening a link** — the client runs on the **web** as well as natively, and an **anonymous Viewer tier** can look around before any account exists, with **login** gating the parts that mutate shared state. |
 
 ## Non-goals (current)
 

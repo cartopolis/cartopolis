@@ -61,7 +61,7 @@ cargo check -p viberfox      # Bevy client
 
 Faster iteration: `--profile dev-bevy` (deps at full opt) for smoother runtime, or `--features fast-dev` (Bevy dynamic linking, local dev only — never with `--release`).
 
-The sim server runs standalone via `cargo run -p vibe_sim`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`meta/guides/server.md`](meta/guides/server.md).
+The sim server runs standalone via `cargo run -p vibe_sim`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`docs/guides/server.md`](docs/guides/server.md).
 
 ## Assets
 
@@ -76,7 +76,7 @@ Avatar models under `assets/models/avatar/characters/` are stored in **Git LFS**
 | `viberfox` | Bevy 0.19 game client (rendering, ECS systems, UI) |
 | `big_space` | Vendored fork of `big_space` 0.10, ported to Bevy 0.19 for planet-scale floating-origin transforms |
 
-Design docs and the reasoning behind major decisions live under [`meta/`](meta/) — read them before large or cross-cutting changes.
+Design docs and the reasoning behind major decisions live under [`docs/`](docs/) — read them before large or cross-cutting changes.
 
 ## Troubleshooting
 

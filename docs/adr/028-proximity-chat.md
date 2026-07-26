@@ -3,7 +3,7 @@
 ---
 **Metadata:**
 - **ID**: ADR-028
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-21
 - **Tags**: [chat, social, geo, places, protocol, networking, privacy, persistence]
 - **Decision Type**: architecture_pattern

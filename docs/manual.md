@@ -217,4 +217,4 @@ ANTHROPIC_MODEL=claude-haiku-4-5-20251001 cargo run -p viberfox
 - **Build errors after a toolchain/dependency bump:** `cargo clean` and rebuild.
 
 More runtime knobs and known-issue workarounds are documented in
-[`CLAUDE.md`](../CLAUDE.md) and the architecture notes under [`meta/`](../meta/).
+[`CLAUDE.md`](../CLAUDE.md) and the architecture notes under [`docs/`](./).

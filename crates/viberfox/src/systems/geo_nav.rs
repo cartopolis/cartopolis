@@ -32,7 +32,7 @@ use vibe_core::world::tile_to_meters;
 
 
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
-/// the Netherlands extract — see `meta/guides/server.md`). Override with
+/// the Netherlands extract — see `docs/guides/server.md`). Override with
 /// `VIBE_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
 const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.garage44.eu";
 

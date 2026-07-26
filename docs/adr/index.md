@@ -17,7 +17,7 @@
 | [013](./013-sqlite-migrations-and-server-writer.md) | SQLite Migrations and Single Server Writer | Accepted | sqlite, storage, migrations, server |
 | [014](./014-runtime-configuration-and-operations.md) | Runtime Configuration and Operations | Accepted | config, ops, deployment |
 | [015](./015-workspace-module-boundaries.md) | Workspace Module and Crate Boundaries | Accepted | workspace, crates, architecture |
-| [016](./016-authentication-and-session-model-v0.md) | Authentication and Server Session Model (v0) | Proposed | auth, session, security, networking, protocol, cli, ops |
+| [016](./016-authentication-and-session-model-v0.md) | Authentication and Server Session Model (v0) | Accepted | auth, session, security, networking, protocol, cli, ops |
 | [017](./017-prim-authoring-and-editing.md) | Prim Authoring and Editing (v0) | Accepted | authoring, prims, ui, protocol, persistence, textures, replication |
 | [018](./018-prim-texture-surface-params.md) | Prim Texture Surface Parameters | Accepted | prims, textures, ui, protocol, persistence, rendering |
 | [019](./019-planet-scale-floating-origin.md) | Planet-Scale Floating-Origin Coordinate Model | Accepted | coordinates, precision, rendering, osm, large-world |
@@ -36,7 +36,7 @@
 | [032](./032-global-cloud-cover-data.md) | Global Cloud Cover from GFS (Real Weather Driving Procedural Clouds) | Accepted | rendering, globe, weather, live-data, dependency, clouds |
 | [033](./033-build-targets-and-wasm-packaging.md) | Build Targets — Standalone (Native) and Web (wasm32) | Proposed | architecture, platform, wasm, web, build, packaging, ops, cors, dependency |
 | [034](./034-public-data-relay.md) | Public Data Relay (Standardised Upstream Adapters) | Proposed | ops, networking, cache, data-layers, live-data, architecture, crates, upstreams |
-| [035](./035-self-hosted-map-tiles.md) | Self-Hosted Vector Map Tiles | Proposed | osm, tiles, vector, mvt, map, ops, rendering, dependency, hosting, web |
+| [035](./035-self-hosted-map-tiles.md) | Self-Hosted Vector Map Tiles | Accepted | osm, tiles, vector, mvt, map, ops, rendering, dependency, hosting, web |
 | [036](./036-input-sequenced-client-prediction.md) | Input-Sequenced Client Prediction and Reconciliation | Proposed | networking, protocol, prediction, avatar, latency, replication |
 | [037](./037-vector-tile-routing.md) | Routing on the Vector Tiles | Accepted | routing, navigation, map, vector, mvt, ui, offline, data-layers |
 | [038](./038-pluggable-terrain-elevation.md) | Pluggable Terrain Elevation (Height-Field Sources, AHN First) | Proposed | terrain, elevation, dem, ahn, pdok, map, vector, rendering, geometry, collision, providers, dependency, ops |

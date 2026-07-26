@@ -3,7 +3,7 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "vibe_sim", about = "Headless vibers simulation server")]
+#[command(name = "vibe_sim", about = "Headless Viberfox simulation server")]
 pub struct SimCli {
     #[arg(long, help = "TCP listen address (overrides vibe.toml / VIBE_listen)")]
     pub listen: Option<String>,

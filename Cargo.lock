@@ -6947,6 +6947,7 @@ dependencies = [
  "vibe_core",
  "vibe_sim",
  "wasm_thread",
+ "web-sys",
  "web-time",
  "winit",
  "winresource",
