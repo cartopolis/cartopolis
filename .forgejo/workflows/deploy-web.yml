@@ -1,0 +1,135 @@
+name: Deploy web
+
+# Build the wasm client and publish it to https://viberfox.garage44.eu.
+#
+# Separate from ci.yml on purpose. This job rebuilds std (`-Z build-std`, needed
+# for atomics) and links ~70 MB with LTO, so it is tens of minutes cold against a
+# runner with capacity 2 — attached to the test lanes it would block them on
+# every push. Here it runs only when `main` moves, plus on demand.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  deploy-web:
+    name: build wasm & publish
+    runs-on: ubuntu-latest
+    container:
+      image: viberfox-ci:latest
+      # The runner and the web host are the same machine, so publishing is a
+      # copy rather than a transfer. `/data/viberfox/site` is the only path the
+      # runner permits mounting (`valid_volumes` in its config); Caddy has the
+      # same directory mounted read-only as /srv/viberfox.
+      options: --volume /data/viberfox/site:/publish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The avatar glTFs are LFS pointers otherwise, and Bevy would fetch a
+          # 130-byte text file where a mesh should be. The legacy Quaternius
+          # packs are gitignored, so a fresh checkout carries only `characters/`.
+          lfs: true
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          # Distinct from the native lanes: different target triple, different
+          # profile, and a std rebuild. Sharing one key would thrash both.
+          key: wasm-web-release
+
+      # A wasm-bindgen CLI that disagrees with the crate emits JS glue and a
+      # module that do not match, and says nothing — it fails later, in the
+      # browser, as an opaque import error. Cheap to assert, miserable to debug.
+      - name: wasm-bindgen CLI matches the lockfile
+        run: |
+          want=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          have=$(wasm-bindgen --version | awk '{print $2}')
+          echo "lockfile: $want / image: $have"
+          [ "$want" = "$have" ] || {
+            echo "::error::wasm-bindgen $have in viberfox-ci:latest, but Cargo.lock wants $want."
+            echo "Rebuild the image with --build-arg WASM_BINDGEN_VERSION=$want (~/build/viberfox-ci-image)."
+            exit 1
+          }
+
+      # The same three-part configuration serve-threads.sh documents: atomics
+      # alone gives every worker a private heap, so the shared-memory link args
+      # are what actually make threading work; the TLS symbols must be exported
+      # by name for wasm-bindgen's thread transform; and std needs rebuilding
+      # because the shipped one has no atomics.
+      #
+      # RUSTFLAGS set here *replaces* `.cargo/config.toml`'s per-target entry
+      # rather than merging with it, so `+simd128` is repeated — without it
+      # tiny-skia silently falls back to scalar. `simd_baseline.rs` fails the
+      # build if this is ever dropped.
+      - name: Build (web-release, threads + SIMD)
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+          CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+          RUSTFLAGS: >-
+            -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128
+            -C link-arg=--shared-memory
+            -C link-arg=--import-memory
+            -C link-arg=--max-memory=4294967296
+            -C link-arg=--export=__heap_base
+            -C link-arg=--export=__tls_base
+            -C link-arg=--export=__wasm_init_tls
+            -C link-arg=--export=__tls_size
+            -C link-arg=--export=__tls_align
+        # Deliberately not `trunk build --release`: that turns on wasm-opt, which
+        # is fetched from GitHub at build time and, more importantly, rejects or
+        # silently mangles a shared-memory module unless handed `--enable-threads
+        # --enable-bulk-memory` to match. The size win is real but it is not free
+        # to get right, and `web-release` already carries opt-level 3 + thin LTO.
+        # Revisit as a deliberate change with the feature flags spelled out.
+        run: |
+          cd crates/viberfox
+          trunk build --cargo-profile web-release --dist dist
+
+      # Verify what was produced rather than assuming the flags took. Both of
+      # these have silently regressed before: shared memory is what makes the
+      # worker pool possible at all, and a stripped-symbol module is 71 MB
+      # against 114 MB unstripped.
+      - name: Verify the module is threaded
+        run: |
+          wasm=$(ls crates/viberfox/dist/*_bg.wasm)
+          js=$(ls crates/viberfox/dist/*.js | head -1)
+          echo "module: $wasm ($(( $(stat -c%s "$wasm") / 1000000 )) MB)"
+          # These two exports exist only if wasm-bindgen's thread transform ran,
+          # and it only runs when the link produced shared memory and the TLS
+          # symbols. Grepping the export names is a far sturdier check than
+          # re-parsing the binary, and catches the failure that matters: a build
+          # that succeeds and quietly has no worker pool.
+          for sym in wasm_thread_entry_point __wbindgen_thread_destroy; do
+            grep -qa "$sym" "$wasm" || {
+              echo "::error::$sym missing — the module was linked without shared memory."
+              echo "RUSTFLAGS likely lost the --shared-memory/--export=__tls_* group."
+              exit 1
+            }
+          done
+          # The JS half has to agree, or the workers never get spawned browser-side.
+          grep -qa "shared:true\|shared: true" "$js" || {
+            echo "::error::JS glue does not construct a shared WebAssembly.Memory."
+            exit 1
+          }
+          echo "threading: shared memory + thread transform confirmed"
+
+      # Pre-compress so Caddy's `precompressed gzip` serves a file read instead
+      # of compressing ~71 MB per cold request. Keep the original: a client that
+      # sends no Accept-Encoding still needs it.
+      - name: Pre-compress the large assets
+        run: |
+          cd crates/viberfox/dist
+          for f in *.wasm *.js; do [ -f "$f" ] && gzip -9 -k -f "$f"; done
+          ls -la *.wasm* *.js* | awk '{print $5, $9}'
+
+      # `--delete` so files from a previous deploy (old content-hashed modules)
+      # do not accumulate 70 MB at a time. Written last, after every check above
+      # has passed, so a failed build leaves the live site untouched.
+      - name: Publish
+        run: |
+          apt-get update -qq && apt-get install -y -qq rsync >/dev/null
+          rsync -a --delete crates/viberfox/dist/ /publish/
+          echo "published $(du -sh /publish | cut -f1) to /data/viberfox/site"
