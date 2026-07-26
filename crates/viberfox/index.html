@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Viberfox</title>
+    <!-- Build this crate's `viberfox` bin for wasm, Phase-1 Viewer (no sim,
+         so no default `solo` feature). ADR-031/033. -->
+    <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features />
+    <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
+         root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
+    <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body></body>
+</html>

@@ -18,6 +18,10 @@ default = ["solo"]
 solo = ["dep:vibe_sim"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
+# Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
+# codegen bug, or a host that really does predate AVX2 — not for shipped builds,
+# where it silently costs several times the tile raster throughput.
+scalar-fallback = []
 
 [dependencies]
 anyhow.workspace = true
@@ -97,13 +101,39 @@ ureq.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ehttp = "0.5"
-# Web render backend (ADR-033): `webgl2` turns on wgpu's web-sys/WebGL2 path, which
-# egui-wgpu's shared wgpu also needs on wasm. Features union, so this only adds to
-# the base bevy set for the wasm target.
-bevy = { workspace = true, features = ["webgl2"] }
+# Web render backend (ADR-033). WebGPU, not WebGL2, and the difference is not
+# cosmetic: WebGL2 has no compute pipeline, no storage buffers and no storage
+# textures *as an API*, so on it Bevy drops the atmosphere, SSAO, OIT and
+# environment-map generation outright and falls back to CPU light clustering and
+# CPU batching preprocessing. Running those unoptimised over a few hundred draws
+# measured ~10 s per frame — the fallbacks, not the shaders, were the cost. WebGPU
+# exposes all of it, so the GPU paths light up and the workarounds below come out.
+#
+# The two are mutually exclusive: bevy's `webgpu` feature *overrides* `webgl2`, so
+# this build requires a WebGPU browser (Chrome/Edge ≥113, Firefox ≥141,
+# Safari ≥26) — there is no automatic WebGL2 fallback to inherit.
+#
+# `web` is not optional and not cosmetic: `bevy_platform::time::Instant` resolves to
+# `web_time` only under `cfg(all(target_arch = "wasm32", feature = "web"))` and
+# otherwise falls through to `use std::time`, whose `Instant::now()` is the
+# `unsupported` stub that panics "time not implemented on this platform". Bevy calls
+# it constantly (frame timing, asset channels), so without this the browser build
+# carries a landmine under every clock read — it surfaced as tiles dying mid-decode
+# with a stack that pointed at the raster code rather than at the clock. Our own
+# code was already on the `web-time` shim; this puts Bevy's on it too.
+bevy = { workspace = true, features = ["webgpu", "web"] }
 # `getrandom` (via uuid v4 + others) needs its JS backend on wasm, where there is
 # no OS RNG (ADR-033). Feature-unifies with the graph's 0.2 instance.
 getrandom = { version = "0.2", features = ["js"] }
+# jiff (timezone/local-time) needs its `js` backend on wasm — `Timestamp::now()`
+# otherwise panics ("current time not possible with just std"). ADR-033.
+jiff = { version = "0.2.34", features = ["js"] }
+# Real threads for the CPU half of tile decoding (ADR-033, `platform::workers`).
+# `std::thread::spawn` is Unsupported on wasm32 even with atomics — creating a
+# thread is a JS act — so this starts Web Workers that re-instantiate the module
+# against the shared imported memory. `es_modules` matches trunk's
+# `wasm-bindgen --target web` output.
+wasm_thread = { version = "0.3", features = ["es_modules"] }
 
 # Embeds the app icon (assets/icon/viberfox.ico) into the Windows .exe via
 # `build.rs`. NOT host-gated: cross-compiling to Windows from the Linux CI needs

@@ -1,7 +1,17 @@
+# SIMD baselines. Nothing in the tree writes intrinsics; what these flags buy is
+# the SIMD that is *already there* but compiled out. `tiny-skia`'s raster pipeline
+# is built on `f32x8`/`u32x8`, and its `wide/f32x8_t.rs` selects `__m256` only
+# under `target_feature = "avx"` — on the default `x86-64` baseline (SSE2) every
+# 256-bit op in the tile rasteriser is emulated as two 128-bit ones. `image`'s
+# resamplers and our own per-pixel loops autovectorise wider for the same reason.
+# Measured on this workload: ~30% off the 1024² mask raster and off `image`'s
+# Triangle resize, ~2x off the shore-field tail map.
+#
+# `x86-64-v3` = AVX2 + FMA + BMI2: Haswell (2013) / Excavator (2015) and later.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 # lld: `pacman -S lld clang`. For faster links on large binaries, try mold instead of lld (`pacman -S mold`).
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=x86-64-v3"]
 
 # Cross-compile to Windows from Linux (CI: the `viberfox-ci` image carries the
 # mingw-w64 toolchain + `rustup target add x86_64-pc-windows-gnu`). Link with the
@@ -9,6 +19,24 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 # matching `x86_64-w64-mingw32-windres` from the same package.
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+# aarch64 (Apple silicon, ARM Linux) needs nothing: NEON is baseline on the
+# architecture, so tiny-skia's `target_feature = "neon"` arm is already live.
+
+# The web target matters most of all here (ADR-033). `simd128` is *not* on by
+# default, and without it tiny-skia falls through both its SSE2 and its wasm arms
+# to the fully scalar fallback in `wide/f32x4_t.rs` — 4-wide arithmetic executed
+# one lane at a time, on the one target that has no worker threads to hide it
+# behind. This is the difference between SIMD and no SIMD, not a widening.
+#
+# simd128 is baseline in every browser we target (Chrome 91+, Firefox 89+,
+# Safari 16.4+).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
 
 [build]
 incremental = true

@@ -132,3 +132,19 @@ codegen-units = 1
 incremental = false
 debug = false
 panic = "abort"
+
+# The web build's working profile (ADR-033), and the reason it is not `dev-bevy`:
+# that profile optimises *dependencies* and leaves this crate at opt-level 1, which
+# is backwards for the browser. Bevy is hot, but so are our own streaming,
+# tessellation and collision systems, and on wasm there is no fast native fallback
+# to hide them. `debug = false` matters twice over here — debuginfo dominated a
+# 135 MB module, and every byte is parsed and compiled by the browser on load.
+#
+# Thin LTO over 16 codegen units rather than the shipped profile's fat LTO over
+# one: near-identical frame times for a fraction of the link, which is what makes
+# this usable as a dev loop when a rebuild already has to re-do std.
+[profile.web-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+debug = false

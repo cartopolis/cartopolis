@@ -16,3 +16,7 @@ assets/models/avatar/base/
 assets/models/avatar/outfits/
 assets/models/avatar/anims/
 assets/models/avatar/License_Standard.txt
+
+# Trunk output for the web build (`crates/viberfox/serve-threads.sh`). Build
+# artifact, and a large one — the wasm module alone is >100 MB unoptimised.
+dist/
