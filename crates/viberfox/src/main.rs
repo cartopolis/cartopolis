@@ -103,7 +103,7 @@ struct Cli {
     hide_ui: bool,
 
     /// Open UI panels in `--shot` captures, comma-separated: `dev`, `layers`,
-    /// `bookmarks`, `ai`, `avatar`, `stats`, `route`, or `all`. The menu bar and
+    /// `places`, `ai`, `avatar`, `stats`, `route`, or `all`. The menu bar and
     /// HUD already show (unless `--hide-ui`); this documents a panel too, e.g.
     /// `--ui dev` to capture the lighting/weather controls. `route` also seeds a
     /// demo route, so the planner is captured with a result in it.
@@ -900,6 +900,15 @@ fn main() {
                 .after(systems::free_camera::camera_controls),
             systems::navigation::update_route_visuals
                 .after(systems::navigation::drive_route_solver),
+            // Saved-place pins over the map. Last of the UI systems on purpose:
+            // it culls against the root `Ui`'s leftover space, which is only the
+            // map area once every side panel has taken its width — otherwise a
+            // pin would paint on top of the panel covering it. And after the
+            // camera has moved, so pins project onto this frame's view.
+            systems::place_pins::render_place_pins
+                .after(systems::navigation::render_route_panel)
+                .after(systems::chat::render_chat_panel)
+                .after(systems::free_camera::camera_controls),
         ),
     )
     // Phase 6: Transform gizmos
@@ -912,6 +921,10 @@ fn main() {
         ),
     )
     .add_systems(Update, (frame_time_watchdog, log_render_cost, frame_stats))
+    // Drawn over everything until the first tiles are up. Mirrors the
+    // splash in index.html, which covers the wasm load this cannot.
+    .init_resource::<systems::splash::BootSplash>()
+    .add_systems(Update, systems::splash::boot_splash)
     // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
     .add_systems(
         PostUpdate,

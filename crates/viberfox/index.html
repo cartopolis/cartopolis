@@ -59,6 +59,54 @@
         window.stop();
       }
     </script>
+    <!-- Boot recorder. Must run before the loader below, and before any Rust:
+         the failures worth catching on a device with no console — a module that
+         will not instantiate, a memory that cannot be reserved — happen *during*
+         instantiation, so nothing our `tracing` logger does will ever see them.
+         `onerror` and `unhandledrejection` are the only things that will.
+
+         It buffers rather than rendering, because at this point in the parse the
+         overlay it writes into does not exist yet. -->
+    <script>
+      (function () {
+        var lines = [];
+        window.__boot = { lines: lines, failed: false, onLine: null };
+        function push(level, text) {
+          if (lines.length > 400) lines.shift();
+          lines.push({ level: level, text: text });
+          if (window.__boot.onLine) window.__boot.onLine();
+        }
+        function fmt(args) {
+          return Array.prototype.map
+            .call(args, function (a) {
+              if (typeof a === "string") return a;
+              try { return JSON.stringify(a); } catch (e) { return String(a); }
+            })
+            .join(" ")
+            // Bevy's wasm logger writes `%c`-styled console output; strip the
+            // directives and the CSS that follows them so the line stays legible.
+            .replace(/%c/g, "")
+            .replace(/(color|background|font-style)\s*:[^;]*;?/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+        }
+        ["log", "info", "warn", "error"].forEach(function (k) {
+          var orig = console[k].bind(console);
+          console[k] = function () {
+            push(k, fmt(arguments));
+            orig.apply(null, arguments);
+          };
+        });
+        window.addEventListener("error", function (e) {
+          window.__boot.failed = true;
+          push("error", e.message + (e.filename ? " (" + e.filename + ")" : ""));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          window.__boot.failed = true;
+          push("error", "unhandled rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+        });
+      })();
+    </script>
     <!-- Build this crate's `viberfox` bin for wasm, Phase-1 Viewer (no sim,
          so no default `solo` feature). ADR-031/033. -->
     <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features />
@@ -94,7 +142,117 @@
         border-radius: 3px;
       }
       .unsupported a { color: #7ab7ff; }
+
+      /* Boot splash. Covers the canvas until the app has actually drawn — the
+         module is ~70 MB and takes real seconds to fetch and compile, which
+         without this is an unexplained black screen. */
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.1rem;
+        background: radial-gradient(120% 90% at 50% 20%, #1d2b34 0%, #0d1114 60%, #08090b 100%);
+        color: #e8e6e1;
+        font: 15px/1.5 system-ui, -apple-system, sans-serif;
+        transition: opacity 0.5s ease;
+        padding: 6vh 1.5rem;
+        box-sizing: border-box;
+      }
+      #boot.done { opacity: 0; pointer-events: none; }
+      #boot img { width: 96px; height: 96px; image-rendering: auto; }
+      #boot h1 {
+        margin: 0;
+        font-size: 1.9rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      #boot .motto {
+        margin: -0.6rem 0 0;
+        color: #9fb3bf;
+        font-size: 1rem;
+        letter-spacing: 0.04em;
+      }
+      /* Fixed height so the panel does not jump around as lines arrive. */
+      #bootlog {
+        width: min(64rem, 100%);
+        height: 12.5rem;
+        overflow: hidden;
+        margin: 0;
+        padding: 0.6rem 0.8rem;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid #1e2a31;
+        border-radius: 6px;
+        color: #8fa3ad;
+        font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #bootlog .warn { color: #d8c07a; }
+      #bootlog .error { color: #e88b7d; }
+      /* A boot that failed keeps the overlay up — the log is the whole point,
+         and fading it out would leave the user with the black screen again. */
+      #boot.failed { background: #140d0d; }
+      #boot.failed .motto { color: #e88b7d; }
     </style>
   </head>
-  <body></body>
+  <body>
+    <div id="boot">
+      <img src="assets/icon/viberfox.png" alt="" />
+      <h1>Viberfox</h1>
+      <p class="motto">Widen your horizon</p>
+      <pre id="bootlog"></pre>
+    </div>
+    <script>
+      (function () {
+        var boot = document.getElementById("boot");
+        var log = document.getElementById("bootlog");
+        var motto = boot.querySelector(".motto");
+
+        function render() {
+          var b = window.__boot;
+          // Only the tail fits, and the tail is the interesting part.
+          log.textContent = "";
+          b.lines.slice(-14).forEach(function (l) {
+            var span = document.createElement("span");
+            span.className = l.level;
+            span.textContent = l.text + "\n";
+            log.appendChild(span);
+          });
+          if (b.failed && !boot.classList.contains("failed")) {
+            boot.classList.add("failed");
+            motto.textContent = "Startup failed — the log below is the reason";
+          }
+        }
+        window.__boot.onLine = render;
+        render();
+
+        // Hide on evidence of a drawn frame, not on a timer: winit creates the
+        // canvas well before anything is on it, so waiting for the element alone
+        // would swap a splash for a black screen. Two rAFs after the canvas has a
+        // backing buffer is the cheapest honest signal that a frame has gone
+        // through. `?log` keeps it up regardless, for reading the boot sequence.
+        var keep = /(^|[?&])(log|LOG)(=|&|$)/.test(location.search);
+        (function wait() {
+          if (window.__boot.failed) return;
+          var c = document.querySelector("canvas");
+          if (c && c.width > 1 && c.height > 1) {
+            requestAnimationFrame(function () {
+              requestAnimationFrame(function () {
+                if (window.__boot.failed || keep) return;
+                boot.classList.add("done");
+                setTimeout(function () { boot.remove(); }, 600);
+              });
+            });
+            return;
+          }
+          requestAnimationFrame(wait);
+        })();
+      })();
+    </script>
+  </body>
 </html>

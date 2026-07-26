@@ -146,6 +146,15 @@ pub struct MapStream {
 }
 
 impl MapStream {
+    /// Whether any streamed tile has been applied yet — the boot splash's
+    /// "the world is visible" signal (`systems::splash`). Exposed as a predicate
+    /// rather than the map itself so the field stays private.
+    pub fn has_tiles(&self) -> bool {
+        !self.loaded.is_empty()
+    }
+}
+
+impl MapStream {
     /// The geo anchor (lat, lng of the world origin + base zoom) — the geo↔world
     /// mapping other systems build on.
     pub fn geo_anchor(&self) -> Option<(f64, f64, u32)> {
