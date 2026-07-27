@@ -49,11 +49,16 @@ pub struct EguiManager {
     /// keeps the cooperative panel layout the old ctx-based panels had.
     root_ui: Option<egui::Ui>,
     elapsed_time: f64,
-    /// Logical viewport size in **points** (physical pixels ÷ scale), refreshed
-    /// each frame in [`begin_egui_frame`]. UI systems read [`Self::compact`] off
-    /// this to lay out responsively — egui has no media queries, so "responsive"
-    /// is just branching on the live viewport width every frame.
-    viewport_pts: egui::Vec2,
+    /// The surface egui lays out against: physical pixels + the logical→physical
+    /// scale, refreshed each frame in [`begin_egui_frame`]. UI systems read
+    /// [`Self::compact`] off [`Self::viewport_pts`] to lay out responsively —
+    /// egui has no media queries, so "responsive" is just branching on the live
+    /// viewport width every frame.
+    ///
+    /// Kept here (rather than re-read from the `Window` each time) because it is
+    /// also the fallback for a frame that has **no** surface at all — see
+    /// [`begin_egui_frame`].
+    surface: (UVec2, f32),
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -127,7 +132,9 @@ impl Default for EguiManager {
             ctx,
             root_ui: None,
             elapsed_time: 0.0,
-            viewport_pts: egui::vec2(1280.0, 720.0),
+            // Matches the primary window's default resolution in `main.rs`; only
+            // ever used for the frames before the first `begin_egui_frame`.
+            surface: (UVec2::new(1280, 720), 1.0),
         }
     }
 }
@@ -143,17 +150,36 @@ impl EguiManager {
     /// Logical viewport size in points (physical pixels ÷ display scale), as egui
     /// lays out against it this frame.
     pub fn viewport_pts(&self) -> egui::Vec2 {
-        self.viewport_pts
+        let (physical, scale) = self.surface;
+        egui::vec2(physical.x as f32 / scale, physical.y as f32 / scale)
+    }
+
+    /// Record the surface this frame is laid out against. The scale is sanitised
+    /// on the way in: it divides every size below, and a display handing back 0
+    /// (or NaN) — which is what a monitor being switched off under us looks like
+    /// — would otherwise turn the whole viewport into infinities.
+    fn set_surface(&mut self, physical: UVec2, scale: f32) {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        self.surface = (physical, scale);
     }
 
     /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
     /// systems branch on this for a responsive layout.
     pub fn compact(&self) -> bool {
-        self.viewport_pts.x < COMPACT_WIDTH_PTS
+        self.viewport_pts().x < COMPACT_WIDTH_PTS
     }
 
     /// Borrow this frame's shared root `Ui`, for showing panels
     /// (`egui::Panel`, `egui::CentralPanel`). Only valid during Update.
+    ///
+    /// [`begin_egui_frame`] builds the root `Ui` unconditionally — including on a
+    /// frame with no window at all — so during Update this cannot fail. It still
+    /// panics rather than no-ops, because the one remaining way to reach it is a
+    /// UI system registered in the wrong schedule, and that should be loud.
     pub fn ui_mut(&mut self) -> &mut egui::Ui {
         self.root_ui
             .as_mut()
@@ -268,7 +294,8 @@ impl Plugin for EguiPlugin {
 
 /// The surface egui lays out against: the primary window, or the offscreen
 /// target in a headless `--shot` run (see [`HeadlessSurface`]). Physical pixels
-/// plus the logical→physical scale.
+/// plus the logical→physical scale. `None` once the window has been despawned
+/// and no headless target stands in — see [`begin_egui_frame`].
 fn egui_surface(
     windows: &Query<&Window>,
     headless: Option<&Res<HeadlessSurface>>,
@@ -365,15 +392,29 @@ pub fn begin_egui_frame(
     mut last_pointer: Local<Option<egui::Pos2>>,
     mut pointer_carry: Local<Vec<egui::Event>>,
 ) {
-    let Some((physical, scale)) = egui_surface(&windows, headless.as_ref()) else {
-        return;
-    };
+    // A frame with no surface at all still begins (and ends) an egui pass, laid
+    // out against the last one we saw.
+    //
+    // The window entity is despawned by Bevy's `close_when_requested` (in `Last`)
+    // while `Update` keeps running, so the shutdown sequence can put a whole frame
+    // through the schedule with zero `Window`s in the world. Returning early here
+    // left `root_ui` at `None` for that frame — and every panel system still ran,
+    // each one hitting `ui_mut()`'s `expect` on a task-pool thread. That is the
+    // macOS "ui_mut() called outside an egui frame" crash (#2): a stack with no
+    // system name, on a compute-pool thread, at shutdown.
+    //
+    // The cost is one laid-out, tessellated frame that is never presented; the
+    // gain is that `ui_mut()`'s invariant holds by construction instead of by the
+    // convention that a window exists.
+    if let Some((physical, scale)) = egui_surface(&windows, headless.as_ref()) {
+        egui_manager.set_surface(physical, scale);
+    }
+    let (physical, scale) = egui_manager.surface;
 
     egui_manager.elapsed_time += time.delta_secs_f64();
 
     let logical_w = physical.x as f32 / scale;
     let logical_h = physical.y as f32 / scale;
-    egui_manager.viewport_pts = egui::vec2(logical_w, logical_h);
 
     let mut events: Vec<egui::Event> = Vec::new();
 
@@ -520,12 +561,12 @@ fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
 pub fn end_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     mut render_output: ResMut<EguiRenderOutput>,
-    windows: Query<&Window>,
-    headless: Option<Res<HeadlessSurface>>,
 ) {
-    let Some((physical, _)) = egui_surface(&windows, headless.as_ref()) else {
-        return;
-    };
+    // Unconditional, and deliberately not gated on a surface existing: every
+    // `begin_pass` needs its `end_pass`, or a windowless frame would leave the
+    // pass open and the next `begin_pass` would nest inside it. `begin_egui_frame`
+    // laid this frame out against `surface` — quote the same numbers back.
+    let (physical, _) = egui_manager.surface;
 
     // Drop the shared root `Ui`, finalizing its panel layers, before ending the pass.
     egui_manager.root_ui = None;
@@ -710,11 +751,16 @@ pub fn egui_pass(
     }
 }
 
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::input::InputPlugin;
     use bevy::input::mouse::MouseButtonInput;
-    use bevy::window::{CursorMoved, WindowEvent};
+    use bevy::window::{
+        CursorMoved, ExitCondition, PrimaryWindow, WindowCloseRequested, WindowEvent, WindowPlugin,
+    };
 
     fn moved(x: f32, y: f32) -> WindowEvent {
         WindowEvent::CursorMoved(CursorMoved {
@@ -956,5 +1002,84 @@ mod tests {
             }),
             "an overlay confined to the map area ate a click meant for the panel"
         );
+    }
+
+    /// A UI-bearing app with no render world (`EguiPlugin` skips its render-app
+    /// half when there is none, which is exactly what a test wants).
+    fn ui_app(primary_window: Option<Window>) -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            InputPlugin,
+            WindowPlugin {
+                primary_window,
+                exit_condition: ExitCondition::OnAllClosed,
+                close_when_requested: true,
+                ..default()
+            },
+            EguiPlugin,
+        ))
+        .add_systems(Update, touch_root_ui);
+        app
+    }
+
+    /// The first thing every panel system does.
+    fn touch_root_ui(mut egui: ResMut<EguiManager>) {
+        let _ = egui.ui_mut();
+    }
+
+    /// The macOS shutdown crash (#2): Bevy despawns the window in `Last`, so the
+    /// frames between the close and the process actually exiting run the whole
+    /// `Update` schedule with no `Window` in the world. `begin_egui_frame` used to
+    /// bail out there, leaving every panel system to panic on `ui_mut()`.
+    #[test]
+    fn update_survives_the_window_being_closed() {
+        let mut app = ui_app(Some(Window::default()));
+        app.update();
+
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("primary window");
+        app.world_mut().write_message(WindowCloseRequested { window });
+
+        // `close_when_requested` marks on one frame and despawns on the next, so
+        // give it both — then run the frames that used to panic.
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(
+            app.world_mut()
+                .query_filtered::<Entity, With<Window>>()
+                .iter(app.world())
+                .next()
+                .is_none(),
+            "the window should be gone — otherwise this test never reaches the case it is about"
+        );
+    }
+
+    /// The same invariant from the other end: a windowless run whose
+    /// `HeadlessSurface` is missing — what a `--shot` capture looks like if the
+    /// harness fails to insert one. The UI has nothing to lay out against, which
+    /// is not a reason to take the process down.
+    #[test]
+    fn update_survives_a_run_with_no_surface_at_all() {
+        let mut app = ui_app(None);
+        app.update();
+        app.update();
+    }
+
+    /// A zero/NaN scale factor divides every viewport size, so it is sanitised on
+    /// the way in rather than propagated as infinities through panel layout.
+    #[test]
+    fn a_degenerate_scale_factor_never_reaches_layout() {
+        let mut mgr = EguiManager::default();
+        for bad in [0.0, -1.0, f32::NAN] {
+            mgr.set_surface(UVec2::new(1280, 720), bad);
+            assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
+        }
+        mgr.set_surface(UVec2::new(2560, 1440), 2.0);
+        assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
     }
 }
