@@ -4,14 +4,13 @@
 
 ## Architecture docs
 
-Intent and decisions live under `docs/`:
+Intent and standing constraints live under `docs/`:
 
-- `docs/abstract/` — **why**: vision (`G-*`), principles (`P-*`), roadmap (P0–P2), ADR resolution (R0–R3), capability map, glossary
-- `docs/adr/` — **what we chose**: one file per decision; [`docs/adr/index.md`](docs/adr/index.md) lists them all
+- [`docs/guides/development.md`](docs/guides/development.md) — contributor guide: dev loop, tests, code map, conventions
+- [`docs/notes/`](docs/notes/) — **standing facts**: measurements (with method), rejected options (with the reason they lost), external-world constraints, directions abandoned without a diff. One file per topic, retrieved by `triggers:`, edited in place
+- `docs/adr/`, `docs/abstract/` — **frozen archive** of the numbered decision log, retired 2026-07-26 ([why](docs/notes/retired/adr-system.md)). Read for history; **never add to them, and don't re-propose numbered ADRs**
 
-Before large or cross-cutting work, read in order: [`vision.md`](docs/abstract/vision.md) → [`principles.md`](docs/abstract/principles.md) → [`roadmap.md`](docs/abstract/roadmap.md) → [`adr-resolution.md`](docs/abstract/adr-resolution.md) → [`docs/adr/index.md`](docs/adr/index.md). Full ADR discipline (when one is required, definition of done): [`docs/abstract/README.md`](docs/abstract/README.md).
-
-**Create or supersede an ADR** for wire-protocol, authority, persistence-schema, security-boundary, major-dependency, or sim/client process-boundary changes; skip it for bug fixes and refactors inside an existing ADR's scope. Copy [`docs/adr/template.md`](docs/adr/template.md) and add a row to [`docs/adr/index.md`](docs/adr/index.md) in the same change set.
+**Where a fact goes:** explains one diff → the commit body (required for `feat`/`fix`/`perf` and any 5+-file commit — see [`.claude/skills/commit`](.claude/skills/commit/SKILL.md)); constrains all future work → a note; falsified by a code change → a comment next to the code.
 
 ## Build scope
 

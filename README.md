@@ -76,12 +76,19 @@ Binary assets — models, textures, fonts, icons, audio, the `docs/img` screensh
 | `viberfox` | Bevy 0.19 game client (rendering, ECS systems, UI) |
 | `big_space` | Vendored fork of `big_space` 0.10, ported to Bevy 0.19 for planet-scale floating-origin transforms |
 
-Design docs and the reasoning behind major decisions live under [`docs/`](docs/) — read them before large or cross-cutting changes.
+## Development
 
-## Troubleshooting
+New here? [`docs/guides/development.md`](docs/guides/development.md) is the contributor
+guide — the dev loop, tests, a map of the code, conventions, config and CI.
 
-- **Wayland flicker (GLES):** force Vulkan — `WGPU_BACKEND=vulkan cargo run -p viberfox`.
-- **Build errors after a toolchain/dep bump:** `cargo clean` and rebuild.
+```bash
+cargo test -p viberfox --bin viberfox   # the client suite (no lib target: --lib fails)
+```
+
+Standing constraints and measurements live in [`docs/notes/`](docs/notes/); the traps
+worth knowing before a first non-trivial change are in [`CLAUDE.md`](CLAUDE.md)'s
+*Known issues*. `docs/adr/` and `docs/abstract/` are a frozen archive of the earlier
+decision log.
 
 ## Credits
 

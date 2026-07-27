@@ -189,23 +189,13 @@ This is a **Cargo workspace** with four crates:
 
 **Wire format (ADR-008–009):** TCP length-delimited frames, little-endian `u32` length; frame body = `protocol_version` (u8) + `message_kind` (u8) + `request_id` (u64) + postcard payload.
 
-## Architecture docs (abstract → ADR → code)
+## Documentation (notes + commit bodies)
 
-Architecture documentation lives under `docs/`:
+- `docs/guides/development.md` — contributor guide: dev loop, tests, code map, conventions, config, CI
+- `docs/notes/` — **standing facts** the code and `git log` don't hold: measurements (with date and method), rejected options (with the reason they lost), external-world constraints, directions abandoned without a diff. One file per topic with `triggers:` front-matter; edited in place when a fact stops being true. `docs/notes/README.md` has the format
+- `docs/adr/`, `docs/abstract/` — **frozen archive** of the numbered ADR log and its abstract layer, retired 2026-07-26 (`docs/notes/retired/adr-system.md` says why). Read for history; **do not add to them or re-propose the form**
 
-- `docs/abstract/` — **why**: vision (`G-*` goals), principles (`P-*`), roadmap tiers (P0–P2), ADR resolution depth (R0–R3), capability map
-- `docs/adr/` — **what we chose**: one file per decision; `index.md` lists all ADRs
-
-**Before large or cross-cutting changes**, read in this order:
-1. `docs/abstract/vision.md` — goals G-01…G-09
-2. `docs/abstract/principles.md` — principles P-01…P-07
-3. `docs/abstract/roadmap.md` — P0/P1/P2 priorities
-4. `docs/abstract/adr-resolution.md` — R0–R3 depth guide
-5. `docs/adr/index.md` — existing decisions
-
-**Create or supersede an ADR** for: wire protocol changes, storage schema, security boundaries, major new dependencies, sim/client process boundary changes. Skip for bug fixes or refactors within an existing ADR's scope.
-
-New ADR checklist: copy `docs/adr/template.md`, set `Aligns with: G-*, P-*`, add a row to `docs/adr/index.md` in the same commit. Match depth to R0–R3 (not every change needs a full R2 ADR).
+**Where a fact goes:** explains this diff → the commit body, required for `feat`/`fix`/`perf` and any 5+-file commit (`.claude/skills/commit`); constrains all future work → a note; a code change would falsify it → a comment next to the code.
 
 ## Known issues / workarounds
 

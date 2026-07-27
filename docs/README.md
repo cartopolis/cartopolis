@@ -1,29 +1,25 @@
 # Documentation
 
-User docs, product intent, planning, and architecture decisions for Viberfox live
-under **`docs/`**:
-
 | Path | Contents |
 |------|----------|
+| **[guides/development.md](guides/development.md)** | **Contributor guide** — dev loop, tests, code map, conventions, config, CI |
 | **[manual.md](manual.md)** | User manual — controls, getting around, authoring objects, developer panel |
-| **[abstract/](abstract/)** | Vision (`G-*`), principles (`P-*`), roadmap, **ADR resolution** guide, capability map, glossary, discipline |
-| **[adr/](adr/)** | Architecture Decision Records (numbered files + `index.md`, `template.md`) |
+| **[notes/](notes/)** | Standing facts about the codebase: measurements, rejected options, external constraints |
 | **[guides/](guides/)** | Operational how-tos (self-hosting services, deployment) |
-| **[img/](img/)** | Screenshots used by the docs and the top-level README (`shots.toml` drives `cargo shots`) |
+| **[img/](img/)** | Screenshots for the docs and the top-level README (`shots.toml` drives `cargo shots`) |
+| [adr/](adr/), [abstract/](abstract/) | **Frozen archive** — the numbered decision log and its abstract layer, retired 2026-07-26 ([why](notes/retired/adr-system.md)) |
 
 ## Guides
 
+- [Development](guides/development.md) — start here as a new contributor
 - [Self-hosted geo services (Overpass + Nominatim)](guides/server.md) — run local Overpass/Nominatim instances seeded with the Netherlands extract and point the client at them via `VIBE_OVERPASS_URL` / `VIBE_NOMINATIM_URL`
 
-## Read order
+## Where a fact belongs
 
-1. [abstract/vision.md](abstract/vision.md)
-2. [abstract/principles.md](abstract/principles.md)
-3. [abstract/roadmap.md](abstract/roadmap.md) — **priorities and sequencing**
-4. [abstract/adr-resolution.md](abstract/adr-resolution.md) — **how deep to document** a concept
-5. [abstract/capability-map.md](abstract/capability-map.md)
-6. [adr/index.md](adr/index.md)
+- Explains **one diff** → the commit body (required for `feat`/`fix`/`perf` and any 5+-file commit).
+- Constrains **all future work** → a topic note in [notes/](notes/), edited in place.
+- Falsified by a code change → a comment next to the thing.
 
-Discipline (when an ADR is required, DoD): [abstract/README.md](abstract/README.md).
+Nothing new goes in `adr/` or `abstract/`.
 
 **AI assistants:** [AGENTS.md](../AGENTS.md) in the repo root.
