@@ -1,5 +1,8 @@
 # ADR Index
 
+> **Archived 2026-07-26** — history only. New standing facts go in
+> [`docs/notes/`](../notes/); see [retired/adr-system.md](../notes/retired/adr-system.md).
+
 | ID | Title | Status | Tags |
 |----|-------|--------|------|
 | [001](./001-bevy-game-engine.md) | Bevy as Game Engine | Accepted | technology, rendering, ecs |

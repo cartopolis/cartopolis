@@ -1,5 +1,10 @@
 # Abstract (strategic foundation)
 
+> **Archived 2026-07-26** along with the numbered ADRs it graded — replaced by
+> topic notes in [`docs/notes/`](../notes/) plus required commit bodies
+> ([why](../notes/retired/adr-system.md)). Kept for history; nothing new goes
+> here. Everything below describes the retired process.
+
 This directory holds **slow-moving** product and engineering intent. **[`docs/adr/`](../adr/)** holds **point-in-time** decisions. Together: **abstract constrains and prioritizes; ADRs record what we chose.**
 
 **Canonical layout:** [`docs/`](../README.md) → **`abstract/`** (here) + **`adr/`** (decision log).
