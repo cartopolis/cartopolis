@@ -25,7 +25,7 @@ axes and conflating them gets the GPU rule wrong.
 | Session | `claude-acp` on the workstation | Remote Control into `viberfox-agent` | headless `claude -p` |
 | **Lane** | **driven** | **driven** | **autonomous** |
 | Driving | you, live | you, live | a new issue or a label |
-| Label | `local` | `local` | none, or `agent` |
+| Label | `driven` | `driven` | none, `autonomous`, or `agent` |
 | Host | workstation | VPS container | VPS container |
 | GPU | **yes** | no | no |
 | Correcting it | a sentence | a sentence | a comment, next poll |
@@ -40,15 +40,38 @@ discover it went sideways.
 `claude.ai/code` is the same lane as Zed, not a variant of the watcher: a person
 is steering it turn by turn. It is a full design/spec session that happens to be
 reachable from a phone. Everything below about the driven lane — `/ticket`, the
-`local` label, the `Stop` hook, the handover — applies to it unchanged.
+`driven` label, the `Stop` hook, the handover — applies to it unchanged.
 
 The autonomous lane is for what the driven one cannot absorb: work that should
 happen while you are not at a keyboard, tickets filed in passing, and anything
 you would rather queue than do.
 
-> **`local` names the lane, not the machine.** It means "a person is driving
+### Both polarities exist, and both are useful
+
+The lanes have a label each, because which one is load-bearing depends on how
+much you want running unattended:
+
+| Label | Says | Load-bearing when |
+|---|---|---|
+| `driven` | hands off, a person owns this | `AGENT_NEW_ISSUE_MODE=refine` — the watcher acts by default, so tickets opt **out** |
+| `autonomous` | take this: refine it, then build it | `AGENT_NEW_ISSUE_MODE=off` — nothing runs unless a ticket opts **in** |
+
+Neither is redundant in the other's mode. With the watcher acting by default,
+`autonomous` is still the only way to hand it a ticket it has already passed —
+its cursor only ever moves forward, so an issue that sat in Backlog for a week
+will never be picked up on its own.
+
+`autonomous` differs from the bare `agent` label in how much it asks for:
+`autonomous` runs the **full pipeline** (refine, then implement), `agent` means
+"I have decided this is actionable, skip the spec". `autonomous` on a ticket
+whose branch already exists skips refinement too — rewriting the spec of
+half-built work is not an improvement.
+
+> **`driven` names the lane, not the machine.** It means "a person is driving
 > this ticket; the watcher must not touch it" — true of a claude.ai/code session
-> on the VPS just as much as a Zed session on the workstation.
+> on the VPS just as much as a Zed session on the workstation. It replaced
+> `local`, which was a misnomer for exactly that reason; `local` is still
+> accepted as an alias so nothing in flight breaks.
 
 ### The GPU rule is about the host, not the lane
 
@@ -70,7 +93,7 @@ Identical in both places. The only difference is the GPU.
 
 Use the [`/ticket`](../.claude/skills/ticket/SKILL.md) skill. It writes a spec —
 problem, approach, acceptance criteria, verification, out of scope — shows it to
-you before filing, then creates the issue with the `local` label.
+you before filing, then creates the issue with the `driven` label.
 
 ```bash
 .claude/skills/ticket/file-issue --title "..." < /tmp/spec.md
@@ -129,7 +152,7 @@ worktree *directories* are named `bridge-cse_*`, but the branches are ordinary
 
 ## Autonomous lane (the issue watcher)
 
-A new issue with no `local` label is **refined** before anything is built.
+A new issue with no `driven` label is **refined** before anything is built.
 
 ### Refinement
 
@@ -163,7 +186,7 @@ push the branch. `main` is protected; the bot cannot push to it.
 ### Talking to it
 
 - `@agent <instruction>` — resume that issue's session with a new instruction.
-  On a `local` issue this doubles as the handover.
+  On a `driven` issue this doubles as the handover.
 - `@agent refine <what is wrong>` — throw the spec away and write it again.
 - `agent:skip` — hands off, permanently.
 
@@ -173,8 +196,8 @@ label triggers need no allowlist.
 
 ## Handover
 
-The local lane stalls; the remote agent picks it up. **Remove the `local`
-label** (or comment `@agent`).
+The driven lane stalls; the watcher picks it up. **Remove the `driven` label**
+(or comment `@agent`).
 
 Three things have to line up, and each one used to fail silently:
 
@@ -211,13 +234,14 @@ The labels are the state machine. The column follows.
 
 | Label | Column | Meaning |
 |---|---|---|
-| `local` | Backlog¹ | The workstation owns it. The agent never touches it. |
+| `driven` (or `local`) | Backlog¹ | A person owns it. The watcher never touches it. |
 | `agent:skip` | Backlog¹ | Nobody acts on it. |
-| *(none)* | Backlog | New. Refinement starts on the next poll. |
+| *(none)* | Backlog | New. Refinement starts on the next poll, unless `AGENT_NEW_ISSUE_MODE=off`. |
+| `autonomous` | Backlog | Opt in: refine, then implement. Works on any issue, however old. |
 | `agent:refining` | Backlog | Reading the code, writing a spec. Read-only. |
 | `agent:needs-input` | Backlog | Refined, but blocking questions. **Parked.** |
 | `agent:refined` | To Do | Spec agreed. Queued for implementation. |
-| `agent` | To Do | Explicit "implement this now" — skips refinement. |
+| `agent` | To Do | Explicit "implement this now" — skips refinement. Also the takeover gesture. |
 | `agent:running` | In Progress | A session is running **right now**. |
 | `agent:done` | Done | Branch pushed, waiting for review. |
 | `agent:failed` | To Do | Needs a human. |

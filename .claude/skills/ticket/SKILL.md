@@ -1,13 +1,13 @@
 ---
 name: ticket
-description: File a viberfox issue on the kanban board from a local session, with a spec you and the user just agreed on. Use when work should be tracked as a ticket — whether it is being started now, deferred, or handed to the remote agent. Applies the `local` label so the VPS agent leaves it alone.
+description: File a viberfox issue on the kanban board from a session you are steering (Zed or claude.ai/code), with a spec you and the user just agreed on. Use when work should be tracked as a ticket — whether it is being started now, deferred, or handed to the autonomous agent. Applies the `driven` label so the watcher leaves it alone.
 ---
 
 # ticket
 
 File a Forgejo issue for viberfox from *this* session, with the spec already
 written. See [docs/workflow.md](../../../docs/workflow.md) for the two lanes and
-why the default is local.
+why the default is `driven`.
 
 The point of filing from here is that you have the codebase in context and the
 user is in the room. A ticket written now can cite real files and settle the
@@ -47,7 +47,7 @@ guess at an acceptance criterion, ask the user instead of writing it.
 ```
 
 `--branch` defaults to the branch currently checked out (`main` counts as none).
-`--label` defaults to `local`. It prints the issue number; the URL goes to
+`--label` defaults to `driven`. It prints the issue number; the URL goes to
 stderr.
 
 **The issue number is inserted into the branch name**, keeping the
@@ -66,21 +66,24 @@ Forgejo 16 has no kanban API and only the bot's session can move a card.
 
 ## Which label
 
-- **`local`** (default) — you or a later local session will do the work. The
-  remote agent never touches it.
-- **`agent`** — hand it straight to the VPS agent to implement. Use when the
-  spec is complete and the work needs no GPU.
+- **`driven`** (default) — you, or a later session you are steering (Zed or
+  claude.ai/code), will do the work. The watcher never touches it.
+- **`autonomous`** — hand it to the watcher for the full pipeline: refine, then
+  implement, unattended.
+- **`agent`** — hand it straight to the watcher to implement. Use when the spec
+  is complete and the work needs no GPU.
 - **`agent:skip`** — a record only; nobody should act on it yet.
 
-**Anything touching camera, shaders, egui layout or map draw order must stay
-`local`.** The VPS container has no GPU, so `--shot` and `cargo shots` cannot
-run there and the change cannot be verified — see the run-modes notes in
-CLAUDE.md.
+**Anything touching camera, shaders, egui layout or map draw order must stay on
+the workstation.** Neither VPS context has a GPU, so `--shot` and `cargo shots`
+cannot run there and the change cannot be verified — that includes an
+interactive claude.ai/code session, not just the watcher. See the run-modes
+notes in CLAUDE.md.
 
 ## Handing it over later
 
-If the work stalls, the remote agent can take it over: remove the `local` label
-(or comment `@agent`). It will attach to the branch named in the issue body and
+If the work stalls, the watcher can take it over: remove the `driven` label (or
+comment `@agent`). It will attach to the branch named in the issue body and
 read the chat digest this session publishes to `refs/agent-context/<branch>`.
 
 Two things have to be true for that to work, and both are automatic *provided
