@@ -44,6 +44,7 @@ use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
 };
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
+use crate::systems::vector_tiles;
 use vibe_core::TileKey;
 
 /// Typing pause before an endpoint field is geocoded — the search bar's value, so
@@ -667,18 +668,23 @@ pub fn update_route_visuals(
                     ..default()
                 })
             };
-            // Well clear of the ground stack, whose own biases top out at 4
+            // Well clear of the ground stack, whose own rungs top out at 10
             // (`vector_tiles::SurfaceGroup::depth_bias`). Matching that range was
             // not enough: the route has to win against the *buildings* and the
             // road surfaces too, and at street range the depth buffer's resolution
             // is coarse enough that a near-tie shows up as banding. The route is a
             // navigation aid — drawing it over the odd building corner is the right
             // trade against losing it under one.
+            //
+            // These are rungs on the same ladder the surfaces use, so they carry
+            // the same `DEPTH_BIAS_STEP` — a bias is denominated in depth-buffer
+            // ULPs, and one rung of separation is below the rounding noise.
+            let rung = |n: f32| n * vector_tiles::DEPTH_BIAS_STEP;
             let p = RouteMaterials {
-                fill: line(0.16, 0.53, 0.90, 20.0),
-                casing: line(0.06, 0.22, 0.42, 18.0),
-                start: line(0.20, 0.78, 0.35, 22.0),
-                finish: line(0.90, 0.25, 0.22, 22.0),
+                fill: line(0.16, 0.53, 0.90, rung(20.0)),
+                casing: line(0.06, 0.22, 0.42, rung(18.0)),
+                start: line(0.20, 0.78, 0.35, rung(22.0)),
+                finish: line(0.90, 0.25, 0.22, rung(22.0)),
             };
             commands.insert_resource(RouteMaterials {
                 fill: p.fill.clone(),

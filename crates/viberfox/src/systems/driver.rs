@@ -50,6 +50,7 @@ use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, T
 use crate::systems::map_stream::MapStream;
 use crate::systems::navigation::RouteState;
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
+use crate::systems::vector_tiles;
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 
@@ -741,11 +742,13 @@ pub fn update_driver_arrow(
             // Unlit for the same reason the route line is: this is a UI affordance
             // drawn into the scene, and it has to stay legible at night. The depth
             // bias puts it above the route line, which is itself above the ground
-            // stack (`navigation::ROUTE_Y` explains that fight in full).
+            // stack (`navigation::ROUTE_Y` explains that fight in full). Rung 24 on
+            // the shared ladder — the step is what keeps a rung clear of the
+            // rounding noise, see `vector_tiles::DEPTH_BIAS_STEP`.
             let fill = materials.add(StandardMaterial {
                 base_color: Color::srgb(0.20, 0.60, 0.98),
                 unlit: true,
-                depth_bias: 24.0,
+                depth_bias: 24.0 * vector_tiles::DEPTH_BIAS_STEP,
                 cull_mode: None,
                 ..default()
             });

@@ -39,6 +39,16 @@ pub const TILE_PX: u32 = 512;
 /// rendered by magnifying the z14 ancestor.
 pub const MAX_SOURCE_ZOOM: u32 = 14;
 
+/// Depth-buffer units between adjacent rungs of the coplanar ground stack, and of
+/// everything else drawn flat on it (the route line, the driver arrow).
+///
+/// Every bias in the scene is a small integer rung times this, so scaling it moves
+/// the whole stack together and cannot reorder it. It exists because the rungs used
+/// to *be* the bias: neighbours one unit apart, which is one ULP of the depth
+/// buffer and below the per-frame rounding noise. See [`SurfaceGroup::depth_bias`]
+/// for why the millimetre `y_offset`s stop covering for that as you climb.
+pub const DEPTH_BIAS_STEP: f32 = 16.0;
+
 /// Which sub-rectangle of a source tile to draw, when the requested tile is deeper
 /// than [`MAX_SOURCE_ZOOM`]. `factor` is 2^(requested_z − source_z); `(x, y)` is the
 /// requested tile's position within the source tile, in units of the sub-grid.
@@ -487,9 +497,11 @@ impl SurfaceGroup {
     /// the first attempt — pushed grass and water up through the bottom courses of
     /// the buildings, which is the green bleeding out from under the grey.
     ///
-    /// The window is only 10 mm, far too little to separate anything by geometry
-    /// alone against a 200 km far plane, so the actual z-fight is settled by
-    /// [`Self::depth_bias`]; these offsets only fix the ordering intent.
+    /// The window is only 10 mm. That is enough to settle the stack at street
+    /// range and nowhere near enough from the air: measured in depth-buffer units
+    /// a geometric gap shrinks as 1/z, so these offsets fade out exactly as you
+    /// climb. [`Self::depth_bias`] is what has to hold at altitude; these fix the
+    /// ordering intent and carry it up close.
     #[must_use]
     pub fn y_offset(self) -> f32 {
         match self {
@@ -508,14 +520,41 @@ impl SurfaceGroup {
 
     /// Depth-buffer bias, which is what actually stops the flicker.
     ///
-    /// The camera runs `near = 0`, `far = 200 km` (`free_camera::camera_controls`
-    /// widens it for the globe tier), so depth precision at ground range is far too
-    /// coarse to resolve a millimetre of physical separation — coplanar ground
-    /// surfaces then flicker as the camera moves, which is exactly the symptom.
-    /// `StandardMaterial::depth_bias` biases the comparison itself, so the ordering
-    /// holds at any distance and does not depend on the far plane.
+    /// The rung ladder below is multiplied by [`DEPTH_BIAS_STEP`], and the spacing
+    /// is the whole point. `StandardMaterial::depth_bias` reaches the hardware
+    /// depth bias — Bevy's `StandardMaterial::specialize` writes it to
+    /// `DepthStencilState::bias.constant`, and `ExtendedMaterial` chains to the
+    /// base's `specialize`, so the water material gets it too. But that field is
+    /// denominated in **depth-buffer ULPs**, not world units, so a ladder in steps
+    /// of 1.0 buys exactly one ULP between neighbours — less than the rasteriser's
+    /// own rounding noise, which re-rolls every frame as the view matrix moves.
+    ///
+    /// The `y_offset` millimetres do not make up the difference at range. The depth
+    /// buffer is reversed-z `Depth32Float`, so for a primitive at depth `D` one
+    /// bias unit is `r = 2^(e-23) ≈ D·1.19e-7`; expressing a geometric gap `Δy` in
+    /// those units gives `Δy / (1.19e-7 · z)`, which **decays as 1/z**. Water sits
+    /// 2 mm above Forest: ~3.4 ULP of margin at 5 km, ~1.1 ULP at 15 km. Climbing
+    /// collapses that term until only the ladder is left, which is why the flicker
+    /// appears when the camera moves in *height* and freezes when it stops.
+    ///
+    /// Widening the ladder is safe at every range precisely because the unit is
+    /// proportional to the primitive's own depth: the apparent world-space shift is
+    /// `1.19e-7 · bias · z`, so water's 64 units read as ~4 cm at 5 km and ~40 µm
+    /// at 10 m. It cannot punch through a building, which is separated by metres of
+    /// honest depth.
+    ///
+    /// `bias.slope_scale` stays 0 — `StandardMaterial` exposes only `constant`, and
+    /// reaching the other field would mean wrapping every group in an
+    /// `ExtendedMaterial` just to get at `MaterialExtension::specialize`.
     #[must_use]
     pub fn depth_bias(self) -> f32 {
+        self.depth_rung() * DEPTH_BIAS_STEP
+    }
+
+    /// The group's rung in the coplanar ground stack, low to high. Ordering intent
+    /// only; [`Self::depth_bias`] turns it into depth-buffer units.
+    #[must_use]
+    pub fn depth_rung(self) -> f32 {
         match self {
             Self::Built => 1.0,
             Self::Grass => 2.0,
@@ -1954,6 +1993,51 @@ mod tests {
         // Water draws over land, and its bias must agree with its height.
         assert!(SurfaceGroup::Water.y_offset() > SurfaceGroup::Grass.y_offset());
         assert!(SurfaceGroup::Water.depth_bias() > SurfaceGroup::Grass.depth_bias());
+    }
+
+    #[test]
+    fn depth_bias_rungs_clear_the_rounding_noise() {
+        // A bias is denominated in depth-buffer ULPs, and the interpolated depth
+        // carries a few ULPs of per-frame rounding noise. Neighbouring rungs one
+        // unit apart therefore cannot hold on their own, and the millimetre
+        // `y_offset`s that used to cover for them decay as 1/z — which is why the
+        // water surface flickered against the land when the camera changed
+        // altitude. Keep real distance between adjacent rungs.
+        const MIN_SEPARATION: f32 = 8.0;
+        let mut ladder: Vec<f32> = [
+            SurfaceGroup::Built,
+            SurfaceGroup::Grass,
+            SurfaceGroup::Forest,
+            SurfaceGroup::Sand,
+            SurfaceGroup::Water,
+            SurfaceGroup::Road(RoadClass::Path),
+            SurfaceGroup::Road(RoadClass::Minor),
+            SurfaceGroup::Road(RoadClass::Major),
+            SurfaceGroup::Road(RoadClass::Motorway),
+            SurfaceGroup::Road(RoadClass::Rail),
+            SurfaceGroup::Canopy,
+        ]
+        .into_iter()
+        .map(SurfaceGroup::depth_bias)
+        .collect();
+        ladder.sort_by(f32::total_cmp);
+        ladder.dedup();
+        for pair in ladder.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= MIN_SEPARATION,
+                "rungs {} and {} are only {} depth units apart",
+                pair[0],
+                pair[1],
+                pair[1] - pair[0]
+            );
+        }
+
+        // A road crosses a canal on a bridge, never the other way round, and the
+        // canopy stands above the whole sheet stack.
+        assert!(
+            SurfaceGroup::Road(RoadClass::Path).depth_bias() > SurfaceGroup::Water.depth_bias()
+        );
+        assert!(SurfaceGroup::Canopy.depth_bias() > SurfaceGroup::Road(RoadClass::Rail).depth_bias());
     }
 
     #[test]
