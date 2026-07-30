@@ -183,7 +183,7 @@ went the wrong way.
 | 5 | You reply: *"@agent refine — defaults per road kind for now, table in routing.rs, no new data source"* | **Backlog** |
 | 6 | It rewrites the spec against that decision: `agent:refined` | **To Do** |
 | 7 | Queued until a slot frees, then `agent:running` | **In Progress** |
-| 8 | Branch `issue-23` pushed, `agent:done`, waiting for your review | **Done** |
+| 8 | Branch `feat/23-warn-driving-speed-limit` pushed, `agent:done`, waiting for your review | **Done** |
 
 ### B. claude.ai/code — you refine it, the agent builds it
 
@@ -262,8 +262,16 @@ comments authored by `viberfox-agent` as a loop-breaker.
 is inserted into its name**: `fix/road-joins` → `fix/12-road-joins`, renamed
 locally to match. The number only exists once the issue does, so the rename
 happens on filing; a branch already numbered, or already pushed to `origin`, is
-left alone. The watcher's own fallback is `issue-<n>`, which carries the number
-for the same reason.
+left alone.
+
+The watcher names branches the same way when a ticket has no `` Branch: `` line
+of its own. A refinement session proposes the name — it has read the code, so it
+knows whether the change is a `fix` or a `feat` and which area it touches — and
+the watcher validates the shape and injects the number:
+`fix/23-routing-speeding-pill`. With no refinement to ask, it derives one from
+the title (`"Map is slow when zooming out"` → `perf/25-map-slow-zooming-out`).
+Either way the branch matches the repo's commit convention, so a branch name and
+the commits on it agree about what the change is.
 
 That name is then written into the issue body as a `` Branch: `` line, which is
 not decoration — see [Handover](#handover).
@@ -360,8 +368,8 @@ Three things have to line up, and each one used to fail silently:
 
 **The branch.** The watcher reads `` Branch: `feat/x` `` from the issue body. The
 two lanes name branches differently — local uses `feat/…`, the watcher used to
-hardcode `issue-<n>` — so without that line a takeover would cut a *fresh*
-branch from main and ignore every local commit. `main` in that line is ignored.
+derive its own — so without that line a takeover would cut a *fresh* branch from
+main and ignore every local commit. `main` in that line is ignored.
 
 **The work.** A branch already on `origin` means a takeover: the worktree is
 checked out where the branch is, and `freshenWorktree` is skipped. It resets to

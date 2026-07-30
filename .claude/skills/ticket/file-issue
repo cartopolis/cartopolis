@@ -112,7 +112,7 @@ if [ -n "$branch" ]; then
 
     # The Branch: line is load-bearing, not decoration: it is the ONLY thing that
     # lets a takeover attach to this branch and its refs/agent-context digest
-    # instead of cutting a fresh issue-<n> from main and ignoring the work.
+    # instead of cutting a fresh branch from main and ignoring the work.
     BODY=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch") python3 -c '
 import json, os
 print(json.dumps({"body": os.environ["BODY"]}))

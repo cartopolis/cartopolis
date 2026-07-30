@@ -52,7 +52,9 @@ stderr.
 
 **The issue number is inserted into the branch name**, keeping the
 Conventional-Commits prefix: `fix/road-joins` becomes `fix/12-road-joins`, and
-your local branch is renamed to match. The number cannot be known before the
+your local branch is renamed to match. Cut your branch with a type prefix and a
+short slug and this does the rest; the watcher produces the same shape
+(`fix/23-routing-speeding-pill`) for tickets it names itself. The number cannot be known before the
 issue exists, which is why the rename happens on filing rather than when you cut
 the branch.
 
