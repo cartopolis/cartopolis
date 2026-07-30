@@ -47,7 +47,17 @@ pub const MAX_SOURCE_ZOOM: u32 = 14;
 /// to *be* the bias: neighbours one unit apart, which is one ULP of the depth
 /// buffer and below the per-frame rounding noise. See [`SurfaceGroup::depth_bias`]
 /// for why the millimetre `y_offset`s stop covering for that as you climb.
-pub const DEPTH_BIAS_STEP: f32 = 16.0;
+///
+/// 16 was not enough on its own — lakes still took the occasional triangle
+/// through the surface at the oblique angles a low camera looks at the middle
+/// distance with, where the depth gradient across a pixel is at its steepest.
+/// This is the blunt lever for that; the sharp one is `bias.slope_scale`, which
+/// is the textbook remedy for grazing angles and is *proportional* to that
+/// gradient, but `StandardMaterial` exposes only `constant` and reaching the
+/// other field means wrapping every surface group in an `ExtendedMaterial` to
+/// get at `MaterialExtension::specialize`. If a lake ever flickers again, that
+/// is the fix — not another doubling here.
+pub const DEPTH_BIAS_STEP: f32 = 64.0;
 
 /// Which sub-rectangle of a source tile to draw, when the requested tile is deeper
 /// than [`MAX_SOURCE_ZOOM`]. `factor` is 2^(requested_z − source_z); `(x, y)` is the
@@ -527,16 +537,25 @@ impl SurfaceGroup {
     /// a geometric gap shrinks as 1/z, so these offsets fade out exactly as you
     /// climb. [`Self::depth_bias`] is what has to hold at altitude; these fix the
     /// ordering intent and carry it up close.
+    ///
+    /// The millimetres inside the window are **not** spread evenly, because the
+    /// fights are not equally visible. Land against land is pale green against
+    /// pale grey and can lose without anyone noticing; land against water is the
+    /// one that shows, dark against pale, and it is the one that came back as
+    /// triangles flickering up through a lake. So the land groups stay packed at
+    /// 1 mm apart and water takes the widest gap in the stack — 4 mm of clear air
+    /// under it, 2 mm over it to the roads. Spend the window where the contrast
+    /// is.
     #[must_use]
     pub fn y_offset(self) -> f32 {
         match self {
-            Self::Built => -0.008,
-            Self::Grass => -0.007,
-            Self::Forest | Self::Sand => -0.006,
-            Self::Water => -0.004,
+            Self::Built => -0.0095,
+            Self::Grass => -0.0085,
+            Self::Forest | Self::Sand => -0.0075,
+            Self::Water => -0.0035,
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
-            Self::Road(_) => -0.003,
+            Self::Road(_) => -0.0015,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
             Self::Canopy | Self::Trunk => 0.0,
@@ -2018,6 +2037,17 @@ mod tests {
         // Water draws over land, and its bias must agree with its height.
         assert!(SurfaceGroup::Water.y_offset() > SurfaceGroup::Grass.y_offset());
         assert!(SurfaceGroup::Water.depth_bias() > SurfaceGroup::Grass.depth_bias());
+
+        // Water gets the widest gap in the stack, because dark-on-pale is the
+        // fight that shows when it is lost. Whoever next rebalances this window
+        // has to take the room from somewhere other than under the water.
+        let water_gap = SurfaceGroup::Water.y_offset() - SurfaceGroup::Forest.y_offset();
+        let land_gap = SurfaceGroup::Forest.y_offset() - SurfaceGroup::Grass.y_offset();
+        assert!(
+            water_gap >= 3.0 * land_gap,
+            "water sits {water_gap} m above the land sheets but they are {land_gap} m apart; \
+             the contrasty fight should get the widest gap"
+        );
     }
 
     #[test]
