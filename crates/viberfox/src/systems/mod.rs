@@ -25,6 +25,7 @@ pub mod picking;
 pub mod place_pins;
 pub mod prim_geo;
 pub mod rendering;
+pub mod route_ahead;
 pub mod routing;
 pub mod road_texture;
 pub mod shot_harness;

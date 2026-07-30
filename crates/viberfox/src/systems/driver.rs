@@ -8,13 +8,28 @@
 //! is what strips the map, locks the camera into a chase view, and swaps the
 //! avatar for a heading arrow.
 //!
-//! The layout is a satnav's, taken from the two reference screenshots this was
-//! specified against (Organic Maps' navigation view and a TomTom unit): the next
-//! manoeuvre on a card at the top left with the compass under it, the trip —
-//! arrival clock, time left, distance left — as a narrow strip down the right
-//! edge, and the current speed in a pill at the bottom centre. Nothing else. The
-//! first cut put all three trip numbers in one wide bar across the bottom, which
-//! read as a dashboard rather than as a navigation view.
+//! The layout is a satnav's, taken from the two reference navigation views this
+//! was specified against: the next manoeuvre on a card at the top left with the
+//! compass under it, the trip — arrival clock, time left, distance left — as a
+//! narrow strip down the right edge, and the current speed in a pill at the bottom
+//! centre. The first cut put all three trip numbers in one wide bar across the
+//! bottom, which read as a dashboard rather than as a navigation view.
+//!
+//! **The right strip is a route rail, not a column of numbers.** Under the trip
+//! figures it runs the drive as one vertical track — the vehicle at the foot, the
+//! destination capped at the top, and the services, saved places and other things
+//! you will pass marked along it in proportion ([`route_rail`]). That is the
+//! element both references build their right-hand side around, and it answers the
+//! question the numbers cannot: not *how far* is left, but *what* is left. What
+//! goes on it is [`crate::systems::route_ahead`]'s problem; placing it is this
+//! module's, and the scale it is placed on is the interesting part
+//! ([`RAIL_NEAR_SPAN_M`]).
+//!
+//! The speed pill carries the posted limit beside the speedometer, as a painted
+//! road sign rather than a themed readout ([`speed_limit_sign`]) — same reasoning
+//! as [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
+//! road class the planner routes on is a cost estimate, not a legal limit, and a
+//! sign confidently showing the wrong number is worse than no sign.
 //!
 //! **Where the position comes from.** Outside driver mode there is only one
 //! answer: the avatar, which the user walks around. Inside it, the device's own
@@ -49,6 +64,7 @@ use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
 use crate::systems::map_stream::MapStream;
 use crate::systems::navigation::RouteState;
+use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
 use crate::systems::vector_tiles;
 
@@ -204,14 +220,20 @@ pub struct Progress {
 /// Built once per route rather than per frame, and it is what makes the readout
 /// independent of the planner's own distance bookkeeping — every number comes off
 /// the same polyline the line on the map is drawn from.
-struct RouteGeom {
+///
+/// Public because [`crate::systems::route_ahead`] measures the road ahead against
+/// it too. Sharing the geometry rather than rebuilding it there is the point: a
+/// rail marker at "9.4 km" and a readout saying "9.4 km to go" have to mean the
+/// same thing, which they only do while both are projected onto *this* polyline —
+/// pins stripped, cumulative metres per vertex.
+pub struct RouteGeom {
     /// `[lat, lng]` per vertex, road portion only (the pin lead-ins are not driven).
-    points: Vec<[f64; 2]>,
+    pub points: Vec<[f64; 2]>,
     /// Metres from the start to each vertex; `cum[0] == 0`.
-    cum: Vec<f64>,
-    total_m: f64,
+    pub cum: Vec<f64>,
+    pub total_m: f64,
     /// Metres from the start to each step's manoeuvre, one per [`Route::steps`].
-    step_along: Vec<f64>,
+    pub step_along: Vec<f64>,
 }
 
 /// Driver mode's own state. `active` is the switch everything else keys off —
@@ -318,7 +340,7 @@ impl RouteGeom {
     /// drive (it is the walk across the pavement, and it is drawn as a thin
     /// connector for exactly that reason). So the driven polyline is the road
     /// portion, which is also what the fat route line covers.
-    fn build(route: &Route) -> Option<Self> {
+    pub fn build(route: &Route) -> Option<Self> {
         let n = route.points.len();
         if n < 4 {
             // Fewer than two road vertices between the pins: nothing to drive.
@@ -353,7 +375,7 @@ impl RouteGeom {
 /// Segment-wise, not vertex-wise. A vertex-only search reports you as "at" the
 /// last junction until you are nearer the next one, which on a 200 m straight
 /// freezes the remaining distance and then drops it 200 m at once.
-fn nearest_on_polyline(points: &[[f64; 2]], cum: &[f64], at: [f64; 2]) -> (f64, f64) {
+pub fn nearest_on_polyline(points: &[[f64; 2]], cum: &[f64], at: [f64; 2]) -> (f64, f64) {
     let mut best = (0.0, f64::MAX);
     for (i, w) in points.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
@@ -830,8 +852,48 @@ pub const CARD_HEIGHT: f32 = 108.0;
 /// Where the card sits, and therefore where everything under it stacks from.
 pub const CARD_MARGIN: f32 = 12.0;
 
-/// Width of the trip strip down the right-hand edge.
-const STRIP_WIDTH: f32 = 96.0;
+/// Width of the trip strip down the right-hand edge. Wide enough for the route
+/// rail's badges to sit on the track without touching its edges.
+const STRIP_WIDTH: f32 = 116.0;
+
+/// Height of the route rail's track. The one dimension the widget's usefulness
+/// scales with — everything on the route between here and the destination has to
+/// find a distinct pixel on it.
+const RAIL_HEIGHT: f32 = 236.0;
+
+/// Half-width of the track, and the radius of a marker badge sitting on it.
+const RAIL_HALF_W: f32 = 4.0;
+const RAIL_BADGE_R: f32 = 9.5;
+
+/// Minimum vertical gap between two badges. Below this they overlap into an
+/// unreadable stack, so the rail spreads them apart (and drops what will not fit)
+/// rather than drawing a smear that is technically in proportion.
+const RAIL_MIN_GAP: f32 = 21.0;
+
+/// The rail's near field: the first [`RAIL_NEAR_SPAN_M`] of route get
+/// [`RAIL_NEAR_FRACTION`] of the track.
+///
+/// A purely linear rail is the obvious design and it is the wrong one. On a 40 km
+/// route the next three things you pass all land inside the bottom 2 % of the
+/// track — one blurred clump — while the empty motorway stretch nobody needs to
+/// read gets nine tenths of the pixels. Both reference layouts solve it the same
+/// way, by giving what is about to happen a disproportionate share and compressing
+/// the rest, so the rail stays readable at the only end where the answer changes
+/// minute to minute. The break is *drawn* (a notch across the track) rather than
+/// left implicit: a scale that changes silently halfway up is a lie about
+/// distance, and a driver reads distance off this.
+const RAIL_NEAR_SPAN_M: f64 = 2_000.0;
+const RAIL_NEAR_FRACTION: f32 = 0.45;
+
+/// How close the manoeuvre after this one has to be before the card previews it.
+/// Two turns in quick succession is the case a card showing only the next one gets
+/// wrong — you take the first and are already in the second before it appears.
+const THEN_PREVIEW_M: f64 = 300.0;
+
+/// Tolerance before the speedometer calls you over the limit, in km/h. Speed is
+/// measured from successive positions and the limit comes off a map; flashing red
+/// at 51 in a 50 on that evidence would be noise.
+const OVER_LIMIT_TOLERANCE_KMH: f32 = 4.0;
 
 /// How far the speed pill clears the bottom edge — over the chat/action bar,
 /// which is docked there and would otherwise sit on top of it.
@@ -853,6 +915,7 @@ pub fn render_driver_hud(
     mut egui: ResMut<EguiManager>,
     mut driver: ResMut<DriverState>,
     route: Res<RouteState>,
+    ahead: Res<RouteAhead>,
     clock: Res<crate::systems::transit_live::WorldClock>,
 ) {
     if !driver.active {
@@ -902,9 +965,40 @@ pub fn render_driver_hud(
                                 theme::CREAM,
                             ));
                         });
-                        if let Some(name) = step.and_then(|s| s.name.as_deref()) {
-                            ui.label(egui::RichText::new(name).size(12.5).color(theme::CREAM));
-                        }
+                        // Street name, and — when the manoeuvre after this one
+                        // follows immediately — a preview of it on the same row.
+                        // Right-aligned so it reads as a footnote to the turn
+                        // rather than as a competing instruction, and inside the
+                        // card so the compass below keeps its place.
+                        ui.horizontal(|ui| {
+                            if let Some(name) = step.and_then(|s| s.name.as_deref()) {
+                                ui.label(
+                                    egui::RichText::new(name).size(12.5).color(theme::CREAM),
+                                );
+                            }
+                            let Some(next) = r.steps.get(progress.step + 1) else {
+                                return;
+                            };
+                            if next_step_gap(r, progress) > THEN_PREVIEW_M {
+                                return;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    ui.label(
+                                        egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
+                                            .size(16.0)
+                                            .color(theme::CREAM),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("then")
+                                            .size(11.0)
+                                            .color(theme::CREAM.gamma_multiply(0.75)),
+                                    );
+                                },
+                            );
+                        });
                     });
                 });
         });
@@ -947,6 +1041,8 @@ pub fn render_driver_hud(
                     ui.label(big(&format_distance(progress.remaining_m), 21.0, theme::TEXT));
                     ui.label(small(&format_duration(progress.remaining_s), theme::TEXT_DIM));
                     ui.add_space(8.0);
+                    route_rail(ui, &ctx, &ahead, progress);
+                    ui.add_space(6.0);
                     if ui
                         .add(egui::Button::new(egui::RichText::new("✕ Stop").size(12.5)))
                         .on_hover_text("Leave driver mode and put the map back")
@@ -958,7 +1054,10 @@ pub fn render_driver_hud(
             });
         });
 
-    // ── The speed pill, bottom centre ──
+    // ── The speed pill, bottom centre, with the limit beside it ──
+    let speed_kmh = driver.speed_ms * 3.6;
+    let limit = ahead.limit_at(progress.along_m);
+    let over = limit.is_some_and(|l| speed_kmh > f32::from(l) + OVER_LIMIT_TOLERANCE_KMH);
     egui::Area::new(egui::Id::new("driver_speed"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -PILL_BOTTOM))
         .show(&ctx, |ui| {
@@ -967,15 +1066,22 @@ pub fn render_driver_hud(
                 .corner_radius(18.0)
                 .inner_margin(egui::Margin::symmetric(16, 6))
                 .show(ui, |ui| {
-                    ui.set_width(84.0);
+                    ui.set_width(if limit.is_some() { 124.0 } else { 84.0 });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
+                        // Over the limit turns the *speed* red, not the sign: the
+                        // sign states a fact about the road and must read the same
+                        // whatever the vehicle is doing.
                         ui.label(big(
-                            &format!("{:.0}", driver.speed_ms * 3.6),
+                            &format!("{speed_kmh:.0}"),
                             22.0,
-                            theme::CREAM,
+                            if over { theme::ERROR } else { theme::CREAM },
                         ));
                         ui.label(small("km/h", theme::TEXT_DIM));
+                        if let Some(limit) = limit {
+                            ui.add_space(4.0);
+                            speed_limit_sign(ui, limit);
+                        }
                     });
                 });
         });
@@ -989,6 +1095,224 @@ pub fn render_driver_hud(
 /// palette is the fox's warm one, and a *direction* instruction is the one piece
 /// of chrome that has to read as a road sign rather than as part of the app.
 const DRIVE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x14, 0x6E, 0xD2);
+
+/// The two colours of a European speed-limit sign. Same argument as
+/// [`DRIVE_BLUE`], only harder: this *is* a road sign, and a road sign recoloured
+/// into a brand palette stops being recognisable at a glance, which is the entire
+/// function it performs.
+const SIGN_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF7, 0xF7, 0xF4);
+const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
+
+/// Metres between the manoeuvre being driven toward and the one after it.
+///
+/// Off the steps' own `distance_m` rather than the measured polyline: a step's
+/// distance is the length of the leg *leading to* it, which is exactly this gap,
+/// and it needs no geometry — so the card's preview keeps working on the frames
+/// before a position has been projected.
+fn next_step_gap(route: &Route, progress: Progress) -> f64 {
+    route
+        .steps
+        .get(progress.step + 1)
+        .map_or(f64::INFINITY, |s| s.distance_m)
+}
+
+/// The route rail: the drive from here to the destination as one vertical track,
+/// with what you will pass marked along it in proportion.
+///
+/// Bottom is the vehicle, top is the destination, and the track carries only what
+/// is *left* — a rail that also showed the road already driven would spend pixels
+/// on the one part of the route that can no longer change. The scale is the
+/// two-zone one [`RAIL_NEAR_SPAN_M`] documents.
+///
+/// Badges are laid out bottom-up and pushed apart to [`RAIL_MIN_GAP`], so a clump
+/// of car parks in one street becomes a legible column rather than one smudge;
+/// anything pushed past the destination cap is dropped and counted, because a
+/// badge drawn over the flag would claim to be the end of the route.
+fn route_rail(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    ahead: &RouteAhead,
+    progress: Progress,
+) {
+    let width = ui.available_width();
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, RAIL_HEIGHT), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let x = rect.center().x;
+    let top = rect.top() + RAIL_BADGE_R;
+    let bottom = rect.bottom() - RAIL_BADGE_R;
+    let span = bottom - top;
+
+    // The track. Drawn in the route's own blue so the rail and the line on the
+    // map are visibly the same object.
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(x - RAIL_HALF_W, top),
+            egui::pos2(x + RAIL_HALF_W, bottom),
+        ),
+        RAIL_HALF_W,
+        DRIVE_BLUE,
+    );
+
+    let remaining = progress.remaining_m.max(1.0);
+    let y_of = |d: f64| bottom - span * rail_t(d, remaining);
+
+    // The scale break, when there is one — see `RAIL_NEAR_SPAN_M`.
+    if remaining > RAIL_NEAR_SPAN_M {
+        let y = y_of(RAIL_NEAR_SPAN_M);
+        painter.line_segment(
+            [egui::pos2(x - RAIL_HALF_W - 3.0, y), egui::pos2(x + RAIL_HALF_W + 3.0, y)],
+            egui::Stroke::new(1.0, theme::OVERLAY_LINE),
+        );
+    }
+
+    // Markers, bottom-up, spread apart. `along_m` is measured from the start of
+    // the route; the rail measures from the vehicle.
+    let base = progress.along_m;
+    let mut placed: Vec<(f32, &crate::systems::route_ahead::AheadItem)> = Vec::new();
+    let mut last_y = f32::INFINITY;
+    let mut dropped = 0usize;
+    for item in ahead.ahead_of(base) {
+        if item.kind == AheadKind::Destination {
+            continue; // drawn as the cap, below
+        }
+        let y = y_of(item.along_m - base).min(last_y - RAIL_MIN_GAP);
+        if y < top + RAIL_MIN_GAP {
+            dropped += 1;
+            continue;
+        }
+        last_y = y;
+        placed.push((y, item));
+    }
+
+    for (y, item) in &placed {
+        let c = egui::pos2(x, *y);
+        painter.circle_filled(c, RAIL_BADGE_R, theme::SURFACE);
+        painter.circle_stroke(c, RAIL_BADGE_R, egui::Stroke::new(1.0, theme::OVERLAY_LINE));
+        painter.text(
+            c,
+            egui::Align2::CENTER_CENTER,
+            probe_glyph(ctx, item.kind.icon_candidates()),
+            egui::FontId::proportional(11.0),
+            theme::TEXT,
+        );
+        // A badge is 19 px across and the name never fits, so the name is a
+        // tooltip. `interact` rather than a widget: the rail is one allocated
+        // rect, and hover regions inside it are hit-tested by hand.
+        let hit = egui::Rect::from_center_size(c, egui::Vec2::splat(RAIL_BADGE_R * 2.0));
+        ui.interact(hit, ui.id().with(("rail", item.along_m.to_bits())), egui::Sense::hover())
+            .on_hover_text(format!(
+                "{}\n{} ahead · {} off the route",
+                item.title(),
+                format_distance(item.along_m - base),
+                format_distance(item.off_m),
+            ));
+    }
+
+    // The destination cap, and the vehicle at the foot.
+    painter.circle_filled(egui::pos2(x, top), RAIL_BADGE_R + 1.0, theme::FOX);
+    painter.text(
+        egui::pos2(x, top),
+        egui::Align2::CENTER_CENTER,
+        probe_glyph(ctx, AheadKind::Destination.icon_candidates()),
+        egui::FontId::proportional(11.0),
+        theme::INK,
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x, bottom - 7.0),
+            egui::pos2(x - 6.0, bottom + 4.0),
+            egui::pos2(x + 6.0, bottom + 4.0),
+        ],
+        theme::CREAM,
+        egui::Stroke::NONE,
+    ));
+
+    // How many would not fit, parked beside the destination cap — against the end
+    // of the rail rather than against whichever badge happens to be topmost, which
+    // read as a count of *that* thing.
+    if dropped > 0 {
+        painter.text(
+            egui::pos2(x + RAIL_BADGE_R + 5.0, top),
+            egui::Align2::LEFT_CENTER,
+            format!("+{dropped}"),
+            egui::FontId::proportional(10.0),
+            theme::TEXT_DIM,
+        );
+    }
+
+    // What is next, spelled out under the rail — the rail says where things are,
+    // this says what the nearest one is, which is the question actually being
+    // asked while driving.
+    match ahead.next_ahead(base) {
+        Some(next) => {
+            ui.label(big(&format_distance(next.along_m - base), 15.0, theme::CREAM));
+            // Truncated, not wrapped: a long POI name is three lines in a 96 px
+            // column, and the strip is a fixed-height box with a button under it —
+            // the wrap pushed Stop off the bottom of the panel.
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(next.title())
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                )
+                .truncate(),
+            );
+        }
+        None if ahead.status == AheadStatus::Fetching => {
+            ui.label(small("scanning route…", theme::TEXT_DIM));
+        }
+        None => {}
+    }
+}
+
+/// Where a distance ahead sits on the rail: 0 at the vehicle, 1 at the
+/// destination. See [`RAIL_NEAR_SPAN_M`] for why this is not `d / remaining`.
+fn rail_t(d: f64, remaining: f64) -> f32 {
+    let d = d.clamp(0.0, remaining);
+    if remaining <= RAIL_NEAR_SPAN_M {
+        return (d / remaining) as f32;
+    }
+    if d <= RAIL_NEAR_SPAN_M {
+        return RAIL_NEAR_FRACTION * (d / RAIL_NEAR_SPAN_M) as f32;
+    }
+    RAIL_NEAR_FRACTION
+        + (1.0 - RAIL_NEAR_FRACTION)
+            * ((d - RAIL_NEAR_SPAN_M) / (remaining - RAIL_NEAR_SPAN_M)) as f32
+}
+
+/// A European speed-limit sign: the number in a red annulus. Painted rather than
+/// composed from widgets because that is the only way to get the proportions of
+/// the real sign, which is what makes it readable without being read.
+fn speed_limit_sign(ui: &mut egui::Ui, limit: u16) {
+    const R: f32 = 13.0;
+    let (rect, _) =
+        ui.allocate_exact_size(egui::Vec2::splat(R * 2.0), egui::Sense::hover());
+    let c = rect.center();
+    let painter = ui.painter();
+    painter.circle_filled(c, R, SIGN_WHITE);
+    painter.circle_stroke(c, R - 1.9, egui::Stroke::new(3.8, SIGN_RED));
+    painter.text(
+        c,
+        egui::Align2::CENTER_CENTER,
+        limit.to_string(),
+        egui::FontId::proportional(if limit >= 100 { 10.0 } else { 12.0 }),
+        egui::Color32::BLACK,
+    );
+}
+
+/// First glyph in `candidates` the loaded font actually has — the same probe
+/// [`maneuver_glyph`] does, over an arbitrary list.
+fn probe_glyph(ctx: &egui::Context, candidates: &'static [&'static str]) -> &'static str {
+    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
+    ctx.fonts_mut(|f| {
+        candidates
+            .iter()
+            .copied()
+            .find(|c| f.has_glyphs(&font, c))
+            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
+    })
+}
 
 /// A readout value.
 fn big(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
@@ -1011,15 +1335,7 @@ fn arrival_clock(h: u32, m: u32, remaining_s: f64) -> String {
 /// egui ships a thin emoji subset and a missing glyph renders as an empty box
 /// (`navigation::Icons` documents the probing this shares).
 fn maneuver_glyph(ctx: &egui::Context, maneuver: Maneuver) -> &'static str {
-    let candidates = maneuver.icon_candidates();
-    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
-    ctx.fonts_mut(|f| {
-        candidates
-            .iter()
-            .copied()
-            .find(|c| f.has_glyphs(&font, c))
-            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
-    })
+    probe_glyph(ctx, maneuver.icon_candidates())
 }
 
 #[cfg(test)]
@@ -1191,5 +1507,50 @@ mod tests {
         assert!(driver.active && driver.watch.is_some() && driver.snap_pending);
         driver.exit();
         assert!(!driver.active && driver.watch.is_none() && driver.progress.is_none());
+    }
+
+    /// The rail's scale: pinned to its ends, monotonic in between, and — the part
+    /// that is the whole point — giving the near field a share of the track far
+    /// out of proportion to its share of the distance.
+    #[test]
+    fn the_rail_scale_favours_the_near_field_without_going_backwards() {
+        // Short route: no break, plain linear.
+        assert!((rail_t(0.0, 1_000.0) - 0.0).abs() < 1e-6);
+        assert!((rail_t(500.0, 1_000.0) - 0.5).abs() < 1e-6);
+        assert!((rail_t(1_000.0, 1_000.0) - 1.0).abs() < 1e-6);
+
+        // Long route: the first RAIL_NEAR_SPAN_M — 5% of a 40 km drive — gets
+        // RAIL_NEAR_FRACTION of the track. Linearly it would get 5% of it, and
+        // every marker in it would land inside a dozen pixels.
+        let remaining = 40_000.0;
+        assert!((rail_t(0.0, remaining) - 0.0).abs() < 1e-6);
+        assert!((rail_t(RAIL_NEAR_SPAN_M, remaining) - RAIL_NEAR_FRACTION).abs() < 1e-6);
+        assert!((rail_t(remaining, remaining) - 1.0).abs() < 1e-6);
+        let mut prev = -1.0;
+        for i in 0..=400 {
+            let t = rail_t(remaining * f64::from(i) / 400.0, remaining);
+            assert!(t >= prev, "rail scale went backwards at {i}");
+            prev = t;
+        }
+
+        // Past the destination and behind the vehicle both clamp onto the track —
+        // an item projected a metre beyond the end must not paint off the widget.
+        assert!((rail_t(remaining * 2.0, remaining) - 1.0).abs() < 1e-6);
+        assert!((rail_t(-50.0, remaining) - 0.0).abs() < 1e-6);
+    }
+
+    /// The "then" preview keys off the gap to the manoeuvre *after* the next one,
+    /// so it appears for two turns in quick succession and stays away otherwise.
+    #[test]
+    fn the_then_preview_only_fires_on_a_close_pair() {
+        let mut route = fixture();
+        let far = Progress { step: 0, ..default() };
+        route.steps[1].distance_m = 900.0;
+        assert!(next_step_gap(&route, far) > THEN_PREVIEW_M);
+        route.steps[1].distance_m = 120.0;
+        assert!(next_step_gap(&route, far) <= THEN_PREVIEW_M);
+        // No step after the last one: never previews, never panics.
+        let last = Progress { step: route.steps.len() - 1, ..default() };
+        assert!(next_step_gap(&route, last).is_infinite());
     }
 }
