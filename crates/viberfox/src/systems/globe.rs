@@ -646,12 +646,12 @@ const GROUND_SKY_SAMPLES: u32 = 16;
 pub fn update_atmosphere_origin(
     globe: Res<GlobeState>,
     camera: Query<&GridCell, With<crate::systems::free_camera::FreeCamera>>,
-    mut planet: Query<&mut Transform, With<PlanetAtmosphere>>,
+    mut planet: Query<(&mut Transform, &mut bevy::light::Atmosphere), With<PlanetAtmosphere>>,
 ) {
     if !globe.ready {
         return;
     }
-    let (Ok(cell), Ok(mut tf)) = (camera.single(), planet.single_mut()) else {
+    let (Ok(cell), Ok((mut tf, mut atmosphere))) = (camera.single(), planet.single_mut()) else {
         return;
     };
     let edge = crate::systems::free_camera::WORLD_CELL_EDGE as f64;
@@ -660,6 +660,23 @@ pub fn update_atmosphere_origin(
     let new = centre.as_vec3();
     if tf.translation != new {
         tf.translation = new;
+    }
+
+    // …and give it our globe's radius, not Bevy's. Once the entity sits at the
+    // true centre, the gap between the two is not a rounding error but an
+    // altitude offset: `GlobeState::radius` is geocentric at the anchor
+    // (6,364.5 km at 53° N) while `Atmosphere::earth` puts its ground at
+    // 6,360 km, so the atmosphere believed a camera 365 m up was at 4.9 km.
+    // That misplaces the tangent ray, and `sample_transmittance_lut_segment`
+    // switches formula across it (`ray_intersects_ground`); the step between its
+    // two branches drew a thin ring ~2.2° below the horizon, blue-selective
+    // because Rayleigh extinction is. Matching the radii puts the branch back at
+    // the horizon, where the two sides agree and nothing shows. `outer_radius`
+    // is derived from this each frame in `update_globe_visibility`, so the
+    // 100 km shell follows. A field write on the live component is safe; it is
+    // adding or removing one that hangs the device.
+    if atmosphere.inner_radius != globe.radius {
+        atmosphere.inner_radius = globe.radius;
     }
 }
 
