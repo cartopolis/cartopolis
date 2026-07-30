@@ -529,34 +529,21 @@ then build.
 ### The picture
 
 ```mermaid
-flowchart LR
-    subgraph WS["Workstation — Zed"]
-        WT["worktree per thread<br/>detached HEAD<br/>.git/viberfox-ticket = 23"]
-    end
+flowchart TB
+    Z["Zed thread\ndetached worktree · marker 23"]
+    I["issue #23\nlabels = lock · board follows"]
+    G["origin\nfeat/23-slug"]
+    X["context repo\nfeat-23-slug/"]
+    W["watcher\nworktree per issue"]
 
-    subgraph FJ["Forgejo"]
-        ISS["issue #23<br/>labels = lock<br/>board = projection"]
-        REPO["viberfox<br/>feat/23-slug (ref only)"]
-        CTX["viberfox-agent-context<br/>feat-23-slug/&lt;session&gt;.md"]
-    end
-
-    subgraph VPS["VPS — watcher"]
-        RWT["worktree per issue<br/>checkout of origin/feat/23-slug"]
-    end
-
-    WT -- "/ticket: create or claim (driven)" --> ISS
-    WT -- "Stop hook, per turn:<br/>push HEAD:feat/23-slug" --> REPO
-    WT -- "Stop hook, per turn:<br/>write session file" --> CTX
-    WT -- "/handover: wip commit + push,<br/>driven → agent, comment" --> ISS
-
-    ISS -- "poll 30 s: labels" --> RWT
-    REPO -- "fetch → worktree add" --> RWT
-    CTX -- "read oldest-first on takeover" --> RWT
-    RWT -- "push feat/23-slug" --> REPO
-    RWT -- "Stop hook: session file" --> CTX
-    RWT -- "agent:done / needs-input,<br/>board column" --> ISS
-
-    REPO -. "take-back: /ticket 23<br/>detach onto tip" .-> WT
+    Z -->|"/ticket · /handover"| I
+    Z -->|"push HEAD · per turn"| G
+    Z -->|"digest · per turn"| X
+    I -->|"poll 30 s"| W
+    G <-->|"fetch · push"| W
+    X <-->|"read · write"| W
+    W -->|"done / needs-input"| I
+    G -.->|"take-back"| Z
 ```
 
 ### One key: the issue number
