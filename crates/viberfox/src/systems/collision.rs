@@ -111,6 +111,12 @@ pub struct BuildingColliders {
     detail: Vec<Footprint>,
     /// 3DBAG LoD2.2 footprints keyed by their cell, dropped with the cell.
     lod22: HashMap<(i64, i64), Vec<Footprint>>,
+    /// Per-source gates mirrored from the Layers panel's Buildings checkboxes
+    /// (`data_layers::apply_feature_toggles`), so a hidden source's footprints
+    /// don't act as invisible walls. Negated (`_off`) so `derive(Default)`
+    /// leaves both sources active.
+    detail_off: bool,
+    lod22_off: bool,
 }
 
 impl BuildingColliders {
@@ -135,12 +141,29 @@ impl BuildingColliders {
         self.lod22.clear();
     }
 
+    /// Gate each source on its Layers-panel checkbox (collision matches what's
+    /// drawn). A disabled source keeps its footprints — the streamers go on
+    /// publishing — but `iter` skips them.
+    pub fn set_sources(&mut self, detail_on: bool, lod22_on: bool) {
+        self.detail_off = !detail_on;
+        self.lod22_off = !lod22_on;
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.detail.is_empty() && self.lod22.is_empty()
+        (self.detail_off || self.detail.is_empty())
+            && (self.lod22_off || self.lod22.is_empty())
     }
 
     fn iter(&self) -> impl Iterator<Item = &Footprint> {
-        self.detail.iter().chain(self.lod22.values().flatten())
+        let detail = if self.detail_off {
+            &[]
+        } else {
+            self.detail.as_slice()
+        };
+        let lod22_on = !self.lod22_off;
+        detail
+            .iter()
+            .chain(self.lod22.values().filter(move |_| lod22_on).flatten())
     }
 
     /// True if `p` (world XZ) lies inside any footprint.

@@ -307,6 +307,10 @@ pub struct DataLayers {
     /// Off = OSM extrusions everywhere; mirrored into `osm_buildings`' coverage
     /// gate by [`apply_feature_toggles`].
     pub tdbag_enabled: bool,
+    /// Feature toggle (under Buildings): the OSM source — extruded footprints
+    /// and lit windows. The fallback beneath 3DBAG: where 3DBAG covers (and is
+    /// on), OSM already skips the cell, so this only ever removes the fallback.
+    pub osm_buildings_enabled: bool,
     /// Feature toggle: the map ground (streamed OSM tiles + region plane).
     pub map_enabled: bool,
     /// Feature toggle: live moving vehicles on the transit layer (ADR-026).
@@ -369,6 +373,7 @@ impl Default for DataLayers {
             panel_open: false,
             buildings_enabled: true,
             tdbag_enabled: true,
+            osm_buildings_enabled: true,
             map_enabled: true,
             vehicles_enabled: false,
             trees_enabled: true,
@@ -1011,16 +1016,28 @@ pub fn apply_feature_toggles(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    mut buildings: Query<
+    mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
+    // The two building sources are separate entity types with their own panel
+    // checkboxes, so they get separate queries (the `Without`s prove the two
+    // `&mut Visibility` sets disjoint). Unchecking Buildings still hides both —
+    // an earlier OSM-only query left the 3DBAG soup standing.
+    mut osm_meshes: Query<
         &mut Visibility,
-        Or<(
-            With<crate::systems::osm_buildings::OsmBuildingMesh>,
-            With<crate::systems::osm_buildings::WindowGlow>,
-            // The 3DBAG LOD2.2 buildings are a *separate* entity type from the OSM
-            // detail patches; without them here, unchecking Buildings hid the OSM
-            // meshes but left the 3DBAG soup standing.
+        (
+            Or<(
+                With<crate::systems::osm_buildings::OsmBuildingMesh>,
+                With<crate::systems::osm_buildings::WindowGlow>,
+            )>,
+            Without<crate::systems::lod22::Lod22Mesh>,
+        ),
+    >,
+    mut lod22_meshes: Query<
+        &mut Visibility,
+        (
             With<crate::systems::lod22::Lod22Mesh>,
-        )>,
+            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::systems::osm_buildings::WindowGlow>,
+        ),
     >,
     stream: Res<crate::systems::map_stream::MapStream>,
     mut map: Query<
@@ -1048,6 +1065,9 @@ pub fn apply_feature_toggles(
     // coverage predicates are free functions over statics, out of reach of this
     // resource. `lod22::update_lod22` tears its meshes down on the off-edge.
     crate::systems::osm_buildings::set_tdbag_enabled(dl.tdbag_enabled);
+    // And both source toggles into the collision index, so a hidden source's
+    // footprints stop acting as invisible walls (collision matches what's drawn).
+    colliders.set_sources(dl.osm_buildings_enabled, dl.tdbag_enabled);
 
     // Sole visibility writer for these entities: the panel toggle AND the space
     // tier (from orbit the flat patch floats over the globe, parallax-shifted —
@@ -1056,12 +1076,25 @@ pub fn apply_feature_toggles(
         .single()
         .map(|(cell, tf)| globe.in_space(cell, tf))
         .unwrap_or(false);
-    let want = if dl.buildings_enabled && !in_space {
+    let base = dl.buildings_enabled && !in_space;
+    let want = if base && dl.osm_buildings_enabled {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     };
-    for mut vis in buildings.iter_mut() {
+    for mut vis in osm_meshes.iter_mut() {
+        if *vis != want {
+            *vis = want;
+        }
+    }
+    // 3DBAG-off despawns its meshes (`lod22::update_lod22`); this covers the
+    // master Buildings toggle, the space tier, and the frame before teardown.
+    let want = if base && dl.tdbag_enabled {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut vis in lod22_meshes.iter_mut() {
         if *vis != want {
             *vis = want;
         }
@@ -1136,6 +1169,44 @@ pub fn animate_stop_rings(
     }
 }
 
+/// The Buildings block of the Layers panel: the master checkbox plus one
+/// checkbox per source, in precedence order — 3DBAG first (where it covers
+/// and is on, it owns the cell), the OSM fallback beneath. The 3DBAG row only
+/// appears once a coverage manifest has loaded (`tdbag_available`): before
+/// that, or with no host, there is nothing to turn off.
+///
+/// Split out of [`render_data_layers_panel`] so a unit test can drive it with
+/// synthetic clicks. Returns the 3DBAG checkbox's response for that test.
+fn buildings_section(
+    ui: &mut egui::Ui,
+    dl: &mut DataLayers,
+    tdbag_available: bool,
+) -> Option<egui::Response> {
+    ui.checkbox(
+        &mut dl.buildings_enabled,
+        egui::RichText::new("Buildings").size(14.0),
+    );
+    ui.indent("buildings", |ui| {
+        // Grayed out while the master is off: the sources are gated by it, so
+        // an active-looking sub-checkbox would promise something it can't do.
+        ui.add_enabled_ui(dl.buildings_enabled, |ui| {
+            let tdbag = tdbag_available.then(|| {
+                ui.checkbox(
+                    &mut dl.tdbag_enabled,
+                    egui::RichText::new("3DBAG (NL)").size(13.0),
+                )
+            });
+            ui.checkbox(
+                &mut dl.osm_buildings_enabled,
+                egui::RichText::new("OSM 3D buildings and windows").size(13.0),
+            );
+            tdbag
+        })
+        .inner
+    })
+    .inner
+}
+
 /// The Layers side panel (menu bar ▸ Layers): a checkbox per layer with a
 /// colour legend, plus the required OSM attribution. Styled like the AI
 /// assistant panel (right side panel, resizable).
@@ -1191,23 +1262,17 @@ pub fn render_data_layers_panel(
                 ui.separator();
             }
             ui.add_space(4.0);
-            ui.checkbox(
-                &mut dl.buildings_enabled,
-                egui::RichText::new("Buildings").size(14.0),
+            let tdbag_resp = buildings_section(
+                ui,
+                &mut dl,
+                crate::systems::osm_buildings::tdbag_attribution().is_some(),
             );
-            ui.indent("buildings", |ui| {
-                // 3DBAG serves covered NL areas (real BAG heights); OSM extrusions
-                // fill in wherever it is off or absent. The checkbox only appears
-                // once a coverage manifest has loaded — before that (or with no
-                // host) there is nothing to turn off.
-                if crate::systems::osm_buildings::tdbag_attribution().is_some() {
-                    ui.checkbox(
-                        &mut dl.tdbag_enabled,
-                        egui::RichText::new("3DBAG (NL)").size(13.0),
-                    );
-                }
-                ui.label(egui::RichText::new("OSM 3D buildings and windows").size(13.0));
-            });
+            // One line per click, so a live session can tell "the click never
+            // reached the widget" from "it toggled and something reverted it"
+            // without a debugger (#12 reported the checkbox stuck).
+            if tdbag_resp.is_some_and(|r| r.clicked()) {
+                tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
+            }
             ui.add_space(4.0);
             ui.separator();
             ui.add_space(4.0);
@@ -1490,5 +1555,133 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
     });
     for i in 0..SEG {
         base.tri(centre, disc[i], disc[(i + 1) % SEG], hue);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Does a `request_discard` on the click frame eat a checkbox toggle
+    /// (double-fire across the repeated pass)?
+    #[test]
+    fn discard_pass_does_not_eat_the_click() {
+        let ctx = egui::Context::default();
+        crate::systems::theme::install(&ctx);
+        let mut dl = DataLayers::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+
+        let mut target: Option<egui::Pos2> = None;
+        for frame in 0..5 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            if let Some(pos) = target {
+                raw.events = match frame {
+                    1 => vec![egui::Event::PointerMoved(pos)],
+                    2 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    3 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    _ => vec![],
+                };
+            }
+            let mut open = true;
+            let rect = std::cell::Cell::new(None);
+            let dl_ref = &mut dl;
+            ctx.run_ui(raw, |ui| {
+                // Force a second pass every frame, like an unstable Area does.
+                ui.ctx().request_discard("test");
+                crate::systems::egui_manager::responsive_right_panel(
+                    "layers_panel",
+                    false,
+                    1280.0,
+                    260.0,
+                )
+                .show_collapsible(ui, &mut open, |ui| {
+                    if let Some(resp) = buildings_section(ui, dl_ref, true) {
+                        rect.set(Some(resp.rect));
+                    }
+                });
+            });
+            if target.is_none() {
+                target = rect.get().map(|r| r.center());
+            }
+        }
+        assert!(
+            !dl.tdbag_enabled,
+            "a discarded pass ate the checkbox click (double-toggle)"
+        );
+    }
+
+    /// A click on the 3DBAG checkbox must toggle it — and only it. Drives the
+    /// real widget tree (same panel container as the live app) with synthetic
+    /// pointer events. egui resolves hits against the *previous* pass's widget
+    /// rects, so the press goes in one frame after layout and the release one
+    /// frame after that.
+    #[test]
+    fn tdbag_checkbox_toggles_on_click() {
+        let ctx = egui::Context::default();
+        crate::systems::theme::install(&ctx);
+        let mut dl = DataLayers::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+
+        let mut target: Option<egui::Pos2> = None;
+        for frame in 0..5 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            if let Some(pos) = target {
+                raw.events = match frame {
+                    1 => vec![egui::Event::PointerMoved(pos)],
+                    2 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    3 => vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    _ => vec![],
+                };
+            }
+            let mut open = true;
+            let rect = std::cell::Cell::new(None);
+            let dl_ref = &mut dl;
+            ctx.run_ui(raw, |ui| {
+                crate::systems::egui_manager::responsive_right_panel(
+                    "layers_panel",
+                    false,
+                    1280.0,
+                    260.0,
+                )
+                .show_collapsible(ui, &mut open, |ui| {
+                    if let Some(resp) = buildings_section(ui, dl_ref, true) {
+                        rect.set(Some(resp.rect));
+                    }
+                });
+            });
+            if target.is_none() {
+                target = rect.get().map(|r| r.center());
+            }
+        }
+        assert!(
+            !dl.tdbag_enabled,
+            "click on the 3DBAG checkbox did not toggle it"
+        );
+        assert!(
+            dl.buildings_enabled && dl.osm_buildings_enabled,
+            "the click leaked into a sibling checkbox"
+        );
     }
 }
