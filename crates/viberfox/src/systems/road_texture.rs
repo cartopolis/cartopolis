@@ -41,6 +41,10 @@ const TEX_H: u32 = 256;
 pub enum RoadClass {
     /// Motorway/trunk: lane dashes both carriageways, solid median and shoulders.
     Motorway,
+    /// **One direction** of a fast road: a dual carriageway's separately-mapped
+    /// half, or a slip road. No median — the oncoming traffic is a different
+    /// feature, several metres away. See [`StreetFlags`].
+    Carriageway,
     /// Primary/secondary: solid edge lines, dashed centre line.
     Major,
     /// Tertiary down to service roads: unmarked tarmac with wheel tracks.
@@ -58,6 +62,7 @@ impl RoadClass {
     pub fn texture_length_m(self) -> f32 {
         match self {
             Self::Motorway => 24.0,
+            Self::Carriageway => 24.0,
             Self::Major => 16.0,
             Self::Minor => 12.0,
             Self::Path => 4.0,
@@ -71,7 +76,7 @@ impl RoadClass {
     #[must_use]
     pub fn flat_color(self) -> [f32; 3] {
         let rgb = match self {
-            Self::Motorway | Self::Major => TARMAC_DARK,
+            Self::Motorway | Self::Carriageway | Self::Major => TARMAC_DARK,
             Self::Minor => TARMAC_LIGHT,
             Self::Path => GRIT,
             Self::Rail => BALLAST,
@@ -88,7 +93,7 @@ impl RoadClass {
     #[must_use]
     pub fn perceptual_roughness(self) -> f32 {
         match self {
-            Self::Motorway | Self::Major => 0.78,
+            Self::Motorway | Self::Carriageway | Self::Major => 0.78,
             Self::Minor => 0.84,
             Self::Rail => 0.9,
             Self::Path => 0.95,
@@ -96,11 +101,45 @@ impl RoadClass {
     }
 }
 
+/// The Shortbread `streets` attributes that change how a street is *drawn*, as
+/// opposed to what it is called.
+///
+/// A `kind` alone is not enough to know how wide a street is, because OSM maps a
+/// dual carriageway as **two** ways — each tagged `motorway`, each `oneway`, a
+/// median apart. Widening both to the full 22 m of a motorway laid two slabs of
+/// tarmac over each other with a metre or two of daylight between their centre
+/// lines: the doubled markings and the wide dark blob at an interchange. Ramps
+/// (`link`) are the same mistake in the other direction — a single-lane slip road
+/// drawn as wide as the motorway it leaves is most of what turns a junction into
+/// a puddle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreetFlags {
+    /// Traffic runs one way. On the fast classes this means "one half of a dual
+    /// carriageway"; on a residential street it means nothing about the width, so
+    /// only the fast classes read it.
+    pub oneway: bool,
+    /// A slip road or ramp (OSM's `*_link`).
+    pub link: bool,
+}
+
+impl StreetFlags {
+    /// One direction of traffic on a fast road: a dual carriageway's half, or a
+    /// ramp (which is one-way in practice whether or not it is tagged so).
+    #[must_use]
+    fn single_direction(self) -> bool {
+        self.oneway || self.link
+    }
+}
+
 /// Map a Shortbread `streets` `kind` to a surface class. `None` means "do not
 /// draw as geometry": `subway` is underground, and an unknown kind is better
 /// left to the raster tile underneath than guessed at in 3D.
 #[must_use]
-pub fn road_class(kind: &str) -> Option<RoadClass> {
+pub fn road_class(kind: &str, flags: StreetFlags) -> Option<RoadClass> {
+    let fast = matches!(kind, "motorway" | "trunk" | "primary" | "secondary");
+    if fast && flags.single_direction() {
+        return Some(RoadClass::Carriageway);
+    }
     Some(match kind {
         "motorway" | "trunk" => RoadClass::Motorway,
         "primary" | "secondary" => RoadClass::Major,
@@ -117,8 +156,31 @@ pub fn road_class(kind: &str) -> Option<RoadClass> {
 /// pixels at the source tile's scale and deliberately exaggerated so a street is
 /// visible on a zoomed-out map; geometry has no such excuse, and a 20 m wide
 /// residential street is obvious the moment you stand on it.
+///
+/// The [`StreetFlags`] are what keep the fast classes honest: the base numbers
+/// are for a road that carries **both** directions, which a `oneway` motorway or
+/// a ramp does not.
 #[must_use]
-pub fn road_width_m(kind: &str) -> f32 {
+pub fn road_width_m(kind: &str, flags: StreetFlags) -> f32 {
+    // A ramp is one or two lanes plus a hard strip, whatever it ramps off.
+    if flags.link {
+        return match kind {
+            "motorway" | "trunk" => 8.0,
+            "primary" | "secondary" => 7.0,
+            _ => 6.0,
+        };
+    }
+    // Half of a dual carriageway: the lanes of one direction, its hard shoulder,
+    // and none of the median — that belongs to the gap between the two features.
+    if flags.oneway {
+        match kind {
+            "motorway" => return 12.0,
+            "trunk" => return 10.0,
+            "primary" => return 8.0,
+            "secondary" => return 7.0,
+            _ => {}
+        }
+    }
     match kind {
         "motorway" => 22.0,
         "trunk" => 18.0,
@@ -211,6 +273,19 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
                 Marking::dashed(0.330, 0.005, PAINT_WHITE, 4.0, 12.0),
                 Marking::dashed(0.670, 0.005, PAINT_WHITE, 4.0, 12.0),
                 Marking::dashed(0.820, 0.005, PAINT_WHITE, 4.0, 12.0),
+            ],
+        ),
+        // One direction of a dual carriageway (or a ramp): shoulder lines and
+        // lane dashes, and *no* median — the median is the daylight between this
+        // feature and the one carrying the other direction.
+        RoadClass::Carriageway => (
+            TARMAC_DARK,
+            0.055,
+            vec![
+                Marking::solid(0.040, 0.007, PAINT_WHITE),
+                Marking::solid(0.960, 0.007, PAINT_WHITE),
+                Marking::dashed(0.340, 0.006, PAINT_WHITE, 4.0, 12.0),
+                Marking::dashed(0.670, 0.006, PAINT_WHITE, 4.0, 12.0),
             ],
         ),
         RoadClass::Major => (
@@ -377,8 +452,9 @@ fn hash2(x: u32, y: u32) -> f32 {
 mod tests {
     use super::*;
 
-    const CLASSES: [RoadClass; 5] = [
+    const CLASSES: [RoadClass; 6] = [
         RoadClass::Motorway,
+        RoadClass::Carriageway,
         RoadClass::Major,
         RoadClass::Minor,
         RoadClass::Path,
@@ -446,10 +522,76 @@ mod tests {
 
     #[test]
     fn subways_and_unknown_kinds_are_not_drawn() {
-        assert_eq!(road_class("subway"), None);
-        assert_eq!(road_class("elevator"), None);
-        assert_eq!(road_class("motorway"), Some(RoadClass::Motorway));
-        assert_eq!(road_class("residential"), Some(RoadClass::Minor));
+        let both = StreetFlags::default();
+        assert_eq!(road_class("subway", both), None);
+        assert_eq!(road_class("elevator", both), None);
+        assert_eq!(road_class("motorway", both), Some(RoadClass::Motorway));
+        assert_eq!(road_class("residential", both), Some(RoadClass::Minor));
+    }
+
+    /// A dual carriageway arrives as two one-way features a median apart. Drawing
+    /// each at the full two-way width is what laid two slabs of tarmac over one
+    /// another; each half must come out roughly half as wide, and without the
+    /// median markings that belong to the gap between them.
+    #[test]
+    fn a_one_way_fast_road_is_half_a_carriageway() {
+        let oneway = StreetFlags {
+            oneway: true,
+            link: false,
+        };
+        let both = StreetFlags::default();
+        for kind in ["motorway", "trunk", "primary", "secondary"] {
+            let (w1, w2) = (road_width_m(kind, oneway), road_width_m(kind, both));
+            assert!(
+                w1 < w2 && w1 > w2 * 0.45,
+                "{kind}: one-way {w1} m against two-way {w2} m"
+            );
+            assert_eq!(road_class(kind, oneway), Some(RoadClass::Carriageway));
+        }
+        // Below the fast classes `oneway` is about the direction of travel, not
+        // about a second carriageway somewhere else — the width must not move.
+        for kind in ["residential", "service", "cycleway"] {
+            assert_eq!(road_width_m(kind, oneway), road_width_m(kind, both));
+            assert_ne!(road_class(kind, oneway), Some(RoadClass::Carriageway));
+        }
+    }
+
+    /// A slip road is a lane or two wide whatever it ramps off — drawn at the
+    /// motorway's own width it is most of what makes an interchange a blob.
+    #[test]
+    fn a_ramp_is_narrower_than_the_road_it_leaves() {
+        let link = StreetFlags {
+            oneway: true,
+            link: true,
+        };
+        for kind in ["motorway", "trunk", "primary"] {
+            assert!(
+                road_width_m(kind, link) < road_width_m(kind, StreetFlags::default()) * 0.6,
+                "{kind}_link is not narrow"
+            );
+            assert_eq!(road_class(kind, link), Some(RoadClass::Carriageway));
+        }
+    }
+
+    /// The whole point of the class: no median, so the two halves of a dual
+    /// carriageway do not each paint the line that belongs between them.
+    #[test]
+    fn a_carriageway_has_no_centre_line() {
+        let t = road_texture(RoadClass::Carriageway);
+        let lum = |x: u32, y: u32| -> u32 {
+            let i = ((y * t.width + x) * 4) as usize;
+            u32::from(t.rgba[i]) + u32::from(t.rgba[i + 1]) + u32::from(t.rgba[i + 2])
+        };
+        let centre = (0..t.height).map(|y| lum(t.width / 2, y)).max().unwrap();
+        let shoulder = (0..t.height)
+            .flat_map(|y| (0..5).map(move |x| (x, y)))
+            .map(|(x, y)| lum(x, y))
+            .max()
+            .unwrap();
+        assert!(
+            centre < shoulder,
+            "centre {centre} is painted like the shoulder line {shoulder}"
+        );
     }
 
     /// Eyeball hatch, like `vector_tiles::dump_png`: writes each class's surface

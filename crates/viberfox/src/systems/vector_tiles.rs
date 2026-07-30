@@ -27,7 +27,9 @@ use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
 };
 
-use crate::systems::road_texture::{road_class, road_width_m, RoadClass};
+use std::collections::HashMap;
+
+use crate::systems::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
 
 /// Edge length in pixels of a rendered tile. Larger than the 256 px raster tiles
 /// we used to fetch: the texture is stretched across a whole region on the ground,
@@ -619,15 +621,19 @@ impl SurfaceGroup {
             Self::Road(RoadClass::Path) => 5.0,
             Self::Road(RoadClass::Minor) => 6.0,
             Self::Road(RoadClass::Major) => 7.0,
-            Self::Road(RoadClass::Motorway) => 8.0,
+            // A carriageway is a motorway's half or a ramp: above the ordinary
+            // roads it flies over, below the motorway it feeds — a slip road
+            // merging into a carriageway must not paint its kerb line across it.
+            Self::Road(RoadClass::Carriageway) => 8.0,
+            Self::Road(RoadClass::Motorway) => 9.0,
             // Rails sit above their own crossings, so a level crossing shows the
             // track rather than the tarmac.
-            Self::Road(RoadClass::Rail) => 9.0,
+            Self::Road(RoadClass::Rail) => 10.0,
             // Above the whole coplanar ground stack. Trees resolve against it by
             // honest depth — they stand a metre or ten above the plane — but the
             // ground sheets are biased *forward* to settle their own z-fight, and
             // a grass sheet at 2.0 would otherwise punch through a trunk base.
-            Self::Canopy | Self::Trunk => 10.0,
+            Self::Canopy | Self::Trunk => 11.0,
         }
     }
 
@@ -876,39 +882,77 @@ pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>
         .collect())
 }
 
-/// Fraction of its own half-width that a ribbon is extended past each end of its
-/// centre line. Streets arrive as separate features that merely *share an
-/// endpoint*, so without this every junction is a notch of missing tarmac.
+/// How far a ribbon may be pushed past the end of its centre line, in metres, to
+/// fill the notch at a junction.
 ///
-/// A full half-width (`1.0`) is what a square cap needs to fill a right-angled
-/// corner exactly: the stub reaches the far edge of the road it tees into. The
-/// earlier `0.5` left the outer half of the corner bare, which is the little dark
-/// notch on the outside of a path junction.
-const JUNCTION_EXTEND: f32 = 1.0;
+/// Streets arrive as separate features that merely *share an endpoint*, so a road
+/// tee-ing into another stops at that road's centre line and leaves a wedge of
+/// bare ground either side of it. The stub that fills the wedge has to reach the
+/// **far kerb of the road being joined**, which is that road's half-width — not
+/// this one's. Extending by its own half-width (what this used to do) is right
+/// only when the two are the same width; a motorway ending at a service road threw
+/// an 11 m flap of tarmac across a 4 m street, and every road that simply *ends*
+/// — a cul-de-sac, a track petering out — grew the same flap into open ground.
+///
+/// So the length now comes from [`junction_extent`], and this is only the cap that
+/// keeps a pathological node (a footpath meeting a motorway) from painting a stub
+/// longer than anything it could plausibly be joining.
+const JUNCTION_EXTEND_MAX: f32 = 12.0;
 
 /// Vertical spacing, in metres, between successive road features within one tile.
 ///
-/// Ribbons **overlap by construction** — [`JUNCTION_EXTEND`] pushes a stub across
-/// whatever it tees into, a clipped run's stub crosses the tile seam into the
-/// neighbour's copy of the same street, and Shortbread's merged ways cross each
-/// other freely. Two coplanar overlapping triangles have depth values that agree
-/// only to the last few bits, so which one wins flips per pixel as the camera
-/// moves: the flicker along a junction. `depth_bias` cannot settle it, being a
-/// per-material constant while the fight is between two features sharing a
-/// material.
+/// Ribbons **overlap by construction** — a junction stub crosses whatever it tees
+/// into, Shortbread's merged ways cross each other freely, and a flyover is drawn
+/// on the same ground plane as the road it flies over. Two coplanar overlapping
+/// triangles have depth values that agree only to the last few bits, so which one
+/// wins flips per pixel as the camera moves: the flicker along a junction.
+/// `depth_bias` cannot settle it, being a per-material constant while the fight is
+/// between two features sharing a material.
 ///
 /// Stepping each feature up by a fraction of a millimetre makes the winner
 /// deterministic. The step has to clear the depth buffer's resolution at ground
 /// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the 10 mm window
 /// `SurfaceGroup::y_offset` documents — at [`ROAD_LAYERS`] rungs the ladder is
-/// under 1 mm tall, so roads stay below the buildings' base at y = 0.
+/// under 1.5 mm tall, so roads stay below the buildings' base at y = 0.
 const ROAD_LAYER_STEP: f32 = 6.0e-5;
 
-/// How many rungs the [`ROAD_LAYER_STEP`] ladder has before it wraps. Two features
-/// that land on the same rung z-fight again, but they have to be the 16th apart in
-/// one tile *and* overlap, which the ordering of a Shortbread `streets` layer
-/// (grouped by kind) makes rare.
-const ROAD_LAYERS: u32 = 16;
+/// How many rungs the [`ROAD_LAYER_STEP`] ladder has. The ladder is *ordered*, not
+/// arbitrary (see [`road_rung`]), so which of two overlapping features wins is a
+/// property of the roads rather than of the order the tile happened to store them
+/// in — and the same two roads resolve the same way in the neighbouring tile.
+const ROAD_LAYERS: u32 = 20;
+
+/// Rungs reserved at the top of the ladder for bridge decks.
+const BRIDGE_LAYERS: u32 = 4;
+
+/// Tie-breaking rungs within one width band.
+const ROAD_TIE_LAYERS: u32 = 4;
+
+/// Which rung of the [`ROAD_LAYER_STEP`] ladder a feature draws on.
+///
+/// Two rules, in order:
+///
+/// * A **bridge** takes the reserved top of the ladder. A flyover and the road
+///   under it are both flat sheets on the same ground plane here, so the only
+///   thing that can say which is on top is this; without it an interchange
+///   resolves per-pixel and the deck and the road beneath interleave.
+/// * Otherwise the **wider road wins**, which is the same rule
+///   [`SurfaceGroup::depth_rung`] applies between classes, continued inside one:
+///   the through road keeps an unbroken surface and the side road disappears
+///   under it, rather than slicing its kerb lines across the junction.
+///
+/// Features that tie on both fall back to their index in the tile, which is only a
+/// deterministic shuffle — but two roads of the same width that also overlap are
+/// two halves of the same junction, where either winner reads the same.
+fn road_rung(width_m: f32, bridge: bool, feature_index: usize) -> u32 {
+    let tie = feature_index as u32 % ROAD_TIE_LAYERS;
+    if bridge {
+        return ROAD_LAYERS - BRIDGE_LAYERS + tie;
+    }
+    // 0: paths and service roads, 1: streets, 2: main roads, 3: motorways.
+    let band = ((width_m / 6.0) as u32).min((ROAD_LAYERS - BRIDGE_LAYERS) / ROAD_TIE_LAYERS - 1);
+    band * ROAD_TIE_LAYERS + tie
+}
 
 /// Miter limit: how far a join may push a vertex out relative to the half-width,
 /// before it is allowed to pinch instead. Unbounded miters spike to infinity at a
@@ -930,6 +974,9 @@ const MITER_LIMIT: f32 = 2.5;
 ///   [`clip_polyline`] cuts instead, so the neighbouring tile's copy of the same
 ///   street meets it edge to edge.
 /// * **UVs matter.** They are what puts the centre line down the centre.
+/// * **Ends have to know what they meet.** A ribbon that simply stops leaves a
+///   notch at every junction; one that always overshoots leaves a flap at every
+///   dead end. [`street_nodes`] is the difference between the two.
 pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
     let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
     let layers = reader
@@ -944,17 +991,16 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
         .map_err(|e| format!("mvt features: {e:?}"))?;
     let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
     let scale = tile_m / extent;
+    let nodes = street_nodes(&features);
 
     let mut builders: Vec<(RoadClass, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
 
     for (fi, feature) in features.iter().enumerate() {
-        let kind = kind_of(feature).unwrap_or("");
-        let Some(class) = road_class(kind) else {
+        let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
-        let half = road_width_m(kind) * 0.5;
         // This feature's rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`).
-        let y = (fi as u32 % ROAD_LAYERS) as f32 * ROAD_LAYER_STEP;
+        let y = road_rung(half * 2.0, flag_of(feature, "bridge"), fi) as f32 * ROAD_LAYER_STEP;
 
         let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
             Some(i) => i,
@@ -981,7 +1027,20 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
                 .filter(|c| c.x.is_finite() && c.y.is_finite())
                 .map(|c| [c.x, c.y])
                 .collect();
+            let (Some(head), Some(tail)) = (pts.first().copied(), pts.last().copied()) else {
+                continue;
+            };
             for run in clip_polyline(&pts, 0.0, extent) {
+                // Only the run holding an *original* end of the line can be at a
+                // junction; the rest begin and end at the tile border, where the
+                // neighbour's copy of the same street abuts this one exactly and
+                // an extension would draw the same tarmac twice.
+                let ext_head = (run.first() == Some(&head))
+                    .then(|| junction_extent(&nodes, head, fi))
+                    .unwrap_or(0.0);
+                let ext_tail = (run.last() == Some(&tail))
+                    .then(|| junction_extent(&nodes, tail, fi))
+                    .unwrap_or(0.0);
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
@@ -990,6 +1049,7 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
                     half,
                     y,
                     class.texture_length_m(),
+                    [ext_head, ext_tail],
                     positions,
                     uvs,
                     indices,
@@ -1012,6 +1072,103 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
         .collect())
 }
 
+/// Read a boolean Shortbread property (`bridge`, `tunnel`, `oneway`, `link`),
+/// treating a missing or non-boolean value as `false`.
+fn flag_of(feature: &Feature, name: &str) -> bool {
+    matches!(
+        feature.properties.as_ref().and_then(|p| p.get(name)),
+        Some(Value::Bool(true))
+    )
+}
+
+/// A street's drawn class and half-width, or `None` if it is not drawn as ground
+/// geometry at all.
+///
+/// **Tunnels are not drawn.** A tunnel is tarmac the camera cannot see: painting
+/// it on the ground plane lays a road across whatever is genuinely up there —
+/// which at an interchange is the junction the tunnel passes under, and in a city
+/// is a park or a canal with a carriageway ruled through it. `road_class` already
+/// refuses `subway` for the same reason; the `tunnel` flag is that rule applied to
+/// the kinds that can be either.
+fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
+    if flag_of(feature, "tunnel") {
+        return None;
+    }
+    let kind = kind_of(feature).unwrap_or("");
+    let flags = StreetFlags {
+        oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+        link: flag_of(feature, "link"),
+    };
+    Some((road_class(kind, flags)?, road_width_m(kind, flags) * 0.5))
+}
+
+/// Every vertex of every drawn street in the tile, keyed on the integer lattice,
+/// carrying the features that touch it and how wide each of them is.
+///
+/// Keyed on the raw tile units *rounded to an integer*, with no tolerance, because
+/// none is needed: MVT quantises all of a tile's geometry onto one integer lattice,
+/// so two ways sharing an OSM node share the exact coordinate (the same property
+/// `routing::RoadGraph` leans on to stitch tiles without a fuzzy match). A tolerance
+/// would only start fusing genuinely distinct nodes in a dense junction.
+///
+/// *Every* vertex goes in, not just endpoints: a side street tees into the middle
+/// of a through road, so the node it shares is an interior vertex of that road.
+///
+/// Keys are tile units; the half-widths are metres, which is what the ribbon
+/// builder works in.
+fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32)>> {
+    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32)>> = HashMap::new();
+    for (fi, feature) in features.iter().enumerate() {
+        let Some((_, half)) = drawn_street(feature) else {
+            continue;
+        };
+        let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => lines.push(ls),
+            Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+            _ => continue,
+        }
+        for c in lines.iter().flat_map(|ls| ls.0.iter()) {
+            if !c.x.is_finite() || !c.y.is_finite() {
+                continue;
+            }
+            let at = nodes.entry(node_key([c.x, c.y])).or_default();
+            // One entry per feature: a way that doubles back through its own node
+            // is not a junction with itself.
+            if !at.iter().any(|(o, _)| *o == fi) {
+                at.push((fi, half));
+            }
+        }
+    }
+    nodes
+}
+
+fn node_key(p: [f32; 2]) -> (i32, i32) {
+    (p[0].round() as i32, p[1].round() as i32)
+}
+
+/// How far past `end` the feature's ribbon has to run to fill the junction there,
+/// in metres: the half-width of the **widest other road** meeting at that node, so
+/// the stub reaches its far kerb and stops. `0.0` where nothing else meets — a
+/// dead end keeps a square end on the ground instead of a flap of tarmac reaching
+/// into the field beyond it.
+fn junction_extent(
+    nodes: &HashMap<(i32, i32), Vec<(usize, f32)>>,
+    end: [f32; 2],
+    feature_index: usize,
+) -> f32 {
+    nodes
+        .get(&node_key(end))
+        .map(|at| {
+            at.iter()
+                .filter(|(fi, _)| *fi != feature_index)
+                .map(|(_, half)| *half)
+                .fold(0.0, f32::max)
+        })
+        .unwrap_or(0.0)
+        .min(JUNCTION_EXTEND_MAX)
+}
+
 /// Extrude a centre line into a flat ribbon of `2 × half` metres at height `y`,
 /// writing positions, UVs and indices into shared buffers.
 ///
@@ -1023,11 +1180,16 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
 /// `y` is the feature's rung on the [`ROAD_LAYER_STEP`] ladder — sub-millimetre,
 /// and the only thing that keeps two overlapping ribbons from flickering against
 /// each other at a junction.
+///
+/// `extend` is `[head, tail]` metres of stub past each end, from
+/// [`junction_extent`]: how far this road has to run *into* whatever it meets
+/// there. Zero at a dead end and at a tile border.
 fn ribbon(
     points: &[[f32; 2]],
     half: f32,
     y: f32,
     tex_len_m: f32,
+    extend: [f32; 2],
     positions: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
     indices: &mut Vec<u32>,
@@ -1047,18 +1209,27 @@ fn ribbon(
     }
 
     // Stubs past each end, to fill the notch at a junction.
-    let extend = half * JUNCTION_EXTEND;
     let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let len = dx.hypot(dy).max(1e-6);
         [dx / len, dy / len]
     };
-    let head = dir(pts[1], pts[0]);
-    let first = pts[0];
-    pts.insert(0, [first[0] + head[0] * extend, first[1] + head[1] * extend]);
-    let tail = dir(pts[pts.len() - 2], pts[pts.len() - 1]);
-    let last = pts[pts.len() - 1];
-    pts.push([last[0] + tail[0] * extend, last[1] + tail[1] * extend]);
+    if extend[0] > 0.0 {
+        let head = dir(pts[1], pts[0]);
+        let first = pts[0];
+        pts.insert(
+            0,
+            [
+                first[0] + head[0] * extend[0],
+                first[1] + head[1] * extend[0],
+            ],
+        );
+    }
+    if extend[1] > 0.0 {
+        let tail = dir(pts[pts.len() - 2], pts[pts.len() - 1]);
+        let last = pts[pts.len() - 1];
+        pts.push([last[0] + tail[0] * extend[1], last[1] + tail[1] * extend[1]]);
+    }
 
     let base = positions.len() as u32;
     let mut travelled = 0.0f32;
@@ -1981,6 +2152,185 @@ mod tests {
         );
     }
 
+    /// Eyeball hatch for junction geometry: rasterise the tessellated ribbons
+    /// top-down and colour each pixel by how many ribbons cover it, so stubs,
+    /// gaps and overlaps are visible without a GPU.
+    ///
+    /// `cargo test -p viberfox --bin viberfox dump_road_ribbons -- --ignored
+    /// --nocapture`; `VIBE_DUMP_WIN="x,z,size"` (tile metres) zooms to a junction.
+    #[test]
+    #[ignore]
+    fn dump_road_ribbons() {
+        const PX: usize = 1200;
+        let tile_m = 1000.0f32;
+        let (wx, wz, ws) = match std::env::var("VIBE_DUMP_WIN") {
+            Ok(s) => {
+                let v: Vec<f32> = s.split(',').map(|p| p.trim().parse().unwrap()).collect();
+                (v[0], v[1], v[2])
+            }
+            Err(_) => (0.0, 0.0, tile_m),
+        };
+        // `VIBE_DUMP_MVT=/tmp/some.mvt` looks at a tile fetched from the live
+        // source instead of the fixture — which is how you answer "is this street
+        // missing because of the styling or because of the data?" for a place you
+        // are actually looking at.
+        let owned = std::env::var("VIBE_DUMP_MVT")
+            .ok()
+            .map(|p| std::fs::read(p).expect("read tile"));
+        let tile: &[u8] = owned.as_deref().unwrap_or(GRONINGEN_Z14);
+
+        // What the tile *says* about its streets, tallied — the tags are what
+        // decide how wide each one is drawn and whether it is drawn at all, so
+        // this is the difference between "the styling lost that road" and "the
+        // data never had it".
+        let reader = mvt_reader(tile).unwrap();
+        let meta = reader.get_layer_metadata().unwrap();
+        let streets = meta.iter().find(|l| l.name == "streets").unwrap();
+        let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
+        for f in &reader.get_features(streets.layer_index).unwrap() {
+            let flags = ["bridge", "tunnel", "oneway", "oneway_reverse", "link"]
+                .iter()
+                .filter(|n| flag_of(f, n))
+                .copied()
+                .collect::<Vec<_>>()
+                .join("+");
+            let drawn = match drawn_street(f) {
+                Some((class, half)) => format!("{class:?} {:.1} m wide", half * 2.0),
+                None => "not drawn".to_string(),
+            };
+            *tally
+                .entry(format!(
+                    "{:>12} {flags:<22} → {drawn}",
+                    kind_of(f).unwrap_or("?")
+                ))
+                .or_default() += 1;
+        }
+        for (what, n) in &tally {
+            println!("  {n:>3} × {what}");
+        }
+
+        let meshes = tessellate_roads(tile, tile_m).expect("tessellate");
+
+        let mut count = vec![0u16; PX * PX];
+        for m in &meshes {
+            // Per class as well as in total: two ribbons of *different* classes
+            // overlapping is a crossing, which the depth rungs settle. Two of the
+            // same class is the same road drawn twice.
+            let mut own = vec![0u16; PX * PX];
+            for tri in m.indices.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = tri
+                    .iter()
+                    .map(|i| {
+                        let v = m.positions[*i as usize];
+                        [
+                            (v[0] - wx) / ws * PX as f32,
+                            (v[2] - wz) / ws * PX as f32,
+                        ]
+                    })
+                    .collect();
+                let (x0, x1) = (
+                    p.iter().map(|q| q[0]).fold(f32::MAX, f32::min).floor().max(0.0) as usize,
+                    p.iter().map(|q| q[0]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0)
+                        as usize,
+                );
+                let (y0, y1) = (
+                    p.iter().map(|q| q[1]).fold(f32::MAX, f32::min).floor().max(0.0) as usize,
+                    p.iter().map(|q| q[1]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0)
+                        as usize,
+                );
+                let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                    - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                if area.abs() < 1e-9 {
+                    continue;
+                }
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let w0 = ((p[1][0] - p[0][0]) * (py - p[0][1])
+                            - (px - p[0][0]) * (p[1][1] - p[0][1]))
+                            / area;
+                        let w1 = ((px - p[0][0]) * (p[2][1] - p[0][1])
+                            - (p[2][0] - p[0][0]) * (py - p[0][1]))
+                            / area;
+                        if w0 >= 0.0 && w1 >= 0.0 && w0 + w1 <= 1.0 {
+                            count[y * PX + x] += 1;
+                            own[y * PX + x] += 1;
+                        }
+                    }
+                }
+            }
+            let covered = own.iter().filter(|c| **c > 0).count();
+            let doubled = own.iter().filter(|c| **c > 1).count();
+            println!(
+                "  {:?}: {covered} px, {doubled} drawn twice by its own class ({:.1}%)",
+                m.group,
+                100.0 * doubled as f32 / covered.max(1) as f32
+            );
+        }
+
+        let mut rgba = Vec::with_capacity(PX * PX * 4);
+        let mut overlapped = 0usize;
+        for c in &count {
+            let px: [u8; 3] = match c {
+                0 => [0x1A, 0x22, 0x1A],
+                1 => [0x8A, 0x88, 0x86],
+                2 => {
+                    overlapped += 1;
+                    [0xFD, 0x92, 0x12]
+                }
+                _ => {
+                    overlapped += 1;
+                    [0xE0, 0x20, 0x20]
+                }
+            };
+            rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
+        }
+        let covered = count.iter().filter(|c| **c > 0).count();
+        println!(
+            "ribbon pixels {covered}, of which overlapped {overlapped} ({:.1}%)",
+            100.0 * overlapped as f32 / covered.max(1) as f32
+        );
+        image::save_buffer(
+            "/tmp/ribbons.png",
+            &rgba,
+            PX as u32,
+            PX as u32,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("write png");
+        println!("wrote /tmp/ribbons.png");
+    }
+
+    /// Which of two overlapping ribbons wins has to be a property of the *roads*,
+    /// not of the order the tile happened to store them in — otherwise the same
+    /// junction resolves one way in this tile and the other way in its neighbour.
+    #[test]
+    fn the_wider_road_and_the_bridge_win_the_overlap() {
+        let street = road_rung(7.0, false, 0);
+        let main = road_rung(14.0, false, 0);
+        let motorway = road_rung(22.0, false, 0);
+        assert!(street < main && main < motorway, "the wider road must be on top");
+        // A flyover and the road under it are both flat sheets on this plane; the
+        // deck is the only one that can be on top, whatever it flies over.
+        assert!(road_rung(4.0, true, 0) > motorway, "a bridge deck must be on top");
+        // …and the whole ladder has to stay inside the millimetre window under the
+        // buildings' base that `SurfaceGroup::y_offset` documents.
+        for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
+            for bridge in [false, true] {
+                for fi in 0..40 {
+                    let rung = road_rung(width, bridge, fi);
+                    assert!(rung < ROAD_LAYERS, "rung {rung} is off the ladder");
+                }
+            }
+        }
+        assert!(
+            SurfaceGroup::Road(RoadClass::Minor).y_offset()
+                + ROAD_LAYERS as f32 * ROAD_LAYER_STEP
+                < 0.0,
+            "the ladder pushes roads through the buildings' base"
+        );
+    }
+
     #[test]
     fn tessellates_water_and_landuse() {
         let tile_m = 1000.0;
@@ -2160,12 +2510,14 @@ mod tests {
         let mut positions = Vec::new();
         let mut uvs = Vec::new();
         let mut indices = Vec::new();
-        // 100 m due east, 7 m wide (a residential street).
+        // 100 m due east, 7 m wide (a residential street), joining a 10 m road at
+        // its far end and nothing at all at its near one.
         ribbon(
             &[[0.0, 0.0], [100.0, 0.0]],
             3.5,
             0.0,
             12.0,
+            [0.0, 5.0],
             &mut positions,
             &mut uvs,
             &mut indices,
@@ -2178,11 +2530,15 @@ mod tests {
                 p
             );
         }
-        // `v` counts metres travelled over the class's texture length, so the far
-        // end of a 100 m street (plus a half-width junction stub at each end) is
-        // ~8.9 repeats in.
+        // The junction stub reaches the far kerb of the road it joins, and the
+        // dead end stops where the centre line does.
+        let x_max = positions.iter().fold(f32::MIN, |a, p| a.max(p[0]));
+        let x_min = positions.iter().fold(f32::MAX, |a, p| a.min(p[0]));
+        assert!((x_max - 105.0).abs() < 1e-3, "tail at {x_max}");
+        assert!(x_min.abs() < 1e-3, "head at {x_min}");
+        // `v` counts metres travelled over the class's texture length.
         let v_max = uvs.iter().fold(0.0f32, |a, uv| a.max(uv[1]));
-        assert!((v_max - 107.0 / 12.0).abs() < 1e-2, "v_max {v_max}");
+        assert!((v_max - 105.0 / 12.0).abs() < 1e-2, "v_max {v_max}");
     }
 
     /// Clipping, not clamping: geometry in the MVT buffer zone must be *cut* at
