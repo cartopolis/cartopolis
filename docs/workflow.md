@@ -126,10 +126,28 @@ Three ways an idea becomes a branch, and what the board shows at each step. The
 column is always a projection of the labels — see [States](#states) for the full
 mapping.
 
+**A and B are both "an idea from the couch".** The difference is not where you
+are, it is whether you want to think it through now:
+
+- **A** — you cannot be bothered right now. Two lines into Forgejo, put the phone
+  down. The agent reads the code and either writes the spec or comes back with
+  questions. Nothing is lost if the idea was half-baked; the worst case is a
+  ticket that parks on `agent:needs-input` until you feel like answering.
+- **B** — you want to know whether the idea is any good *before* you commit to
+  it. A session reads the actual code and tells you what it would touch, and you
+  steer with short messages while it does the reading and the typing. That is
+  cheap on a phone. What it is not is fire-and-forget: it is a conversation, and
+  it wants your attention until the spec is settled.
+
+Reach for B when the idea might be wrong, or might be bigger than it looks.
+Reach for A when it is obviously worth doing and you simply are not going to
+write it up now.
+
 ### A. Straight into Forgejo — the agent decides
 
-You have an idea and open an issue. No labels, no session, possibly from a
-phone. Use this when you do not want to think about it yet.
+You have an idea and open an issue. No labels, no session — from the couch, on a
+phone, in the time it takes to type two lines. Use this when the idea is worth
+recording and you are not going to work on it now.
 
 | # | What happens | Board |
 |---|---|---|
@@ -159,9 +177,14 @@ a branch you have to read to find out it went sideways.
 
 ### B. claude.ai/code — you refine it, the agent builds it
 
-You have an idea away from your desk. Open a session at claude.ai/code, which is
-Remote Control into the `viberfox-agent` container: a person is steering, so
-this is the [driven lane](#the-lane-axis--how-much-it-may-assume).
+Also from the couch, but you want to interrogate the idea first. Open a session
+at claude.ai/code — Remote Control into the `viberfox-agent` container — so a
+person is steering and this is the
+[driven lane](#the-lane-axis--how-much-it-may-assume), just not at a desk.
+
+The session does the reading and the writing; you supply direction in a sentence
+at a time, which is what makes this workable on a phone. By the end you have a
+spec you have actually agreed with, rather than one inferred from two lines.
 
 | # | What happens | Board |
 |---|---|---|
