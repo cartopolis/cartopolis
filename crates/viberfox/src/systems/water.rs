@@ -40,9 +40,17 @@ use crate::systems::weather::WeatherState;
 use crate::CLOUD_WIND;
 
 /// Albedo of the water body itself — dark, because nearly everything you see
-/// looking at water is *reflected*, not scattered back out of it. Deliberately
-/// still in the map palette's blue-grey family so the geometry ring doesn't clash
-/// with the painted `palette::WATER` on the raster tiles beyond it.
+/// looking at water is *reflected*, not scattered back out of it.
+///
+/// Being an albedo, this is not what the surface *renders* as: the shader takes
+/// another ~40% out of it for depth (`sea_state`'s `surface.z`) except at grazing
+/// angles, and the sun, sky and environment map put light back. Shaded, it lands
+/// around `#36495C`–`#415462`.
+///
+/// That rendered tone is the number `vector_tiles::palette::WATER` is matched to,
+/// because the vector surfaces only stream in a ring around the camera and the
+/// paint has to take over at its edge without a step. Changing this means
+/// re-sampling a render and moving the palette entry to wherever it lands.
 const WATER_ALBEDO: Color = Color::srgb(0.06, 0.16, 0.21);
 
 /// Wind speed (m/s) at which the wave shaping is fully "blown up" — beyond this

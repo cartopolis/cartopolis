@@ -98,7 +98,32 @@ impl SubTile {
 /// angle. Sits under the same lighting as everything else.
 pub mod palette {
     pub const PAPER: u32 = 0xEE_EA_E2;
-    pub const WATER: u32 = 0xA8_C4_DA;
+    /// Water as the raster basemap paints it — and, more to the point, what the
+    /// *shaded* water of `systems::water` looks like from far enough that its
+    /// waves have merged, the same contract [`FOREST_CANOPIED`] has with the
+    /// trees.
+    ///
+    /// The vector surfaces stream in a 3×3 cell ring around the camera
+    /// (`map_geometry::CELL_RADIUS`), so there is always a hard edge where the
+    /// geometry stops and this paint takes over. That edge is only invisible if
+    /// the two agree. They used to disagree by almost the whole value range —
+    /// pale `#A8C4DA` paint meeting water shaded from a near-black albedo — and
+    /// it read as a bright cut straight across every lake. Sampled from a render,
+    /// the shaded surface sits around `#36495C`–`#415462`; this is picked to land
+    /// there once the sun has been on it.
+    ///
+    /// So this is not a free colour choice: move `water::WATER_ALBEDO` and this
+    /// has to move with it.
+    ///
+    /// It is pulled the other way too, and that one is silent. On a *raster*
+    /// basemap the globe has no geometry to ask, so it decides what is ocean by
+    /// how much bluer than red a texel is (`tile_loader::WATER_BLUE_BIAS`): this
+    /// has to stay at least 40 bluer than it is red or the planet quietly loses
+    /// its oceans. Matching the shaded tone wants it greyer, that wants it blue,
+    /// and this value is where the two settle — the residual blue cast at the ring
+    /// edge is the price. `tile_loader`'s
+    /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
+    pub const WATER: u32 = 0x3E_5A_70;
     pub const FOREST: u32 = 0xC3_D3_BB;
     pub const GRASS: u32 = 0xD2_DE_C6;
     /// Canopy tone: one step down the [`FOREST`] hue ramp. The map is pale

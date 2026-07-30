@@ -451,6 +451,28 @@ mod tests {
         }
     }
 
+    /// The basemap's own water paint has to survive this classifier, and it is
+    /// tuned against something else entirely: `palette::WATER` is matched to the
+    /// tone the *shaded* vector water renders at, so the ring where the geometry
+    /// stops does not show a step. Those two pulls are not aligned — the match
+    /// wants it darker and greyer, this wants it blue — and only this one fails
+    /// silently, as a globe that stops having oceans. Pin it.
+    #[test]
+    fn the_basemaps_water_paint_reads_as_fully_water() {
+        let w = crate::systems::vector_tiles::palette::WATER;
+        let (r, b) = (((w >> 16) & 0xFF) as u8, (w & 0xFF) as u8);
+        let mut img = image::RgbaImage::from_pixel(1, 1, image::Rgba([r, 0, b, 0]));
+        paint_water_alpha_by_colour(&mut img);
+        assert_eq!(
+            img.get_pixel(0, 0).0[3],
+            255,
+            "palette::WATER #{w:06X} is only blue-red={} and needs {} to read as \
+             fully water; the globe's raster ocean mask fades out below that",
+            i32::from(b) - i32::from(r),
+            WATER_BLUE_BIAS + WATER_BLUE_RANGE
+        );
+    }
+
     #[test]
     fn classifies_raster_and_vector_templates() {
         // Raster: an extension right after {y}.
