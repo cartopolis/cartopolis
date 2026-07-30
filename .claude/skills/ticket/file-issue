@@ -41,14 +41,24 @@ if [ -z "$branch" ]; then
 fi
 
 body=$(cat)
-# The Branch: line is load-bearing, not decoration: it is the ONLY thing that
-# lets a takeover attach to the local branch and its refs/agent-context digest
-# instead of cutting a fresh issue-<n> from main and silently ignoring the work.
-if [ -n "$branch" ]; then
-    body=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch")
-fi
 
-# Resolve label names to ids; the create API takes ids only.
+# Insert the issue number into a branch name, keeping the Conventional-Commits
+# style prefix the repo already uses: fix/road-joins -> fix/12-road-joins.
+# A name that already carries this number as a segment is returned untouched, so
+# re-filing is idempotent. `50-x` is not treated as containing `5-`.
+number_branch() {
+    _n="$1" _name="$2"
+    case "$_name" in
+        "$_n"-* | */"$_n"-*) printf '%s' "$_name"; return ;;
+    esac
+    case "$_name" in
+        */*) printf '%s/%s-%s' "${_name%%/*}" "$_n" "${_name#*/}" ;;
+        *)   printf '%s-%s' "$_n" "$_name" ;;
+    esac
+}
+
+# Resolve label names to ids up front: a typo'd label should fail before an
+# issue exists, not after.
 label_ids=$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" \
     "$API/repos/$REPO/labels?limit=100" |
     LABELS="$labels" python3 -c '
@@ -57,23 +67,69 @@ want = {s.strip() for s in os.environ["LABELS"].split(",") if s.strip()}
 have = {l["name"]: l["id"] for l in json.load(sys.stdin)}
 missing = want - have.keys()
 if missing:
-    sys.exit(f"no such label(s) in the repo: {\", \".join(sorted(missing))}")
+    # Not an f-string: a backslash inside an f-string expression is a syntax
+    # error before Python 3.12, and this file is run by whatever python3 the
+    # workstation has.
+    sys.exit("no such label(s) in the repo: " + ", ".join(sorted(missing)))
 print(json.dumps([have[n] for n in sorted(want)]))
 ')
 
-response=$(TITLE="$title" BODY="$body" IDS="$label_ids" python3 -c '
+# Create UNLABELLED. The branch name is not knowable until the issue number
+# exists, and the `Branch:` line has to be in the body before any label makes the
+# issue visible to the watcher — an `agent`-labelled issue picked up in that
+# window would cut a fresh branch and ignore the local work entirely.
+response=$(TITLE="$title" BODY="$body" python3 -c '
 import json, os
-print(json.dumps({"title": os.environ["TITLE"],
-                  "body": os.environ["BODY"],
-                  "labels": json.loads(os.environ["IDS"])}))
+print(json.dumps({"title": os.environ["TITLE"], "body": os.environ["BODY"]}))
 ' | curl -sf -X POST \
     -H "Authorization: token $FORGEJO_TOKEN" \
     -H "Content-Type: application/json" \
     "$API/repos/$REPO/issues" -d @-)
 
-printf '%s' "$response" | python3 -c '
+read -r number url <<EOF
+$(printf '%s' "$response" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-print(d["html_url"], file=sys.stderr)
-print(d["number"])
-'
+print(d["number"], d["html_url"])
+')
+EOF
+
+if [ -n "$branch" ]; then
+    numbered=$(number_branch "$number" "$branch")
+    if [ "$numbered" != "$branch" ]; then
+        # Only rename a branch that exists nowhere but here. Once it is on the
+        # remote, renaming would orphan the pushed branch — and any agent-context
+        # ref already published under the old name with it.
+        if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            echo "note: $branch is already on origin — leaving its name alone" >&2
+            numbered="$branch"
+        else
+            git branch -m "$branch" "$numbered"
+            echo "renamed branch: $branch -> $numbered" >&2
+        fi
+    fi
+    branch="$numbered"
+
+    # The Branch: line is load-bearing, not decoration: it is the ONLY thing that
+    # lets a takeover attach to this branch and its refs/agent-context digest
+    # instead of cutting a fresh issue-<n> from main and ignoring the work.
+    BODY=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch") python3 -c '
+import json, os
+print(json.dumps({"body": os.environ["BODY"]}))
+' | curl -sf -o /dev/null -X PATCH \
+        -H "Authorization: token $FORGEJO_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$API/repos/$REPO/issues/$number" -d @-
+fi
+
+# Label last: this is what makes the issue actionable to the watcher.
+IDS="$label_ids" python3 -c '
+import json, os
+print(json.dumps({"labels": json.loads(os.environ["IDS"])}))
+' | curl -sf -o /dev/null -X POST \
+    -H "Authorization: token $FORGEJO_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$API/repos/$REPO/issues/$number/labels" -d @-
+
+echo "$url" >&2
+echo "$number"

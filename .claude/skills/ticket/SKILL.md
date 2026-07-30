@@ -50,6 +50,17 @@ guess at an acceptance criterion, ask the user instead of writing it.
 `--label` defaults to `local`. It prints the issue number; the URL goes to
 stderr.
 
+**The issue number is inserted into the branch name**, keeping the
+Conventional-Commits prefix: `fix/road-joins` becomes `fix/12-road-joins`, and
+your local branch is renamed to match. The number cannot be known before the
+issue exists, which is why the rename happens on filing rather than when you cut
+the branch.
+
+Two cases where it leaves the name alone: a branch already carrying that number
+(so re-filing is idempotent), and a branch already pushed to `origin` — renaming
+that one would orphan the remote branch and any `refs/agent-context` digest
+published under the old name. It says which it did on stderr.
+
 The card appears in **Backlog** within 30 s — the watcher seeds it, because
 Forgejo 16 has no kanban API and only the bot's session can move a card.
 

@@ -57,8 +57,15 @@ The card appears in **Backlog** within 30 s. The workstation does not place it
 itself; the watcher does, so the bot's password never has to live on your
 laptop.
 
-`--branch` defaults to the branch currently checked out. That line in the issue
-body is not decoration — see [Handover](#handover).
+`--branch` defaults to the branch currently checked out, and **the issue number
+is inserted into its name**: `fix/road-joins` → `fix/12-road-joins`, renamed
+locally to match. The number only exists once the issue does, so the rename
+happens on filing; a branch already numbered, or already pushed to `origin`, is
+left alone. The watcher's own fallback is `issue-<n>`, which carries the number
+for the same reason.
+
+That name is then written into the issue body as a `` Branch: `` line, which is
+not decoration — see [Handover](#handover).
 
 ### Work
 
