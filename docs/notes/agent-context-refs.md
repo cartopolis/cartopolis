@@ -136,7 +136,20 @@ one place content could outlive the prune; file contents are not carried there.
 
 ## What is still not covered
 
-Backups taken before a deletion still hold the content — true of any store, git
-or database. And a clone that explicitly fetched the namespace keeps its objects
-until its own prune, which is why `finish-branch` prunes locally as well as
-letting the server hook run.
+A clone that explicitly fetched the namespace keeps its objects until its own
+prune, which is why `finish-branch` prunes locally as well as letting the server
+hook run.
+
+Backups taken before a deletion also hold the content — true of any store, git
+or database. For **this** feature that risk is bounded, because it is a day old:
+the whole public-repo exposure ran from the first digest push at 06:24 UTC on
+2026-07-30 to the deletion at roughly 08:25 UTC, about two hours. Checked at the
+time, garage44.eu carries no backup tooling at all — no restic, borg, duplicity
+or rclone, no backup timers beyond `dpkg-db-backup`, no root cron jobs and no
+Forgejo dumps on disk — so nothing on that machine snapshotted the window.
+
+What remains genuinely unknown is a snapshot at the hosting-provider level,
+which is not visible from inside the VPS, and anyone who fetched the refspec
+from the public repo during those two hours. Registration on the instance is
+disabled, but the repo is public, so that is not zero — merely small and
+unmeasurable. Recorded rather than solved.
