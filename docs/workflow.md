@@ -13,7 +13,7 @@ store](#why-the-board-cannot-be-the-state-store).
 - [The autonomous lane in practice](#the-autonomous-lane-in-practice) — ③
 - [Handover](#handover)
 - [States](#states)
-- [Proposed: one worktree per session](#proposed-one-worktree-per-session) — not built
+- [Proposed: the sync model](#proposed-the-sync-model) — not built
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
@@ -229,7 +229,7 @@ which is what you traded the conversation for.
 
 ### C. Zed — spec and build with the same local agent
 
-> Changing — see [Proposed: one worktree per session](#proposed-one-worktree-per-session).
+> Changing — see [Proposed: the sync model](#proposed-the-sync-model).
 
 Same idea, at your desk. The local agent builds it too — you are not typing the
 code, you are steering it turn by turn, the same way you steered the spec in B.
@@ -520,57 +520,103 @@ Forgejo upgrade can break it. Every board call is therefore failure-tolerant:
 it logs a warning and the work proceeds. Labels remain correct; only the card
 position goes stale.
 
-## Proposed: one worktree per session
+## Proposed: the sync model
 
-**Not built.** Everything else describes what runs today.
+**Not built.** Everything above describes what runs today. This is the design
+that keeps issues, local Zed sessions and the remote agent in step — decide,
+then build.
 
-### Zed already does most of this
+### One key: the issue number
 
-Zed 1.13 has parallel agent threads and native git worktrees, so almost nothing
-needs building:
+A unit of work exists in four places. Every one derives from the issue number,
+so nothing is kept in sync by hand:
 
-- **Worktree picker** in the title bar creates and switches worktrees
-- New worktrees are **detached HEAD** on purpose, *"so you won't accidentally
-  share a branch between worktrees"*; the branch picker then makes one
-- Threads in linked worktrees group under their main project in the sidebar
-- **Cleanup is automatic** — archiving a thread saves the worktree's git state
-  and removes it from disk; restoring the thread restores the worktree
+| Holder | Form | Derived how |
+|---|---|---|
+| Forgejo issue | `#23` | the source |
+| Branch | `feat/23-warn-driving-speed-limit` | number + slug |
+| Context dir | `feat-23-warn-driving-speed-limit/` | branch, `/`→`-` |
+| Session binding | `.git/viberfox-ticket` containing `23` | written by `/ticket` |
 
-A Zed *workspace* is a window with one or more root folders and is not a git
-worktree. Zed confusingly calls its root folders "worktrees" too. An external
-ACP agent can only operate in one directory at a time.
+The Stop hook keys on the **marker file**, not the branch name. That closes the
+silent hole hit three times (`main`, `worktree-*`, detached HEAD): a ticketed
+session publishes no matter where its checkout points. A session with no marker
+is exploratory and publishes nothing — by choice, not by accident.
 
-### So the flow is
+### Context repo: plain files on `main`
 
-| # | What happens |
+`viberfox-agent-context` loses the ref namespace (invisible in Forgejo, needs a
+fetch incantation, existed only to be deletable — digests are kept now):
+
+```
+feat-23-warn-driving-speed-limit/
+    <session-id>.md          one file per session — local and remote alike
+```
+
+- Browsable, `git grep`-able, plain clone. `git log` = all agent activity.
+- Parallel sessions write different files → pushes never conflict, only rebase.
+- Stop hook: temp shallow clone → write → commit → push (rebase-retry). Per turn.
+- Read oldest-first, as today.
+- Prune machinery and `finish-branch` destruction step: deleted.
+
+### Ownership is a lock
+
+The labels already are one; stated as the rule it is:
+
+| Label | Locked by |
 |---|---|
-| 1 | Title bar → worktree picker → new worktree (detached HEAD) |
-| 2 | Branch picker → `feat/23-…`, **before starting work** |
-| 3 | Start an ACP thread there; its cwd is that worktree |
-| 4 | `/ticket` files the issue from inside it and takes the number into the branch name — what it already does today |
-| 5 | Work, merge, close. Archive the thread; Zed removes the worktree. |
+| `driven` | you |
+| `agent:running` | the watcher, right now — touch nothing |
+| `agent` / `autonomous` / `agent:refined` | queued for the watcher |
+| `agent:needs-input` / *(none)* | free — claim before working |
 
-### What actually needs changing
+### The whole local interface: two commands
 
-Only one thing: `/ticket` currently *creates and checks out* a branch, which
-fights Zed for control of the checkout. It should assume it is already in the
-right place and only take the number into the branch name.
+| | |
+|---|---|
+| `/ticket` | **Start of every session, by hand.** Files the issue from the conversation, `driven` label, writes the marker. No branch creation, no checkout switching — where you sit is Zed's business. |
+| `/ticket 23` | Same binding, existing issue: claims it (`driven`), writes the marker, pulls its branch if one exists. Refuses while `agent:running`. |
+| `/handover` | Sweeps leftovers into a `wip:` commit, pushes the branch, verifies this session's digest is in the context repo, `driven`→`agent`, comments on the issue. Refuses without a marker — ticket first. |
 
-### The trap
+Take-back (remote→local) is not a command: wait until not `agent:running`, then
+`/ticket 23` in a worktree and `git pull`.
 
-**Zed's default is detached HEAD, and the `Stop` hook skips `HEAD`.** Work in a
-fresh worktree before setting a branch and no digest is published — silently.
-That is the third instance of this failure: `main`, `worktree-*`, and now
-detached HEAD.
+### Parallel sessions in Zed
 
-Dodging it with "always set a branch first" is a convention, not a fix. The
-durable answer is to stop keying the digest on the branch name — which is also
-what flattening agent-context to one file per session would allow.
+- One thread = one worktree = one ticket. Zed 1.13 creates and removes
+  worktrees natively; archiving a thread cleans its worktree up.
+- Git refuses to check the same branch out in two worktrees — that *is* the
+  guard against two local threads on one ticket.
+- A `SessionStart` hook reads the marker and injects `#23` + spec + context
+  path into every new or resumed session in that worktree, so binding
+  survives thread restarts. (Verified: SessionStart supports context
+  injection; Stop fires once per turn.)
 
-### Still the gate
+### Remote side: symmetry
 
-Two building worktrees either serialise on cargo's lock or cost 50–90 GB each.
-**sccache is a prerequisite**, and whether it helps a Bevy build is unmeasured.
+The watcher writes the same marker into its worktrees; the same Stop hook
+publishes the same way; `fetchAgentContext` becomes "read the ticket's
+directory". No second mechanism.
+
+### Sync summary
+
+| What | Channel | When |
+|---|---|---|
+| Code | branch on `origin` | per turn if commits exist; `/handover` sweeps WIP |
+| Reasoning | ticket dir in context repo | per turn, both sides |
+| Ownership | issue labels | `/ticket`, `/handover`, watcher |
+| Board | columns | watcher, from labels — unchanged |
+
+### Gates
+
+- **sccache unmeasured.** Parallel local builds serialise on cargo's lock or
+  cost 50–90 GB each without it.
+- **Stop hook in Zed ACP sessions: assumed, never observed.** Verified for
+  remote-control and manual runs only.
+- `.gitignore` needs `.claude/worktrees/` before `/handover` runs `git add -A`.
+- To build: marker logic in `/ticket` (+ bind mode), `/handover`, hook rewrite,
+  watcher read/write of the context dir, SessionStart hook, delete prune
+  machinery.
 
 ## Setup
 
