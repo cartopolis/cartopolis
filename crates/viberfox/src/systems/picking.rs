@@ -11,7 +11,9 @@ use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 use crate::systems::rendering::PrimMesh;
+use bevy::math::DVec3;
 use bevy::prelude::*;
+use big_space::prelude::GridCell;
 
 const MARQUEE_DRAG_THRESHOLD_PX: f32 = 4.0;
 
@@ -32,6 +34,11 @@ pub fn prim_picking(
     selected_query: Query<Entity, With<Selected>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     gizmo_state: Res<crate::systems::gizmo::GizmoState>,
+    // For the context menu's geographic point: the camera's floating-origin cell
+    // (the `cameras` query above has no `GridCell`) and the map anchor to measure
+    // against.
+    geo_cameras: Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
+    stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
     if egui_manager.ctx.egui_wants_pointer_input() {
@@ -157,17 +164,55 @@ pub fn prim_picking(
         } else {
             context_menu.hit_prim_id = None;
 
-            if let Some((_, region, region_transform)) = region_query.iter().next() {
-                let region_y = region_transform.translation().y;
-                context_menu.hit_region_id = Some(region.id);
-                context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, region_y)
-                    .unwrap_or_else(|| ray_origin + ray_dir * 20.0);
-            } else {
-                context_menu.visible = false;
-            }
-            tracing::debug!("context menu for region");
+            // No region under the cursor used to mean *no menu at all*, which on
+            // the streamed map is nearly always: regions are the sim's authored
+            // parcels and the OSM world has none. So right-clicking the map — the
+            // ordinary case, and the one "Route to here" needs — opened nothing.
+            // The menu now always opens; the prim entries gate on `hit_region_id`.
+            context_menu.hit_region_id =
+                region_query.iter().next().map(|(_, region, _)| region.id);
+            let plane_y = region_query
+                .iter()
+                .next()
+                .map_or(0.0, |(_, _, tf)| tf.translation().y);
+            context_menu.hit_point = ray_plane_y(ray_origin, ray_dir, plane_y)
+                .unwrap_or_else(|| ray_origin + ray_dir * 20.0);
+            tracing::debug!("context menu for the map");
         }
+
+        // The geographic point under the cursor, for the routing entries. Built
+        // from the ray's *direction* plus the camera's absolute world position —
+        // the ray's own origin is render-space, which under `big_space` is the
+        // same point `cell` + `tf` name absolutely, so adding both would count the
+        // in-cell offset twice (`navigation::handle_route_map_pick` does the same
+        // reconstruction and documents it).
+        context_menu.lat_lng = map_geo_at(&geo_cameras, &stream, ray_dir);
     }
+}
+
+/// `(lat, lng)` where the cursor ray meets the ground plane, or `None` when there
+/// is no anchor, no camera, or the ray points at the sky.
+fn map_geo_at(
+    cameras: &Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
+    stream: &crate::systems::map_stream::MapStream,
+    ray_dir: Vec3,
+) -> Option<(f64, f64)> {
+    let anchor = stream.geo_anchor()?;
+    let (cell, tf) = cameras.single().ok()?;
+    let dir = ray_dir.as_dvec3();
+    if dir.y > -1e-4 {
+        return None; // at or above the horizon — no ground hit
+    }
+    let edge = f64::from(crate::systems::free_camera::WORLD_CELL_EDGE);
+    let cam_world = DVec3::new(
+        cell.x as f64 * edge + f64::from(tf.translation.x),
+        cell.y as f64 * edge + f64::from(tf.translation.y),
+        cell.z as f64 * edge + f64::from(tf.translation.z),
+    );
+    let hit = cam_world + dir * (cam_world.y / -dir.y);
+    Some(crate::systems::geo_nav::world_to_lat_lng(
+        anchor, hit.x, hit.z,
+    ))
 }
 
 // ─── Marquee update ───────────────────────────────────────────────────────────

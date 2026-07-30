@@ -281,6 +281,15 @@ pub struct ContextMenuState {
     pub hit_point: Vec3,
     pub hit_prim_id: Option<i64>,
     pub hit_region_id: Option<i64>,
+    /// Where the click landed on the map, in `(lat, lng)`.
+    ///
+    /// Separate from `hit_point`, which is a *render-space* position under the
+    /// floating origin and means nothing outside the frame it was measured in.
+    /// The routing entries need a geographic point, so it is resolved once at
+    /// click time — the anchor it is relative to can move before the menu is
+    /// clicked, and re-deriving it later would place the pin somewhere else.
+    /// `None` when the map has no anchor yet (nothing streamed).
+    pub lat_lng: Option<(f64, f64)>,
 }
 
 /// Twist / taper / top-shear / slice parameters edited together in the dialog.

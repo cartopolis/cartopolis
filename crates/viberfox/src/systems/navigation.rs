@@ -203,6 +203,10 @@ pub struct RouteState {
     pub status: SolveStatus,
     /// Endpoint awaiting a click on the map, if the user armed "pick on map".
     pub picking: Option<Endpoint>,
+    /// The start is shown as an editable field rather than a one-line footnote.
+    /// See [`start_row`] — the destination is the primary field, and the start
+    /// only becomes one while it is being changed.
+    pub from_editing: bool,
     /// Bumped whenever `route` changes, so the world visuals know to rebuild.
     pub generation: u32,
     /// What the current `route` was solved for; a change here starts a new solve.
@@ -227,6 +231,7 @@ impl Default for RouteState {
             route: None,
             status: SolveStatus::Idle,
             picking: None,
+            from_editing: false,
             generation: 0,
             solved_for: None,
             seq: 0,
@@ -260,7 +265,45 @@ impl RouteState {
         self.picking = Some(end);
         self.waypoint_mut(end).show_suggestions = false;
     }
+
+    /// Set an endpoint to a point on the map: coordinates now, a real address as
+    /// soon as the reverse lookup answers.
+    ///
+    /// Public because a map point can now arrive from two places — the panel's
+    /// "pick on map" and the map's own right-click menu ("Route to here") — and
+    /// they must behave identically. The context menu doing its own `set` would
+    /// silently skip the invalidate and the reverse geocode, leaving a stale line
+    /// drawn under a new destination labelled with raw coordinates.
+    pub fn set_endpoint_at(&mut self, end: Endpoint, lat: f64, lng: f64) {
+        self.picking = None;
+        self.waypoint_mut(end)
+            .set(format!("📍 {lat:.5}, {lng:.5}"), (lat, lng));
+        self.invalidate();
+        spawn_reverse(end, lat, lng, self.reverse.clone());
+    }
+
+    /// Default the start to the user's current position when it is empty.
+    ///
+    /// "Route to" is the primary act — the destination is what a user has in mind,
+    /// and the start is almost always "here". Leaving `from` blank made every route
+    /// a two-field form where one field had an obvious answer the app already knew.
+    /// Returns whether it filled anything, so callers can invalidate.
+    pub fn default_start(&mut self, here: Option<(f64, f64)>) -> bool {
+        let Some(here) = here else {
+            return false;
+        };
+        if !self.from.label.is_empty() || self.from.coord.is_some() {
+            return false;
+        }
+        self.from.set(HERE_LABEL, here);
+        true
+    }
 }
+
+/// What the start field says when it is the user's own position. Compared against
+/// as well as written, so re-running `default_start` after the camera has moved
+/// can refresh the coordinate without stamping over a place the user typed.
+pub const HERE_LABEL: &str = "My position";
 
 // ─── Geocoding the endpoint fields ───────────────────────────────────────────
 
@@ -578,12 +621,7 @@ pub fn handle_route_map_pick(
     let hit = cam_world + dir * (cam_world.y / -dir.y);
     let (lat, lng) = world_to_lat_lng(anchor, hit.x, hit.z);
 
-    route.picking = None;
-    route
-        .waypoint_mut(end)
-        .set(format!("📍 {lat:.5}, {lng:.5}"), (lat, lng));
-    route.invalidate();
-    spawn_reverse(end, lat, lng, route.reverse.clone());
+    route.set_endpoint_at(end, lat, lng);
     tracing::info!(?end, lat, lng, "route endpoint picked on the map");
 }
 
@@ -891,6 +929,11 @@ pub fn render_route_panel(
         .zip(stream.geo_anchor())
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
 
+    // Fill the start in the moment the panel can see one, so the user only ever
+    // has a destination to supply. Only when it is *empty* — refreshing it as the
+    // camera drifts would re-invalidate and re-solve the route every frame.
+    route.default_start(here);
+
     // Live fetch progress, for the status line.
     if let SolveStatus::Fetching(..) = route.status {
         let done = route.progress.0.load(Ordering::Relaxed);
@@ -939,20 +982,15 @@ pub fn render_route_panel(
             });
             ui.add_space(6.0);
 
-            // The endpoint card: two fields with a swap between them.
+            // The endpoint card. **The destination is the primary field and the
+            // start is a footnote**, because "route to somewhere" is the whole act
+            // and the start is almost always "here" — which the app already knows.
+            // The first cut gave both ends an identical full-width row, which made
+            // every route a two-field form where one field had an obvious answer,
+            // and left a blank start looking like a required step.
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                endpoint_row(ui, &mut route, Endpoint::From, here.is_some(), &icons, &mut actions);
-                ui.horizontal(|ui| {
-                    ui.add_space(14.0);
-                    if ui
-                        .small_button(icons.swap)
-                        .on_hover_text("Swap start and destination")
-                        .clicked()
-                    {
-                        actions.swap = true;
-                    }
-                });
+                start_row(ui, &mut route, here.is_some(), &icons, &mut actions);
                 endpoint_row(ui, &mut route, Endpoint::To, here.is_some(), &icons, &mut actions);
             });
 
@@ -1121,6 +1159,93 @@ struct PanelActions {
     /// Endpoint whose text changed (invalidates its coordinate).
     edited: Option<Endpoint>,
     cleared: Option<Endpoint>,
+    /// Open the start as an editable field / fold it back to a footnote.
+    edit_start: bool,
+    collapse_start: bool,
+}
+
+/// The start, as a footnote above the destination.
+///
+/// It is a full endpoint row only while it is being *changed*: at rest it is one
+/// muted line reading where the route starts, because the answer is nearly always
+/// "here" and a text field invites filling in something that is already correct.
+/// Clicking it opens the field; the pin sets it back to the current position and
+/// the swap sends the current destination up here, which is how you say "route
+/// *from* that place" without retyping it.
+fn start_row(
+    ui: &mut egui::Ui,
+    route: &mut RouteState,
+    has_here: bool,
+    icons: &Icons,
+    actions: &mut PanelActions,
+) {
+    // Editing sticks while the field has focus or the label is still unresolved —
+    // otherwise the row would snap shut mid-word the frame a suggestion arrived.
+    let editing = route.from_editing || route.from.coord.is_none();
+    if editing {
+        endpoint_row(ui, route, Endpoint::From, has_here, icons, actions);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            if ui
+                .small_button(icons.swap)
+                .on_hover_text("Swap start and destination")
+                .clicked()
+            {
+                actions.swap = true;
+            }
+            if route.from.coord.is_some()
+                && ui.small_button("Done").on_hover_text("Collapse").clicked()
+            {
+                actions.collapse_start = true;
+            }
+        });
+        return;
+    }
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.label(
+            egui::RichText::new("From")
+                .size(11.0)
+                .color(theme::TEXT_DIM),
+        );
+        let label = if route.from.label == HERE_LABEL {
+            // Say what it *means*, not what it is called: "My position" in a field
+            // is a value, but as a footnote it reads better as the default it is.
+            format!("{} {}", icons.here, HERE_LABEL)
+        } else {
+            route.from.label.clone()
+        };
+        if ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(label).size(12.0).color(theme::TEXT),
+                )
+                .truncate()
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text("Click to change the starting point")
+            .clicked()
+        {
+            actions.edit_start = true;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button(icons.swap)
+                .on_hover_text("Swap start and destination")
+                .clicked()
+            {
+                actions.swap = true;
+            }
+            if ui
+                .add_enabled(has_here, egui::Button::new(icons.here).small())
+                .on_hover_text("Start from my current position")
+                .clicked()
+            {
+                actions.use_here = Some(Endpoint::From);
+            }
+        });
+    });
 }
 
 /// One endpoint: the icon, the text field with its suggestion popup, and the two
@@ -1135,7 +1260,9 @@ fn endpoint_row(
 ) {
     let (glyph, colour, hint) = match end {
         Endpoint::From => (icons.start, egui::Color32::from_rgb(80, 190, 110), "Start"),
-        Endpoint::To => (icons.finish, egui::Color32::from_rgb(225, 95, 85), "Destination"),
+        // Phrased as the question rather than as a field name: this is the one
+        // thing the panel asks for, and "Destination" reads like a form label.
+        Endpoint::To => (icons.finish, egui::Color32::from_rgb(225, 95, 85), "Where to?"),
     };
     let wp = match end {
         Endpoint::From => &mut route.from,
@@ -1236,10 +1363,13 @@ fn apply_actions(
         route.invalidate();
     }
     if let (Some(end), Some(here)) = (actions.use_here, here) {
-        route
-            .waypoint_mut(end)
-            .set("My position", here);
+        route.waypoint_mut(end).set(HERE_LABEL, here);
         route.invalidate();
+        // Setting the start to "here" is the one thing the footnote form does
+        // best; there is nothing left to type, so fold it back.
+        if end == Endpoint::From {
+            route.from_editing = false;
+        }
     }
     if let Some(end) = actions.pick {
         route.pick_on_map(end);
@@ -1248,9 +1378,16 @@ fn apply_actions(
         std::mem::swap(&mut route.from, &mut route.to);
         route.invalidate();
     }
+    if actions.edit_start {
+        route.from_editing = true;
+    }
+    if actions.collapse_start {
+        route.from_editing = false;
+    }
     if actions.clear {
         route.from.clear();
         route.to.clear();
+        route.from_editing = false;
         route.invalidate();
         route.status = SolveStatus::Idle;
     }
@@ -1500,5 +1637,75 @@ mod tests {
         assert!(long > short, "a longer route must be framed from higher up");
         assert!((200.0..=60_000.0).contains(&short));
         assert!((200.0..=60_000.0).contains(&long));
+    }
+
+    /// "Route to" is the primary act: the start defaults to where you are, so the
+    /// user only ever supplies a destination.
+    #[test]
+    fn the_start_defaults_to_the_current_position() {
+        let mut route = RouteState::default();
+        assert!(route.default_start(Some((53.22, 6.57))));
+        assert_eq!(route.from.label, HERE_LABEL);
+        assert_eq!(route.from.coord, Some((53.22, 6.57)));
+    }
+
+    /// `set_endpoint_at` fires the reverse geocode on the `IoTaskPool`, which a
+    /// unit test has no Bevy app to create for it.
+    fn with_task_pool() {
+        bevy::tasks::IoTaskPool::get_or_init(Default::default);
+    }
+
+    /// …but it must never stamp over a start the user chose. This is the one that
+    /// would ruin a route: "Route from here" on the map, then opening the panel,
+    /// and the picked start silently becoming the camera position again.
+    #[test]
+    fn defaulting_the_start_never_overwrites_one() {
+        with_task_pool();
+        let mut route = RouteState::default();
+        route.set_endpoint_at(Endpoint::From, 53.10, 6.10);
+        assert!(!route.default_start(Some((53.22, 6.57))));
+        assert_eq!(route.from.coord, Some((53.10, 6.10)));
+
+        // A half-typed label with no coordinate yet is still the user's.
+        let mut route = RouteState::default();
+        route.from.label = "Gron".into();
+        assert!(!route.default_start(Some((53.22, 6.57))));
+        assert_eq!(route.from.label, "Gron");
+    }
+
+    /// With nowhere to resolve "here" to (no anchor, no camera) it does nothing
+    /// rather than inventing a start at null island.
+    #[test]
+    fn defaulting_the_start_needs_a_position() {
+        let mut route = RouteState::default();
+        assert!(!route.default_start(None));
+        assert!(route.from.label.is_empty() && route.from.coord.is_none());
+    }
+
+    /// Setting an endpoint from the map — whether by "pick on map" or by the map's
+    /// own "Route to here" — must drop the drawn route with it. Leaving the old
+    /// line up under a new destination is the failure this shares between the two
+    /// call sites, which is why they share the method.
+    #[test]
+    fn setting_an_endpoint_from_the_map_invalidates_the_route() {
+        with_task_pool();
+        let mut route = RouteState::default();
+        route.route = Some(Route {
+            mode: TravelMode::Car,
+            points: vec![[53.20, 6.55], [53.21, 6.55]],
+            distance_m: 1000.0,
+            duration_s: 60.0,
+            steps: Vec::new(),
+        });
+        route.picking = Some(Endpoint::To);
+        let gen_before = route.generation;
+
+        route.set_endpoint_at(Endpoint::To, 53.30, 6.60);
+
+        assert!(route.route.is_none(), "the stale line must go");
+        assert_ne!(route.generation, gen_before, "so the world visuals rebuild");
+        assert!(route.picking.is_none(), "and the map-pick arming is spent");
+        assert_eq!(route.to.coord, Some((53.30, 6.60)));
+        assert!(route.solved_for.is_none(), "the solver must run again");
     }
 }

@@ -927,9 +927,12 @@ fn main() {
             // Measures the drive (position, speed, course, progress) before anything
             // reads it. After the panel, so the button press that starts driving is
             // acted on in the same frame it was captured.
+            // …and before the solver, so a reroute it asks for on leaving the
+            // route is picked up in the same frame rather than a frame late.
             systems::driver::drive_driver_mode
                 .after(systems::navigation::render_route_panel)
-                .after(avatar::handle_avatar_movement),
+                .after(avatar::handle_avatar_movement)
+                .before(systems::navigation::drive_route_solver),
             // Writes the chase rig into `CameraState`, so it must land before the
             // camera consumes it — this is the whole mechanism by which driver mode
             // holds the view still.

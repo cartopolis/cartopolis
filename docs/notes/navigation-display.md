@@ -1,6 +1,6 @@
 ---
 topic: navigation
-triggers: [driver.rs, route_ahead.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route"]
+triggers: [driver.rs, route_ahead.rs, navigation.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu"]
 updated: 2026-07-30
 ---
 
@@ -62,6 +62,56 @@ stream in a grid around the *camera*, so the rail would only ever know about the
 few hundred metres you are already looking at. The far two thirds of the route —
 the part the widget exists to show — would be blank. Hence a corridor query along
 the route polyline instead, once per route, cached by the query string.
+
+## Leaving the route is a request, not an error
+
+"Off route — 140 m from the route" was the display giving up at the one moment it
+is actually needed: the driver is somewhere unplanned and the manoeuvre card has
+nothing true to say. Missing a turn is the normal case, so it now re-solves from
+the current position. Three things this depends on:
+
+- **Only the start moves.** The destination is what the user asked for; a reroute
+  that quietly changed it would be unforgivable, and re-anchoring the start is the
+  entire request as far as the solver is concerned.
+- **The cooldown is the loop breaker, not politeness.** A solve can legitimately
+  return a route the vehicle is still `OFF_ROUTE_M` from — the start snaps to the
+  nearest routable road, and beside a dual carriageway or a closed street that can
+  be the *other* road. With no floor between attempts the display re-solves every
+  frame it stays there and never settles on a line.
+- **"Rerouting" is tracked by route generation, not by `SolveStatus`.** Status is
+  also true for every unrelated re-solve — switching travel mode mid-drive re-runs
+  the search — and the card would then announce "Rerouting… from your current
+  position" for something the user had just asked for deliberately.
+
+## "Route to" is the act; "route from" is the exception
+
+The planner presented two identical endpoint fields, so every route was a
+two-field form in which one field had an obvious answer the app already knew. The
+start now defaults to the current position and renders as a one-line footnote
+above the destination, which is the only field the user fills. `default_start`
+fills it **only when empty** — refreshing it as the camera drifts would invalidate
+and re-solve the route every frame, and stamping over a start the user picked
+("Route from here") would silently undo them.
+
+The same asymmetry is in the map's right-click menu: "Route to here" is a plain
+button, "Route from here" a small one. Both go through `RouteState::set_endpoint_at`
+so they cannot drift from the panel's own "pick on map" — an endpoint set without
+the invalidate leaves the previous line drawn under a new destination, and without
+the reverse geocode it stays labelled with raw coordinates.
+
+That menu did not previously open on the map at all: it required a `Region` entity
+under the cursor, and the streamed OSM world has none — regions are the sim's
+authored parcels. It now always opens, and the prim entries gate on
+`hit_region_id` instead.
+
+## The trip strip cannot hide behind a panel
+
+It is anchored to the right edge, which is where the docked panels are, and egui
+paints floating `Area`s *above* panels — there is no z-order between an `Area` and
+a panel to lose (the same constraint the place-pin culling in `place_pins.rs`
+works around). So it stands down while a right panel is open rather than drawing
+over the route's own turn list. The manoeuvre card, compass and speed pill are
+clear of that edge and stay put.
 
 ## Not implemented: lane guidance
 

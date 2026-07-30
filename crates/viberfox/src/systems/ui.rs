@@ -848,7 +848,12 @@ pub fn render_context_menu(
     mut game_state: ResMut<GameState>,
     prim_query: Query<(Entity, &Prim, &Transform)>,
     selected_query: Query<Entity, With<Selected>>,
+    mut route: ResMut<crate::systems::navigation::RouteState>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
 ) {
+    use crate::resources::RightPanel;
+    use crate::systems::navigation::Endpoint;
+
     if !context_menu.visible {
         return;
     }
@@ -863,6 +868,41 @@ pub fn render_context_menu(
         .open(&mut menu_open)
         .fixed_pos(menu_pos)
         .show(ctx, |ui| {
+            // ── Routing, first and primary ──
+            //
+            // "Route to here" is the default act — a point on a map is a place you
+            // want to *go*, and asking for the destination is the whole planner.
+            // "Route from here" is the same gesture the other way round and is
+            // deliberately the quieter of the two: needing it means you are
+            // planning a journey that does not start where you are, which is the
+            // rarer case.
+            if let Some((lat, lng)) = context_menu.lat_lng {
+                if ui
+                    .button("🚩 Route to here")
+                    .on_hover_text("Set this point as the destination")
+                    .clicked()
+                {
+                    route.set_endpoint_at(Endpoint::To, lat, lng);
+                    // The start fills itself in: opening the panel runs
+                    // `RouteState::default_start`, which is where "here" is
+                    // defined (the camera against the map anchor). Resolving it a
+                    // second time here would mean carrying three more queries into
+                    // a menu that has no other use for them.
+                    *right_panel = RightPanel::Route;
+                    context_menu.visible = false;
+                }
+                if ui
+                    .small_button("Route from here")
+                    .on_hover_text("Set this point as the starting point")
+                    .clicked()
+                {
+                    route.set_endpoint_at(Endpoint::From, lat, lng);
+                    *right_panel = RightPanel::Route;
+                    context_menu.visible = false;
+                }
+                ui.separator();
+            }
+
             if let Some(prim_id) = context_menu.hit_prim_id {
                 // Clicked on an existing prim
                 if ui.button("Edit Prim (E)").clicked() {
@@ -887,8 +927,11 @@ pub fn render_context_menu(
                     game_state.prims_to_delete.push(prim_id);
                     context_menu.visible = false;
                 }
-            } else {
-                // Clicked on empty space - create new prim
+            } else if context_menu.hit_region_id.is_some() {
+                // Clicked on empty space inside a region — the only place a prim
+                // can go. The streamed OSM map has no regions, and the menu now
+                // opens there too (for the routing entries above), so this can no
+                // longer assume one exists.
                 if ui.button("Create Prim (C)").clicked() {
                     edit_dialog.prim_id = None;
                     edit_dialog.is_new = true;

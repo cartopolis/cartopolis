@@ -25,6 +25,12 @@
 //! module's, and the scale it is placed on is the interesting part
 //! ([`RAIL_NEAR_SPAN_M`]).
 //!
+//! **Leaving the route asks for a new one.** Missing a turn is the normal case,
+//! not a fault, so the display re-solves from where the vehicle actually is
+//! instead of painting "Off route" and stopping there — which was giving up at
+//! the one moment navigation is needed. Only the *start* moves; see
+//! [`DriverState::reroute_ready`] for why the cooldown is load-bearing.
+//!
 //! The speed pill carries the posted limit beside the speedometer, as a painted
 //! road sign rather than a themed readout ([`speed_limit_sign`]) — same reasoning
 //! as [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
@@ -122,6 +128,10 @@ const STEP_PASSED_M: f64 = 8.0;
 /// Off-route distance beyond which the readout says so instead of quietly showing
 /// a projection from hundreds of metres away.
 const OFF_ROUTE_M: f64 = 60.0;
+
+/// Minimum seconds between two reroute requests. See
+/// [`DriverState::reroute_ready`] — this is the loop breaker, not a politeness.
+const REROUTE_COOLDOWN: f32 = 10.0;
 
 /// …and for how long it has to hold before the card says so. Undebounced, the
 /// banner fires on any transient: the frames between a teleport being *requested*
@@ -255,9 +265,18 @@ pub struct DriverState {
     pub gps_error: Option<String>,
     /// Set while a device fix — rather than the avatar — is driving the position.
     pub gps_fix: bool,
+    /// A reroute is in flight — the card says so instead of naming a manoeuvre off
+    /// a route the vehicle has already left.
+    pub rerouting: bool,
     /// Since when the position has been further than [`OFF_ROUTE_M`] from the
     /// route; the banner waits [`OFF_ROUTE_GRACE`] on this. `None` while on route.
     off_route_since: Option<Instant>,
+    /// When the last reroute was requested; [`REROUTE_COOLDOWN`] is measured from
+    /// it. `None` until one has been.
+    reroute_at: Option<Instant>,
+    /// `RouteState::generation` at the moment a reroute was asked for; the request
+    /// is outstanding until it changes. `None` when none is.
+    reroute_gen: Option<u32>,
 
     /// The device-location subscription. `Some` only while driving, so nothing
     /// keeps the browser's location indicator lit after you stop.
@@ -289,6 +308,9 @@ impl DriverState {
         self.active = true;
         self.snap_pending = true;
         self.off_route_since = None;
+        self.reroute_at = None;
+        self.reroute_gen = None;
+        self.rerouting = false;
         self.progress = None;
         self.speed_ms = 0.0;
         self.last_sample = None;
@@ -433,13 +455,15 @@ fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress
 #[allow(clippy::too_many_arguments)]
 pub fn drive_driver_mode(
     mut driver: ResMut<DriverState>,
-    route: Res<RouteState>,
+    mut route: ResMut<RouteState>,
     mut nav: ResMut<GeoNavState>,
     stream: Res<MapStream>,
     time: Res<Time>,
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
 ) {
+    // `route` is mutable only so leaving the route can ask for a new one (see the
+    // reroute at the end of this system); everything else here reads it.
     if driver.armed && route.route.is_some() {
         driver.armed = false;
         driver.enter();
@@ -565,6 +589,41 @@ pub fn drive_driver_mode(
         driver.off_route_since = Some(now);
     }
     driver.progress = progress;
+
+    // ── Leaving the route asks for a new one, it is not an error ──
+    //
+    // The first cut painted "Off route — 140 m from the route" and stopped there,
+    // which is the one moment a navigation display is *needed* and the only one
+    // where it gave up: the driver is somewhere the app did not expect and the
+    // manoeuvre card has nothing useful to say. Missing a turn is the normal case,
+    // not a fault, so the answer is a new route from where you actually are.
+    // A reroute is "in flight" until a *different* route lands, tracked by
+    // generation rather than by `SolveStatus`. Status alone would also be true for
+    // every unrelated re-solve — switching travel mode mid-drive re-runs the
+    // search — and the card would announce "Rerouting… from your current position"
+    // for something the user had just asked for on purpose.
+    if driver.reroute_gen.is_some_and(|g| g != route.generation) {
+        driver.reroute_gen = None;
+    }
+    driver.rerouting = driver.reroute_gen.is_some();
+
+    if driver.off_route() && !driver.rerouting && driver.reroute_ready(now) {
+        driver.reroute_at = Some(now);
+        // Only the start moves. The destination is what the user asked for and a
+        // reroute must never quietly change it — and re-anchoring the start is
+        // exactly what the solver keys on, so this is the whole request.
+        route.set_endpoint_at(crate::systems::navigation::Endpoint::From, lat, lng);
+        // Captured *after* the set: `set_endpoint_at` invalidates, which already
+        // bumps the generation, so this is the value that holds until the solve
+        // lands and bumps it again.
+        driver.reroute_gen = Some(route.generation);
+        // Clear the debounce with it: the position is no longer off *this* route
+        // because there is about to be a different one, and leaving it armed would
+        // fire a second reroute the instant the cooldown expired.
+        driver.off_route_since = None;
+        driver.rerouting = true;
+        tracing::info!(lat, lng, "off route — rerouting from the current position");
+    }
 }
 
 impl DriverState {
@@ -574,6 +633,20 @@ impl DriverState {
     pub fn off_route(&self) -> bool {
         self.off_route_since
             .is_some_and(|t| t.elapsed().as_secs_f32() > OFF_ROUTE_GRACE)
+    }
+
+    /// Whether enough time has passed since the last reroute to ask for another.
+    ///
+    /// The cooldown is what stops a reroute *loop*. A solve can legitimately come
+    /// back with a route the vehicle is still 60 m from — the snapped start is on
+    /// the nearest routable road, and on a dual carriageway or beside a closed
+    /// street that road can be the other one — and without a floor between
+    /// attempts the display would re-solve every frame it stayed there, hammering
+    /// the tile fetch and never settling on a line to draw.
+    #[must_use]
+    fn reroute_ready(&self, now: Instant) -> bool {
+        self.reroute_at
+            .is_none_or(|t| now.duration_since(t).as_secs_f32() > REROUTE_COOLDOWN)
     }
 }
 
@@ -911,12 +984,24 @@ const PILL_BOTTOM: f32 = 62.0;
 /// each frame — this frame's size becomes next frame's available width — and
 /// stretches across the screen. `hud`'s module note documents the same trap; the
 /// first cut of this bar hit it and swallowed the lower third of the window.
+///
+/// **The trip strip yields to a right-hand panel.** It is anchored to the right
+/// edge, which is exactly where the docked panels are, and egui paints floating
+/// `Area`s *above* panels — so the rail drew straight over the open Route panel
+/// and its turn list. It cannot be put behind one (there is no z-order between an
+/// `Area` and a panel to lose), so it stands down while one is open, the same
+/// resolution `hud::render_map_controls` reached for the status box. The manoeuvre
+/// card, the compass and the speed pill are all clear of that edge and stay.
 pub fn render_driver_hud(
     mut egui: ResMut<EguiManager>,
     mut driver: ResMut<DriverState>,
     route: Res<RouteState>,
     ahead: Res<RouteAhead>,
     clock: Res<crate::systems::transit_live::WorldClock>,
+    right_panel: Res<crate::resources::RightPanel>,
+    data_layers: Res<crate::systems::data_layers::DataLayers>,
+    bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
+    ai: Res<crate::resources::AiAssistantState>,
 ) {
     if !driver.active {
         return;
@@ -926,6 +1011,7 @@ pub fn render_driver_hud(
     };
     let progress = driver.progress.unwrap_or_default();
     let off_route = driver.off_route();
+    let rerouting = driver.rerouting;
     let step = r.steps.get(progress.step);
     let ctx = egui.ctx_mut().clone();
     let panel = |fill: egui::Color32| {
@@ -939,12 +1025,29 @@ pub fn render_driver_hud(
     egui::Area::new(egui::Id::new("driver_maneuver"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
         .show(&ctx, |ui| {
-            panel(if off_route { theme::ERROR } else { DRIVE_BLUE })
+            // Amber, not red, while the route is being replaced: leaving the line
+            // is the normal case (you missed a turn), and the display is already
+            // fixing it. Red is reserved for the state it cannot fix.
+            panel(if rerouting {
+                theme::AMBER
+            } else if off_route {
+                theme::ERROR
+            } else {
+                DRIVE_BLUE
+            })
                 .show(ui, |ui| {
                     ui.set_width(CARD_WIDTH - 20.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
+                        if rerouting {
+                            ui.label(big("Rerouting…", 19.0, theme::INK));
+                            ui.label(small("from your current position", theme::INK));
+                            return;
+                        }
                         if off_route {
+                            // Reached only when a reroute cannot be asked for yet
+                            // (the cooldown, or a solve that failed) — otherwise
+                            // the card above has already taken over.
                             ui.label(big("Off route", 20.0, theme::INK));
                             ui.label(small(
                                 &format!("{} from the route", format_distance(progress.off_route_m)),
@@ -1019,40 +1122,52 @@ pub fn render_driver_hud(
             });
     }
 
-    // ── The trip strip, right edge ──
+    // ── The trip strip, right edge — unless a panel is docked there ──
+    //
+    // `RightPanel` is the shared state; the three booleans are the older panels
+    // that only publish their own (`hud` ORs the same four for the same reason).
+    let right_panel_open = data_layers.panel_open
+        || bookmarks.panel_open
+        || ai.open
+        || !right_panel.is(crate::resources::RightPanel::None);
+
     let mut exit = false;
     let (hh, mm, _) = clock.hms().0;
     let arrival = arrival_clock(hh, mm, progress.remaining_s);
-    egui::Area::new(egui::Id::new("driver_strip"))
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-CARD_MARGIN, CARD_MARGIN),
-        )
-        .show(&ctx, |ui| {
-            panel(theme::OVERLAY).show(ui, |ui| {
-                ui.set_width(STRIP_WIDTH - 20.0);
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    // Arrival first: on a drive of any length it is the number
-                    // being planned around, which is why a satnav puts it top.
-                    ui.label(big(&arrival, 24.0, theme::CREAM));
-                    ui.label(small("arrival", theme::TEXT_DIM));
-                    ui.add_space(6.0);
-                    ui.label(big(&format_distance(progress.remaining_m), 21.0, theme::TEXT));
-                    ui.label(small(&format_duration(progress.remaining_s), theme::TEXT_DIM));
-                    ui.add_space(8.0);
-                    route_rail(ui, &ctx, &ahead, progress);
-                    ui.add_space(6.0);
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new("✕ Stop").size(12.5)))
-                        .on_hover_text("Leave driver mode and put the map back")
-                        .clicked()
-                    {
-                        exit = true;
-                    }
+    // Not an early `return`: the speed pill and its limit sign are drawn below and
+    // sit at the bottom centre, nowhere near the panel.
+    if !right_panel_open {
+        egui::Area::new(egui::Id::new("driver_strip"))
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-CARD_MARGIN, CARD_MARGIN),
+            )
+            .show(&ctx, |ui| {
+                panel(theme::OVERLAY).show(ui, |ui| {
+                    ui.set_width(STRIP_WIDTH - 20.0);
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        // Arrival first: on a drive of any length it is the number
+                        // being planned around, which is why a satnav puts it top.
+                        ui.label(big(&arrival, 24.0, theme::CREAM));
+                        ui.label(small("arrival", theme::TEXT_DIM));
+                        ui.add_space(6.0);
+                        ui.label(big(&format_distance(progress.remaining_m), 21.0, theme::TEXT));
+                        ui.label(small(&format_duration(progress.remaining_s), theme::TEXT_DIM));
+                        ui.add_space(8.0);
+                        route_rail(ui, &ctx, &ahead, progress);
+                        ui.add_space(6.0);
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("✕ Stop").size(12.5)))
+                            .on_hover_text("Leave driver mode and put the map back")
+                            .clicked()
+                        {
+                            exit = true;
+                        }
+                    });
                 });
             });
-        });
+    }
 
     // ── The speed pill, bottom centre, with the limit beside it ──
     let speed_kmh = driver.speed_ms * 3.6;
@@ -1342,6 +1457,7 @@ fn maneuver_glyph(ctx: &egui::Context, maneuver: Maneuver) -> &'static str {
 mod tests {
     use super::*;
     use crate::systems::routing::{RouteStep, TravelMode};
+    use std::time::Duration;
 
     /// A straight 1 km route due east, with a turn in the middle, in metres that
     /// are easy to check by hand.
@@ -1537,6 +1653,38 @@ mod tests {
         // an item projected a metre beyond the end must not paint off the widget.
         assert!((rail_t(remaining * 2.0, remaining) - 1.0).abs() < 1e-6);
         assert!((rail_t(-50.0, remaining) - 0.0).abs() < 1e-6);
+    }
+
+    /// The reroute cooldown is the loop breaker: a solve can legitimately return a
+    /// route the vehicle is still off, and without a floor between attempts the
+    /// display would re-solve every frame it stayed there.
+    #[test]
+    fn a_reroute_waits_out_its_cooldown() {
+        let mut driver = DriverState::default();
+        let now = Instant::now();
+        assert!(driver.reroute_ready(now), "the first reroute is never blocked");
+        driver.reroute_at = Some(now);
+        assert!(!driver.reroute_ready(now));
+        assert!(!driver
+            .reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN * 0.5)));
+        assert!(driver
+            .reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN + 0.1)));
+    }
+
+    /// Entering driver mode a second time must not inherit the previous drive's
+    /// cooldown — that would block the first reroute of the new one.
+    #[test]
+    fn entering_clears_the_reroute_state() {
+        let mut driver = DriverState::default();
+        driver.enter();
+        driver.reroute_at = Some(Instant::now());
+        driver.reroute_gen = Some(7);
+        driver.rerouting = true;
+        driver.exit();
+        driver.enter();
+        assert!(driver.reroute_at.is_none() && driver.reroute_gen.is_none());
+        assert!(!driver.rerouting);
+        assert!(driver.reroute_ready(Instant::now()));
     }
 
     /// The "then" preview keys off the gap to the manoeuvre *after* the next one,
