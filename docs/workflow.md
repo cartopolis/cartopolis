@@ -13,7 +13,7 @@ store](#why-the-board-cannot-be-the-state-store).
 - [The autonomous lane in practice](#the-autonomous-lane-in-practice) — ③
 - [Handover](#handover)
 - [States](#states)
-- [Proposed: the sync model](#proposed-the-sync-model) — not built
+- [The sync model](#the-sync-model) — how the three stay in step
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
@@ -229,7 +229,7 @@ which is what you traded the conversation for.
 
 ### C. Zed — spec and build with the same local agent
 
-> Changing — see [Proposed: the sync model](#proposed-the-sync-model).
+> Changing — see [The sync model](#the-sync-model).
 
 Same idea, at your desk. The local agent builds it too — you are not typing the
 code, you are steering it turn by turn, the same way you steered the spec in B.
@@ -520,11 +520,11 @@ Forgejo upgrade can break it. Every board call is therefore failure-tolerant:
 it logs a warning and the work proceeds. Labels remain correct; only the card
 position goes stale.
 
-## Proposed: the sync model
+## The sync model
 
-**Not built.** Everything above describes what runs today. This is the design
-that keeps issues, local Zed sessions and the remote agent in step — decide,
-then build.
+How issues, local Zed sessions and the remote agent stay in step. Built and
+exercised; the walkthroughs above still describe the older branch-switching
+flow and are rewritten next.
 
 ### The picture
 
@@ -643,16 +643,23 @@ directory". No second mechanism.
 | Ownership | issue labels | `/ticket`, `/handover`, watcher |
 | Board | columns | watcher, from labels — unchanged |
 
-### Gates
+### Verified
+
+- Marker is per-worktree and dies with it; the Stop hook keys on it, publishes a
+  plain file, and pushes `HEAD:<branch>`.
+- Three concurrent sessions pushed digests at once — all four files landed,
+  rebase-retry held.
+- `/ticket` create and bind; the claim guard refused a second worktree by path.
+- `/handover` swept, pushed, confirmed the digest, flipped the label — and the
+  watcher **took the branch over rather than restarting it**, which had never
+  been exercised before.
+
+### Still unproven
 
 - **sccache unmeasured.** Parallel local builds serialise on cargo's lock or
   cost 50–90 GB each without it.
-- **Stop hook in Zed ACP sessions: assumed, never observed.** Verified for
-  remote-control and manual runs only.
-- `.gitignore` needs `.claude/worktrees/` before `/handover` runs `git add -A`.
-- To build: marker logic in `/ticket` (+ bind mode), `/handover`, hook rewrite,
-  watcher read/write of the context dir, SessionStart hook, delete prune
-  machinery.
+- **The Stop hook has never been observed firing from a Zed ACP session.** Every
+  test so far drove it by hand or through remote-control.
 
 ## Setup
 

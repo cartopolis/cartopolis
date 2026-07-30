@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# File a viberfox issue from a local session. Body on stdin.
+# Bind this worktree to a viberfox ticket.
 #
-#   ./file-issue --title "..." [--branch feat/x] [--label driven] < body.md
+#   ./file-issue --title "..." [--branch feat/slug] [--label driven] < body.md
+#   ./file-issue --bind 23
 #
-# Prints the issue number on stdout and the URL on stderr.
+# The binding is a marker at $(git rev-parse --git-dir)/viberfox-ticket:
+# per-worktree, never committed, and what the Stop and SessionStart hooks key
+# on. It holds the branch name in full, because those hooks are pure git with no
+# credentials and cannot resolve an issue number into a slug.
 #
-# Credentials come from ~/.config/viberfox/forgejo.env (0600, scope write:issue).
-# The board placement is deliberately NOT done here: Forgejo 16 has no kanban
-# API, so a card can only be moved by a *session* login as the bot, and putting
-# the bot's password on the workstation to save one poll cycle would be a poor
-# trade. The watcher seeds the card into Backlog within 30 s instead.
+# This does NOT create, switch or push branches. Worktrees stay detached — Zed
+# owns that lifecycle — and code travels as `push HEAD:<branch>` from the hook.
 
 set -euo pipefail
 
@@ -21,20 +22,116 @@ set -a; . "$env_file"; set +a
 API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
 REPO="${FORGEJO_REPO:-jeroen/viberfox}"
 
-title=""; branch=""; labels="driven"
+title=""; branch=""; labels="driven"; bind=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --title)  title="$2"; shift 2 ;;
         --branch) branch="$2"; shift 2 ;;
         --label)  labels="$2"; shift 2 ;;
+        --bind)   bind="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-[ -n "$title" ] || { echo "--title is required" >&2; exit 2; }
 
-# Derive a Conventional-Commits type and slug from the title. Mirrors the rules
-# in watcher.ts so both lanes produce the same shape, and means the caller never
-# has to think of a branch name.
+git_dir=$(git rev-parse --git-dir)
+marker="$git_dir/viberfox-ticket"
+common=$(git rev-parse --git-common-dir)
+
+api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
+
+label_id() {
+    api "$API/repos/$REPO/labels?limit=100" | LBL="$1" python3 -c '
+import json, os, sys
+print({l["name"]: l["id"] for l in json.load(sys.stdin)}.get(os.environ["LBL"], ""))'
+}
+
+# A ticket may be held by exactly one local worktree. Git used to enforce this
+# for free — it refuses one branch in two checkouts — but nothing here uses local
+# branches any more, so the claim has to be checked directly. Catching it now
+# beats catching it at push time, after the work.
+claimed_elsewhere() {
+    _n="$1"
+    for _m in "$common"/worktrees/*/viberfox-ticket; do
+        [ -f "$_m" ] || continue
+        [ "$_m" = "$marker" ] && continue
+        if [ "$(sed -n 's/^issue=//p' "$_m" | head -1)" = "$_n" ]; then
+            printf '%s' "$(dirname "$_m")"
+            return 0
+        fi
+    done
+    return 1
+}
+
+write_marker() {
+    printf 'issue=%s\nbranch=%s\nurl=%s\ntitle=%s\n' "$1" "$2" "$3" "$4" > "$marker"
+}
+
+# --- bind mode ---------------------------------------------------------------
+
+if [ -n "$bind" ]; then
+    issue=$(api "$API/repos/$REPO/issues/$bind") ||
+        { echo "no such issue: #$bind" >&2; exit 1; }
+
+    eval "$(printf '%s' "$issue" | python3 -c '
+import json, sys, re, shlex
+d = json.load(sys.stdin)
+body = d.get("body") or ""
+m = re.search(r"^\s*branch:\s*`?([A-Za-z0-9._/-]+)`?\s*$", body, re.I | re.M)
+print("i_title=" + shlex.quote(d["title"]))
+print("i_url=" + shlex.quote(d["html_url"]))
+print("i_branch=" + shlex.quote(m.group(1) if m else ""))
+print("i_labels=" + shlex.quote(",".join(l["name"] for l in d.get("labels", []))))
+print("i_state=" + shlex.quote(d["state"]))
+')"
+
+    case ",$i_labels," in
+        *,agent:running,*)
+            echo "#$bind is running on the VPS right now — wait for it to finish." >&2
+            exit 1 ;;
+    esac
+    [ "$i_state" = "open" ] || { echo "#$bind is closed." >&2; exit 1; }
+
+    if held=$(claimed_elsewhere "$bind"); then
+        echo "#$bind is already claimed by another worktree: $held" >&2
+        exit 1
+    fi
+
+    [ -n "$i_branch" ] ||
+        { echo "#$bind has no 'Branch:' line — nothing to attach to." >&2; exit 1; }
+
+    # Taking a ticket back means detaching onto its remote tip. Anything here
+    # that is not on origin would become unreachable, so refuse rather than
+    # silently orphan it.
+    [ -z "$(git status --porcelain)" ] ||
+        { echo "working tree is dirty — commit or stash before binding." >&2; exit 1; }
+
+    git fetch -q origin "$i_branch" 2>/dev/null || true
+    if [ "$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)" -gt 0 ] &&
+       ! git merge-base --is-ancestor HEAD FETCH_HEAD 2>/dev/null; then
+        echo "this worktree has commits that are not on origin/$i_branch — push or drop them first." >&2
+        exit 1
+    fi
+    git rev-parse -q --verify FETCH_HEAD >/dev/null 2>&1 &&
+        { git checkout -q --detach FETCH_HEAD; echo "detached onto origin/$i_branch" >&2; }
+
+    # Claim it back from the autonomous lane.
+    did=$(label_id driven)
+    [ -n "$did" ] && api -o /dev/null -X POST "$API/repos/$REPO/issues/$bind/labels" -d "{\"labels\":[$did]}"
+    for l in agent agent:done agent:failed agent:refined autonomous; do
+        lid=$(label_id "$l")
+        [ -n "$lid" ] && api -o /dev/null -X DELETE "$API/repos/$REPO/issues/$bind/labels/$lid" 2>/dev/null || true
+    done
+
+    write_marker "$bind" "$i_branch" "$i_url" "$i_title"
+    echo "bound to #$bind ($i_branch)" >&2
+    echo "$bind"
+    exit 0
+fi
+
+# --- create mode -------------------------------------------------------------
+
+[ -n "$title" ] || { echo "--title is required (or --bind <n>)" >&2; exit 2; }
+
 infer_type() {
     _t=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$_t" in
@@ -55,64 +152,30 @@ slugify() {
         grep -v '^$' | head -4 | paste -sd- - | cut -c1-48 | sed 's/-*$//'
 }
 
-current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-
-# The branch name is never something to think about. Three sources, in order:
-# an explicit --branch (the agent proposes one, since it knows what the change
-# is), the branch already checked out, or the issue title.
-if [ -z "$branch" ]; then
-    case "$current_branch" in
-        main | master | HEAD | '') branch="$(infer_type "$title")/$(slugify "$title")" ;;
-        *) branch="$current_branch" ;;
-    esac
-fi
-[ "${branch%/*}" = "$branch" ] && branch="$(infer_type "$title")/$branch"
+[ -n "$branch" ] || branch="$(infer_type "$title")/$(slugify "$title")"
+case "$branch" in */*) ;; *) branch="$(infer_type "$title")/$branch" ;; esac
 
 body=$(cat)
 
-# Insert the issue number into a branch name, keeping the Conventional-Commits
-# style prefix the repo already uses: fix/road-joins -> fix/12-road-joins.
-# A name that already carries this number as a segment is returned untouched, so
-# re-filing is idempotent. `50-x` is not treated as containing `5-`.
-number_branch() {
-    _n="$1" _name="$2"
-    case "$_name" in
-        "$_n"-* | */"$_n"-*) printf '%s' "$_name"; return ;;
-    esac
-    case "$_name" in
-        */*) printf '%s/%s-%s' "${_name%%/*}" "$_n" "${_name#*/}" ;;
-        *)   printf '%s-%s' "$_n" "$_name" ;;
-    esac
-}
-
-# Resolve label names to ids up front: a typo'd label should fail before an
-# issue exists, not after.
-label_ids=$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" \
-    "$API/repos/$REPO/labels?limit=100" |
-    LABELS="$labels" python3 -c '
+# Validate labels before anything exists, so a typo fails cheaply.
+label_ids=$(api "$API/repos/$REPO/labels?limit=100" | LABELS="$labels" python3 -c '
 import json, os, sys
 want = {s.strip() for s in os.environ["LABELS"].split(",") if s.strip()}
 have = {l["name"]: l["id"] for l in json.load(sys.stdin)}
 missing = want - have.keys()
 if missing:
-    # Not an f-string: a backslash inside an f-string expression is a syntax
-    # error before Python 3.12, and this file is run by whatever python3 the
-    # workstation has.
     sys.exit("no such label(s) in the repo: " + ", ".join(sorted(missing)))
 print(json.dumps([have[n] for n in sorted(want)]))
 ')
 
-# Create UNLABELLED. The branch name is not knowable until the issue number
-# exists, and the `Branch:` line has to be in the body before any label makes the
-# issue visible to the watcher — an `agent`-labelled issue picked up in that
-# window would cut a fresh branch and ignore the local work entirely.
+# Created unlabelled: the branch name is not knowable until the number exists,
+# and the Branch: line must be in the body before any label makes the issue
+# visible to the watcher — one picked up in that window would cut its own branch
+# and ignore this work entirely.
 response=$(TITLE="$title" BODY="$body" python3 -c '
 import json, os
 print(json.dumps({"title": os.environ["TITLE"], "body": os.environ["BODY"]}))
-' | curl -sf -X POST \
-    -H "Authorization: token $FORGEJO_TOKEN" \
-    -H "Content-Type: application/json" \
-    "$API/repos/$REPO/issues" -d @-)
+' | api -X POST "$API/repos/$REPO/issues" -d @-)
 
 read -r number url <<EOF
 $(printf '%s' "$response" | python3 -c '
@@ -122,62 +185,22 @@ print(d["number"], d["html_url"])
 ')
 EOF
 
-if [ -n "$branch" ]; then
-    numbered=$(number_branch "$number" "$branch")
+# Inject the number: fix/road-joins -> fix/23-road-joins, idempotent if already
+# numbered ("50-x" is not treated as containing "5-").
+case "$branch" in
+    */"$number"-*) ;;
+    *) branch="${branch%%/*}/$number-${branch#*/}" ;;
+esac
 
-    case "$current_branch" in
-        main | master | HEAD | '')
-            # Working from main is the normal state of an editor sitting on the
-            # repo, and it is the one state where none of this works: the Stop
-            # hook skips main entirely, so no digest is published and no branch
-            # is pushed, and the eventual push is rejected by branch protection
-            # after the work is done. All three fail silently, so getting off
-            # main is not a suggestion — it is what filing a ticket means.
-            #
-            # `switch -c` carries any uncommitted changes across, which is what
-            # someone who started poking at the problem before filing wants.
-            git switch -q -c "$numbered" 2>/dev/null ||
-                git checkout -q -b "$numbered"
-            echo "branch: created and checked out $numbered" >&2
-            ;;
-        "$numbered")
-            : # already there, nothing to do
-            ;;
-        *)
-            # A branch that exists nowhere but here can take the number. Once it
-            # is on the remote, renaming would orphan the pushed branch — and any
-            # agent-context ref published under the old name with it.
-            if git show-ref --verify --quiet "refs/remotes/origin/$current_branch"; then
-                echo "note: $current_branch is already on origin — leaving its name alone" >&2
-                numbered="$current_branch"
-            else
-                git branch -m "$current_branch" "$numbered"
-                echo "branch: renamed $current_branch -> $numbered" >&2
-            fi
-            ;;
-    esac
-    branch="$numbered"
-
-    # The Branch: line is load-bearing, not decoration: it is the ONLY thing that
-    # lets a takeover attach to this branch and its refs/agent-context digest
-    # instead of cutting a fresh branch from main and ignoring the work.
-    BODY=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch") python3 -c '
+BODY=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch") python3 -c '
 import json, os
 print(json.dumps({"body": os.environ["BODY"]}))
-' | curl -sf -o /dev/null -X PATCH \
-        -H "Authorization: token $FORGEJO_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$API/repos/$REPO/issues/$number" -d @-
-fi
+' | api -o /dev/null -X PATCH "$API/repos/$REPO/issues/$number" -d @-
 
-# Label last: this is what makes the issue actionable to the watcher.
-IDS="$label_ids" python3 -c '
-import json, os
-print(json.dumps({"labels": json.loads(os.environ["IDS"])}))
-' | curl -sf -o /dev/null -X POST \
-    -H "Authorization: token $FORGEJO_TOKEN" \
-    -H "Content-Type: application/json" \
-    "$API/repos/$REPO/issues/$number/labels" -d @-
+api -o /dev/null -X POST "$API/repos/$REPO/issues/$number/labels" -d "{\"labels\":$label_ids}"
+
+write_marker "$number" "$branch" "$url" "$title"
 
 echo "$url" >&2
+echo "bound this worktree to #$number ($branch)" >&2
 echo "$number"

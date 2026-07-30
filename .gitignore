@@ -20,3 +20,8 @@ assets/models/avatar/License_Standard.txt
 # Trunk output for the web build (`crates/viberfox/serve-threads.sh`). Build
 # artifact, and a large one — the wasm module alone is >100 MB unoptimised.
 dist/
+
+# Git worktrees for parallel agent threads. Nested inside the repo by some
+# tooling, so `git add -A` would otherwise sweep an entire second checkout into
+# a commit.
+.claude/worktrees/
