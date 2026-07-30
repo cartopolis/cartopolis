@@ -21,7 +21,7 @@ use bevy::{
     core_pipeline::{upscaling::upscaling, Core3d},
     input::{
         keyboard::KeyboardInput,
-        mouse::{MouseScrollUnit, MouseWheel},
+        mouse::MouseScrollUnit,
         ButtonState,
     },
     prelude::*,
@@ -279,17 +279,91 @@ fn egui_surface(
     headless.map(|h| (h.size, h.scale))
 }
 
+/// Map one Bevy window event to its egui pointer event, threading the running
+/// cursor position so button events carry the position *at their point in the
+/// stream*. Pure, so the ordering contract is unit-testable.
+///
+/// Order and per-event positions are load-bearing: a fast click-then-flick
+/// batches `[press, release, move…]` into a single frame, and the old bridge —
+/// moves first, then `ButtonInput` press/release stamped with the end-of-frame
+/// `cursor_position()` — teleported the click to wherever the flick ended. egui
+/// then either hit-tested the wrong widget or, with press and release split
+/// across frames, cancelled the click as a drag (press→release further than its
+/// ~6 pt click threshold). Panel checkboxes needed several tries because only a
+/// motionless click survived; anything floating on an `Area` (menu bar, HUD)
+/// felt fine since those get clicked deliberately.
+pub(crate) fn pointer_event(
+    ev: &bevy::window::WindowEvent,
+    last_pointer: &mut Option<egui::Pos2>,
+) -> Option<egui::Event> {
+    use bevy::window::WindowEvent as We;
+    match ev {
+        We::CursorMoved(e) => {
+            let pos = egui::Pos2::new(e.position.x, e.position.y);
+            *last_pointer = Some(pos);
+            Some(egui::Event::PointerMoved(pos))
+        }
+        We::MouseWheel(e) => {
+            let (unit, delta) = match e.unit {
+                MouseScrollUnit::Line => (egui::MouseWheelUnit::Line, egui::Vec2::new(e.x, e.y)),
+                MouseScrollUnit::Pixel => (egui::MouseWheelUnit::Point, egui::Vec2::new(e.x, e.y)),
+            };
+            Some(egui::Event::MouseWheel {
+                unit,
+                delta,
+                // We don't distinguish trackpad scroll phases; "unknown" maps to Move.
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::default(),
+            })
+        }
+        We::MouseButtonInput(e) => {
+            let button = match e.button {
+                MouseButton::Left => egui::PointerButton::Primary,
+                MouseButton::Right => egui::PointerButton::Secondary,
+                MouseButton::Middle => egui::PointerButton::Middle,
+                _ => return None,
+            };
+            Some(egui::Event::PointerButton {
+                pos: (*last_pointer)?,
+                button,
+                pressed: e.state == ButtonState::Pressed,
+                modifiers: egui::Modifiers::default(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Split off the pointer events for one egui pass: everything up to and
+/// including the FIRST button event; the remainder stays in `pending` for the
+/// next pass. egui hit-tests once per pass, at the batch's **final** pointer
+/// position — so a pass whose batch continues past a press/release
+/// re-attributes that button to wherever the pointer ended up afterwards (the
+/// flick away from a fast click), and the click is lost. Deferring the tail
+/// delays pointer motion by one frame only on frames containing a button, and
+/// leaves drags intact: a `[press]` / `[moves…, release]` split keeps every
+/// drag delta with its release.
+pub(crate) fn take_pass_events(pending: &mut Vec<egui::Event>) -> Vec<egui::Event> {
+    let split = pending
+        .iter()
+        .position(|e| matches!(e, egui::Event::PointerButton { .. }))
+        .map(|i| i + 1)
+        .unwrap_or(pending.len());
+    let tail = pending.split_off(split);
+    std::mem::replace(pending, tail)
+}
+
 /// Collect Bevy input and begin an egui frame (runs in PreUpdate).
 pub fn begin_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     windows: Query<&Window>,
     headless: Option<Res<HeadlessSurface>>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut mouse_wheel: MessageReader<MouseWheel>,
-    mut cursor_moved: MessageReader<CursorMoved>,
+    mut window_events: MessageReader<bevy::window::WindowEvent>,
     mut keyboard_input: MessageReader<KeyboardInput>,
     time: Res<Time>,
+    mut last_pointer: Local<Option<egui::Pos2>>,
+    mut pointer_carry: Local<Vec<egui::Event>>,
 ) {
     let Some((physical, scale)) = egui_surface(&windows, headless.as_ref()) else {
         return;
@@ -303,61 +377,25 @@ pub fn begin_egui_frame(
 
     let mut events: Vec<egui::Event> = Vec::new();
 
-    // Cursor movement
-    for e in cursor_moved.read() {
-        events.push(egui::Event::PointerMoved(egui::Pos2::new(
-            e.position.x,
-            e.position.y,
-        )));
+    // Pointer input, from the ORDERED window-event stream (see [`pointer_event`]
+    // for why the per-frame `ButtonInput`/`cursor_position()` snapshot lost
+    // clicks). `last_pointer` persists across frames so a button event with no
+    // motion this frame keeps the position of the last motion ever; the fallback
+    // covers a click before any `CursorMoved` has been seen (cursor already
+    // inside the window at startup). Headless runs see no window events at all.
+    if last_pointer.is_none() {
+        *last_pointer = windows
+            .iter()
+            .next()
+            .and_then(|w| w.cursor_position())
+            .map(|p| egui::Pos2::new(p.x, p.y));
     }
-
-    // Scroll wheel
-    for e in mouse_wheel.read() {
-        let (unit, delta) = match e.unit {
-            MouseScrollUnit::Line => (
-                egui::MouseWheelUnit::Line,
-                egui::Vec2::new(e.x, e.y),
-            ),
-            MouseScrollUnit::Pixel => (
-                egui::MouseWheelUnit::Point,
-                egui::Vec2::new(e.x, e.y),
-            ),
-        };
-        events.push(egui::Event::MouseWheel {
-            unit,
-            delta,
-            // We don't distinguish trackpad scroll phases; "unknown" maps to Move.
-            phase: egui::TouchPhase::Move,
-            modifiers: egui::Modifiers::default(),
-        });
+    let mut pending = std::mem::take(&mut *pointer_carry);
+    for ev in window_events.read() {
+        pending.extend(pointer_event(ev, &mut last_pointer));
     }
-
-    // Mouse buttons. Headless has no cursor at all, so this block just doesn't run.
-    if let Some(cursor_pos) = windows.iter().next().and_then(|w| w.cursor_position()) {
-        let pos = egui::Pos2::new(cursor_pos.x, cursor_pos.y);
-        for (bevy_btn, egui_btn) in [
-            (MouseButton::Left, egui::PointerButton::Primary),
-            (MouseButton::Right, egui::PointerButton::Secondary),
-            (MouseButton::Middle, egui::PointerButton::Middle),
-        ] {
-            if mouse_buttons.just_pressed(bevy_btn) {
-                events.push(egui::Event::PointerButton {
-                    pos,
-                    button: egui_btn,
-                    pressed: true,
-                    modifiers: egui::Modifiers::default(),
-                });
-            }
-            if mouse_buttons.just_released(bevy_btn) {
-                events.push(egui::Event::PointerButton {
-                    pos,
-                    button: egui_btn,
-                    pressed: false,
-                    modifiers: egui::Modifiers::default(),
-                });
-            }
-        }
-    }
+    events.extend(take_pass_events(&mut pending));
+    *pointer_carry = pending;
 
     // Keyboard: text input for text fields + special keys. Ctrl+C/V/X become
     // explicit clipboard events bridged to the system clipboard (this custom
@@ -655,5 +693,119 @@ pub fn egui_pass(
         for id in &render_data.textures_delta.free {
             renderer.free_texture(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::input::mouse::MouseButtonInput;
+    use bevy::window::{CursorMoved, WindowEvent};
+
+    fn moved(x: f32, y: f32) -> WindowEvent {
+        WindowEvent::CursorMoved(CursorMoved {
+            window: Entity::PLACEHOLDER,
+            position: Vec2::new(x, y),
+            delta: None,
+        })
+    }
+
+    fn button(pressed: bool) -> WindowEvent {
+        WindowEvent::MouseButtonInput(MouseButtonInput {
+            button: MouseButton::Left,
+            state: if pressed {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            },
+            window: Entity::PLACEHOLDER,
+        })
+    }
+
+    /// The click-then-flick frame: `[move→target, press, release, move→far]`
+    /// arrives as one batch, and the buttons must be stamped with the position
+    /// *at their point in the stream* (the target), not the end-of-frame cursor
+    /// position (the far side of the flick). The old `ButtonInput` +
+    /// `cursor_position()` bridge got exactly this wrong, which is why panel
+    /// checkboxes only responded to a motionless click.
+    #[test]
+    fn buttons_carry_the_position_at_their_point_in_the_stream() {
+        let target = egui::Pos2::new(100.0, 100.0);
+        let mut last = None;
+        let stream = [
+            moved(100.0, 100.0),
+            button(true),
+            button(false),
+            moved(400.0, 300.0),
+        ];
+        let events: Vec<egui::Event> = stream
+            .iter()
+            .filter_map(|ev| pointer_event(ev, &mut last))
+            .collect();
+
+        assert_eq!(events.len(), 4);
+        match (&events[1], &events[2]) {
+            (
+                egui::Event::PointerButton { pos: p1, pressed: true, .. },
+                egui::Event::PointerButton { pos: p2, pressed: false, .. },
+            ) => {
+                assert_eq!(*p1, target, "press teleported away from the pointer");
+                assert_eq!(*p2, target, "release teleported away from the pointer");
+            }
+            other => panic!("expected press then release, got {other:?}"),
+        }
+        assert!(
+            matches!(events[3], egui::Event::PointerMoved(p) if p.x == 400.0),
+            "the flick motion must still be delivered, after the click"
+        );
+    }
+
+    /// End-to-end: a click-then-flick arriving as ONE frame's batch must still
+    /// toggle a checkbox, via the pass-splitting the live bridge applies
+    /// ([`take_pass_events`]). Without the split this exact scenario fails:
+    /// egui hit-tests once per pass at the batch's final pointer position, so
+    /// the click lands wherever the flick ended.
+    #[test]
+    fn click_then_flick_in_one_frame_still_clicks() {
+        let ctx = egui::Context::default();
+        crate::systems::theme::install(&ctx);
+        let mut checked = true;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+
+        let mut target: Option<egui::Pos2> = None;
+        let mut pending: Vec<egui::Event> = Vec::new();
+        for frame in 0..6 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            if let (1, Some(pos)) = (frame, target) {
+                // One frame's batch: arrive at the checkbox, click, flick away.
+                let mut last = None;
+                pending = [
+                    moved(pos.x, pos.y),
+                    button(true),
+                    button(false),
+                    moved(pos.x + 300.0, pos.y + 200.0),
+                ]
+                .iter()
+                .filter_map(|ev| pointer_event(ev, &mut last))
+                .collect();
+            }
+            raw.events = take_pass_events(&mut pending);
+            let rect = std::cell::Cell::new(None);
+            let checked_ref = &mut checked;
+            ctx.run_ui(raw, |ui| {
+                egui::Panel::right("panel")
+                    .default_size(260.0)
+                    .show(ui, |ui| {
+                        let resp = ui.checkbox(checked_ref, "a checkbox");
+                        rect.set(Some(resp.rect));
+                    });
+            });
+            if target.is_none() {
+                target = rect.get().map(|r| r.center());
+            }
+        }
+        assert!(pending.is_empty(), "the carry never drained");
+        assert!(!checked, "the click-then-flick frame lost the click");
     }
 }
