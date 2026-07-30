@@ -1864,9 +1864,81 @@ mod tests {
     #[test]
     #[ignore]
     fn dump_layers() {
-        let reader = Reader::new(GRONINGEN_Z14.to_vec()).unwrap();
+        let owned = std::env::var("VIBE_DUMP_MVT")
+            .ok()
+            .map(|p| std::fs::read(p).expect("read tile"));
+        let tile: &[u8] = owned.as_deref().unwrap_or(GRONINGEN_Z14);
+        let reader = Reader::new(tile.to_vec()).unwrap();
         let meta = reader.get_layer_metadata().unwrap();
-        println!("tile bytes: {}", GRONINGEN_Z14.len());
+        println!("tile bytes: {}", tile.len());
+        if let Some(l) = meta.iter().find(|l| l.name == "bridges") {
+            println!("\n`bridges` layer:");
+            for f in reader.get_features(l.layer_index).unwrap().iter().take(8) {
+                let shape = match &f.geometry {
+                    Geometry::LineString(ls) => format!("LineString {} pts", ls.0.len()),
+                    Geometry::MultiLineString(m) => format!("MultiLineString {} parts", m.0.len()),
+                    Geometry::Polygon(p) => format!("Polygon {} pts", p.exterior().0.len()),
+                    Geometry::MultiPolygon(m) => format!("MultiPolygon {} parts", m.0.len()),
+                    g => format!("{g:?}"),
+                };
+                // Deck footprint in metres over a 1000 m tile: is this an outline
+                // we could stand a slab on, or a token?
+                let s = 1000.0 / 4096.0;
+                let mut area = 0.0f32;
+                let mut bbox = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                if let Geometry::MultiPolygon(mp) = &f.geometry {
+                    for poly in mp {
+                        let r = poly.exterior();
+                        for w in r.0.windows(2) {
+                            area += (w[0].x * w[1].y - w[1].x * w[0].y) * 0.5;
+                        }
+                        for c in &r.0 {
+                            bbox = [
+                                bbox[0].min(c.x),
+                                bbox[1].min(c.y),
+                                bbox[2].max(c.x),
+                                bbox[3].max(c.y),
+                            ];
+                        }
+                    }
+                }
+                println!(
+                    "  {shape} {:.0} m² bbox {:.0}×{:.0} m — {:?}",
+                    area.abs() * s * s,
+                    (bbox[2] - bbox[0]) * s,
+                    (bbox[3] - bbox[1]) * s,
+                    f.properties.as_ref().and_then(|p| p.get("name"))
+                );
+            }
+        }
+        // Every bridge-flagged street, with the length of its span in tile units
+        // (÷ extent × tile metres for real length) — the number a deck height has
+        // to be derived from.
+        let idx = meta
+            .iter()
+            .find(|l| l.name == "streets")
+            .unwrap()
+            .layer_index;
+        println!("\nbridge-flagged streets (length in metres over a 1000 m tile):");
+        for f in reader.get_features(idx).unwrap().iter() {
+            if !flag_of(f, "bridge") {
+                continue;
+            }
+            let len: f32 = match &f.geometry {
+                Geometry::LineString(ls) => ls
+                    .0
+                    .windows(2)
+                    .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
+                    .sum(),
+                _ => 0.0,
+            };
+            println!(
+                "  {:>12} {:>7.0} m  {:?}",
+                kind_of(f).unwrap_or("?"),
+                len * 1000.0 / 4096.0,
+                drawn_street(f)
+            );
+        }
         for l in &meta {
             println!(
                 "  {:<26} {:>5} features  extent {}",
