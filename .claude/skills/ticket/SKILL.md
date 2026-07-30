@@ -50,11 +50,18 @@ guess at an acceptance criterion, ask the user instead of writing it.
 `--label` defaults to `driven`. It prints the issue number; the URL goes to
 stderr.
 
-**The issue number is inserted into the branch name**, keeping the
-Conventional-Commits prefix: `fix/road-joins` becomes `fix/12-road-joins`, and
-your local branch is renamed to match. Cut your branch with a type prefix and a
-short slug and this does the rest; the watcher produces the same shape
-(`fix/23-routing-speeding-pill`) for tickets it names itself. The number cannot be known before the
+**Filing a ticket puts the user on the right branch.** Do not ask them to make
+one first, and do not mention the rename as if it were a step they perform:
+
+- from `main`, it creates `<type>/<number>-<slug>` from the title and checks it
+  out, carrying uncommitted work across
+- from a feature branch, it takes the number (`fix/road-joins` →
+  `fix/12-road-joins`), unless that branch is already on `origin`
+
+Pass `--branch <type>/<slug>` when you can name the change better than the title
+does — you have read the code, so usually you can. Leave the number out; it is
+injected. The watcher produces the same shape (`fix/23-routing-speeding-pill`)
+for tickets it names itself, so both lanes agree. The number cannot be known before the
 issue exists, which is why the rename happens on filing rather than when you cut
 the branch.
 

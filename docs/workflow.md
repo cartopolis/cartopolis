@@ -240,7 +240,7 @@ eyes.
 
 | # | What happens | Board |
 |---|---|---|
-| 1 | `/ticket` files it with the spec, labelled `driven`, and renames your branch `feat/speed-warning` → `feat/23-speed-warning` | **Backlog** *(seeded once)* |
+| 1 | `/ticket` files it with the spec, labelled `driven`, and moves you from `main` onto `feat/23-warn-driving-speed-limit` — created, checked out, no naming decision to make | **Backlog** *(seeded once)* |
 | 2 | You and the session work through it, correcting course as it goes. Every turn the `Stop` hook publishes the chat digest and pushes the branch. | **Backlog** — the watcher never moves a `driven` card |
 
 **C1 — it gets finished.** Merge with `finish-branch`, close the issue.
@@ -254,8 +254,8 @@ agent continues from where the local one stopped.
 
 | # | What happens | Board |
 |---|---|---|
-| 3 | The watcher reads `` Branch: `feat/23-speed-warning` `` , finds it on `origin`, and **takes it over** instead of cutting a fresh branch from main | **To Do** |
-| 4 | It fetches `refs/agent-context/feat/23-speed-warning` and reads every session digest, oldest first | **In Progress** |
+| 3 | The watcher reads `` Branch: `feat/23-warn-driving-speed-limit` `` , finds it on `origin`, and **takes it over** instead of cutting a fresh branch from main | **To Do** |
+| 4 | It fetches `refs/agent-context/feat/23-warn-driving-speed-limit` and reads every session digest, oldest first | **In Progress** |
 | 5 | Continues from your commits, pushes, `agent:done` | **Done** |
 
 Step 4 is where the digest earns its keep. The diff shows a `kind`→speed table
@@ -290,11 +290,21 @@ own token. Both author issues as **you**, not as the bot: a person is driving,
 and it keeps the `@agent` comment path working, since the watcher ignores
 comments authored by `viberfox-agent` as a loop-breaker.
 
-`--branch` defaults to the branch currently checked out, and **the issue number
-is inserted into its name**: `fix/road-joins` → `fix/12-road-joins`, renamed
-locally to match. The number only exists once the issue does, so the rename
-happens on filing; a branch already numbered, or already pushed to `origin`, is
-left alone.
+**You never name a branch, and never notice one being named.** Filing a ticket
+puts you on the right branch:
+
+- **On `main`** — which is where an editor sitting on the repo normally is — it
+  creates `<type>/<number>-<slug>` from the title and checks it out, carrying any
+  uncommitted poking-around with it. `"Map is slow when zooming out"` gives
+  `perf/25-map-slow-zooming-out`.
+- **On a feature branch already** — it takes the number:
+  `fix/road-joins` → `fix/12-road-joins`. A branch already numbered, or already
+  pushed to `origin`, is left alone; renaming a pushed branch would orphan it and
+  its context ref.
+
+The number only exists once the issue does, which is why this happens on filing
+rather than when you cut a branch. Pass `--branch <type>/<slug>` to override the
+derived name; the number is still injected for you.
 
 The watcher names branches the same way when a ticket has no `` Branch: `` line
 of its own. A refinement session proposes the name — it has read the code, so it
@@ -340,6 +350,11 @@ Each claude.ai/code session gets its own worktree (`--spawn worktree`) on its ow
 branch, so the digest is per-branch there exactly as on the workstation. The
 worktree *directories* are named `bridge-cse_*`, but the branches are ordinary
 `feat/…` / `fix/…` names — which is what the hook keys on.
+
+> **Never work on `main`.** The `Stop` hook skips it, so nothing is published and
+> nothing is pushed; commits there are rejected by branch protection only once
+> the work is done. All three fail silently, which is why `/ticket` moves you off
+> `main` rather than warning you about it.
 
 > **Commit before you walk away.** The *reasoning* is safe either way — it is
 > republished every turn. The *code* is not: only committed work is pushed, so

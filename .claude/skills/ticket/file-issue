@@ -32,13 +32,41 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$title" ] || { echo "--title is required" >&2; exit 2; }
 
-# Default to the branch actually checked out — the common case is filing a
-# ticket for work already started. `main` is not a handover target, so it is
-# treated as "no branch yet".
+# Derive a Conventional-Commits type and slug from the title. Mirrors the rules
+# in watcher.ts so both lanes produce the same shape, and means the caller never
+# has to think of a branch name.
+infer_type() {
+    _t=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$_t" in
+        *crash*|*panic*|*broken*|*wrong*|*incorrect*|*regress*|*fails*|*bug*) echo fix ;;
+        *slow*|*sluggish*|*performance*|*fps*|*lag*|*stutter*|*faster*) echo perf ;;
+        *document*|*docs*|*readme*) echo docs ;;
+        *refactor*|*cleanup*|*"clean up"*|*tidy*) echo refactor ;;
+        *test*|*coverage*) echo test ;;
+        *) echo feat ;;
+    esac
+}
+
+slugify() {
+    printf '%s' "$1" |
+        tr '[:upper:]' '[:lower:]' |
+        sed "s/'//g; s/[^a-z0-9]\{1,\}/ /g" |
+        tr ' ' '\n' | grep -vxE 'a|an|the|is|are|be|to|of|in|on|for|when|while|and|or|it|its|we|i|im|my|me|should|would|could|please|can|that|this|there|at|as|with|over|some|somehow' |
+        grep -v '^$' | head -4 | paste -sd- - | cut -c1-48 | sed 's/-*$//'
+}
+
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+# The branch name is never something to think about. Three sources, in order:
+# an explicit --branch (the agent proposes one, since it knows what the change
+# is), the branch already checked out, or the issue title.
 if [ -z "$branch" ]; then
-    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-    case "$branch" in main | master | HEAD | '') branch="" ;; esac
+    case "$current_branch" in
+        main | master | HEAD | '') branch="$(infer_type "$title")/$(slugify "$title")" ;;
+        *) branch="$current_branch" ;;
+    esac
 fi
+[ "${branch%/*}" = "$branch" ] && branch="$(infer_type "$title")/$branch"
 
 body=$(cat)
 
@@ -96,18 +124,38 @@ EOF
 
 if [ -n "$branch" ]; then
     numbered=$(number_branch "$number" "$branch")
-    if [ "$numbered" != "$branch" ]; then
-        # Only rename a branch that exists nowhere but here. Once it is on the
-        # remote, renaming would orphan the pushed branch — and any agent-context
-        # ref already published under the old name with it.
-        if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-            echo "note: $branch is already on origin — leaving its name alone" >&2
-            numbered="$branch"
-        else
-            git branch -m "$branch" "$numbered"
-            echo "renamed branch: $branch -> $numbered" >&2
-        fi
-    fi
+
+    case "$current_branch" in
+        main | master | HEAD | '')
+            # Working from main is the normal state of an editor sitting on the
+            # repo, and it is the one state where none of this works: the Stop
+            # hook skips main entirely, so no digest is published and no branch
+            # is pushed, and the eventual push is rejected by branch protection
+            # after the work is done. All three fail silently, so getting off
+            # main is not a suggestion — it is what filing a ticket means.
+            #
+            # `switch -c` carries any uncommitted changes across, which is what
+            # someone who started poking at the problem before filing wants.
+            git switch -q -c "$numbered" 2>/dev/null ||
+                git checkout -q -b "$numbered"
+            echo "branch: created and checked out $numbered" >&2
+            ;;
+        "$numbered")
+            : # already there, nothing to do
+            ;;
+        *)
+            # A branch that exists nowhere but here can take the number. Once it
+            # is on the remote, renaming would orphan the pushed branch — and any
+            # agent-context ref published under the old name with it.
+            if git show-ref --verify --quiet "refs/remotes/origin/$current_branch"; then
+                echo "note: $current_branch is already on origin — leaving its name alone" >&2
+                numbered="$current_branch"
+            else
+                git branch -m "$current_branch" "$numbered"
+                echo "branch: renamed $current_branch -> $numbered" >&2
+            fi
+            ;;
+    esac
     branch="$numbered"
 
     # The Branch: line is load-bearing, not decoration: it is the ONLY thing that
