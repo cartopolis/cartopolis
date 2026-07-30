@@ -16,9 +16,21 @@ exact rather than guessed.
 
 The reasoning behind an unfinished branch is published as a digest on
 **`refs/agent-context/<branch>`** in a **separate, private repo**
-(`jeroen/viberfox-agent-context`). It is readable by people with access to that
-repo while the branch is open, and must be *unretrievable* once the branch is
-merged — that requirement is what drove every choice below.
+(`jeroen/viberfox-agent-context`), readable by people with access to that repo.
+
+**Digests are kept, including after the branch lands.** That reverses the
+original requirement, which was that a digest be *unretrievable* once merged —
+and that requirement is what drove most of the machinery described below. It
+existed because digests were pushed into the public viberfox repo, so the only
+way to limit who could read one was to limit how long it existed. A private repo
+answers that directly, and keeping the digest is worth more: "why is this code
+like this?" outlives the branch by years, while the commit body only holds what
+the author thought to write down.
+
+The destruction path still exists and still works — it is now a manual escape
+hatch for a digest that must genuinely go (a credential past the redaction, say),
+not a routine step at merge time. Everything measured below still holds; it is
+the *when* that changed.
 
 ## Why a private repo, and not viberfox itself
 
@@ -74,6 +86,8 @@ of the table above. Any advertisement or isolation test must pass `--no-local`.
 
 ## Why deletion needs a prune, and what actually prunes
 
+Still true, still the reason the escape hatch is shaped the way it is.
+
 Also measured 2026-07-30, in order of increasing force:
 
 | step | result |
@@ -93,6 +107,8 @@ re-derive the reflog worry from first principles; it was tested.
 
 Because the digest never touches `main`, removing it is a ref deletion plus a
 prune — **not** a history rewrite. No SHA on `main` changes and nobody re-clones.
+That property is why the escape hatch stayed cheap enough to keep after the
+routine deletion was dropped.
 
 ## Where the prune is triggered from
 

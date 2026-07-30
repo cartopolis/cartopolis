@@ -14,7 +14,11 @@ alternatives that lost, the dead ends, the things the user still has to decide â
 none of which survives in the diff.
 
 See [docs/notes/agent-context-refs.md](../../../docs/notes/agent-context-refs.md)
-for why it lives on a ref outside `refs/heads/*` and how it gets deleted.
+for why it lives on a ref outside `refs/heads/*` in a private repo.
+
+Digests are **kept after a branch lands**, so this works on merged work too â€” it
+is often the only surviving answer to "why is this like this?" once the branch
+name is gone.
 
 ## Retrieve
 

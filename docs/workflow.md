@@ -274,7 +274,10 @@ If no digest exists, the agent is told to say so rather than invent intent.
 > it drops tool *results*, thinking, and slash-command plumbing. Because a
 > transcript is not reviewed before it is published, the filter also redacts
 > values after `password=`, `token:`, `Authorization:` and vendor-prefixed keys.
-> Merging the branch destroys the digest — see
+> **The digest is kept after the branch lands.** It used to be destroyed at
+> merge time, which only made sense while digests sat in the public repo; a
+> private one removes the reason, and the reasoning is worth more than the
+> branch. Deleting one is now a manual escape hatch — see
 > [notes/agent-context-refs.md](notes/agent-context-refs.md) and the
 > [`finish-branch`](../.claude/skills/finish-branch/SKILL.md) skill.
 
