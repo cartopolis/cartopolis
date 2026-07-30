@@ -112,6 +112,9 @@ pub struct Lod22Buildings {
     no_shadow: HashSet<(i64, i64)>,
     /// Shared material (white base, per-vertex wall/roof colours).
     material: Option<Handle<StandardMaterial>>,
+    /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
+    /// teardown in [`update_lod22`] runs exactly once per uncheck.
+    enabled_was: bool,
 }
 
 /// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
@@ -146,6 +149,25 @@ pub fn update_lod22(
         lod.anchor = None;
         lod.established = false;
     }
+
+    // The Layers panel's 3DBAG toggle: on the off-edge, tear down like a
+    // re-anchor — despawn the meshes, drop their colliders (the OSM streamers
+    // publish replacements as they take the cells over), orphan any in-flight
+    // results, and forget `requested` so re-checking re-queues every covered
+    // cell. While off, `lod22_covers()` reports no coverage, so the queue loop
+    // below stays empty on its own.
+    let enabled = crate::systems::osm_buildings::tdbag_user_enabled();
+    if lod.enabled_was && !enabled {
+        for (_, e) in lod.cells.drain() {
+            commands.entity(e).despawn();
+        }
+        colliders.clear_lod22();
+        lod.no_shadow.clear();
+        lod.requested.clear();
+        lod.failed.clear();
+        lod.results = Arc::new(Mutex::new(Vec::new()));
+    }
+    lod.enabled_was = enabled;
 
     // Establish the anchor and reset the fetch+mesh dispatcher.
     if !lod.established {

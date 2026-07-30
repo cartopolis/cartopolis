@@ -302,6 +302,11 @@ pub struct DataLayers {
     pub panel_open: bool,
     /// Feature toggle: the OSM 3D buildings (meshes + lit windows).
     pub buildings_enabled: bool,
+    /// Feature toggle (under Buildings): the 3DBAG source — LoD2.2 real meshes
+    /// (`lod22.rs`) plus LoD1.2 real-height footprints over covered NL cells.
+    /// Off = OSM extrusions everywhere; mirrored into `osm_buildings`' coverage
+    /// gate by [`apply_feature_toggles`].
+    pub tdbag_enabled: bool,
     /// Feature toggle: the map ground (streamed OSM tiles + region plane).
     pub map_enabled: bool,
     /// Feature toggle: live moving vehicles on the transit layer (ADR-026).
@@ -363,6 +368,7 @@ impl Default for DataLayers {
         Self {
             panel_open: false,
             buildings_enabled: true,
+            tdbag_enabled: true,
             map_enabled: true,
             vehicles_enabled: false,
             trees_enabled: true,
@@ -1038,6 +1044,11 @@ pub fn apply_feature_toggles(
         ),
     >,
 ) {
+    // Mirror the panel's 3DBAG toggle into `osm_buildings`' coverage gate — the
+    // coverage predicates are free functions over statics, out of reach of this
+    // resource. `lod22::update_lod22` tears its meshes down on the off-edge.
+    crate::systems::osm_buildings::set_tdbag_enabled(dl.tdbag_enabled);
+
     // Sole visibility writer for these entities: the panel toggle AND the space
     // tier (from orbit the flat patch floats over the globe, parallax-shifted —
     // ADR-025). Folding both in here avoids racing another writer.
@@ -1185,13 +1196,17 @@ pub fn render_data_layers_panel(
                 egui::RichText::new("Buildings").size(14.0),
             );
             ui.indent("buildings", |ui| {
-                // 3DBAG serves covered NL areas (real BAG heights); OSM elsewhere.
-                let label = if crate::systems::osm_buildings::tdbag_attribution().is_some() {
-                    "3DBAG (NL) + OSM 3D buildings"
-                } else {
-                    "OSM 3D buildings and windows"
-                };
-                ui.label(egui::RichText::new(label).size(13.0));
+                // 3DBAG serves covered NL areas (real BAG heights); OSM extrusions
+                // fill in wherever it is off or absent. The checkbox only appears
+                // once a coverage manifest has loaded — before that (or with no
+                // host) there is nothing to turn off.
+                if crate::systems::osm_buildings::tdbag_attribution().is_some() {
+                    ui.checkbox(
+                        &mut dl.tdbag_enabled,
+                        egui::RichText::new("3DBAG (NL)").size(13.0),
+                    );
+                }
+                ui.label(egui::RichText::new("OSM 3D buildings and windows").size(13.0));
             });
             ui.add_space(4.0);
             ui.separator();

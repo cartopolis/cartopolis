@@ -83,6 +83,23 @@ static COVERAGE: OnceLock<Coverage> = OnceLock::new();
 static COVERAGE_LOD22: OnceLock<Coverage> = OnceLock::new();
 /// Guards the one-time coverage prefetch (see `ensure_coverage_prefetch`).
 static COVERAGE_PREFETCH_STARTED: AtomicBool = AtomicBool::new(false);
+/// The Layers panel's "3DBAG (NL)" toggle, mirrored in by
+/// `data_layers::apply_feature_toggles` each frame — the coverage predicates are
+/// free functions over statics, out of reach of the `DataLayers` resource. While
+/// `false`, [`tdbag_covers`] / [`lod22_covers`] report no coverage, which routes
+/// every building path to its existing OSM fallback (the same behaviour as an
+/// unreachable 3DBAG host).
+static TDBAG_USER_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Mirror the Layers-panel 3DBAG toggle into the coverage gate.
+pub(crate) fn set_tdbag_enabled(on: bool) {
+    TDBAG_USER_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Current state of the Layers-panel 3DBAG toggle.
+pub(crate) fn tdbag_user_enabled() -> bool {
+    TDBAG_USER_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Fetch a 3DBAG coverage manifest via the http seam. A missing/unreachable host
 /// (or an empty tile URL) yields empty coverage, so the client silently uses OSM
@@ -157,20 +174,24 @@ fn ensure_coverage_prefetch() {
 }
 
 /// True if the 3DBAG host serves this cell's LoD1.2 footprints. `false` until the
-/// coverage manifest has loaded (see [`ensure_coverage_prefetch`]).
+/// coverage manifest has loaded (see [`ensure_coverage_prefetch`]), and while the
+/// Layers panel's 3DBAG toggle is off.
 fn tdbag_covers(cx: i64, cy: i64) -> bool {
-    COVERAGE
-        .get()
-        .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
+    tdbag_user_enabled()
+        && COVERAGE
+            .get()
+            .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
 /// True if the 3DBAG host serves this cell as a real LoD2.2 mesh (rendered by
 /// `lod22.rs`). The OSM/LoD1.2 building layers skip these cells so the real meshes
-/// render without overlapping simplified extrusions. `false` until coverage loads.
+/// render without overlapping simplified extrusions. `false` until coverage loads,
+/// and while the Layers panel's 3DBAG toggle is off.
 pub(crate) fn lod22_covers(cx: i64, cy: i64) -> bool {
-    COVERAGE_LOD22
-        .get()
-        .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
+    tdbag_user_enabled()
+        && COVERAGE_LOD22
+            .get()
+            .is_some_and(|cov| cov.zoom == CACHE_ZOOM && cov.cells.contains(&(cx, cy)))
 }
 
 /// The 3DBAG attribution string, if any 3DBAG coverage (LoD2.2 or LoD1.2) is
