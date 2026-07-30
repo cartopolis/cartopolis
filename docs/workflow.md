@@ -8,7 +8,7 @@ Everything below is driven by **Forgejo labels**. The board column is a
 store](#why-the-board-cannot-be-the-state-store).
 
 - [The three workflows](#the-three-workflows) — ① Zed, ② claude.ai/code, ③ issue watcher
-- [Walkthroughs](#walkthroughs) — an idea becoming a branch, three ways, and what the board shows
+- [Walkthroughs](#walkthroughs) — one feature, three routes in, and what the board shows at each step
 - [The driven lane in practice](#the-driven-lane-in-practice) — ① and ②
 - [The autonomous lane in practice](#the-autonomous-lane-in-practice) — ③
 - [Handover](#handover)
@@ -143,76 +143,74 @@ Reach for B when the idea might be wrong, or might be bigger than it looks.
 Reach for A when it is obviously worth doing and you simply are not going to
 write it up now.
 
+### The example
+
+All three use the same idea, so the paths can be compared:
+
+> **"Warn me when I'm driving over the speed limit."**
+
+It is a good example because it sounds like an afternoon and is not. Driver mode
+already shows current speed in a pill (`driver.rs:958`). What it has no access to
+is the *limit*: `TravelMode::max_speed_ms` (`routing.rs:145`) is the A\* heuristic
+bound per travel mode — documented to err *upward* on purpose — not a posted
+limit, and the Shortbread tiles carry only `kind`, `oneway`, `surface` and
+`bicycle`. There is no speed limit anywhere in the data.
+
+So the honest answer is a question: where should the limit come from? That is
+exactly the thing a one-line ticket cannot say and a confident agent would
+invent.
+
 ### A. Straight into Forgejo — the agent decides
 
-You have an idea and open an issue. No labels, no session — from the couch, on a
-phone, in the time it takes to type two lines. Use this when the idea is worth
-recording and you are not going to work on it now.
+| # | What happens | Board |
+|---|---|---|
+| 1 | You open an issue titled *"Warn me when I'm speeding"*, body: *"Driver mode should tell me when I'm over the limit."* No labels. | *not on the board* |
+| 2 | Within 30 s: `agent:refining`, plus a comment saying it has been picked up | **Backlog** |
+| 3 | A read-only session reads `driver.rs`, `routing.rs` and the tile schema. No branch, no commits. | **Backlog** |
+
+It finds the gap above, so it does **not** write a spec:
 
 | # | What happens | Board |
 |---|---|---|
-| 1 | You open the issue | *not on the board yet* |
-| 2 | Within 30 s the watcher claims it: `agent:refining`, and comments to say so | **Backlog** |
-| 3 | A **read-only** session reads the code and rewrites the description as a spec — every claim cited as `file.rs:line`, no branch, no commits | **Backlog** |
+| 4 | `agent:needs-input`. The description is rewritten with what it found — the speed pill at `driver.rs:958`, `max_speed_ms` being a heuristic bound, the tile layers that exist — and ends in **Open questions**: *derive a default per road `kind`? add `maxspeed` to the tile pipeline? query Overpass live?* Each with its cost. | **Backlog** |
 
-Then it goes one of two ways, and this is the decision you asked it to make:
-
-**A1 — it is buildable.** `agent:refined`, the description is now the spec.
+**Nothing is built.** That is the point: three plausible answers, and picking
+wrong costs a 45-minute session plus a branch you have to read to discover it
+went the wrong way.
 
 | # | What happens | Board |
 |---|---|---|
-| 4 | Spec posted, ticket queued | **To Do** |
-| 5 | A slot frees, `agent:running` | **In Progress** |
-| 6 | Branch pushed, `agent:done` — waiting for your review | **Done** |
-
-**A2 — it cannot decide.** `agent:needs-input`, and **nothing is built**. The
-open questions are in the description. This is the outcome the whole lane exists
-to make possible: guessing an acceptance criterion costs a 45-minute session and
-a branch you have to read to find out it went sideways.
-
-| # | What happens | Board |
-|---|---|---|
-| 4 | Questions posted, parked | **Backlog** |
-| 5 | You answer, then `@agent refine` to rewrite the spec, or `@agent` to build it as it stands | → A1 |
+| 5 | You reply: *"@agent refine — defaults per road kind for now, table in routing.rs, no new data source"* | **Backlog** |
+| 6 | It rewrites the spec against that decision: `agent:refined` | **To Do** |
+| 7 | Queued until a slot frees, then `agent:running` | **In Progress** |
+| 8 | Branch `issue-23` pushed, `agent:done`, waiting for your review | **Done** |
 
 ### B. claude.ai/code — you refine it, the agent builds it
 
-Also from the couch, but you want to interrogate the idea first. Open a session
-at claude.ai/code — Remote Control into the `viberfox-agent` container — so a
-person is steering and this is the
-[driven lane](#the-lane-axis--how-much-it-may-assume), just not at a desk.
-
-The session does the reading and the writing; you supply direction in a sentence
-at a time, which is what makes this workable on a phone. By the end you have a
-spec you have actually agreed with, rather than one inferred from two lines.
+Same idea, but you want to know whether it is any good before committing.
 
 | # | What happens | Board |
 |---|---|---|
-| 1 | You and the session settle the spec together — it reads the code, you correct direction a sentence at a time | — |
-| 2 | `/ticket --label agent` files it with the spec and a `` Branch: `` line | **To Do** *(queued)* |
-| 3 | The watcher picks it up: `agent:running` | **In Progress** |
-| 4 | Branch pushed, `agent:done` | **Done** |
+| 1 | You open a session and say *"can we warn when speeding in driver mode?"* | — |
+| 2 | It reads the same code and tells you, **in the conversation**, that there is no `maxspeed` in the tiles — the same finding as A3, but in a minute and with you there to react | — |
+| 3 | You settle it together: defaults per road `kind`, amber pill over the limit, no new data source. Two messages, not a design round. | — |
+| 4 | `/ticket --label agent` files it with the agreed spec and a `` Branch: `` line | **To Do** *(queued)* |
+| 5 | The watcher picks it up: `agent:running` | **In Progress** |
+| 6 | Branch pushed, `agent:done` | **Done** |
 
-**No refinement pass.** The bare `agent` label means "I have decided this is
-actionable" — you just did that, live, with the code in front of you. Refining
-it again would only re-derive what you already agreed.
-
-Use `--label autonomous` instead if you want it refined anyway, and plain
-`/ticket` (which defaults to `driven`) if you would rather build it yourself
-later.
+**No refinement pass** — `agent` means "I have decided this is actionable", and
+you just did, live, with the code in front of you. The difference from A is not
+the outcome but *when the question got asked*: step 2 instead of a round trip
+through the issue tracker.
 
 ### C. Zed — you build it yourself
 
-You have an idea at your desk. This is the default for real work: a wrong
-direction costs one sentence.
+Same idea, at your desk, where you can also *see* the pill turn amber.
 
 | # | What happens | Board |
 |---|---|---|
-| 1 | `/ticket` files it with the spec, labelled `driven`, and renames your branch to carry the issue number (`fix/road-joins` → `fix/12-road-joins`) | **Backlog** *(seeded once)* |
-| 2 | You work. Every turn, the `Stop` hook publishes the chat digest and pushes the branch | **Backlog** — the watcher never moves a `driven` card |
-
-The card sits still because the ticket is yours. Drag it if you want; the
-watcher will not argue. It ends one of two ways:
+| 1 | `/ticket` files it with the spec, labelled `driven`, and renames your branch `feat/speed-warning` → `feat/23-speed-warning` | **Backlog** *(seeded once)* |
+| 2 | You work. Every turn the `Stop` hook publishes the chat digest and pushes the branch. | **Backlog** — the watcher never moves a `driven` card |
 
 **C1 — you finish it.** Merge with `finish-branch`, close the issue.
 
@@ -220,15 +218,21 @@ watcher will not argue. It ends one of two ways:
 |---|---|---|
 | 3 | Issue closed | **Done** |
 
-**C2 — it stalls.** Remove the `driven` label (or comment `@agent`).
+**C2 — you get pulled away.** Remove the `driven` label.
 
 | # | What happens | Board |
 |---|---|---|
-| 3 | The watcher reads `` Branch: `` from the description, sees that branch on `origin`, and **takes it over** rather than starting fresh | **To Do** |
-| 4 | It fetches `refs/agent-context/<branch>` and reads every session digest, oldest first, before touching anything | **In Progress** |
-| 5 | Continues the work, pushes, `agent:done` | **Done** |
+| 3 | The watcher reads `` Branch: `feat/23-speed-warning` `` , finds it on `origin`, and **takes it over** instead of cutting a fresh branch from main | **To Do** |
+| 4 | It fetches `refs/agent-context/feat/23-speed-warning` and reads every session digest, oldest first | **In Progress** |
+| 5 | Continues from your commits, pushes, `agent:done` | **Done** |
 
-Only committed work survives step 3 — see [Handover](#handover).
+Step 4 is where the digest earns its keep. The diff shows a `kind`→speed table
+appearing in `routing.rs`. It does not show that you *considered* adding
+`maxspeed` to the tile pipeline and rejected it as too much for this ticket —
+so without the digest the next agent is free to "improve" the work by doing
+exactly the thing you already decided against.
+
+Only committed work survives step 3; see [Handover](#handover).
 
 ## The driven lane in practice
 
