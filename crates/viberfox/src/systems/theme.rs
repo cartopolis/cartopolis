@@ -289,6 +289,29 @@ pub fn overlay_frame() -> egui::Frame {
         .inner_margin(Margin::symmetric(11, 8))
 }
 
+/// A checkbox whose box is square. egui derives the checkbox frame's rounding
+/// from the shared widget visuals ([`RADIUS`], sized for buttons), and on a
+/// ~14 pt box that radius reads as a circle — an unchecked toggle then looks
+/// like a radio button, which promises "pick one" instead of "on/off". Scopes
+/// the rounding down for just this widget; every other visual stays the
+/// theme's. Use this, not `ui.checkbox`, everywhere.
+pub fn checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let square = CornerRadius::same(2);
+        let w = &mut ui.style_mut().visuals.widgets;
+        w.noninteractive.corner_radius = square;
+        w.inactive.corner_radius = square;
+        w.hovered.corner_radius = square;
+        w.active.corner_radius = square;
+        ui.checkbox(checked, text)
+    })
+    .inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

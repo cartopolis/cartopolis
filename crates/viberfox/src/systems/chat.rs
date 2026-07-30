@@ -188,7 +188,7 @@ pub fn render_chat_panel(
                                 }
                             });
                         if is_local {
-                            ui.checkbox(&mut chat.shout, "Shout");
+                            crate::systems::theme::checkbox(ui, &mut chat.shout, "Shout");
                         }
                         // Nearby-chat input (SL's persistent "say" line). Narrow it
                         // on a phone so the 280 pt default doesn't force the strip

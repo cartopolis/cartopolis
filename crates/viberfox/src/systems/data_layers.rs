@@ -1182,7 +1182,7 @@ fn buildings_section(
     dl: &mut DataLayers,
     tdbag_available: bool,
 ) -> Option<egui::Response> {
-    ui.checkbox(
+    crate::systems::theme::checkbox(ui, 
         &mut dl.buildings_enabled,
         egui::RichText::new("Buildings").size(14.0),
     );
@@ -1191,12 +1191,12 @@ fn buildings_section(
         // an active-looking sub-checkbox would promise something it can't do.
         ui.add_enabled_ui(dl.buildings_enabled, |ui| {
             let tdbag = tdbag_available.then(|| {
-                ui.checkbox(
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.tdbag_enabled,
                     egui::RichText::new("3DBAG (NL)").size(13.0),
                 )
             });
-            ui.checkbox(
+            crate::systems::theme::checkbox(ui, 
                 &mut dl.osm_buildings_enabled,
                 egui::RichText::new("OSM 3D buildings and windows").size(13.0),
             );
@@ -1233,7 +1233,7 @@ pub fn render_data_layers_panel(
             ui.separator();
             for (i, def) in LAYER_DEFS.iter().enumerate() {
                 ui.add_space(4.0);
-                ui.checkbox(
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.layers[i].enabled,
                     egui::RichText::new(def.name).size(14.0),
                 );
@@ -1252,7 +1252,7 @@ pub fn render_data_layers_panel(
                     // Live moving vehicles ride on the transit layer (ADR-026).
                     if i == TRANSIT_LAYER {
                         ui.add_space(2.0);
-                        ui.checkbox(
+                        crate::systems::theme::checkbox(ui, 
                             &mut dl.vehicles_enabled,
                             egui::RichText::new("Live vehicles").size(13.0),
                         );
@@ -1276,19 +1276,19 @@ pub fn render_data_layers_panel(
             ui.add_space(4.0);
             ui.separator();
             ui.add_space(4.0);
-            ui.checkbox(&mut dl.map_enabled, egui::RichText::new("Map").size(14.0));
+            crate::systems::theme::checkbox(ui, &mut dl.map_enabled, egui::RichText::new("Map").size(14.0));
             ui.indent("map", |ui| {
                 ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
                 ui.add_space(2.0);
-                ui.checkbox(
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.trees_enabled,
                     egui::RichText::new("Trees").size(13.0),
                 );
-                ui.checkbox(
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.roads_textured,
                     egui::RichText::new("Road textures").size(13.0),
                 );
-                ui.checkbox(
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.water_shading,
                     egui::RichText::new("Water shading").size(13.0),
                 );

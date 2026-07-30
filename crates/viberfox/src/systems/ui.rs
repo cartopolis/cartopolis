@@ -318,7 +318,7 @@ pub fn render_dev_panel(
                 let lit = crate::utils::sun::moon_illuminated_fraction(dev.moon_age_days);
                 ui.label(format!("{:.0}% lit (0 = new, ~14.8 = full)", lit * 100.0));
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut dev.auto_cycle, "Quick cycle");
+                    crate::systems::theme::checkbox(ui, &mut dev.auto_cycle, "Quick cycle");
                     ui.add(
                         egui::DragValue::new(&mut dev.cycle_seconds)
                             .suffix(" s")
@@ -372,17 +372,17 @@ pub fn render_dev_panel(
             });
             ui.separator();
             ui.label("Render features");
-            ui.checkbox(&mut dev.shadows_enabled, "Shadows (sun + moon)");
+            crate::systems::theme::checkbox(ui, &mut dev.shadows_enabled, "Shadows (sun + moon)");
             // Atmosphere / env-map IBL can't be hot-swapped — removing those
             // components at runtime hangs the GPU on this stack — so they apply at
             // startup only (a live flip needs a relaunch to take effect).
-            ui.checkbox(&mut dev.atmosphere_enabled, "Atmosphere (restart)");
+            crate::systems::theme::checkbox(ui, &mut dev.atmosphere_enabled, "Atmosphere (restart)");
             ui.add_enabled(
                 dev.atmosphere_enabled,
                 egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
             );
             ui.separator();
-            ui.checkbox(&mut dev.show_stats, "Show stats overlay (FPS)");
+            crate::systems::theme::checkbox(ui, &mut dev.show_stats, "Show stats overlay (FPS)");
             ui.separator();
             ui.label("README screenshots");
             // The documentation set is generated from the remembered camera
@@ -1297,7 +1297,7 @@ pub fn render_edit_dialog(
                             ui.end_row();
 
                             ui.label("Full Bright");
-                            ui.checkbox(&mut edit_dialog.surface.full_bright, "");
+                            crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.full_bright, "");
                             ui.end_row();
                         });
 
@@ -1313,7 +1313,7 @@ pub fn render_edit_dialog(
                                 .range(0.0..=100.0)
                                 .max_decimals(3),
                         );
-                        ui.checkbox(&mut edit_dialog.surface.flip_u, "Flip");
+                        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_u, "Flip");
                         ui.add(
                             egui::DragValue::new(&mut edit_dialog.surface.repeat_v)
                                 .prefix("V ")
@@ -1321,7 +1321,7 @@ pub fn render_edit_dialog(
                                 .range(0.0..=100.0)
                                 .max_decimals(3),
                         );
-                        ui.checkbox(&mut edit_dialog.surface.flip_v, "Flip");
+                        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_v, "Flip");
                     });
 
                     ui.add_space(4.0);
