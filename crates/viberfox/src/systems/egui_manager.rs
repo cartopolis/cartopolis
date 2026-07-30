@@ -400,6 +400,16 @@ pub fn begin_egui_frame(
     // Keyboard: text input for text fields + special keys. Ctrl+C/V/X become
     // explicit clipboard events bridged to the system clipboard (this custom
     // integration has no winit clipboard plumbing of its own).
+    //
+    // Forwarded ONLY while text is actually being edited — the exact mirror of
+    // `EguiManager::ui_owns_keyboard`, which yields the game's keys to the UI
+    // under the same condition, so exactly one side ever acts on a key. egui
+    // keeps *focus* on the last-clicked widget (a checkbox, a panel's collapse
+    // button), and Space/Enter activate the focused widget: flying up re-toggled
+    // whatever was clicked last and collapsed panels mid-flight. The reader is
+    // drained regardless, or the keys held before clicking into a field would
+    // arrive as a stale burst the moment it gains focus.
+    let forward_keys = egui_manager.ctx.text_edit_focused();
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let modifiers = egui::Modifiers {
@@ -409,6 +419,9 @@ pub fn begin_egui_frame(
         ..Default::default()
     };
     for ev in keyboard_input.read() {
+        if !forward_keys {
+            continue;
+        }
         if ev.state == ButtonState::Pressed && ctrl {
             match ev.key_code {
                 KeyCode::KeyC => {
