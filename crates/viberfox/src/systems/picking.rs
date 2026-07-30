@@ -164,11 +164,14 @@ pub fn prim_picking(
         } else {
             context_menu.hit_prim_id = None;
 
-            // No region under the cursor used to mean *no menu at all*, which on
-            // the streamed map is nearly always: regions are the sim's authored
-            // parcels and the OSM world has none. So right-clicking the map — the
-            // ordinary case, and the one "Route to here" needs — opened nothing.
+            // No `Region` entity used to mean *no menu at all*. A region only
+            // exists when a sim has sent one (`network::region_from_dto`), so
+            // `--offline` — which is every `--shot` run — had no map right-click
+            // whatsoever, and that is the gesture "Route to here" is reached by.
             // The menu now always opens; the prim entries gate on `hit_region_id`.
+            //
+            // Note this takes the *first* region, not the one under the cursor —
+            // pre-existing, and only harmless while a world has one.
             context_menu.hit_region_id =
                 region_query.iter().next().map(|(_, region, _)| region.id);
             let plane_y = region_query

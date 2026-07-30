@@ -928,10 +928,10 @@ pub fn render_context_menu(
                     context_menu.visible = false;
                 }
             } else if context_menu.hit_region_id.is_some() {
-                // Clicked on empty space inside a region — the only place a prim
-                // can go. The streamed OSM map has no regions, and the menu now
-                // opens there too (for the routing entries above), so this can no
-                // longer assume one exists.
+                // Clicked on empty space with a region to put a prim in. The menu
+                // now also opens where there is no region at all (for the routing
+                // entries above, and so `--offline` has a map right-click), so
+                // this can no longer assume one exists.
                 if ui.button("Create Prim (C)").clicked() {
                     edit_dialog.prim_id = None;
                     edit_dialog.is_new = true;

@@ -99,10 +99,10 @@ so they cannot drift from the panel's own "pick on map" — an endpoint set with
 the invalidate leaves the previous line drawn under a new destination, and without
 the reverse geocode it stays labelled with raw coordinates.
 
-That menu did not previously open on the map at all: it required a `Region` entity
-under the cursor, and the streamed OSM world has none — regions are the sim's
-authored parcels. It now always opens, and the prim entries gate on
-`hit_region_id` instead.
+That menu required a `Region` entity to exist before it would open at all
+(`picking.rs`), and a region only exists when a sim has sent one — so `--offline`,
+which is every `--shot` run, had no map right-click whatsoever. It now always
+opens and the prim entries gate on `hit_region_id` instead.
 
 ## The trip strip cannot hide behind a panel
 
