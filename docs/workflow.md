@@ -13,6 +13,7 @@ store](#why-the-board-cannot-be-the-state-store).
 - [The autonomous lane in practice](#the-autonomous-lane-in-practice) — ③
 - [Handover](#handover)
 - [States](#states)
+- [Proposed: one worktree per session](#proposed-one-worktree-per-session) — not built
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
@@ -227,6 +228,8 @@ After step 4 you are done. Steps 5 and 6 happen whether you are watching or not,
 which is what you traded the conversation for.
 
 ### C. Zed — spec and build with the same local agent
+
+> Changing — see [Proposed: one worktree per session](#proposed-one-worktree-per-session).
 
 Same idea, at your desk. The local agent builds it too — you are not typing the
 code, you are steering it turn by turn, the same way you steered the spec in B.
@@ -516,6 +519,72 @@ Because that path is a password session against un-versioned web routes, a
 Forgejo upgrade can break it. Every board call is therefore failure-tolerant:
 it logs a warning and the work proceeds. Labels remain correct; only the card
 position goes stale.
+
+## Proposed: one worktree per session
+
+**Not built.** Everything else in this document describes what runs today. This
+is where the local lane would go, written down so the cost is visible first.
+
+### Why
+
+Today a local session works in your one checkout, on a branch. Two sessions
+cannot run at once — same files, same branch. The remote lanes never had this
+problem: the container has run `--spawn worktree` since day one, so ② already
+gets a checkout per session. This makes ① match.
+
+### Shape
+
+```
+~/code/viberfox                             main. Reference workspace, never worked in.
+~/code/viberfox-wt/
+    feat-23-warn-driving-speed-limit/       one Zed window, one ACP session
+    fix-24-route-line-sharp-junctions/      another, in parallel
+```
+
+Branches keep meaningful names (`feat/23-…`), **not** Claude Code's default
+`worktree-<name>`. That one choice keeps the context refs, the `` Branch: `` line
+and the takeover working unchanged — and avoids the `Stop` hook, which skips
+`worktree-*`, silently publishing nothing.
+
+Outside the repo rather than `.claude/worktrees/`: nothing in `.gitignore` stops
+`git add -A` sweeping a nested checkout into a commit, and your main Zed
+workspace would index a second 3.9 GB tree inside itself.
+
+### Walkthrough C, revised
+
+| # | What happens |
+|---|---|
+| 1 | `/ticket` files issue #23 from wherever you are — `main` is fine |
+| 2 | It creates a worktree on `feat/23-warn-driving-speed-limit`, directory named the same with `/`→`-` |
+| 3 | It runs `zed -n <path>`; the window title *is* the directory name |
+| 4 | You start an ACP session in that window. Its cwd is the worktree. |
+| 5 | Work, merge, close — unchanged from today |
+
+Order is forced: the issue number does not exist until the issue does, and a
+directory cannot be renamed under a running session. So file first, then create,
+then open.
+
+The session that *filed* the ticket stays on `main` and does nothing further —
+the `Stop` hook skips `main`, so it publishes nothing.
+
+### Unchanged
+
+A, B, the board, every label, refine, takeover, `refs/agent-context/*`. Only
+`/ticket` and where you point a session change.
+
+### Costs
+
+| | |
+|---|---|
+| Builds | The real one. Two building worktrees either serialise on cargo's lock or cost 50–90 GB each. **sccache is a prerequisite, not a tune-up** — and unmeasured. |
+| Cleanup | Worktrees do not remove themselves. Needs folding into `finish-branch`. |
+| Conflicts | Two agents in one crate still collide at landing. Git rejects it; a merge queue only pays off at 4+ agents. |
+| Manual step | Starting the ACP session in the new window. |
+
+### Undecided
+
+- Does sccache actually help a Bevy build? Proc macros and codegen may not cache well.
+- A real two-session run has never happened. Neither has a real takeover.
 
 ## Setup
 
