@@ -203,23 +203,30 @@ fn spawn_geometry_task(
                 let mut shore = None;
                 let mut decks = Vec::new();
                 let mut labels = Vec::new();
-                let outcome = match fetched {
-                    Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
+                // **One** parse for all seven consumers. Each of them used to open
+                // its own `Reader` over this same body — seven full copies plus
+                // seven prost decodes of the tile per streamed cell.
+                let parsed = fetched
+                    .map_err(|e| format!("surface tile fetch failed: {e}"))
+                    .and_then(|bytes| vector_tiles::TileData::parse(&bytes));
+                let outcome = match parsed {
+                    Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m) {
                         Ok(mut meshes) => {
                             // Decks first: the road tessellation needs them, since a
                             // bridge-flagged street's own span belongs to the deck
                             // that carries it rather than to the ground plane.
-                            match vector_tiles::tessellate_bridges(&bytes, tile_m) {
+                            match vector_tiles::tessellate_bridges(&tile, tile_m) {
                                 Ok(d) => decks = d,
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "bridge tessellation failed");
                                 }
                             }
-                            // Roads share the fetch, the worker and the per-cell
-                            // batching with the area surfaces — they differ only
-                            // in being lines, so they ride along here rather than
-                            // running a second streamer over the same tiles.
-                            match vector_tiles::tessellate_roads(&bytes, tile_m, &decks) {
+                            // Roads share the fetch, the parse, the worker and the
+                            // per-cell batching with the area surfaces — they
+                            // differ only in being lines, so they ride along here
+                            // rather than running a second streamer over the same
+                            // tiles.
+                            match vector_tiles::tessellate_roads(&tile, tile_m, &decks) {
                                 Ok(roads) => meshes.extend(roads),
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
@@ -230,7 +237,7 @@ fn spawn_geometry_task(
                             // merging thousands of canopies is pure CPU work, so
                             // it belongs on this worker and not on the frame that
                             // uploads the result.
-                            match vegetation::scatter_vegetation(&bytes, tile_m, veg_seed(cell)) {
+                            match vegetation::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
                                 Ok(trees) => {
                                     meshes.extend(vegetation::build_vegetation_meshes(&trees));
                                 }
@@ -243,7 +250,7 @@ fn spawn_geometry_task(
                             // and was being decoded and dropped
                             // (`systems::street_furniture`).
                             match street_furniture::extract_furniture(
-                                &bytes,
+                                &tile,
                                 tile_m,
                                 veg_seed(cell),
                             ) {
@@ -258,7 +265,7 @@ fn spawn_geometry_task(
                             // from a layer of the very same tile, and parsing them
                             // here means the label renderer never touches an MVT
                             // body on the frame loop (`systems::street_labels`).
-                            match vector_tiles::extract_street_labels(&bytes, tile_m) {
+                            match vector_tiles::extract_street_labels(&tile, tile_m) {
                                 Ok(l) => labels = l,
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
@@ -269,7 +276,7 @@ fn spawn_geometry_task(
                             // the shader gets it as a rasterised distance field —
                             // built here, on the worker, for the same reason.
                             if meshes.iter().any(|m| m.group == SurfaceGroup::Water) {
-                                match vector_tiles::water_shore_field(&bytes, tile_m) {
+                                match vector_tiles::water_shore_field(&tile, tile_m) {
                                     Ok(field) => shore = field,
                                     Err(e) => {
                                         tracing::warn!(cell = ?cell, error = %e, "shore field failed");
@@ -284,7 +291,7 @@ fn spawn_geometry_task(
                         }
                     },
                     Err(e) => {
-                        tracing::warn!(cell = ?cell, error = %e, "surface tile fetch failed");
+                        tracing::warn!(cell = ?cell, error = %e, "surface tile unusable");
                         None
                     }
                 };

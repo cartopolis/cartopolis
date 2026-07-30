@@ -20,8 +20,11 @@
 //! * **Styling.** There is no cartography in the data. [`PAINT_ORDER`] *is* the
 //!   map's look, bottom layer first.
 
+use std::cell::OnceCell;
+
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
+use mvt_reader::layer::Layer;
 use mvt_reader::Reader;
 use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
@@ -30,6 +33,85 @@ use tiny_skia::{
 use std::collections::HashMap;
 
 use crate::systems::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+
+/// One tile body, parsed **once**, with its decoded features memoised per layer.
+///
+/// Everything that reads an MVT used to take `&[u8]` and open its own [`Reader`],
+/// which meant `Reader::new(bytes.to_vec())` — a full copy plus a prost decode of
+/// the whole tile — per *function*. A single `map_geometry` cell ran four of them
+/// over the same body ([`tessellate_surfaces`], [`tessellate_roads`],
+/// [`vegetation::scatter_vegetation`], [`water_shore_field`]) and a globe tile ran
+/// two ([`render_mvt`], [`ocean_mask`]). Taking `&TileData` instead makes the
+/// parse the caller's, once, and every consumer of that body shares it.
+///
+/// The per-layer memo matters for a second reason: `Reader::get_features` decodes
+/// geometry *and* properties into a fresh `Vec<Feature>` on **every** call, and
+/// [`PAINT_ORDER`] lists `streets` twice (casing then fill) and `buildings` twice
+/// (fill then outline) — so the two heaviest layers of every rendered tile were
+/// decoded twice each. `OnceCell` (not `RefCell`) because a decoded layer is never
+/// invalidated; the interior mutability is initialise-once, so `&TileData` stays
+/// the shape every consumer wants.
+///
+/// Deliberately **not** cached across tasks: a parsed reader holds `geo_types`
+/// f32 geometry for every feature in the tile and nothing here measures how much
+/// that is, whereas `tile_source`'s byte cache holds things whose size is exactly
+/// known. Collapsing the ~179 repeat parses a fresh anchor makes is the obvious
+/// follow-up, once someone has a number for the memory.
+pub struct TileData {
+    reader: Reader,
+    layers: Vec<Layer>,
+    /// Decoded features per `Layer::layer_index`. Empty for a layer that failed
+    /// to decode — the byte-taking callers all treated that as "skip the layer",
+    /// and folding it in here keeps that behaviour in one place.
+    features: Vec<OnceCell<Vec<Feature>>>,
+}
+
+impl TileData {
+    /// Parse a tile body. The one `Reader::new` in the client.
+    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+        let layers = reader
+            .get_layer_metadata()
+            .map_err(|e| format!("mvt layers: {e:?}"))?;
+        // Indexed by `layer_index`, which the reader assigns as the layer's
+        // position — but size from the maximum rather than the count, so a source
+        // that ever numbered them otherwise cannot index out of bounds.
+        let slots = layers.iter().map(|l| l.layer_index + 1).max().unwrap_or(0);
+        Ok(Self {
+            reader,
+            layers,
+            features: (0..slots).map(|_| OnceCell::new()).collect(),
+        })
+    }
+
+    /// Every layer's metadata, in tile order.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    /// A named layer's metadata, or `None` if the tile has no such layer.
+    pub fn layer(&self, name: &str) -> Option<&Layer> {
+        self.layers.iter().find(|l| l.name == name)
+    }
+
+    /// A layer's decoded features, decoded on first ask and reused after.
+    pub fn features(&self, layer: &Layer) -> &[Feature] {
+        let Some(slot) = self.features.get(layer.layer_index) else {
+            return &[];
+        };
+        slot.get_or_init(|| self.reader.get_features(layer.layer_index).unwrap_or_default())
+    }
+
+    /// A layer's extent, with Shortbread's default substituted for a source that
+    /// reports none. Every consumer needs this and every one of them wrote it out.
+    pub fn extent(layer: &Layer) -> f32 {
+        if layer.extent == 0 {
+            4096.0
+        } else {
+            layer.extent as f32
+        }
+    }
+}
 
 /// Edge length in pixels of a rendered tile. Larger than the 256 px raster tiles
 /// we used to fetch: the texture is stretched across a whole region on the ground,
@@ -313,12 +395,7 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
 ///
 /// `sub` selects the magnified sub-rectangle for overzoomed requests; pass
 /// [`SubTile::WHOLE`] to draw the source tile as-is.
-pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     let mut pixmap =
         Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
     pixmap.fill(tiny_skia::Color::from_rgba8(
@@ -339,17 +416,16 @@ pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
     };
 
     for (layer_name, draw) in PAINT_ORDER {
-        let Some(meta) = layers.iter().find(|l| l.name == *layer_name) else {
+        let Some(meta) = tile.layer(layer_name) else {
             continue;
         };
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
+        // Memoised (`TileData::features`), which is what makes the two `streets`
+        // passes and the two `buildings` passes one decode each rather than two.
+        let features = tile.features(meta);
         if features.is_empty() {
             continue;
         }
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
-        let scale = px * f / extent;
+        let scale = px * f / TileData::extent(meta);
         let transform = Transform::from_row(
             scale,
             0.0,
@@ -359,7 +435,7 @@ pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
             -(sub.y as f32) * px,
         );
 
-        for feature in &features {
+        for feature in features {
             let kind = kind_of(feature);
             match draw {
                 Draw::Fill(rgb) => {
@@ -701,12 +777,6 @@ fn land_group(kind: &str) -> Option<SurfaceGroup> {
     })
 }
 
-/// Open an MVT body. Shared with `systems::vegetation`, which reads the same
-/// `land` layer for a different purpose and should not re-derive the error text.
-pub(crate) fn mvt_reader(bytes: &[u8]) -> Result<Reader, String> {
-    Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))
-}
-
 /// Clip one ring to the square `[0, extent]²` (Sutherland–Hodgman), returning it
 /// **open** — no repeated last point — with consecutive duplicates dropped.
 ///
@@ -858,15 +928,10 @@ pub struct SurfaceMesh {
 /// units. Only water and landuse are handled here — buildings deliberately are not,
 /// because 3DBAG (ADR-027) and the Overpass detail patches (ADR-022) already supply
 /// them in 3D, and they are ~75% of a tile's triangles.
-pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn tessellate_surfaces(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
 
-    for meta in &layers {
+    for meta in tile.layers() {
         // (layer, fixed group) — `land` resolves its group per feature instead.
         let fixed = match meta.name.as_str() {
             "ocean" | "water_polygons" => Some(SurfaceGroup::Water),
@@ -874,13 +939,10 @@ pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>
             "land" => None,
             _ => continue,
         };
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let extent = TileData::extent(meta);
         let scale = tile_m / extent;
 
-        for feature in &features {
+        for feature in tile.features(meta) {
             let group = match fixed {
                 Some(g) => g,
                 None => match kind_of(feature).and_then(land_group) {
@@ -984,22 +1046,16 @@ impl BridgeDeck {
 /// why a viaduct was nothing but the road ribbon crossing it. Measured over
 /// Groningen station: the Emmaviaduct arrives as 34 × 149 m and 68 × 176 m of
 /// footprint. That is a deck you can stand geometry on.
-pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "bridges") else {
+pub fn tessellate_bridges(tile: &TileData, tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+    let Some(meta) = tile.layer("bridges") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
     let mut decks = Vec::new();
-    for feature in &features {
+    for feature in features {
         let mut polys: Vec<&geo_types::Polygon<f32>> = Vec::new();
         match &feature.geometry {
             Geometry::Polygon(p) => polys.push(p),
@@ -1134,22 +1190,15 @@ const MITER_LIMIT: f32 = 2.5;
 /// under a structure standing several metres above it. Only `bridge` features are
 /// dropped, so the road *under* a viaduct keeps every metre of its own ribbon.
 pub fn tessellate_roads(
-    bytes: &[u8],
+    tile: &TileData,
     tile_m: f32,
     decks: &[BridgeDeck],
 ) -> Result<Vec<SurfaceMesh>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
-    let Some(meta) = layers.iter().find(|l| l.name == "streets") else {
+    let Some(meta) = tile.layer("streets") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     let nodes = street_nodes(&features);
 
@@ -1318,22 +1367,16 @@ const LABEL_MIN_LEN_M: f32 = 15.0;
 /// crossing a cell boundary contributes its own stretch to each cell rather than a
 /// full copy to both — the label renderer's same-name spacing rule then thins the
 /// repeats by *screen* distance, which is the only place that judgement can be made.
-pub fn extract_street_labels(bytes: &[u8], tile_m: f32) -> Result<Vec<StreetLabelLine>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "street_labels") else {
+pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetLabelLine>, String> {
+    let Some(meta) = tile.layer("street_labels") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
     let mut out = Vec::new();
-    for feature in &features {
+    for feature in features {
         let Some(name) = str_prop(feature, "name").filter(|n| !n.is_empty()) else {
             continue;
         };
@@ -1798,12 +1841,7 @@ pub const WATER_LAYERS: [&str; 2] = ["ocean", "water_polygons"];
 ///
 /// Anti-aliased on purpose: the mask feeds a roughness blend, and a hard-edged
 /// coastline would put a stair-stepped gloss boundary along every shore.
-pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn ocean_mask(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     let mut pixmap =
         Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
@@ -1814,15 +1852,11 @@ pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
 
     let f = sub.factor as f32;
     let px = TILE_PX as f32;
-    for meta in &layers {
+    for meta in tile.layers() {
         if !WATER_LAYERS.contains(&meta.name.as_str()) {
             continue;
         }
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
-        let scale = px * f / extent;
+        let scale = px * f / TileData::extent(meta);
         let transform = Transform::from_row(
             scale,
             0.0,
@@ -1831,7 +1865,7 @@ pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
             -(sub.x as f32) * px,
             -(sub.y as f32) * px,
         );
-        for feature in &features {
+        for feature in tile.features(meta) {
             fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
         }
     }
@@ -1877,12 +1911,7 @@ pub struct ShoreField {
 /// — which is why nothing is padded around the raster. Treating the border as
 /// land instead (the obvious padding) would draw a shoreline straight down the
 /// middle of every river that crosses a tile edge.
-pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreField>, String> {
     let size = SHORE_FIELD_PX;
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
@@ -1892,16 +1921,13 @@ pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>
     };
 
     let mut any_water = false;
-    for meta in &layers {
+    for meta in tile.layers() {
         if !WATER_LAYERS.contains(&meta.name.as_str()) {
             continue;
         }
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let extent = TileData::extent(meta);
         let transform = Transform::from_scale(size as f32 / extent, size as f32 / extent);
-        for feature in &features {
+        for feature in tile.features(meta) {
             if area_path(&feature.geometry).is_some() {
                 any_water = true;
             }
@@ -2049,13 +2075,120 @@ pub fn looks_like_raster(bytes: &[u8]) -> bool {
         || (bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
 }
 
+/// Parse-then-call shims, for callers that hold only bytes: the fixture tests
+/// (which are asserting about one tile in isolation, where a shared [`TileData`]
+/// would only be ceremony) and the `TileData`-vs-bytes equivalence test.
+///
+/// Production code must **not** use these — a `&[u8]` call site is exactly the
+/// duplicate parse `TileData` exists to remove.
+#[cfg(test)]
+mod bytes {
+    use super::*;
+
+    pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
+        super::render_mvt(&TileData::parse(bytes)?, sub)
+    }
+
+    pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
+        super::tessellate_surfaces(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn tessellate_roads(
+        bytes: &[u8],
+        tile_m: f32,
+        decks: &[BridgeDeck],
+    ) -> Result<Vec<SurfaceMesh>, String> {
+        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks)
+    }
+
+    pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+        super::tessellate_bridges(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn extract_street_labels(
+        bytes: &[u8],
+        tile_m: f32,
+    ) -> Result<Vec<StreetLabelLine>, String> {
+        super::extract_street_labels(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
+        super::ocean_mask(&TileData::parse(bytes)?, sub)
+    }
+
+    pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>, String> {
+        super::water_shore_field(&TileData::parse(bytes)?, tile_m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::bytes::{
+        extract_street_labels, ocean_mask, render_mvt, tessellate_bridges, tessellate_roads,
+        tessellate_surfaces, water_shore_field,
+    };
     use super::*;
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
     /// (now self-hosted at tiles.garage44.eu; the archive is identical).
     const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+
+    /// A `TileData` shared by several consumers must produce byte-for-byte what
+    /// each of them produced from its own parse. This is the whole safety claim
+    /// of step 2 — the outputs feed the map's pixels, its meshes and the globe's
+    /// ocean mask, and a wrong hand-off shows up as missing water or roads, which
+    /// only a screenshot would otherwise catch.
+    #[test]
+    fn one_shared_parse_matches_a_parse_per_call() {
+        let tile_m = 1500.0;
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse once");
+
+        assert_eq!(
+            super::render_mvt(&tile, SubTile::WHOLE).unwrap(),
+            render_mvt(GRONINGEN_Z14, SubTile::WHOLE).unwrap(),
+        );
+        assert_eq!(
+            super::ocean_mask(&tile, SubTile::WHOLE).unwrap(),
+            ocean_mask(GRONINGEN_Z14, SubTile::WHOLE).unwrap(),
+        );
+        let same = |a: &[SurfaceMesh], b: &[SurfaceMesh]| {
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(b) {
+                assert_eq!(x.group, y.group);
+                assert_eq!(x.positions, y.positions);
+                assert_eq!(x.indices, y.indices);
+                assert_eq!(x.uvs, y.uvs);
+            }
+        };
+        same(
+            &super::tessellate_surfaces(&tile, tile_m).unwrap(),
+            &tessellate_surfaces(GRONINGEN_Z14, tile_m).unwrap(),
+        );
+        same(
+            &super::tessellate_roads(&tile, tile_m, &[]).unwrap(),
+            &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
+        );
+        assert_eq!(
+            super::water_shore_field(&tile, tile_m).unwrap().unwrap().data,
+            water_shore_field(GRONINGEN_Z14, tile_m).unwrap().unwrap().data,
+        );
+        let trees = crate::systems::vegetation::scatter_vegetation(&tile, tile_m, 7).unwrap();
+        let fresh = crate::systems::vegetation::scatter_vegetation(
+            &TileData::parse(GRONINGEN_Z14).unwrap(),
+            tile_m,
+            7,
+        )
+        .unwrap();
+        assert_eq!(trees.len(), fresh.len(), "vegetation scatter diverged");
+
+        // …and asking twice for the same layer really is memoised, not just
+        // consistent: the paint order visits `streets` and `buildings` twice.
+        let streets = tile.layer("streets").expect("fixture has streets");
+        assert!(std::ptr::eq(
+            tile.features(streets).as_ptr(),
+            tile.features(streets).as_ptr(),
+        ));
+    }
 
     #[test]
     fn fixture_has_expected_shortbread_layers() {
@@ -2641,11 +2774,10 @@ mod tests {
         // decide how wide each one is drawn and whether it is drawn at all, so
         // this is the difference between "the styling lost that road" and "the
         // data never had it".
-        let reader = mvt_reader(tile).unwrap();
-        let meta = reader.get_layer_metadata().unwrap();
-        let streets = meta.iter().find(|l| l.name == "streets").unwrap();
+        let parsed = TileData::parse(tile).unwrap();
+        let streets = parsed.layer("streets").unwrap();
         let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
-        for f in &reader.get_features(streets.layer_index).unwrap() {
+        for f in parsed.features(streets) {
             let flags = ["bridge", "tunnel", "oneway", "oneway_reverse", "link"]
                 .iter()
                 .filter(|n| flag_of(f, n))

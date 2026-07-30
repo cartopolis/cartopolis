@@ -661,11 +661,27 @@ pub fn update_data_layers(
     while let Some((li, cx, cy)) = dl.dispatch.next(now_secs) {
         let results = results.clone();
         let ground = terrain.snapshot();
+        // Fetch on the task pool, parse + mesh on the worker pool (ADR-033). The
+        // `serde_json` decode of an Overpass response and the merged marker mesh
+        // are both pure arithmetic; on wasm `IoTaskPool` is the main thread, so
+        // running them here was running them on the frame loop.
         IoTaskPool::get()
             .spawn(async move {
-                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat, ground).await;
-                if let Ok(mut g) = results.lock() {
-                    g.push((li, (cx, cy), built));
+                match fetch_cell_text(&LAYER_DEFS[li], cx, cy).await {
+                    Ok(text) => {
+                        crate::platform::workers::submit(Box::new(move || {
+                            let built =
+                                build_layer_cell(li, &text, cx, cy, ax, ay, z, lat, ground);
+                            if let Ok(mut g) = results.lock() {
+                                g.push((li, (cx, cy), built));
+                            }
+                        }));
+                    }
+                    Err(e) => {
+                        if let Ok(mut g) = results.lock() {
+                            g.push((li, (cx, cy), Err(e)));
+                        }
+                    }
                 }
             })
             .detach();
@@ -1478,11 +1494,15 @@ struct Poi {
     addr: Option<String>,
 }
 
-/// Fetch one layer cell (disk-cached Overpass) and build its merged marker
-/// mesh, anchored to the cell centre's BigSpace grid cell for f32 precision.
-/// Returns `None` for cells without matching POIs.
-async fn build_layer_cell(
+/// Parse one layer cell's Overpass body and build its merged marker mesh, anchored
+/// to the cell centre's BigSpace grid cell for f32 precision. Returns `None` for
+/// cells without matching POIs.
+///
+/// Pure CPU — no I/O — which is what lets it run on [`crate::platform::workers`];
+/// [`fetch_cell_text`] is the awaited half.
+fn build_layer_cell(
     li: usize,
+    text: &str,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -1492,7 +1512,7 @@ async fn build_layer_cell(
     ground: crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<CellBuild>, String> {
     let def = &LAYER_DEFS[li];
-    let pois = fetch_cell(def, cx, cy).await?;
+    let pois = parse_pois(def, text)?;
     if pois.is_empty() {
         return Ok(None);
     }
@@ -1554,14 +1574,18 @@ fn cell_cache_key(key: &str, cx: i64, cy: i64) -> String {
     format!("layers/{}/{}/{}/{}.json", key, LAYER_ZOOM, cx, cy)
 }
 
-/// One cell's POIs, from the storage cache or a single Overpass query. Runs on an
-/// `IoTaskPool` task; dispatch spacing (the old `thread::sleep` throttle) now lives
-/// in the caller's [`Dispatcher`]. `overpass_query` is still synchronous — it goes
-/// through the http seam in the final Overpass-group step.
-async fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String> {
+/// One cell's Overpass response **as text**, from the storage cache or a single
+/// query. Runs on an `IoTaskPool` task; dispatch spacing (the old `thread::sleep`
+/// throttle) lives in the caller's [`Dispatcher`].
+///
+/// Deliberately returns the raw body rather than parsed POIs: the `serde_json`
+/// parse is CPU work and belongs on `platform::workers` with the mesh build, not
+/// on the thread that awaited the fetch (ADR-033 — on wasm that thread is the one
+/// drawing the frame, and `serde_json` was ~46% of its non-idle time).
+async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key(def.key, cx, cy);
     if let Some(cached) = storage::get_string(&key).await {
-        return parse_pois(def, &cached);
+        return Ok(cached);
     }
 
     let (north, west) = tile_to_lat_lng(cx, cy, LAYER_ZOOM);
@@ -1569,7 +1593,7 @@ async fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String
     let bbox = format!("{south},{west},{north},{east}");
     let fetched = overpass_query(&def.query.replace("{bbox}", &bbox)).await?;
     storage::put(&key, fetched.as_bytes()).await;
-    parse_pois(def, &fetched)
+    Ok(fetched)
 }
 
 /// Parse an Overpass node response into POIs via the layer's classifier.

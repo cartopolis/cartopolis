@@ -36,7 +36,7 @@ use big_space::prelude::{BigSpace, GridCell};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::map_stream::MapStream;
 use crate::systems::globe_ocean::{GlobeOcean, GlobeOceanGloss, GlobeSurfaceMaterial};
-use crate::systems::tile_loader::load_globe_tile_rgba;
+use crate::systems::tile_loader::fetch_globe_tile_payload;
 use vibe_core::geo::TangentFrame;
 use vibe_core::world::tile_to_meters;
 use vibe_core::TileKey;
@@ -343,7 +343,7 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 
 /// Does tile `a` cover (is an ancestor of, or equal) tile `b`?
 /// Build a decoded tile's mipmap chain. Pure CPU work, called on the fetch workers
-/// (the fetch + decode/render itself is `tile_loader::load_tile_rgba`).
+/// (the fetch + decode/render itself is `tile_loader::fetch_globe_tile_payload`).
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
     let (data, mip_count) =
@@ -890,16 +890,33 @@ fn spawn_globe_tile(
                 return;
             }
             let still_wanted = wanted.lock().map(|w| w.contains(&key)).unwrap_or(true);
-            let outcome = if !still_wanted {
-                TileFetch::Cancelled
-            } else {
-                match load_globe_tile_rgba(&key, &template).await {
-                    Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
-                    Err(_) => TileFetch::Failed,
+            if !still_wanted {
+                if let Ok(mut g) = results.lock() {
+                    g.push((key, TileFetch::Cancelled));
                 }
-            };
-            if let Ok(mut g) = results.lock() {
-                g.push((key, outcome));
+                return;
+            }
+            // Fetch here, decode on the worker pool (ADR-033). The rasterise +
+            // ocean mask + mip chain is the whole cost of a globe tile and up to
+            // `QT_FETCH_BUDGET` of them are in flight at once; on wasm this future
+            // runs on the main thread, so doing that here was the frame loop.
+            match fetch_globe_tile_payload(&key, &template).await {
+                Ok(payload) => {
+                    crate::platform::workers::submit(Box::new(move || {
+                        let outcome = match payload.decode() {
+                            Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
+                            Err(_) => TileFetch::Failed,
+                        };
+                        if let Ok(mut g) = results.lock() {
+                            g.push((key, outcome));
+                        }
+                    }));
+                }
+                Err(_) => {
+                    if let Ok(mut g) = results.lock() {
+                        g.push((key, TileFetch::Failed));
+                    }
+                }
             }
         })
         .detach();

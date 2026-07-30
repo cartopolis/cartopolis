@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::work::Dispatcher;
-use crate::platform::{http, storage};
 pub use vibe_core::TileKey;
 
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
@@ -49,9 +48,13 @@ impl Default for TileCache {
     }
 }
 
-/// Spawn one tile fetch+decode task on the `IoTaskPool` (ADR-033 seam): fetch via
-/// the http/storage seams, decode + mip-chain off the main thread, push the result
-/// back for the render loop to upload. Replaces one iteration of the old worker pool.
+/// Spawn one tile fetch+decode task (ADR-033 seam): await the fetch on the
+/// `IoTaskPool`, then hand the decode + mip chain to [`crate::platform::workers`]
+/// and push the finished pixels back for the render loop to upload.
+///
+/// The split is the same one `map_stream::spawn_map_tile` makes and for the same
+/// reason: on wasm `IoTaskPool` *is* the main thread, so awaiting the fetch there
+/// is free but decoding there is not.
 fn spawn_tile_task(
     key: TileKey,
     template: String,
@@ -59,25 +62,41 @@ fn spawn_tile_task(
 ) {
     IoTaskPool::get()
         .spawn(async move {
-            let outcome = match load_tile_rgba(&key, &template).await {
-                Ok(rgba) => {
-                    let (width, height) = (rgba.width(), rgba.height());
-                    let (data, mip_count) =
-                        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
-                    Some(TileImageData {
-                        data,
-                        width,
-                        height,
-                        mip_count,
-                    })
+            match fetch_tile_payload(&key, &template).await {
+                Ok(payload) => {
+                    crate::platform::workers::submit(Box::new(move || {
+                        let outcome = match payload.decode() {
+                            Ok(rgba) => {
+                                let (width, height) = (rgba.width(), rgba.height());
+                                let (data, mip_count) =
+                                    crate::systems::rendering::build_mip_chain(
+                                        width,
+                                        height,
+                                        rgba.into_raw(),
+                                    );
+                                Some(TileImageData {
+                                    data,
+                                    width,
+                                    height,
+                                    mip_count,
+                                })
+                            }
+                            Err(e) => {
+                                tracing::error!(tile = %key.to_path(), error = %e, "map tile decode failed");
+                                None
+                            }
+                        };
+                        if let Ok(mut r) = results.lock() {
+                            r.push((key, outcome));
+                        }
+                    }));
                 }
                 Err(e) => {
                     tracing::error!(tile = %key.to_path(), error = %e, "failed to load map tile");
-                    None
+                    if let Ok(mut r) = results.lock() {
+                        r.push((key, None));
+                    }
                 }
-            };
-            if let Ok(mut r) = results.lock() {
-                r.push((key, outcome));
             }
         })
         .detach();
@@ -110,7 +129,7 @@ pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
 
 /// What a tile endpoint serves. Raster payloads are decoded by the `image` crate;
 /// vector payloads are drawn by [`crate::systems::vector_tiles`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileSourceKind {
     Raster,
     Vector,
@@ -155,7 +174,7 @@ pub fn tile_source_kind(template: &str) -> TileSourceKind {
 /// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
 /// The extension tracks the source kind so a raster and a vector cache can coexist
 /// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
-fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
+pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
     let ext = match kind {
         TileSourceKind::Raster => "png",
         TileSourceKind::Vector => "mvt",
@@ -163,23 +182,18 @@ fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
     format!("tiles/{}/{}/{}.{ext}", key.z, key.x, key.y)
 }
 
-/// Fetch a single tile's raw bytes, using the on-disk cache first and falling back
-/// to the network (which is then cached). The payload may be a raster image or an
-/// MVT body — see [`load_tile_rgba`] for the decoded form.
-pub async fn load_tile_image(key: &TileKey, template: &str) -> Result<Vec<u8>, String> {
-    let kind = tile_source_kind(template);
-    let cache_key = tile_cache_key(key, kind);
-    if let Some(bytes) = storage::get(&cache_key).await {
-        if !bytes.is_empty() {
-            return Ok(bytes);
-        }
-    }
-
-    let url = format_osm_tile_url(template, key);
-    let bytes = http::fetch(http::Request::get(url)).await?;
-    // Best-effort write-through to the cache.
-    storage::put(&cache_key, &bytes).await;
-    Ok(bytes)
+/// Fetch a single tile's raw bytes. A thin wrapper over
+/// [`tile_source::tile_bytes`], which owns the in-memory byte cache, the
+/// single-flight table and — behind those — the on-disk cache and the network.
+/// The payload may be a raster image or an MVT body — see [`TilePayload::decode`]
+/// for the decoded form.
+///
+/// `Arc` rather than `Vec`: several consumers share one body (the overzoom
+/// pyramid alone collapses 179 requests per anchor onto a few dozen z14 tiles),
+/// and handing each of them its own ~500 KB copy would give back most of what the
+/// cache saves.
+pub async fn load_tile_image(key: &TileKey, template: &str) -> Result<Arc<Vec<u8>>, String> {
+    crate::systems::tile_source::tile_bytes(key, template).await
 }
 
 /// Fetch a tile and hand back finished RGBA pixels, whatever the source serves.
@@ -203,10 +217,10 @@ pub async fn load_tile_image(key: &TileKey, template: &str) -> Result<Vec<u8>, S
 pub enum TilePayload {
     /// An encoded image (PNG/JPEG/WebP) — either a raster source, or a vector
     /// template that answered with an image anyway (see `looks_like_raster`).
-    Raster(Vec<u8>),
+    Raster(Arc<Vec<u8>>),
     /// A Mapbox Vector Tile plus the sub-rectangle of it we actually want.
     Vector {
-        bytes: Vec<u8>,
+        bytes: Arc<Vec<u8>>,
         sub: crate::systems::vector_tiles::SubTile,
     },
 }
@@ -221,7 +235,8 @@ impl TilePayload {
                 .map(|img| img.to_rgba8())
                 .map_err(|e| e.to_string()),
             TilePayload::Vector { bytes, sub } => {
-                let rgba = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
+                let tile = vector_tiles::TileData::parse(&bytes)?;
+                let rgba = vector_tiles::render_mvt(&tile, sub).map_err(|e| e.to_string())?;
                 image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
             }
@@ -250,10 +265,6 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
     Ok(TilePayload::Vector { bytes, sub })
 }
 
-pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::RgbaImage, String> {
-    fetch_tile_payload(key, template).await?.decode()
-}
-
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
 /// (255 = water), and whether that mask means anything.
 ///
@@ -272,19 +283,23 @@ pub async fn load_tile_rgba(key: &TileKey, template: &str) -> Result<image::Rgba
 ///   is), so `blue − red` separates them where a hue test would trip over the
 ///   green end. A misread here costs a little gloss in the wrong place, not a
 ///   wrong shape, which is why the heuristic is acceptable at all.
-pub async fn load_globe_tile_rgba(
+/// The network half of a globe tile: fetch its body and classify it, decoding
+/// nothing. Split from [`GlobeTilePayload::decode`] for the reason every loader on
+/// the ADR-033 seams is split — the fetch is awaited on the `IoTaskPool` (which on
+/// wasm *is* the main thread, where awaiting a browser fetch is free) and the
+/// decode goes to [`crate::platform::workers`], which is where a core is actually
+/// spent. Running the rasterise + mask + mip chain inline, up to `QT_FETCH_BUDGET`
+/// at a time, put all of it on the frame loop.
+pub async fn fetch_globe_tile_payload(
     key: &TileKey,
     template: &str,
-) -> Result<(image::RgbaImage, bool), String> {
+) -> Result<GlobeTilePayload, String> {
     use crate::systems::vector_tiles;
 
     if tile_source_kind(template) == TileSourceKind::Raster {
-        let bytes = load_tile_image(key, template).await?;
-        let mut rgba = image::load_from_memory(&bytes)
-            .map_err(|e| e.to_string())?
-            .to_rgba8();
-        paint_water_alpha_by_colour(&mut rgba);
-        return Ok((rgba, true));
+        return Ok(GlobeTilePayload::Raster(
+            load_tile_image(key, template).await?,
+        ));
     }
 
     let ((z, x, y), sub) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
@@ -292,27 +307,60 @@ pub async fn load_globe_tile_rgba(
     let bytes = load_tile_image(&source, template).await?;
 
     if vector_tiles::looks_like_raster(&bytes) {
-        let mut rgba = image::load_from_memory(&bytes)
-            .map_err(|e| e.to_string())?
-            .to_rgba8();
-        paint_water_alpha_by_colour(&mut rgba);
-        return Ok((rgba, true));
+        return Ok(GlobeTilePayload::Raster(bytes));
     }
+    Ok(GlobeTilePayload::Vector { bytes, sub })
+}
 
-    let pixels = vector_tiles::render_mvt(&bytes, sub).map_err(|e| e.to_string())?;
-    let mut rgba = image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, pixels)
-        .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
-    match vector_tiles::ocean_mask(&bytes, sub) {
-        Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
-            for (px, m) in rgba.pixels_mut().zip(mask) {
-                px.0[3] = m;
+/// A fetched globe tile body, still undecoded. The globe's twin of [`TilePayload`],
+/// separate because a globe tile also carries the ocean mask in its alpha.
+pub enum GlobeTilePayload {
+    Raster(Arc<Vec<u8>>),
+    Vector {
+        bytes: Arc<Vec<u8>>,
+        sub: crate::systems::vector_tiles::SubTile,
+    },
+}
+
+impl GlobeTilePayload {
+    /// The CPU half: rasterise (or image-decode) and pack the ocean mask into
+    /// alpha. Pure computation, so it runs on a worker.
+    pub fn decode(self) -> Result<(image::RgbaImage, bool), String> {
+        use crate::systems::vector_tiles;
+
+        match self {
+            GlobeTilePayload::Raster(bytes) => {
+                let mut rgba = image::load_from_memory(&bytes)
+                    .map_err(|e| e.to_string())?
+                    .to_rgba8();
+                paint_water_alpha_by_colour(&mut rgba);
+                Ok((rgba, true))
             }
-            Ok((rgba, true))
-        }
-        Ok(_) => Ok((rgba, false)),
-        Err(e) => {
-            tracing::warn!(error = %e, "ocean mask failed; globe tile stays matte");
-            Ok((rgba, false))
+            GlobeTilePayload::Vector { bytes, sub } => {
+                // One parse for both passes: the render and the mask read the same
+                // layers, and each used to open its own `Reader` over this body.
+                let tile = vector_tiles::TileData::parse(&bytes)?;
+                let pixels = vector_tiles::render_mvt(&tile, sub).map_err(|e| e.to_string())?;
+                let mut rgba = image::RgbaImage::from_raw(
+                    vector_tiles::TILE_PX,
+                    vector_tiles::TILE_PX,
+                    pixels,
+                )
+                .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
+                match vector_tiles::ocean_mask(&tile, sub) {
+                    Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
+                        for (px, m) in rgba.pixels_mut().zip(mask) {
+                            px.0[3] = m;
+                        }
+                        Ok((rgba, true))
+                    }
+                    Ok(_) => Ok((rgba, false)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ocean mask failed; globe tile stays matte");
+                        Ok((rgba, false))
+                    }
+                }
+            }
         }
     }
 }

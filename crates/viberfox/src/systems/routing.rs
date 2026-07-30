@@ -43,12 +43,11 @@ use std::collections::{BinaryHeap, HashMap};
 
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
-use mvt_reader::Reader;
 
 use vibe_core::world::tile_to_meters;
 
 use crate::systems::map_stream::lat_lng_to_tile_frac;
-use crate::systems::vector_tiles::MAX_SOURCE_ZOOM;
+use crate::systems::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at
 /// its top zoom and nothing finer exists, so this is both the best and the only
@@ -420,31 +419,24 @@ impl RoadGraph {
     ///
     /// Re-adding a tile is harmless in the sense that node identity is stable, but
     /// it would duplicate every edge — the caller tracks which tiles are in.
-    pub fn add_tile(&mut self, bytes: &[u8], tile: (i64, i64)) -> Result<(), String> {
-        let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-        let layers = reader
-            .get_layer_metadata()
-            .map_err(|e| format!("mvt layers: {e:?}"))?;
-
-        for meta in &layers {
+    pub fn add_tile(&mut self, tile_data: &TileData, tile: (i64, i64)) -> Result<(), String> {
+        for meta in tile_data.layers() {
             let routable = match meta.name.as_str() {
                 "streets" => true,
                 "street_labels" => false,
                 _ => continue,
             };
-            let Ok(features) = reader.get_features(meta.layer_index) else {
-                continue;
-            };
+            let features = tile_data.features(meta);
             // Normalise a source that ships a different extent onto our lattice,
             // so tiles from mixed sources still stitch (see the module docs).
-            let extent = if meta.extent == 0 { EXTENT } else { f64::from(meta.extent) };
+            let extent = f64::from(TileData::extent(meta));
             let scale = EXTENT / extent;
             let ox = tile.0 as f64 * EXTENT;
             let oy = tile.1 as f64 * EXTENT;
             let to_global =
                 |c: &geo_types::Coord<f32>| (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale);
 
-            for feature in &features {
+            for feature in features {
                 if routable {
                     self.add_street(feature, &to_global);
                 } else {
@@ -1573,7 +1565,8 @@ mod tests {
 
     fn graph() -> RoadGraph {
         let mut g = RoadGraph::new(53.2194);
-        g.add_tile(GRONINGEN_Z14, TILE).expect("add tile");
+        g.add_tile(&TileData::parse(GRONINGEN_Z14).expect("parse"), TILE)
+            .expect("add tile");
         g.finish();
         g
     }

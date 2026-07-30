@@ -34,6 +34,7 @@ pub mod shot_harness;
 pub mod shot_presets;
 pub mod theme;
 pub mod tile_loader;
+pub mod tile_source;
 pub mod transit_live;
 pub mod splash;
 pub mod street_furniture;
