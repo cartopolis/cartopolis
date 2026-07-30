@@ -534,14 +534,28 @@ so nothing is kept in sync by hand:
 | Holder | Form | Derived how |
 |---|---|---|
 | Forgejo issue | `#23` | the source |
-| Branch | `feat/23-warn-driving-speed-limit` | number + slug |
-| Context dir | `feat-23-warn-driving-speed-limit/` | branch, `/`→`-` |
+| Remote branch | `feat/23-warn-driving-speed-limit`, **origin only** | number + slug |
+| Context dir | `feat-23-warn-driving-speed-limit/` | remote branch, `/`→`-` |
 | Session binding | `.git/viberfox-ticket` containing `23` | written by `/ticket` |
 
 The Stop hook keys on the **marker file**, not the branch name. That closes the
 silent hole hit three times (`main`, `worktree-*`, detached HEAD): a ticketed
 session publishes no matter where its checkout points. A session with no marker
 is exploratory and publishes nothing — by choice, not by accident.
+
+### Branches live only on origin
+
+Git needs a named ref to *receive* code; that is all a branch is here. Locally
+there are none: every worktree stays **detached** (Zed's default), and code
+travels by `git push origin HEAD:feat/23-…`, the name derived from the marker.
+You never create, name, switch or push a branch — the hook does, invisibly.
+
+- Zero local branches → the one-branch-per-worktree rule is moot; nothing to
+  name, nothing to collide.
+- Two sessions on one ticket still collide **at push time** (non-fast-forward,
+  never forced). The label lock is the real guard: claim before working.
+- Landing and `finish-branch` see an ordinary branch on origin. Nothing
+  downstream changes.
 
 ### Context repo: plain files on `main`
 
@@ -575,18 +589,20 @@ The labels already are one; stated as the rule it is:
 | | |
 |---|---|
 | `/ticket` | **Start of every session, by hand.** Files the issue from the conversation, `driven` label, writes the marker. No branch creation, no checkout switching — where you sit is Zed's business. |
-| `/ticket 23` | Same binding, existing issue: claims it (`driven`), writes the marker, pulls its branch if one exists. Refuses while `agent:running`. |
-| `/handover` | Sweeps leftovers into a `wip:` commit, pushes the branch, verifies this session's digest is in the context repo, `driven`→`agent`, comments on the issue. Refuses without a marker — ticket first. |
+| `/ticket 23` | Same binding, existing issue: claims it (`driven`), writes the marker, detaches the worktree onto `origin/feat/23-…` if it exists. Refuses while `agent:running`. |
+| `/handover` | Sweeps leftovers into a `wip:` commit, pushes `HEAD` to the ticket's remote branch, verifies this session's digest is in the context repo, `driven`→`agent`, comments on the issue. Refuses without a marker — ticket first. |
 
 Take-back (remote→local) is not a command: wait until not `agent:running`, then
-`/ticket 23` in a worktree and `git pull`.
+`/ticket 23` in a fresh worktree — it fetches and detaches onto the ticket's
+remote branch.
 
 ### Parallel sessions in Zed
 
 - One thread = one worktree = one ticket. Zed 1.13 creates and removes
   worktrees natively; archiving a thread cleans its worktree up.
-- Git refuses to check the same branch out in two worktrees — that *is* the
-  guard against two local threads on one ticket.
+- No local branches means nothing to name and nothing to collide; the marker
+  is what tells worktrees apart, and push-time rejection catches two sessions
+  on one ticket.
 - A `SessionStart` hook reads the marker and injects `#23` + spec + context
   path into every new or resumed session in that worktree, so binding
   survives thread restarts. (Verified: SessionStart supports context
@@ -602,7 +618,7 @@ directory". No second mechanism.
 
 | What | Channel | When |
 |---|---|---|
-| Code | branch on `origin` | per turn if commits exist; `/handover` sweeps WIP |
+| Code | ticket branch on `origin`, pushed as `HEAD:` | per turn if commits exist; `/handover` sweeps WIP |
 | Reasoning | ticket dir in context repo | per turn, both sides |
 | Ownership | issue labels | `/ticket`, `/handover`, watcher |
 | Board | columns | watcher, from labels — unchanged |
