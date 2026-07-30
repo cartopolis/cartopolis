@@ -7,8 +7,9 @@ description: Retrieve the agent chat digest for a branch from refs/agent-context
 
 Fetch and read the chat digest published for a branch. Sessions run through
 `claude.ai/code` execute in the `viberfox-agent` container on the VPS, and a
-`Stop` hook there publishes a mechanical digest of each session to
-`refs/agent-context/<branch>`. That ref is what carries the *why* — the
+`Stop` hook publishes a mechanical digest of each session to
+`refs/agent-context/<branch>` in a **separate, private repo**. That ref carries
+the *why* — the
 alternatives that lost, the dead ends, the things the user still has to decide —
 none of which survives in the diff.
 
@@ -17,13 +18,17 @@ for why it lives on a ref outside `refs/heads/*` and how it gets deleted.
 
 ## Retrieve
 
-The namespace is deliberately not part of any default refspec, so a plain
-`git fetch` will not have it. Ask for it explicitly:
+The digests live in `jeroen/viberfox-agent-context`, **not** in this repo — it
+is private, because a transcript is never reviewed for credentials before it is
+published and viberfox itself is public. Fetch from there explicitly:
 
 ```bash
-git fetch origin '+refs/agent-context/*:refs/agent-context/*'
+git fetch ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git \
+    '+refs/agent-context/*:refs/agent-context/*'
 git for-each-ref 'refs/agent-context/**' --format='%(refname:lstrip=2)'
 ```
+
+You need read access to that repo; there is no anonymous path to it.
 
 Then list and read. One file per session, named for the session id:
 

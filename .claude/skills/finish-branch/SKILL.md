@@ -29,8 +29,12 @@ server's `post-receive.d/prune-agent-context` hook detaches a
 `git gc --prune=now` when it sees an `refs/agent-context/*` deletion:
 
 ```bash
-git push origin --delete refs/agent-context/<branch>
+git push ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git \
+    --delete refs/agent-context/<branch>
 ```
+
+Note the remote: the digests live in the private `viberfox-agent-context` repo,
+not in viberfox. Deleting from `origin` would silently succeed at nothing.
 
 **4. Prune this clone too.** The server hook cannot reach your objects. If this
 clone ever fetched the namespace, it still holds them:
@@ -44,11 +48,12 @@ git gc --prune=now
 The `reflog expire` is only needed locally — a working clone does have reflogs
 that a bare server repo does not.
 
-**5. Verify, don't assume.** Confirm the ref is gone from `origin`, and that a
+**5. Verify, don't assume.** Confirm the ref is gone from the context repo, and that a
 digest blob you noted in step 1 is no longer readable:
 
 ```bash
-git ls-remote origin 'refs/agent-context/*'
+git ls-remote ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git \
+    'refs/agent-context/*'
 git cat-file -e <blob-from-step-1> && echo "STILL PRESENT" || echo gone
 ```
 

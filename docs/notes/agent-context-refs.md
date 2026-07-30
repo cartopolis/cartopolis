@@ -15,9 +15,40 @@ transcript line carries a `gitBranch` field, so branch → session mapping is
 exact rather than guessed.
 
 The reasoning behind an unfinished branch is published as a digest on
-**`refs/agent-context/<branch>`**. It is public while the branch is open and
-must be *unretrievable* once the branch is merged — that requirement is what
-drove every choice below.
+**`refs/agent-context/<branch>`** in a **separate, private repo**
+(`jeroen/viberfox-agent-context`). It is readable by people with access to that
+repo while the branch is open, and must be *unretrievable* once the branch is
+merged — that requirement is what drove every choice below.
+
+## Why a private repo, and not viberfox itself
+
+Corrected 2026-07-30. The digests were originally pushed to a namespace inside
+`jeroen/viberfox`, on the reasoning that a namespace outside `refs/heads/*` is
+not picked up by clone or plain fetch. That is true, and it is **not an access
+control** — measured:
+
+```
+git clone --no-local https://code.garage44.eu/jeroen/viberfox.git   # anonymous
+git fetch origin '+refs/agent-context/*:refs/agent-context/*'       # all four refs
+```
+
+viberfox is a public repo, so *anyone*, with no account, retrieved every digest
+by asking for the refspec. The namespace choice buys **discoverability
+hygiene**, not privacy, and the two were conflated.
+
+A transcript is never reviewed for credentials before it is published, and the
+digest keeps user and assistant prose verbatim and untruncated — one sentence
+quoting a password ships it whole. Tool-call inputs are truncated at 100
+characters, which is a margin, not a control.
+
+So the digests moved to a private repo, and the filter gained keyword-based
+redaction (`password=`, `token:`, `Authorization:`, vendor-prefixed keys). A
+bare 40-hex string is deliberately **not** redacted: a Forgejo token and a git
+object id are the same shape, and SHAs are much of what makes a digest useful.
+
+Audited at the time of the move: none of the six existing digests contained a
+credential. They were migrated to the private repo and destroyed in the public
+one, verified by tracer object.
 
 ## Why a ref outside `refs/heads/*`
 
@@ -30,7 +61,9 @@ Measured 2026-07-30 with scratch bare repos:
 | explicit `git fetch origin '+refs/agent-context/*:…'` | yes |
 
 So no clone accumulates chat history by accident; only an agent that asks gets
-it. `uploadpack.hideRefs` was tried and **rejected**: it does stop the
+it. That is still worth having *inside* the private repo — it keeps a routine
+clone from dragging transcripts along — but see above: it is hygiene, not a
+boundary. `uploadpack.hideRefs` was tried and **rejected**: it does stop the
 advertisement, but it also makes the explicit fetch impossible, which is the one
 access path we need.
 
@@ -63,7 +96,9 @@ prune — **not** a history rewrite. No SHA on `main` changes and nobody re-clon
 
 ## Where the prune is triggered from
 
-`hooks/post-receive.d/prune-agent-context` in the *server* repo. Forgejo's
+`hooks/post-receive.d/prune-agent-context`, now installed in **both** server
+repos — the private context repo (where deletions happen) and viberfox (kept so
+a stray legacy ref still prunes). Forgejo's
 global `core.hooksPath` means a repo's own `hooks/post-receive` is never run by
 git, but the generated dispatcher in the shared hooks dir loops over
 `./hooks/post-receive.d/*` relative to the repo (skipping the entry named

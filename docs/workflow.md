@@ -255,10 +255,18 @@ earliest usually holds the design decision and the later ones only execute it.
 
 If no digest exists, the agent is told to say so rather than invent intent.
 
-> The digest is readable by anyone who can read the repo, for as long as the
-> branch is open. It keeps user and assistant prose and one line per tool call;
-> it drops tool *results*, thinking, and slash-command plumbing. Merging the
-> branch destroys it — see
+> **The digests live in a separate, private repo** —
+> `jeroen/viberfox-agent-context`, not in viberfox, which is public. Measured:
+> an anonymous clone plus an explicit `+refs/agent-context/*` refspec retrieved
+> every digest from a public repo, no account needed. A namespace outside
+> `refs/heads/*` keeps transcripts out of a routine clone; it was never an
+> access control.
+>
+> The digest keeps user and assistant prose verbatim and one line per tool call;
+> it drops tool *results*, thinking, and slash-command plumbing. Because a
+> transcript is not reviewed before it is published, the filter also redacts
+> values after `password=`, `token:`, `Authorization:` and vendor-prefixed keys.
+> Merging the branch destroys the digest — see
 > [notes/agent-context-refs.md](notes/agent-context-refs.md) and the
 > [`finish-branch`](../.claude/skills/finish-branch/SKILL.md) skill.
 
@@ -325,6 +333,7 @@ position goes stale.
 | `Stop` hook + jq filter | `~/.claude/hooks/agent-context-push`, `agent-context.jq` |
 | Hook registration | `~/.claude/settings.json` → `hooks.Stop` |
 | Forgejo token (`write:issue`) | `~/.config/viberfox/forgejo.env`, `0600` |
+| Digest destination | `jeroen/viberfox-agent-context` (private), over SSH. Override with `VIBERFOX_AGENT_CONTEXT_REMOTE` |
 
 **② claude.ai/code — the `viberfox-agent` container**
 
