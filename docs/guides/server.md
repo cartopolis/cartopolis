@@ -14,9 +14,11 @@ load, so we run our own instance and point the client at it with
 same region.
 
 > **Why Docker.** The upstream images (`wiktorn/overpass-api`,
-> `mediagis/nominatim`) bundle the import *and* the daily diff-update mechanism,
-> so the whole deployment — and its maintenance — reduces to a few environment
-> variables. The host OS only has to run Docker.
+> `mediagis/nominatim`) bundle the import *and* a diff-update mechanism, so the
+> whole deployment — and its maintenance — reduces to a few environment
+> variables. The host OS only has to run Docker. (We use the updates for
+> Overpass and deliberately not for Nominatim — see
+> [Static vs. updating](#static-vs-updating).)
 
 ## Host
 
@@ -43,7 +45,10 @@ your region and data):
   RAM both matter for the Nominatim import, and this fits Overpass + Nominatim for
   one country with headroom.
 - **Extra storage — the 200 GB block volume**: mounted at `/data` (step 1) to keep
-  the geo data off the OS disk. 200 GB is comfortable for the Netherlands; size up
+  the geo data off the OS disk. Measured, Netherlands: Nominatim ~23 GB, Overpass
+  ~10 GB — but a Nominatim flatnode file adds **~105 GB** if you keep diff
+  updates, since it is sized by the global node-ID space rather than the extract.
+  Running frozen (as we do) is what makes 200 GB comfortable; size up
   only to go multi-country. You can attach more later.
 - **Location — nearest your users**: for NL, Germany (Limburg) or France
   (Gravelines). The workload isn't latency-sensitive, so this is just a tiebreaker.
@@ -76,7 +81,7 @@ sudo apt-get update && sudo apt-get upgrade -y
     └── .env                 # NOMINATIM_PASSWORD (secret, chmod 600, not in git)
 ```
 
-Named volumes (`overpass_db`, `nominatim_data`, `nominatim_flatnode`,
+Named volumes (`overpass_db`, `nominatim_data`,
 `caddy_data`, `caddy_config`) all resolve under `/data/docker/volumes`.
 
 ## Executing the steps
@@ -198,10 +203,11 @@ Key choices, encoded as env vars:
   the `.osm.bz2` the image expects, so `OVERPASS_PLANET_PREPROCESS` converts the
   `.pbf` to `.bz2` in-place with `osmium` (bundled in the image). Diffs come from
   `OVERPASS_DIFF_URL`, applied daily (`OVERPASS_UPDATE_SLEEP=86400`).
-- **Nominatim** — imports `PBF_URL`, keeps up to date from `REPLICATION_URL`.
-  `IMPORT_STYLE=address` is the lean style (address/POI geocoding, faster
-  import). Postgres 16 data lives at `/var/lib/postgresql/16/main`; the flatnode
-  file is persisted so diff updates work.
+- **Nominatim** — imports `PBF_URL`. `IMPORT_STYLE=address` is the lean style
+  (address/POI geocoding, faster import). Postgres 16 data lives at
+  `/var/lib/postgresql/16/main`. **`FREEZE=true`: no diff updates** — see
+  [Static vs. updating](#static-vs-updating) before changing that, because the
+  flatnode file it needs costs ~105 GB.
 - **Caddy** — terminates TLS, proxies `overpass.example.com` → `overpass:80`.
 
 ```yaml
@@ -232,12 +238,17 @@ services:
     restart: unless-stopped
     environment:
       PBF_URL: https://download.geofabrik.de/europe/netherlands-latest.osm.pbf
-      REPLICATION_URL: https://download.geofabrik.de/europe/netherlands-updates/
       IMPORT_STYLE: address
       NOMINATIM_PASSWORD: ${NOMINATIM_PASSWORD}
+      # Static, query-only. Drops the replication block in the image's
+      # /app/start.sh entirely — including an unconditional
+      # `nominatim replication --init` that otherwise runs on EVERY boot even
+      # with UPDATE_MODE unset. See "Static vs. updating" below.
+      FREEZE: "true"
     volumes:
       - nominatim_data:/var/lib/postgresql/16/main
-      - nominatim_flatnode:/nominatim/flatnode
+      # No nominatim_flatnode mount: the node cache is only read by osm2pgsql
+      # during import and diff updates, never by queries, and it is ~105 GB.
     shm_size: 2g
     ports:
       - "127.0.0.1:8080:8080"
@@ -262,7 +273,6 @@ networks:
 volumes:
   overpass_db:
   nominatim_data:
-  nominatim_flatnode:
   caddy_data:
   caddy_config:
 ```
@@ -522,12 +532,65 @@ Smoke test: `curl --compressed https://3dbag.garage44.eu/coverage.json`.
 
 ## Maintenance
 
-Routine upkeep is mostly automatic — the containers self-update from Geofabrik
-diffs. What's left is occasional and change-driven:
+Routine upkeep is mostly automatic. What's left is occasional and change-driven.
 
-- **Diff updates** — built in. Overpass applies daily
-  (`OVERPASS_UPDATE_SLEEP`); Nominatim replicates from `REPLICATION_URL`. Nothing
-  to schedule.
+**Diff updates** — Overpass applies them daily (`OVERPASS_UPDATE_SLEEP`), nothing
+to schedule. **Nominatim does not update**: it runs frozen, on purpose.
+
+### Static vs. updating
+
+Nominatim runs **static** (`FREEZE=true`, no flatnode volume). Reversing that is
+a full re-import, so the trade is worth understanding before you change it.
+
+**What the flatnode file is.** A node cache osm2pgsql writes during import,
+sized by the *global* OSM node-ID space rather than the extract — so a
+Netherlands-only import still produced **105 GB**, over half of `/data`. It is
+read only by osm2pgsql, during import and while applying diffs. **Queries never
+touch it**; they hit Postgres. A frozen instance therefore has no reader for it
+at all.
+
+Measured on this host (2026-07-30): deleting it freed 105 GB and cost ~30 s of
+downtime. Search, reverse and the public route all returned 200 immediately
+after, and again after a forced restart with the file absent.
+
+**Why `FREEZE=true` is required, not cosmetic.** The image's `/app/start.sh`
+runs `nominatim replication --init` *unconditionally* whenever `REPLICATION_URL`
+is set and `FREEZE` is not — outside the `UPDATE_MODE` branches, so it fires on
+every boot even when no updater is configured. `FREEZE=true` drops that whole
+block. Without it, a restart eventually reaches for a file that is no longer
+there. Confirm after a restart:
+
+```bash
+docker logs --since 5m nominatim | grep -i replication   # expect: replicationpid=0
+```
+
+**What you give up.** Incremental updates, permanently, without re-importing.
+Geocoding results are a snapshot of the extract's import date. For viberfox that
+is acceptable: place names and addresses move slowly, and the client's failure
+mode is a missing search result, not incorrect data.
+
+**To re-enable updates** (~105 GB and a 1–3 h re-import):
+
+1. Drop `FREEZE`, restore `REPLICATION_URL` and the `nominatim_flatnode` volume
+   plus its `/nominatim/flatnode` mount
+2. Set `UPDATE_MODE=continuous` — without it the container still never updates,
+   which is exactly how this instance sat "configured for replication" for
+   weeks while doing nothing
+3. Remove `nominatim_data` and re-import: the flatnode cannot be reconstructed
+   from an existing database
+
+**Check whether an instance is actually updating** (not merely configured to):
+
+```bash
+docker exec nominatim psql -U nominatim -d nominatim -tAc 'select * from import_status;'
+stat -c %y /data/docker/volumes/geo_nominatim_flatnode/_data/flatnode.file
+```
+
+An empty `import_status` and a flatnode mtime equal to the import date mean
+replication never ran.
+
+Remaining upkeep:
+
 - **Restart / boot** — `restart: unless-stopped` brings everything back after a
   reboot. Verify with `docker compose ps`.
 - **Image upgrade** — bump the pinned tag in `docker-compose.yml`, then
