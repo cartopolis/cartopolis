@@ -73,16 +73,29 @@ sudo apt-get update && sudo apt-get upgrade -y
 ## Layout
 
 ```
-/data
+/data                       # OVH block volume (network-attached)
 ├── docker/                 # Docker data-root (images + named volumes)
 └── stack/
     ├── docker-compose.yml   # overpass + nominatim + caddy
     ├── Caddyfile            # reverse proxy + TLS
     └── .env                 # NOMINATIM_PASSWORD (secret, chmod 600, not in git)
+
+/srv/nominatim/pgdata       # root NVMe — Nominatim's PGDATA, bind-mounted
 ```
 
-Named volumes (`overpass_db`, `nominatim_data`,
-`caddy_data`, `caddy_config`) all resolve under `/data/docker/volumes`.
+Named volumes (`overpass_db`, `caddy_data`, `caddy_config`) all resolve under
+`/data/docker/volumes`.
+
+**Nominatim's database is the exception, and deliberately so.** `/data` is OVH's
+*additional* volume, which is network-attached: measured at ~240 random 8 KB IOPS
+against ~8,000 on the root NVMe. A geocoding search touches thousands of random
+pages, so a cold street-and-city lookup took 4–10 s there and tripped Nominatim's
+own 10 s timeout (HTTP 503, `Query took too long to process.`), while the same
+statement served from cache took 15 ms. Docker's data-root lives on `/data`, so a
+*named* volume cannot be moved off it — the PGDATA is a bind mount to
+`/srv/nominatim/pgdata` on the root disk instead. See
+[docs/notes/geocoding-latency.md](../notes/geocoding-latency.md) for the numbers
+and for the several plausible causes that turned out not to be it.
 
 ## Executing the steps
 
@@ -245,8 +258,20 @@ services:
       # `nominatim replication --init` that otherwise runs on EVERY boot even
       # with UPDATE_MODE unset. See "Static vs. updating" below.
       FREEZE: "true"
+      # Query-instance tuning. The image's defaults are import defaults: 2 GB of
+      # shared_buffers cannot hold search_name (3.5 GB) + its GIN indexes, and
+      # every miss then costs a random read off a 240-IOPS volume. 10 GB of
+      # maintenance_work_mem is likewise only useful during the import.
+      POSTGRES_SHARED_BUFFERS: 8GB
+      POSTGRES_MAINTENANCE_WORK_MEM: 1GB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 18GB
+      # Runs `nominatim admin --warm` before serving, so the first real user is
+      # not the one who pays for a cold cache after a restart.
+      WARMUP_ON_STARTUP: "true"
     volumes:
-      - nominatim_data:/var/lib/postgresql/16/main
+      # Bind mount, not a named volume: Docker's data-root is on the slow /data
+      # block volume. See "Layout" above.
+      - /srv/nominatim/pgdata:/var/lib/postgresql/16/main
       # No nominatim_flatnode mount: the node cache is only read by osm2pgsql
       # during import and diff updates, never by queries, and it is ~105 GB.
     shm_size: 2g
@@ -272,7 +297,6 @@ networks:
 
 volumes:
   overpass_db:
-  nominatim_data:
   caddy_data:
   caddy_config:
 ```
@@ -576,8 +600,8 @@ mode is a missing search result, not incorrect data.
 2. Set `UPDATE_MODE=continuous` — without it the container still never updates,
    which is exactly how this instance sat "configured for replication" for
    weeks while doing nothing
-3. Remove `nominatim_data` and re-import: the flatnode cannot be reconstructed
-   from an existing database
+3. Empty `/srv/nominatim/pgdata` and re-import: the flatnode cannot be
+   reconstructed from an existing database
 
 **Check whether an instance is actually updating** (not merely configured to):
 
