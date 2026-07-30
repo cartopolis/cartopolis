@@ -522,69 +522,55 @@ position goes stale.
 
 ## Proposed: one worktree per session
 
-**Not built.** Everything else in this document describes what runs today. This
-is where the local lane would go, written down so the cost is visible first.
+**Not built.** Everything else describes what runs today.
 
-### Why
+### Zed already does most of this
 
-Today a local session works in your one checkout, on a branch. Two sessions
-cannot run at once — same files, same branch. The remote lanes never had this
-problem: the container has run `--spawn worktree` since day one, so ② already
-gets a checkout per session. This makes ① match.
+Zed 1.13 has parallel agent threads and native git worktrees, so almost nothing
+needs building:
 
-### Shape
+- **Worktree picker** in the title bar creates and switches worktrees
+- New worktrees are **detached HEAD** on purpose, *"so you won't accidentally
+  share a branch between worktrees"*; the branch picker then makes one
+- Threads in linked worktrees group under their main project in the sidebar
+- **Cleanup is automatic** — archiving a thread saves the worktree's git state
+  and removes it from disk; restoring the thread restores the worktree
 
-```
-~/code/viberfox                             main. Reference workspace, never worked in.
-~/code/viberfox-wt/
-    feat-23-warn-driving-speed-limit/       one Zed window, one ACP session
-    fix-24-route-line-sharp-junctions/      another, in parallel
-```
+A Zed *workspace* is a window with one or more root folders and is not a git
+worktree. Zed confusingly calls its root folders "worktrees" too. An external
+ACP agent can only operate in one directory at a time.
 
-Branches keep meaningful names (`feat/23-…`), **not** Claude Code's default
-`worktree-<name>`. That one choice keeps the context refs, the `` Branch: `` line
-and the takeover working unchanged — and avoids the `Stop` hook, which skips
-`worktree-*`, silently publishing nothing.
-
-Outside the repo rather than `.claude/worktrees/`: nothing in `.gitignore` stops
-`git add -A` sweeping a nested checkout into a commit, and your main Zed
-workspace would index a second 3.9 GB tree inside itself.
-
-### Walkthrough C, revised
+### So the flow is
 
 | # | What happens |
 |---|---|
-| 1 | `/ticket` files issue #23 from wherever you are — `main` is fine |
-| 2 | It creates a worktree on `feat/23-warn-driving-speed-limit`, directory named the same with `/`→`-` |
-| 3 | It runs `zed -n <path>`; the window title *is* the directory name |
-| 4 | You start an ACP session in that window. Its cwd is the worktree. |
-| 5 | Work, merge, close — unchanged from today |
+| 1 | Title bar → worktree picker → new worktree (detached HEAD) |
+| 2 | Branch picker → `feat/23-…`, **before starting work** |
+| 3 | Start an ACP thread there; its cwd is that worktree |
+| 4 | `/ticket` files the issue from inside it and takes the number into the branch name — what it already does today |
+| 5 | Work, merge, close. Archive the thread; Zed removes the worktree. |
 
-Order is forced: the issue number does not exist until the issue does, and a
-directory cannot be renamed under a running session. So file first, then create,
-then open.
+### What actually needs changing
 
-The session that *filed* the ticket stays on `main` and does nothing further —
-the `Stop` hook skips `main`, so it publishes nothing.
+Only one thing: `/ticket` currently *creates and checks out* a branch, which
+fights Zed for control of the checkout. It should assume it is already in the
+right place and only take the number into the branch name.
 
-### Unchanged
+### The trap
 
-A, B, the board, every label, refine, takeover, `refs/agent-context/*`. Only
-`/ticket` and where you point a session change.
+**Zed's default is detached HEAD, and the `Stop` hook skips `HEAD`.** Work in a
+fresh worktree before setting a branch and no digest is published — silently.
+That is the third instance of this failure: `main`, `worktree-*`, and now
+detached HEAD.
 
-### Costs
+Dodging it with "always set a branch first" is a convention, not a fix. The
+durable answer is to stop keying the digest on the branch name — which is also
+what flattening agent-context to one file per session would allow.
 
-| | |
-|---|---|
-| Builds | The real one. Two building worktrees either serialise on cargo's lock or cost 50–90 GB each. **sccache is a prerequisite, not a tune-up** — and unmeasured. |
-| Cleanup | Worktrees do not remove themselves. Needs folding into `finish-branch`. |
-| Conflicts | Two agents in one crate still collide at landing. Git rejects it; a merge queue only pays off at 4+ agents. |
-| Manual step | Starting the ACP session in the new window. |
+### Still the gate
 
-### Undecided
-
-- Does sccache actually help a Bevy build? Proc macros and codegen may not cache well.
-- A real two-session run has never happened. Neither has a real takeover.
+Two building worktrees either serialise on cargo's lock or cost 50–90 GB each.
+**sccache is a prerequisite**, and whether it helps a Bevy build is unmeasured.
 
 ## Setup
 
