@@ -40,6 +40,13 @@ or the building geometry.
 
 **Linker:** `.cargo/config.toml` uses `clang + lld` on Linux. If linking is slow, switch to `mold` (`fuse-ld=mold`).
 
+**Never export `CARGO_TARGET_DIR` on the workstation.** sccache (wired as
+`rustc-wrapper` in `~/.cargo/config.toml`) hashes that env var into its cache
+key, so setting it silently zeroes build sharing between git worktrees — each
+worktree builds into its default `target/` instead, in parallel, at ~85 % cache
+hits. The container is the exception: it bakes one constant value for one shared
+target dir. See `docs/notes/sccache-parallel-builds.md`.
+
 **Git LFS is a build prerequisite, and its failure mode is silent.** `.gitattributes`
 tracks binary assets by extension anywhere in the tree (models, images, fonts, audio,
 `.mvt` fixtures), so a new asset needs no setup — but four of them are

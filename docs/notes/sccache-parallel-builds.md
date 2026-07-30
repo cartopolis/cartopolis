@@ -69,6 +69,17 @@ from a non-default profile, making rebuild tests no-ops. Check the *server log*
 hit-rate number: `CannotCache(...)` lines mean the probe never tested what it
 claimed to.
 
+## Where the pieces live (workstation)
+
+| What | Where |
+|---|---|
+| Wrapper | `~/.cargo/config.toml` → `[build] rustc-wrapper = ~/.cargo/bin/sccache` |
+| Cache + 64 GB cap | `~/.config/sccache/config` → `~/.cache/sccache` |
+| Check it works | `sccache --zero-stats`, build, `sccache --show-stats` — expect a high Rust hit rate on a second worktree; ~0 % means something exported `CARGO_TARGET_DIR` again |
+
+The server starts on demand and dies with the session; no service to manage.
+Nothing of this is in the repo, and CI is untouched.
+
 ## Not measured
 
 The full Bevy client graph. Proc-macro fan-out is larger there, so the hit rate
