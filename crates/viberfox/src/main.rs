@@ -694,9 +694,16 @@ fn main() {
             // camera_controls reads it this frame.
             // Both skipped under `--shot`: a scripted capture places its own
             // camera and must not overwrite the interactive session's location.
-            systems::user_store::restore_start_location
-                .after(systems::map_stream::init_map_stream)
-                .run_if(not(systems::shot_harness::harness_active)),
+            // Nested to stay under the per-tuple system limit.
+            (
+                systems::user_store::restore_start_location
+                    .after(systems::map_stream::init_map_stream)
+                    .run_if(not(systems::shot_harness::harness_active)),
+                // Same gate: a scripted capture's layer state comes from its
+                // manifest (`--ui`), never from what a session left in user.json.
+                systems::user_store::restore_layer_prefs
+                    .run_if(not(systems::shot_harness::harness_active)),
+            ),
             systems::geo_nav::apply_teleport
                 .after(systems::geo_nav::drive_geocode)
                 .after(systems::user_store::restore_start_location)

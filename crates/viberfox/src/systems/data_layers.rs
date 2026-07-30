@@ -353,6 +353,62 @@ pub struct DataLayers {
     minimal: Option<MinimalSave>,
 }
 
+impl DataLayers {
+    /// Snapshot the panel's toggles for persistence (`data/user.json`). While
+    /// driver mode's minimal mode is active, the user's *real* preferences live
+    /// in its snapshot — persist those, so exiting mid-drive doesn't freeze the
+    /// stripped-down map into the file.
+    pub fn prefs(&self) -> crate::systems::user_store::LayerPrefs {
+        let (buildings, vehicles, trees, overlay) = match &self.minimal {
+            Some(m) => (
+                m.buildings,
+                m.vehicles,
+                m.trees,
+                Some(&m.layers),
+            ),
+            None => (self.buildings_enabled, self.vehicles_enabled, self.trees_enabled, None),
+        };
+        crate::systems::user_store::LayerPrefs {
+            buildings,
+            tdbag: self.tdbag_enabled,
+            osm_buildings: self.osm_buildings_enabled,
+            map: self.map_enabled,
+            trees,
+            roads_textured: self.roads_textured,
+            water_shading: self.water_shading,
+            vehicles,
+            overlays: LAYER_DEFS
+                .iter()
+                .enumerate()
+                .map(|(i, def)| {
+                    let on = overlay
+                        .and_then(|l| l.get(i).copied())
+                        .unwrap_or(self.layers[i].enabled);
+                    (def.key.to_string(), on)
+                })
+                .collect(),
+        }
+    }
+
+    /// Apply persisted toggles at startup. Overlay layers missing from the file
+    /// (added since it was written) keep their defaults.
+    pub fn apply_prefs(&mut self, p: &crate::systems::user_store::LayerPrefs) {
+        self.buildings_enabled = p.buildings;
+        self.tdbag_enabled = p.tdbag;
+        self.osm_buildings_enabled = p.osm_buildings;
+        self.map_enabled = p.map;
+        self.trees_enabled = p.trees;
+        self.roads_textured = p.roads_textured;
+        self.water_shading = p.water_shading;
+        self.vehicles_enabled = p.vehicles;
+        for (i, def) in LAYER_DEFS.iter().enumerate() {
+            if let Some(on) = p.overlays.get(def.key) {
+                self.layers[i].enabled = *on;
+            }
+        }
+    }
+}
+
 /// Snapshot of everything minimal mode turns off, taken when driving starts, so
 /// stopping puts the map back exactly as it was. Weather lives in other
 /// resources ([`DevPanelState`], [`WeatherState`]) but is restored together here.
@@ -1561,6 +1617,30 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Panel toggles must survive a save/load cycle, including through JSON —
+    /// and overlay layers must round-trip by key, not index.
+    #[test]
+    fn layer_prefs_round_trip() {
+        let mut dl = DataLayers::default();
+        dl.tdbag_enabled = false;
+        dl.trees_enabled = false;
+        dl.vehicles_enabled = true;
+        dl.layers[0].enabled = true;
+
+        let json = serde_json::to_string(&dl.prefs()).unwrap();
+        let prefs: crate::systems::user_store::LayerPrefs =
+            serde_json::from_str(&json).unwrap();
+
+        let mut restored = DataLayers::default();
+        restored.apply_prefs(&prefs);
+        assert!(!restored.tdbag_enabled);
+        assert!(!restored.trees_enabled);
+        assert!(restored.vehicles_enabled);
+        assert!(restored.layers[0].enabled);
+        assert!(restored.buildings_enabled, "untouched toggles keep defaults");
+        assert_eq!(restored.prefs(), prefs);
+    }
 
     /// Does a `request_discard` on the click frame eat a checkbox toggle
     /// (double-fire across the repeated pass)?

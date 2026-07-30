@@ -44,6 +44,29 @@ pub struct UserData {
     /// keeps pre-appearance files loadable (they get Man/Casual).
     #[serde(default)]
     pub appearance: AvatarAppearance,
+    /// The Layers panel's toggles, persisted like the last location so the map
+    /// comes back the way it was left. `None` on files from before the field
+    /// existed — startup then keeps the defaults.
+    #[serde(default)]
+    pub layers: Option<LayerPrefs>,
+}
+
+/// Snapshot of the Layers panel's toggles (see [`crate::systems::data_layers::
+/// DataLayers::prefs`] / `apply_prefs`). Overlay layers are keyed by their
+/// `LAYER_DEFS` key rather than index, so reordering or adding layers never
+/// shuffles a saved file's state onto the wrong layer.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct LayerPrefs {
+    pub buildings: bool,
+    pub tdbag: bool,
+    pub osm_buildings: bool,
+    pub map: bool,
+    pub trees: bool,
+    pub roads_textured: bool,
+    pub water_shading: bool,
+    pub vehicles: bool,
+    #[serde(default)]
+    pub overlays: std::collections::HashMap<String, bool>,
 }
 
 /// The local player's avatar choice. Each clothing slot holds the display label of
@@ -419,6 +442,24 @@ pub fn restore_start_location(
 
 /// Snapshot the current location every few seconds and persist the store when
 /// it changed — and always flush on AppExit (File ▸ Exit or window close).
+/// Startup restore of the Layers panel's toggles, once. Unlike the location
+/// restore this waits for nothing — the toggles have no anchor dependency, and
+/// the streamers all read them live, so applying on the first frame means the
+/// first thing streamed in already matches the saved preferences.
+pub fn restore_layer_prefs(
+    mut done: Local<bool>,
+    store: Res<UserStore>,
+    mut dl: ResMut<crate::systems::data_layers::DataLayers>,
+) {
+    if *done {
+        return;
+    }
+    *done = true;
+    if let Some(p) = &store.data.layers {
+        dl.apply_prefs(p);
+    }
+}
+
 pub fn autosave_user_store(
     time: Res<Time>,
     mut next_at: Local<f32>,
@@ -428,6 +469,7 @@ pub fn autosave_user_store(
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
     cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    dl: Res<crate::systems::data_layers::DataLayers>,
 ) {
     let exiting = exits.read().next().is_some();
     let due = time.elapsed_secs() >= *next_at;
@@ -437,6 +479,8 @@ pub fn autosave_user_store(
     if due {
         *next_at = time.elapsed_secs() + AUTOSAVE_INTERVAL;
     }
+
+    store.data.layers = Some(dl.prefs());
 
     if let (Some(anchor), Ok((cell, tf))) = (stream.geo_anchor(), cameras.single()) {
         // Both through the shared camera fix (`camera_geo` / `altitude_m`): the
