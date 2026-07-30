@@ -3,6 +3,7 @@
 | Path | Contents |
 |------|----------|
 | **[guides/development.md](guides/development.md)** | **Contributor guide** — dev loop, tests, code map, conventions, config, CI |
+| **[workflow.md](workflow.md)** | **Agent workflow** — how a ticket moves from idea to branch across Zed and the VPS agent, and what the kanban labels mean |
 | **[manual.md](manual.md)** | User manual — controls, getting around, authoring objects, developer panel |
 | **[notes/](notes/)** | Standing facts about the codebase: measurements, rejected options, external constraints |
 | **[guides/](guides/)** | Operational how-tos (self-hosting services, deployment) |

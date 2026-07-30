@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# File a viberfox issue from a local session. Body on stdin.
+#
+#   ./file-issue --title "..." [--branch feat/x] [--label local] < body.md
+#
+# Prints the issue number on stdout and the URL on stderr.
+#
+# Credentials come from ~/.config/viberfox/forgejo.env (0600, scope write:issue).
+# The board placement is deliberately NOT done here: Forgejo 16 has no kanban
+# API, so a card can only be moved by a *session* login as the bot, and putting
+# the bot's password on the workstation to save one poll cycle would be a poor
+# trade. The watcher seeds the card into Backlog within 30 s instead.
+
+set -euo pipefail
+
+env_file="${VIBERFOX_FORGEJO_ENV:-$HOME/.config/viberfox/forgejo.env}"
+[ -f "$env_file" ] || { echo "missing $env_file — see docs/workflow.md" >&2; exit 1; }
+set -a; . "$env_file"; set +a
+: "${FORGEJO_TOKEN:?not set in $env_file}"
+API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
+REPO="${FORGEJO_REPO:-jeroen/viberfox}"
+
+title=""; branch=""; labels="local"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --title)  title="$2"; shift 2 ;;
+        --branch) branch="$2"; shift 2 ;;
+        --label)  labels="$2"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[ -n "$title" ] || { echo "--title is required" >&2; exit 2; }
+
+# Default to the branch actually checked out — the common case is filing a
+# ticket for work already started. `main` is not a handover target, so it is
+# treated as "no branch yet".
+if [ -z "$branch" ]; then
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    case "$branch" in main | master | HEAD | '') branch="" ;; esac
+fi
+
+body=$(cat)
+# The Branch: line is load-bearing, not decoration: it is the ONLY thing that
+# lets a takeover attach to the local branch and its refs/agent-context digest
+# instead of cutting a fresh issue-<n> from main and silently ignoring the work.
+if [ -n "$branch" ]; then
+    body=$(printf '%s\n\n---\n\nBranch: `%s`\n' "$body" "$branch")
+fi
+
+# Resolve label names to ids; the create API takes ids only.
+label_ids=$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" \
+    "$API/repos/$REPO/labels?limit=100" |
+    LABELS="$labels" python3 -c '
+import json, os, sys
+want = {s.strip() for s in os.environ["LABELS"].split(",") if s.strip()}
+have = {l["name"]: l["id"] for l in json.load(sys.stdin)}
+missing = want - have.keys()
+if missing:
+    sys.exit(f"no such label(s) in the repo: {\", \".join(sorted(missing))}")
+print(json.dumps([have[n] for n in sorted(want)]))
+')
+
+response=$(TITLE="$title" BODY="$body" IDS="$label_ids" python3 -c '
+import json, os
+print(json.dumps({"title": os.environ["TITLE"],
+                  "body": os.environ["BODY"],
+                  "labels": json.loads(os.environ["IDS"])}))
+' | curl -sf -X POST \
+    -H "Authorization: token $FORGEJO_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$API/repos/$REPO/issues" -d @-)
+
+printf '%s' "$response" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(d["html_url"], file=sys.stderr)
+print(d["number"])
+'
