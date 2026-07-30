@@ -4,66 +4,74 @@ triggers: [sccache, parallel agents, worktree, CARGO_TARGET_DIR, build cache, co
 updated: 2026-07-30
 ---
 
-# sccache does not share Rust builds across target dirs here
+# sccache shares builds across worktrees — unless CARGO_TARGET_DIR is exported
 
 Measured 2026-07-30, workstation, sccache 0.17.0, `vibe_sim --profile dev-bevy`
-(158 rustc invocations — small enough to iterate, real enough to trust).
+(154 cacheable rustc invocations). **An earlier version of this note concluded
+sccache could not share across target dirs at all. That conclusion was wrong**,
+and the correction matters more than the original: the failure was a single
+environment variable.
 
-The question was whether a second git worktree can build without either
-recompiling everything or serialising behind the first one on cargo's target-dir
-lock. That is the gate on running several local agent sessions that build.
+## The result
 
-**The answer is no.** Three configurations, one result:
+Fresh worktree, fresh default `target/`, warm cache:
 
-| Setup | Rust cache hits |
-|---|---|
-| Worktree B, separate target dir, after A populated the cache | **0.00 %** (153 misses) |
-| Same, with `--remap-path-prefix` normalising both worktree paths | **0.00 %** (153 misses) |
-| **Same worktree**, different target dir | **0.00 %** (153 misses) |
+| | cold | warm, second worktree |
+|---|---|---|
+| wall time | 76 s | **49 s** |
+| Rust cache hits | — | **132 / 154 (85.6 %)** |
+| cargo lock contention | — | none — separate target dirs |
 
-The third row is the one that settles it: with the source path held identical,
-changing only `CARGO_TARGET_DIR` still misses every Rust unit. So the key varies
-with the target directory, and no amount of path normalisation on the *source*
-side helps. The one hit in every run was the C compilation in `libsqlite3-sys`,
-which caches fine — the C/C++ hit rate was 100 %.
+The ~22 misses are crates downstream of proc-macros: a proc-macro `.so` is
+non-cacheable, rebuilt per target dir, and byte-varies, so its direct dependents
+key differently. Everything else cascades from the cache.
 
-Not a plumbing failure: 493 MB landed on disk, zero write errors, zero read
-errors, `Average cache write 0.001 s`. sccache stored everything and then could
-not find any of it from a different target dir.
+## The root cause
 
-Even with perfect keys the ceiling is low. Of 158 invocations, sccache reports
-35 non-cacheable on `crate-type` (proc-macro and dylib units, which Bevy has many
-of) and 2 on `incremental`, which `[profile.dev]` turns on and `dev-bevy`
-inherits. That is ~23 % unreachable before the keys are even considered.
+**sccache hashes the values of `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR`
+into the Rust cache key.** Isolated probe: identical compile, only that env var
+differing → miss. Every earlier test exported it (one value per worktree), which
+produced a universal 0 % hit rate and sent the investigation everywhere else
+first.
 
-## What this means for parallel agents
+Verified NOT in the key: `--out-dir`, `-L dependency=…`, `--extern` *paths*
+(contents are hashed, correctly), the `OUT_DIR` env var. The cwd IS in the key,
+but cargo runs rustc with cwd = the *package* directory — the shared registry
+for every dependency — so worktrees don't differ there. (`SCCACHE_BASEDIRS`
+exists for cwd normalisation; not needed for this reason.)
 
-A second worktree that *builds* costs a full separate build — 50–90 GB and the
-whole compile time — or shares `CARGO_TARGET_DIR` and serialises on cargo's
-lock. sccache removes neither horn. Parallel sessions that read, edit and commit
-are fine; parallel sessions that each run `cargo build` are not, and the
-workflow should not be designed as though they are.
+## The rules that keep it working
 
-The VPS watcher already lives with this: `AGENT_MAX_CONCURRENT=2` with one
-shared target dir, and its own comment says extra concurrency "mostly buys lock
-contention, not throughput". That was the right call and this measurement is why.
+1. **Never export `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR`.** Every
+   worktree builds into its default `target/`. This is what makes worktrees
+   parallel: separate dirs → no cargo lock; sccache → no recompilation.
+2. The wrapper lives in `~/.cargo/config.toml`, never the repo's committed
+   `.cargo/config.toml` — CI has no sccache and a missing rustc-wrapper fails
+   every job.
+3. `dev-bevy` deps build with `debug = false` (committed): their `.dwo` files
+   embed the absolute target-dir path, so a shared artifact would point its
+   debug info at another worktree's (possibly deleted) target. Also most of the
+   profile's disk weight. Workspace crates keep full debug.
 
-## Rejected
+Per-worktree disk after the debug change: **518 MB** for the vibe_sim graph
+(was ~700 MB with dep debuginfo; the full client profile was 51 GB, dominated
+by exactly this).
 
-- **`--remap-path-prefix`** — the obvious hypothesis (debug info embeds absolute
-  source paths, `debug = 1` is on). Measured: no effect. Row 3 shows why the
-  source path was never the variable.
-- **Leaving sccache wired up anyway.** It was configured at
-  `~/.cargo/config.toml` (never the repo's — CI has no sccache and a missing
-  `rustc-wrapper` fails every job) and reverted after measuring. A wrapper on
-  every rustc invocation that demonstrably returns nothing is worse than absent,
-  because the next person debugging a slow build has to rule it out first. The
-  binary is still at `~/.cargo/bin/sccache` if someone wants to retest a later
-  version.
+## Method failures worth remembering
 
-## Not tested
+The wrong conclusion survived three of my own probe bugs, each of which
+produced a plausible 0 %: zsh doesn't word-split unquoted variables (the flag
+string arrived as one argument — `CannotCache(missing input)`); sccache's parser
+needs `--edition=2021`, not `--edition 2021` (space form reads `2021` as an
+input file); and `cargo clean -p` without `--profile dev-bevy` removes nothing
+from a non-default profile, making rebuild tests no-ops. Check the *server log*
+(`SCCACHE_ERROR_LOG` + `SCCACHE_LOG=sccache=debug`) before believing any
+hit-rate number: `CannotCache(...)` lines mean the probe never tested what it
+claimed to.
 
-Whether a Bevy-scale build behaves differently. It should be worse, not better —
-more proc-macro and dylib units, which are the non-cacheable ones — but the
-number is unmeasured. A cold `dev-bevy` build of the full client takes tens of
-minutes, and the vibe_sim result was unambiguous enough not to spend it.
+## Not measured
+
+The full Bevy client graph. Proc-macro fan-out is larger there, so the hit rate
+will be lower than 85 %, but the mechanism is the same. And the VPS is
+unaffected either way: its container bakes one constant `CARGO_TARGET_DIR` for
+one shared target dir, so the env value never varies there.

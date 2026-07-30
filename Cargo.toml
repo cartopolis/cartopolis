@@ -116,6 +116,13 @@ inherits = "dev"
 [profile.dev-bevy.package."*"]
 opt-level = 3
 codegen-units = 256
+# No debuginfo for dependencies. Three reasons, one measurement each: their
+# .dwo files (split-debuginfo=unpacked) embed the absolute target-dir path, so
+# an sccache-shared artifact would point its debug info at another worktree's
+# (possibly deleted) target; dep debuginfo is most of the profile's disk
+# weight; and nobody steps through Bevy internals at opt-level=3 anyway —
+# backtraces keep symbol names without it. Workspace crates keep full debug.
+debug = false
 
 [profile.dev-bevy.package.vibe_core]
 opt-level = 0

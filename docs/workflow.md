@@ -656,11 +656,12 @@ directory". No second mechanism.
 
 ### Still unproven
 
-- **sccache does not help — measured, not assumed.** 0 % Rust cache hits across
-  target dirs, including within one worktree. A second worktree that *builds*
-  still costs a full separate build or serialises on cargo's lock. Sessions that
-  read, edit and commit run in parallel fine; sessions that each compile do not.
-  See [notes/sccache-parallel-builds.md](notes/sccache-parallel-builds.md).
+- **Parallel builds work: sccache, measured at 85.6 % hits.** Each worktree
+  builds into its own default `target/` — no cargo lock — and sccache refills it
+  from cache (76 s → 49 s on the vibe_sim graph). The one rule: **never export
+  `CARGO_TARGET_DIR`**; sccache hashes that env var and it silently zeroes the
+  hit rate. See [notes/sccache-parallel-builds.md](notes/sccache-parallel-builds.md)
+  for the root cause and the earlier wrong conclusion it replaces.
 - **The Stop hook has never been observed firing from a Zed ACP session.** Every
   test so far drove it by hand or through remote-control.
 
