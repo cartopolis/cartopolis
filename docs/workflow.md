@@ -45,7 +45,8 @@ are asking about.
 `claude-acp` in Zed on the workstation. You are in the room, so a wrong
 direction costs one sentence.
 
-*Use it for:* real work, at the desk.
+*Use it for:* work you want to stay in the loop on, and anything whose result
+you have to look at.
 
 ### ② claude.ai/code — driven, remote
 
@@ -56,7 +57,8 @@ to be at your desk. `/ticket`, the `driven` label, the `Stop` hook and the
 handover all apply to it unchanged.
 
 *Use it for:* the same work as ①, from a browser or the phone — thinking,
-specs, review, changes you can state and verify in text.
+specs, review, changes you can state and verify in text. Often the place a
+ticket is written before ③ builds it.
 
 ### ③ Issue watcher — autonomous, remote
 
@@ -143,6 +145,20 @@ Reach for B when the idea might be wrong, or might be bigger than it looks.
 Reach for A when it is obviously worth doing and you simply are not going to
 write it up now.
 
+**C is not a third way of filing a ticket, it is a different amount of
+involvement.** An agent writes the code in all three; what changes is how long
+you stay in the conversation:
+
+| | Spec written by | Built by | You are present |
+|---|---|---|---|
+| **A** | the autonomous agent, alone | the autonomous agent | not at all |
+| **B** | you *and* an interactive agent | the autonomous agent | until the spec is settled |
+| **C** | you *and* an interactive agent | **the same interactive agent** | throughout |
+
+So B and C start identically and diverge at the handoff. Stay in C when the
+implementation needs judgement rather than execution, or when the result has to
+be looked at — that is the only lane where `cargo shots` runs.
+
 ### The example
 
 All three use the same idea, so the paths can be compared:
@@ -185,9 +201,13 @@ went the wrong way.
 | 7 | Queued until a slot frees, then `agent:running` | **In Progress** |
 | 8 | Branch `feat/23-warn-driving-speed-limit` pushed, `agent:done`, waiting for your review | **Done** |
 
-### B. claude.ai/code — you refine it, the agent builds it
+### B. claude.ai/code — spec with an agent, build with the autonomous one
 
-Same idea, but you want to know whether it is any good before committing.
+Same idea, but you want to know whether it is any good before committing to it —
+and once you do, you want to stop thinking about it.
+
+Two agents, and that is the whole shape of this path: an **interactive** one
+writes the spec with you, then the **autonomous** one builds it unattended.
 
 | # | What happens | Board |
 |---|---|---|
@@ -203,22 +223,34 @@ you just did, live, with the code in front of you. The difference from A is not
 the outcome but *when the question got asked*: step 2 instead of a round trip
 through the issue tracker.
 
-### C. Zed — you build it yourself
+After step 4 you are done. Steps 5 and 6 happen whether you are watching or not,
+which is what you traded the conversation for.
 
-Same idea, at your desk, where you can also *see* the pill turn amber.
+### C. Zed — spec and build with the same local agent
+
+Same idea, at your desk. The local agent builds it too — you are not typing the
+code, you are steering it turn by turn, the same way you steered the spec in B.
+
+The difference from B is not who writes the code but **how far the conversation
+goes**: B hands off after the spec, C keeps the same session through the
+implementation. Choose C when the implementation itself needs judgement rather
+than just execution, or when you need to *look* at the result — this is the only
+place `cargo shots` runs, and an amber pill is a thing you check with your
+eyes.
 
 | # | What happens | Board |
 |---|---|---|
 | 1 | `/ticket` files it with the spec, labelled `driven`, and renames your branch `feat/speed-warning` → `feat/23-speed-warning` | **Backlog** *(seeded once)* |
-| 2 | You work. Every turn the `Stop` hook publishes the chat digest and pushes the branch. | **Backlog** — the watcher never moves a `driven` card |
+| 2 | You and the session work through it, correcting course as it goes. Every turn the `Stop` hook publishes the chat digest and pushes the branch. | **Backlog** — the watcher never moves a `driven` card |
 
-**C1 — you finish it.** Merge with `finish-branch`, close the issue.
+**C1 — it gets finished.** Merge with `finish-branch`, close the issue.
 
 | # | What happens | Board |
 |---|---|---|
 | 3 | Issue closed | **Done** |
 
-**C2 — you get pulled away.** Remove the `driven` label.
+**C2 — you get pulled away.** Remove the `driven` label, and the autonomous
+agent continues from where the local one stopped.
 
 | # | What happens | Board |
 |---|---|---|
