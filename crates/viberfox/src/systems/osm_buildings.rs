@@ -274,6 +274,11 @@ pub struct OsmBuildings {
     synced_gen: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
+    /// Last-seen state of the 3DBAG toggle. A patch bakes its building set
+    /// under one setting (covered cells filtered out, or not), so a flip must
+    /// force a refetch — the drift trigger alone can leave a stale patch
+    /// standing under (or holed inside) the real meshes indefinitely.
+    tdbag_was: Option<bool>,
     /// When the last detail fetch was kicked off (`DETAIL_REFETCH_COOLDOWN`).
     last_fetch: Option<Instant>,
     in_flight: bool,
@@ -526,6 +531,16 @@ pub fn update_buildings(
         ay + (world_z / tile_m).round() as i64,
     );
 
+    // A 3DBAG toggle flip invalidates the standing patch: its building set was
+    // baked under the other setting (covered cells filtered out, or present),
+    // so waiting for the drift trigger would leave it stale indefinitely —
+    // stacked under the real meshes after enabling, holed after disabling.
+    let tdbag_now = tdbag_user_enabled();
+    if osm.tdbag_was != Some(tdbag_now) {
+        osm.tdbag_was = Some(tdbag_now);
+        osm.last_center = None;
+    }
+
     // Kick off a re-fetch when the camera has drifted far enough — but never
     // above `DETAIL_FREEZE_ALT` (a zoom-out drags `center` sideways fast; the
     // rebuild storm that triggered is what hung the GPU — see the const), and
@@ -583,7 +598,21 @@ pub fn update_buildings(
             crate::platform::workers::submit(Box::new(move || {
                 let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
                 let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-                let result = Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east)).map(|buildings| {
+                let result = Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east)).map(|mut buildings| {
+                    // 3DBAG territory: the real meshes own covered cells, and the
+                    // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
+                    // inside the LoD2.2 keep ring, so covered cells here have real
+                    // geometry — an extrusion would stack under or poke through
+                    // it. This bites when the camera stands just OUTSIDE coverage
+                    // and the patch reaches across the edge (the camera-cell skip
+                    // below can't help there). Filtering the Vec, not the mesh
+                    // loop, keeps hit-testing consistent with what is drawn.
+                    buildings.retain(|b| {
+                        b.ring.first().is_none_or(|&(la, lo)| {
+                            let (bx, by) = lat_lng_to_tile(la, lo, CACHE_ZOOM);
+                            !lod22_covers(bx, by)
+                        })
+                    });
                     // Deduped: with consistent windings the fan-triangulated flat caps
                     // and shared footprint corners collapse to one vertex each.
                     let mut bld = MeshData::with_dedup();
@@ -644,12 +673,16 @@ pub fn update_buildings(
         for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
             for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
                 let cell = (ccx + dx, ccy + dy);
-                // Distance LOD: within the LoD2.2 near radius the real meshes
+                // Distance LOD: within the LoD2.2 KEEP ring (its request radius
+                // plus its one cell of despawn hysteresis) the real meshes
                 // (lod22.rs) own the cell, so skip the simplified far extrusion.
-                // Beyond it, the far extrusion is the distant simplified tier.
+                // Matching the request radius instead left ring
+                // `LOD22_RADIUS + 1` owned by both: lod22 still held its mesh
+                // there while this tier fetched an extrusion under it — doubled
+                // buildings all along the boundary as cells drifted through.
                 let lod22_near = lod22_covers(cell.0, cell.1)
                     && (cell.0 - ccx).abs().max((cell.1 - ccy).abs())
-                        <= crate::systems::lod22::LOD22_RADIUS;
+                        <= crate::systems::lod22::LOD22_RADIUS + 1;
                 if !osm.far_requested.contains(&cell)
                     && *osm.far_failed.get(&cell).unwrap_or(&0) < 3
                     && !lod22_near
@@ -790,12 +823,18 @@ pub fn update_buildings(
         }
 
         // Despawn cells out of range (with one cell of hysteresis); re-entry
-        // re-requests them, served from the disk cache.
+        // re-requests them, served from the disk cache. Covered cells inside
+        // the LoD2.2 keep ring go too: the real meshes own those, and an
+        // extrusion there is a leftover from the coverage race or a 3DBAG
+        // toggle flip, standing stacked under the real geometry.
         let stale: Vec<(i64, i64)> = osm
             .far_cells
             .keys()
             .filter(|(cx2, cy2)| {
-                (cx2 - ccx).abs().max((cy2 - ccy).abs()) > FAR_CELL_RADIUS + 1
+                let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
+                d > FAR_CELL_RADIUS + 1
+                    || (d <= crate::systems::lod22::LOD22_RADIUS + 1
+                        && lod22_covers(*cx2, *cy2))
             })
             .copied()
             .collect();
