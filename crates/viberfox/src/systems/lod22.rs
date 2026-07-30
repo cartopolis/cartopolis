@@ -40,8 +40,11 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 const LOD22_ZOOM: u32 = 14;
 
 /// Concurrent cell fetch+mesh tasks. Our own 3DBAG host has no external rate limit,
-/// so this is a citizenship/throughput cap, not a throttle (min-interval 0).
-const LOD22_CONCURRENCY: usize = 3;
+/// so this is a citizenship/throughput cap, not a throttle (min-interval 0). Six,
+/// not three: the fetch is the long pole of a cold load (the 5×5 ring took
+/// ceil(25/3) serial rounds of network), the parse runs on the worker pool, and
+/// the GPU guard is the per-frame upload cap, not this.
+const LOD22_CONCURRENCY: usize = 6;
 /// CACHE_ZOOM cells streamed around the camera at full LoD2.2 detail (radius 2 →
 /// 5×5 ≈ ±3.5 km). Covered cells *beyond* this fall back to the simplified,
 /// inset, non-shadow far-cell extrusion in `osm_buildings` (a distance LOD): the
@@ -483,37 +486,58 @@ async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
 }
 
 /// Parse a LoD2.2 cell file: `{"elements":[{p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}`.
+///
+/// Typed `Deserialize`, not a `serde_json::Value` walk: the DOM route boxed
+/// every coordinate of a ~4 MB cell in a `Value` and re-inspected it in our own
+/// code — a dense central cell (~240k triangles) is mostly numbers, so the walk
+/// was a large share of the per-cell cost on a cold load. The triangle row gets
+/// a hand-written seq visitor (an `untagged` enum would buffer each row and
+/// give the win back); the missing-roof-flag row still reads as wall, matching
+/// the old lenient parser.
 fn parse_lod22(text: &str) -> Result<Vec<Bldg>, String> {
-    let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    let elements = json
-        .get("elements")
-        .and_then(|e| e.as_array())
-        .ok_or_else(|| "no elements".to_string())?;
-    let mut out = Vec::with_capacity(elements.len());
-    for el in elements {
-        let Some(parr) = el.get("p").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        let mut p = Vec::with_capacity(parr.len());
-        for pt in parr {
-            let a = pt.as_array().ok_or_else(|| "bad vertex".to_string())?;
-            let lat = a.first().and_then(|v| v.as_f64());
-            let lng = a.get(1).and_then(|v| v.as_f64());
-            let h = a.get(2).and_then(|v| v.as_f64());
-            if let (Some(lat), Some(lng), Some(h)) = (lat, lng, h) {
-                p.push((lat, lng, h as f32));
+    #[derive(serde::Deserialize)]
+    struct File {
+        elements: Vec<El>,
+    }
+    #[derive(serde::Deserialize)]
+    struct El {
+        #[serde(default)]
+        p: Vec<(f64, f64, f32)>,
+        #[serde(default)]
+        t: Vec<Tri>,
+    }
+    struct Tri(u32, u32, u32, u8);
+    impl<'de> serde::Deserialize<'de> for Tri {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> serde::de::Visitor<'de> for V {
+                type Value = Tri;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("[i, j, k, roof?]")
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Tri, A::Error> {
+                    let missing = || serde::de::Error::custom("bad triangle");
+                    let i = seq.next_element()?.ok_or_else(missing)?;
+                    let j = seq.next_element()?.ok_or_else(missing)?;
+                    let k = seq.next_element()?.ok_or_else(missing)?;
+                    let rf = seq.next_element()?.unwrap_or(0);
+                    Ok(Tri(i, j, k, rf))
+                }
             }
+            d.deserialize_seq(V)
         }
-        let Some(tarr) = el.get("t").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        let mut t = Vec::with_capacity(tarr.len());
-        for tr in tarr {
-            let a = tr.as_array().ok_or_else(|| "bad triangle".to_string())?;
-            let i = a.first().and_then(|v| v.as_u64()).unwrap_or(u64::MAX) as usize;
-            let j = a.get(1).and_then(|v| v.as_u64()).unwrap_or(u64::MAX) as usize;
-            let k = a.get(2).and_then(|v| v.as_u64()).unwrap_or(u64::MAX) as usize;
-            let rf = a.get(3).and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    }
+
+    let file: File = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(file.elements.len());
+    for el in file.elements {
+        let p = el.p;
+        let mut t = Vec::with_capacity(el.t.len());
+        for Tri(i, j, k, rf) in el.t {
+            let (i, j, k) = (i as usize, j as usize, k as usize);
             if i < p.len() && j < p.len() && k < p.len() {
                 t.push((i, j, k, rf));
             }

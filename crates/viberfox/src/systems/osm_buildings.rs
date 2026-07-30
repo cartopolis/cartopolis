@@ -173,6 +173,18 @@ fn ensure_coverage_prefetch() {
         .detach();
 }
 
+/// True once both coverage manifests have resolved — successfully or as the
+/// empty "no 3DBAG" fallback. Before that, [`tdbag_covers`] / [`lod22_covers`]
+/// answer `false` for cells the host actually serves, and building work started
+/// on that answer is wasted: the serial Overpass lane filled with covered-cell
+/// fetches (800 ms courtesy sleep each) that the real meshes evicted moments
+/// later. Resolution is one round-trip to our own host (instant when
+/// `VIBE_3DBAG_URL` is empty), so briefly holding building work for it is
+/// cheaper than doing it twice.
+pub(crate) fn coverage_resolved() -> bool {
+    COVERAGE.get().is_some() && COVERAGE_LOD22.get().is_some()
+}
+
 /// True if the 3DBAG host serves this cell's LoD1.2 footprints. `false` until the
 /// coverage manifest has loaded (see [`ensure_coverage_prefetch`]), and while the
 /// Layers panel's 3DBAG toggle is off.
@@ -274,11 +286,12 @@ pub struct OsmBuildings {
     synced_gen: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
-    /// Last-seen state of the 3DBAG toggle. A patch bakes its building set
-    /// under one setting (covered cells filtered out, or not), so a flip must
-    /// force a refetch — the drift trigger alone can leave a stale patch
-    /// standing under (or holed inside) the real meshes indefinitely.
-    tdbag_was: Option<bool>,
+    /// Last-seen (3DBAG toggle, coverage resolved) pair. A patch bakes its
+    /// building set under one setting (covered cells filtered out, or not), so
+    /// either flipping must force a refetch — the drift trigger alone can leave
+    /// a stale patch standing under (or holed inside) the real meshes
+    /// indefinitely.
+    tdbag_was: Option<(bool, bool)>,
     /// When the last detail fetch was kicked off (`DETAIL_REFETCH_COOLDOWN`).
     last_fetch: Option<Instant>,
     in_flight: bool,
@@ -286,9 +299,19 @@ pub struct OsmBuildings {
     fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
     /// Detail-ring mesh entities (buildings + windows), despawned on re-fetch.
     detail_entities: Vec<Entity>,
-    /// Far LOD cell dispatcher (CACHE_ZOOM cell coords) — replaces the worker
-    /// thread + channel; serial, spacing comes from the throttle in the fetch.
+    /// Far LOD cell dispatcher (CACHE_ZOOM cell coords) for **Overpass** cells —
+    /// replaces the worker thread + channel; serial, spacing comes from the
+    /// throttle in the fetch (citizenship toward a shared public API).
     far_dispatch: Dispatcher<(i64, i64)>,
+    /// Far dispatcher for **3DBAG-covered** cells. Our own static host has no
+    /// rate limit, so these run concurrently instead of riding the Overpass
+    /// courtesy lane — which made a covered city stream its far ring one cell
+    /// at a time for no one's benefit.
+    far_dispatch_tdbag: Dispatcher<(i64, i64)>,
+    /// Which cells went to the 3DBAG lane, so completion frees the right slot
+    /// (re-deriving from coverage at completion time would miscount across a
+    /// mid-flight toggle flip).
+    far_tdbag_lane: HashSet<(i64, i64)>,
     /// Completed far cells from the worker: meshes + their BigSpace cell (None
     /// for cells with no buildings).
     #[allow(clippy::type_complexity)]
@@ -407,6 +430,11 @@ const FAR_WINDOWS: WindowGrid = WindowGrid {
 /// Tiles out from the camera covered by the full-detail building patch
 /// (windows, roof shapes).
 const BUILDING_PATCH_RADIUS: i64 = 3;
+
+/// Concurrent far-cell fetches against the 3DBAG host (see
+/// `OsmBuildings::far_dispatch_tdbag`). Same reasoning as `LOD22_CONCURRENCY`:
+/// our own host, so this is a throughput cap, not a throttle.
+const TDBAG_FAR_CONCURRENCY: usize = 4;
 /// CACHE_ZOOM cells out from the camera covered by far-LOD building cells
 /// (radius 3 → 7×7 cells ≈ ±5 km). Each cell streams in independently (fetched
 /// once, meshed on the worker, kept while in range), so this radius costs
@@ -507,6 +535,8 @@ pub fn update_buildings(
         let lat = clat;
         osm.anchor = Some((ax, ay, z, lat));
         osm.far_dispatch = Dispatcher::new(1, 0.0);
+        osm.far_dispatch_tdbag = Dispatcher::new(TDBAG_FAR_CONCURRENCY, 0.0);
+        osm.far_tdbag_lane.clear();
     }
     let (ax, ay, z, lat) = osm.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -531,11 +561,12 @@ pub fn update_buildings(
         ay + (world_z / tile_m).round() as i64,
     );
 
-    // A 3DBAG toggle flip invalidates the standing patch: its building set was
-    // baked under the other setting (covered cells filtered out, or present),
-    // so waiting for the drift trigger would leave it stale indefinitely —
-    // stacked under the real meshes after enabling, holed after disabling.
-    let tdbag_now = tdbag_user_enabled();
+    // A 3DBAG toggle flip — or the coverage manifests resolving — invalidates
+    // the standing patch: its building set was baked under the other setting
+    // (covered cells filtered out, or present), so waiting for the drift
+    // trigger would leave it stale indefinitely — stacked under the real
+    // meshes after enabling, holed after disabling.
+    let tdbag_now = (tdbag_user_enabled(), coverage_resolved());
     if osm.tdbag_was != Some(tdbag_now) {
         osm.tdbag_was = Some(tdbag_now);
         osm.last_center = None;
@@ -572,7 +603,17 @@ pub fn update_buildings(
         }
         osm.last_center = None;
     }
-    if need && !osm.in_flight && cooled && cam_altitude < DETAIL_FREEZE_ALT && !over_lod22 {
+    // `coverage_resolved` holds the FIRST fetch those few startup frames: a
+    // patch fetched before the manifests land bakes covered-cell buildings in
+    // (the filter sees no coverage) and is refetched on resolution anyway —
+    // one whole wasted Overpass bbox round-trip and mesh rebuild.
+    if need
+        && !osm.in_flight
+        && cooled
+        && cam_altitude < DETAIL_FREEZE_ALT
+        && !over_lod22
+        && coverage_resolved()
+    {
         osm.in_flight = true;
         osm.last_center = Some(center);
         osm.last_fetch = Some(Instant::now());
@@ -669,8 +710,16 @@ pub fn update_buildings(
         );
 
         // Queue missing cells, nearest first so the surroundings fill outward.
+        // Nothing queues until the coverage manifests resolve (a few startup
+        // frames): queued earlier, covered cells route to the serial Overpass
+        // lane — 800 ms courtesy sleep per cell — only to be evicted when the
+        // real meshes arrive (see `coverage_resolved`).
         let mut to_request: Vec<(i64, i64)> = Vec::new();
+        let queue_open = coverage_resolved();
         for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+            if !queue_open {
+                break;
+            }
             for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
                 let cell = (ccx + dx, ccy + dy);
                 // Distance LOD: within the LoD2.2 KEEP ring (its request radius
@@ -694,14 +743,24 @@ pub fn update_buildings(
         to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
         for cell in to_request {
             osm.far_requested.insert(cell);
-            osm.far_dispatch.queue(cell);
+            // Two lanes: covered cells hit our own 3DBAG host and run
+            // concurrently; everything else rides the serial Overpass
+            // courtesy lane. Routed at queue time and remembered, so a
+            // mid-flight toggle flip can't misattribute the completion.
+            if tdbag_covers(cell.0, cell.1) {
+                osm.far_tdbag_lane.insert(cell);
+                osm.far_dispatch_tdbag.queue(cell);
+            } else {
+                osm.far_dispatch.queue(cell);
+            }
         }
 
-        // Dispatch queued far cells (serial; the throttle inside the Overpass fetch
-        // spaces them) as detached tasks (ADR-033 seam) — no worker thread.
+        // Dispatch queued far cells (the Overpass lane is serial; the throttle
+        // inside the fetch spaces it) as detached tasks (ADR-033 seam) — no
+        // worker thread.
         let now_secs = time.elapsed_secs_f64();
         let results = osm.far_results.clone();
-        while let Some((cx, cy)) = osm.far_dispatch.next(now_secs) {
+        let spawn_cell = |cx: i64, cy: i64| {
             let results = results.clone();
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
             // on wasm `IoTaskPool` is the main thread, so this whole thing used to
@@ -725,6 +784,12 @@ pub fn update_buildings(
                     }
                 })
                 .detach();
+        };
+        while let Some((cx, cy)) = osm.far_dispatch.next(now_secs) {
+            spawn_cell(cx, cy);
+        }
+        while let Some((cx, cy)) = osm.far_dispatch_tdbag.next(now_secs) {
+            spawn_cell(cx, cy);
         }
 
         // Apply completed cells.
@@ -733,8 +798,12 @@ pub fn update_buildings(
             .lock()
             .map(|mut g| g.drain(..).collect())
             .unwrap_or_default();
-        for _ in 0..done.len() {
-            osm.far_dispatch.completed();
+        for (cell, _) in &done {
+            if osm.far_tdbag_lane.remove(cell) {
+                osm.far_dispatch_tdbag.completed();
+            } else {
+                osm.far_dispatch.completed();
+            }
         }
         for (cell, built) in done {
             match built {
