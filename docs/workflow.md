@@ -25,9 +25,9 @@ them into a single "local vs remote".
 is it running unattended? This decides how much it may assume, and it is what
 the `driven` / `autonomous` labels mean.
 
-**Where does it run?** — the workstation or the VPS. This decides one thing
-only: whether there is a **GPU**, and therefore whether a rendering change can
-be verified at all.
+**Where does it run?** — the workstation or the VPS. This decides whether you
+have to be at your desk, and which machine's checkout, build cache and login the
+session uses. ② and ③ share all three: same image, same volumes, same clone.
 
 |  | **local** (workstation) | **remote** (VPS) |
 |---|---|---|
@@ -41,11 +41,10 @@ are asking about.
 
 ### ① Zed — driven, local
 
-`claude-acp` in Zed on the workstation. You are in the room; a wrong direction
-costs one sentence. **The only place with a GPU**, so the only place a rendering
-change can be signed off.
+`claude-acp` in Zed on the workstation. You are in the room, so a wrong
+direction costs one sentence.
 
-*Use it for:* real work, and anything visual.
+*Use it for:* real work, at the desk.
 
 ### ② claude.ai/code — driven, remote
 
@@ -55,8 +54,8 @@ steering it turn by turn, so it is a full design/spec session that happens not
 to be at your desk. `/ticket`, the `driven` label, the `Stop` hook and the
 handover all apply to it unchanged.
 
-*Use it for:* thinking, specs, review, non-visual changes — away from the desk.
-*Not for:* signing off anything you have to look at.
+*Use it for:* the same work as ①, from a browser or the phone — thinking,
+specs, review, changes you can state and verify in text.
 
 ### ③ Issue watcher — autonomous, remote
 
@@ -101,26 +100,28 @@ half-built work is not an improvement.
 > `local`, which was a misnomer for exactly that reason; `local` is still
 > accepted as an alias so nothing in flight breaks.
 
-### The host axis — whether it can see
+### The host axis — where the work happens
 
-**Anything touching camera, shaders, egui layout or map draw order must run on
-the workstation** — workflow ① only. Both VPS contexts are deliberately
-GPU-less, so `--shot` and `cargo shots` cannot run there and the change cannot
-be verified. That constrains ② exactly as much as ③, even though ② has a person
-watching: attention is not a GPU. Both are told to say so rather than fake it,
-but the cheaper fix is not to send it.
+`local` and `remote` say nothing about how a session behaves; ① and ② follow the
+same rules throughout this document. What the host decides is practical:
 
-So ② is excellent for the *spec* of a rendering change and unable to sign it
-off. Writing the ticket there and doing the work in ① is the intended shape.
+- **① requires your desk.** ② and ③ do not — ② is reachable from a browser or
+  the phone app, and ③ needs nobody at all.
+- **② and ③ share a machine**, and deliberately: same image, same volumes, so
+  the same clone, crate cache and login serve both. A branch a claude.ai/code
+  session pushes is one the watcher can pick up without fetching anything new.
+- **Capabilities differ per host** — a container may not be able to run
+  everything the workstation can. That is an operational fact about a given
+  machine, not part of this workflow; the run-modes and tooling notes in
+  CLAUDE.md are where it belongs, and a session that cannot run something is
+  expected to say so rather than fake the result.
 
-This is also why the fourth cell of the matrix is empty. An autonomous runner on
-the workstation would be the only way to verify a rendering change unattended —
-nothing prevents it, it simply does not exist, and until it does, visual tickets
-stay in ①.
+The fourth cell of the matrix is empty simply because no autonomous runner is
+installed on the workstation. Nothing prevents one.
 
 ## The driven lane in practice
 
-Identical in both places; the only difference is the GPU.
+Identical in ① and ②.
 
 ### File the ticket
 

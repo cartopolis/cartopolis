@@ -30,8 +30,8 @@ The change, in terms of crates and files.
 - [ ] A checklist someone else can verify.
 
 ## Verification
-`cargo check -p viberfox`, `cargo test -p viberfox --bin viberfox`, and anything
-that needs `cargo shots` on a workstation.
+`cargo check -p viberfox`, `cargo test -p viberfox --bin viberfox`, and any
+visual check via `cargo shots`.
 
 ## Out of scope
 What a reader would reasonably assume is included but is not.
@@ -71,14 +71,12 @@ Forgejo 16 has no kanban API and only the bot's session can move a card.
 - **`autonomous`** — hand it to the watcher for the full pipeline: refine, then
   implement, unattended.
 - **`agent`** — hand it straight to the watcher to implement. Use when the spec
-  is complete and the work needs no GPU.
+  is complete and you want it built now, without a refinement pass.
 - **`agent:skip`** — a record only; nobody should act on it yet.
 
-**Anything touching camera, shaders, egui layout or map draw order must stay on
-the workstation.** Neither VPS context has a GPU, so `--shot` and `cargo shots`
-cannot run there and the change cannot be verified — that includes an
-interactive claude.ai/code session, not just the watcher. See the run-modes
-notes in CLAUDE.md.
+If part of the verification can only run on certain machines, say so in the
+**Verification** section. That is a note for whoever picks the ticket up, not a
+reason to choose a label.
 
 ## Handing it over later
 
