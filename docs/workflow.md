@@ -7,41 +7,64 @@ Everything below is driven by **Forgejo labels**. The board column is a
 *projection* of them, never the source — see [Why the board cannot be the state
 store](#why-the-board-cannot-be-the-state-store).
 
-- [The two lanes](#the-two-lanes)
-- [Local lane](#local-lane-zed-on-the-workstation)
-- [Remote lane](#remote-lane-the-vps-agent)
+- [Two lanes, three places](#two-lanes-three-places)
+- [Driven lane](#driven-lane-zed-and-claudeaicode)
+- [Autonomous lane](#autonomous-lane-the-issue-watcher)
 - [Handover](#handover)
 - [States](#states)
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
-## The two lanes
+## Two lanes, three places
 
-| | **Local** | **Remote** |
-|---|---|---|
-| Runs in | Zed on the workstation (`claude-acp`) | `viberfox-issue-watcher` on garage44.eu |
-| Started by | you, in a session | a new issue, or a label |
-| Label | `local` | none, or `agent` |
-| GPU | yes — `cargo shots` works | **no** |
-| Correcting it | a sentence, immediately | a comment, next poll |
+Work is split by **who is driving**, not by where it runs. Those are separate
+axes and conflating them gets the GPU rule wrong.
 
-**Local is the default for real work**, and the reason is the cost of being
-wrong. A spec written in Zed is reviewed as it is written; the user is in the
-room, the code is in context, and a wrong direction costs one sentence to fix.
-The same ticket handed to the remote agent raw has to be *inferred* from
-whatever the issue says, and a confidently wrong inference costs a 45-minute
-session and a branch someone has to read to discover it went sideways.
+| | Zed | claude.ai/code | issue watcher |
+|---|---|---|---|
+| Session | `claude-acp` on the workstation | Remote Control into `viberfox-agent` | headless `claude -p` |
+| **Lane** | **driven** | **driven** | **autonomous** |
+| Driving | you, live | you, live | a new issue or a label |
+| Label | `local` | `local` | none, or `agent` |
+| Host | workstation | VPS container | VPS container |
+| GPU | **yes** | no | no |
+| Correcting it | a sentence | a sentence | a comment, next poll |
 
-The remote lane is for what the local one cannot absorb: work that should happen
-while you are not at the machine, tickets filed from a phone, and anything you
-would rather queue than do.
+**The driven lane is the default for real work**, and the reason is the cost of
+being wrong. A spec written with you in the room is reviewed as it is written,
+and a wrong direction costs one sentence to fix. The same ticket handed to the
+watcher raw has to be *inferred* from whatever the issue says, and a confidently
+wrong inference costs a 45-minute session and a branch someone has to read to
+discover it went sideways.
 
-**Anything touching camera, shaders, egui layout or map draw order must stay
-local.** The container is deliberately GPU-less, so `--shot` and `cargo shots`
-cannot run there and the change cannot be verified. The remote agent is told to
-say so rather than fake it, but the cheaper fix is not to send it.
+`claude.ai/code` is the same lane as Zed, not a variant of the watcher: a person
+is steering it turn by turn. It is a full design/spec session that happens to be
+reachable from a phone. Everything below about the driven lane — `/ticket`, the
+`local` label, the `Stop` hook, the handover — applies to it unchanged.
 
-## Local lane (Zed on the workstation)
+The autonomous lane is for what the driven one cannot absorb: work that should
+happen while you are not at a keyboard, tickets filed in passing, and anything
+you would rather queue than do.
+
+> **`local` names the lane, not the machine.** It means "a person is driving
+> this ticket; the watcher must not touch it" — true of a claude.ai/code session
+> on the VPS just as much as a Zed session on the workstation.
+
+### The GPU rule is about the host, not the lane
+
+**Anything touching camera, shaders, egui layout or map draw order must run on
+the workstation.** Both VPS contexts are deliberately GPU-less, so `--shot` and
+`cargo shots` cannot run there and the change cannot be verified — that applies
+to an interactive claude.ai/code session exactly as much as to the watcher. Both
+are told to say so rather than fake it, but the cheaper fix is not to send it.
+
+A claude.ai/code session is therefore excellent for the *spec* of a rendering
+change and unable to sign it off. Filing the ticket there and doing the work in
+Zed is the intended shape.
+
+## Driven lane (Zed, and claude.ai/code)
+
+Identical in both places. The only difference is the GPU.
 
 ### File the ticket
 
@@ -53,9 +76,15 @@ you before filing, then creates the issue with the `local` label.
 .claude/skills/ticket/file-issue --title "..." < /tmp/spec.md
 ```
 
-The card appears in **Backlog** within 30 s. The workstation does not place it
-itself; the watcher does, so the bot's password never has to live on your
-laptop.
+The card appears in **Backlog** within 30 s. Neither driven context places it
+itself; the watcher does, so the bot's board password stays in one place instead
+of being copied to a laptop and a container.
+
+Credentials are `~/.config/viberfox/forgejo.env` (`0600`, scope `write:issue`) in
+whichever context you are in — the workstation and the container each hold their
+own token. Both author issues as **you**, not as the bot: a person is driving,
+and it keeps the `@agent` comment path working, since the watcher ignores
+comments authored by `viberfox-agent` as a loop-breaker.
 
 `--branch` defaults to the branch currently checked out, and **the issue number
 is inserted into its name**: `fix/road-joins` → `fix/12-road-joins`, renamed
@@ -78,15 +107,27 @@ session **ends normally**, both from the `Stop` hook in
 2. the branch is pushed, if it has commits
 
 The hook is scoped by **remote URL**, not by where it is installed: it lives in
-the global `~/.claude/settings.json` and exits silently in any repo whose
-`origin` is not viberfox. Without that guard it would publish chat digests into
-every other project on the workstation.
+the global settings and exits silently in any repo whose `origin` is not
+viberfox. Without that guard it would publish chat digests into every other
+project on the workstation.
+
+**The same script runs in both driven contexts** — `~/.claude/hooks/` on the
+workstation and `/home/agent/.claude/hooks/` on the `agent_claude` volume. They
+must stay byte-identical; `md5sum` both after touching either. They drifted once
+already, and the symptom was silent: claude.ai/code sessions published their
+digest but never pushed their branch, so a handover got the reasoning and none of
+the code.
+
+Each claude.ai/code session gets its own worktree (`--spawn worktree`) on its own
+branch, so the digest is per-branch there exactly as on the workstation. The
+worktree *directories* are named `bridge-cse_*`, but the branches are ordinary
+`feat/…` / `fix/…` names — which is what the hook keys on.
 
 > **Commit before you stop.** Uncommitted work does not survive a handover. The
 > digest header records the file count (`uncommitted at stop: 7 file(s)`) so the
 > next agent knows something existed, but it cannot recover it.
 
-## Remote lane (the VPS agent)
+## Autonomous lane (the issue watcher)
 
 A new issue with no `local` label is **refined** before anything is built.
 
@@ -227,17 +268,26 @@ position goes stale.
 | Hook registration | `~/.claude/settings.json` → `hooks.Stop` |
 | Forgejo token (`write:issue`) | `~/.config/viberfox/forgejo.env`, `0600` |
 
-**VPS** (`/data/agent/`, docs in `README.md` there)
+**VPS — `viberfox-agent`** (the claude.ai/code container)
+
+| What | Where |
+|---|---|
+| Same `Stop` hook + jq filter | `/home/agent/.claude/hooks/` on the `agent_claude` volume |
+| Hook registration | `/home/agent/.claude/settings.json` → `hooks.Stop` |
+| Forgejo token (`write:issue`) | `/home/agent/.config/viberfox/forgejo.env`, `0600` |
+
+**VPS — `viberfox-issue-watcher`** (`/data/agent/`, docs in `README.md` there)
 
 | What | Where |
 |---|---|
 | Watcher + board driver | `issue-watcher/watcher.ts`, `issue-watcher/board.ts` |
 | Token, bot password | `watcher.env`, `0600` |
 | Modes, labels, column ids | `docker-compose.yml` → `environment:` |
-| Same `Stop` hook | `/home/agent/.claude/hooks/` on the `agent_claude` volume |
 
-The hook exists in two places on purpose — the workstation and the container are
-separate environments — but they are the same script. Keep them in step.
+The `Stop` hook exists in two places on purpose — the workstation and the
+container are separate environments — but it is the same script. `md5sum` both
+after editing either; see the warning under [Work](#work) for what drift looks
+like.
 
 `AGENT_NEW_ISSUE_MODE` chooses what a new issue gets: `refine` (default),
 `implement`, or `off`.
