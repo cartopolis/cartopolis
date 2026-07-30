@@ -503,6 +503,14 @@ impl SurfaceGroup {
     #[must_use]
     pub fn base_color(self) -> [f32; 3] {
         let rgb = match self {
+            // Not where water's colour comes from, and never reached: `map_geometry`
+            // builds a `WaterMaterial` for any cell holding a water mesh and takes
+            // that branch for every one of them, shading toggle or not, so this
+            // function only ever sees the other groups. Kept because the match is
+            // exhaustive and this is the honest fallback anyway — `palette::WATER`
+            // is *tuned* to the tone `water::WATER_ALBEDO` shades to, so a water
+            // sheet that somehow arrived here would still land the right colour
+            // rather than panic in the middle of a tile stream.
             Self::Water => palette::WATER,
             Self::Forest => palette::FOREST,
             Self::Grass => palette::GRASS,
