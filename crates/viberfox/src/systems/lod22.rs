@@ -129,6 +129,7 @@ pub fn update_lod22(
     globe: Res<GlobeState>,
     time: Res<Time>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
+    mut osm: ResMut<crate::systems::osm_buildings::OsmBuildings>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -303,6 +304,11 @@ pub fn update_lod22(
                     .id();
                 // Shadow-caster state is set by the shadow-LOD pass below.
                 lod.cells.insert(c, e);
+                // The far tier may already hold this cell — queued before the
+                // coverage manifest loaded, or while the 3DBAG toggle was off.
+                // Evict it now that the real mesh is up, or both tiers render
+                // stacked (see `OsmBuildings::evict_far_cell`).
+                osm.evict_far_cell(&mut commands, c);
                 tracing::info!(cell = ?c, live = lod.cells.len(), "lod22 cell rendered");
             }
             Ok(None) => {} // empty cell; stays requested so it isn't re-queried

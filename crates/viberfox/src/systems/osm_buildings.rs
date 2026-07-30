@@ -305,6 +305,25 @@ pub struct OsmBuildings {
     buildings: Vec<Building>,
 }
 
+impl OsmBuildings {
+    /// Despawn the far-cell extrusion for `cell`, if one is up — called by the
+    /// LoD2.2 streamer the moment its real mesh spawns there, so the two tiers
+    /// never stack. The far tier legitimately requests covered cells whenever
+    /// `lod22_covers` says no *at request time* — before the coverage manifest
+    /// arrives at startup, or while the Layers panel's 3DBAG toggle is off —
+    /// and nothing else removes them: far cells are only pruned by camera
+    /// distance, and the inset footprint does not hide them (the extruded
+    /// height is a guess that can poke through the real BAG roof). Dropping the
+    /// cell from `far_requested` lets the far tier re-fetch it (disk-cached)
+    /// when the real mesh later goes out of range.
+    pub(crate) fn evict_far_cell(&mut self, commands: &mut Commands, cell: (i64, i64)) {
+        for e in self.far_cells.remove(&cell).unwrap_or_default() {
+            commands.entity(e).despawn();
+        }
+        self.far_requested.remove(&cell);
+    }
+}
+
 /// Marker for spawned building meshes.
 #[derive(Component)]
 pub struct OsmBuildingMesh;
