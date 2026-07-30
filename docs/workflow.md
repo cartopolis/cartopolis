@@ -7,49 +7,77 @@ Everything below is driven by **Forgejo labels**. The board column is a
 *projection* of them, never the source — see [Why the board cannot be the state
 store](#why-the-board-cannot-be-the-state-store).
 
-- [Two lanes, three places](#two-lanes-three-places)
-- [Driven lane](#driven-lane-zed-and-claudeaicode)
-- [Autonomous lane](#autonomous-lane-the-issue-watcher)
+- [The three workflows](#the-three-workflows) — ① Zed, ② claude.ai/code, ③ issue watcher
+- [The driven lane in practice](#the-driven-lane-in-practice) — ① and ②
+- [The autonomous lane in practice](#the-autonomous-lane-in-practice) — ③
 - [Handover](#handover)
 - [States](#states)
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
-## Two lanes, three places
+## The three workflows
 
-Work is split by **who is driving**, not by where it runs. Those are separate
-axes and conflating them gets the GPU rule wrong.
+Two independent questions, not one. Keeping them apart is the whole point of
+this section, because every mistake in this document so far came from collapsing
+them into a single "local vs remote".
 
-| | Zed | claude.ai/code | issue watcher |
-|---|---|---|---|
-| Session | `claude-acp` on the workstation | Remote Control into `viberfox-agent` | headless `claude -p` |
-| **Lane** | **driven** | **driven** | **autonomous** |
-| Driving | you, live | you, live | a new issue or a label |
-| Label | `driven` | `driven` | none, `autonomous`, or `agent` |
-| Host | workstation | VPS container | VPS container |
-| GPU | **yes** | no | no |
-| Correcting it | a sentence | a sentence | a comment, next poll |
+**Who is driving?** — is a person reading each answer and correcting course, or
+is it running unattended? This decides how much it may assume, and it is what
+the `driven` / `autonomous` labels mean.
 
-**The driven lane is the default for real work**, and the reason is the cost of
-being wrong. A spec written with you in the room is reviewed as it is written,
-and a wrong direction costs one sentence to fix. The same ticket handed to the
-watcher raw has to be *inferred* from whatever the issue says, and a confidently
-wrong inference costs a 45-minute session and a branch someone has to read to
-discover it went sideways.
+**Where does it run?** — the workstation or the VPS. This decides one thing
+only: whether there is a **GPU**, and therefore whether a rendering change can
+be verified at all.
 
-`claude.ai/code` is the same lane as Zed, not a variant of the watcher: a person
-is steering it turn by turn. It is a full design/spec session that happens to be
-reachable from a phone. Everything below about the driven lane — `/ticket`, the
-`driven` label, the `Stop` hook, the handover — applies to it unchanged.
+|  | **local** (workstation) | **remote** (VPS) |
+|---|---|---|
+| **driven** (person steering) | ① **Zed** | ② **claude.ai/code** |
+| **autonomous** (unattended) | *(nothing — see below)* | ③ **issue watcher** |
 
-The autonomous lane is for what the driven one cannot absorb: work that should
-happen while you are not at a keyboard, tickets filed in passing, and anything
-you would rather queue than do.
+So `driven`/`autonomous` and `local`/`remote` are **not two names for the same
+split**. ① and ② share a lane and differ in host; ② and ③ share a host and
+differ in lane. Everything that follows hangs off which of those two things you
+are asking about.
 
-### Both polarities exist, and both are useful
+### ① Zed — driven, local
 
-The lanes have a label each, because which one is load-bearing depends on how
-much you want running unattended:
+`claude-acp` in Zed on the workstation. You are in the room; a wrong direction
+costs one sentence. **The only place with a GPU**, so the only place a rendering
+change can be signed off.
+
+*Use it for:* real work, and anything visual.
+
+### ② claude.ai/code — driven, remote
+
+Remote Control into the `viberfox-agent` container, reachable from a browser or
+the phone app. **Same lane as Zed, not a variant of the watcher** — a person is
+steering it turn by turn, so it is a full design/spec session that happens not
+to be at your desk. `/ticket`, the `driven` label, the `Stop` hook and the
+handover all apply to it unchanged.
+
+*Use it for:* thinking, specs, review, non-visual changes — away from the desk.
+*Not for:* signing off anything you have to look at.
+
+### ③ Issue watcher — autonomous, remote
+
+Headless `claude -p` in the `viberfox-issue-watcher` container, triggered by an
+issue or a label rather than by you. Nobody sees the intermediate turns, which
+is why it [refines before it builds](#refinement) and why refinement is required
+to cite the code rather than assume.
+
+*Use it for:* work that should happen while you are not at a keyboard.
+*Not for:* anything visual, or anything you cannot state precisely.
+
+### The lane axis — how much it may assume
+
+A spec written with you in the room is reviewed as it is written. The same
+ticket handed to the watcher raw has to be *inferred* from whatever the issue
+says, and a confidently wrong inference costs a 45-minute session plus a branch
+someone has to read to discover it went sideways. That is why the driven lane is
+the default for real work, and why the autonomous one refines before it builds.
+
+Each lane has a label, and which one is load-bearing depends on how much you
+want running unattended:
 
 | Label | Says | Load-bearing when |
 |---|---|---|
@@ -73,21 +101,26 @@ half-built work is not an improvement.
 > `local`, which was a misnomer for exactly that reason; `local` is still
 > accepted as an alias so nothing in flight breaks.
 
-### The GPU rule is about the host, not the lane
+### The host axis — whether it can see
 
 **Anything touching camera, shaders, egui layout or map draw order must run on
-the workstation.** Both VPS contexts are deliberately GPU-less, so `--shot` and
-`cargo shots` cannot run there and the change cannot be verified — that applies
-to an interactive claude.ai/code session exactly as much as to the watcher. Both
-are told to say so rather than fake it, but the cheaper fix is not to send it.
+the workstation** — workflow ① only. Both VPS contexts are deliberately
+GPU-less, so `--shot` and `cargo shots` cannot run there and the change cannot
+be verified. That constrains ② exactly as much as ③, even though ② has a person
+watching: attention is not a GPU. Both are told to say so rather than fake it,
+but the cheaper fix is not to send it.
 
-A claude.ai/code session is therefore excellent for the *spec* of a rendering
-change and unable to sign it off. Filing the ticket there and doing the work in
-Zed is the intended shape.
+So ② is excellent for the *spec* of a rendering change and unable to sign it
+off. Writing the ticket there and doing the work in ① is the intended shape.
 
-## Driven lane (Zed, and claude.ai/code)
+This is also why the fourth cell of the matrix is empty. An autonomous runner on
+the workstation would be the only way to verify a rendering change unattended —
+nothing prevents it, it simply does not exist, and until it does, visual tickets
+stay in ①.
 
-Identical in both places. The only difference is the GPU.
+## The driven lane in practice
+
+Identical in both places; the only difference is the GPU.
 
 ### File the ticket
 
@@ -150,7 +183,7 @@ worktree *directories* are named `bridge-cse_*`, but the branches are ordinary
 > digest header records the file count (`uncommitted at stop: 7 file(s)`) so the
 > next agent knows something existed, but it cannot recover it.
 
-## Autonomous lane (the issue watcher)
+## The autonomous lane in practice
 
 A new issue with no `driven` label is **refined** before anything is built.
 
@@ -284,7 +317,7 @@ position goes stale.
 
 ## Setup
 
-**Workstation**
+**① Zed — the workstation**
 
 | What | Where |
 |---|---|
@@ -292,7 +325,7 @@ position goes stale.
 | Hook registration | `~/.claude/settings.json` → `hooks.Stop` |
 | Forgejo token (`write:issue`) | `~/.config/viberfox/forgejo.env`, `0600` |
 
-**VPS — `viberfox-agent`** (the claude.ai/code container)
+**② claude.ai/code — the `viberfox-agent` container**
 
 | What | Where |
 |---|---|
@@ -300,7 +333,7 @@ position goes stale.
 | Hook registration | `/home/agent/.claude/settings.json` → `hooks.Stop` |
 | Forgejo token (`write:issue`) | `/home/agent/.config/viberfox/forgejo.env`, `0600` |
 
-**VPS — `viberfox-issue-watcher`** (`/data/agent/`, docs in `README.md` there)
+**③ Issue watcher — the `viberfox-issue-watcher` container** (`/data/agent/`, docs in `README.md` there)
 
 | What | Where |
 |---|---|
@@ -308,10 +341,10 @@ position goes stale.
 | Token, bot password | `watcher.env`, `0600` |
 | Modes, labels, column ids | `docker-compose.yml` → `environment:` |
 
-The `Stop` hook exists in two places on purpose — the workstation and the
-container are separate environments — but it is the same script. `md5sum` both
-after editing either; see the warning under [Work](#work) for what drift looks
-like.
+The `Stop` hook exists in two places on purpose — ① and ② are separate
+environments — but it is the same script. `md5sum` both after editing either;
+see the warning under [Work](#work) for what drift looks like. ③ needs no hook:
+it publishes nothing, because the watcher already reports on the issue itself.
 
 `AGENT_NEW_ISSUE_MODE` chooses what a new issue gets: `refine` (default),
 `implement`, or `off`.
