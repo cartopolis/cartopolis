@@ -42,8 +42,12 @@ use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 /// (each cell is `cache/buildings/{CACHE_ZOOM}/{x}/{y}.json`). Kept coarse (few,
 /// large cells) so a patch is a handful of Overpass queries, not dozens.
 const CACHE_ZOOM: u32 = 14;
-/// Throttle between live Overpass queries so we don't trip its rate limit (429).
-pub(crate) const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
+/// Polite pace against a PUBLIC Overpass instance (see [`overpass_pace`]).
+const OVERPASS_THROTTLE: Duration = Duration::from_millis(800);
+/// Concurrent live queries against our own Overpass (see [`overpass_pace`]).
+/// A throughput cap for the VPS (Overpass queries are server-CPU-heavy and the
+/// box also runs Nominatim and the tile mirror), not a rate limit.
+const OVERPASS_SELF_CONCURRENCY: usize = 4;
 
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
@@ -55,6 +59,29 @@ const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter
 /// self-hosted default.
 fn overpass_url() -> String {
     std::env::var("VIBE_OVERPASS_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.to_string())
+}
+
+/// Pace for live Overpass queries: `(max concurrent, min spacing between them)`.
+///
+/// The 1-in-flight / 800 ms budget is citizenship toward a **public** Overpass
+/// instance — its rate limits and fairness rules. The default endpoint is our
+/// own (`overpass.garage44.eu`), which has no such budget, and pacing it
+/// politely made the far building ring and the POI layers stream several times
+/// slower than the server requires. Localhost counts as ours too; any *other*
+/// override is assumed public and keeps the polite pace automatically.
+pub(crate) fn overpass_pace() -> (usize, Duration) {
+    static PACE: OnceLock<(usize, Duration)> = OnceLock::new();
+    *PACE.get_or_init(|| {
+        let url = overpass_url();
+        let ours = url == DEFAULT_OVERPASS_URL
+            || url.starts_with("http://localhost")
+            || url.starts_with("http://127.");
+        if ours {
+            (OVERPASS_SELF_CONCURRENCY, Duration::ZERO)
+        } else {
+            (1, OVERPASS_THROTTLE)
+        }
+    })
 }
 
 /// Self-hosted 3DBAG static building host (real Dutch BAG heights + ground level;
@@ -534,7 +561,10 @@ pub fn update_buildings(
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         osm.anchor = Some((ax, ay, z, lat));
-        osm.far_dispatch = Dispatcher::new(1, 0.0);
+        // Concurrency per lane from the endpoint: our own Overpass runs
+        // concurrent, a public one serial (spacing comes from the throttle
+        // inside the fetch).
+        osm.far_dispatch = Dispatcher::new(overpass_pace().0, 0.0);
         osm.far_dispatch_tdbag = Dispatcher::new(TDBAG_FAR_CONCURRENCY, 0.0);
         osm.far_tdbag_lane.clear();
     }
@@ -1948,11 +1978,17 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
         "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
     );
     let fetched = overpass_query(&query).await?;
-    // Space out live queries so a multi-cell patch doesn't burst-trip the limit.
+    // Space out live queries against a public instance so a multi-cell patch
+    // doesn't burst-trip its limit; zero (skipped) against our own host.
     // Native only: a blocking sleep on the pool thread (as the old worker did); the
     // wasm build skips it (it cannot block) and leans on cache + the far dispatcher.
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::sleep(OVERPASS_THROTTLE);
+    {
+        let (_, throttle) = overpass_pace();
+        if !throttle.is_zero() {
+            std::thread::sleep(throttle);
+        }
+    }
     // Validate *before* persisting: `parse_buildings` rejects a `remark` response
     // (Overpass's 200-status error channel), so a transient timeout is never cached
     // as a permanently-empty cell.

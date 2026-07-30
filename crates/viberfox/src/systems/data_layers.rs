@@ -38,7 +38,7 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{
-    lat_lng_to_local, overpass_query, MeshData, OVERPASS_THROTTLE,
+    lat_lng_to_local, overpass_query, MeshData,
 };
 use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
 
@@ -527,8 +527,10 @@ pub fn update_data_layers(
         let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         dl.anchor = Some((ax, ay, z, lat));
-        // Serial (1 at a time), spaced by the Overpass throttle.
-        dl.dispatch = Dispatcher::new(1, OVERPASS_THROTTLE.as_secs_f64());
+        // Paced by the endpoint: concurrent and unspaced against our own
+        // Overpass, serial + throttled against a public one.
+        let (concurrency, spacing) = crate::systems::osm_buildings::overpass_pace();
+        dl.dispatch = Dispatcher::new(concurrency, spacing.as_secs_f64());
     }
     let (ax, ay, z, lat) = dl.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
