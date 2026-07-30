@@ -509,6 +509,7 @@ fn main() {
     .init_resource::<systems::geo_nav::GeoNavState>()
     .init_resource::<systems::navigation::RouteState>()
     .init_resource::<systems::driver::DriverState>()
+    .init_resource::<systems::route_ahead::RouteAhead>()
     .init_resource::<systems::bookmarks::BookmarksState>()
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
@@ -933,7 +934,14 @@ fn main() {
             systems::driver::update_driver_arrow
                 .after(systems::driver::drive_driver_mode)
                 .after(systems::free_camera::camera_controls),
-            systems::driver::render_driver_hud.after(systems::ui::render_menu_bar),
+            // What lies ahead on the route (the rail's markers, the speed limit).
+            // After the drive tick, which is what turns driver mode on, and before
+            // the chrome that reads it.
+            systems::route_ahead::drive_route_ahead
+                .after(systems::driver::drive_driver_mode),
+            systems::driver::render_driver_hud
+                .after(systems::ui::render_menu_bar)
+                .after(systems::route_ahead::drive_route_ahead),
             // The compass/locate column, which driver mode repurposes.
             systems::hud::render_map_controls
                 .after(systems::ui::render_menu_bar)
@@ -1586,6 +1594,11 @@ struct HorizonHazeMaterial {
     /// `DistanceFog::directional_light_color` — rgb tint, alpha = strength.
     #[uniform(2)]
     dir_light_color: LinearRgba,
+    /// x: view-direction `y` where the shell's own rim sits (negative — the ray
+    /// that grazes the shell exactly where the ground does). The haze fades to
+    /// nothing there, so the rim itself never draws an edge. yzw unused.
+    #[uniform(3)]
+    rim: Vec4,
 }
 
 impl Material for HorizonHazeMaterial {
@@ -2230,11 +2243,17 @@ fn setup_horizon_haze(
     // Unit shell: `update_horizon_haze` scales it to the fog's saturation
     // distance each frame, so it stands *in front of* the ground the fog has
     // already hidden rather than behind it (see `fog_saturation_distance`).
-    let mesh = meshes.add(Cuboid::from_length(2.0).mesh());
+    //
+    // A sphere, not a box: the rim where the shell stops covering the ground is
+    // the one edge the haze can't hide, so it has to sit at the same elevation in
+    // every direction. A cube's rim runs from `r` at the face to `r√2` at the
+    // corner, which swept up and down as a ring as the camera pivoted.
+    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap());
     let material = materials.add(HorizonHazeMaterial {
         color: LinearRgba::WHITE,
         params: Vec4::ZERO, // set each frame from the distance fog
         dir_light_color: LinearRgba::NONE,
+        rim: Vec4::ZERO,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -2320,6 +2339,16 @@ fn update_horizon_haze(
             d * d,
         );
         mat.dir_light_color = fog.directional_light_color.to_linear();
+        // Where the shell's rim meets the ground, in view-direction `y`: the ray
+        // that grazes the sphere at `radius` is the same one that hits the ground
+        // plane there, so it is `-altitude / radius` (small, and always below the
+        // horizon). The shader ramps the haze from nothing at the rim to full at
+        // the horizon, which is what keeps the rim from being an edge of its own:
+        // the ground just inside it wears the atmosphere's own aerial perspective,
+        // and at sunset that is a strong warm tint for flat fog colour to butt up
+        // against. Fading in over that span also means the haze only takes over
+        // where the ground is far enough for the atmosphere to have got it wrong.
+        mat.rim = Vec4::new(-(altitude / radius).clamp(1e-4, 1.0), 0.0, 0.0, 0.0);
     }
 }
 

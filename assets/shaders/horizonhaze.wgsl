@@ -20,6 +20,9 @@
 @group(3) @binding(1) var<uniform> params: vec4<f32>;
 // DistanceFog::directional_light_color — rgb tint, alpha = strength.
 @group(3) @binding(2) var<uniform> dir_light_color: vec4<f32>;
+// rim.x: view-direction y where this shell's rim crosses the ground (negative).
+// The haze ramps from nothing there to full at the horizon.
+@group(3) @binding(3) var<uniform> rim: vec4<f32>;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -52,5 +55,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // divisor so a zero-strength shell is simply transparent.
     let scale = max(params.x, 1e-6);
     let fade = params.w + (1.0 - params.w) * exp(-max(dir.y, 0.0) / scale);
-    return vec4<f32>(rgb, clamp(color.a * params.y * fade, 0.0, 1.0));
+
+    // Below the horizon the shell is standing in front of ground the fog has
+    // already hidden — but only past its own rim, and the ground just inside that
+    // rim is correctly hazed by the atmosphere. Butting opaque fog colour against
+    // it drew a ring (the rim is a circle on screen, and it swept as the camera
+    // pivoted). Ramp in from the rim to the horizon instead: nothing is covered
+    // where the atmosphere still has it right, everything is by the time the
+    // ground is far enough that its in-scattering has been clamped.
+    let rim_fade = smoothstep(rim.x, 0.0, min(dir.y, 0.0));
+
+    return vec4<f32>(rgb, clamp(color.a * params.y * fade * rim_fade, 0.0, 1.0));
 }
