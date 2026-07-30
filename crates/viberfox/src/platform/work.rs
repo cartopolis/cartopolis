@@ -45,7 +45,6 @@ impl<J> Dispatcher<J> {
     }
 
     /// Jobs waiting to start (not counting in-flight ones).
-    #[allow(dead_code)] // accessor for callers that surface backlog; not all use it.
     pub fn queued(&self) -> usize {
         self.pending.len()
     }
@@ -55,6 +54,29 @@ impl<J> Dispatcher<J> {
     /// harness's settle test, which otherwise captures a half-built city.
     pub fn busy(&self) -> bool {
         self.in_flight > 0 || !self.pending.is_empty()
+    }
+
+    /// Take every job that has not started yet, leaving the in-flight count alone.
+    ///
+    /// For a caller that re-decides its whole work list each pass rather than
+    /// accumulating one: the globe quadtree re-selects and re-sorts its desired
+    /// tiles (coarse first, nearest first) every `QT_SELECT_INTERVAL`, and a queue
+    /// left over from an earlier pass would outrank the fresh order — spending the
+    /// fetch budget on tiles the view has since moved past.
+    pub fn drain_pending(&mut self) -> Vec<J> {
+        self.pending.drain(..).collect()
+    }
+
+    /// Count a job as in flight again after it was completed.
+    ///
+    /// One caller: [`CellStream::defer`](super::stream::CellStream::defer), where a
+    /// result is drained (freeing its slot) and then handed back because the frame's
+    /// build cap was already spent. It is still outstanding work holding a decoded
+    /// payload, so it has to keep counting against the bound — otherwise the stream
+    /// admits fresh fetches on top of results it has not consumed, and the
+    /// concurrency cap stops bounding memory, which is half of what it is for.
+    pub fn reoccupy(&mut self) {
+        self.in_flight += 1
     }
 
     /// The next job allowed to start at time `now`, or `None` if at the concurrency

@@ -359,7 +359,7 @@ mod tests {
         // alongside the other three, so exactly one must be evicted.
         let third = MAX_CACHE_BYTES / 3;
         for i in 0..3u8 {
-            run(source.bytes(key(10 + i64::from(i)), || async move {
+            let _ = run(source.bytes(key(10 + i64::from(i)), || async move {
                 Ok(vec![i; third])
             }));
         }
@@ -369,7 +369,7 @@ mod tests {
             Err("must not be fetched again".to_string())
         }));
         assert_eq!(origin, Origin::Memory);
-        run(source.bytes(key(13), || async move { Ok(vec![3u8; third]) }));
+        let _ = run(source.bytes(key(13), || async move { Ok(vec![3u8; third]) }));
 
         assert!(
             source.cached_bytes() <= MAX_CACHE_BYTES,
@@ -391,7 +391,7 @@ mod tests {
         let k = TileKey::new(8490, 5319, 14);
         let vector = CacheKey { key: k, kind: TileSourceKind::Vector };
         let raster = CacheKey { key: k, kind: TileSourceKind::Raster };
-        run(source.bytes(vector, || async { Ok(b"mvt".to_vec()) }));
+        let _ = run(source.bytes(vector, || async { Ok(b"mvt".to_vec()) }));
         let (r, origin) = run(source.bytes(raster, || async { Ok(b"png".to_vec()) }));
         assert_eq!(origin, Origin::Fetched, "a kind switch reused cached bytes");
         assert_eq!(r.unwrap().as_slice(), b"png");

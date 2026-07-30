@@ -20,8 +20,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use web_time::Instant;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -33,6 +31,7 @@ use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
 
+use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::map_stream::MapStream;
 use crate::systems::globe_ocean::{GlobeOcean, GlobeOceanGloss, GlobeSurfaceMaterial};
@@ -94,9 +93,11 @@ const QT_MAX_Z: u32 = 12;
 const QT_SPLIT_PX: f32 = 340.0;
 /// Back off a tile after this many failed attempts…
 const QT_MAX_ATTEMPTS: u32 = 3;
-/// …and try it again after this cooldown (rate-limited fetches heal instead of
-/// leaving permanent holes).
-const QT_RETRY_AFTER: Duration = Duration::from_secs(20);
+/// …and try it again after this cooldown, with a clean attempt count
+/// (rate-limited fetches heal instead of leaving permanent holes). Seconds, on the
+/// caller's clock, because that is what `platform::stream` speaks — `Instant`
+/// panics on wasm.
+const QT_RETRY_AFTER_SECS: f64 = 20.0;
 /// Max new fetches queued per selection pass. Bursts of 100+ requests are what
 /// trip the tile server's rate limiting (fetches then fail en masse and whole
 /// altitude bands render as backstop); a steady trickle loads everything in a
@@ -141,7 +142,7 @@ const MAX_GLOBE_TILE_BUILDS_PER_FRAME: usize = 4;
 /// that hangs a weak GPU. Retired entities are queued and freed at this rate.
 const MAX_GLOBE_TILE_DESPAWNS_PER_FRAME: usize = 8;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct GlobeState {
     /// The base (ocean backstop) sphere entity, once built.
     entity: Option<Entity>,
@@ -161,13 +162,9 @@ pub struct GlobeState {
     // ── tile quadtree streaming ─────────────────────────────────────────────
     /// Tiles with a live entity (texture applied).
     loaded: HashMap<TileKey, Entity>,
-    /// Tiles queued/being fetched.
-    pending: HashSet<TileKey>,
-    /// Failed fetch attempts per tile: (attempts, last failure) — backed off
-    /// after `QT_MAX_ATTEMPTS`, retried after `QT_RETRY_AFTER`.
-    failed: HashMap<TileKey, (u32, Instant)>,
-    /// Finished fetches from the workers.
-    results: Arc<Mutex<Vec<(TileKey, TileFetch)>>>,
+    /// The requested/in-flight/failed bookkeeping, the results sink, the fetch
+    /// budget and the bounded despawn queue (`platform::stream`).
+    tiles: CellStream<TileKey, TileFetch>,
     /// Fetch jobs, tagged with the build generation so workers drop stale ones.
     gen_shared: Arc<AtomicU32>,
     /// The current desired set, shared with the workers: a queued job whose
@@ -178,10 +175,36 @@ pub struct GlobeState {
     select_timer: f32,
     /// Last selection's desired set (kept for the despawn policy between runs).
     desired: HashSet<TileKey>,
-    /// Tiles retired from `loaded` and awaiting despawn, freed under
-    /// `MAX_GLOBE_TILE_DESPAWNS_PER_FRAME` per frame so a mass teardown (zoom-out,
-    /// stale reclaim, re-anchor) never packs one giant command buffer.
-    despawn_queue: Vec<Entity>,
+}
+
+impl Default for GlobeState {
+    fn default() -> Self {
+        Self {
+            entity: None,
+            center_local: Vec3::ZERO,
+            radius: 0.0,
+            anchor_lat: 0.0,
+            anchor_lng: 0.0,
+            ready: false,
+            built_gen: 0,
+            loaded: HashMap::new(),
+            tiles: CellStream::new(Policy {
+                max_in_flight: QT_FETCH_BUDGET,
+                min_interval_secs: 0.0,
+                max_attempts: QT_MAX_ATTEMPTS,
+                // No wait between the first attempts: a single dropped fetch should
+                // heal on the next selection pass, not leave a hole for 20 s.
+                backoff_secs: 0.0,
+                backoff_doublings: 0,
+                cooldown_secs: QT_RETRY_AFTER_SECS,
+                despawns_per_frame: MAX_GLOBE_TILE_DESPAWNS_PER_FRAME,
+            }),
+            gen_shared: Arc::new(AtomicU32::new(0)),
+            wanted_shared: Arc::new(Mutex::new(HashSet::new())),
+            select_timer: 0.0,
+            desired: HashSet::new(),
+        }
+    }
 }
 
 impl GlobeState {
@@ -233,9 +256,7 @@ impl GlobeState {
     /// Are globe tiles still being fetched or retired? Used by the `--shot`
     /// harness to capture as soon as the globe has settled (see `shot_harness`).
     pub fn streaming_busy(&self) -> bool {
-        !self.pending.is_empty()
-            || !self.despawn_queue.is_empty()
-            || self.results.lock().map(|r| !r.is_empty()).unwrap_or(false)
+        self.tiles.busy()
     }
 
     /// Whether the camera is high enough that the globe is shown and the local
@@ -462,9 +483,8 @@ pub fn setup_globe(
     // (Below GLOBE_SHOW_ALT they're hidden anyway, so draining over ~1 s is
     // invisible; update_globe_tiles drains the queue every frame.)
     let old_tiles = globe.loaded.drain().map(|(_, e)| e).collect::<Vec<_>>();
-    globe.despawn_queue.extend(old_tiles);
-    globe.pending.clear();
-    globe.failed.clear();
+    globe.tiles.retire_all(old_tiles);
+    globe.tiles.reset();
     globe.desired.clear();
     globe.select_timer = 0.0;
 
@@ -957,33 +977,24 @@ pub fn update_globe_tiles(
     // The mass-despawn half of the device-loss guard, paired with the build cap.
     // Runs above the QT_MIN_ALT early-return below so a ground-level re-anchor
     // teardown still clears while the globe is hidden.
-    if !globe.despawn_queue.is_empty() {
-        let n = globe.despawn_queue.len().min(MAX_GLOBE_TILE_DESPAWNS_PER_FRAME);
-        for e in globe.despawn_queue.drain(..n) {
-            commands.entity(e).despawn();
-        }
-    }
+    globe.tiles.drain_despawns(&mut commands);
+    let now_secs = time.elapsed_secs_f64();
 
     // ── Harvest finished fetches into live tile entities (every frame) ──────
-    let ready: Vec<(TileKey, TileFetch)> = globe
-        .results
-        .lock()
-        .map(|mut g| g.drain(..).collect())
-        .unwrap_or_default();
+    let ready = globe.tiles.take_results();
     let mut fetch_failures = 0u32;
     let mut built = 0usize;
     let mut deferred: Vec<(TileKey, TileFetch)> = Vec::new();
     for (key, outcome) in ready {
         let tile = match outcome {
+            // Left the view while queued: forget it so re-wanting it re-fetches
+            // (the bytes are cached, so that is cheap).
             TileFetch::Cancelled => {
-                globe.pending.remove(&key);
-                continue; // left the view while queued
+                globe.tiles.forget(&key);
+                continue;
             }
             TileFetch::Failed => {
-                globe.pending.remove(&key);
-                let e = globe.failed.entry(key).or_insert((0, Instant::now()));
-                e.0 += 1;
-                e.1 = Instant::now();
+                globe.tiles.failed(&key, now_secs);
                 fetch_failures += 1;
                 continue;
             }
@@ -998,16 +1009,17 @@ pub fn update_globe_tiles(
                 .iter()
                 .any(|d| covers(&key, d) && !globe.loaded.contains_key(d));
         if !useful {
-            globe.pending.remove(&key);
+            globe.tiles.forget(&key);
             continue;
         }
-        // Cap decode + upload per frame; defer the rest (kept in `pending` so they
-        // aren't re-fetched) to keep the tile burst from overrunning the GPU timeout.
+        // Cap decode + upload per frame; defer the rest (still counted in flight, so
+        // they aren't re-fetched *and* the budget keeps bounding how many decoded
+        // tiles are held) to keep the burst from overrunning the GPU timeout.
         if built >= MAX_GLOBE_TILE_BUILDS_PER_FRAME {
             deferred.push((key, TileFetch::Ok(tile)));
             continue;
         }
-        globe.pending.remove(&key);
+        globe.tiles.succeeded(&key);
         let has_ocean_mask = tile.has_ocean_mask;
         // Decode + mips already done on the worker; just assemble and upload.
         let image = crate::systems::rendering::image_from_mip_chain(
@@ -1119,19 +1131,15 @@ pub fn update_globe_tiles(
             ))
             .id();
         if let Some(old) = globe.loaded.insert(key, entity) {
-            globe.despawn_queue.push(old);
+            globe.tiles.retire(old);
         }
         built += 1;
     }
     // Requeue the tiles we deferred this frame for the next one.
-    if !deferred.is_empty() {
-        if let Ok(mut g) = globe.results.lock() {
-            g.extend(deferred);
-        }
-    }
+    globe.tiles.defer(deferred);
     if fetch_failures > 0 {
         // A run of failures usually means the tile server is rate-limiting;
-        // failed tiles retry after a cooldown (QT_RETRY_AFTER).
+        // failed tiles retry after a cooldown (QT_RETRY_AFTER_SECS).
         tracing::warn!(failures = fetch_failures, "globe tile fetches failed");
     }
 
@@ -1259,42 +1267,34 @@ pub fn update_globe_tiles(
     // discarded. Sort on the squared distance — same rank order, ~900 fewer sqrts.
     let mut queue_order: Vec<(TileKey, u64)> = desired_set
         .iter()
-        .filter(|k| !globe.loaded.contains_key(*k) && !globe.pending.contains(*k))
+        .filter(|k| !globe.loaded.contains_key(*k) && !globe.tiles.is_requested(k))
         .map(|k| {
             let c_lat = tile_frac_to_lat(k.y as f64 + 0.5, k.z);
             let c_lng = tile_frac_to_lng(k.x as f64 + 0.5, k.z);
             let centre = geodetic_to_local(&frame, c_lat, c_lng, 0.0).as_dvec3();
-            (k.clone(), (cam - centre).length_squared() as u64)
+            (*k, (cam - centre).length_squared() as u64)
         })
         .collect();
     queue_order.sort_by_key(|(k, dist)| (k.z, *dist));
-    let queue_order: Vec<TileKey> = queue_order.into_iter().map(|(k, _)| k).collect();
-    let mut budget = QT_FETCH_BUDGET.saturating_sub(globe.pending.len());
+    // Each pass re-decides the whole order, so drop whatever the last one queued
+    // and did not start: a stale queue would outrank this fresh coarse-first,
+    // nearest-first order and spend the budget on tiles the view has moved past.
+    // `request` then de-dups and holds the attempt/cooldown policy, and `next_job`
+    // enforces QT_FETCH_BUDGET — so the budget is the queue's, not a counter here.
+    globe.tiles.clear_queue();
+    for (key, _) in &queue_order {
+        globe.tiles.request(*key, now_secs);
+    }
     let mut queued = 0u32;
     {
         let gen = globe.built_gen;
-        let results = globe.results.clone();
+        let results = globe.tiles.sink();
         let live_gen = globe.gen_shared.clone();
         let wanted = globe.wanted_shared.clone();
         let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-        for key in &queue_order {
-            if budget == 0 {
-                break;
-            }
-            if globe.loaded.contains_key(key) || globe.pending.contains(key) {
-                continue;
-            }
-            if let Some((attempts, last)) = globe.failed.get(key) {
-                if *attempts >= QT_MAX_ATTEMPTS {
-                    if last.elapsed() < QT_RETRY_AFTER {
-                        continue;
-                    }
-                    globe.failed.remove(key); // cooldown over: fresh attempts
-                }
-            }
-            globe.pending.insert(key.clone());
+        while let Some(key) = globe.tiles.next_job(now_secs) {
             spawn_globe_tile(
-                key.clone(),
+                key,
                 gen,
                 template.clone(),
                 results.clone(),
@@ -1302,7 +1302,6 @@ pub fn update_globe_tiles(
                 wanted.clone(),
             );
             queued += 1;
-            budget -= 1;
         }
     }
     if queued > 0 {
@@ -1310,7 +1309,8 @@ pub fn update_globe_tiles(
             queued,
             desired = desired_set.len(),
             loaded = globe.loaded.len(),
-            despawn_pending = globe.despawn_queue.len(),
+            in_flight = globe.tiles.in_flight(),
+            despawn_pending = globe.tiles.despawn_backlog(),
             "globe tile fetches queued"
         );
     }
@@ -1336,8 +1336,11 @@ pub fn update_globe_tiles(
         if let Some(e) = globe.loaded.remove(&key) {
             // Queue rather than despawn inline: on a fast zoom-out many tiles go
             // stale at once, and the per-frame drain keeps the teardown bounded.
-            globe.despawn_queue.push(e);
+            globe.tiles.retire(e);
         }
+        // The texture dies with the entity, so a tile that comes back must fetch
+        // again; leaving it `requested` would suppress that.
+        globe.tiles.forget(&key);
     }
 }
 

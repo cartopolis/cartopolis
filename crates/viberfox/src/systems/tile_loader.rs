@@ -421,7 +421,7 @@ pub fn load_region_tiles(
                 );
                 let handle = images.add(bevy_image);
                 if let Ok(mut handles) = tile_cache.handles.lock() {
-                    handles.insert(tile_key.clone(), handle);
+                    handles.insert(tile_key, handle);
                 }
                 tracing::info!(tile = %tile_key.to_path(), "tile loaded and applied");
             }
@@ -438,7 +438,7 @@ pub fn load_region_tiles(
     // 2. Attach ready textures / enqueue missing ones onto the dispatcher.
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
     for (entity, region_tile) in region_query.iter() {
-        let tile_key = region_tile.tile_key.clone();
+        let tile_key = region_tile.tile_key;
 
         {
             let handles = tile_cache.handles.lock().unwrap();
@@ -455,7 +455,7 @@ pub fn load_region_tiles(
             if loading.contains_key(&tile_key) {
                 continue;
             }
-            loading.insert(tile_key.clone(), true);
+            loading.insert(tile_key, true);
         }
 
         tracing::info!(tile = %tile_key.to_path(), "queued OSM tile fetch");
