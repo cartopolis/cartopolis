@@ -150,6 +150,28 @@ pub fn poll_task<T>(task: &mut bevy::tasks::Task<T>) -> Option<T> {
 mod imp {
     use super::{Method, Request, MAX_BODY, USER_AGENT};
     use std::io::Read;
+    use std::sync::LazyLock;
+
+    /// One process-wide agent, so connections are **pooled and reused**.
+    ///
+    /// The free functions (`ureq::get`) build a fresh `Agent` — and therefore a
+    /// fresh, empty connection pool — on every call, so each fetch paid a full
+    /// TCP + TLS handshake. Measured against `nominatim.garage44.eu` that was
+    /// ~90 ms of a ~160 ms request: more than half the latency of a geocoding
+    /// keystroke, spent re-negotiating a connection we had just closed. Keeping
+    /// idle connections per host makes the second and later requests to the same
+    /// endpoint start at the first byte.
+    ///
+    /// `max_idle_connections_per_host` defaults to 1, which would serialize the
+    /// tile/building streamers onto a single socket; they fan out, so give them
+    /// room. A connection only returns to the pool once its body is read to the
+    /// end, which [`fetch`] always does.
+    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        ureq::AgentBuilder::new()
+            .max_idle_connections(64)
+            .max_idle_connections_per_host(16)
+            .build()
+    });
 
     /// Native: a blocking `ureq` call. `fetch` is `async` for a uniform signature,
     /// but has no internal await points — it is expected to run on an `IoTaskPool`
@@ -157,8 +179,8 @@ mod imp {
     /// `gzip` feature transparently inflates compressed responses.
     pub async fn fetch(req: Request) -> Result<Vec<u8>, String> {
         let mut builder = match req.method {
-            Method::Get => ureq::get(&req.url),
-            Method::Post => ureq::post(&req.url),
+            Method::Get => AGENT.get(&req.url),
+            Method::Post => AGENT.post(&req.url),
         };
         builder = builder.timeout(req.timeout);
 
