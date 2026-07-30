@@ -2227,7 +2227,10 @@ fn setup_horizon_haze(
     if env_flag("VIBERFOX_NO_HAZE") {
         return;
     }
-    let mesh = meshes.add(Cuboid::from_length(360_000.0).mesh());
+    // Unit shell: `update_horizon_haze` scales it to the fog's saturation
+    // distance each frame, so it stands *in front of* the ground the fog has
+    // already hidden rather than behind it (see `fog_saturation_distance`).
+    let mesh = meshes.add(Cuboid::from_length(2.0).mesh());
     let material = materials.add(HorizonHazeMaterial {
         color: LinearRgba::WHITE,
         params: Vec4::ZERO, // set each frame from the distance fog
@@ -2272,9 +2275,33 @@ fn update_horizon_haze(
     let alt = systems::free_camera::fog_altitude_factor(altitude);
     let d = dev.fog_density * alt;
 
+    // Peak alpha is the fog's *own* opacity where the map ends, read off the same
+    // `DistanceFog` the ground wears rather than approximated: the shell is that
+    // fog wall continued past the last tile, and anything short of it draws a step
+    // at the horizon. The old `0.35 * alt + 1.2 * d` only reached 1.0 at density
+    // 0.54, so at the default 0.15 the ground went to full fog colour while the
+    // sky above it got 53% — a visible grey line at every ordinary altitude.
+    // In practice this is ~1.0 for any density worth calling fog (82 km of it
+    // against 7–15 km of visibility) and exactly 0 when the fog is off.
+    let peak = systems::free_camera::fog_factor_at(
+        &fog.falloff,
+        systems::free_camera::HORIZON_FOG_DISTANCE,
+    );
+
+    // Stand the shell just inside the distance where the fog has hidden the ground
+    // completely, so it draws *over* the far map instead of behind it. Bevy's
+    // atmosphere composites over geometry only (and its in-scattering is clamped
+    // at 32 km while its extinction is not), so ground past that reads as a warm
+    // band that no amount of fog colour behind it can cover — see
+    // `fog_saturation_distance`. Capped at the ground disc so a thin, high-altitude
+    // haze never pulls the shell in over map the fog has genuinely left visible.
+    let radius = systems::free_camera::fog_saturation_distance(&fog.falloff)
+        .clamp(1_000.0, 150_000.0);
+    tf.scale = Vec3::splat(radius);
+
     // Once it carries no haze at all, drop the shell out of the frame rather than
-    // drawing a fully transparent 360 km box over the whole view every frame.
-    let want = if alt <= 0.0 && d <= 0.0 { Visibility::Hidden } else { Visibility::Inherited };
+    // drawing a fully transparent shell over the whole view every frame.
+    let want = if peak <= 0.0 { Visibility::Hidden } else { Visibility::Inherited };
     if *vis != want {
         *vis = want;
     }
@@ -2288,7 +2315,7 @@ fn update_horizon_haze(
         // blue while dense fog closes over the whole dome.
         mat.params = Vec4::new(
             0.25 * d,
-            (0.35 * alt + 1.2 * d).min(1.0),
+            peak,
             fog.directional_light_exponent,
             d * d,
         );

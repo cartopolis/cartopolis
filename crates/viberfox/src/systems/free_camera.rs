@@ -87,6 +87,72 @@ pub fn fog_altitude_factor(altitude_m: f32) -> f32 {
     1.0 - crate::utils::sun::smoothstep(FOG_FADE_LOW, FOG_FADE_HIGH, altitude_m)
 }
 
+/// Distance the horizon-haze shell stands in for: the far edge of the streamed
+/// map (the coarsest clipmap ring, ~82 km out at mid latitude). A horizon ray
+/// leaves the map there, and the shell's job is to carry the ground's own fog
+/// past that edge. The exact value barely matters — the fog has saturated by
+/// ~15 km at every density in play — it only has to be well beyond visibility.
+pub const HORIZON_FOG_DISTANCE: f32 = 82_000.0;
+
+/// Fog opacity at which the ground behind it carries no information left to see,
+/// so the horizon shell may stand in front of it. Not 1.0: the exponential curves
+/// only reach that asymptotically.
+const FOG_SATURATED: f32 = 0.995;
+
+/// The distance at which the fog reaches [`FOG_SATURATED`] — where the ground
+/// stops contributing anything and the horizon shell can take over.
+///
+/// This is what decides how *far away* the shell sits, and the reason it must sit
+/// close is Bevy's atmosphere. `render_sky` composites `scene × transmittance +
+/// inscattering` over geometry, but the transmittance is computed for the true
+/// distance while the in-scattering is clamped at `aerial_view_lut_max_distance`
+/// (32 km). Ground beyond that is therefore dimmed without the airlight that
+/// should replace it — measured at 882 m, saturated fog colour `#9DA4B2` came out
+/// `#949297` between 30 and 150 km, a warm band along the horizon with a hard top
+/// edge at the ground disc's rim. The shell can't cover it from 180 km, behind
+/// that ground; from inside the saturation distance it can, and painting fog
+/// colour over ground that is already ≥99.5% fog colour costs nothing. (Raising
+/// the LUT distance instead does not work — verified, it only moves which slice
+/// the clamp lands on.)
+pub fn fog_saturation_distance(falloff: &FogFalloff) -> f32 {
+    // ln(1 / (1 - f)) — the optical depth that reaches FOG_SATURATED.
+    let depth = -(1.0 - FOG_SATURATED).ln();
+    match falloff {
+        FogFalloff::Linear { end, .. } => *end,
+        FogFalloff::Exponential { density } => depth / density.max(f32::MIN_POSITIVE),
+        FogFalloff::ExponentialSquared { density } => {
+            depth.sqrt() / density.max(f32::MIN_POSITIVE)
+        }
+        FogFalloff::Atmospheric { extinction, .. } => {
+            depth / extinction.max_element().max(f32::MIN_POSITIVE)
+        }
+    }
+}
+
+/// How opaque a [`DistanceFog`] is at `distance` — the same curves `bevy_pbr`
+/// applies to geometry. Lets the horizon shell read its strength off the fog it
+/// continues instead of approximating it: any mismatch is a visible line at the
+/// horizon, since the ground on one side of it is saturated fog colour.
+pub fn fog_factor_at(falloff: &FogFalloff, distance: f32) -> f32 {
+    match falloff {
+        // Fog-off is spelled `Linear { start: MAX, end: MAX }` (see
+        // `distance_fog`), which lands on 0 here — the shell hides itself.
+        FogFalloff::Linear { start, end } => {
+            ((distance - start) / (end - start).max(f32::EPSILON)).clamp(0.0, 1.0)
+        }
+        FogFalloff::Exponential { density } => 1.0 - (-distance * density).exp(),
+        FogFalloff::ExponentialSquared { density } => {
+            let d = distance * density;
+            1.0 - (-d * d).exp()
+        }
+        // Atmospheric extinction is per-channel; the shell carries one alpha, so
+        // take the channel that closes first.
+        FogFalloff::Atmospheric { extinction, .. } => {
+            1.0 - (-distance * extinction.max_element()).exp()
+        }
+    }
+}
+
 // Simple constants
 const FREE_CAMERA_SPEED: f32 = 45.0;
 const FREE_CAMERA_SPEED_FAST: f32 = 180.0;
@@ -1415,5 +1481,26 @@ mod tests {
             up.dot(north_up) > 0.999999,
             "view rolled off north after repeated drags"
         );
+    }
+
+    /// The horizon shell is the ground's fog wall continued past the last tile,
+    /// so its opacity has to *be* the fog's at that range. The hand-tuned peak it
+    /// replaced (`0.35 * alt + 1.2 * density`) only reached 1.0 at density 0.54,
+    /// while the ground is saturated fog colour from ~10 km out at any density —
+    /// so every ordinary flight drew a step where the map ended.
+    #[test]
+    fn horizon_haze_matches_the_fog_wall_it_continues() {
+        for density in [0.05_f32, 0.15, 0.3, 0.6, 1.0] {
+            let fog = distance_fog(density, 12.0, 0.0);
+            let peak = fog_factor_at(&fog.falloff, HORIZON_FOG_DISTANCE);
+            assert!(
+                peak > 0.999,
+                "density {density}: horizon shell at {peak}, fog wall at 1.0"
+            );
+        }
+        // Fog off is the one case that must not paint: no wall to continue, and
+        // a shell that veils the horizon anyway is what the old formula did.
+        let clear = distance_fog(0.0, 12.0, 0.0);
+        assert_eq!(fog_factor_at(&clear.falloff, HORIZON_FOG_DISTANCE), 0.0);
     }
 }
