@@ -656,8 +656,11 @@ directory". No second mechanism.
 
 ### Still unproven
 
-- **sccache unmeasured.** Parallel local builds serialise on cargo's lock or
-  cost 50–90 GB each without it.
+- **sccache does not help — measured, not assumed.** 0 % Rust cache hits across
+  target dirs, including within one worktree. A second worktree that *builds*
+  still costs a full separate build or serialises on cargo's lock. Sessions that
+  read, edit and commit run in parallel fine; sessions that each compile do not.
+  See [notes/sccache-parallel-builds.md](notes/sccache-parallel-builds.md).
 - **The Stop hook has never been observed firing from a Zed ACP session.** Every
   test so far drove it by hand or through remote-control.
 
