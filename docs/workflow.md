@@ -155,13 +155,19 @@ not decoration — see [Handover](#handover).
 
 ### Work
 
-Ordinary sessions on an ordinary branch. Two things happen automatically when a
-session **ends normally**, both from the `Stop` hook in
-`~/.claude/hooks/agent-context-push`:
+Ordinary sessions on an ordinary branch. Two things happen automatically from
+the `Stop` hook in `~/.claude/hooks/agent-context-push`:
 
 1. a mechanical digest of the session is published to
-   `refs/agent-context/<branch>`
-2. the branch is pushed, if it has commits
+   `refs/agent-context/<branch>` in the private context repo
+2. the branch is pushed to `origin`, if it has commits
+
+**This runs at the end of every turn, not when the session ends.** Measured on
+this branch: one session, eight publications. Each one rewrites the same
+`<session-id>.md` with the transcript so far, so the digest is never more than a
+turn stale and a session that is killed, crashes or is simply abandoned still
+leaves its reasoning behind. Several sessions on one branch means several files
+on the ref, which is why they are read oldest-first.
 
 The hook is scoped by **remote URL**, not by where it is installed: it lives in
 the global settings and exits silently in any repo whose `origin` is not
@@ -180,9 +186,11 @@ branch, so the digest is per-branch there exactly as on the workstation. The
 worktree *directories* are named `bridge-cse_*`, but the branches are ordinary
 `feat/…` / `fix/…` names — which is what the hook keys on.
 
-> **Commit before you stop.** Uncommitted work does not survive a handover. The
-> digest header records the file count (`uncommitted at stop: 7 file(s)`) so the
-> next agent knows something existed, but it cannot recover it.
+> **Commit before you walk away.** The *reasoning* is safe either way — it is
+> republished every turn. The *code* is not: only committed work is pushed, so
+> uncommitted changes do not survive a handover. The digest header records the
+> file count (`uncommitted at stop: 7 file(s)`) so the next agent knows something
+> existed, but nothing can recover it.
 
 ## The autonomous lane in practice
 
