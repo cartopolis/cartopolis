@@ -23,3 +23,9 @@ headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder
 [[proxy]]
 rewrite = "/up/nomads/"
 backend = "https://nomads.ncep.noaa.gov/"
+
+# PDOK's AHN height rasters (`systems::height`). A public national service, and a
+# third party to us in exactly the way NOMADS is.
+[[proxy]]
+rewrite = "/up/ahn/"
+backend = "https://service.pdok.nl/"

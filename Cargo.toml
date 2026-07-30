@@ -66,6 +66,10 @@ figment = { version = "0.10", features = ["toml", "env"] }
 fontdue = "0.9"
 glam = { version = "0.32", features = ["serde"] }
 image = "0.25"
+# Float32 GeoTIFF decoding for the height layer (PDOK's AHN rasters). Pure Rust,
+# already in the tree as `image`'s own TIFF backend, so this is a direct name for a
+# dependency we were carrying anyway.
+tiff = "0.10"
 # Client-side vector-tile rendering (VersaTiles / Shortbread MVT → RGBA).
 # Both are pure Rust with no C deps, so they survive the wasm32 target (ADR-033).
 mvt-reader = "2.4"

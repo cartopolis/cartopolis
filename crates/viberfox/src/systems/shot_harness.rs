@@ -278,19 +278,25 @@ pub struct ShotMetrics {
     /// one that is rendered but unseen is a depth or colour problem.
     pub route_meshes: usize,
     pub route_rendered: usize,
+    /// Measured ground level at the map anchor, metres above NAP, and how many
+    /// patches the height layer has fetched (`systems::height`). `NaN` and 0 mean
+    /// the layer is off, out of AHN's coverage, or has not answered yet — which is
+    /// the whole question you ask of a layer that only works over one country.
+    pub ground_m: f32,
+    pub height_patches: usize,
 }
 
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
 /// so the two never drift; a mismatch would silently mislabel columns.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,globe_entities,\
-globe_visible,globe_rendered,route_meshes,route_rendered";
+globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches";
 
 impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{},{},{},{},{}",
+            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -312,6 +318,8 @@ impl ShotMetrics {
             self.globe_rendered,
             self.route_meshes,
             self.route_rendered,
+            self.ground_m,
+            self.height_patches,
         )
     }
 }
@@ -845,12 +853,13 @@ pub fn drive_capture(
     weather: Res<WeatherState>,
     route: Res<crate::systems::navigation::RouteState>,
     cam_state: Res<CameraState>,
-    // The altitude-driven ramps, tupled into one `SystemParam`: this system is at
-    // Bevy's 16-parameter ceiling, and a ramp is exactly the kind of thing that
-    // keeps getting added here.
-    ramps: (
+    // Resources that exist only to be *read into* `ShotMetrics`, tupled into one
+    // `SystemParam`: this system is at Bevy's 16-parameter ceiling, and a new
+    // inspectable fact is exactly the kind of thing that keeps getting added here.
+    readouts: (
         Res<GlobeSurfaceAlbedo>,
         Res<crate::systems::vegetation::VegetationLod>,
+        Res<crate::systems::height::HeightLayer>,
     ),
     camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
@@ -946,13 +955,15 @@ pub fn drive_capture(
             far_m: far as i64,
             exposure_ev100: exposure.ev100,
             bloom: bloom.intensity,
-            globe_albedo: ramps.0 .0,
-            veg_factor: ramps.1.factor,
+            globe_albedo: readouts.0 .0,
+            veg_factor: readouts.1.factor,
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
             globe_entities: globe_meshes.iter().count(),
             globe_visible: globe_meshes.iter().filter(|(_, v)| **v == Visibility::Visible).count(),
             globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
+            ground_m: readouts.2.ground_m.unwrap_or(f32::NAN),
+            height_patches: readouts.2.fetched,
         };
         tracing::info!(
             shot = m.shot,
@@ -974,6 +985,8 @@ pub fn drive_capture(
             globe_entities = m.globe_entities,
             globe_visible = m.globe_visible,
             globe_rendered = m.globe_rendered,
+            ground_m = format!("{:.2}", m.ground_m),
+            height_patches = m.height_patches,
             "shot state"
         );
         progress.metrics.push(m);
@@ -1164,6 +1177,8 @@ mod tests {
             globe_rendered: 0,
             route_meshes: 0,
             route_rendered: 0,
+            ground_m: f32::NAN,
+            height_patches: 0,
         };
         assert_eq!(
             CSV_HEADER.split(',').count(),

@@ -156,6 +156,13 @@ struct Cli {
     /// In `--shot` mode the capture waits for the first sample (capped by `--wait`).
     #[arg(long)]
     weather_live: bool,
+
+    /// Switch the **height layer** on for this run (`systems::height`): measured
+    /// AHN elevation from PDOK, over the Netherlands only. Off by default because
+    /// it reaches a third party's service; this is how a scripted capture opts in,
+    /// since a headless run has no Layers panel to tick.
+    #[arg(long)]
+    height: bool,
 }
 
 /// Resolve the scripted capture the CLI asked for, if any.
@@ -497,7 +504,15 @@ fn main() {
     .init_resource::<systems::osm_buildings::OsmBuildings>()
     .init_resource::<systems::lod22::Lod22Buildings>()
     .init_resource::<systems::collision::BuildingColliders>()
-    .init_resource::<systems::data_layers::DataLayers>()
+    .init_resource::<systems::height::HeightLayer>()
+    .insert_resource({
+        // `--height` is the only way into the layer in a scripted run; an
+        // interactive session ticks it in the Layers panel (or restores it from
+        // `data/user.json`, which `apply_prefs` does after this).
+        let mut layers = systems::data_layers::DataLayers::default();
+        layers.height_enabled = cli.height;
+        layers
+    })
     .init_resource::<systems::transit_live::TransitLive>()
     .init_resource::<systems::transit_live::WorldClock>()
     // Default to Auto (live met.no) in interactive runs; keep scripted captures
@@ -678,6 +693,13 @@ fn main() {
                 // one background fetch → the coarse coverage texture the globe
                 // cloud shader samples. Independent of the anchor (it's global).
                 systems::globe_weather::poll_globe_clouds,
+                // The height layer (AHN): the queue that fills its patch cache,
+                // and the anchor ground probe that both proves the path works and
+                // gives `--dump-state` a measured number to show.
+                systems::height::poll_height_layer,
+                systems::height::probe_anchor_ground
+                    .after(systems::map_stream::apply_reanchor)
+                    .before(systems::height::poll_height_layer),
             ),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old

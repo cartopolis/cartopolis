@@ -33,6 +33,7 @@ earcutr.workspace = true
 fontdue.workspace = true
 glam.workspace = true
 image.workspace = true
+tiff.workspace = true
 mvt-reader.workspace = true
 tiny-skia.workspace = true
 geo-types.workspace = true

@@ -324,6 +324,11 @@ pub struct DataLayers {
     /// Feature toggle (under Map): the animated water surface shader (waves, foam,
     /// chop). Off = calm flat water (`water::update_water_waves`).
     pub water_shading: bool,
+    /// Feature toggle: the **height layer** (`systems::height`) — measured ground
+    /// and surface elevation from PDOK's AHN. Its own source rather than a Map
+    /// sub-toggle, like Buildings: it answers only over the Netherlands, and off
+    /// means every consumer falls back to the flat-ground assumption.
+    pub height_enabled: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
@@ -376,6 +381,7 @@ impl DataLayers {
             trees,
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
+            height: self.height_enabled,
             vehicles,
             overlays: LAYER_DEFS
                 .iter()
@@ -400,6 +406,7 @@ impl DataLayers {
         self.trees_enabled = p.trees;
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
+        self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
             if let Some(on) = p.overlays.get(def.key) {
@@ -435,6 +442,9 @@ impl Default for DataLayers {
             trees_enabled: true,
             roads_textured: true,
             water_shading: true,
+            // Off by default: it reaches a third party's service and only
+            // answers over the Netherlands, so opting in is the honest default.
+            height_enabled: false,
             popup: None,
             anchor: None,
             synced_gen: 0,
@@ -1346,10 +1356,23 @@ pub fn render_data_layers_panel(
                     &mut dl.roads_textured,
                     egui::RichText::new("Road textures").size(13.0),
                 );
-                crate::systems::theme::checkbox(ui, 
+                crate::systems::theme::checkbox(ui,
                     &mut dl.water_shading,
                     egui::RichText::new("Water shading").size(13.0),
                 );
+            });
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.height_enabled,
+                egui::RichText::new("Height").size(14.0),
+            );
+            ui.indent("height", |ui| {
+                // Say where it works, in the panel rather than in a doc comment: a
+                // toggle that silently does nothing over Berlin is a bug report.
+                ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
             });
             ui.add_space(4.0);
             ui.separator();

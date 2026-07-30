@@ -65,6 +65,11 @@ pub struct LayerPrefs {
     pub roads_textured: bool,
     pub water_shading: bool,
     pub vehicles: bool,
+    /// The height layer (`systems::height`). Defaulted, so a file written before it
+    /// existed still parses — and defaults to *off*, because it is a request to a
+    /// third party's service that only answers over the Netherlands.
+    #[serde(default)]
+    pub height: bool,
     #[serde(default)]
     pub overlays: std::collections::HashMap<String, bool>,
 }

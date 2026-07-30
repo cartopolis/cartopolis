@@ -13,6 +13,7 @@ pub mod geo_nav;
 pub mod globe;
 pub mod globe_ocean;
 pub mod globe_weather;
+pub mod height;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod gizmo;
