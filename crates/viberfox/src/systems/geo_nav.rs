@@ -30,6 +30,7 @@ use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::theme;
 use vibe_core::world::tile_to_meters;
 
 
@@ -88,11 +89,75 @@ const AVATAR_GROUND_Y: f64 = 0.05;
 /// Minimum free-camera altitude after a teleport, so the destination is visible.
 const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
 
+/// One hit in a geocoding dropdown.
+///
+/// Nominatim answers with a single `display_name` comma-run — "Amsterdam, North
+/// Holland, Netherlands" — which is the whole address flattened into a line. Shown
+/// as one truncated string it hides exactly the part that tells two hits apart:
+/// the eight Amsterdams the public index returns differ only past the first comma.
+/// So the hit is split at parse time into what it *is* ([`name`](Self::name)), what
+/// disambiguates it ([`context`](Self::context)) and what kind of thing it is
+/// ([`kind`](Self::kind)); `label` stays the full line, because that is what goes
+/// back into the address bar when the hit is picked.
 #[derive(Clone)]
 pub struct GeoSuggestion {
+    /// The full `display_name` — the text a picked suggestion leaves in the field.
     pub label: String,
+    /// Primary name ("Amsterdam"), the first line of a suggestion row.
+    pub name: String,
+    /// The rest of the address ("North Holland, Netherlands"), the second line.
+    pub context: String,
+    /// Nominatim's `addresstype` ("city", "island", "road"), shown beside the name.
+    pub kind: Option<String>,
     pub lat: f64,
     pub lng: f64,
+}
+
+impl GeoSuggestion {
+    /// Parse one element of a Nominatim `format=jsonv2` array. Shared by the
+    /// address bar and the route panel, which ask the same endpoint the same way
+    /// and had drifted into two copies of this that read different fields.
+    pub fn from_nominatim(it: &serde_json::Value) -> Option<Self> {
+        let label = it.get("display_name")?.as_str()?.to_string();
+        let lat = it.get("lat")?.as_str()?.parse().ok()?;
+        let lng = it.get("lon")?.as_str()?.parse().ok()?;
+        // `name` is jsonv2's own primary label. It is missing or empty for plenty
+        // of hits (an unnamed way, a house number), so fall back to splitting the
+        // display line at its first comma — which is the same thing by convention.
+        let name = it
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let (name, context) = match name {
+            Some(n) => {
+                let rest = label
+                    .strip_prefix(&n)
+                    .map(|r| r.trim_start_matches([',', ' ']).to_string())
+                    .unwrap_or_else(|| label.clone());
+                (n, rest)
+            }
+            None => match label.split_once(", ") {
+                Some((head, rest)) => (head.to_string(), rest.to_string()),
+                None => (label.clone(), String::new()),
+            },
+        };
+        let kind = it
+            .get("addresstype")
+            .or_else(|| it.get("type"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.replace('_', " "))
+            .filter(|s| !s.is_empty() && s != "yes");
+        Some(Self { label, name, context, kind, lat, lng })
+    }
+
+    /// A suggestion with no address behind it — the "go to these coordinates"
+    /// entry, and the fixture the tests use.
+    pub fn plain(label: impl Into<String>, lat: f64, lng: f64) -> Self {
+        let label = label.into();
+        Self { name: label.clone(), label, context: String::new(), kind: None, lat, lng }
+    }
 }
 
 /// A finished Nominatim lookup, tagged with the query it answered so stale
@@ -134,11 +199,12 @@ pub struct GeoNavState {
     /// re-record it as a new visit.
     from_history: bool,
     /// The address bar should grab keyboard focus next frame (set by the top
-    /// bar's Ctrl+L shortcut, consumed in `nav_bar_ui`); also keeps the
-    /// auto-hiding top bar revealed until the field actually takes focus.
+    /// bar's Ctrl+L shortcut and by [`seed_search`](Self::seed_search), consumed
+    /// in `nav_bar_ui`); also unfolds the bar, since a field that is not drawn
+    /// cannot take focus.
     pub focus_search: bool,
-    /// The address bar currently holds keyboard focus — keeps the auto-hiding
-    /// top bar revealed while the user is typing a search (set in `nav_bar_ui`).
+    /// The address bar currently holds keyboard focus — read by `ui_owns_keyboard`
+    /// so typing a search doesn't also walk the avatar (set in `nav_bar_ui`).
     pub search_has_focus: bool,
 }
 
@@ -179,6 +245,29 @@ impl GeoNavState {
             self.show_suggestions = true;
         }
         self.suggestions = list;
+    }
+
+    /// Drop the suggestion list. Called when the address bar folds away — the
+    /// dropdown is an `Area` of its own and would otherwise hang under a bar that
+    /// is no longer drawn.
+    pub fn close_suggestions(&mut self) {
+        self.show_suggestions = false;
+        self.teleport_on_result = false;
+    }
+
+    /// Put a query in the address bar and open its dropdown, as if it had been
+    /// typed. The debounce and the "has the text changed" gate both live behind
+    /// private fields, so a scripted run (`--ui search`) cannot reach the search
+    /// path without this — and the address bar is otherwise uncapturable, since
+    /// revealing it needs a pointer at the top edge.
+    pub fn seed_search(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.focus_search = true;
+        self.force_search = true;
+        self.show_suggestions = true;
+        // Not a teleport: the shot wants the list on screen, not a jump to its
+        // top hit the moment the lookup lands.
+        self.teleport_on_result = false;
     }
 
     /// Record a visited destination, browser-style: drop any forward history,
@@ -617,16 +706,150 @@ async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
     let body = http::fetch_string(http::Request::get(url)).await?;
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("unexpected Nominatim response")?;
-    Ok(items
-        .iter()
-        .filter_map(|it| {
-            Some(GeoSuggestion {
-                label: it.get("display_name")?.as_str()?.to_string(),
-                lat: it.get("lat")?.as_str()?.parse().ok()?,
-                lng: it.get("lon")?.as_str()?.parse().ok()?,
-            })
-        })
-        .collect())
+    Ok(items.iter().filter_map(GeoSuggestion::from_nominatim).collect())
+}
+
+// ─── How far away, and which way ─────────────────────────────────────────────
+
+/// Great-circle metres between two points.
+///
+/// Haversine, not the equirectangular approximation `driver::metres_between`
+/// uses: that one is measuring tens of metres between consecutive route vertices,
+/// this one routinely measures thousands of kilometres (searching "Amsterdam"
+/// from the Netherlands returns one in Missouri), where the flat-earth error is
+/// hundreds of km.
+pub fn great_circle_m(from: (f64, f64), to: (f64, f64)) -> f64 {
+    const R: f64 = 6_371_008.8; // mean Earth radius
+    let (lat1, lat2) = (from.0.to_radians(), to.0.to_radians());
+    let dlat = lat2 - lat1;
+    let dlng = (to.1 - from.1).to_radians();
+    let a = (dlat * 0.5).sin().powi(2)
+        + lat1.cos() * lat2.cos() * (dlng * 0.5).sin().powi(2);
+    2.0 * R * a.sqrt().clamp(0.0, 1.0).asin()
+}
+
+/// Initial great-circle bearing from `from` to `to`, in degrees clockwise from north.
+fn bearing_deg(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let (lat1, lat2) = (from.0.to_radians(), to.0.to_radians());
+    let dlng = (to.1 - from.1).to_radians();
+    let y = dlng.sin() * lat2.cos();
+    let x = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlng.cos();
+    (y.atan2(x).to_degrees() + 360.0) % 360.0
+}
+
+/// The 8-point compass name for a bearing.
+///
+/// A letter and not an arrow glyph on purpose: the loaded font has none of
+/// `← → ↑ ↓ ↖ ↗ ↘ ↙` (see [`theme::first_drawable`]), so a direction drawn as an
+/// arrow would be a row of empty boxes.
+fn compass_point(deg: f64) -> &'static str {
+    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    POINTS[(((deg + 22.5) % 360.0) / 45.0) as usize % 8]
+}
+
+/// "820 m NE", "12.4 km S", "8 738 km W" — how far a hit is from where the
+/// viewer is now, which is the single most useful thing to say about a list of
+/// identically named places.
+pub fn distance_label(from: (f64, f64), to: (f64, f64)) -> String {
+    let m = great_circle_m(from, to);
+    let dir = compass_point(bearing_deg(from, to));
+    if m < 30.0 {
+        return "here".to_string();
+    }
+    if m < 950.0 {
+        return format!("{m:.0} m {dir}");
+    }
+    let km = m / 1000.0;
+    if km < 10.0 {
+        format!("{km:.1} km {dir}")
+    } else {
+        // Thin space every three digits: "8 738 km" is scannable, "8738 km" isn't.
+        let whole = format!("{km:.0}");
+        let mut grouped = String::with_capacity(whole.len() + 2);
+        for (i, c) in whole.chars().enumerate() {
+            if i > 0 && (whole.len() - i) % 3 == 0 {
+                grouped.push('\u{202F}');
+            }
+            grouped.push(c);
+        }
+        format!("{grouped} km {dir}")
+    }
+}
+
+/// One suggestion row, shared by the address bar's dropdown and the route panel's
+/// endpoint fields so the two lists cannot drift apart.
+///
+/// Two lines: the name (plus what kind of place it is) leads, and the address
+/// context and the distance from `viewer` sit under it in the dim tone. The whole
+/// block is one click target — `UiBuilder::sense` puts a single response over the
+/// laid-out content, which a `Button` could not do without collapsing both lines
+/// into one string and losing the type hierarchy that makes the row scannable.
+pub fn suggestion_row(
+    ui: &mut egui::Ui,
+    s: &GeoSuggestion,
+    viewer: Option<(f64, f64)>,
+    width: f32,
+) -> egui::Response {
+    // Reserve the highlight's place in the paint list *before* the content, so the
+    // fill lands behind the text rather than over it.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let inner = ui.scope_builder(
+        egui::UiBuilder::new().sense(egui::Sense::click()),
+        |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&s.name).strong())
+                        .truncate()
+                        .selectable(false),
+                );
+                if let Some(kind) = &s.kind {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(kind).small().weak())
+                            .truncate()
+                            .selectable(false),
+                    );
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if let Some(here) = viewer {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(distance_label(here, (s.lat, s.lng)))
+                                .small()
+                                .color(theme::FOX_TEXT),
+                        )
+                        .selectable(false),
+                    );
+                }
+                if !s.context.is_empty() {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&s.context).small().weak())
+                            .truncate()
+                            .selectable(false),
+                    );
+                }
+            });
+        },
+    );
+    let resp = inner.response;
+    if resp.hovered() {
+        let v = ui.visuals().widgets.hovered;
+        ui.painter().set(
+            bg,
+            egui::epaint::RectShape::new(
+                resp.rect.expand2(egui::vec2(4.0, 3.0)),
+                v.corner_radius,
+                v.weak_bg_fill,
+                egui::Stroke::NONE,
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Poll finished lookups into the UI state and send the debounced next query.
@@ -703,10 +926,22 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
 
 // ─── Search bar UI (rendered inside the top menu bar) ────────────────────────
 
-pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
+/// Width of the address field. Narrower than it was: the bar is a floating card
+/// sized to its content now, not a full-width strip, so every point here is a
+/// point of map it covers. Long place names still fit — the *dropdown* is what
+/// has to be readable, and it is wider than the field on purpose.
+const SEARCH_FIELD_WIDTH: f32 = 215.0;
+/// Widest the suggestion dropdown gets. Wider than the field — the rows carry an
+/// address line the field never has to show.
+const SUGGESTION_POPUP_WIDTH: f32 = 380.0;
+
+/// Draw the address bar and its dropdown. `viewer` is where the camera is on
+/// Earth, used to say how far away each hit is; `None` before the world anchor
+/// exists, and the rows simply omit the distance.
+pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
     let field = ui.add(
         egui::TextEdit::singleline(&mut nav.query)
-            .desired_width(340.0)
+            .desired_width(SEARCH_FIELD_WIDTH)
             // Vertical padding so the field matches the taller menu bar.
             .margin(egui::Margin::symmetric(8, 6))
             .hint_text("Search place, or paste \"lat, lng\"…"),
@@ -767,19 +1002,24 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
     // Suggestion dropdown under the field. Pasted coordinates get a single
     // direct "Go to" entry instead of a lookup.
     let coord_fix = parse_location(&nav.query);
-    let coord_entry = coord_fix.map(|fix| GeoSuggestion {
-        label: {
-            let mut label = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
-            if let Some(a) = fix.altitude {
-                label.push_str(&format!(" at {a:.0} m"));
+    let coord_entry = coord_fix.map(|fix| {
+        let mut s = GeoSuggestion::plain(
+            format!("{:.5}, {:.5}", fix.lat, fix.lng),
+            fix.lat,
+            fix.lng,
+        );
+        s.name = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
+        s.kind = Some("coordinates".to_string());
+        if let Some(a) = fix.altitude {
+            s.context = format!("at {a:.0} m");
+        }
+        if fix.look.is_some() {
+            if !s.context.is_empty() {
+                s.context.push_str(", ");
             }
-            if fix.look.is_some() {
-                label.push_str(" (with view)");
-            }
-            label
-        },
-        lat: fix.lat,
-        lng: fix.lng,
+            s.context.push_str("with the pasted view");
+        }
+        s
     });
     let has_content = coord_entry.is_some()
         || !nav.suggestions.is_empty()
@@ -798,20 +1038,23 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
         .fixed_pos(field.rect.left_bottom() + egui::vec2(0.0, 4.0))
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(field.rect.width());
-                ui.set_max_width(420.0);
+                let width = field
+                    .rect
+                    .width()
+                    .max(SUGGESTION_POPUP_WIDTH)
+                    .min(ui.ctx().viewport_rect().width() - 32.0);
+                ui.set_min_width(width);
+                ui.set_max_width(width);
                 let entries: Vec<&GeoSuggestion> = coord_entry
                     .iter()
                     .chain(nav.suggestions.iter())
                     .collect();
-                for s in entries {
-                    let resp = ui.add(
-                        egui::Button::new(&s.label)
-                            .wrap_mode(egui::TextWrapMode::Truncate)
-                            .min_size(egui::vec2(field.rect.width(), 0.0)),
-                    );
-                    if resp.clicked() {
-                        picked = Some(s.clone());
+                for (i, s) in entries.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    if suggestion_row(ui, s, viewer, width).clicked() {
+                        picked = Some((*s).clone());
                     }
                 }
                 if let Some(err) = &nav.error {
@@ -823,13 +1066,17 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
 
     if let Some(s) = picked {
         // The direct coordinate entry keeps its pasted altitude and view; a
-        // Nominatim hit is only a spot.
+        // Nominatim hit is only a spot. It also leaves the field alone: the user
+        // typed those coordinates, and replacing them with "Go to 53.21940, …"
+        // would make a re-submit unparseable.
         let fix = coord_fix.filter(|f| f.lat == s.lat && f.lng == s.lng);
-        nav.pending_teleport = Some(match fix {
-            Some(fix) => Teleport::fix(fix),
-            None => Teleport::geo(s.lat, s.lng, None),
-        });
-        nav.query = s.label;
+        match fix {
+            Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix)),
+            None => {
+                nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None));
+                nav.query = s.label;
+            }
+        }
         nav.show_suggestions = false;
         nav.teleport_on_result = false;
     } else if field.lost_focus() && !submitted && !popup_hovered {
@@ -1068,7 +1315,79 @@ mod tests {
     const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
 
     fn suggestion(label: &str) -> GeoSuggestion {
-        GeoSuggestion { label: label.into(), lat: 53.0, lng: 6.0 }
+        GeoSuggestion::plain(label, 53.0, 6.0)
+    }
+
+    /// The suggestion rows show a name, a kind and an address context, and all
+    /// three come out of one flattened `display_name` plus two sibling fields.
+    #[test]
+    fn a_nominatim_hit_splits_into_name_kind_and_context() {
+        let hit = serde_json::json!({
+            "display_name": "Amsterdam, Noord-Holland, Nederland",
+            "name": "Amsterdam",
+            "addresstype": "city",
+            "lat": "52.3730796",
+            "lon": "4.8924534",
+        });
+        let s = GeoSuggestion::from_nominatim(&hit).expect("well-formed hit");
+        assert_eq!(s.name, "Amsterdam");
+        assert_eq!(s.context, "Noord-Holland, Nederland");
+        assert_eq!(s.kind.as_deref(), Some("city"));
+        // The full line survives — it is what a picked suggestion leaves behind
+        // in the address bar.
+        assert_eq!(s.label, "Amsterdam, Noord-Holland, Nederland");
+    }
+
+    /// Plenty of hits carry no `name` at all (an unnamed way, a house number).
+    /// Splitting the display line at its first comma is the same convention.
+    #[test]
+    fn a_hit_without_a_name_falls_back_to_the_first_segment() {
+        let hit = serde_json::json!({
+            "display_name": "12, Oosterstraat, Groningen, Nederland",
+            "addresstype": "house_number",
+            "lat": "53.2194",
+            "lon": "6.5665",
+        });
+        let s = GeoSuggestion::from_nominatim(&hit).expect("well-formed hit");
+        assert_eq!(s.name, "12");
+        assert_eq!(s.context, "Oosterstraat, Groningen, Nederland");
+        // Underscores are a database detail, not a word.
+        assert_eq!(s.kind.as_deref(), Some("house number"));
+    }
+
+    /// The distance is the whole reason the rows got richer: it is what tells the
+    /// Amsterdam next door from the one in Missouri.
+    #[test]
+    fn distance_scales_its_unit_and_names_the_direction() {
+        let groningen = (53.2194, 6.5665);
+        // Same spot: no useful direction to give.
+        assert_eq!(distance_label(groningen, groningen), "here");
+        // A few hundred metres north stays in metres.
+        let near = (53.2224, 6.5665);
+        assert!(
+            distance_label(groningen, near).ends_with(" m N"),
+            "got {}",
+            distance_label(groningen, near)
+        );
+        // Amsterdam is ~147 km west-south-west; the thousands group with a thin
+        // space only once there are four digits, so this one has none.
+        let amsterdam = (52.3731, 4.8925);
+        assert_eq!(distance_label(groningen, amsterdam), "147 km SW");
+        // Amsterdam, Missouri — the hit this whole line exists to disambiguate.
+        // North-west, not west: the bearing is the great-circle one, which leaves
+        // the Netherlands over the pole side rather than along the parallel.
+        let missouri = (39.4028, -93.9666);
+        let far = distance_label(groningen, missouri);
+        assert!(far.ends_with(" km NW"), "got {far}");
+        assert!(far.contains('\u{202F}'), "four digits should group: {far}");
+    }
+
+    /// Haversine, not the flat approximation the driver uses: a quarter of the
+    /// way round the planet is where the two disagree by thousands of km.
+    #[test]
+    fn great_circle_matches_a_known_quarter_meridian() {
+        let quarter = great_circle_m((0.0, 0.0), (90.0, 0.0));
+        assert!((quarter - 10_007_543.0).abs() < 1_000.0, "got {quarter}");
     }
 
     #[test]

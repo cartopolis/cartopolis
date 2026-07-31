@@ -73,7 +73,8 @@ Movement is camera-relative. The full input reference:
 
 ### Camera modes
 
-Press **Tab** to cycle modes, or pick one from the camera menu in the top bar:
+Press **Tab** to cycle modes, or pick one from the camera menu in the address bar
+(beside the search field):
 
 - **Follow** — third-person camera tracking your avatar.
 - **Fly** — a free camera you steer directly; best for framing shots and
@@ -92,10 +93,12 @@ ready, which jumps to an orbit that frames the entire planet.
 
 ### Going somewhere specific
 
-Use the **search bar** in the top menu to jump to a place by name. The world is
-anchored in real geography, so moving the anchor re-streams the ground tiles,
-buildings, and data layers for wherever you land. Save spots you return to from
-the **Bookmarks** panel.
+Click the fox mark in the top-left corner (or press **Ctrl + L**) to open the
+address bar, then search for a place by name. Each suggestion says what kind of
+place it is and how far away it is — which is how you tell the Amsterdam down the
+road from the one in Missouri. The world is anchored in real geography, so moving
+the anchor re-streams the ground tiles, buildings, and data layers for wherever
+you land. Save spots you return to from the **★ Places** panel.
 
 ### Planning a route
 

@@ -38,6 +38,8 @@
 //! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
 //! hand in a headless run, so `--ui <list>` opens them for the capture, e.g.
 //! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
+//! `--ui search` is the same idea for the auto-hiding address bar, which reveals
+//! on a pointer at the top edge and so has no other way to appear in a capture.
 //!
 //! ## Metrics: the numbers behind the frame
 //!
@@ -605,6 +607,7 @@ pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
 /// every shot rather than once per run: panels the current shot doesn't ask for
 /// are closed again, or a `--ui route` preset would leave the planner open over
 /// every image after it.
+#[allow(clippy::too_many_arguments)]
 pub fn open_scripted_ui(
     harness: Res<ShotHarness>,
     progress: Res<ShotProgress>,
@@ -616,6 +619,7 @@ pub fn open_scripted_ui(
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut route: ResMut<crate::systems::navigation::RouteState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
+    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -678,10 +682,20 @@ pub fn open_scripted_ui(
         route.from.set("Route start", seed("VIBE_ROUTE_FROM", (53.2194, 6.5665)));
         route.to.set("Route end", seed("VIBE_ROUTE_TO", (53.2109, 6.5642)));
     }
+    // The address bar is the one piece of chrome that cannot be *asked* for: it
+    // auto-hides and reveals on a pointer at the top edge, which a headless run
+    // has none of. `--ui search` seeds a query instead, which both pins the bar
+    // open (the field takes focus) and fills the suggestion dropdown — so the
+    // capture shows the thing the bar exists for, not an empty field.
+    // `VIBE_SEARCH_QUERY` overrides the demo query, per the `VIBE_*` convention.
+    if want("search") {
+        let query = std::env::var("VIBE_SEARCH_QUERY").unwrap_or_else(|_| "Amsterdam".into());
+        nav.seed_search(query);
+    }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
     let known = [
-        "dev", "stats", "ai", "avatar", "layers", "places", "bookmarks", "route", "driver",
-        "all",
+        "dev", "stats", "ai", "avatar", "appearance", "layers", "places", "bookmarks", "route",
+        "driver", "search", "all",
     ];
     for u in &panels {
         if !known.contains(&u.as_str()) {

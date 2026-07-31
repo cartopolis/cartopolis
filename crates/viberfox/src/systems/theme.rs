@@ -281,6 +281,69 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_style_of(egui::Theme::Light, style);
 }
 
+// ─── Logo ─────────────────────────────────────────────────────────────────────
+
+/// Side of the logo texture, in texels. Drawn at [`LOGO_SIZE`] points, so this is
+/// ~2× for a hidpi screen; egui has no mip chain, and the 256 px source scaled to
+/// 26 pt in the sampler shimmers as the window moves under it.
+const LOGO_TEXELS: u32 = 64;
+
+/// The address bar's logo button, in points.
+pub const LOGO_SIZE: f32 = 26.0;
+
+/// The app mark as an egui image, decoded from the same embedded PNG the OS
+/// window icon and the XDG desktop entry use — one asset, three surfaces.
+///
+/// Returns `None` only if that PNG fails to decode, which in practice means a
+/// clone without Git LFS (the pointer file is 130 bytes of text). The bar then
+/// falls back to a text mark rather than panicking, because a broken checkout
+/// should still boot far enough to say so.
+pub fn logo_image() -> Option<egui::ColorImage> {
+    let png = crate::systems::window_icon::ICON_PNG;
+    let img = match image::load_from_memory(png) {
+        Ok(img) => img,
+        Err(e) => {
+            tracing::warn!(error = %e, "logo: embedded icon PNG did not decode (Git LFS?)");
+            return None;
+        }
+    };
+    let small = image::imageops::resize(
+        &img.into_rgba8(),
+        LOGO_TEXELS,
+        LOGO_TEXELS,
+        image::imageops::FilterType::Lanczos3,
+    );
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [LOGO_TEXELS as usize; 2],
+        small.as_raw(),
+    ))
+}
+
+// ─── Glyphs ───────────────────────────────────────────────────────────────────
+
+/// The first of `candidates` the loaded font can actually draw.
+///
+/// egui bundles Ubuntu-Light plus a small emoji subset, and a character outside
+/// both renders as an empty box. That subset is *much* thinner than it looks:
+/// probing the loaded font shows it has none of `⇅ ⬤ ⬆ ⬅ ➡ ← → ↑ ↰ ↱ ✕ 📍 🖈`, and
+/// of the plausible symbols only `⌖ ◎ ○ • ⚑ ↻ ⟲ ⏵ ⏴ ⏶ ⏷ ☰`. So no icon in the app
+/// is hard-coded to a guess: each is picked from a preference list whose last
+/// entry is Latin-1 and therefore cannot fail.
+///
+/// Lives here rather than beside any one panel because the answer depends on
+/// [`fonts`] — change the font stack and every icon list has to be re-probed
+/// against it, from one place.
+pub fn first_drawable(ctx: &egui::Context, candidates: &[&'static str]) -> &'static str {
+    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
+    ctx.fonts_mut(|f| {
+        candidates
+            .iter()
+            .copied()
+            .find(|c| f.has_glyphs(&font, c))
+            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
+    })
+}
+
 // ─── Shared frames ────────────────────────────────────────────────────────────
 
 /// The frame every box that floats *over the map* shares — the status HUD, the

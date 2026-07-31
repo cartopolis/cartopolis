@@ -245,11 +245,13 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
     let accent = theme::FOX;
     let rotate_accent = theme::AMBER;
     egui::Area::new(egui::Id::new("locate_overlay"))
-        // Directly under the compass (46 pt tall, anchored at (12, 12)), centred on
-        // its column.
+        // Directly under the compass, centred on its column.
         .anchor(
             egui::Align2::LEFT_TOP,
-            egui::vec2(12.0 + (COMPASS_SIZE - LOCATE_SIZE) * 0.5, 12.0 + COMPASS_SIZE + 8.0),
+            egui::vec2(
+                12.0 + (COMPASS_SIZE - LOCATE_SIZE) * 0.5,
+                crate::systems::ui::MAP_CONTROLS_TOP + COMPASS_SIZE + 8.0,
+            ),
         )
         .show(ctx, |ui| {
             let (rect, resp) =
@@ -365,7 +367,9 @@ pub fn render_map_controls(
     let cfg = Compass {
         interactive: orbit,
         locked,
-        top: 12.0,
+        // Below the address bar's logo card, which owns this corner permanently
+        // now (`ui::MAP_CONTROLS_TOP`) — the mark used to sit on the compass.
+        top: crate::systems::ui::MAP_CONTROLS_TOP,
         caption: None,
         hover: if locked {
             "North-up locked — click to release"

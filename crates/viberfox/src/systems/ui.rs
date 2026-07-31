@@ -16,14 +16,30 @@ use crate::resources::RightPanel;
 use crate::systems::theme;
 use vibe_core::NetMessage;
 
-/// Auto-hiding top bar: a browser-style address bar (`File` menu, Back /
-/// Forward / Home, geo search). Hidden by default; it slides down when the
-/// pointer nudges the top edge, stays while it's hovered / a menu is open / the
-/// search field has focus, and `Ctrl+L` reveals it and focuses the address bar.
+/// Where the map controls (compass, locate) stack, clear of the logo card that
+/// now owns the top-left corner. Read by `hud::render_map_controls`; one constant
+/// because the compass and the locate button under it have to agree.
+pub const MAP_CONTROLS_TOP: f32 = 52.0;
+
+/// The address bar: the app mark, Back / Forward / Home, the geo search field,
+/// and a hamburger holding what used to be the `File` menu.
+///
+/// **The logo is the switch, and it is the only part that is always there.** The
+/// bar started as a full-width strip, which put an opaque 46 pt band across the
+/// top of the map to carry ~400 pt of controls; then as a card that revealed
+/// itself when the pointer grazed the top edge, which is undiscoverable (you
+/// cannot aim at something you have never seen) and fired on every trip to the
+/// window's title bar. Now a single mark sits in the corner, clicking it unfolds
+/// the rest of the card to the right of it, and clicking it again folds it back —
+/// the logo does not move between the two states, so the card reads as growing
+/// out of it rather than appearing next to it. `Ctrl+L` (the browser shortcut)
+/// unfolds it and focuses the field. The one thing that takes the card away is a
+/// screen with no map on it: driver mode, or a right-hand panel that has gone
+/// full-width on a compact viewport (see the body).
 ///
 /// The panel toggles that used to live here (AI, Layers, Places, Appearance) and
-/// the camera-mode picker now live in the bottom bar ([`camera_picker_ui`],
-/// `chat::render_chat_panel`), so the top strip declutters down to navigation.
+/// the camera-mode picker live in the bottom bar ([`camera_picker_ui`],
+/// `chat::render_chat_panel`), so this card is navigation only.
 #[allow(clippy::too_many_arguments)]
 pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
@@ -31,76 +47,142 @@ pub fn render_menu_bar(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     store: Res<crate::systems::user_store::UserStore>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    driver: Res<crate::systems::driver::DriverState>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
+    mut camera_state: ResMut<crate::resources::CameraState>,
     mut app_exit: MessageWriter<AppExit>,
-    // Whether the bar was revealed last frame — widens the hover keep-zone to a
-    // full bar height so moving onto the bar doesn't immediately re-hide it.
-    mut revealed: Local<bool>,
+    // For the "how far away is this hit" line in the suggestion rows: the same
+    // camera fix the HUD reads out.
+    stream: Res<crate::systems::map_stream::MapStream>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<
+        (&big_space::prelude::GridCell, &Transform),
+        With<crate::systems::free_camera::FreeCamera>,
+    >,
+    // Follow mode needs an avatar to follow (logged-in viewer only).
+    avatars: Query<(), With<crate::components::Avatar>>,
+    // Whether the bar is unfolded, and the decoded logo. Both survive across
+    // frames; the texture is uploaded once, on the first frame that draws.
+    mut open: Local<bool>,
+    mut logo: Local<Option<egui::TextureHandle>>,
 ) {
+    // Driving takes the whole screen (bare basemap, manoeuvre card in this very
+    // corner) — the address bar is not part of that chrome, mark included.
+    if driver.active {
+        nav.search_has_focus = false;
+        return;
+    }
+    // On a compact viewport a right-hand panel takes the *whole* screen
+    // (`responsive_right_panel`), and this card is a floating `Area`, which egui
+    // always paints above panels — so the mark sat on top of the panel's own
+    // header with no map left behind it to navigate. Dropping it while a panel
+    // owns the screen is the same workaround the compass and the status HUD use
+    // (`hud::render_map_controls`); there is no z-order that puts an `Area`
+    // behind a panel. On a wide viewport the panel docks to the right and never
+    // reaches this corner, so the card stays. `*open` is left alone: closing the
+    // panel brings the bar back in the state it was folded away in.
+    if egui.compact() && !right_panel.is(RightPanel::None) {
+        nav.search_has_focus = false;
+        return;
+    }
     let ctx = egui.ctx_mut();
 
-    // Ctrl+L (browser address-bar shortcut): reveal the bar and grab the search
+    // Ctrl+L (browser address-bar shortcut): unfold the bar and grab the search
     // field's focus next frame (`nav.focus_search`, consumed in `nav_bar_ui`).
     let ctrl =
         keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
         nav.focus_search = true;
     }
-
-    // Reveal when the pointer is inside the top strip; keep it up while hovered
-    // (the zone widens to a bar height once shown), while one of the bar's own
-    // menus is open (`*revealed && any_popup_open` — a combo opened *elsewhere*,
-    // e.g. the bottom bar, must not summon this one), or while the address bar
-    // holds focus / is about to (so typing a search doesn't dismiss it).
-    const BAR_HEIGHT: f32 = 46.0;
-    let reveal_zone = if *revealed { BAR_HEIGHT } else { 6.0 };
-    let hot = ctx.pointer_latest_pos().is_some_and(|p| p.y <= reveal_zone);
-    let want = hot
-        || (*revealed && ctx.any_popup_open())
-        || nav.search_has_focus
-        || nav.focus_search;
-    *revealed = want;
-    if !want {
-        // Nothing rendered this frame → the search field can hold no focus.
+    // `focus_search` is also how a scripted run asks for the bar
+    // (`geo_nav::seed_search`, `--ui search`), which has no pointer to click with.
+    if nav.focus_search {
+        *open = true;
+    }
+    if !*open {
+        // No field on screen → it can hold no focus, and no dropdown hangs off it.
         nav.search_has_focus = false;
-        return;
     }
 
-    // A floating full-width strip (not a `Panel::top`) so the side panels keep
-    // their full height and the bar overlays them when it drops in.
-    let width = ctx.viewport_rect().width();
+    if logo.is_none() {
+        *logo = theme::logo_image()
+            .map(|img| ctx.load_texture("viberfox_logo", img, egui::TextureOptions::LINEAR));
+    }
+
+    // Where the camera is on Earth, for the suggestion rows' distances.
+    let viewer = camera
+        .single()
+        .ok()
+        .zip(stream.geo_anchor())
+        .map(|((cell, tf), anchor)| {
+            crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf)
+        });
+
+    let mut toggle = false;
+    // A floating `Area` (not a `Panel::top`) so the side panels keep their full
+    // height and the card overlays them when it unfolds.
     egui::Area::new(egui::Id::new("menu_bar"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(0.0, 0.0))
+        .fixed_pos(egui::pos2(8.0, 8.0))
         .show(ctx, |ui| {
-        // Symmetric top/bottom margin makes the strip size to its content with
-        // equal padding above and below, so the row is vertically centred.
-        let frame = egui::Frame::side_top_panel(ui.style())
-            .inner_margin(egui::Margin::symmetric(10, 8));
-        frame.show(ui, |ui| {
-        ui.set_width(width);
-        // `MenuBar` uses this as the row height and centres items within it
-        // (its layout is `Align::Center`); bumping it gives the buttons and the
-        // taller search field a common, roomier height that lines up.
+        // `Frame::popup` rather than `theme::overlay_frame`: the shared overlay
+        // frame is translucent, which is right for a HUD readout and wrong behind
+        // a text field the user is typing into over a moving map. Folded, the card
+        // keeps the *margins* and drops the paint — the logo carries its own teal
+        // card, so a second one around it only muddies the mark, and matching the
+        // margins is what keeps the logo from jumping when the bar unfolds.
+        let frame = if *open {
+            egui::Frame::popup(ui.style())
+        } else {
+            egui::Frame::NONE
+        };
+        frame
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+        // A plain row, **not** `egui::MenuBar`: `MenuBar::ui` ends with
+        // `set_min_size(available_width, …)`, which is right for a bar spanning a
+        // window and exactly wrong for a card that is supposed to size to its
+        // content — it stretched the card ~230 pt past the last button. Its other
+        // job, sharing a menu config so hovering slides between open menus, has
+        // nothing left to do here now that there is one menu.
+        //
+        // `interact_size.y` is the row height and `horizontal` centres against it,
+        // so bumping it gives the buttons and the taller search field a common,
+        // roomier height that lines up.
         ui.style_mut().spacing.interact_size.y = 26.0;
-        ui.style_mut().spacing.item_spacing.x = 8.0;
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                let dev_label = if dev_state.open {
-                    "Hide developer tools"
-                } else {
-                    "Developer tools"
-                };
-                if ui.button(dev_label).clicked() {
-                    dev_state.open = !dev_state.open;
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Exit").clicked() {
-                    app_exit.write(AppExit::Success);
-                    ui.close();
-                }
-            });
-            ui.separator();
+        ui.style_mut().spacing.item_spacing.x = 6.0;
+        ui.horizontal(|ui| {
+            // The mark, and the switch. Frameless: the asset is already a rounded
+            // teal card, so egui's button frame would draw a box around a box.
+            let mark = match logo.as_ref() {
+                // A `SizedTexture` straight off the handle, not an `Image` from a
+                // URI: this bypasses egui's image *loader* machinery entirely
+                // (`egui_extras` is not a dependency), because the texture is
+                // already uploaded.
+                Some(tex) => ui.add(
+                    egui::Button::image(egui::load::SizedTexture::new(
+                        tex.id(),
+                        egui::Vec2::splat(theme::LOGO_SIZE),
+                    ))
+                    .frame(false),
+                ),
+                // No logo means a checkout without Git LFS. Say so in the tooltip
+                // rather than leaving a dead corner.
+                None => ui.add(
+                    egui::Button::new(egui::RichText::new("V").heading())
+                        .frame(false)
+                        .min_size(egui::Vec2::splat(theme::LOGO_SIZE)),
+                ),
+            };
+            if mark
+                .on_hover_text(if *open { "Hide the address bar" } else { "Search and navigate" })
+                .clicked()
+            {
+                toggle = true;
+            }
+            if !*open {
+                return;
+            }
             // Browser-style Back / Forward through the location history. Every
             // teleport (search, bookmark, Home, coords) is a history entry.
             if ui
@@ -137,20 +219,79 @@ pub fn render_menu_bar(
                     });
                 }
             }
-            ui.separator();
             // Browser-style geo search: place names via Nominatim, or pasted
             // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
             // reached from the always-visible bottom bar (🧭 Route), alongside the
-            // other right-hand panels, rather than this auto-hiding strip.
-            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav);
+            // other right-hand panels, rather than this card.
+            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
+
+            // Camera mode, beside the address it applies to — "where am I looking
+            // from" is the same question as "where am I". It sat in the bottom bar
+            // while this strip auto-hid and could not be relied on.
+            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
+
+            // The app menu, at the far end where a browser puts it. Probed rather
+            // than hard-coded: `☰` is one of the few symbols the loaded font
+            // actually has, but that is a fact about the font stack, not a
+            // guarantee (see `theme::first_drawable`).
+            let hamburger = theme::first_drawable(ui.ctx(), &["☰", "≡", "⋮", "="]);
+            ui.menu_button(hamburger, |ui| {
+                // Panels you *visit* rather than flip: Appearance is a wardrobe and
+                // the Assistant is a conversation, so neither earns a permanent
+                // disc in the dock next to the four places you actually navigate
+                // between.
+                for panel in [
+                    crate::resources::RightPanel::Appearance,
+                    crate::resources::RightPanel::Assistant,
+                ] {
+                    // Same glyph the panel's own header wears, so the menu entry
+                    // and the badge it opens are recognisably one thing.
+                    let icon = theme::first_drawable(ui.ctx(), panel.icons());
+                    if ui
+                        .selectable_label(
+                            right_panel.is(panel),
+                            format!("{icon}  {}", panel.label()),
+                        )
+                        .clicked()
+                    {
+                        right_panel.toggle(panel);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                let dev_label = if dev_state.open {
+                    "Hide developer tools"
+                } else {
+                    "Developer tools"
+                };
+                if ui.button(dev_label).clicked() {
+                    dev_state.open = !dev_state.open;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Exit").clicked() {
+                    app_exit.write(AppExit::Success);
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text("Menu");
         });
         });
     });
+    if toggle {
+        *open = !*open;
+        // Folding it away drops the dropdown with it, or the suggestions would
+        // hang under a bar that is no longer there.
+        if !*open {
+            nav.close_suggestions();
+        }
+    }
 }
 
-/// Camera-mode picker for the bottom bar (Follow / Fly / Earth, plus a one-click
-/// "View Whole Earth"). Moved out of the top bar so it can auto-hide; the mode
-/// is also Tab-cyclable. Follow needs an avatar (logged-in viewer only).
+/// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View Whole
+/// Earth"), drawn in the address bar beside the search field. The mode is also
+/// Tab-cyclable. Follow needs an avatar (logged-in viewer only).
 pub fn camera_picker_ui(
     ui: &mut egui::Ui,
     camera_state: &mut crate::resources::CameraState,

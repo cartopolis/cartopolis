@@ -80,5 +80,26 @@ rapid requests then five spaced by up to 125 s idle, all reusing the connection
 gap was the obvious suspect when search briefly broke; it is not what happens.
 
 Unrelated to speed, and worth knowing before "the search is broken" gets filed:
-Nominatim does no prefix matching to speak of. `Gron` and `Groning` return `[]`;
-results start at `Groninge`.
+**Nominatim does no prefix matching at all, and it is not an autocomplete engine.**
+The ICU tokenizer stores complete word tokens in the `word` table and the query
+analyzer looks them up by exact equality, so a half-typed name matches no rows and
+the endpoint returns `[]` — which the address bar renders, correctly, as
+"No results". `Leeuward`, `Groning` and `Utrech` all return nothing; the full names
+return 2, 3 and 3 hits.
+
+The near-misses that *do* answer are coincidences, not partial matching, and they
+are what makes this look like an intermittent bug (measured 2026-07-31 against
+`select word_token, type, word from word …`):
+
+| query | hits | why |
+|---|---|---|
+| `Amsterda` | 1 | `amsterda` is a real token — the Portuguese exonym **Amsterdã** |
+| `Groninge` | 1 | `groninge` is a real place name |
+| `Leeuwarde` | 0 | no such word exists |
+
+Fixing it means a second engine, not a Nominatim setting: **Photon** is the
+purpose-built typeahead front end for this data (country extracts are published,
+so an NL-only index is small), and it would sit beside Nominatim rather than
+replace it — reverse geocoding and structured lookup stay here. Until then the
+honest client-side mitigation is to keep the last non-empty list on screen while a
+prefix returns nothing, rather than flashing "No results" between keystrokes.

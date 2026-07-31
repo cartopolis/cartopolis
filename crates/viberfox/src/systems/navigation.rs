@@ -89,15 +89,9 @@ const MARKER_RADIUS: f32 = 7.0;
 const CONNECTOR_HALF_WIDTH: f32 = 1.0;
 const CONNECTOR_MIN_M: f32 = 4.0;
 
-/// The panel's symbols, resolved against the font that is actually loaded.
-///
-/// egui bundles Ubuntu-Light plus a small emoji subset, and a character outside
-/// both renders as an empty box. That subset is *much* thinner than it looks:
-/// probing the loaded font shows it has none of `⇅ ⬤ ⬆ ⬅ ➡ ← → ↑ ↰ ↱ ✕ 📍 🖈`, and
-/// of the plausible symbols only `⌖ ◎ ○ • ⚑ ↻ ⟲ ⏵ ⏴ ⏶ ⏷ ☰`. So nothing here is
-/// hard-coded to a guess: each field is filled from a preference list whose last
-/// entry is Latin-1 and therefore cannot fail, and the lists lead with the glyphs
-/// that probe as present.
+/// The panel's symbols, resolved against the font that is actually loaded — see
+/// [`theme::first_drawable`] for why nothing here is a hard-coded guess. The
+/// lists lead with the glyphs that probe as present.
 struct Icons {
     swap: &'static str,
     pick: &'static str,
@@ -109,7 +103,7 @@ struct Icons {
 
 impl Icons {
     fn resolve(ctx: &egui::Context) -> Self {
-        let pick = |candidates: &[&'static str]| first_drawable(ctx, candidates);
+        let pick = |candidates: &[&'static str]| theme::first_drawable(ctx, candidates);
         Self {
             swap: pick(&["⇅", "⇵", "↕", "⏶⏷", "×"]),
             // A crosshair is exactly the "aim at the map" affordance anyway.
@@ -120,19 +114,6 @@ impl Icons {
             finish: pick(&["⚑", "🏁", "◆", "×"]),
         }
     }
-}
-
-/// The first candidate the loaded font can draw in full; the last is the caller's
-/// guaranteed fallback and is returned even if it too is missing.
-fn first_drawable(ctx: &egui::Context, candidates: &[&'static str]) -> &'static str {
-    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
-    ctx.fonts_mut(|f| {
-        candidates
-            .iter()
-            .copied()
-            .find(|c| f.has_glyphs(&font, c))
-            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
-    })
 }
 
 /// Which end of the route a UI action refers to.
@@ -392,13 +373,7 @@ async fn search_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
         .as_array()
         .ok_or("unexpected Nominatim response")?
         .iter()
-        .filter_map(|it| {
-            Some(GeoSuggestion {
-                label: it.get("display_name")?.as_str()?.to_string(),
-                lat: it.get("lat")?.as_str()?.parse().ok()?,
-                lng: it.get("lon")?.as_str()?.parse().ok()?,
-            })
-        })
+        .filter_map(GeoSuggestion::from_nominatim)
         .collect())
 }
 
@@ -1002,8 +977,8 @@ pub fn render_route_panel(
             // and left a blank start looking like a required step.
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                start_row(ui, &mut route, here.is_some(), &icons, &mut actions);
-                endpoint_row(ui, &mut route, Endpoint::To, here.is_some(), &icons, &mut actions);
+                start_row(ui, &mut route, here, &icons, &mut actions);
+                endpoint_row(ui, &mut route, Endpoint::To, here, &icons, &mut actions);
             });
 
             if let Some(end) = route.picking {
@@ -1101,7 +1076,7 @@ pub fn render_route_panel(
                         let resp = ui
                             .horizontal(|ui| {
                                 ui.label(
-                                    egui::RichText::new(first_drawable(
+                                    egui::RichText::new(theme::first_drawable(
                                         ui.ctx(),
                                         step.maneuver.icon_candidates(),
                                     ))
@@ -1187,15 +1162,16 @@ struct PanelActions {
 fn start_row(
     ui: &mut egui::Ui,
     route: &mut RouteState,
-    has_here: bool,
+    here: Option<(f64, f64)>,
     icons: &Icons,
     actions: &mut PanelActions,
 ) {
+    let has_here = here.is_some();
     // Editing sticks while the field has focus or the label is still unresolved —
     // otherwise the row would snap shut mid-word the frame a suggestion arrived.
     let editing = route.from_editing || route.from.coord.is_none();
     if editing {
-        endpoint_row(ui, route, Endpoint::From, has_here, icons, actions);
+        endpoint_row(ui, route, Endpoint::From, here, icons, actions);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             if ui
@@ -1266,10 +1242,13 @@ fn endpoint_row(
     ui: &mut egui::Ui,
     route: &mut RouteState,
     end: Endpoint,
-    has_here: bool,
+    // Where the viewer is: enables the "use my position" shortcut, and gives the
+    // suggestion rows the distance they quote.
+    here: Option<(f64, f64)>,
     icons: &Icons,
     actions: &mut PanelActions,
 ) {
+    let has_here = here.is_some();
     let (glyph, colour, hint) = match end {
         Endpoint::From => (icons.start, egui::Color32::from_rgb(80, 190, 110), "Start"),
         // Phrased as the question rather than as a field name: this is the one
@@ -1328,16 +1307,16 @@ fn endpoint_row(
         .fixed_pos(field_rect.left_bottom() + egui::vec2(0.0, 2.0))
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_max_width(360.0);
-                for s in &wp.suggestions {
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new(&s.label).size(12.0))
-                                .wrap_mode(egui::TextWrapMode::Truncate)
-                                .min_size(egui::vec2(field_rect.width(), 0.0)),
-                        )
-                        .clicked()
-                    {
+                // Same rows as the address bar's dropdown — name, what kind of
+                // place it is, the address context and how far away it is.
+                let width = field_rect.width().max(300.0);
+                ui.set_min_width(width);
+                ui.set_max_width(width);
+                for (i, s) in wp.suggestions.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    if crate::systems::geo_nav::suggestion_row(ui, s, here, width).clicked() {
                         picked = Some(s.clone());
                     }
                 }
