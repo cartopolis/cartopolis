@@ -821,4 +821,139 @@ mod tests {
         assert!(pending.is_empty(), "the carry never drained");
         assert!(!checked, "the click-then-flick frame lost the click");
     }
+
+    /// Drive a checkbox through the **app's own** frame shape: the shared root
+    /// `Ui` that [`begin_egui_frame`] builds by hand, not the one `run_ui` hands
+    /// out. Returns whether the click landed.
+    ///
+    /// `overlay` gets the map area (the root `Ui`'s leftover space, exactly what
+    /// `place_pins` culls against) after the panel has taken its width, so a test
+    /// can put a floating `Area` there and ask whether it eats the panel's clicks.
+    fn click_checkbox_through_root_ui(
+        overlay: impl Fn(&egui::Context, egui::Rect),
+    ) -> bool {
+        click_checkbox_with_drift(overlay, 0.0)
+    }
+
+    /// As above, but the pointer drifts `drift` points between press and release —
+    /// what a real hand does. The events interleave as
+    /// `[moved, press]` … `[moved, release]`, which is the shape the live bridge
+    /// hands egui.
+    fn click_checkbox_with_drift(
+        overlay: impl Fn(&egui::Context, egui::Rect),
+        drift: f32,
+    ) -> bool {
+        let ctx = egui::Context::default();
+        crate::systems::theme::install(&ctx);
+        let mut checked = false;
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0));
+
+        // The panel slides open (`show_collapsible` animates), so a click aimed at
+        // frame 0's rect would land on a moving target and prove nothing. Wait for
+        // the checkbox to hold the same rect two passes running, then click that.
+        let mut seen: Option<egui::Rect> = None;
+        let mut settled: Option<egui::Pos2> = None;
+        let mut clicked_at: Option<usize> = None;
+        let mut pending: Vec<egui::Event> = Vec::new();
+        for frame in 0..24 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            if let (None, Some(pos)) = (clicked_at, settled) {
+                let mut last = None;
+                pending = [
+                    moved(pos.x, pos.y),
+                    button(true),
+                    moved(pos.x + drift, pos.y),
+                    button(false),
+                ]
+                .iter()
+                .filter_map(|ev| pointer_event(ev, &mut last))
+                .collect();
+                clicked_at = Some(frame);
+            }
+            raw.events = take_pass_events(&mut pending);
+
+            ctx.begin_pass(raw);
+            // Verbatim from `begin_egui_frame` — the thing under test.
+            let mut root = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new((ctx.viewport_id(), "__viberfox_root_ui")),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(ctx.viewport_rect()),
+            );
+            let mut open = true;
+            let rect = std::cell::Cell::new(None);
+            let checked_ref = &mut checked;
+            responsive_right_panel("layers_panel", false, 1280.0, 260.0).show_collapsible(
+                &mut root,
+                &mut open,
+                |ui| {
+                    let resp = crate::systems::theme::checkbox(ui, checked_ref, "Buildings");
+                    rect.set(Some(resp.rect));
+                },
+            );
+            overlay(&ctx, root.available_rect_before_wrap());
+            drop(root);
+            ctx.end_pass();
+
+            if settled.is_none() {
+                if let Some(r) = rect.get() {
+                    if seen == Some(r) {
+                        settled = Some(r.center());
+                    }
+                    seen = Some(r);
+                }
+            }
+        }
+        assert!(settled.is_some(), "the checkbox never settled into a rect");
+        assert!(
+            clicked_at.is_some_and(|f| f + 3 < 24),
+            "the click was issued too late to be resolved"
+        );
+        checked
+    }
+
+    /// A checkbox in a right panel must respond to a click when nothing is over
+    /// it. This is the app's real frame shape, which `run_ui` does not reproduce.
+    #[test]
+    fn panel_checkbox_clicks_through_the_shared_root_ui() {
+        assert!(
+            click_checkbox_through_root_ui(|_, _| {}),
+            "a panel checkbox in the shared root `Ui` ignored a clean click"
+        );
+    }
+
+    /// A hand does not hold a mouse still. Sub-pixel drift between press and
+    /// release — measured at 0.67 and 0.89 pt in a live session, far inside egui's
+    /// 6 pt `max_click_dist` — must not lose the click. In that session the only
+    /// press that toggled anything was the one that drifted exactly 0.0 pt.
+    #[test]
+    fn a_drifting_hand_still_clicks() {
+        for drift in [0.0, 0.5, 0.89, 2.0, 5.0] {
+            assert!(
+                click_checkbox_with_drift(|_, _| {}, drift),
+                "{drift} pt of drift between press and release lost the click"
+            );
+        }
+    }
+
+    /// A floating `Area` covering the **map** must not eat clicks aimed at the
+    /// panel beside it. Panels live on the background layer and every `Area`
+    /// paints above them, so an overlay that fails to cull itself to the map area
+    /// steals the panel's input — the whole reason `place_pins` culls rather than
+    /// clips (see CLAUDE.md). This pins the contract from the panel's side.
+    #[test]
+    fn a_map_overlay_does_not_eat_panel_clicks() {
+        assert!(
+            click_checkbox_through_root_ui(|ctx, map_rect| {
+                egui::Area::new(egui::Id::new("test_map_overlay"))
+                    .fixed_pos(map_rect.left_top())
+                    .show(ctx, |ui| {
+                        ui.allocate_response(map_rect.size(), egui::Sense::click());
+                    });
+            }),
+            "an overlay confined to the map area ate a click meant for the panel"
+        );
+    }
 }

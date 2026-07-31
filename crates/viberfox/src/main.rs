@@ -952,19 +952,41 @@ fn main() {
             (
                 systems::ui::render_dev_panel,
                 systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
-                systems::ui::render_avatar_chooser.after(systems::ui::render_menu_bar),
+                // Also a root-`Ui` panel — tail of the chain (see below).
+                systems::ui::render_avatar_chooser
+                    .after(systems::ui::render_menu_bar)
+                    .after(systems::chat::render_chat_panel),
             ),
             systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
             // The right-hand panels draw into the shared root `Ui`, so their call
-            // order fixes their right-to-left placement. Chain them (AI → Layers →
-            // Bookmarks) so the order is deterministic — otherwise Bevy runs these
-            // systems in a varying order each frame and the panels swap/flicker.
+            // order fixes their right-to-left placement. They must be **totally**
+            // ordered, and the full chain is:
+            //
+            //   menu_bar → ai → layers → bookmarks → route → chat → appearance
+            //                                                        → place_pins
+            //
+            // Every one of those draws into the *same* `Ui`, so any pair Bevy is
+            // free to run in either order composes the panel column differently
+            // from frame to frame. That is not merely a visual swap: panels share
+            // the one `Background` layer, so a panel that lands over another on
+            // some frames wins egui's hit test on those frames — while
+            // `layer_id_at` still answers `Background`, because the contest is
+            // *within* a layer. The symptom is a checkbox that ignores roughly
+            // half the clicks aimed at it, and it is invisible to every
+            // layer-level diagnostic. `chat` and `appearance` were the two left
+            // out (2026-07-31); they are the panels the bottom bar owns.
+            //
+            // Adding a panel here means adding a link. There is no run-time guard.
             systems::data_layers::render_data_layers_panel
                 .after(systems::ui::render_menu_bar)
                 .after(systems::ai_assistant::render_ai_panel),
             (
                 systems::hud::render_hud.after(systems::ui::render_menu_bar),
-                systems::chat::render_chat_panel.after(systems::ui::render_menu_bar),
+                // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
+                // belongs in the chain below — last, after the route panel.
+                systems::chat::render_chat_panel
+                    .after(systems::ui::render_menu_bar)
+                    .after(systems::navigation::render_route_panel),
             ),
             systems::bookmarks::render_bookmarks_panel
                 .after(systems::ui::render_menu_bar)
