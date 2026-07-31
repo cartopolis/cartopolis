@@ -888,6 +888,9 @@ pub fn apply_teleport(
                     grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;
                 tf.translation = local;
+                // Land at rest: fly inertia carried across a teleport would slide
+                // the camera off the place you jumped to.
+                camera_state.free_velocity = Vec3::ZERO;
             }
             // Earth mode with a bookmark/copied location saved from the space
             // tier: return to space over the target instead of the surface. The

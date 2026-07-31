@@ -2,7 +2,7 @@
 
 use crate::components::{Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::{
-    AuthIdentity, AvatarState, CameraState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
+    AuthIdentity, AvatarState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
     NetworkMailbox, NetworkSyncState, OnlineSession, OsmTileUrlTemplate, PrimTextureCache,
     TextureLibrary,
 };
@@ -20,7 +20,7 @@ pub struct AuthWriteback<'w> {
     user_store: ResMut<'w, UserStore>,
     chat: ResMut<'w, crate::systems::chat::ChatState>,
 }
-use crate::systems::avatar::{avatar_facing_yaw_from_camera, wish_dir_camera_relative};
+use crate::systems::avatar::{wish_dir_camera_relative, AIRBORNE_EPS};
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
@@ -221,7 +221,6 @@ pub fn apply_network_snapshot(
     mut game_state: ResMut<GameState>,
     mut avatar_state: ResMut<AvatarState>,
     mut local_sim_id: ResMut<LocalAvatarSimId>,
-    camera_state: Res<CameraState>,
     region_entities: Query<Entity, With<Region>>,
     // Excludes avatars so the `&mut Transform` access is provably disjoint from
     // `avatar_tf` below (prims never carry Avatar/RemoteAvatar).
@@ -313,7 +312,6 @@ pub fn apply_network_snapshot(
                     local_sim_id.0,
                     &mut avatar_state,
                     &mut avatar_tf,
-                    camera_state.azimuth,
                 );
                 sync_remote_avatar_entities(
                     &mut commands,
@@ -437,21 +435,20 @@ fn apply_local_avatar_pose_full(
     local_id: Option<u64>,
     avatar_state: &mut AvatarState,
     avatar_tf: &mut Query<&mut Transform, (With<Avatar>, Without<RemoteAvatar>)>,
-    camera_azimuth: f32,
 ) {
     let Some(a) = local_avatar_dto(avatars, local_id) else {
         return;
     };
-    let pi = std::f32::consts::PI;
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
     avatar_state.snapshot_age = 0.0;
     avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
-    let face = avatar_facing_yaw_from_camera(camera_azimuth);
-    avatar_state.online_tank_yaw = wrap_angle_pi(face - pi);
     if let Ok(mut tf) = avatar_tf.single_mut() {
         tf.translation = a.position;
-        tf.rotation = Quat::from_rotation_y(face);
+        // Keep the locally-turned facing (`avatar::handle_avatar_movement` eases it
+        // toward the travel direction and sends it as `display_yaw`); adopting the
+        // snapshot's yaw here would replay our own turn a tick late.
+        tf.rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
     }
 }
 
@@ -642,6 +639,7 @@ const FLY_MOVE_MULT: f32 = 4.0;
 const SIM_WALK_SPEED: f32 = 8.0;
 const SIM_MAX_SPEED: f32 = 32.0;
 const SIM_FLY_VERTICAL: f32 = 12.0;
+const SIM_FALL_SPEED: f32 = 12.0;
 
 /// Resend interval for an unchanged intent. The intent is absolute state, so it
 /// only has to be *re*sent to cover a dropped/stale reading; changes go out the
@@ -660,6 +658,7 @@ pub struct SentIntent {
     move_x: f32,
     move_z: f32,
     display_yaw: f32,
+    flying: bool,
     fly_up: bool,
     fly_down: bool,
 }
@@ -700,19 +699,26 @@ pub fn send_network_intent(
         && (keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft));
     let move_right = !blocked
         && (keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight));
-    let fly_up = !blocked && keyboard_input.pressed(KeyCode::Space);
-    let fly_down = !blocked
-        && (keyboard_input.pressed(KeyCode::ShiftLeft)
-            || keyboard_input.pressed(KeyCode::ShiftRight));
+    // E/Space up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
+    // which must stay in step: it drives the same avatar in `--offline`).
+    let fly_up = !blocked
+        && (keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE));
+    let fly_down = !blocked && keyboard_input.pressed(KeyCode::KeyQ);
 
     let az = camera_state.azimuth;
     let mut v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
     // Building collision (the sim is authoritative but has no building geometry —
     // that streams only on the client): steer the walk velocity so the avatar
     // slides along walls and can't enter a building, and auto-walk it out if it
-    // ended up inside one (e.g. teleported in — no interiors yet). Flying passes
-    // over roofs, so it's exempt.
-    if !avatar_state.is_flying && layers.buildings_enabled && !colliders.is_empty() {
+    // ended up inside one (e.g. teleported in — no interiors yet). Anything off the
+    // ground is exempt: the footprints are 2D, so a fall past a facade would be
+    // steered around a building the avatar is nowhere near the height of.
+    let airborne = avatar_state.display_position.y > AIRBORNE_EPS;
+    if !avatar_state.is_flying
+        && !airborne
+        && layers.buildings_enabled
+        && !colliders.is_empty()
+    {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
         let steered = colliders.steer_velocity(pos, Vec2::new(v.x, v.z));
         v.x = steered.x;
@@ -723,7 +729,10 @@ pub fn send_network_intent(
     if avatar_state.is_flying {
         v *= FLY_MOVE_MULT;
     }
-    let display_yaw = avatar_facing_yaw_from_camera(az);
+    // The facing is turned toward the travel direction by
+    // `avatar::handle_avatar_movement` (which runs first); replicate that, so other
+    // clients see the avatar turn exactly as its owner does.
+    let display_yaw = avatar_state.facing_yaw;
 
     // Predict the world velocity the sim will derive from this intent (same
     // scaling as `apply_intent`): magnitude → capped speed, plus the fixed
@@ -735,10 +744,19 @@ pub fn send_network_intent(
     } else {
         Vec2::ZERO
     };
-    let vy = if fly_up {
-        SIM_FLY_VERTICAL
-    } else if fly_down {
-        -SIM_FLY_VERTICAL
+    // Vertical mirrors `SimWorld::step`: thrust while flying, otherwise a fall
+    // until the ground. Predicting the fall as well keeps a descent smooth instead
+    // of leaving reconciliation to drag the display down a snapshot behind.
+    let vy = if avatar_state.is_flying {
+        if fly_up {
+            SIM_FLY_VERTICAL
+        } else if fly_down {
+            -SIM_FLY_VERTICAL
+        } else {
+            0.0
+        }
+    } else if airborne {
+        -SIM_FALL_SPEED
     } else {
         0.0
     };
@@ -751,6 +769,7 @@ pub fn send_network_intent(
         move_x: v.x,
         move_z: v.z,
         display_yaw,
+        flying: avatar_state.is_flying,
         fly_up,
         fly_down,
     };
@@ -758,6 +777,7 @@ pub fn send_network_intent(
         (p.move_x - intent.move_x).abs() > INTENT_EPS_DIR
             || (p.move_z - intent.move_z).abs() > INTENT_EPS_DIR
             || wrap_angle_pi(p.display_yaw - intent.display_yaw).abs() > INTENT_EPS_YAW
+            || p.flying != intent.flying
             || p.fly_up != intent.fly_up
             || p.fly_down != intent.fly_down
     });
@@ -772,6 +792,7 @@ pub fn send_network_intent(
         move_x: v.x,
         move_z: v.z,
         display_yaw,
+        flying: avatar_state.is_flying,
         fly_up,
         fly_down,
     });

@@ -90,7 +90,8 @@ fn classify_slot(name: &str) -> Option<Slot> {
 // all embed the same 24-clip set — see `jq '.animations'`).
 const CHAR_IDLE: usize = 4; // Idle
 const CHAR_RUN: usize = 16; // Run
-// The set has no jump/fly clip, so Idle doubles as the airborne pose.
+// The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
+// it read as flight is the forward lean in `update_avatar_flight_pose`.
 
 /// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
 /// showing the slots in `mask`.
@@ -239,7 +240,28 @@ const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 const REMOTE_RUN_SPEED_THRESH: f32 = 0.12;
 
 const WALK_SPEED: f32 = 8.0;
-const FLY_SPEED: f32 = 40.0;
+/// Offline flight, mirroring what the sim gives an online client so the same keys
+/// move the avatar at the same rate in every run mode: horizontal is the sim's
+/// speed cap (`SimWorld::apply_intent` MAX_SPEED, which `FLY_MOVE_MULT` reaches),
+/// vertical and the fall rate are `vibe_sim::state`'s. Offline used to fly 40 m/s
+/// in both axes — a third faster sideways, three times faster up.
+const FLY_SPEED: f32 = 32.0;
+const FLY_VERTICAL_SPEED: f32 = 12.0;
+const FALL_SPEED: f32 = 12.0;
+
+/// Turn rate for the avatar's facing: an exponential ease with a hard cap, so a
+/// tap on A snaps crisply to the new heading while an about-face (S) sweeps
+/// through the intervening angle in ~0.3 s instead of popping.
+const TURN_SMOOTHING: f32 = 16.0;
+const MAX_TURN_RATE: f32 = 12.0;
+
+/// The pitch a flying avatar leans into its travel direction, pivoting about
+/// chest height so the feet swing back rather than the model sinking through the
+/// ground. The Quaternius set has no flight clip (see `docs/notes/avatar-locomotion.md`),
+/// so the pose is what distinguishes gliding from standing in mid-air.
+const FLIGHT_LEAN: f32 = 1.05; // ~60°
+const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
+const FLIGHT_LEAN_SMOOTHING: f32 = 6.0;
 
 /// Horizontal forward from orbit [`CameraState::azimuth`] (into the screen / away from camera).
 #[inline]
@@ -283,14 +305,36 @@ pub(crate) fn wish_dir_camera_relative(
     }
 }
 
-/// World yaw for the avatar to face camera-forward on the ground (W walks “into” the view; S walks back without turning).
+/// World yaw that turns the model's forward (+Z) onto `dir` on the XZ plane, or
+/// `None` for no input — an avatar standing still keeps the heading it has rather
+/// than spinning with the camera.
 #[inline]
-pub(crate) fn avatar_facing_yaw_from_camera(azimuth: f32) -> f32 {
-    let f = camera_plane_forward(azimuth);
-    wrap_angle_pi(f32::atan2(f.x, f.z))
+pub(crate) fn yaw_from_dir(dir: Vec3) -> Option<f32> {
+    if dir.length_squared() < 1e-8 {
+        None
+    } else {
+        Some(wrap_angle_pi(f32::atan2(dir.x, dir.z)))
+    }
 }
-const GRAVITY: f32 = -9.8;
+
+/// Step the avatar's yaw toward `target` for one frame: the avatar turns to face
+/// where it is walking, in every direction. It used to be pinned to camera-forward,
+/// which made A/D a sideways moonwalk and S a backwards one.
+pub(crate) fn advance_facing(current: f32, target: f32, dt: f32) -> f32 {
+    let delta = wrap_angle_pi(target - current);
+    // Settle exactly, or the ease creeps forever and keeps rewriting the transform.
+    if delta.abs() < 1e-3 {
+        return wrap_angle_pi(target);
+    }
+    let ease = delta * (1.0 - (-TURN_SMOOTHING * dt).exp());
+    let cap = MAX_TURN_RATE * dt;
+    wrap_angle_pi(current + ease.clamp(-cap, cap))
+}
+
 const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent y)
+/// Height above the ground at which the avatar stops being a pedestrian: the
+/// building footprints are 2D, so they only apply to something standing on them.
+pub(crate) const AIRBORNE_EPS: f32 = 0.2;
 
 #[derive(Component)]
 pub struct AvatarModelLoaded;
@@ -582,6 +626,67 @@ pub fn update_avatar_animation(
     }
 }
 
+/// Lean the local avatar's model into flight while it is moving under its own
+/// power, and stand it back up on landing.
+///
+/// The Quaternius "Ultimate Modular" clip set has no flight (or jump) animation
+/// and the UAL library can't supply one — different rig, so its clips don't bind
+/// (`docs/notes/avatar-locomotion.md`). Flying therefore played *Idle*, i.e. an
+/// avatar standing to attention while it crossed the city at 32 m/s. Pitching the
+/// model forward is what turns that same pose into a glide; hovering in place
+/// stays upright, which is the readable difference between the two.
+///
+/// The lean lives on the model holders, not on the avatar entity: the avatar's own
+/// transform is its authoritative position and yaw (collision, the follow camera
+/// and the replicated facing all read it), and pitching *that* would tip all three.
+/// Holders pivot about chest height so the feet swing back instead of the head
+/// diving through the ground.
+pub fn update_avatar_flight_pose(
+    time: Res<Time>,
+    avatar_state: Res<AvatarState>,
+    avatars: Query<Entity, With<Avatar>>,
+    mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
+    mut lean: Local<f32>,
+) {
+    let target = if avatar_state.is_flying && avatar_state.is_walking {
+        FLIGHT_LEAN
+    } else {
+        0.0
+    };
+    let previous = *lean;
+    let a = 1.0 - (-FLIGHT_LEAN_SMOOTHING * time.delta_secs()).exp();
+    *lean += (target - *lean) * a;
+    if (target - *lean).abs() < 1e-3 {
+        *lean = target;
+    }
+    // Upright and already written: the holders sit at their spawn identity, so
+    // there is nothing to do (the common, grounded case costs one compare).
+    if *lean == 0.0 && previous == 0.0 {
+        return;
+    }
+
+    let pose = flight_pose(*lean);
+    for (parent, mut tf) in holders.iter_mut() {
+        if !avatars.contains(parent.parent()) {
+            continue; // a remote avatar's holder — flight isn't replicated
+        }
+        *tf = pose;
+    }
+}
+
+/// The holder transform for a given lean: a pitch about the model's X axis taken
+/// around a pivot at [`FLIGHT_LEAN_PIVOT_Y`], so the chest stays put and the feet
+/// swing back. Identity at zero, which is what a holder spawns with.
+fn flight_pose(lean: f32) -> Transform {
+    let rotation = Quat::from_rotation_x(lean);
+    let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
+    Transform {
+        translation: pivot - rotation * pivot,
+        rotation,
+        scale: Vec3::ONE,
+    }
+}
+
 /// Phase-lock a mixed avatar's per-slot holders: force every holder's active clips
 /// to the first holder's seek time, so a head from one style and a body from
 /// another (separate skeletons/players that started at slightly different frames)
@@ -785,26 +890,43 @@ pub fn handle_avatar_movement(
     };
     let delta_time = time.delta().as_secs_f32();
 
-    // Online: server owns translation; camera-relative WASD + fox faces into the orbit camera.
+    let move_forward =
+        keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp);
+    let move_backward =
+        keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown);
+    let move_left =
+        keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft);
+    let move_right =
+        keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight);
+    // Same vertical keys as the Fly camera (`free_camera`): E/Space up, Q down.
+    // Shift used to mean down here, which was unambiguous in avatar flight but
+    // disagreed with the camera, where Shift is the speed boost — one hand, two
+    // meanings for the same key depending on the mode.
+    let fly_up = keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE);
+    let fly_down = keyboard_input.pressed(KeyCode::KeyQ);
+    if keyboard_input.just_pressed(KeyCode::KeyF) {
+        avatar_state.is_flying = !avatar_state.is_flying;
+    }
+
+    let az = camera_state.azimuth;
+    let wish = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    avatar_state.is_walking = wish.length_squared() > 1e-8;
+    // Face the way we're travelling, in both run modes. The wish direction — not
+    // the camera — is the target, so A/D turn the avatar a quarter turn and S
+    // brings it about; only the turn *rate* is smoothed, movement is immediate.
+    if let Some(target) = yaw_from_dir(wish) {
+        avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, target, delta_time);
+    }
+    // Only on a real turn: writing the same rotation back would mark the avatar's
+    // Transform changed every frame and re-propagate its whole model subtree.
+    let rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
+    if transform.rotation != rotation {
+        transform.rotation = rotation;
+    }
+
+    // Online: the sim owns translation (`network::send_network_intent` sends the
+    // wish dir, the fly flags and this facing); nothing below applies.
     if online.is_some() {
-        if keyboard_input.just_pressed(KeyCode::KeyF) {
-            avatar_state.is_flying = !avatar_state.is_flying;
-        }
-        let move_left =
-            keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft);
-        let move_right =
-            keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight);
-        let move_forward =
-            keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp);
-        let move_backward =
-            keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown);
-        avatar_state.is_walking =
-            move_forward || move_backward || move_left || move_right;
-        let az = camera_state.azimuth;
-        let face = avatar_facing_yaw_from_camera(az);
-        let pi = std::f32::consts::PI;
-        avatar_state.online_tank_yaw = wrap_angle_pi(face - pi);
-        transform.rotation = Quat::from_rotation_y(face);
         return;
     }
 
@@ -813,28 +935,16 @@ pub fn handle_avatar_movement(
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
 
-    // Toggle fly mode with F key
-    if keyboard_input.just_pressed(KeyCode::KeyF) {
-        avatar_state.is_flying = !avatar_state.is_flying;
-        println!("Fly mode: {}", if avatar_state.is_flying { "ON" } else { "OFF" });
-    }
-
-    let move_forward = keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp);
-    let move_backward = keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown);
-    let move_left = keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft);
-    let move_right = keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight);
-    let fly_up = keyboard_input.pressed(KeyCode::Space);
-    let fly_down = keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight);
-
-    let az = camera_state.azimuth;
-    let wish = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
-    if wish.length_squared() > 1e-8 {
+    if avatar_state.is_walking {
         let speed = if avatar_state.is_flying { FLY_SPEED } else { WALK_SPEED };
         let delta = wish * speed * delta_time;
-        // Collide against buildings while walking (flying passes over roofs) when
-        // the buildings layer is on. Footprints live in the anchored world-XZ
-        // frame, so resolve the move in absolute metres (cell + local).
-        if !avatar_state.is_flying && layers.buildings_enabled && !colliders.is_empty() {
+        // Collide against buildings while walking (anything off the ground passes
+        // over roofs — the footprints are 2D, so they'd otherwise divert a flight
+        // or a fall around a building it clears) when the buildings layer is on.
+        // Footprints live in the anchored world-XZ frame, so resolve the move in
+        // absolute metres (cell + local).
+        let airborne = transform.translation.y > GROUND_HEIGHT + AIRBORNE_EPS;
+        if !airborne && layers.buildings_enabled && !colliders.is_empty() {
             use crate::systems::free_camera::WORLD_CELL_EDGE;
             let base = Vec2::new(
                 grid_cell.x as f32 * WORLD_CELL_EDGE,
@@ -848,37 +958,147 @@ pub fn handle_avatar_movement(
             transform.translation.x += delta.x;
             transform.translation.z += delta.z;
         }
-        avatar_state.is_walking = true;
-    } else {
-        avatar_state.is_walking = false;
     }
 
     // Handle vertical movement. The avatar models are authored origin-at-feet, so
     // the standing height is the ground surface itself (`GROUND_HEIGHT`) — the old
     // `+ AVATAR_HEIGHT/2` suited only the fox, whose origin is its centre, and it
     // floated the humanoids ~0.45 m.
+    //
+    // The vertical keys are flight controls, not levitation: an avatar that isn't
+    // flying falls, whatever it is holding. Same rule as the sim
+    // (`SimWorld::step`), so switching flight off in mid-air brings the avatar
+    // down in either run mode.
     if avatar_state.is_flying {
         if fly_up {
-            transform.translation.y += FLY_SPEED * delta_time;
-        } else if fly_down {
-            if transform.translation.y > GROUND_HEIGHT + 0.1 {
-                transform.translation.y -= FLY_SPEED * delta_time;
-            }
+            transform.translation.y += FLY_VERTICAL_SPEED * delta_time;
+        } else if fly_down && transform.translation.y > GROUND_HEIGHT {
+            transform.translation.y -= FLY_VERTICAL_SPEED * delta_time;
         }
     } else {
-        // Walking mode: apply gravity, then rest the feet on the ground.
-        transform.translation.y += GRAVITY * delta_time;
-        if transform.translation.y < GROUND_HEIGHT {
-            transform.translation.y = GROUND_HEIGHT;
-        }
+        transform.translation.y -= FALL_SPEED * delta_time;
     }
-
-    let face = avatar_facing_yaw_from_camera(az);
-    let pi = std::f32::consts::PI;
-    avatar_state.rotation = wrap_angle_pi(face - pi);
-    transform.rotation = Quat::from_rotation_y(face);
+    if transform.translation.y < GROUND_HEIGHT {
+        transform.translation.y = GROUND_HEIGHT;
+    }
 
     // Update avatar state position to match transform (important for camera following)
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Turn `yaw` back into the direction the model then faces (+Z rotated by it).
+    fn facing(yaw: f32) -> Vec3 {
+        Quat::from_rotation_y(yaw) * Vec3::Z
+    }
+
+    fn assert_dir(actual: Vec3, expected: Vec3) {
+        assert!(
+            actual.distance(expected) < 1e-4,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    /// The yaw a direction asks for is the yaw that points the model at it — the
+    /// property the whole facing chain (render transform, replicated `display_yaw`)
+    /// rests on.
+    #[test]
+    fn yaw_faces_the_direction_it_came_from() {
+        for dir in [Vec3::Z, Vec3::X, -Vec3::Z, -Vec3::X, Vec3::new(1.0, 0.0, 1.0).normalize()] {
+            let yaw = yaw_from_dir(dir).expect("non-zero direction");
+            assert_dir(facing(yaw), dir);
+        }
+        assert!(yaw_from_dir(Vec3::ZERO).is_none(), "no input must not steer");
+    }
+
+    /// Every WASD combination turns the avatar onto the direction it travels:
+    /// pressing A walks *and* faces left, S about-faces. Checked against the
+    /// camera's own frame so it holds at any azimuth.
+    #[test]
+    fn every_key_turns_the_avatar_onto_its_travel_direction() {
+        for &az in &[0.0, 0.7, 2.5, -1.9] {
+            let f = camera_plane_forward(az);
+            let r = camera_plane_right(az);
+            // (forward, backward, left, right) → expected travel/facing direction.
+            let cases: [(bool, bool, bool, bool, Vec3); 5] = [
+                (true, false, false, false, f),
+                (false, true, false, false, -f),
+                (false, false, true, false, -r),
+                (false, false, false, true, r),
+                (true, false, false, true, (f + r).normalize()),
+            ];
+            for (fwd, back, left, right, want) in cases {
+                let wish = wish_dir_camera_relative(az, fwd, back, left, right);
+                assert_dir(wish, want);
+                let yaw = yaw_from_dir(wish).expect("a key is held");
+                assert_dir(facing(yaw), want);
+            }
+        }
+    }
+
+    /// The turn eases rather than snapping, but it always converges — and settles
+    /// exactly, so a standing avatar stops rewriting its transform.
+    #[test]
+    fn facing_eases_toward_the_target_and_settles() {
+        let dt = 1.0 / 60.0;
+        let target = std::f32::consts::PI; // the worst case: an about-face
+        let mut yaw = 0.0_f32;
+        let first = advance_facing(yaw, target, dt);
+        assert!(first > 0.0 && first < target, "turn is eased, not a snap: {first}");
+        assert!(
+            first <= MAX_TURN_RATE * dt + 1e-6,
+            "first frame respects the rate cap: {first}"
+        );
+        let mut frames = 0;
+        while wrap_angle_pi(target - yaw).abs() > 1e-6 && frames < 600 {
+            yaw = advance_facing(yaw, target, dt);
+            frames += 1;
+        }
+        assert!(frames < 60, "an about-face lands within a second: {frames} frames");
+        assert_eq!(
+            advance_facing(yaw, target, dt),
+            wrap_angle_pi(target),
+            "settled, so no further movement"
+        );
+    }
+
+    /// The flight lean tips the avatar *forward* — head toward its own +Z, feet
+    /// back — about the chest, and is the identity when grounded. Checked here
+    /// because a pose has no other way to fail loudly: a sign slip would fly the
+    /// avatar on its back and only a screenshot would say so.
+    #[test]
+    fn flight_lean_pitches_forward_about_the_chest() {
+        assert_eq!(flight_pose(0.0), Transform::IDENTITY);
+
+        let pose = flight_pose(FLIGHT_LEAN);
+        let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
+        assert!(
+            pose.transform_point(pivot).distance(pivot) < 1e-5,
+            "the chest is the pivot, so it must not move: {:?}",
+            pose.transform_point(pivot)
+        );
+
+        let head = Vec3::new(0.0, 1.7, 0.0);
+        let leant = pose.transform_point(head);
+        assert!(leant.z > 0.5, "head leads, toward model-forward: {leant:?}");
+        assert!(leant.y < head.y, "and drops below standing height: {leant:?}");
+        let feet = pose.transform_point(Vec3::ZERO);
+        assert!(feet.z < 0.0, "feet trail behind: {feet:?}");
+    }
+
+    /// Turning takes the short way round the circle: from just left of −π the
+    /// target just right of +π is a hair away, not a full sweep back.
+    #[test]
+    fn facing_turns_the_short_way_across_the_wrap() {
+        let pi = std::f32::consts::PI;
+        let stepped = advance_facing(pi - 0.05, -pi + 0.05, 1.0 / 60.0);
+        assert!(
+            stepped.abs() > pi - 0.05,
+            "should step across ±π, not unwind through 0: {stepped}"
+        );
+    }
 }

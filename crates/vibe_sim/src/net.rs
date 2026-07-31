@@ -197,6 +197,7 @@ pub async fn handle_connection(
                                 move_x,
                                 move_z,
                                 display_yaw,
+                                flying,
                                 fly_up,
                                 fly_down,
                                 ..
@@ -206,7 +207,9 @@ pub async fn handle_connection(
                                 }
                                 last_intent = Instant::now();
                                 let mut w = world.write().await;
-                                w.apply_intent(avatar_id, move_x, move_z, display_yaw, fly_up, fly_down);
+                                w.apply_intent(
+                                    avatar_id, move_x, move_z, display_yaw, flying, fly_up, fly_down,
+                                );
                             }
                             NetMessage::ObserverUpdate { position } => {
                                 if last_observer.elapsed() < MIN_OBSERVER_INTERVAL {

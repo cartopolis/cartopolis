@@ -47,6 +47,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "ADR-028",
         summary: "chat — ChatSend / ChatMessage / ChatSubscribe; Local (proximity), Global and Room scopes",
     },
+    ProtocolRevision {
+        version: 12,
+        adr: "",
+        summary: "explicit flight — ClientIntent.flying; the sim falls an avatar that isn't flying",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -332,8 +337,14 @@ pub enum NetMessage {
         request_id: u32,
         move_x: f32,
         move_z: f32,
-        /// World yaw replicated to others (fox / travel facing). Server applies this when moving instead of `atan2(velocity)`.
+        /// World yaw replicated to others (travel facing — the direction the avatar
+        /// is turned toward). Server applies this instead of `atan2(velocity)`.
         display_yaw: f32,
+        /// Flight mode. The sim has no gravity of its own: it lets a flying avatar
+        /// hover at whatever altitude it reached, and falls one that isn't flying.
+        /// Without it, switching flight off in mid-air left the avatar hanging there.
+        flying: bool,
+        /// Vertical thrust while `flying`; ignored otherwise.
         fly_up: bool,
         fly_down: bool,
     },

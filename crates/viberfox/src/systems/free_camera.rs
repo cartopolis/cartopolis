@@ -159,6 +159,31 @@ const FREE_CAMERA_SPEED_FAST: f32 = 180.0;
 const MOUSE_SENSITIVITY: f32 = 0.002;
 const MIN_CAMERA_HEIGHT: f32 = 0.5;
 
+/// Altitude (m) at which the fly speeds above are taken literally; above it the
+/// speed grows in proportion to altitude, so how fast the ground slides past
+/// stays roughly constant as you climb (the Google Earth rule — a fixed 45 m/s
+/// is a brisk walk over a city and a crawl over a continent).
+const FREE_SPEED_ALT_REF: f32 = 120.0;
+/// Ceiling on that scaling. Past ~240 km up the speed stops growing; without a
+/// cap the 45,000 km space orbit would multiply it by six figures and a tap of W
+/// would leave the solar system.
+const FREE_SPEED_MAX_FACTOR: f32 = 2_000.0;
+/// Fly inertia, as exponential-approach time constants (s): the velocity chases
+/// the key wish quickly, and coasts to rest more slowly when the keys let go.
+const FREE_ACCEL_TAU: f32 = 0.12;
+const FREE_DECEL_TAU: f32 = 0.5;
+/// Coasting stops for good below this fraction of the current fly speed. The
+/// camera is the big_space floating origin, so a velocity that only ever halves
+/// would rewrite its transform — and re-propagate every entity in the scene —
+/// for the rest of the session.
+const FREE_REST_FRACTION: f32 = 0.005;
+
+/// Fly speed (m/s) at `altitude_m` above the surface, for a base speed of
+/// `base` — [`FREE_SPEED_ALT_REF`] and [`FREE_SPEED_MAX_FACTOR`] applied.
+fn fly_speed(base: f32, altitude_m: f32) -> f32 {
+    base * (altitude_m / FREE_SPEED_ALT_REF).clamp(1.0, FREE_SPEED_MAX_FACTOR)
+}
+
 // ── Earth (orbit) mode tuning ───────────────────────────────────────────────
 /// Closest the orbit camera may sit to its ground focus (metres).
 const ORBIT_MIN_DISTANCE: f64 = 15.0;
@@ -535,7 +560,11 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
             // Land in plain follow; the GPS/locate button owns the rotate sub-state.
             camera_state.follow_rotate = false;
         }
-        CameraMode::Free => camera_state.free_initialized = false,
+        CameraMode::Free => {
+            camera_state.free_initialized = false;
+            // Enter at rest — the restored pose is a placement, not a flight.
+            camera_state.free_velocity = Vec3::ZERO;
+        }
         CameraMode::Orbit => camera_state.orbit_initialized = camera_state.orbit_has_pose,
     }
 }
@@ -827,11 +856,17 @@ pub fn camera_controls(
             let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize();
             let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize();
 
-            let speed = if keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight) {
+            let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight) {
                 FREE_CAMERA_SPEED_FAST
             } else {
                 FREE_CAMERA_SPEED
             };
+            // Speed rides altitude. Read it geocentrically (`GlobeState::altitude_m`) —
+            // the local `y` is only altitude near the anchor and goes negative on the
+            // far side of the globe, where a y-based scale would collapse to the
+            // ground speed exactly where the distances are largest.
+            let altitude = globe.altitude_m(&camera_cell, &camera_transform) as f32;
+            let speed = fly_speed(base_speed, altitude);
 
             let mut move_direction = Vec3::ZERO;
 
@@ -848,20 +883,17 @@ pub fn camera_controls(
                 move_direction += right_horizontal;
             }
 
-            // Vertical movement - ALWAYS world-space, never affects rotation
-            if keyboard_input.pressed(KeyCode::Space) {
+            // Vertical movement — ALWAYS world-space, never affects rotation.
+            // E/Space up, Q down: the editor flycam convention (Unreal, Unity,
+            // Godot, Blender) with Space kept as the universal "up". Shift is the
+            // speed boost and *only* that — it used to also mean "down, if no WASD
+            // is held", so holding it to cross a city dropped you out of the sky the
+            // moment you let go of W. Ctrl, the obvious alternative, isn't available:
+            // `EguiManager::ui_owns_keyboard` reads any Ctrl press as a UI chord.
+            if keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE) {
                 move_direction += Vec3::Y;
             }
-            // Q or Shift for moving down (but Shift also speeds up, so only use Shift if not moving horizontally)
             if keyboard_input.pressed(KeyCode::KeyQ) {
-                move_direction -= Vec3::Y;
-            }
-            // Shift alone (without WASD) moves down
-            if (keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight))
-                && !keyboard_input.pressed(KeyCode::KeyW)
-                && !keyboard_input.pressed(KeyCode::KeyA)
-                && !keyboard_input.pressed(KeyCode::KeyS)
-                && !keyboard_input.pressed(KeyCode::KeyD) {
                 move_direction -= Vec3::Y;
             }
 
@@ -871,17 +903,39 @@ pub fn camera_controls(
                 move_direction = Vec3::ZERO;
             }
 
-            // Apply movement
-            if move_direction.length() > 0.0 {
-                move_direction = move_direction.normalize();
-                camera_transform.translation += move_direction * speed * delta_time;
+            // The keys steer a velocity, not the translation: it chases the wish on
+            // an exponential approach (frame-rate independent), so a release glides
+            // to a stop instead of the camera stopping dead mid-flight. Braking is
+            // deliberately slower than accelerating — the glide is the point, and a
+            // symmetric curve makes the start feel mushy to get it.
+            let wish = if move_direction.length() > 0.0 {
+                move_direction.normalize() * speed
+            } else {
+                Vec3::ZERO
+            };
+            let tau = if wish == Vec3::ZERO { FREE_DECEL_TAU } else { FREE_ACCEL_TAU };
+            let blend = 1.0 - (-delta_time / tau).exp();
+            let mut velocity =
+                camera_state.free_velocity + (wish - camera_state.free_velocity) * blend;
+            if wish == Vec3::ZERO
+                && velocity.length_squared() <= (speed * FREE_REST_FRACTION).powi(2)
+            {
+                velocity = Vec3::ZERO;
+            }
+            camera_state.free_velocity = velocity;
+            if velocity != Vec3::ZERO {
+                camera_transform.translation += velocity * delta_time;
             }
 
-            // Prevent going below ground
+            // Prevent going below ground.
             let ground_height = get_ground_height(camera_transform.translation, &region_mesh_query);
             let min_height = ground_height + MIN_CAMERA_HEIGHT;
-            if camera_transform.translation.y < min_height {
-                camera_transform.translation.y = min_height;
+            let lift = ground_lift(camera_cell.y as f64, camera_transform.translation.y, min_height);
+            if lift > 0.0 {
+                camera_transform.translation.y += lift;
+                // Kill the downward glide at the floor, or a coast into the ground
+                // keeps pressing against the clamp long after the key is released.
+                camera_state.free_velocity.y = camera_state.free_velocity.y.max(0.0);
             }
 
             // Remember this pose so re-entering Fly returns here.
@@ -1324,6 +1378,22 @@ pub fn camera_controls(
     }
 }
 
+/// How far (m) the Fly camera must be lifted to clear `min_height`, for a camera
+/// sitting at `local_y` inside big_space cell index `cell_y`. Zero when it's
+/// already above.
+///
+/// The comparison has to be made in **absolute** metres. `Transform::translation.y`
+/// is only the offset within the current [`WORLD_CELL_EDGE`] (10 km) cell, so
+/// testing it directly against a ground height put a hard floor 0.5 m above *every*
+/// 10 km multiple: descend past 70 km and the camera pinned itself at 70,000.5 m
+/// with "down" doing nothing. It went unnoticed while the fly speed was a flat
+/// 45 m/s — nobody descends 70 km at walking pace — and surfaced the day speed
+/// started scaling with altitude.
+fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
+    let absolute = cell_y * WORLD_CELL_EDGE as f64 + local_y as f64;
+    (min_height as f64 - absolute).max(0.0) as f32
+}
+
 fn get_ground_height(position: Vec3, region_mesh_query: &Query<&GlobalTransform, With<RegionMesh>>) -> f32 {
     let mut min_height: f32 = 0.0;
     for region_transform in region_mesh_query.iter() {
@@ -1346,6 +1416,44 @@ mod tests {
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
     const NORTH: DVec3 = DVec3::Y;
+
+    #[test]
+    fn the_ground_clamp_reads_altitude_across_cells_not_within_one() {
+        // High up, whatever the cell-local y: nothing to clamp. A local y below the
+        // ground height is perfectly normal seven cells (70 km) up — reading it as
+        // an altitude is what pinned a descent at every 10 km boundary.
+        assert_eq!(ground_lift(7.0, 200.0, 0.5), 0.0);
+        assert_eq!(ground_lift(7.0, -4_000.0, 0.5), 0.0);
+        assert_eq!(ground_lift(1.0, 0.0, 0.5), 0.0);
+        // Only the real ground clamps, and by exactly the shortfall.
+        assert_eq!(ground_lift(0.0, 0.2, 0.5), 0.3);
+        assert!((ground_lift(-1.0, 9_999.0, 0.5) - 1.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fly_speed_rides_altitude_between_a_floor_and_a_ceiling() {
+        // Down among the buildings the constant is taken literally — scaling it
+        // *down* near the ground would make the last few metres of a descent
+        // unusable.
+        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 0.0), FREE_CAMERA_SPEED);
+        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 5.0), FREE_CAMERA_SPEED);
+        // Above the reference altitude it is proportional: ten times as high is
+        // ten times as fast, so the ground slides past at a constant rate.
+        assert!(
+            (fly_speed(FREE_CAMERA_SPEED, FREE_SPEED_ALT_REF * 10.0)
+                - FREE_CAMERA_SPEED * 10.0)
+                .abs()
+                < 1e-3
+        );
+        // …until the cap, which every orbital altitude shares — the 45,000 km
+        // space orbit must not multiply the speed by six figures.
+        let capped = FREE_CAMERA_SPEED * FREE_SPEED_MAX_FACTOR;
+        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 1.0e6), capped);
+        assert_eq!(fly_speed(FREE_CAMERA_SPEED, 4.5e7), capped);
+        // A negative altitude (below the surface, or the local-y fallback on the
+        // far side before the globe is ready) falls on the floor, never negative.
+        assert_eq!(fly_speed(FREE_CAMERA_SPEED, -500.0), FREE_CAMERA_SPEED);
+    }
 
     fn latitude(dir: DVec3) -> f64 {
         dir.dot(NORTH).clamp(-1.0, 1.0).asin().to_degrees()

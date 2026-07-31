@@ -816,6 +816,12 @@ fn main() {
             avatar::respawn_avatar_on_appearance_change.before(avatar::spawn_avatar),
             avatar::spawn_avatar,
             avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
+            // The airborne pose the clip set doesn't have: lean the model into
+            // flight. After `spawn_avatar` so a holder that appeared this frame
+            // (first spawn, appearance change) is leant on the frame it exists.
+            avatar::update_avatar_flight_pose
+                .after(avatar::handle_avatar_movement)
+                .after(avatar::spawn_avatar),
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
             avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
             systems::debug::debug_region_entities.after(rendering::spawn_regions),

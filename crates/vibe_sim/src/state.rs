@@ -6,10 +6,21 @@ use vibe_core::{
     PrimSurface, RegionDto,
 };
 
+/// Climb/descent rate while flying (m/s), and the rate an avatar that isn't
+/// flying drops at. Constant speeds rather than an acceleration: the client
+/// predicts the same numbers between snapshots, and a matching closed form is
+/// cheaper to keep honest than a matching integrator.
+const FLY_VERTICAL_SPEED: f32 = 12.0;
+const FALL_SPEED: f32 = 12.0;
+
 struct AvatarSim {
     position: Vec3,
     yaw: f32,
     velocity: Vec3,
+    /// Flight mode (`ClientIntent::flying`): hovers at altitude, and only then do
+    /// `fly_vertical` and the client's vertical keys mean anything. An avatar that isn't flying
+    /// falls — see [`SimWorld::step`].
+    flying: bool,
     fly_vertical: f32,
 }
 
@@ -86,6 +97,7 @@ impl SimWorld {
                 // Match client tank convention: yaw π ↔ tank 0 ↔ travel −Z when pressing W.
                 yaw: std::f32::consts::PI,
                 velocity: Vec3::ZERO,
+                flying: false,
                 fly_vertical: 0.0,
             },
         );
@@ -123,6 +135,7 @@ impl SimWorld {
         move_x: f32,
         move_z: f32,
         display_yaw: f32,
+        flying: bool,
         fly_up: bool,
         fly_down: bool,
     ) {
@@ -146,12 +159,15 @@ impl SimWorld {
         av.velocity.z = v.z;
         // Always apply facing so remotes see orbit-camera rotation while idle (not only when moving).
         av.yaw = snap_yaw_continuation(av.yaw, display_yaw);
-        // Vertical (Space/Shift) is quicker while flying so ascents aren't sluggish.
-        let fly_speed = 12.0_f32;
-        av.fly_vertical = if fly_up {
-            fly_speed
+        // Vertical thrust only means something in flight: a walker holding the
+        // climb key used to levitate and — nothing pulling it back down — stay up.
+        av.flying = flying;
+        av.fly_vertical = if !flying {
+            0.0
+        } else if fly_up {
+            FLY_VERTICAL_SPEED
         } else if fly_down {
-            -fly_speed
+            -FLY_VERTICAL_SPEED
         } else {
             0.0
         };
@@ -161,7 +177,14 @@ impl SimWorld {
         for av in self.avatars.values_mut() {
             av.position.x += av.velocity.x * dt;
             av.position.z += av.velocity.z * dt;
-            av.position.y += av.fly_vertical * dt;
+            // Flight holds altitude; everything else falls. The client mirrors both
+            // rates for prediction (`network::SIM_FLY_VERTICAL` / `SIM_FALL_SPEED`)
+            // and offline movement, so keep the three in step.
+            av.position.y += if av.flying {
+                av.fly_vertical * dt
+            } else {
+                -FALL_SPEED * dt
+            };
             if av.position.y < 0.0 {
                 av.position.y = 0.0;
             }

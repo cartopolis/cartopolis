@@ -433,12 +433,14 @@ pub struct AvatarState {
     /// snapshot staircase doesn't drag the predicted display backwards on every
     /// frame between snapshots (see `smooth_online_avatar_display`).
     pub snapshot_age: f32,
-    /// Offline / local yaw for tank controls (radians).
-    pub rotation: f32,
+    /// The avatar's current world yaw (radians) — the single source for the render
+    /// transform, the replicated `display_yaw` and the follow-and-rotate camera.
+    /// Turned toward the movement direction by `avatar::advance_facing`, so the
+    /// avatar faces where it walks (A/D turn it, they don't strafe) instead of
+    /// being pinned to camera-forward.
+    pub facing_yaw: f32,
     /// Online: replicated world yaw from snapshots (authoritative for reconciliation).
     pub sim_facing_yaw: f32,
-    /// Online: `fox_facing_yaw − π` for legacy parity; movement uses camera azimuth, not this field.
-    pub online_tank_yaw: f32,
     pub is_flying: bool,
     pub is_walking: bool,
 }
@@ -451,9 +453,8 @@ impl Default for AvatarState {
             display_position: p,
             predicted_velocity: Vec3::ZERO,
             snapshot_age: 0.0,
-            rotation: 0.0,
+            facing_yaw: 0.0,
             sim_facing_yaw: 0.0,
-            online_tank_yaw: 0.0,
             is_flying: false,
             is_walking: false,
         }
@@ -481,6 +482,12 @@ pub struct CameraState {
     /// every frame in Fly mode so switching to another mode and back returns here
     /// instead of inheriting wherever Orbit/Follow last moved the shared camera.
     pub free_saved: Option<(GridCell, Vec3, Vec2)>,
+    /// Fly-mode inertia: the camera's current velocity in local metres per second.
+    /// The keys steer *this*, not the translation, so releasing them coasts to a
+    /// stop instead of cutting dead. Cleared whenever the camera is placed rather
+    /// than flown (mode entry, teleport) — a carried-over velocity would drift the
+    /// camera off a fresh placement.
+    pub free_velocity: Vec3,
     // ── Earth (orbit) mode ──────────────────────────────────────────────────
     /// Ground point the orbit camera pivots around, in absolute world metres
     /// (the anchored Web Mercator frame `map_stream` uses). y ≈ 0 (the ground).
@@ -589,6 +596,7 @@ impl Default for CameraState {
             avatar_initialized: false,
             free_initialized: false,
             free_saved: None,
+            free_velocity: Vec3::ZERO,
             orbit_focus: bevy::math::DVec3::ZERO,
             orbit_distance: 1500.0,
             orbit_distance_target: 1500.0,

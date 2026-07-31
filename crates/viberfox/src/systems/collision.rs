@@ -290,7 +290,8 @@ pub fn convex_hull_xz(mut pts: Vec<Vec2>) -> Vec<Vec2> {
 /// teleport that lands inside a building (no interiors yet) resolves, and a
 /// backstop for a building that streams in over the avatar. Runs after
 /// movement, so it corrects the final position; a no-op when the avatar is
-/// clear, flying, online (server-authoritative), or the buildings layer is off.
+/// clear, off the ground, online (server-authoritative), or the buildings layer
+/// is off.
 pub fn eject_avatar_from_buildings(
     colliders: Res<BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
@@ -301,12 +302,17 @@ pub fn eject_avatar_from_buildings(
     if online.is_some() || !layers.buildings_enabled || colliders.is_empty() {
         return;
     }
-    if avatar_state.is_flying {
-        return;
-    }
     let Ok((cell, mut tf)) = avatars.single_mut() else {
         return;
     };
+    // Only a pedestrian is ejected. The footprints have no height, so shoving a
+    // flying — or falling — avatar sideways would move it around a building it is
+    // passing well above.
+    if avatar_state.is_flying
+        || tf.translation.y > crate::systems::avatar::AIRBORNE_EPS
+    {
+        return;
+    }
     let base = Vec2::new(cell.x as f32 * WORLD_CELL_EDGE, cell.z as f32 * WORLD_CELL_EDGE);
     let p = base + Vec2::new(tf.translation.x, tf.translation.z);
     let fixed = colliders.eject(p, EJECT_MARGIN);
