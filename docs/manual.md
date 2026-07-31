@@ -186,19 +186,28 @@ connected clients.
 
 ## Panels and layers
 
-The top menu bar toggles the main panels (also available via keyboard shortcuts):
+The **dock** — the row of round buttons centred along the bottom — opens the four
+places you navigate between. One at a time; clicking the lit one closes it.
 
-- **View ▸ AI Panel** (Ctrl + Shift + A) — the [AI assistant](#ai-assistant).
-- **View ▸ Dev Panel** (Ctrl + Shift + D) — the [developer panel](#developer-panel).
-- **Layers** — toggle OSM-derived data layers and points of interest.
-- **Bookmarks** — save and revisit locations.
+- **💬 Chat** — nearby chat, its channel tabs and the composer. Only present when
+  you are connected to a simulator.
+- **🗺 Layers** — toggle OSM-derived data layers and points of interest.
+- **⚑ Route** — the [route planner](#planning-a-route).
+- **★ Places** — save and revisit locations.
+
+The rest live in the **address bar's ☰ menu**, because they are things you visit
+rather than flip while looking at the map:
+
+- **Appearance** — pick your avatar.
+- **Assistant** (Ctrl + Shift + A) — the [AI assistant](#ai-assistant).
+- **Developer tools** (Ctrl + Shift + D) — the [developer panel](#developer-panel).
 
 Live transit boards and vehicles appear in the world when the relevant layers are
 active.
 
 ## Developer panel
 
-Open it with **Ctrl + Shift + D** (or View ▸ Dev Panel). It gathers tools for
+Open it with **Ctrl + Shift + D** (or ☰ ▸ Developer tools). It gathers tools for
 inspecting and tuning the scene:
 
 - **Day / night cycle** — a slider that drives the sun position, with quick
@@ -279,7 +288,7 @@ README images have identical dimensions no matter how big the window was.
 
 ## AI assistant
 
-Open the AI panel with **Ctrl + Shift + A** (or View ▸ AI Panel) for
+Open the AI panel with **Ctrl + Shift + A** (or ☰ ▸ Assistant) for
 LLM-assisted world building. It needs an Anthropic API key in the environment:
 
 ```bash

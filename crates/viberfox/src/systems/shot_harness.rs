@@ -658,6 +658,11 @@ pub fn open_scripted_ui(
         crate::resources::RightPanel::Places
     } else if want("ai") {
         crate::resources::RightPanel::Assistant
+    } else if want("avatar") || want("appearance") {
+        // The chooser moved into the `RightPanel` slot with the rest; the
+        // `avatar.open` bool above is what the HUD reads, not the panel, so
+        // `--ui avatar` opened nothing at all until this arm existed.
+        crate::resources::RightPanel::Appearance
     } else {
         crate::resources::RightPanel::None
     };

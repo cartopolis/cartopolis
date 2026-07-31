@@ -1158,7 +1158,10 @@ pub fn render_driver_hud(
                         route_rail(ui, &ctx, &ahead, progress);
                         ui.add_space(6.0);
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("✕ Stop").size(12.5)))
+                            // Spelled out, not `✕ Stop`: the cross is not in the
+                            // bundled font and drew as a tofu box (see
+                            // `theme::close_button`, which paints its own).
+                            .add(egui::Button::new(egui::RichText::new("Stop").size(12.5)))
                             .on_hover_text("Leave driver mode and put the map back")
                             .clicked()
                         {

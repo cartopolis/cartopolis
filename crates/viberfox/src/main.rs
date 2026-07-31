@@ -923,7 +923,14 @@ fn main() {
         (
             // Auto-hiding top address bar (floating overlay, reserves no layout
             // space); ordered before the side panels for deterministic input.
-            systems::ui::render_menu_bar.before(systems::ai_assistant::render_ai_panel),
+            (
+                systems::ui::render_menu_bar.before(systems::ai_assistant::render_ai_panel),
+                // The bottom dock — a floating `Area` of round panel toggles, so
+                // it reserves no root-`Ui` space and stays out of the panel chain
+                // below. After the address bar only so input order is
+                // deterministic within a frame.
+                systems::dock::render_dock.after(systems::ui::render_menu_bar),
+            ),
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
             // Nested to stay under the per-tuple system limit: the driver runs after

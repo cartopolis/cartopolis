@@ -941,15 +941,8 @@ pub fn render_route_panel(
 
     crate::systems::egui_manager::responsive_right_panel("route_panel", compact, viewport_w, 320.0)
         .show_collapsible(ui_root, &mut open, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Route");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(icons.clear).clicked() {
-                        actions.close = true;
-                    }
-                });
-            });
-            ui.separator();
+            let panel = crate::resources::RightPanel::Route;
+            actions.close = theme::panel_header(ui, panel.icons(), panel.label());
 
             // Travel-mode tabs. Organic Maps puts these above the fields, because
             // the mode changes what a sensible destination even is.

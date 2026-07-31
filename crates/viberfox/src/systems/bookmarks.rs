@@ -382,12 +382,12 @@ pub fn render_bookmarks_panel(
         300.0,
     )
     .show_collapsible(ui_root, &mut open, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading("Places");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").clicked() {
-                    act.close = true;
-                }
+        let panel = crate::resources::RightPanel::Places;
+        act.close = crate::systems::theme::panel_header_with(
+            ui,
+            panel.icons(),
+            panel.label(),
+            |ui| {
                 // Spelled out rather than an icon: 📁 is not in the bundled icon
                 // font and renders as a tofu box.
                 if ui
@@ -397,9 +397,8 @@ pub fn render_bookmarks_panel(
                 {
                     act.new_folder = true;
                 }
-            });
-        });
-        ui.separator();
+            },
+        );
         if rows.is_empty() {
             ui.add_space(8.0);
             ui.label(

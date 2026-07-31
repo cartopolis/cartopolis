@@ -361,6 +361,217 @@ pub fn overlay_frame() -> egui::Frame {
         .inner_margin(Margin::symmetric(11, 8))
 }
 
+/// Diameter of a round icon button, in points. Matches the compass disc in the
+/// opposite corner — the map's floating controls are one family.
+pub const ROUND_BUTTON_SIZE: f32 = 40.0;
+
+/// A round icon button that floats over the map: the dock along the bottom, and
+/// anything else that wants the compass's visual language.
+///
+/// Painted rather than assembled from `Button`, because egui's button is a
+/// rounded *rect* whose corner radius is capped well below half its height — a
+/// "circular" button built that way is a squircle that reads as a mistake next to
+/// the genuinely round compass. `selected` is the open-panel state and takes the
+/// fox fill, the same "this is on" colour the rest of the UI uses.
+pub fn round_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    tooltip: &str,
+    selected: bool,
+) -> egui::Response {
+    let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hovered = resp.hovered();
+    let (fill, ring, ink) = match (selected, hovered) {
+        (true, _) => (FOX_MUTED, FOX_BRIGHT, CREAM),
+        (false, true) => (SURFACE_HOVER, FOX, CREAM),
+        (false, false) => (OVERLAY, OVERLAY_LINE, TEXT),
+    };
+    paint_disc(
+        ui.painter(),
+        rect.center(),
+        ROUND_BUTTON_SIZE * 0.5 - 1.0,
+        Disc {
+            fill,
+            ring,
+            ink,
+            icon,
+            icon_size: 17.0,
+        },
+    );
+    resp.on_hover_text(tooltip)
+}
+
+/// The look of one icon disc, shared by [`round_button`] and the medallion a
+/// panel header wears — they have to be the same object at two sizes, or the
+/// header stops reading as "the dock button you just pressed".
+struct Disc<'a> {
+    fill: Color32,
+    ring: Color32,
+    ink: Color32,
+    icon: &'a str,
+    icon_size: f32,
+}
+
+fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
+    p.circle_filled(center, radius, d.fill);
+    p.circle_stroke(center, radius, Stroke::new(1.0, d.ring));
+    p.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        d.icon,
+        FontId::proportional(d.icon_size),
+        d.ink,
+    );
+}
+
+// ─── Panel header ─────────────────────────────────────────────────────────────
+
+/// Height of the band [`panel_header`] paints, in points.
+const HEADER_HEIGHT: f32 = 38.0;
+/// Diameter of the header's icon medallion. Small enough to sit on one text
+/// line, large enough that the dock's glyph survives the shrink.
+const HEADER_MEDALLION: f32 = 24.0;
+/// Side of the header's close button.
+const CLOSE_BUTTON_SIZE: f32 = 22.0;
+
+/// The ✕ every panel closes with — **painted, not typed.**
+///
+/// `✕` is not in the bundled font (see [`first_drawable`]), so every panel that
+/// spelled its close button `ui.button("✕")` drew an empty box; the multiplication
+/// sign that survives the probe is a comma-sized cross that reads as a typo at
+/// button size. Two line segments have neither problem: they land on the pixel
+/// grid at any scale and cannot depend on a font subset at all.
+pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::Vec2::splat(CLOSE_BUTTON_SIZE),
+        egui::Sense::click(),
+    );
+    // Frameless at rest: a header carries one obvious action, and boxing it makes
+    // the title bar look like it has a second panel in it.
+    let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
+        (FOX_MUTED, FOX_BRIGHT, CREAM)
+    } else if resp.hovered() {
+        (SURFACE_HOVER, FOX, CREAM)
+    } else {
+        (Color32::TRANSPARENT, Color32::TRANSPARENT, TEXT_DIM)
+    };
+    let p = ui.painter();
+    p.rect(
+        rect,
+        CornerRadius::same(RADIUS - 2),
+        fill,
+        Stroke::new(1.0, ring),
+        egui::StrokeKind::Inside,
+    );
+    let x = rect.shrink(7.0);
+    let stroke = Stroke::new(1.6, ink);
+    p.line_segment([x.left_top(), x.right_bottom()], stroke);
+    p.line_segment([x.right_top(), x.left_bottom()], stroke);
+    resp.on_hover_text("Close")
+}
+
+/// The header every right-hand panel opens with: a raised band carrying the
+/// panel's own icon, its name, and the close button. Returns whether close was
+/// clicked.
+///
+/// Three things it fixes, all of which the six hand-rolled copies shared. The
+/// close glyph was `✕`, which the font cannot draw ([`close_button`]). The
+/// heading sat directly on the panel fill, so a panel opened as a wall of one
+/// colour with a slightly larger word at the top of it. And nothing tied the
+/// header to the control that opened it — the medallion is the dock's disc in
+/// its *selected* colours at a smaller radius, so the lit button at the bottom
+/// of the screen and the badge at the top of the panel are visibly one thing.
+///
+/// Depth is a three-part recipe and all three parts matter: a soft shadow under
+/// the band (it floats over the content, so the content must be able to pass
+/// beneath it), a fill one step up from the panel, and a hairline highlight
+/// along the top edge — the lit edge is what turns a lighter rectangle into a
+/// raised one.
+pub fn panel_header(ui: &mut egui::Ui, icons: &[&'static str], title: &str) -> bool {
+    panel_header_with(ui, icons, title, |_| {})
+}
+
+/// [`panel_header`] plus room for extra actions, laid out right-to-left from the
+/// close button (the Places panel's "+ Folder").
+pub fn panel_header_with(
+    ui: &mut egui::Ui,
+    icons: &[&'static str],
+    title: &str,
+    extra: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let icon = first_drawable(ui.ctx(), icons);
+    let avail = ui.available_rect_before_wrap();
+    let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), HEADER_HEIGHT));
+    let radius = CornerRadius::same(RADIUS + 1);
+
+    let p = ui.painter();
+    p.add(
+        Shadow {
+            offset: [0, 3],
+            blur: 10,
+            spread: 0,
+            color: Color32::from_black_alpha(90),
+        }
+        .as_shape(band, radius),
+    );
+    p.rect(
+        band,
+        radius,
+        SURFACE_RAISED,
+        Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
+    );
+    p.line_segment(
+        [
+            egui::pos2(band.left() + 7.0, band.top() + 1.5),
+            egui::pos2(band.right() - 7.0, band.top() + 1.5),
+        ],
+        Stroke::new(1.0, SURFACE_HOVER),
+    );
+
+    let mut close = false;
+    {
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(band.shrink2(egui::vec2(7.0, 7.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = 8.0;
+        let (medallion, _) =
+            row.allocate_exact_size(egui::Vec2::splat(HEADER_MEDALLION), egui::Sense::hover());
+        paint_disc(
+            row.painter(),
+            medallion.center(),
+            HEADER_MEDALLION * 0.5 - 0.5,
+            Disc {
+                fill: FOX_MUTED,
+                ring: FOX_BRIGHT,
+                ink: CREAM,
+                icon,
+                icon_size: 13.0,
+            },
+        );
+        row.add(
+            egui::Label::new(
+                egui::RichText::new(title)
+                    .font(FontId::new(17.0, brand_family()))
+                    .color(CREAM),
+            )
+            .truncate()
+            .selectable(false),
+        );
+        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            close = close_button(ui).clicked();
+            extra(ui);
+        });
+    }
+    ui.advance_cursor_after_rect(band);
+    // Clears the shadow, which reaches below the band.
+    ui.add_space(4.0);
+    close
+}
+
 /// A checkbox whose box is square. egui derives the checkbox frame's rounding
 /// from the shared widget visuals ([`RADIUS`], sized for buttons), and on a
 /// ~14 pt box that radius reads as a circle — an unchecked toggle then looks
@@ -461,6 +672,42 @@ mod tests {
             },
             |ui| {
                 ui.heading("Places");
+            },
+        );
+    }
+
+    /// No panel may wear a glyph the font cannot draw. [`first_drawable`] only
+    /// promises to fall back to the *last* candidate, so a list whose tail is
+    /// itself missing (`🧭`, `🤖`, `🧍` all were) still renders an empty box — and
+    /// now that the header repeats the dock's icon, one bad list draws tofu twice.
+    #[test]
+    fn every_panel_icon_resolves_to_a_glyph_the_font_has() {
+        use crate::resources::RightPanel;
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                for panel in [
+                    RightPanel::Layers,
+                    RightPanel::Places,
+                    RightPanel::Route,
+                    RightPanel::Assistant,
+                    RightPanel::Chat,
+                    RightPanel::Appearance,
+                ] {
+                    let icon = first_drawable(ui.ctx(), panel.icons());
+                    let font = TextStyle::Body.resolve(ui.style());
+                    assert!(
+                        ui.ctx().fonts_mut(|f| f.has_glyphs(&font, icon)),
+                        "{}: resolved to {icon:?}, which the font cannot draw",
+                        panel.label(),
+                    );
+                }
             },
         );
     }

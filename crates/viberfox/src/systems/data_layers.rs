@@ -969,7 +969,7 @@ pub fn render_poi_popup(
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.small_button("✕").clicked() {
+                                if theme::close_button(ui).clicked() {
                                     close = true;
                                 }
                             },
@@ -1338,15 +1338,8 @@ pub fn render_data_layers_panel(
     let viewport_w = egui.viewport_pts().x;
     crate::systems::egui_manager::responsive_right_panel("layers_panel", compact, viewport_w, 260.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Layers");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕").clicked() {
-                        close = true;
-                    }
-                });
-            });
-            ui.separator();
+            let panel = crate::resources::RightPanel::Layers;
+            close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
             for (i, def) in LAYER_DEFS.iter().enumerate() {
                 ui.add_space(4.0);
                 crate::systems::theme::checkbox(ui, 

@@ -621,15 +621,8 @@ pub fn render_avatar_chooser(
         280.0,
     )
     .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Appearance");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕").clicked() {
-                        close = true;
-                    }
-                });
-            });
-            ui.separator();
+            let panel = crate::resources::RightPanel::Appearance;
+            close = theme::panel_header(ui, panel.icons(), panel.label());
             let d = &mut chooser.draft;
             ui.label("Body");
             ui.horizontal(|ui| {

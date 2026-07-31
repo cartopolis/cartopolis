@@ -286,16 +286,10 @@ pub fn render_ai_panel(
     let viewport_w = egui.viewport_pts().x;
     crate::systems::egui_manager::responsive_right_panel("ai_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            // Header
-            ui.horizontal(|ui| {
-                ui.heading("AI Assistant");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕").clicked() {
-                        *right_panel = crate::resources::RightPanel::None;
-                    }
-                });
-            });
-            ui.separator();
+            let panel = crate::resources::RightPanel::Assistant;
+            if theme::panel_header(ui, panel.icons(), panel.label()) {
+                *right_panel = crate::resources::RightPanel::None;
+            }
 
             if config.api_key.is_none() {
                 ui.colored_label(

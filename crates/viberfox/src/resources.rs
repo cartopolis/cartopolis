@@ -101,12 +101,60 @@ impl RightPanel {
     pub fn is(self, panel: RightPanel) -> bool {
         self == panel
     }
+
+    /// The panel's name — its dock tooltip, its menu entry and its header title,
+    /// from one string so those three can't drift.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Layers => "Map layers",
+            Self::Places => "Saved places",
+            Self::Route => "Route",
+            Self::Assistant => "AI Assistant",
+            Self::Chat => "Nearby Chat",
+            Self::Appearance => "Appearance",
+        }
+    }
+
+    /// The panel's glyph, as a *preference list* for
+    /// [`crate::systems::theme::first_drawable`].
+    ///
+    /// A list because egui's bundled font subset is much thinner than it looks and
+    /// is not something to guess at — the old bottom bar shipped `🧭` for Route,
+    /// `🤖` for the Assistant and `🧍` for Appearance, and all three drew as empty
+    /// boxes for as long as they existed. Every list ends in a character that
+    /// cannot fail.
+    ///
+    /// Lives on the enum rather than in the dock because the dock is no longer the
+    /// only place a panel's icon appears: the header wears it too (and Appearance
+    /// and the Assistant have no dock button at all, only a menu entry).
+    #[must_use]
+    pub fn icons(self) -> &'static [&'static str] {
+        match self {
+            Self::None => &[" "],
+            Self::Layers => &["🗺", "▤", "◈", "L"],
+            Self::Places => &["★", "☆", "•", "P"],
+            // A destination flag, not a compass rose: `🧭` is not in the font, and
+            // a rose would collide with the actual compass in the corner anyway.
+            Self::Route => &["⚑", "🧭", "➤", "R"],
+            Self::Assistant => &["🤖", "✨", "◎", "AI"],
+            Self::Chat => &["💬", "🗨", "◎", "C"],
+            Self::Appearance => &["🧍", "🙂", "☺", "A"],
+        }
+    }
 }
 
 /// How `time_of_day` (the sun/moon/fog clock) is driven — a light/dark/auto
 /// switcher like a website's theme toggle. The HUD exposes Auto/Day/Night; the
 /// dev panel's slider, presets, and Quick-cycle drop into `Manual`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+///
+/// Serializable because it is persisted in `data/user.json`
+/// ([`crate::systems::user_store::SkyPrefs`]) — the sky comes back the way it
+/// was left. Named variants on the wire, so adding a mode never renumbers the
+/// saved files.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SunMode {
     /// Realistic: the sun follows the real current time at the map location
     /// (local solar time from the anchor longitude — see `utils::sun`).

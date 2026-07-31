@@ -25,8 +25,6 @@ pub struct ChatState {
     pub join_input: String,
     /// This client's avatar id (from `ServerHelloAck`), to tag own lines.
     pub my_id: Option<u64>,
-    /// Whether the floating chat-history window is open (toggled from the bar).
-    pub history_open: bool,
 }
 
 pub struct ChatChannel {
@@ -61,7 +59,6 @@ impl Default for ChatState {
             shout: false,
             join_input: String::new(),
             my_id: None,
-            history_open: true,
         }
     }
 }
@@ -113,23 +110,27 @@ fn scope_for(key: &str, shout: bool) -> ChatScope {
     }
 }
 
-/// SL-style bottom bar (persistent nearby-chat input + a button strip that drives
-/// the mutually-exclusive right-panel slot) plus the chat history as an animated
-/// right panel. Present only when online (Simulation tier).
-#[allow(clippy::too_many_arguments)]
+/// The chat panel: channel tabs, history, and the composer.
+///
+/// The composer used to be a persistent "say" line in the bottom bar, Second
+/// Life style, with the channel picker and the Shout toggle beside it. It has
+/// moved in here, and three things fell out of that. The scope **combo box is
+/// gone** — the panel already has channel tabs, and two controls picking the same
+/// value is one too many. The bottom of the screen is back to being map. And the
+/// composer now sits under the history it writes into, which is where every chat
+/// client puts it and where the reply you are answering is still on screen.
+///
+/// Present only when online (Simulation tier) — there is no one to talk to
+/// otherwise. The dock button that opens this panel is hidden on the same test.
 pub fn render_chat_panel(
     mut egui: ResMut<EguiManager>,
     mut chat: ResMut<ChatState>,
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,
-    mut camera_state: ResMut<crate::resources::CameraState>,
-    globe: Res<crate::systems::globe::GlobeState>,
-    avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     let Some(online) = online else {
         return;
     };
-    let has_avatar = !avatars.is_empty();
     let mut close_history = false;
 
     let tabs: Vec<(String, String)> = chat
@@ -143,118 +144,68 @@ pub fn render_chat_panel(
     let mut send_now = false;
     let mut join_now = false;
 
-    // --- Bottom bar: dark strip along the bottom (floating Area, doesn't disturb
-    //     the existing panel layout). ---
-    // Responsive: on a narrow (phone-ish) viewport the strip is too wide for one
-    // row, so bound it to the viewport and let the controls wrap onto several rows
-    // instead of clipping off both screen edges.
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
-    let ctx = egui.ctx_mut();
-    egui::Area::new(egui::Id::new("sl_bottom_bar"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -6.0))
-        .show(ctx, |ui| {
-            theme::overlay_frame()
-                .show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui,
-                               add: &mut dyn FnMut(&mut egui::Ui)| {
-                        if compact {
-                            // Bound the bar to the viewport (minus a small margin)
-                            // so the wrapped row has an edge to wrap against.
-                            ui.set_max_width((viewport_w - 24.0).max(200.0));
-                            ui.horizontal_wrapped(add);
-                        } else {
-                            // Wide screens: unbounded content-sized single row,
-                            // exactly as before.
-                            ui.horizontal(add);
-                        }
-                    };
-                    row(ui, &mut |ui| {
-                        // Chat history toggle (drives the right-panel slot).
-                        if ui
-                            .selectable_label(right_panel.is(RightPanel::Chat), "💬 Chat")
-                            .clicked()
-                        {
-                            right_panel.toggle(RightPanel::Chat);
-                        }
-                        // Channel + say/shout.
-                        egui::ComboBox::from_id_salt("chat_scope")
-                            .selected_text(
-                                tabs.get(active).map(|(_, l)| l.as_str()).unwrap_or("Local"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (i, (_k, label)) in tabs.iter().enumerate() {
-                                    ui.selectable_value(&mut active, i, label);
-                                }
-                            });
-                        if is_local {
-                            crate::systems::theme::checkbox(ui, &mut chat.shout, "Shout");
-                        }
-                        // Nearby-chat input (SL's persistent "say" line). Narrow it
-                        // on a phone so the 280 pt default doesn't force the strip
-                        // wider than the screen before wrapping can even help.
-                        let input_w = if compact {
-                            (viewport_w - 60.0).clamp(120.0, 280.0)
-                        } else {
-                            280.0
-                        };
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut chat.input)
-                                .desired_width(input_w)
-                                .hint_text("Say something…"),
-                        );
-                        let entered =
-                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui.button("Send").clicked() || entered)
-                            && !chat.input.trim().is_empty()
-                        {
-                            send_now = true;
-                        }
-
-                        ui.separator();
-                        // Camera-mode picker (moved off the auto-hiding top bar).
-                        crate::systems::ui::camera_picker_ui(
-                            ui,
-                            &mut camera_state,
-                            has_avatar,
-                            &globe,
-                        );
-
-                        ui.separator();
-                        // Button strip → mutually-exclusive right-panel slot.
-                        for (panel, label) in [
-                            (RightPanel::Appearance, "🧍 Appearance"),
-                            (RightPanel::Layers, "🗺 Layers"),
-                            (RightPanel::Route, "🧭 Route"),
-                            (RightPanel::Places, "★ Places"),
-                            (RightPanel::Assistant, "🤖 Assistant"),
-                        ] {
-                            if ui.selectable_label(right_panel.is(panel), label).clicked() {
-                                right_panel.toggle(panel);
-                            }
-                        }
-                    });
-                });
-        });
 
     // --- Chat history as an animated right panel (mutually exclusive slot). ---
     let mut chat_open = right_panel.is(RightPanel::Chat);
     crate::systems::egui_manager::responsive_right_panel("chat_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut chat_open, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Nearby Chat");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕").clicked() {
-                        close_history = true;
-                    }
-                });
-            });
+            let panel = RightPanel::Chat;
+            close_history = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
             ui.horizontal_wrapped(|ui| {
                 for (i, (_key, label)) in tabs.iter().enumerate() {
                     ui.selectable_value(&mut active, i, label);
                 }
             });
             ui.separator();
+            // The composer and the Join row are laid out *first*, from the bottom
+            // up, so the history takes whatever is left. Give the scroll area the
+            // remaining height instead and it claims the whole panel, pushing the
+            // input off the bottom edge the moment the backlog is long enough —
+            // which is exactly when you want to reply.
+            egui::Panel::bottom("chat_composer")
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.outer_margin(egui::Margin {
+                    top: 6,
+                    ..Default::default()
+                }))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Join room:");
+                        ui.text_edit_singleline(&mut chat.join_input);
+                        join_now =
+                            ui.button("Join").clicked() && !chat.join_input.trim().is_empty();
+                    });
+                    ui.separator();
+                    // Shout is a property of the *local* channel only; a room or
+                    // the global channel has no distance to shout across.
+                    if is_local {
+                        crate::systems::theme::checkbox(ui, &mut chat.shout, "Shout");
+                    }
+                    // Right-to-left so Send lands at the right edge and the field
+                    // takes whatever is left: the panel is resizable and responsive,
+                    // and a fixed input width either overflows the narrow layout or
+                    // leaves a gap in the wide one.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let send = ui.button("Send");
+                        // `desired_width`, not `add_sized(available_size())`: this
+                        // layout's available *height* is the whole rest of the
+                        // panel, and sizing to it grows the single-line field into
+                        // a full-height block.
+                        let field = ui.add(
+                            egui::TextEdit::singleline(&mut chat.input)
+                                .desired_width(ui.available_width())
+                                .hint_text("Say something…"),
+                        );
+                        let entered =
+                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (send.clicked() || entered) && !chat.input.trim().is_empty() {
+                            send_now = true;
+                            field.request_focus();
+                        }
+                    });
+                });
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
@@ -276,12 +227,6 @@ pub fn render_chat_panel(
                         }
                     }
                 });
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Join room:");
-                ui.text_edit_singleline(&mut chat.join_input);
-                join_now = ui.button("Join").clicked() && !chat.join_input.trim().is_empty();
-            });
         });
 
     if close_history {
