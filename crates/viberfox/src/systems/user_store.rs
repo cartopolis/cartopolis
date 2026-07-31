@@ -69,6 +69,11 @@ pub struct LayerPrefs {
     /// which is what `DataLayers::default` gives a fresh install.
     #[serde(default = "yes")]
     pub street_labels: bool,
+    /// Street furniture (`systems::street_furniture`). Defaulted so a file written
+    /// before the layer existed still parses — and it defaults to *on*, which is
+    /// what `DataLayers::default` gives a fresh install.
+    #[serde(default = "yes")]
+    pub furniture: bool,
     pub vehicles: bool,
     /// The height layer (`systems::height`). Defaulted, so a file written before it
     /// existed still parses — and defaults to *off*, because it is a request to a

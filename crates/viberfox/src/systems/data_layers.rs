@@ -318,6 +318,10 @@ pub struct DataLayers {
     /// Feature toggle (under Map): the merged tree canopies/trunks
     /// (`systems::vegetation`). Gates their visibility on top of the altitude LOD.
     pub trees_enabled: bool,
+    /// Feature toggle (under Map): the merged street furniture
+    /// (`systems::street_furniture`) — benches, bins, shelters read out of the
+    /// tile's `pois` layer. Gates their visibility on top of the altitude LOD.
+    pub furniture_enabled: bool,
     /// Feature toggle (under Map): textured road surfaces (generated tarmac +
     /// markings). Off = flat-coloured roads (`map_geometry::apply_road_texture`).
     pub roads_textured: bool,
@@ -370,14 +374,21 @@ impl DataLayers {
     /// in its snapshot — persist those, so exiting mid-drive doesn't freeze the
     /// stripped-down map into the file.
     pub fn prefs(&self) -> crate::systems::user_store::LayerPrefs {
-        let (buildings, vehicles, trees, overlay) = match &self.minimal {
+        let (buildings, vehicles, trees, furniture, overlay) = match &self.minimal {
             Some(m) => (
                 m.buildings,
                 m.vehicles,
                 m.trees,
+                m.furniture,
                 Some(&m.layers),
             ),
-            None => (self.buildings_enabled, self.vehicles_enabled, self.trees_enabled, None),
+            None => (
+                self.buildings_enabled,
+                self.vehicles_enabled,
+                self.trees_enabled,
+                self.furniture_enabled,
+                None,
+            ),
         };
         crate::systems::user_store::LayerPrefs {
             buildings,
@@ -388,6 +399,7 @@ impl DataLayers {
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
             street_labels: self.street_labels,
+            furniture,
             height: self.height_enabled,
             vehicles,
             overlays: LAYER_DEFS
@@ -414,6 +426,7 @@ impl DataLayers {
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
+        self.furniture_enabled = p.furniture;
         self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
@@ -431,6 +444,7 @@ struct MinimalSave {
     buildings: bool,
     vehicles: bool,
     trees: bool,
+    furniture: bool,
     layers: Vec<bool>,
     fog_density: f32,
     cloud_cover: f32,
@@ -448,6 +462,7 @@ impl Default for DataLayers {
             map_enabled: true,
             vehicles_enabled: false,
             trees_enabled: true,
+            furniture_enabled: true,
             roads_textured: true,
             water_shading: true,
             street_labels: true,
@@ -1055,6 +1070,7 @@ pub fn apply_minimal_mode(
                 buildings: dl.buildings_enabled,
                 vehicles: dl.vehicles_enabled,
                 trees: dl.trees_enabled,
+                furniture: dl.furniture_enabled,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
                 cloud_cover: dev.cloud_cover,
@@ -1064,6 +1080,7 @@ pub fn apply_minimal_mode(
             dl.buildings_enabled = false;
             dl.vehicles_enabled = false;
             dl.trees_enabled = false;
+            dl.furniture_enabled = false;
             for l in &mut dl.layers {
                 l.enabled = false;
             }
@@ -1079,6 +1096,7 @@ pub fn apply_minimal_mode(
                 dl.buildings_enabled = saved.buildings;
                 dl.vehicles_enabled = saved.vehicles;
                 dl.trees_enabled = saved.trees;
+                dl.furniture_enabled = saved.furniture;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
                 }
@@ -1382,11 +1400,15 @@ pub fn render_data_layers_panel(
                     &mut dl.trees_enabled,
                     egui::RichText::new("Trees").size(13.0),
                 );
-                crate::systems::theme::checkbox(ui, 
+                crate::systems::theme::checkbox(ui,
+                    &mut dl.furniture_enabled,
+                    egui::RichText::new("Street furniture").size(13.0),
+                );
+                crate::systems::theme::checkbox(ui,
                     &mut dl.roads_textured,
                     egui::RichText::new("Road textures").size(13.0),
                 );
-                crate::systems::theme::checkbox(ui,
+                crate::systems::theme::checkbox(ui, 
                     &mut dl.water_shading,
                     egui::RichText::new("Water shading").size(13.0),
                 );

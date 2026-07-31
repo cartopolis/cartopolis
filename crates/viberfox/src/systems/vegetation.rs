@@ -777,7 +777,7 @@ fn tone_multiplier() -> [f32; 3] {
     [b[0] / a[0], b[1] / a[1], b[2] / a[2]]
 }
 
-fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
+pub(crate) fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
     let ch = |shift: u32| {
         let s = ((rgb >> shift) & 0xFF) as f32 / 255.0;
         if s <= 0.040_45 {
@@ -789,7 +789,7 @@ fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
     [ch(16), ch(8), ch(0)]
 }
 
-fn mix(a: u32, b: u32, t: f32) -> [f32; 3] {
+pub(crate) fn mix(a: u32, b: u32, t: f32) -> [f32; 3] {
     mix_rgb(srgb_to_linear_rgb(a), srgb_to_linear_rgb(b), t)
 }
 
@@ -843,7 +843,7 @@ fn point_seg_dist2(x: f32, z: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
 
 /// Deterministic per-lattice-cell hash. `rand01` pulls independent streams out of
 /// it by byte, which is enough decorrelation for jitter and size.
-fn hash3(seed: u64, i: i32, j: i32) -> u64 {
+pub(crate) fn hash3(seed: u64, i: i32, j: i32) -> u64 {
     let mut h = seed ^ (i as u32 as u64).wrapping_mul(0xA24B_AED4_963E_E407);
     h ^= (j as u32 as u64).wrapping_mul(0x9FB2_1C65_1E98_DF25);
     h ^= h >> 29;
@@ -853,7 +853,7 @@ fn hash3(seed: u64, i: i32, j: i32) -> u64 {
     h ^ (h >> 31)
 }
 
-fn rand01(h: u64, stream: u32) -> f32 {
+pub(crate) fn rand01(h: u64, stream: u32) -> f32 {
     let mut x = h.rotate_left(stream * 11 + 7);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);

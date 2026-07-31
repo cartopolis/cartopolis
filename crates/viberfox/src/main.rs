@@ -537,6 +537,7 @@ fn main() {
     // handle out of `Assets<WaterMaterial>`.
     .init_resource::<systems::water::WaterSeaState>()
     .init_resource::<systems::vegetation::VegetationLod>()
+    .init_resource::<systems::street_furniture::FurnitureLod>()
     .init_resource::<systems::globe::GlobeState>()
     .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
     .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
@@ -772,6 +773,9 @@ fn main() {
                 // follow the surface build, which is what creates the materials it
                 // repaints. Skips unless the ramp actually moved.
                 systems::vegetation::update_vegetation_lod
+                    .after(systems::map_geometry::update_map_surfaces),
+                // Same for the street furniture, over its own (much lower) band.
+                systems::street_furniture::update_furniture_lod
                     .after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then

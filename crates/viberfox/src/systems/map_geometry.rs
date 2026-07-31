@@ -238,6 +238,22 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");
                                 }
                             }
+                            // Benches, bins and shelters likewise ride this fetch:
+                            // Shortbread's `pois` layer is already in these bytes
+                            // and was being decoded and dropped
+                            // (`systems::street_furniture`).
+                            match street_furniture::extract_furniture(
+                                &bytes,
+                                tile_m,
+                                veg_seed(cell),
+                            ) {
+                                Ok(items) => {
+                                    meshes.extend(street_furniture::build_furniture_meshes(&items));
+                                }
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");
+                                }
+                            }
                             // Street names ride the same fetch too: they are read
                             // from a layer of the very same tile, and parsing them
                             // here means the label renderer never touches an MVT
@@ -519,6 +535,12 @@ pub fn update_map_surfaces(
                 commands
                     .entity(id)
                     .insert((VegetationSurface, veg_lod.visibility()));
+            }
+            if sm.group == SurfaceGroup::Furniture {
+                // Same contract, its own (much lower) band.
+                commands
+                    .entity(id)
+                    .insert((FurnitureSurface, furniture_lod.visibility()));
             }
             entities.push(id);
         }

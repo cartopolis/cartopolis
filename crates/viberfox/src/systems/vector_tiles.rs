@@ -170,6 +170,23 @@ pub mod palette {
     pub const BRIDGE_DECK: u32 = 0x57_56_59;
     pub const PATH: u32 = 0xC5_C0_B0;
     pub const BOUNDARY: u32 = 0xB0_A6_B4;
+    /// Base tone of the street furniture group (`systems::street_furniture`). The
+    /// per-part tones below are carried as vertex-colour *multipliers* against
+    /// this, exactly as the canopy's second tone is, so one material paints a whole
+    /// street's benches, bins and shelters.
+    pub const FURNITURE: u32 = 0xB8_B0_A2;
+    /// Timber: bench slats, table tops, swing seats. In the [`TRUNK`] family and
+    /// muted for the same reason — a saturated brown at walking distance is the
+    /// loudest colour on the map.
+    pub const FURNITURE_WOOD: u32 = 0xB4_A9_98;
+    /// Painted steel: posts, frames, bins.
+    pub const FURNITURE_METAL: u32 = 0x9A_98_93;
+    /// Roof and sign panels — a step *lighter* than the posts under them, so a
+    /// shelter still reads as a shelter from directly overhead, which is where the
+    /// orbit camera spends most of its time.
+    pub const FURNITURE_ROOF: u32 = 0xC6_C1_B6;
+    /// Masonry: a fountain rim, an artwork plinth.
+    pub const FURNITURE_STONE: u32 = 0xC0_BA_AE;
 }
 
 /// How one source layer is painted.
@@ -504,6 +521,10 @@ pub enum SurfaceGroup {
     Canopy,
     /// Merged tree trunks.
     Trunk,
+    /// Merged street furniture (`systems::street_furniture`) — benches, bins,
+    /// shelters. Same contract as [`Self::Canopy`]: one group, one material, one
+    /// mesh per cell, with the per-object variety carried in vertex colours.
+    Furniture,
 }
 
 impl SurfaceGroup {
@@ -533,6 +554,7 @@ impl SurfaceGroup {
             // palette entry stays the one place the canopy tone is written down.
             Self::Canopy => palette::CANOPY,
             Self::Trunk => palette::TRUNK,
+            Self::Furniture => palette::FURNITURE,
         };
         [
             ((rgb >> 16) & 0xFF) as f32 / 255.0,
@@ -578,7 +600,7 @@ impl SurfaceGroup {
             // sheet in the coplanar stack, so they take the ground plane itself.
             // A bridge deck is the same kind of thing: it carries its own height,
             // which is a measurement and not a place in this millimetre ladder.
-            Self::BridgeDeck | Self::Canopy | Self::Trunk => 0.0,
+            Self::BridgeDeck | Self::Canopy | Self::Trunk | Self::Furniture => 0.0,
         }
     }
 
@@ -649,7 +671,9 @@ impl SurfaceGroup {
             // honest depth — they stand a metre or ten above the plane — but the
             // ground sheets are biased *forward* to settle their own z-fight, and
             // a grass sheet at 2.0 would otherwise punch through a trunk base.
-            Self::Canopy | Self::Trunk => 12.0,
+            // Street furniture stands on the same plane and wants the same rung —
+            // a bench's legs are exactly the thin thing a biased sheet swallows.
+            Self::Canopy | Self::Trunk | Self::Furniture => 12.0,
         }
     }
 
