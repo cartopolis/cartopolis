@@ -1,7 +1,7 @@
 ---
 topic: tile-raster-cost
-triggers: [vector_tiles.rs, map_geometry.rs, render_mvt, tiny-skia, "rasteris", "rasteriz"]
-updated: 2026-07-26
+triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "map loads slowly"]
+updated: 2026-07-31
 ---
 
 # Vector-tile rasterisation cost
@@ -29,6 +29,44 @@ summed to ~282 ms against a measured 121 ms total, so that attribution was never
 validated. Re-measure by instrumenting the real `render_mvt` before acting on it.
 
 The benchmarks were reverted, not committed — nothing in the tree measures this.
+
+## How wide the pipeline actually runs (measured 2026-07-31)
+
+Bevy's `TaskPoolOptions` defaults cap **both** the io and async-compute pools at
+**4 threads** regardless of core count (`bevy_app/src/task_pool_plugin.rs`), and
+the map streamer lives entirely in those two — `platform::http` is a blocking
+`ureq` call parking an io thread, `platform::workers` forwards every
+rasterisation to `AsyncComputeTaskPool`. On a 22-core workstation the map
+therefore filled 4-wide with 14 cores idle. `main` now overrides the widths
+(io ≈ 30%, async-compute ≈ 45%, `compute` keeps the rest).
+
+Seconds for `MapStream::streaming_busy` to fall, `--shot` over Groningen on
+`dev-bevy` (which leaves `viberfox` itself at opt-level 1 — a release build is
+faster in absolute terms; the ratio is what matters here):
+
+| Case | 4/4 (stock) | io=7, cpu=10 |
+|---|---|---|
+| 3 km, cold cache (277 tiles) | 12.6 s | 7.5 s |
+| street level, cold (424 tiles) | 15.7 s | 9.8 s |
+| street level, **warm** cache | 13.3 s | 4.1 s |
+| street level, warm, frame ms | 33.4 | 29.8 |
+
+**The warm row is the load-bearing one.** A fully populated on-disk cache barely
+helped at 4/4 — 13.3 s against a cold 15.7 s — which says directly that what you
+wait for is scan conversion, not the network, and corroborates the table above
+from the other end. Anyone about to optimise tile *fetching* should read that row
+first.
+
+Two secondary findings from the same run, both against theories that sound right:
+
+* **Uploads are not the limit.** `MAX_UPLOADS_PER_FRAME = 8` allows ~450 tiles/s
+  at these frame rates and the decoded backlog stayed under 8 throughout, i.e.
+  the GPU-upload cap (a device-loss guard) never bound. Leave it alone.
+* **Do not starve Bevy's `compute` pool to feed this.** Pushing async-compute to
+  12 threads left `compute` (the parallel system executor, which runs every frame
+  forever, unlike a one-off fill) just 2 of 22, and *both* numbers got worse:
+  warm street 5.6 s and 34.7 ms/frame, against 4.1 s and 29.8 ms at the balanced
+  split. More rasterisation threads stop paying well before the cores run out.
 
 ## The open question, and what any answer must beat
 

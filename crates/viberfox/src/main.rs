@@ -360,6 +360,48 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     let plugins = plugins.disable::<LogPlugin>();
     let default_plugins = plugins
+        // Bevy's defaults cap **both** the io and async-compute pools at 4 threads
+        // (`bevy_app::TaskPoolOptions`), and the whole map streamer lives in those
+        // two: `platform::http` is a *blocking* `ureq` call that parks an io thread
+        // for a full round trip, and `platform::workers` hands every MVT
+        // rasterisation to `AsyncComputeTaskPool`. Filling the clipmap after a
+        // teleport queues ~400 tiles at ~120 ms of tiny-skia scan conversion each
+        // (`docs/notes/tile-raster-cost.md`) — so on a 22-core workstation the map
+        // filled 4-wide with 14 cores idle, and rasterisation, not the network, was
+        // the thing making you wait.
+        //
+        // Measured 2026-07-31 on a 22-core box, `--shot` over Groningen on
+        // `dev-bevy`, seconds for the streamer to go quiet — 4/4 → these widths
+        // (io=7, cpu=10): 3 km cold 12.6 → 7.5, street cold 15.7 → 9.8, street
+        // **warm** 13.3 → 4.1. That warm row is the tell: a full on-disk cache
+        // barely helped at 4/4, because what you were waiting for was never the
+        // network. Uploads were not the limit either (the decoded backlog stayed
+        // under 8 throughout), which is why widening *this* pool is what moved.
+        //
+        // The io threads block on a socket rather than burning a core, so they can
+        // be oversubscribed; the async-compute ones are genuinely CPU-bound, so the
+        // percentages deliberately leave Bevy's own `compute` pool (its parallel
+        // system executor, which runs every frame forever, unlike a fill) a real
+        // share rather than the two threads a greedier split left it.
+        .set(bevy::app::TaskPoolPlugin {
+            task_pool_options: bevy::app::TaskPoolOptions {
+                io: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: 2,
+                    max_threads: 8,
+                    percent: 0.30,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: 2,
+                    max_threads: 12,
+                    percent: 0.45,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                ..default()
+            },
+        })
         .set(WindowPlugin {
             // No window at all for a scripted run — see the headless block below.
             primary_window: (shot_size.is_none()).then(|| Window {

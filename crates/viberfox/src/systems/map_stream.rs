@@ -307,7 +307,15 @@ pub fn init_map_stream(
         ..default()
     }));
 
-    tracing::info!("map streaming initialized");
+    // The two numbers that set the ceiling on how fast the map can fill, and which
+    // were invisible while both silently sat at Bevy's default of 4 (see the
+    // `TaskPoolPlugin` override in `main`): `io` is how many tile fetches can be in
+    // flight, `cpu` how many can rasterise at once.
+    tracing::info!(
+        io = bevy::tasks::IoTaskPool::get().thread_num(),
+        cpu = crate::platform::workers::worker_count(),
+        "map streaming initialized"
+    );
 }
 
 /// Spawn one ground-tile fetch+decode task (ADR-033 seam): gen-tagged so a
@@ -614,22 +622,26 @@ pub fn update_map_stream(
         } else {
             COARSE_RADIUS
         };
-        // Height is a fixed function of the *zoom*, not the pyramid level: level
-        // indices shift when altitude changes the finest zoom, and cached tiles
-        // keep their spawn height — zoom-keyed heights mean a given tile is
-        // always at the same y, so coarser imagery can never end up on top.
-        let y = -0.03 - 0.4 * base_zoom.saturating_sub(zoom) as f32;
+        let y = level_y(base_zoom, zoom);
         stream
             .quads
             .entry(zoom)
             .or_insert_with(|| meshes.add(Cuboid::new(gs, 0.04, gs)));
+        // Within a level, nearest-first. The fetches are queued in this order and
+        // the pools drain it roughly FIFO, so the ground under the camera is the
+        // first thing to sharpen; row-major from a corner instead put the tile you
+        // are standing on ~40th of 81 at the finest zoom, which is most of a fill
+        // spent watching the periphery resolve.
+        let mut level: Vec<(i64, TileKey)> = Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
         for b in -radius..=radius {
             for a in -radius..=radius {
                 let key = TileKey::new(ctx + a, cty + b, zoom);
                 wanted.insert(key.clone(), y);
-                spawn_order.push(key);
+                level.push((a * a + b * b, key));
             }
         }
+        level.sort_by_key(|(d2, _)| *d2);
+        spawn_order.extend(level.into_iter().map(|(_, key)| key));
     }
 
     // Spawn newly-needed tiles (coarse-first, see spawn_order above).
