@@ -1109,7 +1109,11 @@ pub fn apply_feature_toggles(
     >,
     stream: Res<crate::systems::map_stream::MapStream>,
     mut map: Query<
-        &mut Visibility,
+        (
+            &mut Visibility,
+            Has<crate::systems::map_stream::StreamTileReady>,
+            Has<crate::systems::map_stream::MapBackstop>,
+        ),
         (
             With<crate::systems::map_stream::StreamTile>,
             Without<crate::systems::rendering::RegionMesh>,
@@ -1172,7 +1176,18 @@ pub fn apply_feature_toggles(
     } else {
         Visibility::Hidden
     };
-    for mut vis in map.iter_mut() {
+    // A tile with no imagery yet stays hidden so the coarser clipmap level beneath
+    // it shows through — blurry map, not grey squares (`map_stream::MapBackstop`
+    // has the argument). The coarsest level is exempt: nothing is stacked under it,
+    // so hiding it would open a hole to the sky at the horizon. This has to happen
+    // here rather than in `map_stream`, because this system is the sole visibility
+    // writer for a `StreamTile` and would otherwise un-hide them the next frame.
+    for (mut vis, ready, backstop) in map.iter_mut() {
+        let want = if ready || backstop {
+            want
+        } else {
+            Visibility::Hidden
+        };
         if *vis != want {
             *vis = want;
         }

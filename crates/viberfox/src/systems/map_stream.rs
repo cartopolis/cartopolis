@@ -90,9 +90,31 @@ pub struct StreamTile {
     key: TileKey,
 }
 
-/// Marker: texture applied (or failed) — don't reprocess.
+/// Marker: imagery applied — don't reprocess, and safe to show.
 #[derive(Component)]
 pub struct StreamTileReady;
+
+/// Marker: the fetch attempt budget is spent and this tile will never get imagery.
+///
+/// Kept distinct from [`StreamTileReady`] because the two want opposite treatment
+/// on screen: a textured tile is revealed, a permanently failed one stays hidden so
+/// the coarser level beneath keeps covering that ground. Both stop reprocessing.
+#[derive(Component)]
+pub struct StreamTileFailed;
+
+/// Marker on the **coarsest** clipmap level (`MIN_ZOOM`) — the one level allowed to
+/// show its untextured placeholder.
+///
+/// Every finer tile stays hidden until its imagery lands, so what shows through the
+/// gap is the coarser level already stacked beneath it: the map arrives blurry and
+/// sharpens, instead of arriving as grey squares. That backstop-from-below is what
+/// the pyramid was built for, and an opaque placeholder quad was defeating it — the
+/// finer tile spawned *on top* of the coarse imagery it was supposed to be refining.
+/// `MIN_ZOOM` has nothing beneath it, so it keeps a visible placeholder or the
+/// horizon would be a hole; it is painted the basemap's own paper colour, which
+/// reads as unsurveyed ground rather than as a slab of concrete.
+#[derive(Component)]
+pub struct MapBackstop;
 
 /// A tile decoded and mipmapped **off the main thread** by a fetch worker. Holds
 /// the full packed mip chain ready for a cheap `Image` assembly + GPU upload on
@@ -123,10 +145,12 @@ pub struct MapStream {
     loaded: HashMap<TileKey, Entity>,
     /// Tiles with a fetch **in flight** (job sent, result not yet applied). Purely
     /// an in-flight guard so a pending tile isn't re-queued every frame — a tile is
-    /// dropped from here when it's retired, because the texture dies with the
-    /// entity and a re-entering tile must fetch again (the on-disk cache makes that
-    /// cheap). Treating it as a permanent "ever requested" set left every
-    /// re-streamed tile grey forever.
+    /// dropped from here when its result is consumed, and when it's retired, because
+    /// the texture dies with the entity and a re-entering tile must fetch again (the
+    /// on-disk cache makes that cheap). Treating it as a permanent "ever requested"
+    /// set left every re-streamed tile grey forever — and it also pinned
+    /// [`MapStream::streaming_busy`] true for the whole session, so every `--shot`
+    /// sat out its full `--wait` instead of capturing once the map went quiet.
     requested: HashSet<TileKey>,
     /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
     failed: HashMap<TileKey, (u32, Instant)>,
@@ -164,7 +188,7 @@ impl MapStream {
     /// Are tiles still being fetched or retired? Used by the `--shot` harness to
     /// capture as soon as the view has settled instead of on a fixed timer.
     pub fn streaming_busy(&self) -> bool {
-        !self.requested.is_empty() || !self.despawn_queue.is_empty()
+        !self.requested.is_empty() || !self.failed.is_empty() || !self.despawn_queue.is_empty()
     }
 
     /// Request a re-anchor to a new (lat, lng); applied by `apply_reanchor`, which
@@ -266,8 +290,16 @@ pub fn init_map_stream(
     stream
         .gen_shared
         .store(stream.anchor_generation, Ordering::Relaxed);
+    // The basemap's own background tone, not a neutral grey: only the coarsest ring
+    // ever shows this (see `MapBackstop`), and there it should read as blank paper
+    // continuous with the tiles around it.
+    const PAPER: u32 = crate::systems::vector_tiles::palette::PAPER;
     stream.placeholder = Some(materials.add(StandardMaterial {
-        base_color: Color::srgb(0.6, 0.6, 0.6),
+        base_color: Color::srgb(
+            ((PAPER >> 16) & 0xFF) as f32 / 255.0,
+            ((PAPER >> 8) & 0xFF) as f32 / 255.0,
+            (PAPER & 0xFF) as f32 / 255.0,
+        ),
         // Fully matte: default reflectance puts a grazing-angle Fresnel sheen on
         // distant ground, bleaching the far map toward white.
         perceptual_roughness: 1.0,
@@ -468,20 +500,29 @@ pub fn update_map_stream(
         let world = Vec3::new(wx, y, wz);
         let (tile_cell, local) =
             Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD).translation_to_grid(world.as_dvec3());
-        let entity = commands
-            .spawn((
-                Mesh3d(quad.clone()),
-                MeshMaterial3d(placeholder.clone()),
-                Transform::from_translation(local),
-                tile_cell,
-                ChildOf(root),
-                // Flat tiles + big_space rebasing confuse frustum culling; opt out.
-                NoFrustumCulling,
-                StreamTile { key: key.clone() },
-                // Hidden from orbit alongside the ground disc (ADR-025).
-                crate::systems::globe::HideInSpace,
-            ))
-            .id();
+        let backstop = key.z == MIN_ZOOM;
+        let mut tile = commands.spawn((
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(placeholder.clone()),
+            Transform::from_translation(local),
+            tile_cell,
+            ChildOf(root),
+            // Flat tiles + big_space rebasing confuse frustum culling; opt out.
+            NoFrustumCulling,
+            StreamTile { key: key.clone() },
+            // Hidden from orbit alongside the ground disc (ADR-025).
+            crate::systems::globe::HideInSpace,
+            // Untextured tiles start hidden so the coarser level shows through
+            // (see `MapBackstop`). `data_layers::apply_feature_toggles` is the sole
+            // visibility writer for a `StreamTile` and keeps them that way until
+            // `StreamTileReady` lands — this only avoids a one-frame grey flash
+            // before that system next runs.
+            if backstop { Visibility::Inherited } else { Visibility::Hidden },
+        ));
+        if backstop {
+            tile.insert(MapBackstop);
+        }
+        let entity = tile.id();
         stream.loaded.insert(key.clone(), entity);
         if stream.requested.insert(key.clone()) {
             spawn_map_tile(
@@ -517,6 +558,10 @@ pub fn update_map_stream(
         if let Some((_, last)) = stream.failed.get_mut(&key) {
             *last = now;
         }
+        // A retry is a fetch in flight like any other, so it goes back into
+        // `requested` — that is what `apply_stream_textures` matches its arriving
+        // result against before keeping it.
+        stream.requested.insert(key.clone());
         spawn_map_tile(
             key,
             gen,
@@ -556,7 +601,7 @@ pub fn apply_stream_textures(
     mut stream: ResMut<MapStream>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    tiles: Query<(Entity, &StreamTile), Without<StreamTileReady>>,
+    tiles: Query<(Entity, &StreamTile), (Without<StreamTileReady>, Without<StreamTileFailed>)>,
     time: Res<Time>,
     mut next_report: Local<f64>,
 ) {
@@ -584,11 +629,21 @@ pub fn apply_stream_textures(
             "tile fill"
         );
     }
-    // Drop results for tiles that were retired before their fetch landed. Nobody
-    // will ever consume them (the entity is gone) and they hold a full decoded mip
-    // chain each, so roaming would grow this map without bound. A tile re-entering
-    // range re-queues its own fetch, so nothing is lost.
-    results.retain(|key, _| stream.loaded.contains_key(key));
+    // Drop results nobody will ever consume — they hold a full decoded mip chain
+    // each (~1.4 MB at 512², mips included), so a leak here grows without bound as
+    // you roam. Two ways to become unconsumable, and the second was leaking:
+    //
+    // * the tile was **retired** before its fetch landed (entity gone). A tile
+    //   re-entering range re-queues its own fetch, so nothing is lost.
+    // * a **second** fetch for a still-loaded tile landed after the first one had
+    //   already textured it. Two can be in flight at once — a retry racing the
+    //   attempt it gave up on, or a pre-re-anchor task for a key the new anchor
+    //   wants too — and the loser's mip chain then sat in this map forever. A
+    //   settled cold start was holding ~150 of these.
+    //
+    // `requested` is exactly "a fetch is in flight whose result is still wanted",
+    // which answers both.
+    results.retain(|key, _| stream.loaded.contains_key(key) && stream.requested.contains(key));
 
     // Cap texture finalizations per frame: a fast pan can land dozens of decoded
     // tiles at once, and uploading them all in one frame hitches. The rest keep
@@ -604,11 +659,15 @@ pub fn apply_stream_textures(
         let Some(outcome) = results.remove(&tile.key) else {
             continue;
         };
+        // The fetch is no longer in flight. `failed` takes over the bookkeeping for
+        // anything the retry pump still owes, so `streaming_busy` stays honest —
+        // this is what lets it fall to false at all, and with it `--settle`.
+        stream.requested.remove(&tile.key);
         match outcome {
             None => {
                 // Fetch/decode failed. Record the failure so the retry pump in
                 // update_map_stream can re-queue it; only after the attempt budget
-                // is spent does the placeholder become final.
+                // is spent do we give up and leave the coarser level showing.
                 let attempts = {
                     let entry = stream
                         .failed
@@ -620,7 +679,7 @@ pub fn apply_stream_textures(
                 };
                 if attempts >= MAX_FETCH_ATTEMPTS {
                     stream.failed.remove(&tile.key);
-                    commands.entity(entity).insert(StreamTileReady);
+                    commands.entity(entity).insert(StreamTileFailed);
                 }
             }
             Some(decoded) => {
