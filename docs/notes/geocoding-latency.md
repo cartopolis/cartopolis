@@ -1,7 +1,7 @@
 ---
 topic: geocoding
 triggers: [geo_nav.rs, nominatim, platform/http.rs, "search bar", "slow lookup"]
-updated: 2026-07-30
+updated: 2026-07-31
 ---
 
 # Why a Nominatim lookup is slow, and where the time actually goes
@@ -51,14 +51,33 @@ fast disk — it has to be a bind mount.
 
 ## The client's own budget
 
-`geo_nav.rs` adds 120 ms of debounce plus a 150 ms floor between requests, and
-holds **one request in flight** — so a single slow reply stalls every later
-keystroke behind it. That is deliberate and small next to the server.
+Once the server was fixed the client became the larger half of its own latency.
+Warm is ~70 ms end to end, of which **~50 ms is Nominatim's Python frontend, not
+the database** — that is the floor, and no amount of Postgres tuning moves it.
+Against that, `geo_nav.rs` was spending 120 ms of debounce plus up to 150 ms of
+rate-limit floor. Now 60 ms and 40 ms; the public-API branch keeps its 1 s,
+which is policy rather than tuning.
+
+Two structural things mattered more than the constants:
+
+- **One request in flight** meant a slow reply for `Gron` delayed even *sending*
+  the request for `Groningen`. Up to `MAX_IN_FLIGHT` = 3 now overlap. This was
+  always safe — replies carry the query that produced them and stale ones are
+  dropped — so the slot became a queue, since whichever finishes first must not
+  clobber an unread answer.
+- **A 64-entry per-session cache** keyed by query. A hit waits for neither the
+  debounce nor the rate limit: both exist to protect the *endpoint*, and a hit
+  does not touch it. Errors are not cached, so a retry after the network returns
+  actually retries.
 
 What was *not* deliberate: `ureq::get()` builds a fresh `Agent`, and therefore an
 empty connection pool, on every call. Each lookup paid a full TCP + TLS handshake —
 `conn=0.041 tls=0.094 ttfb=0.162` against `nominatim.garage44.eu`, i.e. **~90 ms of
 a ~160 ms request**. `platform::http` now holds one process-wide pooled agent.
+Verified with a standalone `ureq` 2.12 binary using the same `AgentBuilder`: five
+rapid requests then five spaced by up to 125 s idle, all reusing the connection
+(`conn=0.000 tls=0.000`), none failing. A pooled agent going stale over an idle
+gap was the obvious suspect when search briefly broke; it is not what happens.
 
 Unrelated to speed, and worth knowing before "the search is broken" gets filed:
 Nominatim does no prefix matching to speak of. `Gron` and `Groning` return `[]`;
