@@ -7,11 +7,13 @@
 //! the current camera mode; bookmark jumps and the last-location restore
 //! (`user_store`) go through the same [`GeoNavState::pending_teleport`] path.
 //!
-//! Requests are debounced behind a short typing pause, serialized (one in
-//! flight), rate-limited to the endpoint's policy — near-live against the
-//! self-hosted instance, ≥1 s against the public API
-//! (https://operations.osmfoundation.org/policies/nominatim/) — and sent with an
-//! identifying User-Agent.
+//! Requests are debounced behind a short typing pause, answered from a small
+//! per-session cache when we have asked before, and otherwise sent with up to
+//! [`MAX_IN_FLIGHT`] outstanding so a slow reply never holds up the query the
+//! user is actually typing. They stay rate-limited to the endpoint's policy —
+//! near-live against the self-hosted instance, ≥1 s against the public API
+//! (https://operations.osmfoundation.org/policies/nominatim/) — and are sent
+//! with an identifying User-Agent.
 
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -45,7 +47,13 @@ pub(crate) fn nominatim_base_url() -> String {
         .to_string()
 }
 /// Typing pause before a query is sent — short so suggestions feel near-live.
-const DEBOUNCE: Duration = Duration::from_millis(120);
+///
+/// Measured 2026-07-31, warm, against the self-hosted instance: ~70 ms end to end
+/// (~5–100 ms server, the rest network). At the old 120 ms this pause was the
+/// single largest term in the budget — the client was slower than the round trip
+/// it was pacing. One frame either way is imperceptible; a fifth of a second is
+/// not. See `docs/notes/geocoding-latency.md`.
+const DEBOUNCE: Duration = Duration::from_millis(60);
 /// Minimum spacing between requests. The self-hosted instance has no rate policy
 /// (near-live); the public API allows at most one request per second, so stay
 /// polite when `VIBE_NOMINATIM_URL` points back at `nominatim.openstreetmap.org`.
@@ -53,9 +61,23 @@ static MIN_REQUEST_INTERVAL: LazyLock<Duration> = LazyLock::new(|| {
     if nominatim_base_url().contains("openstreetmap.org") {
         Duration::from_secs(1)
     } else {
-        Duration::from_millis(150)
+        Duration::from_millis(40)
     }
 });
+/// How many lookups may be outstanding at once.
+///
+/// This used to be 1, which made a single slow reply stall *every* later
+/// keystroke: the reply for "Gron" had to land before "Groningen" could even be
+/// sent, so one cold query (seconds, before the server move) added its whole
+/// latency to the next query the user actually cared about. Replies are already
+/// tagged with the query that produced them and stale ones are dropped, so
+/// letting a newer query overtake an older one is free — the cap only exists so
+/// a burst of keystrokes cannot open an unbounded number of sockets.
+const MAX_IN_FLIGHT: u32 = 3;
+/// Remembered lookups, newest last. Small and linearly scanned — retyping or
+/// backspacing through a query costs nothing at all, which is the case the
+/// debounce cannot help with.
+const CACHE_CAP: usize = 64;
 const MIN_QUERY_LEN: usize = 2;
 const MAX_SUGGESTIONS: usize = 8;
 /// Avatar rest height after a teleport. The humanoid models are authored
@@ -90,12 +112,15 @@ pub struct GeoNavState {
     last_edit: Option<Instant>,
     last_sent: String,
     last_sent_at: Option<Instant>,
-    in_flight: bool,
+    /// Lookups currently outstanding (see [`MAX_IN_FLIGHT`]).
+    in_flight: u32,
+    /// Query → its answer, newest last, capped at [`CACHE_CAP`].
+    cache: Vec<(String, Vec<GeoSuggestion>)>,
     /// Enter was pressed before results arrived: jump to the top hit when they do.
     teleport_on_result: bool,
     /// Enter re-submits a query even if it equals the last sent one.
     force_search: bool,
-    results: Arc<Mutex<Option<GeocodeReply>>>,
+    results: Arc<Mutex<Vec<GeocodeReply>>>,
     /// Target picked from a suggestion, pasted coordinates, a bookmark, or the
     /// startup restore. Consumed by `apply_teleport` (kept until the world
     /// anchor exists).
@@ -118,6 +143,44 @@ pub struct GeoNavState {
 }
 
 impl GeoNavState {
+    /// A previously fetched answer for `query`, if we still hold one.
+    fn cached(&self, query: &str) -> Option<Vec<GeoSuggestion>> {
+        self.cache
+            .iter()
+            .find(|(q, _)| q == query)
+            .map(|(_, list)| list.clone())
+    }
+
+    /// Remember an answer, evicting the oldest once [`CACHE_CAP`] is reached.
+    /// Re-inserting an existing query moves it to the newest end.
+    fn remember(&mut self, query: String, list: &[GeoSuggestion]) {
+        self.cache.retain(|(q, _)| *q != query);
+        self.cache.push((query, list.to_vec()));
+        if self.cache.len() > CACHE_CAP {
+            self.cache.remove(0);
+        }
+    }
+
+    /// Put an answer on screen — shared by a network reply and a cache hit, so
+    /// the two are indistinguishable to the user (including an Enter pressed
+    /// before the results landed).
+    fn apply_suggestions(&mut self, list: Vec<GeoSuggestion>) {
+        self.error = list.is_empty().then(|| "No results".to_string());
+        if self.teleport_on_result {
+            self.teleport_on_result = false;
+            if let Some(first) = list.first() {
+                self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+                self.query = first.label.clone();
+                self.show_suggestions = false;
+            } else {
+                self.show_suggestions = true;
+            }
+        } else {
+            self.show_suggestions = true;
+        }
+        self.suggestions = list;
+    }
+
     /// Record a visited destination, browser-style: drop any forward history,
     /// then append (skipping an exact duplicate of the current spot).
     fn record_visit(&mut self, entry: NavEntry) {
@@ -315,10 +378,11 @@ impl Default for GeoNavState {
             last_edit: None,
             last_sent: String::new(),
             last_sent_at: None,
-            in_flight: false,
+            in_flight: 0,
+            cache: Vec::new(),
             teleport_on_result: false,
             force_search: false,
-            results: Arc::new(Mutex::new(None)),
+            results: Arc::new(Mutex::new(Vec::new())),
             pending_teleport: None,
             history: Vec::new(),
             history_pos: 0,
@@ -524,10 +588,11 @@ pub(crate) fn percent_encode(s: &str) -> String {
     out
 }
 
-fn spawn_geocode(query: String, results: Arc<Mutex<Option<GeocodeReply>>>) {
+fn spawn_geocode(query: String, results: Arc<Mutex<Vec<GeocodeReply>>>) {
     // Detached fetch on the IoTaskPool (ADR-033 seam): no OS thread, so it works
-    // on the wasm build too. The `results` slot + `drive_geocode`'s drain are
-    // unchanged; only the fetch mechanism moved.
+    // on the wasm build too. A queue rather than a single slot, because several
+    // lookups may now be outstanding (see `MAX_IN_FLIGHT`) and the one that
+    // finishes first must not overwrite an answer `drive_geocode` has not read.
     IoTaskPool::get()
         .spawn(async move {
             let url = format!(
@@ -541,7 +606,7 @@ fn spawn_geocode(query: String, results: Arc<Mutex<Option<GeocodeReply>>>) {
                 tracing::warn!(query = %query, error = %e, "geocoding lookup failed");
             }
             if let Ok(mut guard) = results.lock() {
-                *guard = Some(GeocodeReply { query, result });
+                guard.push(GeocodeReply { query, result });
             }
         })
         .detach();
@@ -566,36 +631,34 @@ async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
 
 /// Poll finished lookups into the UI state and send the debounced next query.
 pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
-    // Harvest a finished lookup (drop it silently if the query has moved on —
-    // the debounce below will send the newer one).
-    let reply = nav.results.lock().ok().and_then(|mut g| g.take());
-    if let Some(reply) = reply {
-        nav.in_flight = false;
-        if reply.query == nav.query.trim() {
-            match reply.result {
-                Ok(list) => {
-                    nav.error = list.is_empty().then(|| "No results".to_string());
-                    if nav.teleport_on_result {
-                        nav.teleport_on_result = false;
-                        if let Some(first) = list.first() {
-                            nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
-                            nav.query = first.label.clone();
-                            nav.show_suggestions = false;
-                        } else {
-                            nav.show_suggestions = true;
-                        }
-                    } else {
-                        nav.show_suggestions = true;
-                    }
-                    nav.suggestions = list;
-                }
-                Err(e) => {
-                    nav.suggestions.clear();
-                    nav.error = Some(format!("Search failed: {e}"));
-                    nav.show_suggestions = true;
-                    nav.teleport_on_result = false;
+    // Harvest every finished lookup. Each is cached under the query it answered
+    // (so retyping never asks twice), but only the one matching what is in the
+    // field right now reaches the UI — the others are replies the user has
+    // already typed past.
+    let replies: Vec<GeocodeReply> = nav
+        .results
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default();
+    for reply in replies {
+        nav.in_flight = nav.in_flight.saturating_sub(1);
+        let current = reply.query == nav.query.trim();
+        match reply.result {
+            Ok(list) => {
+                nav.remember(reply.query, &list);
+                if current {
+                    nav.apply_suggestions(list);
                 }
             }
+            // Failures are not cached: a retry after the network comes back
+            // should actually retry.
+            Err(e) if current => {
+                nav.suggestions.clear();
+                nav.error = Some(format!("Search failed: {e}"));
+                nav.show_suggestions = true;
+                nav.teleport_on_result = false;
+            }
+            Err(_) => {}
         }
     }
 
@@ -607,14 +670,27 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
         .last_sent_at
         .is_some_and(|t| t.elapsed() < *MIN_REQUEST_INTERVAL);
     let fresh = query != nav.last_sent || nav.force_search;
-    if !nav.in_flight
-        && !throttled
-        && (debounced || nav.force_search)
-        && fresh
-        && query.len() >= MIN_QUERY_LEN
-        && parse_location(&query).is_none()
-    {
-        nav.in_flight = true;
+    let eligible =
+        fresh && query.len() >= MIN_QUERY_LEN && parse_location(&query).is_none();
+
+    // A query we have already answered costs nothing, so it does not wait for
+    // anything: not the debounce (which exists only to avoid firing a request
+    // per keystroke) and not the rate limit (which exists only to be polite to
+    // the endpoint). Backspacing through a query, or retyping one, updates on
+    // the very next frame.
+    if eligible {
+        if let Some(list) = nav.cached(&query) {
+            nav.force_search = false;
+            nav.last_edit = None;
+            nav.last_sent = query;
+            nav.apply_suggestions(list);
+            return;
+        }
+    }
+
+    let wanted = eligible && (debounced || nav.force_search);
+    if wanted && !throttled && nav.in_flight < MAX_IN_FLIGHT {
+        nav.in_flight += 1;
         nav.force_search = false;
         nav.last_edit = None;
         nav.last_sent = query.clone();
@@ -641,7 +717,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState) {
     }
     // Report focus so the auto-hiding top bar stays up while the user types.
     nav.search_has_focus = field.has_focus();
-    if nav.in_flight {
+    if nav.in_flight > 0 {
         ui.spinner();
     }
 
@@ -990,6 +1066,64 @@ mod tests {
     use crate::systems::globe::{sub_point, GlobeState};
 
     const ANCHOR: (f64, f64, u32) = (53.2194, 6.5665, 16);
+
+    fn suggestion(label: &str) -> GeoSuggestion {
+        GeoSuggestion { label: label.into(), lat: 53.0, lng: 6.0 }
+    }
+
+    #[test]
+    fn cache_answers_a_repeated_query_without_a_lookup() {
+        let mut nav = GeoNavState::default();
+        assert!(nav.cached("Groningen").is_none());
+
+        nav.remember("Groningen".into(), &[suggestion("Groningen, Nederland")]);
+        let hit = nav.cached("Groningen").expect("just remembered");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].label, "Groningen, Nederland");
+
+        // Backspacing to a prefix we asked about earlier is a hit too — that is
+        // the case the debounce cannot help with.
+        nav.remember("Groninge".into(), &[suggestion("Groningen, Nederland")]);
+        assert!(nav.cached("Groninge").is_some());
+        // An empty answer is still an answer; re-asking would just return [].
+        nav.remember("Gron".into(), &[]);
+        assert_eq!(nav.cached("Gron").map(|l| l.len()), Some(0));
+    }
+
+    #[test]
+    fn cache_evicts_oldest_first_and_refreshes_on_reuse() {
+        let mut nav = GeoNavState::default();
+        for i in 0..CACHE_CAP {
+            nav.remember(format!("q{i}"), &[suggestion("x")]);
+        }
+        assert_eq!(nav.cache.len(), CACHE_CAP);
+
+        // Touching the oldest entry moves it to the newest end, so the *next*
+        // eviction takes q1 rather than the entry we just used.
+        assert!(nav.cached("q0").is_some());
+        nav.remember("q0".into(), &[suggestion("x")]);
+        nav.remember("fresh".into(), &[suggestion("x")]);
+
+        assert_eq!(nav.cache.len(), CACHE_CAP);
+        assert!(nav.cached("q0").is_some(), "reused entry must survive");
+        assert!(nav.cached("q1").is_none(), "oldest must be evicted");
+        assert!(nav.cached("fresh").is_some());
+    }
+
+    #[test]
+    fn a_cache_hit_teleports_just_like_a_reply() {
+        // Enter pressed before the results landed, then an answer we already
+        // hold: the jump must still happen, or Enter would silently do nothing
+        // on exactly the queries we serve fastest.
+        let mut nav = GeoNavState::default();
+        nav.teleport_on_result = true;
+        nav.apply_suggestions(vec![suggestion("Groningen, Nederland")]);
+
+        assert!(!nav.teleport_on_result, "flag must be consumed");
+        assert!(nav.pending_teleport.is_some(), "cache hit must still jump");
+        assert!(!nav.show_suggestions);
+        assert_eq!(nav.query, "Groningen, Nederland");
+    }
 
     /// A globe built around [`ANCHOR`], the way `setup_globe` leaves it: Earth's
     /// centre one radius below the local ground.
