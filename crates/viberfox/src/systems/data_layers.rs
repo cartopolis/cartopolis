@@ -324,6 +324,10 @@ pub struct DataLayers {
     /// Feature toggle (under Map): the animated water surface shader (waves, foam,
     /// chop). Off = calm flat water (`water::update_water_waves`).
     pub water_shading: bool,
+    /// Feature toggle (under Map): street names written over their streets
+    /// (`systems::street_labels`). Screen-space text, so this gates the drawing
+    /// only — the names are parsed with the cell either way, off the frame loop.
+    pub street_labels: bool,
     /// Feature toggle: the **height layer** (`systems::height`) — measured ground
     /// and surface elevation from PDOK's AHN. Its own source rather than a Map
     /// sub-toggle, like Buildings: it answers only over the Netherlands, and off
@@ -383,6 +387,7 @@ impl DataLayers {
             trees,
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
+            street_labels: self.street_labels,
             height: self.height_enabled,
             vehicles,
             overlays: LAYER_DEFS
@@ -408,6 +413,7 @@ impl DataLayers {
         self.trees_enabled = p.trees;
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
+        self.street_labels = p.street_labels;
         self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
@@ -444,9 +450,11 @@ impl Default for DataLayers {
             trees_enabled: true,
             roads_textured: true,
             water_shading: true,
+            street_labels: true,
             // Off by default: it reaches a third party's service and only
             // answers over the Netherlands, so opting in is the honest default.
             height_enabled: false,
+            terrain_revision: 0,
             popup: None,
             anchor: None,
             synced_gen: 0,
@@ -1381,6 +1389,10 @@ pub fn render_data_layers_panel(
                 crate::systems::theme::checkbox(ui,
                     &mut dl.water_shading,
                     egui::RichText::new("Water shading").size(13.0),
+                );
+                crate::systems::theme::checkbox(ui,
+                    &mut dl.street_labels,
+                    egui::RichText::new("Street labels").size(13.0),
                 );
             });
             ui.add_space(4.0);

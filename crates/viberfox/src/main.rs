@@ -530,6 +530,9 @@ fn main() {
     .insert_resource(systems::user_store::UserStore::load())
     .init_resource::<systems::map_stream::MapStream>()
     .init_resource::<systems::map_geometry::MapSurfaces>()
+    // Filled by the same streamer, cell for cell (`systems::street_labels`).
+    .init_resource::<systems::street_labels::StreetLabelStore>()
+    .init_resource::<systems::street_labels::StreetLabelSigns>()
     // Must come after the `WaterMaterial` plugin above: it mints the shared
     // handle out of `Assets<WaterMaterial>`.
     .init_resource::<systems::water::WaterSeaState>()
@@ -963,6 +966,15 @@ fn main() {
             systems::place_pins::render_place_pins
                 .after(systems::navigation::render_route_panel)
                 .after(systems::chat::render_chat_panel)
+                // Tail of the panel chain — the avatar chooser is a root-`Ui`
+                // panel too, and a pin placed before it took its width sees a map
+                // area that still includes it.
+                .after(systems::ui::render_avatar_chooser)
+                .after(systems::free_camera::camera_controls),
+            // Street names, laid on the streets themselves. World geometry, not
+            // an overlay — after the camera so a turn that flips the letters is
+            // acted on in the frame it happened.
+            systems::street_labels::update_street_labels
                 .after(systems::free_camera::camera_controls),
         ),
     )

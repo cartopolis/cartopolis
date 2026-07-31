@@ -86,14 +86,16 @@ type Cell = (i64, i64);
 const SURFACE_MAX_IN_FLIGHT: usize = 8;
 
 /// A finished tessellation (`None` = fetch or tessellation failed), the cell's
-/// distance-to-shore field when it holds any water (`systems::water`), and its
+/// distance-to-shore field when it holds any water (`systems::water`), its
 /// bridge decks — which are handed over *unmerged*, because each one still has to
-/// be told how high it stands (see [`resolve_bridge_decks`]).
+/// be told how high it stands (see [`resolve_bridge_decks`]) — and the street
+/// centre lines its names will be written along (`systems::street_labels`).
 type Tessellated = (
     Cell,
     Option<Vec<SurfaceMesh>>,
     Option<ShoreField>,
     Vec<BridgeDeck>,
+    Vec<StreetLabelLine>,
 );
 
 /// Deck slab thickness in metres: the fascia band extruded down from the surface,
@@ -200,6 +202,7 @@ fn spawn_geometry_task(
             crate::platform::workers::submit(Box::new(move || {
                 let mut shore = None;
                 let mut decks = Vec::new();
+                let mut labels = Vec::new();
                 let outcome = match fetched {
                     Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
                         Ok(mut meshes) => {
@@ -235,6 +238,16 @@ fn spawn_geometry_task(
                                     tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");
                                 }
                             }
+                            // Street names ride the same fetch too: they are read
+                            // from a layer of the very same tile, and parsing them
+                            // here means the label renderer never touches an MVT
+                            // body on the frame loop (`systems::street_labels`).
+                            match vector_tiles::extract_street_labels(&bytes, tile_m) {
+                                Ok(l) => labels = l,
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
+                                }
+                            }
                             // The water meshes carry no notion of where the bank
                             // is (earcut only ever emits boundary vertices), so
                             // the shader gets it as a rasterised distance field —
@@ -260,7 +273,7 @@ fn spawn_geometry_task(
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, outcome, shore, decks));
+                    g.push((cell, outcome, shore, decks, labels));
                 }
             }));
         })
@@ -325,6 +338,7 @@ pub fn update_map_surfaces(
         // Raster source (OSM PNG, or satellite imagery): nothing to tessellate.
         if !surfaces.loaded.is_empty() {
             surfaces.clear();
+            labels.clear();
         }
         return;
     }
@@ -386,6 +400,7 @@ pub fn update_map_surfaces(
             surfaces.despawn_queue.extend(entities);
         }
         surfaces.requested.remove(&c);
+        labels.remove_cell(&c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -413,7 +428,7 @@ pub fn update_map_surfaces(
     };
     // Each drained result is one finished task — free its concurrency slot.
     surfaces.in_flight = surfaces.in_flight.saturating_sub(ready.len());
-    for (c, outcome, shore, decks) in ready {
+    for (c, outcome, shore, decks, street_names) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.requested.remove(&c);
@@ -429,6 +444,11 @@ pub fn update_map_surfaces(
         // tile-local coordinates are relative to.
         let wx = ((c.0 as f64 - fcx) * f64::from(tile_m)) as f32;
         let wz = ((c.1 as f64 - fcy) * f64::from(tile_m)) as f32;
+
+        // The street names go in at the same origin as the meshes, and come back
+        // out with them below — a label whose cell has been retired points at a
+        // road that is no longer drawn.
+        labels.insert_cell(c, wx, wz, street_names);
 
         // One water material per cell — it carries that cell's shore field, so it
         // cannot be shared the way the flat-colour group materials are. Built once

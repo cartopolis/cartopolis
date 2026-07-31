@@ -88,6 +88,11 @@ pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0x1F, 0x
 /// [`OVERLAY`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
 pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x07, 0x1A, 0x20, 235);
+/// Halo behind map text that has no chip to sit on — the street names
+/// (`systems::street_labels`), which are painted *along* their street and would
+/// black it out under a chip. Near-white and only mostly opaque: it has to lift
+/// [`INK`] off tarmac, grass and water without reading as a second word.
+pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xF6, 0xF4, 0xF0, 205);
 
 // ─── Fonts ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +100,11 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x07, 0x1A
 /// than loaded as an asset because the splash draws on frame one, before any
 /// asset pipeline has run — and on the web that would be an HTTP round trip.
 /// egui reads TTF/OTF, not woff2.
-const BRAND_TTF: &[u8] = include_bytes!("../../../../assets/fonts/PlusJakartaSans-SemiBold.ttf");
+/// Also the face the street names on the map are rasterised in
+/// (`systems::street_labels`): a semibold reads at the size a road marking gets,
+/// where egui's light body face breaks up.
+pub const BRAND_TTF: &[u8] =
+    include_bytes!("../../../../assets/fonts/PlusJakartaSans-SemiBold.ttf");
 const BRAND_FAMILY: &str = "viberfox-brand";
 
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a

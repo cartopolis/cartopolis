@@ -64,6 +64,11 @@ pub struct LayerPrefs {
     pub trees: bool,
     pub roads_textured: bool,
     pub water_shading: bool,
+    /// Street names over the map (`systems::street_labels`). Defaulted so a file
+    /// written before the layer existed still parses — and it defaults to *on*,
+    /// which is what `DataLayers::default` gives a fresh install.
+    #[serde(default = "yes")]
+    pub street_labels: bool,
     pub vehicles: bool,
     /// The height layer (`systems::height`). Defaulted, so a file written before it
     /// existed still parses — and defaults to *off*, because it is a request to a
@@ -100,6 +105,12 @@ pub struct AvatarAppearance {
 
 fn default_style() -> String {
     "Casual".to_string()
+}
+
+/// `#[serde(default)]` for a `bool` that should come back **on** when the file
+/// predates it.
+fn yes() -> bool {
+    true
 }
 
 impl Default for AvatarAppearance {

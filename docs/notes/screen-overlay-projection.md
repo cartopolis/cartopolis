@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [world_to_viewport, GlobalTransform, place_pins.rs, gizmo.rs, data_layers.rs, "overlay wobble", "pin jitter"]
-updated: 2026-07-30
+triggers: [world_to_viewport, GlobalTransform, place_pins.rs, street_labels.rs, gizmo.rs, data_layers.rs, "overlay wobble", "pin jitter"]
+updated: 2026-07-31
 ---
 
 # Projecting world points to the screen from `Update`
@@ -54,3 +54,7 @@ click handlers correctly leave a click on the overlay alone) but **paint from th
 exact projected position**, not from the rect the `Area` allocated. The rounded rect
 still senses the click; half a pixel between the hit area and the drawn shape is not
 something a pointer can resolve.
+
+Both problems are avoided outright by anything that can be world geometry instead:
+the street names went that way (`docs/notes/map-labels.md`) and neither the stale
+basis nor the pixel rounding applies to them, because nothing projects them.
