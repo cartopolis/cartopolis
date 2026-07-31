@@ -49,6 +49,38 @@ pub struct UserData {
     /// existed — startup then keeps the defaults.
     #[serde(default)]
     pub layers: Option<LayerPrefs>,
+    /// The HUD's sky controls: how the day/night clock is driven and whether the
+    /// weather is live. `None` on files from before the field existed.
+    #[serde(default)]
+    pub sky: Option<SkyPrefs>,
+}
+
+/// Snapshot of the sky switchers in the HUD — the sun's Auto/☀/🌙 (plus the dev
+/// panel's `Manual`) and the weather's Auto/Manual — with the manual knobs they
+/// leave the user in charge of.
+///
+/// Two of the fields are deliberately conditional, because saving them
+/// unconditionally would either churn the file or restore a state the user never
+/// chose:
+/// - `time_of_day` is `None` unless the sun is in `Manual`. Every other mode
+///   *derives* the clock from the real time each frame, so persisting it would
+///   rewrite `user.json` on every autosave tick and restore a stale hour that the
+///   next `apply_sun_mode` immediately overwrites anyway.
+/// - the weather knobs are only authoritative while live weather is off; with it
+///   on they are the last met.no sample, which is worth restoring as a starting
+///   point (the next fetch replaces it within a frame or two of the anchor
+///   settling).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SkyPrefs {
+    pub sun_mode: crate::resources::SunMode,
+    /// The clock in hours, 0–24. `Some` only in [`SunMode::Manual`].
+    #[serde(default)]
+    pub time_of_day: Option<f32>,
+    /// Live met.no weather drives cloud/fog/rain (the HUD's weather "Auto").
+    pub weather_live: bool,
+    pub fog_density: f32,
+    pub cloud_cover: f32,
+    pub precipitation: f32,
 }
 
 /// Snapshot of the Layers panel's toggles (see [`crate::systems::data_layers::
@@ -481,6 +513,60 @@ pub fn restore_layer_prefs(
     }
 }
 
+/// Which sky knobs this run's command line pinned. A flag is an explicit
+/// instruction for *this* launch and must survive the restore — `--time 6`
+/// asks for dawn, not for whatever the last session left behind. (Scripted
+/// captures never reach the restore at all; this is for an interactive run
+/// launched with a flag.)
+#[derive(Resource, Default)]
+pub struct SkyCliOverrides {
+    pub time: bool,
+    pub fog: bool,
+    pub clouds: bool,
+    pub rain: bool,
+    pub weather_live: bool,
+}
+
+/// Startup restore of the sun mode and the weather mode, once — the same shape
+/// as [`restore_layer_prefs`] and for the same reason: the sky is a setting the
+/// user chose, not a thing to re-pick every launch.
+pub fn restore_sky_prefs(
+    mut done: Local<bool>,
+    store: Res<UserStore>,
+    cli: Res<SkyCliOverrides>,
+    mut dev: ResMut<crate::resources::DevPanelState>,
+    mut weather: ResMut<crate::systems::weather::WeatherState>,
+) {
+    if *done {
+        return;
+    }
+    *done = true;
+    let Some(p) = &store.data.sky else {
+        return;
+    };
+
+    if !cli.time {
+        dev.sun_mode = p.sun_mode;
+        // Only Manual owns the clock; in every other mode `apply_sun_mode`
+        // computes it from the real time on the next frame.
+        if let Some(t) = p.time_of_day {
+            dev.time_of_day = t.rem_euclid(24.0);
+        }
+    }
+    if !cli.weather_live {
+        weather.live = p.weather_live;
+    }
+    if !cli.fog {
+        dev.fog_density = p.fog_density.clamp(0.0, 1.0);
+    }
+    if !cli.clouds {
+        dev.cloud_cover = p.cloud_cover.clamp(0.0, 1.0);
+    }
+    if !cli.rain {
+        dev.precipitation = p.precipitation.clamp(0.0, 1.0);
+    }
+}
+
 pub fn autosave_user_store(
     time: Res<Time>,
     mut next_at: Local<f32>,
@@ -491,6 +577,8 @@ pub fn autosave_user_store(
     camera_state: Res<CameraState>,
     cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
     dl: Res<crate::systems::data_layers::DataLayers>,
+    dev: Res<crate::resources::DevPanelState>,
+    weather: Res<crate::systems::weather::WeatherState>,
 ) {
     let exiting = exits.read().next().is_some();
     let due = time.elapsed_secs() >= *next_at;
@@ -502,6 +590,9 @@ pub fn autosave_user_store(
     }
 
     store.data.layers = Some(dl.prefs());
+    // Both go through `DataLayers`, which sees past driver mode's temporary
+    // clear sky to what the user actually set.
+    store.data.sky = Some(dl.sky_prefs(&dev, &weather));
 
     if let (Some(anchor), Ok((cell, tf))) = (stream.geo_anchor(), cameras.single()) {
         // Both through the shared camera fix (`camera_geo` / `altitude_m`): the
@@ -548,6 +639,26 @@ mod tests {
         // Missing folders: an empty tree, every bookmark at the top level.
         assert!(data.folders.is_empty());
         assert_eq!(data.bookmarks[0].folder, None);
+        // Missing sky prefs: the sun/weather switchers keep their defaults.
+        assert!(data.sky.is_none());
+    }
+
+    /// The sun mode round-trips by *name*, so adding a variant can never shift a
+    /// saved file onto a different mode.
+    #[test]
+    fn sky_prefs_round_trip_by_name() {
+        use crate::resources::SunMode;
+        let prefs = SkyPrefs {
+            sun_mode: SunMode::Night,
+            time_of_day: None,
+            weather_live: false,
+            fog_density: 0.3,
+            cloud_cover: 0.5,
+            precipitation: 0.0,
+        };
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains("\"night\""), "modes are named on disk: {json}");
+        assert_eq!(serde_json::from_str::<SkyPrefs>(&json).unwrap(), prefs);
     }
 
     fn test_store() -> UserStore {

@@ -415,6 +415,31 @@ impl DataLayers {
         }
     }
 
+    /// The sky settings to persist, for the same reason [`Self::prefs`] exists:
+    /// driver mode's minimal sky is a *mode*, not a preference. Quitting mid-drive
+    /// would otherwise save "manual, no clouds, no rain" and hand that back as the
+    /// user's own choice on the next launch — so while `minimal` holds a snapshot,
+    /// the snapshot is what gets written.
+    pub fn sky_prefs(
+        &self,
+        dev: &crate::resources::DevPanelState,
+        weather: &crate::systems::weather::WeatherState,
+    ) -> crate::systems::user_store::SkyPrefs {
+        let (weather_live, fog_density, cloud_cover, precipitation) = match &self.minimal {
+            Some(m) => (m.weather_live, m.fog_density, m.cloud_cover, m.precipitation),
+            None => (weather.live, dev.fog_density, dev.cloud_cover, dev.precipitation),
+        };
+        crate::systems::user_store::SkyPrefs {
+            sun_mode: dev.sun_mode,
+            time_of_day: (dev.sun_mode == crate::resources::SunMode::Manual)
+                .then_some(dev.time_of_day),
+            weather_live,
+            fog_density,
+            cloud_cover,
+            precipitation,
+        }
+    }
+
     /// Apply persisted toggles at startup. Overlay layers missing from the file
     /// (added since it was written) keep their defaults.
     pub fn apply_prefs(&mut self, p: &crate::systems::user_store::LayerPrefs) {

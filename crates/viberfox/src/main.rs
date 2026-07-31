@@ -526,6 +526,15 @@ fn main() {
     })
     .init_resource::<AiAssistantState>()
     .init_resource::<AvatarChooserState>()
+    // Which of the sky knobs below came from a flag, so `restore_sky_prefs`
+    // leaves them alone (a flag is an instruction for this launch).
+    .insert_resource(systems::user_store::SkyCliOverrides {
+        time: cli.time.is_some(),
+        fog: cli.fog.is_some(),
+        clouds: cli.clouds.is_some(),
+        rain: cli.rain.is_some(),
+        weather_live: cli.weather_live,
+    })
     .insert_resource(DevPanelState {
         time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
         // A `--shot` capture must be deterministic, and an explicit `--time`
@@ -777,6 +786,11 @@ fn main() {
                 // Same gate: a scripted capture's layer state comes from its
                 // manifest (`--ui`), never from what a session left in user.json.
                 systems::user_store::restore_layer_prefs
+                    .run_if(not(systems::shot_harness::harness_active)),
+                // And the same for the sun/weather switchers: a capture's sky
+                // comes from `--time`/`--fog`/`--clouds`/`--rain`, not from what
+                // the last interactive session was looking at.
+                systems::user_store::restore_sky_prefs
                     .run_if(not(systems::shot_harness::harness_active)),
             ),
             systems::geo_nav::apply_teleport
