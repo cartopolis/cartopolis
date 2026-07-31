@@ -50,6 +50,13 @@ impl<J> Dispatcher<J> {
         self.pending.len()
     }
 
+    /// Is there work queued or running? What "the world has not finished
+    /// streaming" means for whoever owns this dispatcher — read by the `--shot`
+    /// harness's settle test, which otherwise captures a half-built city.
+    pub fn busy(&self) -> bool {
+        self.in_flight > 0 || !self.pending.is_empty()
+    }
+
     /// The next job allowed to start at time `now`, or `None` if at the concurrency
     /// cap or still inside the throttle interval. Records the dispatch; the caller
     /// spawns the returned job and calls [`Dispatcher::completed`] when its result

@@ -124,6 +124,15 @@ pub struct Lod22Buildings {
     terrain_revision: u32,
 }
 
+impl Lod22Buildings {
+    /// Are 3DBAG cells still being fetched or meshed? Read by the `--shot`
+    /// harness's settle test — these are the buildings a city shot is *of*.
+    #[must_use]
+    pub fn streaming_busy(&self) -> bool {
+        self.dispatch.busy()
+    }
+}
+
 /// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
 pub fn update_lod22(
     mut commands: Commands,

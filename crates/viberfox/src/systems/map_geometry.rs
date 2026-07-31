@@ -297,6 +297,18 @@ fn spawn_geometry_task(
 }
 
 impl MapSurfaces {
+    /// Are surface cells still being tessellated, placed or retired? The `--shot`
+    /// harness's settle test reads this alongside the tile streamers': the ground
+    /// imagery goes quiet well before the geometry laid over it does, and a
+    /// capture taken on the imagery alone shows a city with no buildings in it.
+    #[must_use]
+    pub fn streaming_busy(&self) -> bool {
+        self.in_flight > 0
+            || !self.requested.is_empty()
+            || !self.despawn_queue.is_empty()
+            || !self.pending_decks.is_empty()
+    }
+
     /// The shared material for a surface group, once some cell has created it.
     /// `systems::vegetation` ramps the canopy, trunk and forest colours through
     /// these handles — one write per group repaints every live cell, which is the

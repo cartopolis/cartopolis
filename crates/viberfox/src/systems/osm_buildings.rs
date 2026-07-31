@@ -363,6 +363,15 @@ pub struct OsmBuildings {
 }
 
 impl OsmBuildings {
+    /// Is the detail patch or either far lane still working? Read by the `--shot`
+    /// harness's settle test: the OSM detail patch is the slowest thing on the
+    /// map (one Overpass round trip per re-anchor) and it is exactly what a
+    /// ground-level capture is waiting for.
+    #[must_use]
+    pub fn streaming_busy(&self) -> bool {
+        self.in_flight || self.far_dispatch.busy() || self.far_dispatch_tdbag.busy()
+    }
+
     /// Despawn the far-cell extrusion for `cell`, if one is up — called by the
     /// LoD2.2 streamer the moment its real mesh spawns there, so the two tiers
     /// never stack. The far tier legitimately requests covered cells whenever

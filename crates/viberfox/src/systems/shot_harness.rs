@@ -888,15 +888,19 @@ pub fn drive_capture(
     weather: Res<WeatherState>,
     route: Res<crate::systems::navigation::RouteState>,
     cam_state: Res<CameraState>,
-    // Resources that exist only to be *read into* `ShotMetrics`, tupled into one
-    // `SystemParam`: this system is at Bevy's 16-parameter ceiling, and a new
-    // inspectable fact is exactly the kind of thing that keeps getting added here.
+    // Resources read into `ShotMetrics`, plus the streamers the settle test waits
+    // on (`.5`–`.7`), tupled into one `SystemParam`: this system is at Bevy's
+    // 16-parameter ceiling, and a new inspectable fact is exactly the kind of
+    // thing that keeps getting added here.
     readouts: (
         Res<GlobeSurfaceAlbedo>,
         Res<crate::systems::vegetation::VegetationLod>,
         Res<crate::systems::height::HeightLayer>,
         Res<crate::systems::terrain::TerrainField>,
         Res<crate::systems::street_furniture::FurnitureLod>,
+        Res<crate::systems::map_geometry::MapSurfaces>,
+        Res<crate::systems::osm_buildings::OsmBuildings>,
+        Res<crate::systems::lod22::Lod22Buildings>,
     ),
     camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
@@ -944,8 +948,20 @@ pub fn drive_capture(
         return;
     }
 
-    // Settle: capture once both tile streams have been quiet for `--settle`
-    // seconds, or when `--wait` runs out (whichever comes first). A
+    // Settle: capture once *every* streamer has been quiet for `--settle`
+    // seconds, or when `--wait` runs out (whichever comes first).
+    //
+    // "Every" is load-bearing and was learned the hard way. This used to watch
+    // only the two tile streams — and `MapStream::streaming_busy` was stuck true
+    // for the life of the process (a fetch was never dropped from `requested`),
+    // so every ground shot silently ran to the `--wait` cap instead. Fixing that
+    // bug turned each README capture into a half-built city: the imagery goes
+    // quiet in ~4 s, while the vector surfaces, the OSM detail patch and the
+    // 3DBAG cells are still arriving. The accidental 45 s sleep was doing the
+    // waiting, so the settle test has to name the streamers it was covering for.
+    //
+    // A `--weather-live` run also holds until the first met.no sample lands, so the
+    // capture shows real conditions rather than the default clear sky, and a
     // `--weather-live` run also holds until the first met.no sample lands, so the
     // capture shows real conditions rather than the default clear sky, and a
     // `--ui route` run holds until the solve lands — otherwise the shot documents
@@ -955,8 +971,12 @@ pub fn drive_capture(
         crate::systems::navigation::SolveStatus::Fetching(..)
             | crate::systems::navigation::SolveStatus::Solving
     );
+    let (surfaces, osm, lod22) = (&readouts.5, &readouts.6, &readouts.7);
     if globe.streaming_busy()
         || stream.streaming_busy()
+        || surfaces.streaming_busy()
+        || osm.streaming_busy()
+        || lod22.streaming_busy()
         || routing
         || (weather.live && !weather.ready())
     {
