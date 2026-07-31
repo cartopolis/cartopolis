@@ -17,6 +17,15 @@
 //! which is why this system runs last of the UI systems). Without that, a pin
 //! behind the Places panel would paint on top of the list it belongs to.
 //!
+//! **Staying put while the camera moves.** A pin is projected every frame, so it
+//! is only as steady as its projection. Two things make one wobble and neither is
+//! about precision in the usual sense: projecting through the camera's
+//! `GlobalTransform` uses last frame's orientation (big_space propagates in
+//! `PostUpdate`; this runs in `Update`), and egui rounds each pin's `Area` to a
+//! whole physical pixel. Both are handled below — the camera basis is rebuilt from
+//! this frame's `Transform`, and the silhouette is painted at the exact sub-pixel
+//! tip rather than at the rounded rect. See `docs/notes/screen-overlay-projection.md`.
+//!
 //! Below the space tier a place is placed through the anchored Mercator frame
 //! (`geo_nav::lat_lng_to_world`) — the same frame the tiles are laid in, so the
 //! pin sits on its building. In space that frame is meaningless, so the point is
@@ -63,7 +72,7 @@ pub fn render_place_pins(
     mut nav: ResMut<GeoNavState>,
     stream: Res<MapStream>,
     globe: Res<GlobeState>,
-    camera: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
+    camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
 ) {
     if store.data.bookmarks.is_empty() {
         return;
@@ -71,7 +80,7 @@ pub fn render_place_pins(
     let Some(anchor) = stream.geo_anchor() else {
         return; // no map yet; nothing to pin to
     };
-    let Ok((cam, cam_gt, cam_cell, cam_tf)) = camera.single() else {
+    let Ok((cam, cam_cell, cam_tf)) = camera.single() else {
         return;
     };
 
@@ -91,6 +100,23 @@ pub fn render_place_pins(
         cam_cell.z as f64 * edge + cam_tf.translation.z as f64,
     );
     let in_space = globe.in_space(cam_cell, cam_tf);
+    // The camera basis to project through, rebuilt from *this* frame's `Transform`.
+    //
+    // Reading the camera's `GlobalTransform` here would be a frame behind: big_space
+    // propagates in `PostUpdate` (`BigSpaceSystems::PropagateHighPrecision`) while this
+    // runs in `Update`, so the `GlobalTransform` in the world is still the one the
+    // *previous* frame rendered with — but the map the pins sit on is drawn from this
+    // frame's. The translation cancels out, the rotation does not: an orbit drag at
+    // 90°/s is 1.5° of stale view per frame, tens of pixels of pins swimming over a map
+    // that is standing still. Rebuilding is exact and free, because the camera is the
+    // floating origin: `Grid::global_transform` subtracts the origin's own cell and
+    // rotation, so for this one entity `GlobalTransform` *is* `Transform`.
+    //
+    // Translation stays at zero and each place is projected as a camera-relative delta
+    // (`place_delta` already produces one, in f64). That keeps the f32 projection from
+    // having to cancel the camera's own offset — up to a `WORLD_SWITCH_THRESHOLD` of
+    // shared magnitude — back out of every point it is added to.
+    let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
 
     let mut jump: Option<Teleport> = None;
     let mut drawn = 0usize;
@@ -98,8 +124,7 @@ pub fn render_place_pins(
         let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng) else {
             continue;
         };
-        let Ok(screen) = cam.world_to_viewport(cam_gt, cam_gt.translation() + delta.as_vec3())
-        else {
+        let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
             continue; // behind the camera
         };
         let tip = egui::pos2(screen.x, screen.y);
@@ -194,13 +219,20 @@ fn pin(
         .show(ctx, |ui| {
             // Never paint over a panel, even when the tip is just inside the map.
             ui.set_clip_rect(map_rect);
-            let (rect, response) = ui.allocate_exact_size(
+            let (_rect, response) = ui.allocate_exact_size(
                 egui::vec2(2.0 * HEAD_R, (HEAD_LIFT + 1.0) * HEAD_R),
                 egui::Sense::click(),
             );
             let scale = if response.hovered() { HOVER_SCALE } else { 1.0 };
             let r = HEAD_R * scale;
-            let tip = rect.center_bottom();
+            // Paint from the *exact* projected tip, not the allocated rect's bottom
+            // centre. egui rounds every `Area`'s position to a whole physical pixel
+            // (`containers::area::round_area_position`, so dragged windows don't have
+            // their widgets shimmer against each other), which is right for chrome and
+            // wrong for a marker pinned to the ground: the map slides smoothly under a
+            // pin that can only step a pixel at a time, and the pin reads as wobbling
+            // on its spot. The rect still senses the click — half a pixel of offset
+            // between the hit area and the silhouette is not something you can aim at.
             let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
             let painter = ui.painter();
 
@@ -289,6 +321,8 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::free_camera::WORLD_SWITCH_THRESHOLD;
+    use big_space::prelude::Grid;
 
     /// The silhouette has to be convex — `Shape::convex_polygon` renders a
     /// concave outline with folded-over antialiasing, and the whole pin is one
@@ -340,6 +374,35 @@ mod tests {
         assert!(
             ((tip.y - top) - (HEAD_LIFT + 1.0) * r).abs() < 0.01,
             "pin height must match the space the widget allocates"
+        );
+    }
+
+    /// Pins are projected through a camera basis rebuilt from the camera's
+    /// `Transform`, because the propagated `GlobalTransform` is a frame stale in
+    /// `Update` (see the module docs). That substitution is only exact while
+    /// big_space keeps giving the floating origin itself an unrotated,
+    /// unoffset grid — `LocalFloatingOrigin::compute_all` resets the grid
+    /// *containing* the origin to `(ZERO, IDENTITY)`, which is the default state
+    /// a fresh `Grid` is in. If a big_space re-sync ever changes that, the rebuilt
+    /// basis silently stops matching the one the frame is rendered with and the
+    /// wobble comes back looking like a rendering bug.
+    #[test]
+    fn the_floating_origin_camera_is_its_own_global_transform() {
+        let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
+        let tf = Transform::from_xyz(12.0, -34.0, 56.0)
+            .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.7, -0.4, 0.2));
+        // The camera's own cell: `compute_all` seeds the origin's grid with it, so
+        // the cell offset is zero whatever the cell happens to be.
+        let propagated = grid.global_transform(&GridCell::default(), &tf);
+        let rebuilt = GlobalTransform::from(tf);
+        assert!(
+            propagated
+                .affine()
+                .abs_diff_eq(rebuilt.affine(), 1e-5),
+            "rebuilding the camera basis from its Transform must match propagation:\n\
+             propagated {:?}\nrebuilt    {:?}",
+            propagated.affine(),
+            rebuilt.affine(),
         );
     }
 
