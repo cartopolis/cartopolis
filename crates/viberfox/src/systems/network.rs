@@ -699,10 +699,9 @@ pub fn send_network_intent(
         && (keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft));
     let move_right = !blocked
         && (keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight));
-    // E/Space up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
+    // E up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
     // which must stay in step: it drives the same avatar in `--offline`).
-    let fly_up = !blocked
-        && (keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE));
+    let fly_up = !blocked && keyboard_input.pressed(KeyCode::KeyE);
     let fly_down = !blocked && keyboard_input.pressed(KeyCode::KeyQ);
 
     let az = camera_state.azimuth;

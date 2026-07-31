@@ -57,9 +57,10 @@ Movement is camera-relative. The full input reference:
 |-------|--------|
 | W / S (or ↑ / ↓) | Move forward / backward (camera-relative) |
 | A / D (or ← / →) | Strafe left / right |
-| Space / Shift | Fly up / down (while flying) |
-| F | Toggle fly / walk |
+| Space (or F) | Take off / land |
+| E / Q | Fly up / down (while flying) |
 | Tab | Cycle camera: Avatar → Free → Orbit (Earth) |
+| Ctrl + L | Open the address bar and focus the search field |
 | Scroll | Zoom |
 | Left-drag | Orbit camera / look |
 | Left-click | Select a prim |

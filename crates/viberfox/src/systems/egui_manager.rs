@@ -405,8 +405,9 @@ pub fn begin_egui_frame(
     // `EguiManager::ui_owns_keyboard`, which yields the game's keys to the UI
     // under the same condition, so exactly one side ever acts on a key. egui
     // keeps *focus* on the last-clicked widget (a checkbox, a panel's collapse
-    // button), and Space/Enter activate the focused widget: flying up re-toggled
-    // whatever was clicked last and collapsed panels mid-flight. The reader is
+    // button), and Space/Enter activate the focused widget: a game key as ordinary
+    // as Space re-triggered whatever was clicked last, collapsing panels from
+    // across the map. The reader is
     // drained regardless, or the keys held before clicking into a field would
     // arrive as a stale burst the moment it gains focus.
     let forward_keys = egui_manager.ctx.text_edit_focused();

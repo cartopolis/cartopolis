@@ -885,13 +885,17 @@ pub fn camera_controls(
             }
 
             // Vertical movement — ALWAYS world-space, never affects rotation.
-            // E/Space up, Q down: the editor flycam convention (Unreal, Unity,
-            // Godot, Blender) with Space kept as the universal "up". Shift is the
-            // speed boost and *only* that — it used to also mean "down, if no WASD
-            // is held", so holding it to cross a city dropped you out of the sky the
-            // moment you let go of W. Ctrl, the obvious alternative, isn't available:
-            // `EguiManager::ui_owns_keyboard` reads any Ctrl press as a UI chord.
-            if keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE) {
+            // E up, Q down: the editor flycam convention (Unreal, Unity, Godot,
+            // Blender), and *only* those two. Space used to be a second "up",
+            // which made the vertical axis read as three keys with one of them
+            // duplicated and left the most reachable key on the board spent on an
+            // alias; it is a discrete verb now (see `avatar::handle_avatar_movement`).
+            // Shift is the speed boost and *only* that — it used to also mean
+            // "down, if no WASD is held", so holding it to cross a city dropped you
+            // out of the sky the moment you let go of W. Ctrl, the obvious
+            // alternative, isn't available: `EguiManager::ui_owns_keyboard` reads
+            // any Ctrl press as a UI chord.
+            if keyboard_input.pressed(KeyCode::KeyE) {
                 move_direction += Vec3::Y;
             }
             if keyboard_input.pressed(KeyCode::KeyQ) {

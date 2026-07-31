@@ -911,13 +911,24 @@ pub fn handle_avatar_movement(
         keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft);
     let move_right =
         keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight);
-    // Same vertical keys as the Fly camera (`free_camera`): E/Space up, Q down.
-    // Shift used to mean down here, which was unambiguous in avatar flight but
-    // disagreed with the camera, where Shift is the speed boost — one hand, two
-    // meanings for the same key depending on the mode.
-    let fly_up = keyboard_input.pressed(KeyCode::Space) || keyboard_input.pressed(KeyCode::KeyE);
+    // Same vertical keys as the Fly camera (`free_camera`): E up, Q down, and
+    // nothing else. Shift used to mean down here, which was unambiguous in avatar
+    // flight but disagreed with the camera, where Shift is the speed boost — one
+    // hand, two meanings for the same key depending on the mode. Space used to be
+    // a second "up", which is the same mistake in a milder form: two keys for one
+    // direction against one for the other reads as an axis with a typo in it.
+    let fly_up = keyboard_input.pressed(KeyCode::KeyE);
     let fly_down = keyboard_input.pressed(KeyCode::KeyQ);
-    if keyboard_input.just_pressed(KeyCode::KeyF) {
+    // Take off / land. Space is the binding this deserves: every 3D game spends it
+    // on "leave the ground", and with no jump in this world taking off is the
+    // nearest true verb. It was a second "up" until now, which wasted the most
+    // reachable key on the board on an alias for E — and on a *hold*, which a
+    // thumb key is bad at and a tap is exactly right for. F stays as an alias.
+    // Landing needs no descent code: `SimWorld::step` (and the offline path below)
+    // falls an avatar that isn't flying.
+    if keyboard_input.just_pressed(KeyCode::Space)
+        || keyboard_input.just_pressed(KeyCode::KeyF)
+    {
         avatar_state.is_flying = !avatar_state.is_flying;
     }
 
