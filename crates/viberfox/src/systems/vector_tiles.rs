@@ -165,6 +165,9 @@ pub mod palette {
     pub const MOTORWAY_FILL: u32 = 0xF4_DF_B4;
     pub const MOTORWAY_CASING: u32 = 0xD8_BC_86;
     pub const RAIL: u32 = 0xB4_AE_A4;
+    /// A bridge deck seen as a structure rather than as a stretch of road: the
+    /// concrete-and-asphalt grey of the whole thing, parapets included.
+    pub const BRIDGE_DECK: u32 = 0x57_56_59;
     pub const PATH: u32 = 0xC5_C0_B0;
     pub const BOUNDARY: u32 = 0xB0_A6_B4;
 }
@@ -491,6 +494,10 @@ pub enum SurfaceGroup {
     /// A road ribbon. Textured rather than flat-coloured — see
     /// [`road_texture`](crate::systems::road_texture).
     Road(RoadClass),
+    /// A bridge deck: the structure's own surface, standing at its measured
+    /// height (`systems::height`) rather than lying in the coplanar ground stack.
+    /// Above everything else on the ground, because that is what a bridge is.
+    BridgeDeck,
     /// Merged tree canopies (`systems::vegetation`). Per-instance tone and luma
     /// variation ride in the mesh's vertex colours, so this stays **one** group,
     /// one material and one mesh per cell like every other group here.
@@ -521,6 +528,7 @@ impl SurfaceGroup {
             // Roads carry their surface in a texture; tinting it would only fight
             // the paint values chosen there, so the material multiplies by white.
             Self::Road(_) => 0xFF_FF_FF,
+            Self::BridgeDeck => palette::BRIDGE_DECK,
             // Vertex colours multiply this, and they are centred on 1.0 — so the
             // palette entry stays the one place the canopy tone is written down.
             Self::Canopy => palette::CANOPY,
@@ -568,7 +576,9 @@ impl SurfaceGroup {
             Self::Road(_) => -0.0015,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
-            Self::Canopy | Self::Trunk => 0.0,
+            // A bridge deck is the same kind of thing: it carries its own height,
+            // which is a measurement and not a place in this millimetre ladder.
+            Self::BridgeDeck | Self::Canopy | Self::Trunk => 0.0,
         }
     }
 
@@ -629,11 +639,17 @@ impl SurfaceGroup {
             // Rails sit above their own crossings, so a level crossing shows the
             // track rather than the tarmac.
             Self::Road(RoadClass::Rail) => 10.0,
+            // A deck is above the tracks, which are above the tarmac — and that
+            // ordering is the *whole* point of the group. A flyover measured at
+            // ~0 m (a Dutch canal bridge sits at street level, with the water
+            // below) has no honest depth to separate it from the road it carries,
+            // so this rung is what stops the rails painting over the viaduct.
+            Self::BridgeDeck => 11.0,
             // Above the whole coplanar ground stack. Trees resolve against it by
             // honest depth — they stand a metre or ten above the plane — but the
             // ground sheets are biased *forward* to settle their own z-fight, and
             // a grass sheet at 2.0 would otherwise punch through a trunk base.
-            Self::Canopy | Self::Trunk => 11.0,
+            Self::Canopy | Self::Trunk => 12.0,
         }
     }
 
@@ -882,6 +898,116 @@ pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>
         .collect())
 }
 
+/// One bridge deck: a `bridges` polygon, tessellated but deliberately **not**
+/// merged with its neighbours.
+///
+/// Every other surface here is batched into one mesh per group per cell, and this
+/// is the exception, because each deck needs its own *height* — a number that does
+/// not exist in the tile and arrives later, per deck, from `systems::height`. So
+/// the worker does the tessellation and hands back the pieces; the main thread
+/// lifts each one to its measured height and merges them then.
+///
+/// The rings come back too. They are what the deck's fascia is extruded from, and
+/// what says whether a sample of AHN — or a road ribbon — is *on* this deck.
+#[derive(Debug, Clone)]
+pub struct BridgeDeck {
+    /// Deck surface triangles, tile-local metres at `y = 0`.
+    pub positions: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    /// Outline rings, clipped and closed (exterior first, then holes).
+    pub rings: Vec<Vec<[f32; 2]>>,
+    /// Tile-local bounding box of the outline.
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+}
+
+impl BridgeDeck {
+    /// Is this tile-local point on the deck? Even-odd crossing count over every
+    /// ring, so a hole in the structure counts as off it.
+    #[must_use]
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        if p[0] < self.min[0] || p[0] > self.max[0] || p[1] < self.min[1] || p[1] > self.max[1] {
+            return false;
+        }
+        let mut inside = false;
+        for ring in &self.rings {
+            for e in ring.windows(2) {
+                let (a, b) = (e[0], e[1]);
+                if (a[1] > p[1]) != (b[1] > p[1]) {
+                    let t = (p[1] - a[1]) / (b[1] - a[1]);
+                    if p[0] < a[0] + t * (b[0] - a[0]) {
+                        inside = !inside;
+                    }
+                }
+            }
+        }
+        inside
+    }
+
+    /// Longest side of the deck's footprint, in metres — how a caller sizes a
+    /// height sample grid to the thing being measured.
+    #[must_use]
+    pub fn span_m(&self) -> f32 {
+        (self.max[0] - self.min[0]).max(self.max[1] - self.min[1])
+    }
+}
+
+/// Tessellate the `bridges` layer: one [`BridgeDeck`] per structure.
+///
+/// Shortbread's `bridges` layer is **areas**, not lines — the outline of the
+/// structure itself, carriageway and parapets and all. The raster path only ever
+/// stroked them as a hairline and the geometry path ignored them entirely, which is
+/// why a viaduct was nothing but the road ribbon crossing it. Measured over
+/// Groningen station: the Emmaviaduct arrives as 34 × 149 m and 68 × 176 m of
+/// footprint. That is a deck you can stand geometry on.
+pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+    let layers = reader
+        .get_layer_metadata()
+        .map_err(|e| format!("mvt layers: {e:?}"))?;
+    let Some(meta) = layers.iter().find(|l| l.name == "bridges") else {
+        return Ok(Vec::new());
+    };
+    let features = reader
+        .get_features(meta.layer_index)
+        .map_err(|e| format!("mvt features: {e:?}"))?;
+    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let scale = tile_m / extent;
+
+    let mut decks = Vec::new();
+    for feature in &features {
+        let mut polys: Vec<&geo_types::Polygon<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::Polygon(p) => polys.push(p),
+            Geometry::MultiPolygon(mp) => polys.extend(mp.iter()),
+            _ => continue,
+        }
+        for poly in polys {
+            let mut positions = Vec::new();
+            let mut indices = Vec::new();
+            tessellate_polygon(poly, scale, extent, &mut positions, &mut indices);
+            let rings = clipped_rings(poly, scale, extent);
+            if indices.is_empty() || rings.is_empty() {
+                continue;
+            }
+            let mut min = [f32::MAX, f32::MAX];
+            let mut max = [f32::MIN, f32::MIN];
+            for p in rings.iter().flatten() {
+                min = [min[0].min(p[0]), min[1].min(p[1])];
+                max = [max[0].max(p[0]), max[1].max(p[1])];
+            }
+            decks.push(BridgeDeck {
+                positions,
+                indices,
+                rings,
+                min,
+                max,
+            });
+        }
+    }
+    Ok(decks)
+}
+
 /// How far a ribbon may be pushed past the end of its centre line, in metres, to
 /// fill the notch at a junction.
 ///
@@ -977,7 +1103,17 @@ const MITER_LIMIT: f32 = 2.5;
 /// * **Ends have to know what they meet.** A ribbon that simply stops leaves a
 ///   notch at every junction; one that always overshoots leaves a flap at every
 ///   dead end. [`street_nodes`] is the difference between the two.
-pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
+///
+/// `decks` are the tile's [`BridgeDeck`]s. Where one of them carries a
+/// bridge-flagged street, that street's ribbon is **left out**: the deck is the
+/// road surface up there, and drawing both would put a carriageway at ground level
+/// under a structure standing several metres above it. Only `bridge` features are
+/// dropped, so the road *under* a viaduct keeps every metre of its own ribbon.
+pub fn tessellate_roads(
+    bytes: &[u8],
+    tile_m: f32,
+    decks: &[BridgeDeck],
+) -> Result<Vec<SurfaceMesh>, String> {
     let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
     let layers = reader
         .get_layer_metadata()
@@ -999,8 +1135,9 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
         let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
+        let bridge = flag_of(feature, "bridge");
         // This feature's rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`).
-        let y = road_rung(half * 2.0, flag_of(feature, "bridge"), fi) as f32 * ROAD_LAYER_STEP;
+        let y = road_rung(half * 2.0, bridge, fi) as f32 * ROAD_LAYER_STEP;
 
         let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
             Some(i) => i,
@@ -1044,16 +1181,29 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
-                ribbon(
-                    &metres,
-                    half,
-                    y,
-                    class.texture_length_m(),
-                    [ext_head, ext_tail],
-                    positions,
-                    uvs,
-                    indices,
-                );
+                // A bridge's own span belongs to the deck that carries it.
+                let parts = if bridge && !decks.is_empty() {
+                    off_deck_runs(&metres, decks)
+                } else {
+                    vec![metres]
+                };
+                // A run that lost part of itself to a deck now ends *at* the deck,
+                // which is not a junction — extending there would push tarmac out
+                // from under the structure.
+                let whole = parts.len() == 1 && parts[0].len() == run.len();
+                for part in parts {
+                    let extend = if whole { [ext_head, ext_tail] } else { [0.0, 0.0] };
+                    ribbon(
+                        &part,
+                        half,
+                        y,
+                        class.texture_length_m(),
+                        extend,
+                        positions,
+                        uvs,
+                        indices,
+                    );
+                }
             }
         }
     }
@@ -1070,6 +1220,33 @@ pub fn tessellate_roads(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, S
             colors: Vec::new(),
         })
         .collect())
+}
+
+/// Split a centre line into the stretches that are **not** on any deck.
+///
+/// Per vertex rather than per feature: Shortbread merges ways by attribute, so one
+/// `bridge` feature can be a chain of spans with ordinary road between them, and
+/// dropping the whole feature would erase the road as well as the bridge. The cut
+/// lands on the vertex either side of the structure, so the ribbon stops within a
+/// segment of the deck edge and the deck takes over from there.
+fn off_deck_runs(points: &[[f32; 2]], decks: &[BridgeDeck]) -> Vec<Vec<[f32; 2]>> {
+    let mut runs: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut cur: Vec<[f32; 2]> = Vec::new();
+    for p in points {
+        if decks.iter().any(|d| d.contains(*p)) {
+            if cur.len() >= 2 {
+                runs.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        } else {
+            cur.push(*p);
+        }
+    }
+    if cur.len() >= 2 {
+        runs.push(cur);
+    }
+    runs
 }
 
 /// Read a boolean Shortbread property (`bridge`, `tunnel`, `oneway`, `link`),
@@ -2208,7 +2385,7 @@ mod tests {
         // z-fight, which is the flicker along a joint. Successive features must
         // land on different rungs, and the whole ladder must stay inside the
         // millimetre window `SurfaceGroup::y_offset` leaves under the buildings.
-        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0).expect("tessellate");
+        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("tessellate");
         let heights: std::collections::BTreeSet<u32> = meshes
             .iter()
             .flat_map(|m| m.positions.iter().map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32))
@@ -2281,7 +2458,12 @@ mod tests {
             println!("  {n:>3} × {what}");
         }
 
-        let meshes = tessellate_roads(tile, tile_m).expect("tessellate");
+        // Decks first, exactly as the streamer does it: a bridge's own span is
+        // drawn by the deck, so the ribbons this dumps are the ones that really
+        // reach the ground.
+        let decks = tessellate_bridges(tile, tile_m).expect("bridges");
+        println!("  {} bridge decks", decks.len());
+        let meshes = tessellate_roads(tile, tile_m, &decks).expect("tessellate");
 
         let mut count = vec![0u16; PX * PX];
         for m in &meshes {
@@ -2371,6 +2553,65 @@ mod tests {
         )
         .expect("write png");
         println!("wrote /tmp/ribbons.png");
+    }
+
+    /// The `bridges` layer is areas, and those areas are the deck a raised bridge
+    /// stands on. Nothing drew them before this, which is why a viaduct was only
+    /// ever the road ribbon crossing it.
+    #[test]
+    fn bridges_tessellate_into_decks_with_outlines() {
+        let decks = tessellate_bridges(GRONINGEN_Z14, 1000.0).expect("bridges");
+        assert!(!decks.is_empty(), "a city tile should hold bridge decks");
+        for d in &decks {
+            assert_eq!(d.indices.len() % 3, 0);
+            assert!(!d.rings.is_empty(), "a deck with no outline has no fascia");
+            assert!(
+                d.indices.iter().all(|i| (*i as usize) < d.positions.len()),
+                "index out of range"
+            );
+            // Inside the tile, flat, and a plausible size for a structure.
+            for p in &d.positions {
+                assert!((0.0..=1000.0).contains(&p[0]) && (0.0..=1000.0).contains(&p[2]));
+                assert_eq!(p[1], 0.0, "a deck leaves the worker flat; height is measured");
+            }
+            let span = d.span_m();
+            assert!((1.0..=600.0).contains(&span), "deck span {span} m");
+            // The centre of the bounding box is a weak test of `contains`, but a
+            // deck that answers "no" everywhere would silently disable both the
+            // ribbon suppression and the height sampling.
+            let mid = [
+                (d.min[0] + d.max[0]) * 0.5,
+                (d.min[1] + d.max[1]) * 0.5,
+            ];
+            assert!(!d.contains([d.min[0] - 5.0, mid[1]]), "outside is not inside");
+        }
+        assert!(
+            decks.iter().any(|d| d.contains([
+                (d.min[0] + d.max[0]) * 0.5,
+                (d.min[1] + d.max[1]) * 0.5
+            ])),
+            "no deck contains its own centre — point-in-polygon is broken"
+        );
+    }
+
+    /// A bridge's own span is drawn by the deck; the road *under* it keeps every
+    /// metre of its ribbon. Getting that backwards would either double the
+    /// carriageway or erase the road beneath a flyover.
+    #[test]
+    fn a_deck_takes_over_from_the_street_it_carries() {
+        let decks = tessellate_bridges(GRONINGEN_Z14, 1000.0).expect("bridges");
+        let bare = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("roads");
+        let with_decks = tessellate_roads(GRONINGEN_Z14, 1000.0, &decks).expect("roads");
+        let count = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.indices.len()).sum::<usize>();
+        assert!(
+            count(&with_decks) < count(&bare),
+            "the decks suppressed no ribbon at all"
+        );
+        // …but only a little of it: the tile's bridges are a handful of spans, not
+        // a fifth of its streets. A big drop here means ordinary roads are being
+        // eaten by a deck they merely pass under.
+        let dropped = 1.0 - count(&with_decks) as f32 / count(&bare) as f32;
+        assert!(dropped < 0.1, "decks removed {:.0}% of the road mesh", dropped * 100.0);
     }
 
     /// Which of two overlapping ribbons wins has to be a property of the *roads*,
@@ -2542,7 +2783,7 @@ mod tests {
     /// them must be a well-formed textured mesh.
     #[test]
     fn roads_tessellate_into_textured_ribbons() {
-        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0).expect("tessellate");
+        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("tessellate");
         assert!(
             meshes.len() >= 3,
             "a city tile should yield several road classes, got {}",

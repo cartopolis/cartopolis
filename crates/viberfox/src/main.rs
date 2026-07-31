@@ -741,6 +741,11 @@ fn main() {
                 // meshes over the textured tiles. No-op on a raster tile source.
                 systems::map_geometry::update_map_surfaces
                     .after(systems::map_stream::update_map_stream),
+                // Bridge decks stand at a *measured* height, so they are placed a
+                // few frames after their cell — whenever the height layer answers.
+                systems::map_geometry::resolve_bridge_decks
+                    .after(systems::map_geometry::update_map_surfaces)
+                    .after(systems::height::poll_height_layer),
                 // Sea state from the live wind (cheap: skips unless the wind moved).
                 systems::water::update_water_waves,
                 // "Road textures" toggle: retexture/flatten the shared road

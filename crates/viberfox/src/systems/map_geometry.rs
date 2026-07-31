@@ -37,7 +37,8 @@ use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRE
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
-use crate::systems::vector_tiles::{self, SurfaceGroup, SurfaceMesh};
+use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
+use crate::systems::vector_tiles::{self, BridgeDeck, SurfaceGroup, SurfaceMesh};
 use crate::systems::vegetation::{self, VegetationLod, VegetationSurface};
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
@@ -81,9 +82,55 @@ type Cell = (i64, i64);
 /// they can be consumed.
 const SURFACE_MAX_IN_FLIGHT: usize = 8;
 
-/// A finished tessellation (`None` = fetch or tessellation failed), plus the
-/// cell's distance-to-shore field when it holds any water (`systems::water`).
-type Tessellated = (Cell, Option<Vec<SurfaceMesh>>, Option<ShoreField>);
+/// A finished tessellation (`None` = fetch or tessellation failed), the cell's
+/// distance-to-shore field when it holds any water (`systems::water`), and its
+/// bridge decks — which are handed over *unmerged*, because each one still has to
+/// be told how high it stands (see [`resolve_bridge_decks`]).
+type Tessellated = (
+    Cell,
+    Option<Vec<SurfaceMesh>>,
+    Option<ShoreField>,
+    Vec<BridgeDeck>,
+);
+
+/// Deck slab thickness in metres: the fascia band extruded down from the surface,
+/// so a bridge reads as a structure with an edge and a shadow rather than as a
+/// sheet of paper floating over the tracks.
+const DECK_THICKNESS_M: f32 = 0.9;
+
+/// Below this measured height a deck is laid **flat**, at the level of the roads
+/// that reach it.
+///
+/// Not a tolerance on the measurement — the measurement is fine. It is that the
+/// road network this deck connects to is flat at `y = 0`, so any lift is a step at
+/// both ends, and the step is only worth paying for where something genuinely
+/// passes *underneath*. A Dutch canal bridge measures a metre or so above its
+/// quays (a deck does arch over the water) while being level with the street it
+/// carries; lifting it built a slab floating over its own approach roads. Above
+/// this, the clearance is a grade separation — a viaduct over a rail yard measures
+/// 6.6 m here — and the step is the honest lesser evil until approach ramps are
+/// sampled from AHN too.
+const MIN_LIFT_M: f32 = 2.5;
+
+/// Below this height a deck gets no fascia: a flat deck is a piece of road
+/// surface, and a skirt around it would read as a kerb.
+const FASCIA_MIN_M: f32 = 0.4;
+
+/// Ceiling on a measured deck height, in metres. Beyond this the measurement is
+/// not a bridge: it is a crane, a gantry or a stack of containers that the DSM
+/// caught standing on the structure.
+const MAX_DECK_M: f32 = 25.0;
+
+/// How far outside a deck the ground level is measured. Wide enough to clear the
+/// structure and its abutments, narrow enough to stay in the same terrain.
+const GROUND_RING_M: f64 = 30.0;
+
+/// Target sample spacing across a deck, in metres, and the bounds on the grid that
+/// comes out of it. A 20 m canal bridge wants a fine grid; a 180 m viaduct does not
+/// need one to know how high it is.
+const DECK_SAMPLE_M: f32 = 1.5;
+const DECK_GRID_MIN: u32 = 16;
+const DECK_GRID_MAX: u32 = 64;
 
 /// Marker for a spawned surface mesh, so the whole layer can be found and cleared.
 #[derive(Component)]
@@ -109,6 +156,20 @@ pub struct MapSurfaces {
     materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
     /// Anchor generation these cells belong to; a re-anchor clears everything.
     generation: u32,
+    /// Cells whose bridge decks are tessellated but not yet *placed*: their height
+    /// is a measurement that arrives from `systems::height` some frames later. Held
+    /// here rather than built flat and corrected, so a viaduct never visibly jumps
+    /// off the ground once its answer lands.
+    pending_decks: HashMap<Cell, PendingDecks>,
+}
+
+/// A cell's decks, waiting on their heights.
+struct PendingDecks {
+    decks: Vec<BridgeDeck>,
+    /// Cell origin in world metres — the same north-west corner the cell's other
+    /// meshes are placed at.
+    world: Vec2,
+    tile_m: f32,
 }
 
 /// Spawn one surface-tessellation task (ADR-033 seam): fetch the MVT body (shared
@@ -132,14 +193,24 @@ fn spawn_geometry_task(
             let fetched = load_tile_image(&key, &template).await;
             crate::platform::workers::submit(Box::new(move || {
                 let mut shore = None;
+                let mut decks = Vec::new();
                 let outcome = match fetched {
                     Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
                         Ok(mut meshes) => {
+                            // Decks first: the road tessellation needs them, since a
+                            // bridge-flagged street's own span belongs to the deck
+                            // that carries it rather than to the ground plane.
+                            match vector_tiles::tessellate_bridges(&bytes, tile_m) {
+                                Ok(d) => decks = d,
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "bridge tessellation failed");
+                                }
+                            }
                             // Roads share the fetch, the worker and the per-cell
                             // batching with the area surfaces — they differ only
                             // in being lines, so they ride along here rather than
                             // running a second streamer over the same tiles.
-                            match vector_tiles::tessellate_roads(&bytes, tile_m) {
+                            match vector_tiles::tessellate_roads(&bytes, tile_m, &decks) {
                                 Ok(roads) => meshes.extend(roads),
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
@@ -183,7 +254,7 @@ fn spawn_geometry_task(
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, outcome, shore));
+                    g.push((cell, outcome, shore, decks));
                 }
             }));
         })
@@ -207,6 +278,7 @@ impl MapSurfaces {
             self.despawn_queue.extend(entities);
         }
         self.requested.clear();
+        self.pending_decks.clear();
         // In-flight tasks push to the (retained) results and drain harmlessly next
         // frame; reset the count so the new anchor starts with a full slot budget.
         self.in_flight = 0;
@@ -320,7 +392,7 @@ pub fn update_map_surfaces(
     };
     // Each drained result is one finished task — free its concurrency slot.
     surfaces.in_flight = surfaces.in_flight.saturating_sub(ready.len());
-    for (c, outcome, shore) in ready {
+    for (c, outcome, shore, decks) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.requested.remove(&c);
@@ -411,6 +483,296 @@ pub fn update_map_surfaces(
         }
         tracing::debug!(cell = ?c, groups = entities.len(), "surface cell built");
         surfaces.loaded.insert(c, entities);
+        if !decks.is_empty() {
+            surfaces.pending_decks.insert(
+                c,
+                PendingDecks {
+                    decks,
+                    world: Vec2::new(wx, wz),
+                    tile_m,
+                },
+            );
+        }
+    }
+}
+
+/// Place each cell's bridge decks once their heights are known.
+///
+/// The deck geometry came off the worker with the rest of the cell, but *how high*
+/// it stands is not in the tile — it is a measurement, and it arrives from
+/// `systems::height` a few frames later. So decks wait here rather than being built
+/// flat and corrected: a viaduct that visibly jumped six metres off the ground a
+/// second after the cell appeared would be worse than one that arrived late.
+///
+/// The height is `median(DSM over the deck) − median(DTM around it)`. The DTM is
+/// the right ground reference precisely *because* AHN cuts bridges out of it: what
+/// is left in the padded box is the terrain the structure stands over. When the
+/// layer is off, out of coverage, or has given up, the deck settles flat — which is
+/// where every road already is, so the fallback is the old picture with the draw
+/// order finally right.
+pub fn resolve_bridge_decks(
+    mut commands: Commands,
+    mut surfaces: ResMut<MapSurfaces>,
+    mut height: ResMut<HeightLayer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    bigspace: Query<Entity, With<BigSpace>>,
+    dl: Res<crate::systems::data_layers::DataLayers>,
+) {
+    if surfaces.pending_decks.is_empty() {
+        return;
+    }
+    let Ok(root) = bigspace.single() else {
+        return;
+    };
+
+    let cells: Vec<Cell> = surfaces.pending_decks.keys().copied().collect();
+    for c in cells {
+        let Some(pending) = surfaces.pending_decks.get(&c) else {
+            continue;
+        };
+        // A cell retired while its decks were still waiting takes them with it.
+        if !surfaces.loaded.contains_key(&c) {
+            surfaces.pending_decks.remove(&c);
+            continue;
+        }
+
+        let tile_m = pending.tile_m;
+        let mut heights = Vec::with_capacity(pending.decks.len());
+        let mut settled = true;
+        for deck in &pending.decks {
+            match deck_height(&mut height, deck, c, tile_m, dl.height_enabled) {
+                Some(h) => heights.push(h),
+                None => {
+                    settled = false;
+                    break;
+                }
+            }
+        }
+        if !settled {
+            continue;
+        }
+
+        let Some(pending) = surfaces.pending_decks.remove(&c) else {
+            continue;
+        };
+        let mesh = build_deck_mesh(&pending.decks, &heights);
+        if mesh.indices.is_empty() {
+            continue;
+        }
+        let world = Vec3::new(pending.world.x, 0.0, pending.world.y);
+        let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+            .translation_to_grid(world.as_dvec3());
+        let material = surfaces
+            .materials
+            .entry(SurfaceGroup::BridgeDeck)
+            .or_insert_with(|| {
+                let [r, g, b] = SurfaceGroup::BridgeDeck.base_color();
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(r, g, b),
+                    perceptual_roughness: SurfaceGroup::BridgeDeck.perceptual_roughness(),
+                    depth_bias: SurfaceGroup::BridgeDeck.depth_bias(),
+                    // The fascia is a single band of quads with no inside to
+                    // speak of, and a ring's winding out of MVT is not something
+                    // to bet a whole structure's visibility on.
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                })
+            })
+            .clone();
+        let id = commands
+            .spawn((
+                Mesh3d(meshes.add(build_mesh(&mesh, pending.world.x, pending.world.y))),
+                MeshMaterial3d(material),
+                Transform::from_translation(local),
+                grid_cell,
+                ChildOf(root),
+                MapSurface,
+                crate::systems::globe::HideInSpace,
+            ))
+            .id();
+        if let Some(entities) = surfaces.loaded.get_mut(&c) {
+            entities.push(id);
+        }
+        let tallest = heights.iter().copied().fold(0.0f32, f32::max);
+        tracing::debug!(cell = ?c, decks = heights.len(), tallest, "bridge decks placed");
+    }
+}
+
+/// How high one deck stands above the ground it crosses, in metres.
+///
+/// `None` while the height layer is still working; `Some(0.0)` is the settled
+/// answer for "no data here" as much as for a bridge that really is at street
+/// level — a Dutch canal bridge is exactly that, and telling the two apart would
+/// buy nothing, because both want a flat deck.
+fn deck_height(
+    layer: &mut HeightLayer,
+    deck: &BridgeDeck,
+    cell: Cell,
+    tile_m: f32,
+    enabled: bool,
+) -> Option<f32> {
+    let to_rd = |p: [f32; 2]| -> [f64; 2] {
+        let (lat, lng) = tile_frac_to_lat_lng(
+            cell.0 as f64 + f64::from(p[0]) / f64::from(tile_m),
+            cell.1 as f64 + f64::from(p[1]) / f64::from(tile_m),
+        );
+        wgs84_to_rd(lat, lng)
+    };
+    // The deck's own outline in RD, which is what says whether a height sample is
+    // on the structure or beside it.
+    let rings: Vec<Vec<[f64; 2]>> = deck
+        .rings
+        .iter()
+        .map(|r| r.iter().map(|p| to_rd(*p)).collect())
+        .collect();
+    let corners = [
+        to_rd(deck.min),
+        to_rd([deck.min[0], deck.max[1]]),
+        to_rd([deck.max[0], deck.min[1]]),
+        to_rd(deck.max),
+    ];
+    let min = [
+        corners.iter().map(|c| c[0]).fold(f64::MAX, f64::min),
+        corners.iter().map(|c| c[1]).fold(f64::MAX, f64::min),
+    ];
+    let max = [
+        corners.iter().map(|c| c[0]).fold(f64::MIN, f64::max),
+        corners.iter().map(|c| c[1]).fold(f64::MIN, f64::max),
+    ];
+    let (lat, lng) = tile_frac_to_lat_lng(
+        cell.0 as f64 + f64::from(deck.min[0] + deck.max[0]) * 0.5 / f64::from(tile_m),
+        cell.1 as f64 + f64::from(deck.min[1] + deck.max[1]) * 0.5 / f64::from(tile_m),
+    );
+    if !enabled || !HeightLayer::covers(lat, lng) {
+        return Some(0.0);
+    }
+
+    let grid = (deck.span_m() / DECK_SAMPLE_M).ceil() as u32;
+    let grid = grid.clamp(DECK_GRID_MIN, DECK_GRID_MAX);
+    let surface = HeightRequest {
+        model: HeightModel::Surface,
+        min,
+        max,
+        grid,
+    };
+    let terrain = HeightRequest {
+        model: HeightModel::Terrain,
+        min,
+        max,
+        grid,
+    }
+    .padded(GROUND_RING_M);
+
+    let deck_top = layer
+        .patch(surface)
+        .and_then(|p| p.median_where(|rd| inside_rings(&rings, rd)));
+    // No predicate on the terrain side: AHN's DTM has the structure cut out of it
+    // already, so everything left in the padded box *is* the ground around it.
+    let ground = layer.patch(terrain).and_then(|p| p.median());
+
+    match (deck_top, ground) {
+        (Some(top), Some(ground)) => {
+            let clearance = (top - ground).clamp(0.0, MAX_DECK_M);
+            Some(if clearance < MIN_LIFT_M { 0.0 } else { clearance })
+        }
+        _ if layer.settled(&surface) && layer.settled(&terrain) => Some(0.0),
+        _ => None,
+    }
+}
+
+/// Even-odd point-in-polygon over a deck's RD rings.
+fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
+    let mut inside = false;
+    for ring in rings {
+        for e in ring.windows(2) {
+            let (a, b) = (e[0], e[1]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let t = (p[1] - a[1]) / (b[1] - a[1]);
+                if p[0] < a[0] + t * (b[0] - a[0]) {
+                    inside = !inside;
+                }
+            }
+        }
+    }
+    inside
+}
+
+/// Web Mercator, fractional tile coordinates → lat/lng. The inverse of
+/// [`lat_lng_to_tile_frac`], for turning a tile-local metre offset back into a
+/// place on the planet — which is what the height layer is addressed by.
+fn tile_frac_to_lat_lng(fx: f64, fy: f64) -> (f64, f64) {
+    let n = 2.0_f64.powi(GEOMETRY_ZOOM as i32);
+    let lng = fx / n * 360.0 - 180.0;
+    let lat = ((1.0 - 2.0 * fy / n) * std::f64::consts::PI)
+        .sinh()
+        .atan()
+        .to_degrees();
+    (lat, lng)
+}
+
+/// Merge a cell's decks into one mesh: each deck's surface at its own height, plus
+/// a fascia band extruded down from its outline.
+///
+/// The fascia is what makes a deck a *structure*. Without it a raised deck is a
+/// sheet with no thickness, and from any angle but straight down it reads as a
+/// texture floating in mid-air rather than as something a road runs over.
+fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    for (deck, &h) in decks.iter().zip(heights) {
+        // Surface.
+        let base = positions.len() as u32;
+        for p in &deck.positions {
+            positions.push([p[0], h, p[2]]);
+            normals.push([0.0, 1.0, 0.0]);
+        }
+        indices.extend(deck.indices.iter().map(|i| base + i));
+
+        if h < FASCIA_MIN_M {
+            continue;
+        }
+        let bottom = h - DECK_THICKNESS_M;
+        for ring in &deck.rings {
+            // The ring's own centroid orients each face outward — cheaper and more
+            // robust than trusting the winding MVT happens to hand us.
+            let n = ring.len().max(1) as f32;
+            let cx = ring.iter().map(|p| p[0]).sum::<f32>() / n;
+            let cz = ring.iter().map(|p| p[1]).sum::<f32>() / n;
+            for e in ring.windows(2) {
+                let (a, b) = (e[0], e[1]);
+                let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                let len = dx.hypot(dz);
+                if len < 1e-3 {
+                    continue;
+                }
+                let mut nx = -dz / len;
+                let mut nz = dx / len;
+                let mid = [(a[0] + b[0]) * 0.5 - cx, (a[1] + b[1]) * 0.5 - cz];
+                if nx * mid[0] + nz * mid[1] < 0.0 {
+                    nx = -nx;
+                    nz = -nz;
+                }
+                let base = positions.len() as u32;
+                for (p, y) in [(a, h), (b, h), (b, bottom), (a, bottom)] {
+                    positions.push([p[0], y, p[1]]);
+                    normals.push([nx, 0.0, nz]);
+                }
+                indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+        }
+    }
+
+    SurfaceMesh {
+        group: SurfaceGroup::BridgeDeck,
+        positions,
+        indices,
+        uvs: Vec::new(),
+        normals,
+        colors: Vec::new(),
     }
 }
 
