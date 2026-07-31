@@ -653,7 +653,8 @@ pub fn update_route_visuals(
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32)>>,
+    mut drawn: Local<Option<(u32, u32, u32)>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -664,7 +665,8 @@ pub fn update_route_visuals(
     // route to the same panel state that (wrongly) stripped the map. `Clear` and
     // editing an endpoint both bump `generation`, so the line still goes away the
     // moment the route it draws does.
-    let key = (route.generation, stream.anchor_generation);
+    // Redrawn when the ground moves under it, too — the line is baked into a mesh.
+    let key = (route.generation, stream.anchor_generation, terrain.revision);
     if *drawn == Some(key) {
         return;
     }
@@ -763,7 +765,17 @@ pub fn update_route_visuals(
     let to_pin = to_local(to_world(&r.points[n - 1]));
 
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-    let mut spawn = |mesh: Mesh, material: Handle<StandardMaterial>, at: DVec3| {
+    let ground = terrain.snapshot();
+    let mut spawn = |mut mesh: Mesh, material: Handle<StandardMaterial>, at: DVec3| {
+        // Follow the measured ground under the road. `ROUTE_Y` still lifts the line
+        // clear of the surface stack; the terrain moves that whole stack, and a
+        // route drawn on the old flat plane would run through the hill the street
+        // goes over.
+        crate::systems::terrain::drape_mesh(
+            &mut mesh,
+            Vec2::new(at.x as f32, at.z as f32),
+            &ground,
+        );
         let (cell, offset) = grid.translation_to_grid(at);
         commands.spawn((
             Mesh3d(meshes.add(mesh)),

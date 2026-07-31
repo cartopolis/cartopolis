@@ -118,6 +118,10 @@ pub struct Lod22Buildings {
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
+    /// Terrain-field revision these cells were built against. The field arrives a
+    /// second or two after the anchor, so the first cells are always built on flat
+    /// ground and have to be rebuilt onto the measured one.
+    terrain_revision: u32,
 }
 
 /// Stream 3DBAG LoD2.2 cells around the camera (ADR-027).
@@ -133,6 +137,7 @@ pub fn update_lod22(
     time: Res<Time>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
     mut osm: ResMut<crate::systems::osm_buildings::OsmBuildings>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -140,8 +145,11 @@ pub fn update_lod22(
 
     // Re-anchor (ADR-025): tear down and re-establish at the new origin. A fresh
     // `results` orphans any in-flight push; `established` re-inits the dispatcher.
-    if lod.synced_gen != stream.anchor_generation {
+    // The ground moving under the buildings invalidates them exactly as a re-anchor
+    // does — every base was computed against the field as it stood.
+    if lod.synced_gen != stream.anchor_generation || lod.terrain_revision != terrain.revision {
         lod.synced_gen = stream.anchor_generation;
+        lod.terrain_revision = terrain.revision;
         for (_, e) in lod.cells.drain() {
             commands.entity(e).despawn();
         }
@@ -235,6 +243,9 @@ pub fn update_lod22(
     let results = lod.results.clone();
     while let Some((cx, cy)) = lod.dispatch.next(now) {
         let results = results.clone();
+        // The terrain travels with the job: a building's base is one height for the
+        // whole footprint, and the footprints only exist inside the worker.
+        let ground = terrain.snapshot();
         // Two halves on two executors, matching the tile path (ADR-033): the fetch
         // is awaited here — free on wasm, where this is the main thread but the
         // browser does the transfer — while the parse and mesh, which are pure
@@ -252,7 +263,7 @@ pub fn update_lod22(
                     }
                 };
                 crate::platform::workers::submit(Box::new(move || {
-                    let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat);
+                    let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
                     if let Ok(mut g) = results.lock() {
                         g.push(((cx, cy), built));
                     }
@@ -390,6 +401,7 @@ fn build_lod22_from_text(
     ay: i64,
     z: u32,
     lat: f64,
+    ground: &crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<Lod22Build>, String> {
     let elements = parse_lod22(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, LOD22_ZOOM);
@@ -435,11 +447,17 @@ fn build_lod22_from_text(
             footprints.push(fp);
         }
 
+        // The whole building steps up to the ground under it — one height for the
+        // footprint, never per vertex. 3DBAG's vertices are heights above the
+        // building's *own* base, so displacing them individually would rack the
+        // walls out of plumb and tilt the roof; a building on a hillside is level,
+        // it is the ground that slopes.
+        let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
         let local: Vec<Vec3> = b
             .p
             .iter()
             .zip(&world_xz)
-            .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h, w.y - oz))
+            .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
             .collect();
         for &(i, j, k, is_roof) in &b.t {
             let (a, bb, c) = (local[i], local[j], local[k]);

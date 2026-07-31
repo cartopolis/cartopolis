@@ -38,7 +38,10 @@ use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
-use crate::systems::vector_tiles::{self, BridgeDeck, SurfaceGroup, SurfaceMesh};
+use crate::systems::street_labels::StreetLabelStore;
+use crate::systems::terrain::TerrainField;
+use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
+use crate::systems::street_furniture::{self, FurnitureLod, FurnitureSurface};
 use crate::systems::vegetation::{self, VegetationLod, VegetationSurface};
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
@@ -156,6 +159,9 @@ pub struct MapSurfaces {
     materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
     /// Anchor generation these cells belong to; a re-anchor clears everything.
     generation: u32,
+    /// Terrain-field revision the live cells were tessellated against, so a field
+    /// that lands (or goes away) after them rebuilds them onto the right ground.
+    terrain_revision: u32,
     /// Cells whose bridge decks are tessellated but not yet *placed*: their height
     /// is a measurement that arrives from `systems::height` some frames later. Held
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
@@ -301,6 +307,9 @@ pub fn update_map_surfaces(
     sea_state: Res<WaterSeaState>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     veg_lod: Res<VegetationLod>,
+    furniture_lod: Res<FurnitureLod>,
+    mut labels: ResMut<StreetLabelStore>,
+    terrain: Res<TerrainField>,
 ) {
     // Always drain the despawn queue, even on the early returns below — a source
     // switch or a climb into space must still clear steadily rather than stall.
@@ -334,6 +343,18 @@ pub fn update_map_surfaces(
     if surfaces.generation != stream.anchor_generation {
         surfaces.generation = stream.anchor_generation;
         surfaces.clear();
+        labels.clear();
+    }
+    // So does the ground moving under them. The measured field lands a second or
+    // two after the anchor it belongs to, by which time these cells have already
+    // been built flat; they are re-tessellated once, against the cached MVT bodies
+    // the first pass fetched. Correcting the meshes in place instead would mean
+    // holding every cell's CPU-side geometry for the life of the cell, to save a
+    // rebuild that happens once per anchor.
+    if surfaces.terrain_revision != terrain.revision {
+        surfaces.terrain_revision = terrain.revision;
+        surfaces.clear();
+        labels.clear();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -422,7 +443,7 @@ pub fn update_map_surfaces(
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
-            let mesh = meshes.add(build_mesh(&sm, wx, wz));
+            let mesh = meshes.add(build_mesh(&sm, wx, wz, &terrain));
             let world = Vec3::new(wx, sm.group.y_offset(), wz);
             let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
                 .translation_to_grid(world.as_dvec3());
@@ -518,6 +539,7 @@ pub fn resolve_bridge_decks(
     mut materials: ResMut<Assets<StandardMaterial>>,
     bigspace: Query<Entity, With<BigSpace>>,
     dl: Res<crate::systems::data_layers::DataLayers>,
+    terrain: Res<TerrainField>,
 ) {
     if surfaces.pending_decks.is_empty() {
         return;
@@ -583,7 +605,12 @@ pub fn resolve_bridge_decks(
             .clone();
         let id = commands
             .spawn((
-                Mesh3d(meshes.add(build_mesh(&mesh, pending.world.x, pending.world.y))),
+                Mesh3d(meshes.add(build_mesh(
+                    &mesh,
+                    pending.world.x,
+                    pending.world.y,
+                    &terrain,
+                ))),
                 MeshMaterial3d(material),
                 Transform::from_translation(local),
                 grid_cell,
@@ -860,40 +887,130 @@ pub fn apply_road_texture(
 /// * **Roads** carry their own UVs from `tessellate_roads` (across × along the
 ///   carriageway) and keep them: those are what register the lane markings with
 ///   the ribbon, and a positional UV would smear the paint across the map.
-fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32) -> Mesh {
+fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
-    // Ground is flat, so the common case is a straight-up normal per vertex; only
-    // the vegetation meshes have volume and bring their own.
-    let normals: Vec<[f32; 3]> = if sm.normals.len() == sm.positions.len() {
+    let mut positions = sm.positions.clone();
+    let mut indices = sm.indices.clone();
+    // Ground is flat *until the terrain field says otherwise*, so the common case is
+    // a straight-up normal per vertex; only the vegetation meshes have volume and
+    // bring their own.
+    let mut normals: Vec<[f32; 3]> = if sm.normals.len() == sm.positions.len() {
         sm.normals.clone()
     } else {
-        vec![[0.0f32, 1.0, 0.0]; sm.positions.len()]
+        Vec::new()
     };
-    let uvs: Vec<[f32; 2]> = if sm.uvs.len() == sm.positions.len() {
+    let mut uvs: Vec<[f32; 2]> = if sm.uvs.len() == sm.positions.len() {
         sm.uvs.clone()
     } else {
-        sm.positions
-            .iter()
-            .map(|p| [wx + p[0], wz + p[2]])
-            .collect()
+        Vec::new()
     };
+    let mut colors: Vec<[f32; 4]> = if sm.colors.len() == sm.positions.len() {
+        sm.colors.clone()
+    } else {
+        Vec::new()
+    };
+
+    if terrain.is_ready() {
+        stand_on_terrain(
+            sm.group,
+            &mut positions,
+            &mut indices,
+            &mut uvs,
+            &mut normals,
+            &mut colors,
+            Vec2::new(wx, wz),
+            terrain,
+        );
+    }
+
+    if normals.is_empty() {
+        normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
+    }
+    if uvs.is_empty() {
+        // The flat-colour groups have no texture; the planar projection is what
+        // the shore field and the water shader read as metres from the anchor.
+        uvs = positions.iter().map(|p| [wx + p[0], wz + p[2]]).collect();
+    }
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, sm.positions.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-    .with_inserted_indices(Indices::U32(sm.indices.clone()));
+    .with_inserted_indices(Indices::U32(indices));
     // `StandardMaterial` multiplies `base_color` by this whenever the attribute is
     // present — which is how one canopy material gives thousands of trees their own
     // tone and brightness without a material or a draw call per tree.
-    if sm.colors.len() == sm.positions.len() {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, sm.colors.clone());
+    if colors.len() == positions.len() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
     mesh
+}
+
+/// Lift one surface group's geometry onto the measured ground.
+///
+/// The group decides *how*, and the three answers are different in kind:
+///
+/// * **Water is level.** A canal follows the valley it sits in, not the slope —
+///   displacing its vertices individually would tip a lake on its side. One height
+///   for the whole body ([`TerrainField::level_over`]), which is also what keeps
+///   the wave shader's flat-plane assumption true.
+/// * **A bridge deck already stands at a measured clearance** over the ground it
+///   crosses, so it takes the terrain *underneath* it and keeps its own height on
+///   top. Displacing it like a road would sink the viaduct back into the yard.
+/// * **Everything else follows the ground per vertex** — after refinement, because
+///   earcut's two-triangle answer for a field has no vertices in the middle to
+///   follow anything with.
+///
+/// Ground surfaces get a fresh normal from the field's own slope; the vegetation
+/// groups keep theirs (a tree's normals describe the tree, not the hill).
+#[allow(clippy::too_many_arguments)]
+fn stand_on_terrain(
+    group: SurfaceGroup,
+    positions: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    uvs: &mut Vec<[f32; 2]>,
+    normals: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    origin: Vec2,
+    terrain: &TerrainField,
+) {
+    let volumetric = matches!(
+        group,
+        SurfaceGroup::Canopy | SurfaceGroup::Trunk | SurfaceGroup::Furniture
+    );
+    // Both of these want *one* height for the whole thing, for opposite reasons: a
+    // water body is level, and a viaduct is straight — the ground under it dipping
+    // into a valley is precisely what it does not do.
+    if matches!(group, SurfaceGroup::Water | SurfaceGroup::BridgeDeck) {
+        let level = terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
+        for p in positions.iter_mut() {
+            p[1] += level;
+        }
+        return;
+    }
+    if !volumetric {
+        crate::systems::terrain::refine_for_terrain(
+            positions,
+            indices,
+            uvs,
+            normals,
+            colors,
+            crate::systems::terrain::MAX_GROUND_EDGE_M,
+        );
+    }
+    for p in positions.iter_mut() {
+        p[1] += terrain.at(origin.x + p[0], origin.y + p[2]);
+    }
+    if !volumetric {
+        *normals = positions
+            .iter()
+            .map(|p| terrain.normal_at(origin.x + p[0], origin.y + p[2]).to_array())
+            .collect();
+    }
 }
 
 /// Seed for a cell's tree scatter. Stable for the cell's absolute tile coordinate,

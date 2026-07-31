@@ -73,6 +73,7 @@ pub fn render_place_pins(
     stream: Res<MapStream>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     if store.data.bookmarks.is_empty() {
         return;
@@ -121,7 +122,7 @@ pub fn render_place_pins(
     let mut jump: Option<Teleport> = None;
     let mut drawn = 0usize;
     for b in &store.data.bookmarks {
-        let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng) else {
+        let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain) else {
             continue;
         };
         let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
@@ -167,6 +168,7 @@ fn place_delta(
     in_space: bool,
     lat: f64,
     lng: f64,
+    terrain: &crate::systems::terrain::TerrainField,
 ) -> Option<DVec3> {
     if in_space {
         // On the sphere itself. The point is visible iff the camera is on its
@@ -178,8 +180,12 @@ fn place_delta(
         ((cam_world - point).dot(normal) > 0.0).then_some(point - cam_world)
     } else {
         let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
-        // Ground level: the streamed map surface is the y = 0 plane in this frame.
-        let delta = DVec3::new(wx, 0.0, wz) - cam_world;
+        // Ground level: `y = 0` is the flat map's surface, and the terrain field is
+        // how far the measured ground stands off it (0 with the layer off). A pin
+        // left at 0 over relief hangs in the air above its own hillside, or sinks
+        // into it — and the pin is *pointing at* a place, so where its tip lands is
+        // the whole feature.
+        let delta = DVec3::new(wx, f64::from(terrain.at(wx as f32, wz as f32)), wz) - cam_world;
         (delta.x.hypot(delta.z) < MAX_FLAT_RANGE_M).then_some(delta)
     }
 }
@@ -423,11 +429,11 @@ mod tests {
         let anchor = (0.0, 0.0, 14);
 
         assert!(
-            place_delta(&globe, anchor, cam, true, 0.0, 0.0).is_some(),
+            place_delta(&globe, anchor, cam, true, 0.0, 0.0, &Default::default()).is_some(),
             "the point straight below the camera is visible"
         );
         assert!(
-            place_delta(&globe, anchor, cam, true, 0.0, 180.0).is_none(),
+            place_delta(&globe, anchor, cam, true, 0.0, 180.0, &Default::default()).is_none(),
             "the antipode is behind the planet"
         );
     }

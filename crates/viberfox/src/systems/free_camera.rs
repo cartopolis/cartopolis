@@ -619,6 +619,7 @@ pub fn camera_controls(
     // The `Transform` gives the avatar's authoritative render yaw for the
     // follow-and-rotate chase (valid in both online and offline run modes).
     avatar_cells: Query<(&GridCell, &Transform), (With<crate::components::Avatar>, Without<FreeCamera>)>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     if camera_query.is_empty() {
         return;
@@ -927,8 +928,13 @@ pub fn camera_controls(
                 camera_transform.translation += velocity * delta_time;
             }
 
-            // Prevent going below ground.
-            let ground_height = get_ground_height(camera_transform.translation, &region_mesh_query);
+            // Prevent going below ground — including the measured ground, or flying
+            // low over the Veluwe puts the camera inside the hill.
+            let ground_height = get_ground_height(camera_transform.translation, &region_mesh_query)
+                + terrain.at(
+                    camera_cell.x as f32 * WORLD_CELL_EDGE + camera_transform.translation.x,
+                    camera_cell.z as f32 * WORLD_CELL_EDGE + camera_transform.translation.z,
+                );
             let min_height = ground_height + MIN_CAMERA_HEIGHT;
             let lift = ground_lift(camera_cell.y as f64, camera_transform.translation.y, min_height);
             if lift > 0.0 {

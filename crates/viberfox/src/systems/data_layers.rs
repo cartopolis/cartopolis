@@ -331,6 +331,8 @@ pub struct DataLayers {
     pub height_enabled: bool,
     /// Info card for a clicked POI (name, address, website links).
     pub popup: Option<PoiPopup>,
+    /// Terrain-field revision the live marker cells were built against.
+    terrain_revision: u32,
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
     /// (`MapStream`), so pins follow re-anchors like the buildings (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
@@ -505,6 +507,7 @@ pub fn update_data_layers(
     time: Res<Time>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -513,8 +516,11 @@ pub fn update_data_layers(
     // Re-anchor (ADR-025): when the map origin moves, drop every loaded cell and
     // re-establish at the new location, exactly like the buildings. Dropping
     // `jobs` retires the old worker; a fresh `results` orphans in-flight builds.
-    if dl.synced_gen != stream.anchor_generation {
+    // …and when the ground moves under them: every marker was placed on the field
+    // as it stood, which for the first cells of an anchor is the flat plane.
+    if dl.synced_gen != stream.anchor_generation || dl.terrain_revision != terrain.revision {
         dl.synced_gen = stream.anchor_generation;
+        dl.terrain_revision = terrain.revision;
         for layer in dl.layers.iter_mut() {
             for (_, ents) in layer.cells.drain() {
                 for e in ents {
@@ -606,9 +612,10 @@ pub fn update_data_layers(
     let results = dl.results.clone();
     while let Some((li, cx, cy)) = dl.dispatch.next(now_secs) {
         let results = results.clone();
+        let ground = terrain.snapshot();
         IoTaskPool::get()
             .spawn(async move {
-                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat).await;
+                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat, ground).await;
                 if let Ok(mut g) = results.lock() {
                     g.push((li, (cx, cy), built));
                 }
@@ -1430,6 +1437,7 @@ async fn build_layer_cell(
     ay: i64,
     z: u32,
     lat: f64,
+    ground: crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<CellBuild>, String> {
     let def = &LAYER_DEFS[li];
     let pois = fetch_cell(def, cx, cy).await?;
@@ -1458,6 +1466,11 @@ async fn build_layer_cell(
         let w = lat_lng_to_local(poi.lat, poi.lng, ax, ay, z, tile_m);
         let local = Vec2::new(w.x - ox, w.y - oz);
         let style = &def.categories[poi.category].1;
+        // A pole is street furniture: it stands on the ground, and the ground is
+        // measured now (`systems::terrain`). One height for the whole marker.
+        let base_y = ground.at(w.x, w.y);
+        buf.set_base(base_y);
+        heads.set_base(base_y);
         push_marker(&mut buf, &mut heads, local, def.shape, style);
         // Anchor (click target + popup + board mount): just clear of the pole's
         // sign plate, or the gem-head centre for a pin.
@@ -1467,7 +1480,7 @@ async fn build_layer_cell(
         };
         instances.push(PoiInstance {
             cell: grid_cell,
-            anchor: Vec3::new(local.x, anchor_y, local.y),
+            anchor: Vec3::new(local.x, anchor_y + base_y, local.y),
             name: poi.name.clone(),
             live_id: poi.live_id.clone(),
             category: poi.category,
@@ -1680,6 +1693,53 @@ mod tests {
         assert!(restored.layers[0].enabled);
         assert!(restored.buildings_enabled, "untouched toggles keep defaults");
         assert_eq!(restored.prefs(), prefs);
+    }
+
+    /// The persisted sky is the user's, not driver mode's. Quitting mid-drive
+    /// must not save the stripped sky (manual, clear, dry) as a preference and
+    /// hand it back on the next launch.
+    #[test]
+    fn sky_prefs_see_past_driver_mode() {
+        use crate::resources::{DevPanelState, SunMode};
+        use crate::systems::weather::WeatherState;
+
+        let dl = DataLayers::default();
+        let dev = DevPanelState { fog_density: 0.4, cloud_cover: 0.7, ..default() };
+        let weather = WeatherState::with_live(true);
+
+        // Not driving: what's on screen is what the user set.
+        let live = dl.sky_prefs(&dev, &weather);
+        assert!(live.weather_live);
+        assert_eq!(live.cloud_cover, 0.7);
+        assert_eq!(live.sun_mode, SunMode::Auto);
+        assert_eq!(live.time_of_day, None, "only Manual owns the clock");
+
+        // Driving: the entry snapshot is, even though the live state is bare.
+        let mut driving = dl;
+        driving.minimal = Some(MinimalSave {
+            buildings: true,
+            vehicles: false,
+            trees: true,
+            furniture: true,
+            layers: vec![false; LAYER_DEFS.len()],
+            fog_density: 0.4,
+            cloud_cover: 0.7,
+            precipitation: 0.2,
+            weather_live: true,
+        });
+        let bare = DevPanelState {
+            sun_mode: SunMode::Manual,
+            time_of_day: 6.5,
+            fog_density: 0.0,
+            cloud_cover: 0.0,
+            precipitation: 0.0,
+            ..default()
+        };
+        let saved = driving.sky_prefs(&bare, &WeatherState::default());
+        assert!(saved.weather_live, "live weather was only frozen for the drive");
+        assert_eq!(saved.cloud_cover, 0.7);
+        assert_eq!(saved.precipitation, 0.2);
+        assert_eq!(saved.time_of_day, Some(6.5), "Manual saves its hour");
     }
 
     /// Does a `request_discard` on the click frame eat a checkbox toggle

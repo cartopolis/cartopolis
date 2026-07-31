@@ -269,6 +269,11 @@ pub struct ShotMetrics {
     /// column to watch in a `--frames` sweep through 500–2000 m — a jump between
     /// adjacent rows is the seam a single still cannot show.
     pub veg_factor: f32,
+    /// The same measurement for the street furniture (`systems::street_furniture`):
+    /// 0 = benches and bins standing individually, 1 = merged into the paving and
+    /// hidden. Its band is 150–450 m, an order of magnitude below the trees', so
+    /// the two columns move at completely different points in a climb.
+    pub furniture_factor: f32,
     pub globe_entities: usize,
     pub globe_visible: usize,
     pub globe_rendered: usize,
@@ -284,19 +289,27 @@ pub struct ShotMetrics {
     /// the whole question you ask of a layer that only works over one country.
     pub ground_m: f32,
     pub height_patches: usize,
+    /// Whether the terrain field has baked (`systems::terrain`), and the relief it
+    /// found over its 6.4 km box, in metres. Together they separate the three ways
+    /// a flat-looking capture can be flat: no field at all (layer off, outside
+    /// AHN, still fetching), a field over genuinely flat ground (a polder reads
+    /// ~2 m), and a field with relief in it that something downstream isn't using.
+    pub terrain_ready: bool,
+    pub terrain_relief_m: f32,
 }
 
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
 /// so the two never drift; a mismatch would silently mislabel columns.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
-orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,globe_entities,\
-globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches";
+orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
+globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches,\
+terrain_ready,terrain_relief_m";
 
 impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{}",
+            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{:.2}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -313,6 +326,7 @@ impl ShotMetrics {
             self.bloom,
             self.globe_albedo,
             self.veg_factor,
+            self.furniture_factor,
             self.globe_entities,
             self.globe_visible,
             self.globe_rendered,
@@ -320,6 +334,8 @@ impl ShotMetrics {
             self.route_rendered,
             self.ground_m,
             self.height_patches,
+            self.terrain_ready,
+            self.terrain_relief_m,
         )
     }
 }
@@ -860,6 +876,8 @@ pub fn drive_capture(
         Res<GlobeSurfaceAlbedo>,
         Res<crate::systems::vegetation::VegetationLod>,
         Res<crate::systems::height::HeightLayer>,
+        Res<crate::systems::terrain::TerrainField>,
+        Res<crate::systems::street_furniture::FurnitureLod>,
     ),
     camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
@@ -957,6 +975,7 @@ pub fn drive_capture(
             bloom: bloom.intensity,
             globe_albedo: readouts.0 .0,
             veg_factor: readouts.1.factor,
+            furniture_factor: readouts.4.factor,
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
             globe_entities: globe_meshes.iter().count(),
@@ -964,6 +983,8 @@ pub fn drive_capture(
             globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
             ground_m: readouts.2.ground_m.unwrap_or(f32::NAN),
             height_patches: readouts.2.fetched,
+            terrain_ready: readouts.3.is_ready(),
+            terrain_relief_m: readouts.3.range_m.1 - readouts.3.range_m.0,
         };
         tracing::info!(
             shot = m.shot,
@@ -980,6 +1001,7 @@ pub fn drive_capture(
             bloom = format!("{:.3}", m.bloom),
             globe_albedo = format!("{:.3}", m.globe_albedo),
             veg_factor = format!("{:.3}", m.veg_factor),
+            furniture_factor = format!("{:.3}", m.furniture_factor),
             route_meshes = m.route_meshes,
             route_rendered = m.route_rendered,
             globe_entities = m.globe_entities,
@@ -987,6 +1009,8 @@ pub fn drive_capture(
             globe_rendered = m.globe_rendered,
             ground_m = format!("{:.2}", m.ground_m),
             height_patches = m.height_patches,
+            terrain_ready = m.terrain_ready,
+            terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
             "shot state"
         );
         progress.metrics.push(m);
@@ -1172,6 +1196,7 @@ mod tests {
             bloom: 0.15,
             globe_albedo: 1.0,
             veg_factor: 0.0,
+            furniture_factor: 0.0,
             globe_entities: 0,
             globe_visible: 0,
             globe_rendered: 0,
@@ -1179,6 +1204,8 @@ mod tests {
             route_rendered: 0,
             ground_m: f32::NAN,
             height_patches: 0,
+            terrain_ready: false,
+            terrain_relief_m: 0.0,
         };
         assert_eq!(
             CSV_HEADER.split(',').count(),

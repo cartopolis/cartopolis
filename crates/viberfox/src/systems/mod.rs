@@ -35,6 +35,7 @@ pub mod theme;
 pub mod tile_loader;
 pub mod transit_live;
 pub mod splash;
+pub mod terrain;
 pub mod transit_vehicles;
 pub mod ui;
 pub mod user_store;

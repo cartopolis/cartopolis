@@ -422,7 +422,16 @@ pub struct AvatarState {
     /// Authoritative sim position (from server when online).
     pub position: Vec3,
     /// Visual follow target: smoothed toward `position` online so camera and mesh do not stutter at tick rate.
+    ///
+    /// This is also where the **terrain** enters (`systems::terrain`): `position` is
+    /// the sim's, on the flat plane the sim simulates, and this one stands on the
+    /// measured ground. The gap between them is [`Self::terrain_lift`].
     pub display_position: Vec3,
+    /// Metres of measured ground currently folded into `display_position` (online
+    /// only — offline the terrain is the ground level itself, so the transform
+    /// carries it). Stripped before each reconciliation so prediction and
+    /// correction are compared on the same flat plane.
+    pub terrain_lift: f32,
     /// Online client-side prediction: the world-space velocity most recently sent
     /// to the sim (after collision steering + fly scaling), replicating the sim's
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
@@ -451,6 +460,7 @@ impl Default for AvatarState {
         Self {
             position: p,
             display_position: p,
+            terrain_lift: 0.0,
             predicted_velocity: Vec3::ZERO,
             snapshot_age: 0.0,
             facing_yaw: 0.0,

@@ -360,6 +360,7 @@ pub fn update_transit_vehicles(
         (&mut Transform, &mut GridCell),
         (With<VehicleLabel>, Without<VehicleBox>, Without<FreeCamera>),
     >,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     let tv = tv.as_mut();
 
@@ -429,7 +430,10 @@ pub fn update_transit_vehicles(
     // that lands 80 vehicles at once spreads over frames instead of one burst.
     let mut spawn_budget = MAX_VEHICLE_SPAWNS_PER_FRAME;
     for (_, id, pos, yaw, transport, line) in &target {
-        let (cell, local) = grid.translation_to_grid(Vec3::new(pos.x, 0.0, pos.y).as_dvec3());
+        // On the measured ground: a bus is a thing standing in the street, and the
+        // street has moved.
+        let ground = terrain.at(pos.x, pos.y);
+        let (cell, local) = grid.translation_to_grid(Vec3::new(pos.x, ground, pos.y).as_dvec3());
         let translation = local + Vec3::new(0.0, BUS_HEIGHT * 0.5, 0.0);
         let rotation = Quat::from_rotation_y(*yaw);
         if let Some(&e) = tv.entities.get(id) {

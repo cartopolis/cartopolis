@@ -375,6 +375,157 @@ fn spawn_map_tile(
         .detach();
 }
 
+/// Resting height of a clipmap level's tiles, relative to the ground plane.
+///
+/// A fixed function of the *zoom*, not the pyramid level: level indices shift when
+/// altitude changes the finest zoom, and cached tiles keep their spawn height —
+/// zoom-keyed heights mean a given tile is always at the same y, so coarser
+/// imagery can never end up on top.
+fn level_y(base_zoom: u32, zoom: u32) -> f32 {
+    -0.03 - 0.4 * base_zoom.saturating_sub(zoom) as f32
+}
+
+/// Marker on a tile whose flat quad has been replaced by ground lifted onto the
+/// terrain field, carrying the field revision it was built for.
+#[derive(Component)]
+pub struct TileRelief {
+    revision: u32,
+}
+
+/// Subdivisions per side for a relief tile of `tile_m` metres: one quad per
+/// terrain sample, so the mesh carries exactly the measurements the field holds
+/// and not one vertex more.
+///
+/// This has to be a function of the tile, not a constant. The clipmap's finest
+/// zoom follows altitude — over a Dutch city it is z17, a **184 m** tile, not the
+/// ~1.5 km one a fixed 48 was sized for — and the same constant is applied to all
+/// four levels that qualify for relief. That put 4,608 triangles on a tile the
+/// field describes with 7 samples across: ~8× over-subdivided per axis, 64× in
+/// triangles, interpolating detail that was never measured. Measured on the
+/// Groningen anchor (2026-07-31, `--offline`, settled, 60 m): the basemap went
+/// from 3k triangles flat to **942k** with relief, the shadow pass from 1.07M to
+/// 2.96M, and the frame rate from ~26 fps to 10–11 — which is also what made the
+/// egui panels feel broken, the click bridge spending one pass per pointer event.
+///
+/// Sizing off [`TERRAIN_SAMPLE_M`] instead keeps every level agreeing with the
+/// *same* field to within one interpolation step. That matters beyond the triangle
+/// count: relieved levels are stacked only 0.4 m apart, so a coarse level that
+/// approximated the ground more crudely than the fine one above it would poke
+/// through it on any slope.
+fn relief_divisions(tile_m: f32) -> usize {
+    // A backstop on one mesh, not a quality knob — and deliberately above what
+    // [`RELIEF_MAX_TILE_M`] can ask for (~100), because a level that subdivided
+    // *more* coarsely than the one above it is the poke-through this rule exists
+    // to prevent. The field is 256 samples across, so nothing inside it can
+    // honestly ask for more than that either.
+    const MAX_DIVISIONS: usize = 128;
+    ((tile_m / crate::systems::terrain::TERRAIN_SAMPLE_M).ceil() as usize).clamp(1, MAX_DIVISIONS)
+}
+
+/// Largest tile that gets relief, in metres. Coarser levels of the clipmap span
+/// tens of kilometres against a 6.4 km field: a grid that coarse could only draw a
+/// blocky caricature of the same ground the fine tiles carry properly, and it
+/// would poke through them.
+const RELIEF_MAX_TILE_M: f32 = 2_500.0;
+
+/// Relief meshes built per frame. A burst of mesh uploads in one command buffer is
+/// the documented device-loss pattern (see CLAUDE.md), and the cost is per *build*
+/// regardless of how big each one is.
+const MAX_RELIEF_BUILDS_PER_FRAME: usize = 2;
+
+/// Stand the basemap tiles on the terrain field, and get out of the way of the
+/// tiles that can't be.
+///
+/// Two halves, and the second is not optional. The finest tiles inside the field
+/// get a subdivided, displaced mesh. **Every coarser level then sinks** below the
+/// field's lowest point, because the clipmap stacks levels only 0.4 m apart: a
+/// dip of eight metres — routine in a Dutch polder — would otherwise drop the
+/// detailed tile *underneath* the coarse imagery it is supposed to be refining,
+/// and the hollow would fill with blurry z10 pixels.
+pub fn apply_terrain_to_tiles(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    stream: Res<MapStream>,
+    field: Res<crate::systems::terrain::TerrainField>,
+    mut tiles: Query<(Entity, &StreamTile, &mut Transform, Option<&TileRelief>)>,
+    mut last_revision: Local<u32>,
+) {
+    let Some((clat, clng, base_zoom)) = stream.anchor else {
+        return;
+    };
+    let revision = field.revision;
+    let sink = if field.is_ready() {
+        // A metre of clearance under the deepest hollow the field knows about.
+        field.range_m.0.min(0.0) - 1.0
+    } else {
+        0.0
+    };
+
+    let mut built = 0;
+    for (entity, tile, mut tf, relief) in tiles.iter_mut() {
+        let gs = tile_to_meters(tile.key.z, clat) as f32;
+        let relieved = field.is_ready() && gs <= RELIEF_MAX_TILE_M;
+        // Coarse levels: sit below the deepest part of the relief. Fine ones keep
+        // their own resting height and carry the displacement in the mesh.
+        let want_y = level_y(base_zoom, tile.key.z) + if relieved { 0.0 } else { sink };
+        if (tf.translation.y - want_y).abs() > 1e-3 {
+            tf.translation.y = want_y;
+        }
+
+        if !relieved {
+            if relief.is_some() {
+                // The field went away (layer off, out of coverage, re-anchored to
+                // Berlin): back to the shared flat quad.
+                if let Some(quad) = stream.quads.get(&tile.key.z) {
+                    commands
+                        .entity(entity)
+                        .insert(Mesh3d(quad.clone()))
+                        .remove::<TileRelief>()
+                        .remove::<bevy::light::NotShadowCaster>();
+                }
+            }
+            continue;
+        }
+        if relief.is_some_and(|r| r.revision == revision) || built >= MAX_RELIEF_BUILDS_PER_FRAME {
+            continue;
+        }
+        // Where this tile's centre sits in the anchored world frame — the same
+        // arithmetic that placed it, so the mesh samples the field under itself.
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
+        let centre = Vec2::new(
+            ((tile.key.x as f64 + 0.5 - fcx) * gs as f64) as f32,
+            ((tile.key.y as f64 + 0.5 - fcy) * gs as f64) as f32,
+        );
+        // Tiles wholly outside the field are flat ground the shared quad already
+        // draws; only the ones the field reaches need geometry of their own.
+        let reach = crate::systems::terrain::TERRAIN_HALF_M + gs * 0.5;
+        if centre.x.abs() > reach || centre.y.abs() > reach {
+            continue;
+        }
+        let mesh =
+            crate::systems::terrain::displaced_grid(&field, centre, gs, relief_divisions(gs));
+        commands
+            .entity(entity)
+            .insert(Mesh3d(meshes.add(mesh)))
+            .insert(TileRelief { revision })
+            // The ground does not cast: four clipmap levels of relief are drawn
+            // again into every shadow cascade, which measured as ~2.5× the mesh's
+            // own cost (`ktris_shadow` 1.07M flat → 2.96M) — for self-shadowing
+            // that a 25 m field can barely express and that shows up mostly as
+            // acne. `lod22` gives up distant building shadows for the same reason.
+            // The trade is real and deliberate: a hill no longer darkens the
+            // valley behind it at a low sun. Over Dutch relief (±2 m) that is
+            // invisible; if the Veluwe ever needs it, it belongs to the finest
+            // level alone, not to all four.
+            .insert(bevy::light::NotShadowCaster);
+        built += 1;
+    }
+    if built > 0 && *last_revision != revision {
+        *last_revision = revision;
+        tracing::info!(revision, sink_m = sink, "terrain relief on the basemap");
+    }
+}
+
 /// Spawn ground tiles within `LOAD_RADIUS` of the camera; despawn the rest.
 pub fn update_map_stream(
     mut commands: Commands,
@@ -707,5 +858,61 @@ pub fn apply_stream_textures(
                 uploaded += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relief grid must follow the tile, not a constant. A fixed 48 was sized
+    /// for a ~1.5 km tile and then applied to the 184 m ones the clipmap actually
+    /// streams over a city, which is where the 942k-triangle basemap came from.
+    #[test]
+    fn relief_grid_matches_the_field_not_the_zoom() {
+        let sample = crate::systems::terrain::TERRAIN_SAMPLE_M;
+        assert!(
+            (sample - 25.1).abs() < 0.2,
+            "the field is a 25 m grid; this test's numbers assume it: {sample}"
+        );
+
+        // The four clipmap levels that qualify for relief at Dutch latitudes.
+        for (tile_m, want) in [(184.0, 8), (368.0, 15), (736.0, 30), (1471.0, 59)] {
+            assert_eq!(
+                relief_divisions(tile_m),
+                want,
+                "a {tile_m} m tile wants one quad per sample"
+            );
+        }
+
+        // Across the whole relief range, a quad is never coarser than a sample (the
+        // level above would poke through it) and never much finer (geometry paid
+        // for detail nothing measured). The cap must not bite inside this range.
+        for tile_m in [50.0, 184.0, 400.0, 1471.0, RELIEF_MAX_TILE_M] {
+            let quad_m = tile_m / relief_divisions(tile_m) as f32;
+            assert!(
+                quad_m <= sample,
+                "{tile_m} m tile: {quad_m} m quads under-describe the field"
+            );
+            assert!(
+                quad_m > sample * 0.5,
+                "{tile_m} m tile: {quad_m} m quads interpolate detail nothing measured"
+            );
+        }
+
+        // And the finest tile is an order of magnitude cheaper than the old fixed
+        // grid — the frame-rate regression this fixes.
+        let tris = |d: usize| d * d * 2;
+        assert!(
+            tris(relief_divisions(184.0)) * 30 < tris(48),
+            "the z17 tile should be >30x cheaper than the old fixed 48"
+        );
+    }
+
+    /// A tile far coarser than the field still yields a bounded mesh.
+    #[test]
+    fn relief_grid_is_bounded() {
+        assert_eq!(relief_divisions(1.0e6), 128);
+        assert_eq!(relief_divisions(0.0), 1);
     }
 }

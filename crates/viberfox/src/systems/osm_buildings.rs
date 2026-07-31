@@ -311,6 +311,8 @@ pub struct OsmBuildings {
     /// The `MapStream::anchor_generation` this patch is built for; a change resets
     /// it and re-establishes the anchor at the new origin.
     synced_gen: u32,
+    /// Terrain-field revision the live buildings stand on; a change rebuilds them.
+    terrain_revision: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
     /// Last-seen (3DBAG toggle, coverage resolved) pair. A patch bakes its
@@ -519,6 +521,7 @@ pub fn update_buildings(
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut colliders: ResMut<crate::systems::collision::BuildingColliders>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     // Fire the 3DBAG coverage prefetch once (async, off the main thread) — the
     // coverage predicates report "uncovered" until it lands, then upgrade.
@@ -532,8 +535,12 @@ pub fn update_buildings(
     // re-establish it at the new location. Dropping `far_jobs` ends the old
     // worker (its `recv` errors), and a fresh `far_results` orphans any in-flight
     // result it still pushes, so nothing from the old origin leaks through.
-    if osm.synced_gen != stream.anchor_generation {
+    // The measured ground lands after the anchor it belongs to, so the first
+    // buildings are always extruded onto the flat plane; rebuilding them is the
+    // same teardown a re-anchor does.
+    if osm.synced_gen != stream.anchor_generation || osm.terrain_revision != terrain.revision {
         osm.synced_gen = stream.anchor_generation;
+        osm.terrain_revision = terrain.revision;
         for e in osm.detail_entities.drain(..) {
             commands.entity(e).despawn();
         }
@@ -664,6 +671,8 @@ pub fn update_buildings(
         // f32 remains precise at any range.
         let (patch_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
+        // The ground travels with the job (see `MeshData::set_base`).
+        let ground = terrain.snapshot();
         IoTaskPool::get().spawn(async move {
             let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
             crate::platform::workers::submit(Box::new(move || {
@@ -697,6 +706,12 @@ pub fn update_buildings(
                                 Vec2::new(w.x - cell_ox, w.y - cell_oz)
                             })
                             .collect();
+                        // Stand it on the measured ground, one height for the whole
+                        // footprint (see `MeshData::set_base`).
+                        let base =
+                            ground.level_over(ring.iter().map(|p| [p.x + cell_ox, p.y + cell_oz]));
+                        bld.set_base(base);
+                        wins.iter_mut().for_each(|w| w.set_base(base));
                         push_building(
                             &mut bld,
                             &mut wins,
@@ -792,6 +807,8 @@ pub fn update_buildings(
         let results = osm.far_results.clone();
         let spawn_cell = |cx: i64, cy: i64| {
             let results = results.clone();
+            // The ground travels with the job — footprints only exist in there.
+            let ground = terrain.snapshot();
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
             // on wasm `IoTaskPool` is the main thread, so this whole thing used to
             // run on the frame loop.
@@ -800,7 +817,7 @@ pub fn update_buildings(
                     match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
                         Ok(text) => {
                             crate::platform::workers::submit(Box::new(move || {
-                                let built = build_far_from_text(&text, cx, cy, ax, ay, z, lat);
+                                let built = build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
                                 if let Ok(mut g) = results.lock() {
                                     g.push(((cx, cy), built));
                                 }
@@ -1012,6 +1029,7 @@ fn build_far_from_text(
     ay: i64,
     z: u32,
     lat: f64,
+    ground: &crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<FarCellBuild>, String> {
     let buildings = parse_buildings(text)?;
     let (north, west) = tile_to_lat_lng(cx, cy, CACHE_ZOOM);
@@ -1053,6 +1071,9 @@ fn build_far_from_text(
         // the far volume sits *under* its detailed twin in the overlap region,
         // instead of a flat slab poking up through the pitched roof (Stage 1).
         let eaves = detail_eaves(b, &ring);
+        let base = ground.level_over(ring.iter().map(|p| [p.x + ox, p.y + oz]));
+        buf.set_base(base);
+        wins.iter_mut().for_each(|w| w.set_base(base));
         push_building_lod(
             &mut buf,
             &mut wins,
@@ -1168,6 +1189,8 @@ pub(crate) struct MeshData {
     /// normal *and* colour all match instead of appending a fresh one. See
     /// [`MeshData::with_dedup`].
     dedup: Option<HashMap<VertexKey, u32, BuildHasherDefault<VertexHasher>>>,
+    /// Ground offset added to every vertex pushed — see [`MeshData::set_base`].
+    base_y: f32,
 }
 
 /// A vertex's position, flat normal and colour, as raw bit patterns.
@@ -1248,8 +1271,20 @@ impl MeshData {
         }
     }
 
+    /// Lift every vertex pushed from now on by `base` metres — the measured ground
+    /// under the building about to be written (`systems::terrain`).
+    ///
+    /// A whole-building offset applied at the buffer, rather than threaded through
+    /// the dozen y-coordinates a wall, roof, ridge and window row each compute, and
+    /// applied *before* the dedup key so a lifted corner can never be merged with an
+    /// identically-shaped one on different ground.
+    pub(crate) fn set_base(&mut self, base: f32) {
+        self.base_y = base;
+    }
+
     /// Append (or, in dedup mode, look up) one vertex and return its index.
     fn vertex(&mut self, v: Vec3, n: Vec3, color: [f32; 4]) -> u32 {
+        let v = Vec3::new(v.x, v.y + self.base_y, v.z);
         // Hash the bit patterns, not the floats: these are copied values, so equal
         // corners are bit-equal. (NaN can't arise here — `normalize_or_zero`.)
         let key: Option<VertexKey> = self.dedup.is_some().then(|| {

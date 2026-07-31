@@ -809,6 +809,7 @@ pub fn smooth_online_avatar_display(
     mut avatar_state: ResMut<AvatarState>,
     time: Res<Time>,
     mut avatar_query: Query<&mut Transform, With<Avatar>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     let dt = time.delta_secs();
     if online.is_some() {
@@ -833,6 +834,15 @@ pub fn smooth_online_avatar_display(
         let mut target =
             avatar_state.position + avatar_state.predicted_velocity * avatar_state.snapshot_age;
         let mut display = avatar_state.display_position + avatar_state.predicted_velocity * dt;
+        // The sim has no terrain and never will — it holds no map data at all, and
+        // the map streams only on the client. So the ground is added *here*, on the
+        // display side: the wire, the prediction and the reconciliation all stay on
+        // the flat plane the sim actually simulates, and only what you see stands on
+        // the measured one. Last frame's lift comes off first for exactly that
+        // reason — smoothing a lifted position toward a flat target would drag the
+        // avatar back into the hillside every frame, and the two would fight for as
+        // long as you stood on a slope.
+        display.y -= avatar_state.terrain_lift;
         // Match the sim's ground clamp (`state::step`, y >= 0) so a fly-down
         // prediction doesn't dip through the floor and bounce back.
         if display.y < 0.0 {
@@ -841,7 +851,7 @@ pub fn smooth_online_avatar_display(
         if target.y < 0.0 {
             target.y = 0.0;
         }
-        avatar_state.display_position = if display.distance(target) > ONLINE_SNAP_ERROR {
+        let flat = if display.distance(target) > ONLINE_SNAP_ERROR {
             // Teleport / correction / resumed stream: ease-in would visibly slide
             // the avatar across the map instead of arriving.
             target
@@ -849,6 +859,8 @@ pub fn smooth_online_avatar_display(
             let reconcile = 1.0 - (-ONLINE_RECONCILE_RATE * dt).exp();
             display.lerp(target, reconcile)
         };
+        avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
+        avatar_state.display_position = flat + Vec3::Y * avatar_state.terrain_lift;
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }
@@ -868,6 +880,7 @@ pub fn handle_avatar_movement(
     edit_dialog: Res<crate::resources::EditDialogState>,
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     // Don't move avatar unless the follow camera is active (Free and Earth
     // modes decouple the camera from the avatar).
@@ -943,7 +956,10 @@ pub fn handle_avatar_movement(
         // or a fall around a building it clears) when the buildings layer is on.
         // Footprints live in the anchored world-XZ frame, so resolve the move in
         // absolute metres (cell + local).
-        let airborne = transform.translation.y > GROUND_HEIGHT + AIRBORNE_EPS;
+        let airborne = transform.translation.y
+            > GROUND_HEIGHT
+                + terrain.at(transform.translation.x, transform.translation.z)
+                + AIRBORNE_EPS;
         if !airborne && layers.buildings_enabled && !colliders.is_empty() {
             use crate::systems::free_camera::WORLD_CELL_EDGE;
             let base = Vec2::new(
@@ -969,17 +985,22 @@ pub fn handle_avatar_movement(
     // flying falls, whatever it is holding. Same rule as the sim
     // (`SimWorld::step`), so switching flight off in mid-air brings the avatar
     // down in either run mode.
+    // Offline, this transform *is* the avatar's state, so the terrain enters as the
+    // ground level itself rather than as a display offset the way it does online
+    // (`smooth_online_avatar_display`): lifting the transform after the fact would
+    // read as airborne on the next frame and gravity would take it straight back.
+    let ground_y = GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z);
     if avatar_state.is_flying {
         if fly_up {
             transform.translation.y += FLY_VERTICAL_SPEED * delta_time;
-        } else if fly_down && transform.translation.y > GROUND_HEIGHT {
+        } else if fly_down && transform.translation.y > ground_y {
             transform.translation.y -= FLY_VERTICAL_SPEED * delta_time;
         }
     } else {
         transform.translation.y -= FALL_SPEED * delta_time;
     }
-    if transform.translation.y < GROUND_HEIGHT {
-        transform.translation.y = GROUND_HEIGHT;
+    if transform.translation.y < ground_y {
+        transform.translation.y = ground_y;
     }
 
     // Update avatar state position to match transform (important for camera following)

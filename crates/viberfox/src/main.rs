@@ -505,6 +505,7 @@ fn main() {
     .init_resource::<systems::lod22::Lod22Buildings>()
     .init_resource::<systems::collision::BuildingColliders>()
     .init_resource::<systems::height::HeightLayer>()
+    .init_resource::<systems::terrain::TerrainField>()
     .insert_resource({
         // `--height` is the only way into the layer in a scripted run; an
         // interactive session ticks it in the Layers panel (or restores it from
@@ -700,6 +701,12 @@ fn main() {
                 systems::height::probe_anchor_ground
                     .after(systems::map_stream::apply_reanchor)
                     .before(systems::height::poll_height_layer),
+                // Terrain relief: one measured box per anchor, baked into the field
+                // every ground-attached system samples. Asks *before* the queue is
+                // polled so a fetch it starts is dispatched the same frame.
+                systems::terrain::update_terrain_field
+                    .after(systems::map_stream::apply_reanchor)
+                    .before(systems::height::poll_height_layer),
             ),
             systems::map_stream::init_map_stream.after(rendering::spawn_regions),
             // Re-anchor requests (from teleports / globe descent) drop the old
@@ -737,6 +744,12 @@ fn main() {
             (
                 systems::map_stream::apply_stream_textures
                     .after(systems::map_stream::update_map_stream),
+                // Stand the basemap on the measured ground. After the spawn pass,
+                // so a tile that appeared this frame is lifted in the same frame
+                // it is placed rather than showing flat for one.
+                systems::map_stream::apply_terrain_to_tiles
+                    .after(systems::map_stream::update_map_stream)
+                    .after(systems::terrain::update_terrain_field),
                 // Vector surfaces as geometry (ADR-035 option B): water and landuse
                 // meshes over the textured tiles. No-op on a raster tile source.
                 systems::map_geometry::update_map_surfaces
