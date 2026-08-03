@@ -51,12 +51,20 @@ const OVERPASS_SELF_CONCURRENCY: usize = 4;
 
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
-/// load — see `docs/guides/server.md`). Override with `VIBE_OVERPASS_URL`, e.g.
-/// the public `https://overpass-api.de/api/interpreter`.
+/// load — see `docs/guides/server.md`). Override with `VIBE_OVERPASS_URL`.
 const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter";
 
-/// Resolve the Overpass endpoint from `VIBE_OVERPASS_URL`, falling back to the
-/// self-hosted default.
+/// Public Overpass instance, tried only after the primary endpoint has exhausted
+/// its retries. Our own instance being down (or not yet seeded for the area you
+/// flew to — it carries a Netherlands extract, and OSM does not stop at the
+/// border) otherwise means no buildings at all, which reads as "this city has no
+/// buildings" rather than as an outage. The public instance is *not* the default:
+/// it is heavily shared and rate-limits under the streaming load a single client
+/// generates, so it is a degraded mode, not a peer.
+const FALLBACK_OVERPASS_URL: &str = "https://overpass-api.de/api/interpreter";
+
+/// Resolve the primary Overpass endpoint from `VIBE_OVERPASS_URL`, falling back to
+/// the self-hosted default.
 fn overpass_url() -> String {
     std::env::var("VIBE_OVERPASS_URL").unwrap_or_else(|_| DEFAULT_OVERPASS_URL.to_string())
 }
@@ -82,6 +90,47 @@ pub(crate) fn overpass_pace() -> (usize, Duration) {
             (1, OVERPASS_THROTTLE)
         }
     })
+}
+
+/// The endpoints a query walks, in order, with the attempts each one gets.
+///
+/// The fallback gets fewer attempts than the primary: a cell that reaches it has
+/// already spent the primary's full retry budget, and the caller's cooldown is not
+/// the only thing that has to stay responsive — every subsequent cell in the patch
+/// queues behind this one on the same pool.
+fn overpass_endpoints() -> Vec<(String, u32)> {
+    let primary = overpass_url();
+    let mut out = vec![(primary.clone(), 3)];
+    if primary != FALLBACK_OVERPASS_URL {
+        out.push((FALLBACK_OVERPASS_URL.to_string(), 2));
+    }
+    out
+}
+
+/// Space the *next* fallback request at least [`OVERPASS_THROTTLE`] after the
+/// previous one, across all callers.
+///
+/// [`overpass_pace`] paces the dispatcher by the **primary** endpoint, so with
+/// ours as primary the far ring runs 4-wide with no spacing — correct for our own
+/// box, and exactly what must not be pointed at a public instance. Without this
+/// gate a primary outage would turn that unpaced fan-out onto `overpass-api.de`
+/// wholesale. Spacing (not serialising) is what the throttle has always meant:
+/// the lock is released before the request goes out, so a slow answer doesn't
+/// stall the one behind it.
+#[cfg(not(target_arch = "wasm32"))]
+fn pace_fallback() {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    // Poisoning only means some other caller panicked mid-pace; the timestamp is
+    // still meaningful, and refusing to pace is the worse failure here.
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(prev) = *last {
+        let waited = prev.elapsed();
+        if waited < OVERPASS_THROTTLE {
+            std::thread::sleep(OVERPASS_THROTTLE - waited);
+        }
+    }
+    *last = Some(Instant::now());
 }
 
 /// Self-hosted 3DBAG static building host (real Dutch BAG heights + ground level;
@@ -2044,25 +2093,44 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
 }
 
 /// POST an Overpass query, retrying a couple of times with backoff on failure
-/// (429/504 are common under load).
+/// (429/504 are common under load), then falling through to the public instance.
+///
+/// A `remark` body is counted as a failure here, not passed back as success:
+/// Overpass answers a timeout, a runtime error and a rate-limit with **HTTP 200**
+/// and a `remark` field, so the transport-level retry this function exists for saw
+/// those as wins and returned on the first one. That also cost the fallback its
+/// whole reason to exist — an overloaded primary answers 200-with-remark far more
+/// often than it refuses a connection. The caller re-checks (`fetch_cell_overpass_text`,
+/// `parse_buildings`) so a remark can still never be cached as an empty cell.
 pub(crate) async fn overpass_query(query: &str) -> Result<String, String> {
-    let url = overpass_url();
     let body = format!("data={}", crate::systems::geo_nav::percent_encode(query)).into_bytes();
     let mut last_err = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            // Backoff between attempts. Native only: a blocking sleep on the pool
-            // thread; the wasm build cannot block, so it retries immediately (cache
-            // + caller backoff cover the difference until an async timer lands).
-            #[cfg(not(target_arch = "wasm32"))]
-            std::thread::sleep(Duration::from_secs(3));
+    for (endpoint, (url, attempts)) in overpass_endpoints().into_iter().enumerate() {
+        if endpoint > 0 {
+            tracing::warn!(%url, %last_err, "Overpass primary exhausted; trying fallback");
         }
-        let req = http::Request::post(url.as_str())
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.clone());
-        match http::fetch_string(req).await {
-            Ok(text) => return Ok(text),
-            Err(e) => last_err = e,
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                // Backoff between attempts. Native only: a blocking sleep on the pool
+                // thread; the wasm build cannot block, so it retries immediately (cache
+                // + caller backoff cover the difference until an async timer lands).
+                #[cfg(not(target_arch = "wasm32"))]
+                std::thread::sleep(Duration::from_secs(3));
+            }
+            if endpoint > 0 {
+                #[cfg(not(target_arch = "wasm32"))]
+                pace_fallback();
+            }
+            let req = http::Request::post(url.as_str())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(body.clone());
+            match http::fetch_string(req).await {
+                Ok(text) => match overpass_remark(&text) {
+                    None => return Ok(text),
+                    Some(remark) => last_err = format!("Overpass remark: {}", remark.trim()),
+                },
+                Err(e) => last_err = e,
+            }
         }
     }
     Err(last_err)
