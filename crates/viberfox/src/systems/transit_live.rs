@@ -874,14 +874,26 @@ mod tests {
             .count();
         assert!(lit > 3000, "board looks blank: only {lit} lit pixels");
 
-        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/board_preview.png");
-        image::save_buffer(
-            out,
+        // An eyeball artefact, not an assertion — so a missing directory must not
+        // fail a test whose actual claim (the pixel count above) just passed.
+        // `<repo>/target` only exists when the build writes there; with
+        // `CARGO_TARGET_DIR` pointing elsewhere (the container does this, to share
+        // one target dir across worktrees) the write used to panic on every run.
+        let out = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
+            })
+            .join("board_preview.png");
+        match image::save_buffer(
+            &out,
             &px,
             BOARD_PX_W as u32,
             BOARD_PX_H as u32,
             image::ColorType::Rgba8,
-        )
-        .expect("save preview");
+        ) {
+            Ok(()) => println!("board preview written to {}", out.display()),
+            Err(e) => println!("board preview not written to {}: {e}", out.display()),
+        }
     }
 }
