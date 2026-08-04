@@ -16,10 +16,7 @@
 //!
 //! First layer: public transport stops (rail stations, tram stops, bus stops).
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use web_time::Instant;
+use std::collections::HashMap;
 
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -33,7 +30,7 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::storage;
-use crate::platform::work::Dispatcher;
+use crate::platform::stream::{CellStream, Policy};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -83,6 +80,15 @@ const SURFACE_LAYER_MAX_ALT: f64 = 20_000.0;
 const LAYER_CELL_RADIUS: i64 = 3;
 /// Give up on a cell after this many failed fetch rounds.
 const MAX_CELL_ATTEMPTS: u32 = 5;
+/// Marker entities freed per frame.
+///
+/// Counted in *entities*, not cells, because one cell is a merged marker mesh plus
+/// a ground ring per POI — up to `MAX_MARKERS_PER_CELL` + 2 of them. A re-anchor
+/// retires every cell of every enabled layer at once, which is hundreds; freeing
+/// that many in one command buffer is the `VK_ERROR_DEVICE_LOST` burst CLAUDE.md
+/// documents. This is a couple of cells' worth per frame, so a full teardown
+/// clears in well under a second while never packing one giant buffer.
+const MAX_MARKER_DESPAWNS_PER_FRAME: usize = 32;
 /// Density LOD: max markers rendered per cell. A dense shopping district returns
 /// 500+ POIs in one cell, and every pin head renders *always-on-top* and
 /// alpha-blended (see [`PinHeadMaterial`] / [`DepthAlways`]) — so emitting them all
@@ -261,19 +267,15 @@ impl PoiInstance {
     }
 }
 
-/// Per-layer streaming state (mirrors the far-building-cell bookkeeping).
+/// Per-layer streaming state. The requested/failed/backoff bookkeeping is *not*
+/// here: it lives in the one shared [`CellStream`] keyed by `(layer, cell)`, so all
+/// the layers share the single Overpass-throttled admission slot they have to.
 #[derive(Default)]
 pub struct LayerRuntime {
     /// Panel checkbox: whether this layer's markers are shown (and streamed).
     pub enabled: bool,
     /// Visibility last applied to the spawned entities.
     shown: bool,
-    /// Cells currently queued or loaded (so they aren't re-queried).
-    requested: HashSet<(i64, i64)>,
-    /// Failed fetch rounds per cell (bounded retry).
-    failed: HashMap<(i64, i64), u32>,
-    /// Earliest time a failed cell may be re-queued (exponential backoff).
-    retry_at: HashMap<(i64, i64), Instant>,
     /// Spawned entities per cell: the merged marker mesh + one ground ring
     /// per POI.
     cells: HashMap<(i64, i64), Vec<Entity>>,
@@ -291,9 +293,12 @@ pub struct CellBuild {
     pois: Vec<PoiInstance>,
 }
 
-/// A completed cell build: the layer it belongs to, its cell coords, and the
-/// build (None for cells without matching POIs).
-type CellResult = (usize, (i64, i64), Result<Option<CellBuild>, String>);
+/// What identifies one streamed cell: which layer, and where. One key space for
+/// every layer, because they share one Overpass budget.
+type LayerCell = (usize, i64, i64);
+
+/// A completed cell build (`None` for cells without matching POIs).
+type CellResult = Result<Option<CellBuild>, String>;
 
 /// Data-layer streaming + panel state.
 #[derive(Resource)]
@@ -344,13 +349,10 @@ pub struct DataLayers {
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
     /// (`MapStream`), so pins follow re-anchors like the buildings (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
-    /// The `MapStream::anchor_generation` the loaded cells belong to; a change
-    /// resets them for the new origin.
-    synced_gen: u32,
-    /// Frame-gated cell dispatcher (layer index, cell x, cell y), throttled to the
-    /// Overpass rate policy — replaces the worker thread + `thread::sleep`.
-    dispatch: Dispatcher<(usize, i64, i64)>,
-    results: Arc<Mutex<Vec<CellResult>>>,
+    /// Cell streaming for every layer at once (`platform::stream`): the
+    /// requested/failed sets with their exponential backoff, the results sink, the
+    /// serial Overpass-throttled admission and the bounded despawn queue.
+    cells: CellStream<LayerCell, CellResult>,
     /// One unlit material shared by all depth-tested marker geometry (hue is
     /// per-vertex): poles, pin stems, pin ground discs.
     material: Option<Handle<StandardMaterial>>,
@@ -479,6 +481,12 @@ struct MinimalSave {
 
 impl Default for DataLayers {
     fn default() -> Self {
+        // Endpoint-derived, and read once here rather than per anchor: the stream's
+        // policy is fixed at construction and `CellStream::reset` rebuilds the
+        // dispatcher from it, so a re-anchor keeps the same pace without restating
+        // it.
+        let (overpass_concurrency, spacing) = crate::systems::osm_buildings::overpass_pace();
+        let overpass_spacing = spacing.as_secs_f64();
         Self {
             panel_open: false,
             buildings_enabled: true,
@@ -497,9 +505,22 @@ impl Default for DataLayers {
             terrain_revision: 0,
             popup: None,
             anchor: None,
-            synced_gen: 0,
-            dispatch: Dispatcher::default(),
-            results: Arc::default(),
+            cells: CellStream::new(Policy {
+                // Paced by the endpoint (`overpass_pace`): concurrent and unspaced
+                // against our own Overpass, serial and throttled against a public
+                // one, which is owed one query at a time. The budget is shared
+                // across the layers too, which is why this is one stream keyed by
+                // (layer, cell) rather than one per layer.
+                max_in_flight: overpass_concurrency,
+                min_interval_secs: overpass_spacing,
+                max_attempts: MAX_CELL_ATTEMPTS,
+                // 15 s, 30 s, 1 m, 2 m, 4 m — long enough to outlast an Overpass
+                // wobble without burning the attempt budget while it is overloaded.
+                backoff_secs: 15.0,
+                backoff_doublings: 4,
+                cooldown_secs: 0.0,
+                despawns_per_frame: MAX_MARKER_DESPAWNS_PER_FRAME,
+            }),
             material: None,
             head_material: None,
             ring_mesh: None,
@@ -564,37 +585,43 @@ pub fn update_data_layers(
     // Re-anchor (ADR-025): when the map origin moves, drop every loaded cell and
     // re-establish at the new location, exactly like the buildings. Dropping
     // `jobs` retires the old worker; a fresh `results` orphans in-flight builds.
-    // …and when the ground moves under them: every marker was placed on the field
-    // as it stood, which for the first cells of an anchor is the flat plane.
-    if dl.synced_gen != stream.anchor_generation || dl.terrain_revision != terrain.revision {
-        dl.synced_gen = stream.anchor_generation;
+    // Free retired marker entities at the shared per-frame cap, before any early
+    // return: a re-anchor must keep clearing even once the camera climbs past
+    // SURFACE_LAYER_MAX_ALT and this streamer freezes.
+    dl.cells.drain_despawns(&mut commands);
+
+    // Retear on a re-anchor — and when the ground moves under them: every marker
+    // was placed on the field as it stood, which for the first cells of an anchor
+    // is the flat plane. `sync` is called unconditionally so it adopts the new
+    // generation either way.
+    let reanchored = dl.cells.sync(stream.anchor_generation);
+    let reground = dl.terrain_revision != terrain.revision;
+    if reanchored || reground {
         dl.terrain_revision = terrain.revision;
-        for layer in dl.layers.iter_mut() {
-            for (_, ents) in layer.cells.drain() {
-                for e in ents {
-                    commands.entity(e).despawn();
-                }
-            }
-            layer.pois.clear();
-            layer.requested.clear();
-            layer.failed.clear();
-            layer.retry_at.clear();
-        }
+        // Through the shared despawn queue, not straight out: a cell is a merged
+        // mesh plus a ground ring *per POI*, and this used to free every entity of
+        // every enabled layer in one command buffer — the documented device-loss
+        // burst that four of the six streamers already guarded against.
+        let retired: Vec<Entity> = dl
+            .layers
+            .iter_mut()
+            .flat_map(|layer| {
+                layer.pois.clear();
+                layer.cells.drain().flat_map(|(_, ents)| ents).collect::<Vec<_>>()
+            })
+            .collect();
+        dl.cells.retire_all(retired);
         dl.popup = None;
-        dl.results = Arc::default();
+        dl.cells.reset();
         dl.anchor = None;
     }
 
-    // Establish the anchor (from the map origin) and reset the cell dispatcher.
+    // Establish the anchor (from the map origin).
     if dl.anchor.is_none() {
         let z = base_zoom;
         let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         dl.anchor = Some((ax, ay, z, lat));
-        // Paced by the endpoint: concurrent and unspaced against our own
-        // Overpass, serial + throttled against a public one.
-        let (concurrency, spacing) = crate::systems::osm_buildings::overpass_pace();
-        dl.dispatch = Dispatcher::new(concurrency, spacing.as_secs_f64());
     }
     let (ax, ay, z, lat) = dl.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -621,66 +648,65 @@ pub fn update_data_layers(
     let ccx = (ax + (world_x / tile_m).round() as i64).div_euclid(1i64 << shift);
     let ccy = (ay + (world_z / tile_m).round() as i64).div_euclid(1i64 << shift);
 
-    // Queue missing cells for enabled layers, nearest first. A cell that failed
-    // waits out its backoff first: Overpass 504s come in bursts, and retrying
-    // straight away just burns the attempt budget while it is still overloaded.
-    // Collect first (the loop mutably borrows `dl.layers`), then enqueue onto the
-    // dispatcher, so the two mutable borrows of `dl` don't overlap.
-    let now = Instant::now();
-    let mut enqueue: Vec<(usize, i64, i64)> = Vec::new();
+    // Queue missing cells for enabled layers, nearest first. `CellStream::request`
+    // both de-dups and holds the backoff, so there is no second retry loop: a cell
+    // that failed waits its 15 s / 30 s / 1 m / … out, because Overpass 504s come
+    // in bursts and retrying straight away only burns the attempt budget.
+    let now_secs = time.elapsed_secs_f64();
+    let mut enqueue: Vec<LayerCell> = Vec::new();
     for li in 0..dl.layers.len() {
         if !dl.layers[li].enabled {
             continue;
         }
-        let rt = &mut dl.layers[li];
         let mut to_request: Vec<(i64, i64)> = Vec::new();
         for dy in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
             for dx in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
-                let c = (ccx + dx, ccy + dy);
-                let attempts = rt.failed.get(&c).copied().unwrap_or(0);
-                let ready = rt.retry_at.get(&c).is_none_or(|t| now >= *t);
-                if !rt.requested.contains(&c) && attempts < MAX_CELL_ATTEMPTS && ready {
-                    to_request.push(c);
-                }
+                to_request.push((ccx + dx, ccy + dy));
             }
         }
         to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
-        for c in to_request {
-            rt.requested.insert(c);
-            enqueue.push((li, c.0, c.1));
-        }
+        enqueue.extend(to_request.into_iter().map(|c| (li, c.0, c.1)));
     }
     for job in enqueue {
-        dl.dispatch.queue(job);
+        dl.cells.request(job, now_secs);
     }
 
     // Dispatch queued cells (serial, Overpass-throttled) as detached fetch+build
     // tasks (ADR-033 seam) — no worker thread.
-    let now_secs = time.elapsed_secs_f64();
-    let results = dl.results.clone();
-    while let Some((li, cx, cy)) = dl.dispatch.next(now_secs) {
+    let results = dl.cells.sink();
+    while let Some((li, cx, cy)) = dl.cells.next_job(now_secs) {
         let results = results.clone();
         let ground = terrain.snapshot();
+        // Fetch on the task pool, parse + mesh on the worker pool (ADR-033). The
+        // `serde_json` decode of an Overpass response and the merged marker mesh
+        // are both pure arithmetic; on wasm `IoTaskPool` is the main thread, so
+        // running them here was running them on the frame loop.
         IoTaskPool::get()
             .spawn(async move {
-                let built = build_layer_cell(li, cx, cy, ax, ay, z, lat, ground).await;
-                if let Ok(mut g) = results.lock() {
-                    g.push((li, (cx, cy), built));
+                match fetch_cell_text(&LAYER_DEFS[li], cx, cy).await {
+                    Ok(text) => {
+                        crate::platform::workers::submit(Box::new(move || {
+                            let built =
+                                build_layer_cell(li, &text, cx, cy, ax, ay, z, lat, ground);
+                            if let Ok(mut g) = results.lock() {
+                                g.push(((li, cx, cy), built));
+                            }
+                        }));
+                    }
+                    Err(e) => {
+                        if let Ok(mut g) = results.lock() {
+                            g.push(((li, cx, cy), Err(e)));
+                        }
+                    }
                 }
             })
             .detach();
     }
 
     // Apply completed cells.
-    let done: Vec<CellResult> = dl
-        .results
-        .lock()
-        .map(|mut g| g.drain(..).collect())
-        .unwrap_or_default();
-    for _ in 0..done.len() {
-        dl.dispatch.completed();
-    }
-    for (li, cell, built) in done {
+    let done = dl.cells.take_results();
+    for (key, built) in done {
+        let (li, cell) = (key.0, (key.1, key.2));
         match built {
             Ok(Some(build)) => {
                 let material = dl
@@ -794,47 +820,41 @@ pub fn update_data_layers(
                 }
                 dl.layers[li].cells.insert(cell, entities);
                 dl.layers[li].pois.insert(cell, build.pois);
-                dl.layers[li].failed.remove(&cell);
-                dl.layers[li].retry_at.remove(&cell);
+                dl.cells.succeeded(&key);
                 tracing::info!(layer = LAYER_DEFS[li].key, cell = ?cell, pois, "data layer cell loaded");
             }
-            Ok(None) => {} // no POIs; stays in `requested` so it isn't re-queried
+            // No POIs; stays requested so it isn't re-queried.
+            Ok(None) => dl.cells.succeeded(&key),
             Err(e) => {
-                let rt = &mut dl.layers[li];
-                let attempts = rt.failed.entry(cell).or_insert(0);
-                *attempts += 1;
-                // 15s, 30s, 1m, 2m, 4m — long enough to outlast an Overpass wobble.
-                let backoff = Duration::from_secs(15u64 << (*attempts - 1).min(4));
-                let attempts = *attempts;
-                rt.retry_at.insert(cell, Instant::now() + backoff);
-                rt.requested.remove(&cell);
+                let attempts = dl.cells.failed(&key, now_secs);
                 tracing::warn!(
                     layer = LAYER_DEFS[li].key, cell = ?cell, attempts,
-                    retry_in_s = backoff.as_secs(), error = %e,
+                    exhausted = dl.cells.exhausted(&key), error = %e,
                     "data layer cell failed; will retry"
                 );
             }
         }
     }
 
-    for rt in dl.layers.iter_mut() {
-        // Despawn cells out of range (one cell of hysteresis); re-entry
-        // re-requests them, served from the disk cache.
-        let stale: Vec<(i64, i64)> = rt
+    for li in 0..dl.layers.len() {
+        // Retire cells out of range (one cell of hysteresis); re-entry re-requests
+        // them, served from the disk cache. Through the shared queue, under the
+        // per-frame cap, like every other streamer.
+        let stale: Vec<(i64, i64)> = dl.layers[li]
             .cells
             .keys()
             .filter(|(cx, cy)| (cx - ccx).abs().max((cy - ccy).abs()) > LAYER_CELL_RADIUS + 1)
             .copied()
             .collect();
         for c in stale {
-            for entity in rt.cells.remove(&c).unwrap_or_default() {
-                commands.entity(entity).despawn();
-            }
-            rt.pois.remove(&c);
-            rt.requested.remove(&c);
+            let entities = dl.layers[li].cells.remove(&c).unwrap_or_default();
+            dl.cells.retire_all(entities);
+            dl.layers[li].pois.remove(&c);
+            dl.cells.forget(&(li, c.0, c.1));
         }
 
         // Apply panel toggles by flipping visibility (cheap on/off).
+        let rt = &mut dl.layers[li];
         if rt.shown != rt.enabled {
             rt.shown = rt.enabled;
             let visibility = if rt.enabled {
@@ -1478,11 +1498,15 @@ struct Poi {
     addr: Option<String>,
 }
 
-/// Fetch one layer cell (disk-cached Overpass) and build its merged marker
-/// mesh, anchored to the cell centre's BigSpace grid cell for f32 precision.
-/// Returns `None` for cells without matching POIs.
-async fn build_layer_cell(
+/// Parse one layer cell's Overpass body and build its merged marker mesh, anchored
+/// to the cell centre's BigSpace grid cell for f32 precision. Returns `None` for
+/// cells without matching POIs.
+///
+/// Pure CPU — no I/O — which is what lets it run on [`crate::platform::workers`];
+/// [`fetch_cell_text`] is the awaited half.
+fn build_layer_cell(
     li: usize,
+    text: &str,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -1492,7 +1516,7 @@ async fn build_layer_cell(
     ground: crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<CellBuild>, String> {
     let def = &LAYER_DEFS[li];
-    let pois = fetch_cell(def, cx, cy).await?;
+    let pois = parse_pois(def, text)?;
     if pois.is_empty() {
         return Ok(None);
     }
@@ -1554,14 +1578,18 @@ fn cell_cache_key(key: &str, cx: i64, cy: i64) -> String {
     format!("layers/{}/{}/{}/{}.json", key, LAYER_ZOOM, cx, cy)
 }
 
-/// One cell's POIs, from the storage cache or a single Overpass query. Runs on an
-/// `IoTaskPool` task; dispatch spacing (the old `thread::sleep` throttle) now lives
-/// in the caller's [`Dispatcher`]. `overpass_query` is still synchronous — it goes
-/// through the http seam in the final Overpass-group step.
-async fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String> {
+/// One cell's Overpass response **as text**, from the storage cache or a single
+/// query. Runs on an `IoTaskPool` task; dispatch spacing (the old `thread::sleep`
+/// throttle) lives in the caller's [`Dispatcher`].
+///
+/// Deliberately returns the raw body rather than parsed POIs: the `serde_json`
+/// parse is CPU work and belongs on `platform::workers` with the mesh build, not
+/// on the thread that awaited the fetch (ADR-033 — on wasm that thread is the one
+/// drawing the frame, and `serde_json` was ~46% of its non-idle time).
+async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key(def.key, cx, cy);
     if let Some(cached) = storage::get_string(&key).await {
-        return parse_pois(def, &cached);
+        return Ok(cached);
     }
 
     let (north, west) = tile_to_lat_lng(cx, cy, LAYER_ZOOM);
@@ -1569,7 +1597,7 @@ async fn fetch_cell(def: &LayerDef, cx: i64, cy: i64) -> Result<Vec<Poi>, String
     let bbox = format!("{south},{west},{north},{east}");
     let fetched = overpass_query(&def.query.replace("{bbox}", &bbox)).await?;
     storage::put(&key, fetched.as_bytes()).await;
-    parse_pois(def, &fetched)
+    Ok(fetched)
 }
 
 /// Parse an Overpass node response into POIs via the layer's classifier.

@@ -1,7 +1,7 @@
 ---
 topic: tile-raster-cost
-triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "map loads slowly"]
-updated: 2026-07-31
+triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly"]
+updated: 2026-08-03
 ---
 
 # Vector-tile rasterisation cost
@@ -82,3 +82,45 @@ cost frames on web was elsewhere entirely.
 
 Any "move it to the GPU" argument has to beat that, and must survive wasm32 plus
 the pure-Rust / no-C-dependency constraint inherited from the web target.
+
+## How often it ran, before anyone made it cheaper
+
+2026-07-30. The first thing to do with a 121 ms operation is stop repeating it,
+and the tile path was repeating a great deal. The counts are now asserted in
+`map_stream`'s tests rather than written down here, because the arithmetic is in
+the code and a radius or zoom change has to restate them: a fresh anchor at
+`DEFAULT_ANCHOR_ZOOM` wants **424** tiles across the z10–z17 clipmap, of which
+**179** sit above `MAX_SOURCE_ZOOM` and resolve onto z14 ancestors the *same pass*
+is already requesting — leaving 245 distinct source tiles. On top of that,
+`map_geometry` parsed each body four times, the globe twice, and `render_mvt`
+decoded `streets` and `buildings` twice each because `PAINT_ORDER` lists them
+twice.
+
+So the ~2.7 ms parse and ~4 ms `get_features` above were being paid several times
+per body while the ~121 ms rasterise was paid once. That does **not** change the
+conclusion that rasterisation dominates — it means the parse figures were never
+the whole parse bill, and any future comparison must say how many parses it is
+counting.
+
+**Not measured: whether removing that duplication moves `ShotMetrics::settled_s`.**
+It is a `--csv` column and a fresh-anchor capture is exactly the 424-request
+burst, so the before/after is one command — but it needs a GPU, and the container
+this work was done in has none. Until someone runs it, the deduplication is
+justified by the counts above, not by a latency number.
+
+## Two things about the byte cache that are guesses, not measurements
+
+`tile_source::MAX_CACHE_BYTES` is **32 MiB, chosen from the ~500 KB/tile body size
+and the live neighbourhood the consumers ask for — nobody has measured the actual
+working set.** Byte-bounded rather than entry-bounded so a dense tile cannot blow
+the budget; LRU with a linear-scan recency order, which is fine at tens of entries
+and was never profiled at the globe quadtree's ~900 tiny z2–z8 bodies.
+
+**Parsed tiles are deliberately not cached across tasks.** A `Reader` holds
+`geo_types` f32 geometry for every feature in the tile and nothing in the tree
+measures how much that is, whereas a body's size is exactly known — so caching
+bytes is the half that can be reasoned about. `vector_tiles::TileData` removes the
+duplicate parses *within* one task instead. An `Arc<TileData>` cache would
+additionally collapse the repeat parses *across* tasks (the 179 overzoomed
+requests, and the same z14 bodies `map_geometry` and the router want); it is the
+obvious next step and it is blocked on one number: how big a parsed tile is.

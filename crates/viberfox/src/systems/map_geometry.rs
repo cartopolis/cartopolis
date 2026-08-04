@@ -31,6 +31,7 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -90,8 +91,9 @@ const SURFACE_MAX_IN_FLIGHT: usize = 8;
 /// bridge decks — which are handed over *unmerged*, because each one still has to
 /// be told how high it stands (see [`resolve_bridge_decks`]) — and the street
 /// centre lines its names will be written along (`systems::street_labels`).
+///
+/// This is the `R` of the cell's [`CellStream`]; the `Cell` is its key.
 type Tessellated = (
-    Cell,
     Option<Vec<SurfaceMesh>>,
     Option<ShoreField>,
     Vec<BridgeDeck>,
@@ -142,25 +144,15 @@ const DECK_GRID_MAX: u32 = 64;
 pub struct MapSurface;
 
 /// Streaming state for the vector surface meshes.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct MapSurfaces {
     /// Live cells → their spawned mesh entities (one per surface group).
     loaded: HashMap<Cell, Vec<Entity>>,
-    /// Cells already queued, so a slow fetch isn't requested twice.
-    requested: HashSet<Cell>,
-    /// Entities retired but not yet despawned (drained under the per-frame cap).
-    despawn_queue: Vec<Entity>,
-    /// Finished tessellations, drained on the main thread.
-    results: Arc<Mutex<Vec<Tessellated>>>,
-    /// Tessellation tasks spawned but not yet drained. Bounded to
-    /// [`SURFACE_MAX_IN_FLIGHT`] so a burst of cells doesn't spawn hundreds of heavy
-    /// earcut/raster tasks at once — which, on single-threaded wasm (no worker
-    /// threads), stalls the frame loop. ADR-033.
-    in_flight: usize,
+    /// Requested/failed/in-flight bookkeeping, the results sink, the despawn queue
+    /// and the anchor generation (`platform::stream`).
+    stream: CellStream<Cell, Tessellated>,
     /// One material per surface group, created on first use.
     materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
-    /// Anchor generation these cells belong to; a re-anchor clears everything.
-    generation: u32,
     /// Terrain-field revision the live cells were tessellated against, so a field
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
@@ -169,6 +161,29 @@ pub struct MapSurfaces {
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
     /// off the ground once its answer lands.
     pending_decks: HashMap<Cell, PendingDecks>,
+}
+
+impl Default for MapSurfaces {
+    fn default() -> Self {
+        Self {
+            loaded: HashMap::new(),
+            stream: CellStream::new(Policy {
+                max_in_flight: SURFACE_MAX_IN_FLIGHT,
+                min_interval_secs: 0.0,
+                // One attempt while the ring sits over the cell: a tile that failed
+                // to fetch or tessellate would fail again the same way, and the
+                // ring moving off it forgets the cell (so a return re-tries).
+                max_attempts: 1,
+                backoff_secs: 0.0,
+                backoff_doublings: 0,
+                cooldown_secs: 0.0,
+                despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
+            }),
+            materials: HashMap::new(),
+            terrain_revision: 0,
+            pending_decks: HashMap::new(),
+        }
+    }
 }
 
 /// A cell's decks, waiting on their heights.
@@ -188,7 +203,7 @@ fn spawn_geometry_task(
     cell: Cell,
     tile_m: f32,
     template: String,
-    results: Arc<Mutex<Vec<Tessellated>>>,
+    results: Arc<Mutex<Vec<(Cell, Tessellated)>>>,
 ) {
     // Fetch on the task pool, tessellate on the worker pool (ADR-033). The
     // comments below already said this work "belongs on the worker" — it did not:
@@ -203,23 +218,30 @@ fn spawn_geometry_task(
                 let mut shore = None;
                 let mut decks = Vec::new();
                 let mut labels = Vec::new();
-                let outcome = match fetched {
-                    Ok(bytes) => match vector_tiles::tessellate_surfaces(&bytes, tile_m) {
+                // **One** parse for all seven consumers. Each of them used to open
+                // its own `Reader` over this same body — seven full copies plus
+                // seven prost decodes of the tile per streamed cell.
+                let parsed = fetched
+                    .map_err(|e| format!("surface tile fetch failed: {e}"))
+                    .and_then(|bytes| vector_tiles::TileData::parse(&bytes));
+                let outcome = match parsed {
+                    Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m) {
                         Ok(mut meshes) => {
                             // Decks first: the road tessellation needs them, since a
                             // bridge-flagged street's own span belongs to the deck
                             // that carries it rather than to the ground plane.
-                            match vector_tiles::tessellate_bridges(&bytes, tile_m) {
+                            match vector_tiles::tessellate_bridges(&tile, tile_m) {
                                 Ok(d) => decks = d,
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "bridge tessellation failed");
                                 }
                             }
-                            // Roads share the fetch, the worker and the per-cell
-                            // batching with the area surfaces — they differ only
-                            // in being lines, so they ride along here rather than
-                            // running a second streamer over the same tiles.
-                            match vector_tiles::tessellate_roads(&bytes, tile_m, &decks) {
+                            // Roads share the fetch, the parse, the worker and the
+                            // per-cell batching with the area surfaces — they
+                            // differ only in being lines, so they ride along here
+                            // rather than running a second streamer over the same
+                            // tiles.
+                            match vector_tiles::tessellate_roads(&tile, tile_m, &decks) {
                                 Ok(roads) => meshes.extend(roads),
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
@@ -230,7 +252,7 @@ fn spawn_geometry_task(
                             // merging thousands of canopies is pure CPU work, so
                             // it belongs on this worker and not on the frame that
                             // uploads the result.
-                            match vegetation::scatter_vegetation(&bytes, tile_m, veg_seed(cell)) {
+                            match vegetation::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
                                 Ok(trees) => {
                                     meshes.extend(vegetation::build_vegetation_meshes(&trees));
                                 }
@@ -243,7 +265,7 @@ fn spawn_geometry_task(
                             // and was being decoded and dropped
                             // (`systems::street_furniture`).
                             match street_furniture::extract_furniture(
-                                &bytes,
+                                &tile,
                                 tile_m,
                                 veg_seed(cell),
                             ) {
@@ -258,7 +280,7 @@ fn spawn_geometry_task(
                             // from a layer of the very same tile, and parsing them
                             // here means the label renderer never touches an MVT
                             // body on the frame loop (`systems::street_labels`).
-                            match vector_tiles::extract_street_labels(&bytes, tile_m) {
+                            match vector_tiles::extract_street_labels(&tile, tile_m) {
                                 Ok(l) => labels = l,
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "street label extraction failed");
@@ -269,7 +291,7 @@ fn spawn_geometry_task(
                             // the shader gets it as a rasterised distance field —
                             // built here, on the worker, for the same reason.
                             if meshes.iter().any(|m| m.group == SurfaceGroup::Water) {
-                                match vector_tiles::water_shore_field(&bytes, tile_m) {
+                                match vector_tiles::water_shore_field(&tile, tile_m) {
                                     Ok(field) => shore = field,
                                     Err(e) => {
                                         tracing::warn!(cell = ?cell, error = %e, "shore field failed");
@@ -284,12 +306,12 @@ fn spawn_geometry_task(
                         }
                     },
                     Err(e) => {
-                        tracing::warn!(cell = ?cell, error = %e, "surface tile fetch failed");
+                        tracing::warn!(cell = ?cell, error = %e, "surface tile unusable");
                         None
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, outcome, shore, decks, labels));
+                    g.push((cell, (outcome, shore, decks, labels)));
                 }
             }));
         })
@@ -303,9 +325,7 @@ impl MapSurfaces {
     /// capture taken on the imagery alone shows a city with no buildings in it.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.in_flight > 0
-            || !self.requested.is_empty()
-            || !self.despawn_queue.is_empty()
+        self.stream.busy()
             || !self.pending_decks.is_empty()
     }
 
@@ -322,13 +342,12 @@ impl MapSurfaces {
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
         for (_, entities) in self.loaded.drain() {
-            self.despawn_queue.extend(entities);
+            self.stream.retire_all(entities);
         }
-        self.requested.clear();
         self.pending_decks.clear();
-        // In-flight tasks push to the (retained) results and drain harmlessly next
-        // frame; reset the count so the new anchor starts with a full slot budget.
-        self.in_flight = 0;
+        // Drops the requested/failed bookkeeping and orphans the results sink, so
+        // in-flight tasks cannot deliver a cell placed in the old origin's frame.
+        self.stream.reset();
     }
 }
 
@@ -354,12 +373,12 @@ pub fn update_map_surfaces(
 ) {
     // Always drain the despawn queue, even on the early returns below — a source
     // switch or a climb into space must still clear steadily rather than stall.
-    if !surfaces.despawn_queue.is_empty() {
-        let n = surfaces.despawn_queue.len().min(MAX_DESPAWNS_PER_FRAME);
-        for e in surfaces.despawn_queue.drain(..n) {
-            commands.entity(e).despawn();
-        }
-    }
+    surfaces.stream.drain_despawns(&mut commands);
+    // The surfaces stream has no backoff and no cooldown (`max_attempts: 1`), so
+    // it never consults the clock — and `update_map_surfaces` is already at Bevy's
+    // system-parameter ceiling, so adding a `Res<Time>` for a value nothing reads
+    // costs a param the next feature will need.
+    let now = 0.0;
 
     let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
     if tile_source_kind(&template) != TileSourceKind::Vector {
@@ -382,8 +401,7 @@ pub fn update_map_surfaces(
     };
 
     // A re-anchor invalidates every cell's placement — drop them and refetch.
-    if surfaces.generation != stream.anchor_generation {
-        surfaces.generation = stream.anchor_generation;
+    if surfaces.stream.sync(stream.anchor_generation) {
         surfaces.clear();
         labels.clear();
     }
@@ -425,9 +443,9 @@ pub fn update_map_surfaces(
         .collect();
     for c in stale {
         if let Some(entities) = surfaces.loaded.remove(&c) {
-            surfaces.despawn_queue.extend(entities);
+            surfaces.stream.retire_all(entities);
         }
-        surfaces.requested.remove(&c);
+        surfaces.stream.forget(&c);
         labels.remove_cell(&c);
     }
 
@@ -435,38 +453,36 @@ pub fn update_map_surfaces(
     // SURFACE_MAX_IN_FLIGHT concurrent. Unqueued cells are re-evaluated next frame as
     // slots free (the `requested` set already de-dups), so nothing is dropped.
     for c in &wanted {
-        if surfaces.in_flight >= SURFACE_MAX_IN_FLIGHT {
-            break;
+        if !surfaces.loaded.contains_key(c) {
+            surfaces.stream.request(*c, now);
         }
-        if surfaces.loaded.contains_key(c) || surfaces.requested.contains(c) {
-            continue;
-        }
-        surfaces.requested.insert(*c);
-        surfaces.in_flight += 1;
-        spawn_geometry_task(*c, tile_m, template.clone(), surfaces.results.clone());
+    }
+    // Dispatch under SURFACE_MAX_IN_FLIGHT; whatever doesn't fit stays queued and
+    // starts on a later frame as slots free, so nothing is dropped.
+    let sink = surfaces.stream.sink();
+    while let Some(c) = surfaces.stream.next_job(now) {
+        spawn_geometry_task(c, tile_m, template.clone(), sink.clone());
     }
 
-    // 3. Upload finished tessellations, capped per frame.
-    let ready: Vec<Tessellated> = {
-        let Ok(mut guard) = surfaces.results.lock() else {
-            return;
-        };
-        let n = guard.len().min(MAX_BUILDS_PER_FRAME);
-        guard.drain(..n).collect()
-    };
-    // Each drained result is one finished task — free its concurrency slot.
-    surfaces.in_flight = surfaces.in_flight.saturating_sub(ready.len());
-    for (c, outcome, shore, decks, street_names) in ready {
+    // 3. Upload finished tessellations, capped per frame; the rest go back into
+    // the sink (still holding their concurrency slots, so the bound keeps bounding
+    // memory as well as work).
+    let mut ready = surfaces.stream.take_results();
+    let deferred = ready.split_off(ready.len().min(MAX_BUILDS_PER_FRAME));
+    surfaces.stream.defer(deferred);
+    for (c, (outcome, shore, decks, street_names)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
-            surfaces.requested.remove(&c);
+            surfaces.stream.forget(&c);
             continue;
         }
         let Some(surface_meshes) = outcome else {
-            // Leave it out of `loaded` but keep it in `requested` so a failed cell
-            // is not retried every frame; the ring moving off it clears the flag.
+            // Not in `loaded`, and marked failed so it is not retried every frame;
+            // the ring moving off it forgets the cell.
+            surfaces.stream.failed(&c, now);
             continue;
         };
+        surfaces.stream.succeeded(&c);
 
         // Cell's north-west corner in world metres — the origin the tessellator's
         // tile-local coordinates are relative to.

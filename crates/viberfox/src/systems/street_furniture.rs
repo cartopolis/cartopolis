@@ -44,7 +44,7 @@ use mvt_reader::feature::{Feature, Value};
 use crate::systems::free_camera::FreeCamera;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
-use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
+use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 use crate::systems::vegetation::{hash3, mix, rand01, srgb_to_linear_rgb};
 
 /// Altitude at which furniture starts merging into the paving.
@@ -187,27 +187,23 @@ fn tag_str<'a>(feature: &'a Feature, key: &str) -> Option<&'a str> {
 /// `seed` must be stable for a given cell (its x/y are the natural choice) so a
 /// cell that streams out and back does not re-roll the angle of every unoriented
 /// object — the tree scatter documents why a reshuffle is instantly visible.
+///
+/// Takes the cell's already-parsed [`TileData`] rather than the tile body: every
+/// consumer on this worker reads a different layer out of the same bytes, and
+/// `Reader::new` is a whole-tile decode (see `vector_tiles::TileData`).
 pub fn extract_furniture(
-    bytes: &[u8],
+    tile: &TileData,
     tile_m: f32,
     seed: u64,
 ) -> Result<Vec<FurnitureInstance>, String> {
-    use crate::systems::vector_tiles::mvt_reader;
-
-    let reader = mvt_reader(bytes)?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "pois") else {
+    let Some(meta) = tile.layer("pois") else {
         return Ok(Vec::new());
     };
-    let Ok(features) = reader.get_features(meta.layer_index) else {
-        return Ok(Vec::new());
-    };
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
-    let ways = WayField::build(&reader, &layers, scale, extent);
+    let ways = WayField::build(tile, scale, extent);
 
     let mut out = Vec::new();
     let mut truncated = false;
@@ -290,27 +286,20 @@ struct WayField {
 impl WayField {
     const CELL: f32 = 24.0;
 
-    fn build(
-        reader: &mvt_reader::Reader,
-        layers: &[mvt_reader::layer::Layer],
-        scale: f32,
-        extent: f32,
-    ) -> Self {
+    fn build(tile: &TileData, scale: f32, extent: f32) -> Self {
         use geo_types::Geometry;
 
         let mut field = Self {
             segs: Vec::new(),
             buckets: HashMap::new(),
         };
-        let Some(meta) = layers.iter().find(|l| l.name == "streets") else {
+        let Some(meta) = tile.layer("streets") else {
             return field;
         };
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            return field;
-        };
+        let features = tile.features(meta);
 
         let margin = extent * 0.25;
-        for feature in &features {
+        for feature in features {
             let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
                 Geometry::LineString(ls) => vec![ls],
                 Geometry::MultiLineString(ml) => ml.iter().collect(),
@@ -789,9 +778,15 @@ mod tests {
     const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
     const TILE_M: f32 = 1000.0;
 
+    /// The fixture, parsed. `extract_furniture` takes a `TileData` because on the
+    /// worker it shares one with every other consumer of the same tile body.
+    fn fixture() -> TileData {
+        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
+    }
+
     #[test]
     fn the_fixture_furnishes_a_street() {
-        let items = extract_furniture(GRONINGEN_Z14, TILE_M, 7).expect("extract");
+        let items = extract_furniture(&fixture(), TILE_M, 7).expect("extract");
         assert!(
             items.len() > 100,
             "a city tile should furnish more than a handful: {}",
@@ -820,7 +815,7 @@ mod tests {
         // The layer is mostly shops, doctors and restaurants: points inside
         // buildings we already draw. Standing a box on each would put furniture
         // through the floor of every terrace on the map.
-        let items = extract_furniture(GRONINGEN_Z14, TILE_M, 7).expect("extract");
+        let items = extract_furniture(&fixture(), TILE_M, 7).expect("extract");
         assert!(
             items.len() < 400,
             "the whole `pois` layer is 467 features; {} of them were furnished",
@@ -830,8 +825,8 @@ mod tests {
 
     #[test]
     fn extraction_is_stable_for_a_cell() {
-        let a = extract_furniture(GRONINGEN_Z14, TILE_M, 11).expect("extract");
-        let b = extract_furniture(GRONINGEN_Z14, TILE_M, 11).expect("extract");
+        let a = extract_furniture(&fixture(), TILE_M, 11).expect("extract");
+        let b = extract_furniture(&fixture(), TILE_M, 11).expect("extract");
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(x.kind, y.kind);
@@ -845,10 +840,8 @@ mod tests {
         // nearest path, not from a hash. Measured as "how many benches are within
         // 15° of *some* street direction" — a hashed angle would land ~17% of them
         // there by chance.
-        let items = extract_furniture(GRONINGEN_Z14, TILE_M, 3).expect("extract");
-        let reader = crate::systems::vector_tiles::mvt_reader(GRONINGEN_Z14).unwrap();
-        let layers = reader.get_layer_metadata().unwrap();
-        let ways = WayField::build(&reader, &layers, TILE_M / 4096.0, 4096.0);
+        let items = extract_furniture(&fixture(), TILE_M, 3).expect("extract");
+        let ways = WayField::build(&fixture(), TILE_M / 4096.0, 4096.0);
 
         let benches: Vec<_> = items
             .iter()
@@ -979,7 +972,7 @@ mod tests {
 
     #[test]
     fn a_merged_cell_is_one_mesh_with_matching_attribute_counts() {
-        let items = extract_furniture(GRONINGEN_Z14, TILE_M, 5).expect("extract");
+        let items = extract_furniture(&fixture(), TILE_M, 5).expect("extract");
         let meshes = build_furniture_meshes(&items);
         assert_eq!(meshes.len(), 1, "furniture must merge into one draw");
         let m = &meshes[0];

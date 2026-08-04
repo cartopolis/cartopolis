@@ -32,7 +32,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::platform::work::Dispatcher;
+use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
@@ -352,14 +352,11 @@ struct BuiltPatch {
 /// Camera-following building patch: re-fetched from Overpass when the camera
 /// drifts, with the old set despawned (ADR-020/022). Anchored to the region tile
 /// so buildings stay aligned with the streamed ground.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct OsmBuildings {
     /// Anchor: tile_x, tile_y, zoom, latitude — derived from the map anchor
     /// (`MapStream`), so buildings follow re-anchors to any location (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
-    /// The `MapStream::anchor_generation` this patch is built for; a change resets
-    /// it and re-establishes the anchor at the new origin.
-    synced_gen: u32,
     /// Terrain-field revision the live buildings stand on; a change rebuilds them.
     terrain_revision: u32,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
@@ -377,27 +374,24 @@ pub struct OsmBuildings {
     fetch: Arc<Mutex<Option<Result<BuiltPatch, String>>>>,
     /// Detail-ring mesh entities (buildings + windows), despawned on re-fetch.
     detail_entities: Vec<Entity>,
-    /// Far LOD cell dispatcher (CACHE_ZOOM cell coords) for **Overpass** cells —
-    /// replaces the worker thread + channel; serial, spacing comes from the
-    /// throttle in the fetch (citizenship toward a shared public API).
-    far_dispatch: Dispatcher<(i64, i64)>,
-    /// Far dispatcher for **3DBAG-covered** cells. Our own static host has no
-    /// rate limit, so these run concurrently instead of riding the Overpass
-    /// courtesy lane — which made a covered city stream its far ring one cell
-    /// at a time for no one's benefit.
-    far_dispatch_tdbag: Dispatcher<(i64, i64)>,
-    /// Which cells went to the 3DBAG lane, so completion frees the right slot
-    /// (re-deriving from coverage at completion time would miscount across a
-    /// mid-flight toggle flip).
-    far_tdbag_lane: HashSet<(i64, i64)>,
-    /// Completed far cells from the worker: meshes + their BigSpace cell (None
-    /// for cells with no buildings).
+    /// Far LOD cell streaming for **Overpass** cells (CACHE_ZOOM cell coords): the
+    /// requested/failed bookkeeping, the results sink, the concurrency bound and
+    /// the bounded despawn queue (`platform::stream`). Paced by the endpoint —
+    /// concurrent against our own Overpass, serial against a public one, where the
+    /// spacing comes from the throttle inside the fetch.
+    ///
+    /// This lane also owns the **shared** despawn queue: a retired far cell is
+    /// retired regardless of which lane fetched it.
     #[allow(clippy::type_complexity)]
-    far_results: Arc<Mutex<Vec<((i64, i64), Result<Option<FarCellBuild>, String>)>>>,
-    /// Far cells ever queued (kept so completed/empty cells aren't re-queried).
-    far_requested: HashSet<(i64, i64)>,
-    /// Failed far-cell fetch attempts (bounded retry).
-    far_failed: HashMap<(i64, i64), u32>,
+    far: CellStream<(i64, i64), Result<Option<FarCellBuild>, String>>,
+    /// The same, for **3DBAG-covered** cells. Our own static host has no rate
+    /// limit, so these run concurrently instead of riding the Overpass courtesy
+    /// lane — which made a covered city stream its far ring one cell at a time for
+    /// no one's benefit. A separate stream rather than a flag: a cell then lives in
+    /// exactly one lane's bookkeeping, so a coverage answer that flips mid-flight
+    /// cannot free the wrong lane's slot.
+    #[allow(clippy::type_complexity)]
+    far_tdbag: CellStream<(i64, i64), Result<Option<FarCellBuild>, String>>,
     /// Spawned far-cell mesh entities (buildings + windows), despawned when out
     /// of range.
     far_cells: HashMap<(i64, i64), Vec<Entity>>,
@@ -418,7 +412,23 @@ impl OsmBuildings {
     /// ground-level capture is waiting for.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.in_flight || self.far_dispatch.busy() || self.far_dispatch_tdbag.busy()
+        self.in_flight || self.far.busy() || self.far_tdbag.busy()
+    }
+
+    /// The far lane a cell belongs to. Routed by coverage at request time and
+    /// re-derived from the same predicate at completion, which is safe because the
+    /// two lanes keep separate bookkeeping — the worst a flip mid-flight can do is
+    /// leave one lane holding a slot until the next reset, never free a slot that
+    /// another cell owns.
+    fn far_lane(
+        &mut self,
+        tdbag: bool,
+    ) -> &mut CellStream<(i64, i64), Result<Option<FarCellBuild>, String>> {
+        if tdbag {
+            &mut self.far_tdbag
+        } else {
+            &mut self.far
+        }
     }
 
     /// Despawn the far-cell extrusion for `cell`, if one is up — called by the
@@ -428,16 +438,71 @@ impl OsmBuildings {
     /// arrives at startup, or while the Layers panel's 3DBAG toggle is off —
     /// and nothing else removes them: far cells are only pruned by camera
     /// distance, and the inset footprint does not hide them (the extruded
-    /// height is a guess that can poke through the real BAG roof). Dropping the
-    /// cell from `far_requested` lets the far tier re-fetch it (disk-cached)
-    /// when the real mesh later goes out of range.
+    /// height is a guess that can poke through the real BAG roof). Forgetting the
+    /// cell in both lanes lets the far tier re-fetch it (disk-cached) when the real
+    /// mesh later goes out of range.
     pub(crate) fn evict_far_cell(&mut self, commands: &mut Commands, cell: (i64, i64)) {
         for e in self.far_cells.remove(&cell).unwrap_or_default() {
             commands.entity(e).despawn();
         }
-        self.far_requested.remove(&cell);
+        self.far.forget(&cell);
+        self.far_tdbag.forget(&cell);
     }
 }
+
+impl Default for OsmBuildings {
+    fn default() -> Self {
+        Self {
+            anchor: None,
+            last_center: None,
+            tdbag_was: None,
+            last_fetch: None,
+            in_flight: false,
+            fetch: Arc::default(),
+            detail_entities: Vec::new(),
+            far: CellStream::new(Policy {
+                // Paced by the endpoint (`overpass_pace`): concurrent against our
+                // own instance, serial against a public one — which is what a
+                // shared endpoint is owed, and where the spacing comes from the
+                // throttle inside the fetch.
+                max_in_flight: overpass_pace().0,
+                min_interval_secs: 0.0,
+                max_attempts: FAR_CELL_MAX_ATTEMPTS,
+                backoff_secs: 0.0,
+                backoff_doublings: 0,
+                cooldown_secs: 0.0,
+                // This lane owns the shared despawn queue; the 3DBAG one below
+                // never retires anything of its own.
+                despawns_per_frame: MAX_FAR_DESPAWNS_PER_FRAME,
+            }),
+            far_tdbag: CellStream::new(Policy {
+                max_in_flight: TDBAG_FAR_CONCURRENCY,
+                min_interval_secs: 0.0,
+                max_attempts: FAR_CELL_MAX_ATTEMPTS,
+                backoff_secs: 0.0,
+                backoff_doublings: 0,
+                cooldown_secs: 0.0,
+                despawns_per_frame: 0,
+            }),
+            terrain_revision: 0,
+            far_cells: HashMap::new(),
+            far_material: None,
+            far_window_materials: None,
+            buildings: Vec::new(),
+        }
+    }
+}
+
+/// Attempts before a far cell is left alone. Overpass 504s under load, and a cell
+/// that has failed three times is either genuinely empty upstream or the query is
+/// too heavy for it — a fourth try costs a shared endpoint a request to find out.
+const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
+
+/// Far cells' entities freed per frame. A far cell is one merged extrusion mesh
+/// plus its window meshes, and a re-anchor retires all `(2·FAR_CELL_RADIUS+1)² =
+/// 49` of them at once — the documented `VK_ERROR_DEVICE_LOST` burst. Higher than
+/// `lod22`'s cap because these meshes are the simplified tier and far cheaper.
+const MAX_FAR_DESPAWNS_PER_FRAME: usize = 6;
 
 /// Marker for spawned building meshes.
 #[derive(Component)]
@@ -593,45 +658,40 @@ pub fn update_buildings(
     // re-establish it at the new location. Dropping `far_jobs` ends the old
     // worker (its `recv` errors), and a fresh `far_results` orphans any in-flight
     // result it still pushes, so nothing from the old origin leaks through.
+    // Free retired far cells at the shared per-frame cap, before any early return.
+    osm.far.drain_despawns(&mut commands);
+
     // The measured ground lands after the anchor it belongs to, so the first
     // buildings are always extruded onto the flat plane; rebuilding them is the
-    // same teardown a re-anchor does.
-    if osm.synced_gen != stream.anchor_generation || osm.terrain_revision != terrain.revision {
-        osm.synced_gen = stream.anchor_generation;
+    // same teardown a re-anchor does. `sync` runs unconditionally so it adopts the
+    // new generation either way.
+    let reanchored = osm.far.sync(stream.anchor_generation);
+    if reanchored || osm.terrain_revision != terrain.revision {
         osm.terrain_revision = terrain.revision;
         for e in osm.detail_entities.drain(..) {
             commands.entity(e).despawn();
         }
-        for (_, ents) in osm.far_cells.drain() {
-            for e in ents {
-                commands.entity(e).despawn();
-            }
-        }
-        osm.far_requested.clear();
-        osm.far_failed.clear();
+        let retired: Vec<Entity> = osm.far_cells.drain().flat_map(|(_, ents)| ents).collect();
+        osm.far.retire_all(retired);
         osm.buildings.clear();
         colliders.clear_detail();
         osm.last_center = None;
         osm.last_fetch = None;
         osm.in_flight = false;
-        osm.far_results = Arc::new(Mutex::new(Vec::new()));
+        // Orphans both results sinks, so nothing from the old origin leaks through.
+        osm.far.reset();
+        osm.far_tdbag.reset();
         osm.anchor = None;
     }
 
-    // Establish the anchor (from the map origin) and start the far-cell worker: it
-    // streams one CACHE_ZOOM cell at a time (disk-cached Overpass fetch + LOD mesh
-    // build), entirely off the main thread.
+    // Establish the anchor (from the map origin). Far cells then stream one
+    // CACHE_ZOOM cell at a time (disk-cached Overpass fetch + LOD mesh build),
+    // entirely off the main thread.
     if osm.anchor.is_none() {
         let z = base_zoom;
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         osm.anchor = Some((ax, ay, z, lat));
-        // Concurrency per lane from the endpoint: our own Overpass runs
-        // concurrent, a public one serial (spacing comes from the throttle
-        // inside the fetch).
-        osm.far_dispatch = Dispatcher::new(overpass_pace().0, 0.0);
-        osm.far_dispatch_tdbag = Dispatcher::new(TDBAG_FAR_CONCURRENCY, 0.0);
-        osm.far_tdbag_lane.clear();
     }
     let (ax, ay, z, lat) = osm.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -835,36 +895,35 @@ pub fn update_buildings(
                 let lod22_near = lod22_covers(cell.0, cell.1)
                     && (cell.0 - ccx).abs().max((cell.1 - ccy).abs())
                         <= crate::systems::lod22::LOD22_RADIUS + 1;
-                if !osm.far_requested.contains(&cell)
-                    && *osm.far_failed.get(&cell).unwrap_or(&0) < 3
-                    && !lod22_near
-                {
+                if !lod22_near {
                     to_request.push(cell);
                 }
             }
         }
         to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+        // `CellStream::request` de-dups and is also the retry pump — it refuses a
+        // cell already known or one that has spent its attempts.
+        let now_secs = time.elapsed_secs_f64();
         for cell in to_request {
-            osm.far_requested.insert(cell);
             // Two lanes: covered cells hit our own 3DBAG host and run
-            // concurrently; everything else rides the serial Overpass
-            // courtesy lane. Routed at queue time and remembered, so a
-            // mid-flight toggle flip can't misattribute the completion.
-            if tdbag_covers(cell.0, cell.1) {
-                osm.far_tdbag_lane.insert(cell);
-                osm.far_dispatch_tdbag.queue(cell);
-            } else {
-                osm.far_dispatch.queue(cell);
-            }
+            // concurrently; everything else rides the Overpass lane. Routed at
+            // request time, and the lane's own bookkeeping is what remembers it.
+            let tdbag = tdbag_covers(cell.0, cell.1);
+            osm.far_lane(tdbag).request(cell, now_secs);
         }
 
-        // Dispatch queued far cells (the Overpass lane is serial; the throttle
-        // inside the fetch spaces it) as detached tasks (ADR-033 seam) — no
-        // worker thread.
-        let now_secs = time.elapsed_secs_f64();
-        let results = osm.far_results.clone();
-        let spawn_cell = |cx: i64, cy: i64| {
-            let results = results.clone();
+        // Dispatch queued far cells as detached tasks (ADR-033 seam) — no worker
+        // thread. Both lanes drain here; each has its own bound and its own sink.
+        let mut jobs: Vec<(bool, (i64, i64))> = Vec::new();
+        while let Some(cell) = osm.far.next_job(now_secs) {
+            jobs.push((false, cell));
+        }
+        while let Some(cell) = osm.far_tdbag.next_job(now_secs) {
+            jobs.push((true, cell));
+        }
+        let sinks = (osm.far.sink(), osm.far_tdbag.sink());
+        for (tdbag, (cx, cy)) in jobs {
+            let results = if tdbag { sinks.1.clone() } else { sinks.0.clone() };
             // The ground travels with the job — footprints only exist in there.
             let ground = terrain.snapshot();
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
@@ -889,28 +948,17 @@ pub fn update_buildings(
                     }
                 })
                 .detach();
-        };
-        while let Some((cx, cy)) = osm.far_dispatch.next(now_secs) {
-            spawn_cell(cx, cy);
-        }
-        while let Some((cx, cy)) = osm.far_dispatch_tdbag.next(now_secs) {
-            spawn_cell(cx, cy);
         }
 
         // Apply completed cells.
-        let done: Vec<((i64, i64), Result<Option<FarCellBuild>, String>)> = osm
-            .far_results
-            .lock()
-            .map(|mut g| g.drain(..).collect())
-            .unwrap_or_default();
-        for (cell, _) in &done {
-            if osm.far_tdbag_lane.remove(cell) {
-                osm.far_dispatch_tdbag.completed();
-            } else {
-                osm.far_dispatch.completed();
-            }
-        }
-        for (cell, built) in done {
+        let done: Vec<(bool, ((i64, i64), Result<Option<FarCellBuild>, String>))> = osm
+            .far
+            .take_results()
+            .into_iter()
+            .map(|r| (false, r))
+            .chain(osm.far_tdbag.take_results().into_iter().map(|r| (true, r)))
+            .collect();
+        for (tdbag, (cell, built)) in done {
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
                     let material = osm
@@ -985,13 +1033,16 @@ pub fn update_buildings(
                         );
                     }
                     osm.far_cells.insert(cell, entities);
+                    osm.far_lane(tdbag).succeeded(&cell);
                 }
-                Ok(None) => {} // empty cell; stays in far_requested so it isn't re-queried
+                // Empty cell; stays requested so it isn't re-queried.
+                Ok(None) => {
+                    osm.far_lane(tdbag).succeeded(&cell);
+                }
                 Err(e) => {
                     tracing::warn!(cell = ?cell, error = %e, "far building cell failed");
-                    *osm.far_failed.entry(cell).or_insert(0) += 1;
-                    // Allow a bounded re-queue on a later frame.
-                    osm.far_requested.remove(&cell);
+                    // Allows a bounded re-queue on a later frame.
+                    osm.far_lane(tdbag).failed(&cell, now_secs);
                 }
             }
         }
@@ -1013,10 +1064,12 @@ pub fn update_buildings(
             .copied()
             .collect();
         for cell in stale {
-            for entity in osm.far_cells.remove(&cell).unwrap_or_default() {
-                commands.entity(entity).despawn();
-            }
-            osm.far_requested.remove(&cell);
+            let entities = osm.far_cells.remove(&cell).unwrap_or_default();
+            // Retiring is lane-agnostic (the `far` lane owns the queue); forgetting
+            // is not, so both are asked — only the owning lane has anything to drop.
+            osm.far.retire_all(entities);
+            osm.far.forget(&cell);
+            osm.far_tdbag.forget(&cell);
         }
     }
 
