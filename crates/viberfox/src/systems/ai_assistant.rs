@@ -251,7 +251,11 @@ fn call_anthropic(
     });
     let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
 
-    let req = ureq::post("https://api.anthropic.com/v1/messages")
+    // The shared agent, not `ureq::post`: a conversation is one request per turn
+    // plus one per tool round-trip, and a private pool per call would hand every
+    // one of them a fresh TLS handshake.
+    let req = crate::platform::http::native_agent()
+        .post("https://api.anthropic.com/v1/messages")
         .set("x-api-key", api_key)
         .set("anthropic-version", "2023-06-01")
         .set("content-type", "application/json");

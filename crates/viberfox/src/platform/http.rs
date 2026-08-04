@@ -139,6 +139,15 @@ pub async fn fetch_string(req: Request) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
+/// The shared native connection pool, for the rare caller that needs raw `ureq`
+/// rather than [`fetch`] — e.g. one that destructures `ureq::Error::Status`, a
+/// status code this module's `Result<_, String>` flattens away. Reaching for it
+/// instead of `ureq::post` is what keeps such a caller on the one pool.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_agent() -> &'static ureq::Agent {
+    imp::agent()
+}
+
 /// Non-blocking poll of a spawned fetch task. Returns `Some(result)` on the frame
 /// the task completes, `None` while it is still running. Call from a system that
 /// holds the `Task`; it never blocks the schedule.
@@ -151,6 +160,13 @@ mod imp {
     use super::{Method, Request, MAX_BODY, USER_AGENT};
     use std::io::Read;
     use std::sync::LazyLock;
+    use std::time::Duration;
+
+    /// Cap on the TCP connect phase alone, so an unreachable host fails fast
+    /// instead of spending the caller's whole request timeout on a dead socket.
+    /// That budget is shared: an io thread parked on a dead connect is one of at
+    /// most eight (`main.rs`'s `TaskPoolOptions`) not streaming the map.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// One process-wide agent, so connections are **pooled and reused**.
     ///
@@ -170,8 +186,14 @@ mod imp {
         ureq::AgentBuilder::new()
             .max_idle_connections(64)
             .max_idle_connections_per_host(16)
+            .timeout_connect(CONNECT_TIMEOUT)
             .build()
     });
+
+    /// Hand out the shared agent — see [`super::native_agent`].
+    pub(super) fn agent() -> &'static ureq::Agent {
+        &AGENT
+    }
 
     /// Native: a blocking `ureq` call. `fetch` is `async` for a uniform signature,
     /// but has no internal await points — it is expected to run on an `IoTaskPool`
