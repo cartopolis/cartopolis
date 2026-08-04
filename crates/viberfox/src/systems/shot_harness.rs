@@ -115,6 +115,16 @@ pub const DEFAULT_SIZE: &str = "1280x720";
 pub const DEFAULT_SETTLE: f32 = 0.8;
 pub const DEFAULT_WAIT: f32 = 15.0;
 
+/// How long the GPU readback gets *after* the capture fires, before the run is
+/// declared dead. Deliberately a constant and not a function of `--wait`: the
+/// settle cap and the readback measure unrelated things, and tying them together
+/// meant a short `--wait` failed runs that would otherwise have produced a
+/// perfectly good (if half-streamed) image. Generous because it is a backstop
+/// against hanging, not a deadline anything is expected to approach — a readback
+/// on a GPU lands in a frame or two, and the slowest measured on a software
+/// rasteriser was ~5 s.
+pub const CAPTURE_GRACE_S: f32 = 60.0;
+
 /// One scripted viewpoint.
 #[derive(Clone, Default)]
 pub struct ShotSpec {
@@ -250,8 +260,17 @@ pub struct ShotMetrics {
     pub name: Option<String>,
     pub lat: f64,
     pub lng: f64,
-    /// Seconds from placement to the settled capture.
+    /// Whether the settle test actually passed, or the capture gave up at
+    /// `--wait`. Without it the two are indistinguishable in the output: a run
+    /// that timed out reports a large `settled_s` and reads as a slow success,
+    /// while every other number below describes a *partially streamed* world.
+    pub settled: bool,
+    /// Seconds from placement to the capture — settled or not (see [`Self::settled`]).
     pub settled_s: f32,
+    /// The streamers still working when the capture fired. Empty on a settled
+    /// shot; on a timed-out one this *is* the diagnosis, and without it the only
+    /// way to learn which stream was slow is to re-run with a longer `--wait`.
+    pub busy: Vec<String>,
     /// Mean frame time over the settled frames (ms) — the space tier's render cost.
     pub frame_ms: f32,
     pub alt_m: i64,
@@ -298,25 +317,33 @@ pub struct ShotMetrics {
     /// ~2 m), and a field with relief in it that something downstream isn't using.
     pub terrain_ready: bool,
     pub terrain_relief_m: f32,
+    /// The capture ran on a CPU rasteriser (Mesa lavapipe in a container or CI)
+    /// rather than a GPU. Geometry, placement, culling and UI layout are the same
+    /// picture either way; the tone-mapped sky is not, so a colour or lighting
+    /// judgement made against a shot with this set is not evidence.
+    pub software_renderer: bool,
 }
 
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
 /// so the two never drift; a mismatch would silently mislabel columns.
-const CSV_HEADER: &str = "shot,name,lat,lng,settled_s,frame_ms,alt_m,space_factor,in_space,\
+/// `busy` is `|`-joined rather than comma-joined for the obvious reason.
+const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches,\
-terrain_ready,terrain_relief_m";
+terrain_ready,terrain_relief_m,software_renderer";
 
 impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{:.2},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{:.2}",
+            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
             self.lng,
+            self.settled,
             self.settled_s,
+            self.busy.join("|"),
             self.frame_ms,
             self.alt_m,
             self.space_factor,
@@ -338,6 +365,7 @@ impl ShotMetrics {
             self.height_patches,
             self.terrain_ready,
             self.terrain_relief_m,
+            self.software_renderer,
         )
     }
 }
@@ -583,6 +611,9 @@ pub struct ShotProgress {
     frame_time: f32,
     /// The capture frame has been requested (waiting on the GPU readback).
     fired: bool,
+    /// `elapsed` at the moment it fired, so the readback gets its own budget —
+    /// see [`CAPTURE_GRACE_S`].
+    fired_at: f32,
     /// Flipped by the capture observer once the PNG is on disk.
     saved: Arc<AtomicBool>,
     /// Frames left before exiting (drains after the last save).
@@ -901,6 +932,7 @@ pub fn drive_capture(
         Res<crate::systems::map_geometry::MapSurfaces>,
         Res<crate::systems::osm_buildings::OsmBuildings>,
         Res<crate::systems::lod22::Lod22Buildings>,
+        Res<bevy::render::renderer::RenderAdapterInfo>,
     ),
     camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
@@ -941,8 +973,19 @@ pub fn drive_capture(
     }
     if progress.fired {
         // The readback normally lands within a frame or two; don't hang forever.
-        if progress.elapsed > harness.wait + 20.0 {
-            tracing::error!("shot harness: capture never completed");
+        //
+        // Budgeted from the moment it fired, and *not* as `wait + N`: the two
+        // measure unrelated things, so shortening `--wait` to capture a
+        // deliberately half-streamed world also shortened the time allowed for the
+        // readback. Measured on a software rasteriser (lavapipe, ground level,
+        // frames running 0.7–2 s): `--wait 5` gave the readback 20 s, it needed
+        // more, and the run died with `capture never completed` and no PNG — a
+        // failure invented entirely by the coupling.
+        if progress.elapsed - progress.fired_at > CAPTURE_GRACE_S {
+            tracing::error!(
+                grace_s = CAPTURE_GRACE_S,
+                "shot harness: capture never completed"
+            );
             exit.write(AppExit::error());
         }
         return;
@@ -972,21 +1015,32 @@ pub fn drive_capture(
             | crate::systems::navigation::SolveStatus::Solving
     );
     let (surfaces, osm, lod22) = (&readouts.5, &readouts.6, &readouts.7);
-    if globe.streaming_busy()
-        || stream.streaming_busy()
-        || surfaces.streaming_busy()
-        || osm.streaming_busy()
-        || lod22.streaming_busy()
-        || routing
-        || (weather.live && !weather.ready())
-    {
-        progress.quiet = 0.0;
-    } else {
+    // Named, not a single `||` chain: when a capture gives up at `--wait`, *which*
+    // streamer was still going is the entire diagnosis, and a bare "not settled"
+    // sends you back to re-run with a longer cap just to learn it.
+    let busy: Vec<&'static str> = [
+        ("globe", globe.streaming_busy()),
+        ("map_tiles", stream.streaming_busy()),
+        ("surfaces", surfaces.streaming_busy()),
+        ("osm_buildings", osm.streaming_busy()),
+        ("lod22", lod22.streaming_busy()),
+        ("routing", routing),
+        ("weather", weather.live && !weather.ready()),
+    ]
+    .into_iter()
+    .filter_map(|(name, busy)| busy.then_some(name))
+    .collect();
+    if busy.is_empty() {
         progress.quiet += time.delta_secs();
+    } else {
+        progress.quiet = 0.0;
     }
     if progress.quiet < harness.settle && progress.elapsed < harness.wait {
         return;
     }
+    // Which arm of the test above let us through. Everything measured below
+    // describes a partially streamed world when this is false.
+    let settled = progress.quiet >= harness.settle;
 
     // The numbers behind the image, so a black frame can be diagnosed without
     // re-running: a black *scene* still reports visible, rendered globe meshes.
@@ -1002,7 +1056,9 @@ pub fn drive_capture(
             name: shot.name.clone(),
             lat: shot.lat,
             lng: shot.lng,
+            settled,
             settled_s: progress.elapsed,
+            busy: busy.iter().map(|s| (*s).to_string()).collect(),
             frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
             alt_m: globe.altitude_m(cell, tf) as i64,
             space_factor: globe.space_factor(cell, tf),
@@ -1024,10 +1080,19 @@ pub fn drive_capture(
             height_patches: readouts.2.fetched,
             terrain_ready: readouts.3.is_ready(),
             terrain_relief_m: readouts.3.range_m.1 - readouts.3.range_m.0,
+            software_renderer: readouts.8.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
         };
-        tracing::info!(
+        // One line, but its *level* carries whether the shot is trustworthy: a
+        // capture that timed out describes a half-built world, and at INFO it
+        // looked exactly like a slow success. The macro is here so the field list
+        // isn't duplicated once per level.
+        macro_rules! shot_state {
+            ($level:ident) => {
+                tracing::$level!(
             shot = m.shot,
             name = m.name.as_deref().unwrap_or("-"),
+            settled = m.settled,
+            busy = m.busy.join("|"),
             settled_in = format!("{:.1}s", m.settled_s),
             frame_ms = format!("{:.1}", m.frame_ms),
             alt_m = m.alt_m,
@@ -1050,8 +1115,16 @@ pub fn drive_capture(
             height_patches = m.height_patches,
             terrain_ready = m.terrain_ready,
             terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
-            "shot state"
-        );
+            software_renderer = m.software_renderer,
+                    "shot state"
+                )
+            };
+        }
+        if m.settled {
+            shot_state!(info);
+        } else {
+            shot_state!(warn);
+        }
         progress.metrics.push(m);
     }
 
@@ -1059,6 +1132,7 @@ pub fn drive_capture(
     // reads `hide_ui` in PostUpdate; ui::drive_screenshots clears it next frame).
     shot_state.hide_ui = harness.hide_ui_for(progress.index);
     progress.fired = true;
+    progress.fired_at = progress.elapsed;
     let saved = progress.saved.clone();
     let path = harness.path_for(progress.index);
     let screenshot = match target.as_ref() {
@@ -1223,6 +1297,11 @@ mod tests {
             name: Some("city".into()),
             lat: 0.0,
             lng: 0.0,
+            settled: false,
+            // Two entries on purpose: `busy` is the one list-valued column, and
+            // joining it with a comma would add columns to this row and silently
+            // shift every header after it.
+            busy: vec!["map_tiles".into(), "lod22".into()],
             settled_s: 1.0,
             frame_ms: 16.6,
             alt_m: 1000,
@@ -1245,6 +1324,7 @@ mod tests {
             height_patches: 0,
             terrain_ready: false,
             terrain_relief_m: 0.0,
+            software_renderer: true,
         };
         assert_eq!(
             CSV_HEADER.split(',').count(),

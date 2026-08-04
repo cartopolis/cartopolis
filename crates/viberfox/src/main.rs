@@ -1135,7 +1135,20 @@ fn main() {
     )
     .add_systems(Last, frame_limiter);
 
-    app.run();
+    // The run's verdict has to become the process's. `app.run()` returns an
+    // `AppExit` and dropping it made every failure look like a success: a `--shot`
+    // that never completed its readback logs `capture never completed`, writes
+    // `AppExit::error()`, produces no PNG — and still exited **0**. Anything
+    // scripted on top of the harness (a CI job, an agent checking its own work)
+    // therefore could not tell a finished capture from a dead one, which is the
+    // one distinction such a caller exists to make.
+    if let AppExit::Error(code) = app.run() {
+        // No process to exit on the web, and the browser build never shoots.
+        #[cfg(not(target_arch = "wasm32"))]
+        std::process::exit(code.get() as i32);
+        #[cfg(target_arch = "wasm32")]
+        let _ = code;
+    }
 }
 
 fn has_connect_addr(addr: Option<Res<ConnectAddr>>) -> bool {
