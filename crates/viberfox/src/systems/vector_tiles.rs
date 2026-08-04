@@ -3319,11 +3319,14 @@ mod tests {
 
     /// Build one corner and hand back the ribbon's vertices in the XZ plane, each
     /// tagged with its `u` (which side of the road it is), plus the centre line
-    /// the ribbon was actually built around — stubs and all, since
-    /// `JUNCTION_EXTEND` lengthens it before any offsetting happens.
+    /// the ribbon was actually built around.
+    ///
+    /// Built with no junction stubs (`extend = [0, 0]`): this is about what the
+    /// join does to the two segments meeting at the corner, and a stub only ever
+    /// lengthens the outer *ends*, which both tests filter away anyway.
     fn corner(turn_deg: f32, seg_m: f32, half: f32) -> (Vec<([f32; 2], f32)>, Vec<[f32; 2]>) {
         let t = turn_deg.to_radians();
-        let centre = [
+        let centre = vec![
             [-seg_m, 0.0],
             [0.0, 0.0],
             [seg_m * t.cos(), seg_m * t.sin()],
@@ -3334,30 +3337,20 @@ mod tests {
             half,
             0.0,
             12.0,
+            [0.0, 0.0],
             &mut positions,
             &mut uvs,
             &mut indices,
         );
         assert_eq!(uvs.len(), positions.len());
         assert!(!indices.is_empty());
-        let stub = half * JUNCTION_EXTEND;
-        let extended = vec![
-            [-seg_m - stub, 0.0],
-            centre[0],
-            centre[1],
-            centre[2],
-            [
-                centre[2][0] + stub * t.cos(),
-                centre[2][1] + stub * t.sin(),
-            ],
-        ];
         (
             positions
                 .iter()
                 .zip(&uvs)
                 .map(|(p, uv)| ([p[0], p[2]], uv[0]))
                 .collect(),
-            extended,
+            centre,
         )
     }
 
