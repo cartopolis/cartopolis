@@ -310,9 +310,17 @@ fn main() {
                 // wgpu/naga at `warn` so GPU validation + device-loss errors
                 // surface (they're the real cause of the zoom-out crash; the
                 // panics only show the aftermath). Override with RUST_LOG.
+                //
+                // `bevy_render=error` is not redundant with those: a validation
+                // failure is reported by Bevy's *own* `bevy_render::error_handler`,
+                // which then writes the `AppExit` that ends the run — and the `off`
+                // default silenced exactly that. The observed failure was a `--shot`
+                // that exited 0 in 3 s with no PNG and an empty log; the wgpu
+                // targets above said nothing, because the error never came from
+                // them. A run that dies for a render reason must say so.
                 .unwrap_or_else(|_| {
                     tracing_subscriber::EnvFilter::new(
-                        "off,viberfox=info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn",
+                        "off,viberfox=info,bevy_render=error,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn",
                     )
                 }),
         )

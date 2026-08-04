@@ -393,11 +393,18 @@ pub fn setup_camera(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     dev: Res<crate::resources::DevPanelState>,
+    adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
 ) {
     camera_state.mode = CameraMode::Avatar;
     camera_state.distance = AVATAR_CAM_DEFAULT;
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
+
+    // A software adapter (Mesa lavapipe in a container or CI) has the *same*
+    // 1-or-4 sample-count restriction as WebGPU, and fails the same silent way —
+    // see the `Msaa` comment below. Detect it rather than keying off the headless
+    // run, so `cargo shots` on a real GPU keeps its 2×.
+    let software_renderer = adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu;
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
     // density is rewritten by altitude in `globe::update_globe_visibility` (thin
@@ -449,7 +456,11 @@ pub fn setup_camera(
                 // no frame budget to spend on edge quality yet. Raise this to
                 // `Msaa::Sample4` once frame times allow — those are the only two
                 // legal values here.
-                if cfg!(target_arch = "wasm32") {
+                // `software_renderer` is the same restriction arriving from the
+                // other direction: lavapipe reports support for [1, 4] only, so a
+                // headless capture in a container dies in `main_texture_sampled`
+                // exactly as the web build did.
+                if cfg!(target_arch = "wasm32") || software_renderer {
                     Msaa::Off
                 } else {
                     Msaa::Sample2
