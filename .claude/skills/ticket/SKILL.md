@@ -30,8 +30,8 @@ The change, in terms of crates and files.
 - [ ] A checklist someone else can verify.
 
 ## Verification
-`cargo check -p viberfox`, `cargo test -p viberfox --bin viberfox`, and any
-visual check via `cargo shots`.
+`cargo check -p viberfox`, `cargo test -p viberfox_geo && cargo test -p viberfox`,
+and any visual check via `cargo shots`.
 
 ## Out of scope
 What a reader would reasonably assume is included but is not.

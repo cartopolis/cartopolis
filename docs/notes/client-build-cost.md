@@ -36,10 +36,18 @@ switching profiles, flipping `solo` / `fast-dev` / `scalar-fallback`, and every
 
 ## Two structural taxes, both self-inflicted
 
-**The bin-only target doubles the test build.** `viberfox` has no lib target, so
-`cargo test -p viberfox --bin viberfox` compiles all ~52k lines a second time
+Both are described as they *were* when measured; the section below records what
+was done about them the same day.
+
+**The bin-only target doubled the test build.** `viberfox` had no lib target, so
+`cargo test -p viberfox --bin viberfox` compiled all ~52k lines a second time
 under `cfg(test)` as a separate artifact. Note that `cargo check` does not
 compile `cfg(test)` code at all, which is why the suite can rot unseen.
+
+> That command outlived the fix and became a trap: with the shim bin in place it
+> selects a nine-line target with no tests in it, so it runs **0 tests and exits
+> 0**. It was still the autonomous lane's verification gate in `workflow.md` and
+> in the `ticket` skill until 2026-08-06. The command is `cargo test -p viberfox`.
 
 **Two dev profiles are maintained and both are paid for.** `target/` measured
 **170 GB**: `debug` 94 GB, `dev-bevy` 72 GB, `release` 2.2 GB, `web-release`

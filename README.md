@@ -82,7 +82,8 @@ New here? [`docs/guides/development.md`](docs/guides/development.md) is the cont
 guide — the dev loop, tests, a map of the code, conventions, config and CI.
 
 ```bash
-cargo test -p viberfox --bin viberfox   # the client suite (no lib target: --lib fails)
+cargo test -p viberfox_geo   # the Bevy-free geodata suite — ~2 s, run it first
+cargo test -p viberfox       # the client suite (links the rlib; --bin runs nothing)
 ```
 
 Standing constraints and measurements live in [`docs/notes/`](docs/notes/); the traps

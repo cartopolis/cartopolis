@@ -393,8 +393,15 @@ unclear signal must not start a build.
 
 A worktree on the issue's branch, cut from `origin/main` unless it is a
 [takeover](#handover). Verify with `cargo check -p <crate>` and
-`cargo test -p viberfox --bin viberfox`, commit in Conventional Commits style,
-push the branch. `main` is protected; the bot cannot push to it.
+`cargo test -p viberfox_geo && cargo test -p viberfox`, commit in Conventional
+Commits style, push the branch. `main` is protected; the bot cannot push to it.
+
+> **Not `--bin viberfox`.** That was the command here until 2026-08-06, and since
+> the lib+shim split ([client-build-cost.md](notes/client-build-cost.md)) it runs
+> **0 of viberfox's 207 tests** — `main.rs` is a nine-line shim with none in it —
+> and exits 0. The autonomous lane's only test gate was passing unconditionally.
+> `viberfox_geo` goes first because it fails in ~2 s on a geodata regression,
+> before the client's codegen.
 
 `agent:done` means **a branch is waiting for review**, not shipped.
 
