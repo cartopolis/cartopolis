@@ -127,11 +127,93 @@ mod imp {
     }
 }
 
-pub use imp::{init, submit};
+pub use imp::init;
 /// Pool width, for diagnostics/HUD. Native callers must wait until Bevy's task
 /// pools exist (it reads `AsyncComputeTaskPool`), so it is not called from [`start`].
 #[allow(unused_imports, dead_code)]
 pub use imp::worker_count;
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// While set, [`submit`] parks jobs in [`PARKED`] instead of dispatching them.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Jobs submitted while paused, released in order by `set_paused(false)`.
+static PARKED: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+/// Jobs handed to the pool and not yet finished — queued *or* running. Read by
+/// [`outstanding`].
+static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
+
+/// Hand one CPU-bound job to the pool (or hold it, while paused — see
+/// [`set_paused`]).
+pub fn submit(job: Job) {
+    // Acquire/Release against `set_paused`: a job admitted here must be visible
+    // to the drain, and a job parked here must be visible to whoever unparks.
+    if PAUSED.load(Ordering::Acquire) {
+        PARKED.lock().unwrap_or_else(|e| e.into_inner()).push(job);
+        return;
+    }
+    dispatch(job);
+}
+
+fn dispatch(job: Job) {
+    OUTSTANDING.fetch_add(1, Ordering::AcqRel);
+    imp::submit(Box::new(move || {
+        // A guard rather than a decrement after `job()`: a panicking job would
+        // otherwise leak a count forever and `outstanding()` would never reach
+        // zero again, which is precisely the condition a caller waits on.
+        struct Done;
+        impl Drop for Done {
+            fn drop(&mut self) {
+                OUTSTANDING.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let _done = Done;
+        job();
+    }));
+}
+
+/// Jobs of ours the pool still owes an answer for — queued or running. Zero means
+/// the pool holds nothing of ours, which is the only state in which something else
+/// spawned onto it is guaranteed a thread promptly.
+pub fn outstanding() -> usize {
+    OUTSTANDING.load(Ordering::Acquire)
+}
+
+/// Stop (or resume) admitting jobs to the pool.
+///
+/// **Why this exists.** On native, [`submit`] *is* `AsyncComputeTaskPool` — and so
+/// is Bevy's screenshot readback, which `collect_screenshots` spawns and detaches
+/// onto the same pool. Our jobs are blocking closures (a full MVT rasterise, ~120 ms
+/// each — `docs/notes/tile-raster-cost.md`), so each one owns a pool thread outright
+/// with no yield point. On an 8-core host the pool is 3 threads wide, a teleport
+/// queues hundreds of jobs, and the streamers keep refilling it: the readback future
+/// is FIFO'd behind all of them and may simply never be polled. That is a `--shot`
+/// that renders 194 healthy frames and never writes a PNG
+/// (`docs/notes/headless-shots-software-renderer.md`).
+///
+/// Pausing is deliberately *parking*, not dropping. The streamers de-duplicate on
+/// "a fetch is in flight", so a discarded decode is never re-queued — the tile would
+/// be missing for the rest of the run, which in a multi-shot `--shots` launch means
+/// every later image too.
+pub fn set_paused(paused: bool) {
+    PAUSED.store(paused, Ordering::Release);
+    if paused {
+        return;
+    }
+    // Loop rather than drain once: `submit` may be reached from a job already
+    // running on the pool, so a batch can arrive between the take and the store
+    // being observed.
+    loop {
+        let batch = std::mem::take(&mut *PARKED.lock().unwrap_or_else(|e| e.into_inner()));
+        if batch.is_empty() {
+            break;
+        }
+        for job in batch {
+            dispatch(job);
+        }
+    }
+}
 
 /// Start the pool. `hint` is the caller's idea of a good width (typically
 /// `navigator.hardwareConcurrency - 1`, leaving the main thread a core to render on).

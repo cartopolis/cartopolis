@@ -125,6 +125,15 @@ pub const DEFAULT_WAIT: f32 = 15.0;
 /// rasteriser was ~5 s.
 pub const CAPTURE_GRACE_S: f32 = 60.0;
 
+/// How long to let our own CPU pool drain, after the world is judged ready and
+/// before the shutter fires, so the readback is not queued behind a rasterise
+/// backlog. See [`crate::platform::workers::set_paused`] for why that queue exists
+/// at all. Bounded rather than unconditional: a capture that gave up at `--wait`
+/// can have hundreds of jobs outstanding, and a half-drained pool still beats
+/// waiting forever. On a settled shot every streamer is already quiet, so this
+/// costs nothing.
+pub const QUIESCE_MAX_S: f32 = 30.0;
+
 /// One scripted viewpoint.
 #[derive(Clone, Default)]
 pub struct ShotSpec {
@@ -594,6 +603,18 @@ pub fn parse_size(size: &str) -> Option<UVec2> {
 #[derive(Resource)]
 pub struct ShotTarget(pub Handle<Image>);
 
+/// The settle test's verdict for one shot, frozen at the moment it was reached.
+#[derive(Clone)]
+struct SettleVerdict {
+    /// Which arm let the capture through: quiet for `--settle`, or out of `--wait`.
+    settled: bool,
+    /// The streamers still going, when it wasn't the quiet arm.
+    busy: Vec<&'static str>,
+    /// `elapsed` when the verdict was reached — the number `settled_s` reports, and
+    /// the start of the quiesce budget.
+    at: f32,
+}
+
 /// Where the scripted run has got to.
 #[derive(Resource, Default)]
 pub struct ShotProgress {
@@ -609,11 +630,19 @@ pub struct ShotProgress {
     /// reported with each capture (how the space tier's render cost is A/B'd).
     frames: u32,
     frame_time: f32,
+    /// The settle test's answer, taken on the frame it passed and held across the
+    /// quiesce that follows. Held rather than recomputed because `quiet` keeps
+    /// accruing while the CPU pool drains: a shot that gave up at `--wait` would
+    /// otherwise go quiet during the drain and report itself settled, which is the
+    /// exact lie `settled`/`busy` were added to stop telling.
+    verdict: Option<SettleVerdict>,
     /// The capture frame has been requested (waiting on the GPU readback).
     fired: bool,
     /// `elapsed` at the moment it fired, so the readback gets its own budget —
     /// see [`CAPTURE_GRACE_S`].
     fired_at: f32,
+    /// The shutter has already been re-fired once after the grace expired.
+    retried: bool,
     /// Flipped by the capture observer once the PNG is on disk.
     saved: Arc<AtomicBool>,
     /// Frames left before exiting (drains after the last save).
@@ -948,8 +977,11 @@ pub fn drive_capture(
         }
         return;
     }
-    // Capture landed: on to the next viewpoint, or done.
+    // Capture landed: on to the next viewpoint, or done. The CPU pool was paused
+    // for the readback (see below); release it here so the next shot's streamers —
+    // and the jobs parked during this one — start again.
     if progress.saved.swap(false, Ordering::Relaxed) {
+        crate::platform::workers::set_paused(false);
         progress.index += 1;
         if progress.index >= harness.shots.len() {
             // Every viewpoint captured — flush the metrics before draining to exit.
@@ -958,6 +990,8 @@ pub fn drive_capture(
         } else {
             progress.placed = false;
             progress.fired = false;
+            progress.retried = false;
+            progress.verdict = None;
         }
         return;
     }
@@ -982,10 +1016,32 @@ pub fn drive_capture(
         // more, and the run died with `capture never completed` and no PNG — a
         // failure invented entirely by the coupling.
         if progress.elapsed - progress.fired_at > CAPTURE_GRACE_S {
+            // Re-fire once before giving up. A `Screenshot` gets exactly **one**
+            // frame: `bevy_render`'s `extract_screenshots` inserts `Capturing` and
+            // its own query is `Without<Capturing>`, while `prepare_screenshots`
+            // clears its prepared set every frame — so if that single frame's
+            // prepare skips the entity (an unknown render-target image, a
+            // pipeline not yet compiled) the request is dropped silently and no
+            // later frame reconsiders it. Nothing distinguishes that from a slow
+            // readback except trying again, and a second shutter costs one frame.
+            if !progress.retried {
+                progress.retried = true;
+                tracing::warn!(
+                    grace_s = CAPTURE_GRACE_S,
+                    outstanding = crate::platform::workers::outstanding(),
+                    "shot harness: no readback within the grace — re-firing the shutter once"
+                );
+                fire_capture(&mut commands, &harness, &mut progress, target.as_deref(), &mut shot_state);
+                return;
+            }
             tracing::error!(
                 grace_s = CAPTURE_GRACE_S,
+                outstanding = crate::platform::workers::outstanding(),
                 "shot harness: capture never completed"
             );
+            // Leaving the pool paused would strand every job parked behind this
+            // capture; the run is ending, but `AppExit` is not immediate.
+            crate::platform::workers::set_paused(false);
             exit.write(AppExit::error());
         }
         return;
@@ -1035,12 +1091,43 @@ pub fn drive_capture(
     } else {
         progress.quiet = 0.0;
     }
-    if progress.quiet < harness.settle && progress.elapsed < harness.wait {
-        return;
+    if progress.verdict.is_none() {
+        if progress.quiet < harness.settle && progress.elapsed < harness.wait {
+            return;
+        }
+        // Which arm of the test above let us through. Everything measured below
+        // describes a partially streamed world when this is false.
+        progress.verdict = Some(SettleVerdict {
+            settled: progress.quiet >= harness.settle,
+            busy: busy.clone(),
+            at: progress.elapsed,
+        });
+        // Stop feeding the CPU pool *before* the shutter. On native the pool that
+        // rasterises tiles is `AsyncComputeTaskPool`, and so is the pool Bevy
+        // detaches the screenshot readback onto — with blocking 120 ms jobs and
+        // three threads on an 8-core host, the readback is FIFO'd behind a queue the
+        // streamers keep refilling and can go unpolled indefinitely. Everything the
+        // streamers do from here is invisible in this frame's image anyway.
+        crate::platform::workers::set_paused(true);
     }
-    // Which arm of the test above let us through. Everything measured below
-    // describes a partially streamed world when this is false.
-    let settled = progress.quiet >= harness.settle;
+    let verdict = progress.verdict.clone().expect("set on the branch above");
+    let settled = verdict.settled;
+
+    // Let the paused pool drain before firing, so the readback finds a free thread
+    // rather than the tail of the backlog. On a settled shot the streamers are
+    // already quiet and this passes on the first frame; on a `--wait`-capped one it
+    // is the difference between an image and `capture never completed`.
+    let outstanding = crate::platform::workers::outstanding();
+    if outstanding > 0 {
+        if progress.elapsed - verdict.at < QUIESCE_MAX_S {
+            return;
+        }
+        tracing::warn!(
+            outstanding,
+            budget_s = QUIESCE_MAX_S,
+            "shot harness: CPU pool still busy at the quiesce cap — firing anyway"
+        );
+    }
 
     // The numbers behind the image, so a black frame can be diagnosed without
     // re-running: a black *scene* still reports visible, rendered globe meshes.
@@ -1057,8 +1144,8 @@ pub fn drive_capture(
             lat: shot.lat,
             lng: shot.lng,
             settled,
-            settled_s: progress.elapsed,
-            busy: busy.iter().map(|s| (*s).to_string()).collect(),
+            settled_s: verdict.at,
+            busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
             frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
             alt_m: globe.altitude_m(cell, tf) as i64,
             space_factor: globe.space_factor(cell, tf),
@@ -1128,6 +1215,20 @@ pub fn drive_capture(
         progress.metrics.push(m);
     }
 
+    fire_capture(&mut commands, &harness, &mut progress, target.as_deref(), &mut shot_state);
+}
+
+/// Spawn the capture request for the current shot and start its readback budget.
+///
+/// Split out of [`drive_capture`] because it has two callers: the shutter, and the
+/// one retry the grace timeout allows.
+fn fire_capture(
+    commands: &mut Commands,
+    harness: &ShotHarness,
+    progress: &mut ShotProgress,
+    target: Option<&ShotTarget>,
+    shot_state: &mut ScreenshotState,
+) {
     // `--hide-ui`: drop this frame's egui geometry (ui::suppress_egui_for_screenshot
     // reads `hide_ui` in PostUpdate; ui::drive_screenshots clears it next frame).
     shot_state.hide_ui = harness.hide_ui_for(progress.index);
@@ -1135,7 +1236,7 @@ pub fn drive_capture(
     progress.fired_at = progress.elapsed;
     let saved = progress.saved.clone();
     let path = harness.path_for(progress.index);
-    let screenshot = match target.as_ref() {
+    let screenshot = match target {
         Some(t) => Screenshot::image(t.0.clone()),
         None => Screenshot::primary_window(),
     };
