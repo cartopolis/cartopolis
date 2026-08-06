@@ -14,8 +14,8 @@ pub use protocol::{
     PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use world::{
-    find_optimal_zoom, lat_lng_to_tile, tile_to_lat_lng, tile_to_meters, TileKey,
-    REGION_SIZE_METERS, REGION_ZOOM_LEVEL,
+    find_optimal_zoom, lat_lng_to_tile, lat_lng_to_tile_frac, tile_to_lat_lng, tile_to_meters,
+    TileKey, REGION_SIZE_METERS, REGION_ZOOM_LEVEL,
 };
 pub use geo::{
     ecef_to_geodetic, geodetic_to_ecef, region_index, region_origin, regions_adjacent,

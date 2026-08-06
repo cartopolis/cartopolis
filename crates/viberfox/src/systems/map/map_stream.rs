@@ -40,13 +40,13 @@ pub fn snap_anchor(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
 }
 
 /// Fractional Web Mercator tile coordinate (no flooring) of a lat/lng at a zoom.
-pub fn lat_lng_to_tile_frac(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
-    let n = 2.0_f64.powi(zoom as i32);
-    let x = (lng + 180.0) / 360.0 * n;
-    let lat_rad = lat.to_radians();
-    let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
-    (x, y)
-}
+///
+/// Re-exported from `vibe_core`, where it lives next to the integer
+/// [`vibe_core::lat_lng_to_tile`] it used to duplicate verbatim. Kept visible here
+/// because a dozen call sites reach for it through this module, and because the
+/// routing graph needs it *without* needing the streamer — that dependency was the
+/// last non-doc tie from `systems::geo` to a Bevy module.
+pub use vibe_core::lat_lng_to_tile_frac;
 
 /// Tiles to keep loaded in each direction from the camera at the finest zoom
 /// (radius 4 → 9×9).

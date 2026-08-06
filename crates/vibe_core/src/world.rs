@@ -52,15 +52,25 @@ pub const REGION_SIZE_METERS: f64 = 256.0;
 /// `.png`) still works and falls back to the pre-rendered path.
 pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}";
 
+/// WGS84 → fractional Web Mercator tile coordinate at a zoom (no flooring).
+///
+/// The sub-tile fraction is what anything positioning *within* a tile needs — the
+/// streamer's centre offsets, the router's corridor endpoints, a metre offset
+/// turned back into a tile coordinate.
+#[must_use]
+pub fn lat_lng_to_tile_frac(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
+    let n = 2.0_f64.powi(zoom as i32);
+    let x = (lng + 180.0) / 360.0 * n;
+    let lat_rad = lat.to_radians();
+    let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
+    (x, y)
+}
+
 /// WGS84 → OSM tile index (Web Mercator).
 #[must_use]
 pub fn lat_lng_to_tile(lat: f64, lng: f64, zoom: u32) -> (i64, i64) {
-    let n = 2.0_f64.powi(zoom as i32);
-    let x = ((lng + 180.0) / 360.0 * n).floor() as i64;
-    let lat_rad = lat.to_radians();
-    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
-        .floor() as i64;
-    (x, y)
+    let (x, y) = lat_lng_to_tile_frac(lat, lng, zoom);
+    (x.floor() as i64, y.floor() as i64)
 }
 
 /// Tile corner (north-west) as WGS84.
