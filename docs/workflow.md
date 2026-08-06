@@ -17,9 +17,10 @@ store](#why-the-board-cannot-be-the-state-store).
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
-This document is about who *owns* a ticket. For the other half — what disagrees
-with a session when it says it is finished, and what still has no verifier at all
-— see [notes/agent-verification.md](notes/agent-verification.md).
+This document is about who *owns* a ticket. Before adding a check that decides
+one — or trusting one that already does — read
+[notes/agent-verification.md](notes/agent-verification.md): a gate may not depend
+on anything the agent controls.
 
 ## The three workflows
 
