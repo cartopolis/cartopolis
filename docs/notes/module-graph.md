@@ -51,10 +51,12 @@ state layer, but **33 of the 50 system files also declare `Resource` /
 layer exists; it was abandoned partway.
 
 The consequence is that the dependency graph does not describe the design. It
-describes *where types were filed*. Hoisting shared types and constants out of
-`systems/` breaks most of the 26 cycles mechanically, without changing any
-system's behaviour — that is the cheap part of any future split, and the reason
-the mesh looks worse than it is.
+describes *where types were filed*.
+
+That made hoisting them look like the cheap fix. It is not — see the next
+section, which is the record of trying it. What the in-degree table above really
+identifies is not five portable types but five *God-objects*, three of which fuse
+shared state with the streaming machinery that maintains it.
 
 ## The hub types cannot simply be moved to a state layer — attempted 2026-08-06
 
