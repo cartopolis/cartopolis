@@ -12,8 +12,10 @@ list, then computing in-degree and mutual pairs.
 
 ## The shape
 
-**26 mutual dependency cycles** exist between modules (22 after the `geo` crate
-extraction on 2026-08-06 removed four). Rust crates cannot be
+**26 mutual dependency cycles** existed between modules when this was written.
+2026-08-06 took it to 17: the `geo` extraction removed four, fixing the tile
+pipeline's layering removed two more (see below), and moving the 23 marker
+components back to `components.rs` removed three. Rust crates cannot be
 cyclic, so each one is a hard blocker for any crate split — this is the reason a
 split cannot simply be done, and it is worth knowing before proposing one again.
 
@@ -39,7 +41,7 @@ as the systems that drive it:
 
 | Hub | In-degree | What importers actually name |
 |---|---|---|
-| `free_camera` | 25 | `FreeCamera` (19), `WORLD_CELL_EDGE` (10) |
+| `free_camera` | 25 | `FreeCamera` (19), `WORLD_CELL_EDGE` (10) — `FreeCamera` is a *unit struct*, and moving it to `components.rs` on 2026-08-06 un-hubbed the module |
 | `map_stream` | 24 | `MapStream` (26) |
 | `globe` | 20 | `GlobeState` (34), `HideInSpace` (12) |
 | `data_layers` | 17 | `DataLayers` (18) |
@@ -95,6 +97,32 @@ same operation `vegetation` needed (870 pure lines / 130 ECS). Until that is
 done, a state crate buys little. That is three non-trivial refactors ahead of the
 one the ticket describes, and it is why phase 2 stalled here rather than
 shipping.
+
+## What did work: markers, and correcting a layering inversion
+
+Two things came out cheaply and are worth distinguishing from the state-crate
+attempt above.
+
+**The 23 marker components.** Zero-sized `#[derive(Component)] pub struct X;`
+tags with no fields and no behaviour, declared across 17 files next to whichever
+system spawned them. `components.rs` already existed for them. Moving them
+removed three cycles at zero risk, because a marker has no state, no ordering
+and no representation to get wrong. The instructive one is `FreeCamera`: the
+single highest-in-degree type in the client, named by 25 modules, is a unit
+struct — a quarter of the module graph pointed at the camera module to write
+`With<FreeCamera>`.
+
+**The tile pipeline was genuinely inverted**, not merely misfiled.
+`tile_source` owns bytes and `tile_loader` owns images, but the URL vocabulary
+(`format_osm_tile_url`, `tile_source_kind`) lived in `tile_loader`, so the byte
+layer imported upward to decide what to fetch. Those moved to `core::world`
+beside `TileKey` and `DEFAULT_TILE_URL_TEMPLATE`; `build_mip_chain` (pure) went
+to `viberfox_geo::mip` and `image_from_mip_chain` (Bevy) to `tile_loader`. The
+pipeline now reads one way: core -> tile_source -> tile_loader -> rendering.
+
+The distinction that matters when picking the next one: both of these moved
+things that have **no runtime semantics** — types with no state, and pure
+functions. The remaining cycles mostly do not.
 
 ## A crate named `core` is not available
 
