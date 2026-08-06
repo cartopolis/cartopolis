@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use simulator::{ensure_account, serve, SimConfig};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use viberfox_core::{
     decode_app_frame, encode_app_frame, AuthCredential, NetMessage, PROTOCOL_VERSION,
 };
+use viberfox_simulator::{ensure_account, serve, SimConfig};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
@@ -45,7 +45,7 @@ async fn password_login_then_token_reconnect_then_reject() {
     // Provision the account exactly as solo mode does, then serve on an
     // ephemeral loopback port.
     {
-        let conn = simulator::db::open_and_migrate(&db).unwrap();
+        let conn = viberfox_simulator::db::open_and_migrate(&db).unwrap();
         ensure_account(&conn, "dev", "dev").unwrap();
     }
     let config = SimConfig {

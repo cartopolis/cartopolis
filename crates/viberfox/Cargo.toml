@@ -32,7 +32,7 @@ path = "src/main.rs"
 # On by default for dev; turn off for lean/release client builds (then `--connect`
 # is required for online play).
 default = ["solo"]
-solo = ["dep:simulator"]
+solo = ["dep:viberfox_simulator"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
@@ -62,7 +62,7 @@ toml = "0.8"
 viberfox_core = { path = "../core" }
 viberfox_geo = { path = "../geo" }
 # Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
-simulator = { path = "../simulator", optional = true }
+viberfox_simulator = { path = "../simulator", optional = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true

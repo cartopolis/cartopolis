@@ -1,12 +1,14 @@
 [package]
-name = "simulator"
+name = "viberfox_simulator"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "simulator"
+name = "viberfox_simulator"
 path = "src/lib.rs"
 
+# The *binary* keeps the short name: it is what a user runs, and unlike the
+# package name it never appears in a dependency graph or a `-p` flag.
 [[bin]]
 name = "simulator"
 path = "src/main.rs"

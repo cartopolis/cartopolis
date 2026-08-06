@@ -41,7 +41,7 @@ pub const REGION_SIZE_METERS: f64 = 256.0;
 /// garage44 mirror of `download.versatiles.org`'s planet archive (z0–14), served by
 /// the `versatiles` server behind Caddy — same schema and URL shape as the public
 /// `tiles.versatiles.org`, so it is a drop-in origin swap off their hosting.
-/// Shared so the sim's advertised default (`simulator::config`) and the client's
+/// Shared so the sim's advertised default (`viberfox_simulator::config`) and the client's
 /// offline/`--shot` fallback (`viberfox::systems::tile_loader`) cannot drift apart —
 /// a mismatch there is how solo mode silently renders the old raster tiles instead
 /// of the vector map.

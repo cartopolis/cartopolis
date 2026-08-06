@@ -38,7 +38,7 @@ jobs:
       # back into per-change churn. Cheap and first: no compilation involved.
       # `crates/big_space` is excluded on purpose — it is a vendored fork kept
       # diff-comparable with upstream, so it is listed nowhere here.
-      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p simulator --check
+      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator --check
       # `--all-targets` now that the vendored big_space fork's test target
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.

@@ -33,7 +33,7 @@ pub fn start() -> anyhow::Result<String> {
                 }
             };
             rt.block_on(async move {
-                let mut config = simulator::SimConfig::default();
+                let mut config = viberfox_simulator::SimConfig::default();
                 config.listen = "127.0.0.1:0".into(); // ephemeral — no clash with a manual sim
                 let config = Arc::new(config);
 
@@ -41,7 +41,7 @@ pub fn start() -> anyhow::Result<String> {
                     let _ = tx.send(Err(format!("solo dev account: {e:#}")));
                     return;
                 }
-                match simulator::serve(config).await {
+                match viberfox_simulator::serve(config).await {
                     Ok(handle) => {
                         let _ = tx.send(Ok(handle.local_addr.to_string()));
                         // Hold the handle (and this runtime) alive for the process
@@ -64,7 +64,7 @@ pub fn start() -> anyhow::Result<String> {
 /// Provision the dev account before serving (idempotent). Opens its own short
 /// connection; `serve` opens the same DB file afterward.
 fn ensure_dev_account(db_path: &str) -> anyhow::Result<()> {
-    let conn = simulator::db::open_and_migrate(db_path)?;
-    simulator::ensure_account(&conn, DEV_USER, DEV_PASSWORD)?;
+    let conn = viberfox_simulator::db::open_and_migrate(db_path)?;
+    viberfox_simulator::ensure_account(&conn, DEV_USER, DEV_PASSWORD)?;
     Ok(())
 }

@@ -648,7 +648,7 @@ pub fn create_egui_texture_handles(
 /// scalar (capped), so flying traverses this many times faster than walking.
 const FLY_MOVE_MULT: f32 = 4.0;
 
-// Sim intent → world velocity scaling, mirrored from `simulator::state::apply_intent`
+// Sim intent → world velocity scaling, mirrored from `viberfox_simulator::state::apply_intent`
 // so the client can predict the local avatar's motion between snapshots. Keep in
 // sync with the sim (a mismatch just makes reconciliation fight prediction —
 // visible rubber-banding — it won't desync authority).

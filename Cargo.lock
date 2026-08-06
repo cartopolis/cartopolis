@@ -5965,29 +5965,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "simulator"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "argon2",
- "bytes",
- "clap",
- "figment",
- "futures-util",
- "glam",
- "refinery",
- "rusqlite",
- "serde",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "viberfox_core",
-]
-
-[[package]]
 name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6920,7 +6897,6 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
- "simulator",
  "tiff",
  "tokio",
  "tokio-util",
@@ -6932,6 +6908,7 @@ dependencies = [
  "uuid",
  "viberfox_core",
  "viberfox_geo",
+ "viberfox_simulator",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm_thread",
@@ -6964,6 +6941,29 @@ dependencies = [
  "mvt-reader",
  "tiny-skia 0.12.0",
  "tracing",
+ "viberfox_core",
+]
+
+[[package]]
+name = "viberfox_simulator"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "bytes",
+ "clap",
+ "figment",
+ "futures-util",
+ "glam",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
  "viberfox_core",
 ]
 

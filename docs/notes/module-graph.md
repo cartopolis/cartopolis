@@ -167,6 +167,24 @@ error[E0433]: cannot find `f32` in `core`
 ```
 
 Any `core::` path in a dependent breaks, including paths that macros expand to.
-`simulator` has no such conflict. If `crates/core/` is wanted as a directory
-name, the package must be named something else (`viberfox_core`) — Cargo does
-not require the directory and package names to match.
+
+**It is the lib target that shadows, not the package** — an earlier version of
+this note said the *package* had to be renamed, which is wrong. Verified
+2026-08-06: a package named `core` whose `[lib] name` is something else compiles
+and its dependents resolve `use core::f32::consts::PI` to the sysroot as normal.
+So `cargo run -p core` was available all along.
+
+It was not taken. The workspace uses `viberfox_core`, `viberfox_geo`,
+`viberfox_simulator` and `viberfox`, because a package whose name and lib name
+disagree is a wrinkle every reader has to look up, and prefixing everything
+removes the question instead of answering it. The crate names barely appear in
+code anyway — `viberfox_geo` is named twice in the whole tree, since
+`systems/mod.rs` re-exports its modules flat and call sites write
+`systems::vector_tiles`.
+
+Cargo does not require directory and package names to match, so the directories
+stay short: `crates/core`, `crates/geo`, `crates/simulator`. `crates/big_space`
+keeps its upstream name — it is a vendored fork kept diff-comparable, and
+renaming it would work against the re-sync it exists for. The simulator's *binary*
+also stays `simulator`: it is what a user runs, and never appears in a dependency
+graph or a `-p` flag.

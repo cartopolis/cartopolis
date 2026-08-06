@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use simulator::{ensure_account, serve, SimConfig};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use viberfox_core::{
     decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, PROTOCOL_VERSION,
 };
+use viberfox_simulator::{ensure_account, serve, SimConfig};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
@@ -58,7 +58,7 @@ async fn global_delivery_and_scrollback() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("chat.db").to_str().unwrap().to_string();
     {
-        let conn = simulator::db::open_and_migrate(&db).unwrap();
+        let conn = viberfox_simulator::db::open_and_migrate(&db).unwrap();
         ensure_account(&conn, "dev", "dev").unwrap();
     }
     let config = SimConfig {
