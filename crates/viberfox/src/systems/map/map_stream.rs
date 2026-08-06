@@ -9,17 +9,17 @@
 //! Textures are fetched on a background worker (one Overpass/tile HTTP call per
 //! tile, via an mpsc queue) so roaming never blocks the frame.
 
-use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
 use crate::components::FreeCamera;
+use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bevy::prelude::*;
-use bevy::tasks::IoTaskPool;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::prelude::*;
+use bevy::render::render_resource::TextureFormat;
+use bevy::tasks::IoTaskPool;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
@@ -113,9 +113,6 @@ fn zoom_for_altitude(altitude_m: f32, base_zoom: u32) -> u32 {
 pub struct StreamTile {
     pub key: TileKey,
 }
-
-
-
 
 /// A tile decoded and mipmapped **off the main thread** by a fetch worker. Holds
 /// the full packed mip chain ready for a cheap `Image` assembly + GPU upload on
@@ -725,8 +722,8 @@ pub fn update_map_stream(
         let wz = ((key.y as f64 + 0.5 - fcy) * gs as f64) as f32;
         // Place under the BigSpace so the tile rebases with the camera (any range).
         let world = Vec3::new(wx, y, wz);
-        let (tile_cell, local) =
-            Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD).translation_to_grid(world.as_dvec3());
+        let (tile_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
+            .translation_to_grid(world.as_dvec3());
         let backstop = key.z == MIN_ZOOM;
         let mut tile = commands.spawn((
             Mesh3d(quad.clone()),
@@ -744,7 +741,11 @@ pub fn update_map_stream(
             // visibility writer for a `StreamTile` and keeps them that way until
             // `StreamTileReady` lands — this only avoids a one-frame grey flash
             // before that system next runs.
-            if backstop { Visibility::Inherited } else { Visibility::Hidden },
+            if backstop {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            },
         ));
         if backstop {
             tile.insert(MapBackstop);
@@ -760,14 +761,24 @@ pub fn update_map_stream(
         let results = stream.tiles.sink();
         let live_gen = stream.gen_shared.clone();
         while let Some(key) = stream.tiles.next_job(now) {
-            spawn_map_tile(key, gen, template.clone(), results.clone(), live_gen.clone());
+            spawn_map_tile(
+                key,
+                gen,
+                template.clone(),
+                results.clone(),
+                live_gen.clone(),
+            );
             queued += 1;
         }
     }
     // Terse fetch accounting: one line per burst, not per tile (served from the
     // byte cache when already seen; only new tiles hit the network).
     if queued > 0 {
-        tracing::info!(queued, finest_zoom = stream.current_zoom, "tile fetches queued");
+        tracing::info!(
+            queued,
+            finest_zoom = stream.current_zoom,
+            "tile fetches queued"
+        );
     }
 
     // Despawn tiles that drifted out of range or left the pyramid after a LOD
@@ -799,7 +810,14 @@ pub fn apply_stream_textures(
     mut stream: ResMut<MapStream>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    tiles: Query<Entity, (With<StreamTile>, Without<StreamTileReady>, Without<StreamTileFailed>)>,
+    tiles: Query<
+        Entity,
+        (
+            With<StreamTile>,
+            Without<StreamTileReady>,
+            Without<StreamTileFailed>,
+        ),
+    >,
     time: Res<Time>,
     mut next_report: Local<f64>,
 ) {
@@ -939,7 +957,11 @@ mod tests {
         (MIN_ZOOM..=finest_zoom)
             .map(|zoom| {
                 let (fcx, fcy) = lat_lng_to_tile_frac(lat, lng, zoom);
-                ((zoom), (fcx - 0.5).round() as i64, (fcy - 0.5).round() as i64)
+                (
+                    (zoom),
+                    (fcx - 0.5).round() as i64,
+                    (fcy - 0.5).round() as i64,
+                )
             })
             .collect()
     }
@@ -956,7 +978,11 @@ mod tests {
         let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
         let (wanted, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, DEFAULT_ANCHOR_ZOOM);
         assert_eq!(order.len(), 424, "the clipmap fan-out changed");
-        assert_eq!(wanted.len(), order.len(), "a tile was wanted twice in one pass");
+        assert_eq!(
+            wanted.len(),
+            order.len(),
+            "a tile was wanted twice in one pass"
+        );
 
         // Coarsest first: a fresh anchor gets full, blurry coverage from a handful
         // of fetches before the finer rings refine it.
@@ -989,7 +1015,10 @@ mod tests {
             .iter()
             .filter(|k| k.z > crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
             .count();
-        assert_eq!(overzoomed, 179, "the overzoomed share of the pyramid changed");
+        assert_eq!(
+            overzoomed, 179,
+            "the overzoomed share of the pyramid changed"
+        );
         // Every one of them resolves onto a tile the z14 ring already wants, so
         // they add no distinct body at all.
         let below: std::collections::HashSet<(u32, i64, i64)> = order
@@ -997,6 +1026,9 @@ mod tests {
             .filter(|k| k.z <= crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
             .map(|k| (k.z, k.x, k.y))
             .collect();
-        assert_eq!(sources, below, "an overzoomed request needed a new source tile");
+        assert_eq!(
+            sources, below,
+            "an overzoomed request needed a new source tile"
+        );
     }
 }

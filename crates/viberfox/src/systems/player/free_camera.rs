@@ -1,18 +1,17 @@
 use crate::components::FreeCamera;
-use bevy::math::{DQuat, DVec3};
-use bevy::light::atmosphere::ScatteringMedium;
 use bevy::camera::Exposure;
-use bevy::post_process::bloom::Bloom;
+use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
+use bevy::math::{DQuat, DVec3};
 use bevy::pbr::AtmosphereSettings;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 
-use crate::resources::{AvatarState, CameraState, CameraMode};
+use crate::components::RegionMesh;
+use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::gizmo::GizmoState;
-use crate::components::RegionMesh;
-
 
 /// Builds the camera's [`DistanceFog`] for a dev-panel density in 0.0–1.0 and a
 /// time of day. The falloff is exponential-squared so the near field stays clear
@@ -119,9 +118,7 @@ pub fn fog_saturation_distance(falloff: &FogFalloff) -> f32 {
     match falloff {
         FogFalloff::Linear { end, .. } => *end,
         FogFalloff::Exponential { density } => depth / density.max(f32::MIN_POSITIVE),
-        FogFalloff::ExponentialSquared { density } => {
-            depth.sqrt() / density.max(f32::MIN_POSITIVE)
-        }
+        FogFalloff::ExponentialSquared { density } => depth.sqrt() / density.max(f32::MIN_POSITIVE),
         FogFalloff::Atmospheric { extinction, .. } => {
             depth / extinction.max_element().max(f32::MIN_POSITIVE)
         }
@@ -289,8 +286,8 @@ pub fn globe_spin(dir: DVec3, north: DVec3, up: DVec3, drag: Vec2, sens: f32) ->
     // fast flick can carry the point clean over a pole, and it would land on the
     // far side within the limit — the globe appearing to jump hemispheres.
     let tip = (-(drag.y * sens) as f64).clamp(lat - GLOBE_LAT_LIMIT, lat + GLOBE_LAT_LIMIT);
-    let rot = DQuat::from_axis_angle(up, -(drag.x * sens) as f64)
-        * DQuat::from_axis_angle(right, tip);
+    let rot =
+        DQuat::from_axis_angle(up, -(drag.x * sens) as f64) * DQuat::from_axis_angle(right, tip);
     let spun = (rot * dir).normalize();
 
     // With a turned view (heading ≠ 0) screen-right is not perpendicular to the
@@ -411,7 +408,9 @@ pub fn setup_camera(
     // `globe::ATMOSPHERE_DENSITY_NEAR`), so it's handed to that system as a shared
     // handle. The planet spawns with it below.
     let medium = scattering_media.add(ScatteringMedium::default());
-    commands.insert_resource(crate::systems::globe::AtmosphereMedia { space: medium.clone() });
+    commands.insert_resource(crate::systems::globe::AtmosphereMedia {
+        space: medium.clone(),
+    });
 
     // Atmosphere and its env-map IBL are chosen once here, at startup: they can't
     // be safely toggled at runtime (removing the components frees in-flight GPU
@@ -422,120 +421,122 @@ pub fn setup_camera(
     // buffer. That ruled it out under WebGL2, which has neither — but the web build
     // targets WebGPU now (ADR-033), where both exist, so this is no longer
     // platform-gated at all.
-    let want_atmosphere =
-        dev.atmosphere_enabled && !crate::env_flag("VIBERFOX_NO_ATMOSPHERE");
+    let want_atmosphere = dev.atmosphere_enabled && !crate::env_flag("VIBERFOX_NO_ATMOSPHERE");
     let want_envmap =
         want_atmosphere && dev.envmap_enabled && !crate::env_flag("VIBERFOX_NO_ENVMAP");
 
-    commands.spawn_big_space(
-        Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD),
-        |root| {
-            // The root must carry Visibility: renderable children inherit it, and a
-            // missing parent Visibility triggers Bevy's B0004 warning per child.
-            root.insert(Visibility::default());
-            let mut cam = root.spawn_spatial((
-                Camera3d::default(),
-                // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
-                // main-pass multisample cost for a marginal edge-quality change at
-                // this scene's geometric density.
-                //
-                // Except on the web, where 2× is not a tuning choice but an invalid
-                // one: WebGPU permits a sample count of only 1 or 4, so requesting 2
-                // fails to create `main_texture_sampled` — and the failure is silent
-                // in the worst way. Nothing renders (black canvas) and every queued
-                // command is then dropped un-applied, so the console fills with
-                // `CommandQueue has un-applied commands` warnings that describe the
-                // symptom and never the cause. 4× is therefore the only anti-aliased
-                // option on WebGPU; `Msaa::Off` is the cheaper one if the extra
-                // resolve shows up in frame times.
-                // ...and on the web that leaves no cheap anti-aliased option at all,
-                // so take none. WebGPU's jump from 2× to 4× doubles the samples
-                // rasterised for every triangle in a scene that is already hundreds
-                // of tiles plus a thousand-odd buildings, and the browser build has
-                // no frame budget to spend on edge quality yet. Raise this to
-                // `Msaa::Sample4` once frame times allow — those are the only two
-                // legal values here.
-                // `software_renderer` is the same restriction arriving from the
-                // other direction: lavapipe reports support for [1, 4] only, so a
-                // headless capture in a container dies in `main_texture_sampled`
-                // exactly as the web build did.
-                if cfg!(target_arch = "wasm32") || software_renderer {
-                    Msaa::Off
-                } else {
-                    Msaa::Sample2
-                },
-                // Bevy's default far plane (1 km) clips the streamed tile pyramid
-                // and the horizon ground disc; reversed-z depth keeps precision
-                // fine at this range.
-                Projection::Perspective(PerspectiveProjection {
-                    far: 200_000.0,
-                    ..default()
-                }),
-                Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-                // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
-                // scene isn't blown out while the sky is lit correctly.
-                Exposure { ev100: ATMOSPHERE_EXPOSURE_EV100 },
-                // Bloom: the glare that makes an HDR scene read as bright. The
-                // sun disk is the case that needs it — a physically-sized disc
-                // is a few pixels across, and without glare around it the sky's
-                // brightest object looks like a sticker. It also gives the night
-                // city's window lights and the sunlit limb from orbit their
-                // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
-                // scenes) so the daytime basemap doesn't smear.
-                Bloom {
-                    intensity: GROUND_BLOOM_INTENSITY,
-                    ..Bloom::NATURAL
-                },
-                AmbientLight::default(),
-                FreeCamera,
-                FloatingOrigin,
-            ));
-            // Atmospheric distance fog: distant buildings fade into haze, sun-side
-            // glow, driven by the dev panel (apply_distance_fog). It is one more
-            // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
-            // — reached there because clustering fell back to uniforms. On WebGPU
-            // clustering uses storage buffers, so the budget is no longer contested.
-            cam.insert(distance_fog(dev.fog_density, dev.time_of_day, dev.sun_declination_rad));
-            // Bevy 0.19 built-in atmosphere: the camera carries only the render
-            // settings; the sky derives from the sun direction + camera altitude
-            // over the planet entity below. `update_globe_visibility` no-ops
-            // without it, which is what made dropping it a safe web workaround —
-            // and what makes restoring it here uneventful.
-            cam.insert(AtmosphereSettings::default());
-            if want_envmap {
-                // Sky-driven image-based lighting: surfaces are lit by and reflect
-                // the actual atmosphere. 256² IBL cubemap instead of the 512²
-                // default quarters the per-frame environment-map compute bake;
-                // ambient/diffuse IBL is low-frequency, so the drop is imperceptible.
-                cam.insert(AtmosphereEnvironmentMapLight {
-                    size: UVec2::splat(256),
-                    ..default()
-                });
-            }
+    commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
+        // The root must carry Visibility: renderable children inherit it, and a
+        // missing parent Visibility triggers Bevy's B0004 warning per child.
+        root.insert(Visibility::default());
+        let mut cam = root.spawn_spatial((
+            Camera3d::default(),
+            // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
+            // main-pass multisample cost for a marginal edge-quality change at
+            // this scene's geometric density.
+            //
+            // Except on the web, where 2× is not a tuning choice but an invalid
+            // one: WebGPU permits a sample count of only 1 or 4, so requesting 2
+            // fails to create `main_texture_sampled` — and the failure is silent
+            // in the worst way. Nothing renders (black canvas) and every queued
+            // command is then dropped un-applied, so the console fills with
+            // `CommandQueue has un-applied commands` warnings that describe the
+            // symptom and never the cause. 4× is therefore the only anti-aliased
+            // option on WebGPU; `Msaa::Off` is the cheaper one if the extra
+            // resolve shows up in frame times.
+            // ...and on the web that leaves no cheap anti-aliased option at all,
+            // so take none. WebGPU's jump from 2× to 4× doubles the samples
+            // rasterised for every triangle in a scene that is already hundreds
+            // of tiles plus a thousand-odd buildings, and the browser build has
+            // no frame budget to spend on edge quality yet. Raise this to
+            // `Msaa::Sample4` once frame times allow — those are the only two
+            // legal values here.
+            // `software_renderer` is the same restriction arriving from the
+            // other direction: lavapipe reports support for [1, 4] only, so a
+            // headless capture in a container dies in `main_texture_sampled`
+            // exactly as the web build did.
+            if cfg!(target_arch = "wasm32") || software_renderer {
+                Msaa::Off
+            } else {
+                Msaa::Sample2
+            },
+            // Bevy's default far plane (1 km) clips the streamed tile pyramid
+            // and the horizon ground disc; reversed-z depth keeps precision
+            // fine at this range.
+            Projection::Perspective(PerspectiveProjection {
+                far: 200_000.0,
+                ..default()
+            }),
+            Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+            // Physically-based exposure to balance the RAW_SUNLIGHT sun so the
+            // scene isn't blown out while the sky is lit correctly.
+            Exposure {
+                ev100: ATMOSPHERE_EXPOSURE_EV100,
+            },
+            // Bloom: the glare that makes an HDR scene read as bright. The
+            // sun disk is the case that needs it — a physically-sized disc
+            // is a few pixels across, and without glare around it the sky's
+            // brightest object looks like a sticker. It also gives the night
+            // city's window lights and the sunlit limb from orbit their
+            // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
+            // scenes) so the daytime basemap doesn't smear.
+            Bloom {
+                intensity: GROUND_BLOOM_INTENSITY,
+                ..Bloom::NATURAL
+            },
+            AmbientLight::default(),
+            FreeCamera,
+            FloatingOrigin,
+        ));
+        // Atmospheric distance fog: distant buildings fade into haze, sun-side
+        // glow, driven by the dev panel (apply_distance_fog). It is one more
+        // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
+        // — reached there because clustering fell back to uniforms. On WebGPU
+        // clustering uses storage buffers, so the budget is no longer contested.
+        cam.insert(distance_fog(
+            dev.fog_density,
+            dev.time_of_day,
+            dev.sun_declination_rad,
+        ));
+        // Bevy 0.19 built-in atmosphere: the camera carries only the render
+        // settings; the sky derives from the sun direction + camera altitude
+        // over the planet entity below. `update_globe_visibility` no-ops
+        // without it, which is what made dropping it a safe web workaround —
+        // and what makes restoring it here uneventful.
+        cam.insert(AtmosphereSettings::default());
+        if want_envmap {
+            // Sky-driven image-based lighting: surfaces are lit by and reflect
+            // the actual atmosphere. 256² IBL cubemap instead of the 512²
+            // default quarters the per-frame environment-map compute bake;
+            // ambient/diffuse IBL is low-frequency, so the drop is imperceptible.
+            cam.insert(AtmosphereEnvironmentMapLight {
+                size: UVec2::splat(256),
+                ..default()
+            });
+        }
 
-            // A ground disc out to the horizon, in the OSM basemap's paper tone.
-            // Without it, the world ends at the loaded tiles and the void below
-            // the horizon reads as a black gulf; with it, DistanceFog fades the
-            // ground into the haze so fog and sky meet seamlessly at any altitude.
-            root.spawn_spatial((
-                Mesh3d(meshes.add(Circle::new(150_000.0))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.83, 0.83, 0.80),
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.0,
-                    ..default()
-                })),
-                // Well below the whole tile pyramid (whose coarsest rings sit a few
-                // metres down — see update_map_stream) so it never covers a tile.
-                Transform::from_xyz(0.0, -5.0, 0.0)
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-                NotShadowCaster,
-                // From orbit this 150 km disc reads as a bright circle over the
-                // anchor; hide it (and the tiles/regions) while the globe is up.
-                crate::components::HideInSpace,
-            ));
-        },
-    );
+        // A ground disc out to the horizon, in the OSM basemap's paper tone.
+        // Without it, the world ends at the loaded tiles and the void below
+        // the horizon reads as a black gulf; with it, DistanceFog fades the
+        // ground into the haze so fog and sky meet seamlessly at any altitude.
+        root.spawn_spatial((
+            Mesh3d(meshes.add(Circle::new(150_000.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.83, 0.83, 0.80),
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            })),
+            // Well below the whole tile pyramid (whose coarsest rings sit a few
+            // metres down — see update_map_stream) so it never covers a tile.
+            Transform::from_xyz(0.0, -5.0, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            NotShadowCaster,
+            // From orbit this 150 km disc reads as a bright circle over the
+            // anchor; hide it (and the tiles/regions) while the globe is up.
+            crate::components::HideInSpace,
+        ));
+    });
 
     // The built-in atmosphere is planetary-scale; its origin and radius come from
     // this entity's transform. Placed one Earth radius straight down so the surface
@@ -628,7 +629,10 @@ pub fn camera_controls(
     // access from the mutable camera query's `&mut GridCell`/`&mut Transform`.
     // The `Transform` gives the avatar's authoritative render yaw for the
     // follow-and-rotate chase (valid in both online and offline run modes).
-    avatar_cells: Query<(&GridCell, &Transform), (With<crate::components::Avatar>, Without<FreeCamera>)>,
+    avatar_cells: Query<
+        (&GridCell, &Transform),
+        (With<crate::components::Avatar>, Without<FreeCamera>),
+    >,
     terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
     if camera_query.is_empty() {
@@ -679,8 +683,7 @@ pub fn camera_controls(
                         camera_state.distance *= factor;
                     }
                 }
-                camera_state.distance =
-                    camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
+                camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
             }
 
             // Handle mouse drag for rotation (suppressed while egui, gizmo, or Ctrl has the pointer).
@@ -705,7 +708,8 @@ pub fn camera_controls(
                         }
                         camera_state.azimuth -= delta.x * 0.005;
                         camera_state.pitch -= delta.y * 0.005;
-                        camera_state.pitch = camera_state.pitch
+                        camera_state.pitch = camera_state
+                            .pitch
                             .max(-std::f32::consts::PI / 3.0)
                             .min(std::f32::consts::PI / 2.5);
                     }
@@ -776,7 +780,11 @@ pub fn camera_controls(
                 let w = cam_world.lerp(target_world, cam_alpha as f64);
                 // Snap once essentially settled, else the floating origin (and the
                 // whole-scene propagation) keeps changing by a hair while standing.
-                if w.distance_squared(target_world) < 1e-6 { target_world } else { w }
+                if w.distance_squared(target_world) < 1e-6 {
+                    target_world
+                } else {
+                    w
+                }
             } else {
                 // Entering Follow: snap straight onto the avatar (the reposition).
                 camera_state.avatar_initialized = true;
@@ -845,7 +853,9 @@ pub fn camera_controls(
             if rotation_delta.length() > 0.0 {
                 camera_state.free_camera_rotation.y -= rotation_delta.x * MOUSE_SENSITIVITY;
                 camera_state.free_camera_rotation.x -= rotation_delta.y * MOUSE_SENSITIVITY;
-                camera_state.free_camera_rotation.x = camera_state.free_camera_rotation.x
+                camera_state.free_camera_rotation.x = camera_state
+                    .free_camera_rotation
+                    .x
                     .max(-std::f32::consts::PI / 2.0 + 0.1)
                     .min(std::f32::consts::PI / 2.0 - 0.1);
             }
@@ -867,7 +877,9 @@ pub fn camera_controls(
             let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize();
             let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize();
 
-            let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight) {
+            let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft)
+                || keyboard_input.pressed(KeyCode::ShiftRight)
+            {
                 FREE_CAMERA_SPEED_FAST
             } else {
                 FREE_CAMERA_SPEED
@@ -928,7 +940,11 @@ pub fn camera_controls(
             } else {
                 Vec3::ZERO
             };
-            let tau = if wish == Vec3::ZERO { FREE_DECEL_TAU } else { FREE_ACCEL_TAU };
+            let tau = if wish == Vec3::ZERO {
+                FREE_DECEL_TAU
+            } else {
+                FREE_ACCEL_TAU
+            };
             let blend = 1.0 - (-delta_time / tau).exp();
             let mut velocity =
                 camera_state.free_velocity + (wish - camera_state.free_velocity) * blend;
@@ -950,7 +966,11 @@ pub fn camera_controls(
                     camera_cell.z as f32 * WORLD_CELL_EDGE + camera_transform.translation.z,
                 );
             let min_height = ground_height + MIN_CAMERA_HEIGHT;
-            let lift = ground_lift(camera_cell.y as f64, camera_transform.translation.y, min_height);
+            let lift = ground_lift(
+                camera_cell.y as f64,
+                camera_transform.translation.y,
+                min_height,
+            );
             if lift > 0.0 {
                 camera_transform.translation.y += lift;
                 // Kill the downward glide at the floor, or a coast into the ground
@@ -959,8 +979,11 @@ pub fn camera_controls(
             }
 
             // Remember this pose so re-entering Fly returns here.
-            camera_state.free_saved =
-                Some((camera_cell, camera_transform.translation, camera_state.free_camera_rotation));
+            camera_state.free_saved = Some((
+                camera_cell,
+                camera_transform.translation,
+                camera_state.free_camera_rotation,
+            ));
         }
         CameraMode::Orbit => {
             // "Earth" mode: a Google-Earth-style orbit. Near the ground it pivots
@@ -985,7 +1008,9 @@ pub fn camera_controls(
                     DVec3::new(cam_world.x, 0.0, cam_world.z)
                 };
                 let offset = cam_world - focus;
-                let dist = offset.length().clamp(ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE);
+                let dist = offset
+                    .length()
+                    .clamp(ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE_SURFACE);
                 camera_state.orbit_focus = focus;
                 camera_state.orbit_distance = dist;
                 camera_state.orbit_distance_target = dist;
@@ -1047,8 +1072,7 @@ pub fn camera_controls(
                             globe.anchor_lng,
                             dir,
                         );
-                        camera_state.reanchor_request =
-                            Some((slat, slng, alt.max(SPACE_EXIT_ALT)));
+                        camera_state.reanchor_request = Some((slat, slng, alt.max(SPACE_EXIT_ALT)));
                         // Stay in space this frame; the teleport repositions us.
                     } else if horiz <= REANCHOR_DISTANCE {
                         // Near home: hand back to the ground-focus orbit as before.
@@ -1217,8 +1241,7 @@ pub fn camera_controls(
                     };
                     let d = camera_state.orbit_distance;
                     let near_arc = fov * (((d - radius) / radius).max(0.0) as f32);
-                    let far_arc =
-                        2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
+                    let far_arc = 2.4 * ((radius / d).clamp(0.0, 1.0) as f32).asin();
                     let sens = (1.2 * near_arc.min(far_arc) / h).clamp(2e-6, ORBIT_ROT_SENS);
                     // Compass locked: spin about the true polar axis (north pinned
                     // up, longitude-only horizontal, latitude clamped short of the
@@ -1318,8 +1341,7 @@ pub fn camera_controls(
                 // down. (The vertical axis used to move the rig the other way —
                 // grab horizontally but inverted vertically, which is why panning
                 // felt "vice versa" up close while the space globe felt right.)
-                let shift =
-                    right * (-pan_delta.x * scale) + fwd_flat * (pan_delta.y * scale);
+                let shift = right * (-pan_delta.x * scale) + fwd_flat * (pan_delta.y * scale);
                 camera_state.orbit_focus += shift.as_dvec3();
                 camera_state.orbit_focus.y = 0.0;
             }
@@ -1414,7 +1436,10 @@ fn ground_lift(cell_y: f64, local_y: f32, min_height: f32) -> f32 {
     (min_height as f64 - absolute).max(0.0) as f32
 }
 
-fn get_ground_height(position: Vec3, region_mesh_query: &Query<&GlobalTransform, With<RegionMesh>>) -> f32 {
+fn get_ground_height(
+    position: Vec3,
+    region_mesh_query: &Query<&GlobalTransform, With<RegionMesh>>,
+) -> f32 {
     let mut min_height: f32 = 0.0;
     for region_transform in region_mesh_query.iter() {
         let region_y: f32 = region_transform.translation().y;
@@ -1422,7 +1447,8 @@ fn get_ground_height(position: Vec3, region_mesh_query: &Query<&GlobalTransform,
         if position.x >= region_transform.translation().x - 150.0
             && position.x <= region_transform.translation().x + 150.0
             && position.z >= region_transform.translation().z - 150.0
-            && position.z <= region_transform.translation().z + 150.0 {
+            && position.z <= region_transform.translation().z + 150.0
+        {
             min_height = min_height.max(region_top);
         }
     }
@@ -1460,8 +1486,7 @@ mod tests {
         // Above the reference altitude it is proportional: ten times as high is
         // ten times as fast, so the ground slides past at a constant rate.
         assert!(
-            (fly_speed(FREE_CAMERA_SPEED, FREE_SPEED_ALT_REF * 10.0)
-                - FREE_CAMERA_SPEED * 10.0)
+            (fly_speed(FREE_CAMERA_SPEED, FREE_SPEED_ALT_REF * 10.0) - FREE_CAMERA_SPEED * 10.0)
                 .abs()
                 < 1e-3
         );
@@ -1488,7 +1513,10 @@ mod tests {
             let up = globe_up(dir, NORTH, 0.0, DVec3::Y);
             // Perpendicular to the view axis, and on north's side of it.
             assert!(up.dot(dir).abs() < 1e-9, "up must be perpendicular to dir");
-            assert!(up.dot(NORTH) > 0.0, "north must be up, not down, at lat {lat}");
+            assert!(
+                up.dot(NORTH) > 0.0,
+                "north must be up, not down, at lat {lat}"
+            );
         }
     }
 
@@ -1527,7 +1555,10 @@ mod tests {
         // Drag down (screen y grows downward) → the map is pulled down and the
         // camera walks north, exactly as grabbing the globe should feel.
         let down = globe_spin(dir, NORTH, up, Vec2::new(0.0, 20.0), 0.01);
-        assert!(latitude(down) > 0.5, "drag down should walk the sub-point north");
+        assert!(
+            latitude(down) > 0.5,
+            "drag down should walk the sub-point north"
+        );
 
         // There and back again.
         let there = globe_spin(dir, NORTH, up, Vec2::new(15.0, 10.0), 0.01);

@@ -240,9 +240,7 @@ where
     /// Anything still moving: work outstanding or entities still to free. The
     /// `--shot` harness settles on this.
     pub fn busy(&self) -> bool {
-        !self.in_flight.is_empty()
-            || self.dispatch.queued() > 0
-            || !self.despawn_queue.is_empty()
+        !self.in_flight.is_empty() || self.dispatch.queued() > 0 || !self.despawn_queue.is_empty()
     }
 
     /// Queue an entity for bounded teardown. **Not** `commands.entity().despawn()`:
@@ -311,7 +309,9 @@ where
 
     /// Backoff before retrying a cell that has failed `attempts` times.
     fn backoff_for(&self, attempts: u32) -> f64 {
-        let doublings = attempts.saturating_sub(1).min(self.policy.backoff_doublings);
+        let doublings = attempts
+            .saturating_sub(1)
+            .min(self.policy.backoff_doublings);
         self.policy.backoff_secs * f64::from(1u32 << doublings)
     }
 
@@ -351,7 +351,11 @@ mod tests {
         assert!(!s.request(3, 0.0), "a known cell must not be re-queued");
 
         let dispatched: Vec<i32> = std::iter::from_fn(|| s.next_job(0.0)).collect();
-        assert_eq!(dispatched, vec![0, 1], "the concurrency cap let extra work in");
+        assert_eq!(
+            dispatched,
+            vec![0, 1],
+            "the concurrency cap let extra work in"
+        );
         assert_eq!(s.in_flight(), 2);
 
         s.sink().lock().unwrap().push((0, "done"));
@@ -374,9 +378,15 @@ mod tests {
 
         assert!(s.is_requested(&0), "an in-flight cell was un-requested");
         assert_eq!(s.in_flight(), 1);
-        assert!(!s.request(0, 0.0), "an in-flight cell must not be re-queued");
+        assert!(
+            !s.request(0, 0.0),
+            "an in-flight cell must not be re-queued"
+        );
         for k in 1..4 {
-            assert!(s.request(k, 0.0), "cell {k} was not released by clear_queue");
+            assert!(
+                s.request(k, 0.0),
+                "cell {k} was not released by clear_queue"
+            );
         }
     }
 
@@ -395,7 +405,11 @@ mod tests {
         assert_eq!(s.in_flight(), 0);
         s.defer(taken);
         assert_eq!(s.in_flight(), 1);
-        assert_eq!(s.take_results().len(), 1, "the deferred result must survive");
+        assert_eq!(
+            s.take_results().len(),
+            1,
+            "the deferred result must survive"
+        );
     }
 
     #[test]
@@ -405,7 +419,11 @@ mod tests {
         s.next_job(0.0);
 
         assert_eq!(s.failed(&1, 10.0), 1);
-        assert_eq!(s.in_flight(), 1, "the task is still running; only the flag cleared");
+        assert_eq!(
+            s.in_flight(),
+            1,
+            "the task is still running; only the flag cleared"
+        );
         assert!(!s.request(1, 10.5), "retried inside the backoff");
         assert!(s.request(1, 11.0), "never retried after the backoff");
         assert!(!s.exhausted(&1));
@@ -434,7 +452,10 @@ mod tests {
         assert!(s.exhausted(&1));
         assert!(!s.request(1, 10.0), "retried inside the cooldown");
         assert!(s.request(1, 21.0), "the cooldown never expired");
-        assert!(!s.exhausted(&1), "attempts must start over after a cooldown");
+        assert!(
+            !s.exhausted(&1),
+            "attempts must start over after a cooldown"
+        );
     }
 
     #[test]
@@ -450,7 +471,10 @@ mod tests {
             let t = f64::from(attempt) * 1_000.0;
             s.request(1, t - 1.0);
             s.failed(&1, t);
-            assert!(!s.request(1, t + wait - 0.1), "attempt {attempt} retried early");
+            assert!(
+                !s.request(1, t + wait - 0.1),
+                "attempt {attempt} retried early"
+            );
             assert!(s.request(1, t + wait), "attempt {attempt} never retried");
         }
     }
@@ -468,7 +492,10 @@ mod tests {
 
         s.forget(&1);
         assert_eq!(s.in_flight(), 1);
-        assert!(s.request(1, 0.0), "a forgotten cell must be requestable again");
+        assert!(
+            s.request(1, 0.0),
+            "a forgotten cell must be requestable again"
+        );
 
         // The late result finds nothing to release, and must not double-free.
         s.sink().lock().unwrap().push((1, "late"));
@@ -491,8 +518,15 @@ mod tests {
 
         assert_eq!(s.in_flight(), 0);
         assert!(!s.is_requested(&1));
-        assert!(s.request(2, 0.0), "a reset must clear the failure history too");
-        assert_eq!(s.despawn_backlog(), 1, "queued entities still have to be freed");
+        assert!(
+            s.request(2, 0.0),
+            "a reset must clear the failure history too"
+        );
+        assert_eq!(
+            s.despawn_backlog(),
+            1,
+            "queued entities still have to be freed"
+        );
 
         // An in-flight task pushing into the old sink cannot deliver a cell whose
         // placement belongs to the previous anchor.

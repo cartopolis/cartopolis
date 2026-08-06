@@ -64,7 +64,11 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     )));
 
     let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);
-    let tick_task = tokio::spawn(net::tick_loop(world.clone(), config.clone(), tx_snap.clone()));
+    let tick_task = tokio::spawn(net::tick_loop(
+        world.clone(),
+        config.clone(),
+        tx_snap.clone(),
+    ));
 
     let sessions = Arc::new(auth::Sessions::new());
     let chat = Arc::new(chat::ChatHub::new());
@@ -112,10 +116,9 @@ async fn accept_loop(
         let sessions_c = sessions.clone();
         let chat_c = chat.clone();
         tokio::spawn(async move {
-            if let Err(e) = net::handle_connection(
-                stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c, chat_c,
-            )
-            .await
+            if let Err(e) =
+                net::handle_connection(stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c, chat_c)
+                    .await
             {
                 tracing::warn!(%addr, "client ended: {e:#}");
             }

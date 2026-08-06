@@ -628,7 +628,10 @@ mod tests {
             shape: "box".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
-            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
+            geo: GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            },
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -648,7 +651,10 @@ mod tests {
             name: "My Prim".into(),
             surface: PrimSurface::default(),
             geometry: PrimGeometry::default(),
-            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
+            geo: GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            },
         };
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
@@ -721,7 +727,10 @@ mod tests {
             slice_begin: 0.0,
             slice_end: 1.0,
             surface: PrimSurface::default(),
-            geo: GeoAnchor { latitude: 53.2194, longitude: 6.5665 },
+            geo: GeoAnchor {
+                latitude: 53.2194,
+                longitude: 6.5665,
+            },
         };
         let m = NetMessage::PrimUpsert { prim: prim.clone() };
         let b = encode_app_frame(&m).unwrap();

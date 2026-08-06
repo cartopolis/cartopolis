@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use simulator::{ensure_account, serve, SimConfig};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use viberfox_core::{
     decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, PROTOCOL_VERSION,
 };
-use simulator::{ensure_account, serve, SimConfig};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 

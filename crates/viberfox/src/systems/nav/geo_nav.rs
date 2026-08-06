@@ -34,7 +34,6 @@ use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::theme;
 use viberfox_core::world::tile_to_meters;
 
-
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract — see `docs/guides/server.md`). Override with
 /// `VIBE_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
@@ -150,14 +149,28 @@ impl GeoSuggestion {
             .and_then(|v| v.as_str())
             .map(|s| s.replace('_', " "))
             .filter(|s| !s.is_empty() && s != "yes");
-        Some(Self { label, name, context, kind, lat, lng })
+        Some(Self {
+            label,
+            name,
+            context,
+            kind,
+            lat,
+            lng,
+        })
     }
 
     /// A suggestion with no address behind it — the "go to these coordinates"
     /// entry, and the fixture the tests use.
     pub fn plain(label: impl Into<String>, lat: f64, lng: f64) -> Self {
         let label = label.into();
-        Self { name: label.clone(), label, context: String::new(), kind: None, lat, lng }
+        Self {
+            name: label.clone(),
+            label,
+            context: String::new(),
+            kind: None,
+            lat,
+            lng,
+        }
     }
 }
 
@@ -336,7 +349,12 @@ pub struct Teleport {
 impl Teleport {
     /// A plain geo jump that keeps the current camera orientation.
     pub fn geo(lat: f64, lng: f64, altitude: Option<f64>) -> Self {
-        Self { lat, lng, altitude, pose: None }
+        Self {
+            lat,
+            lng,
+            altitude,
+            pose: None,
+        }
     }
 
     /// A jump to a parsed location (pasted coordinates, or the `?place=` launch
@@ -347,7 +365,9 @@ impl Teleport {
             lat: fix.lat,
             lng: fix.lng,
             altitude: fix.altitude,
-            pose: fix.look.map(|(pitch, yaw)| CameraPose::free_look(pitch, yaw)),
+            pose: fix
+                .look
+                .map(|(pitch, yaw)| CameraPose::free_look(pitch, yaw)),
         }
     }
 }
@@ -575,8 +595,7 @@ pub fn parse_lat_lng(input: &str) -> Option<(f64, f64)> {
     }
     let lat = coord(parts[0], 'N', 'S')?;
     let lng = coord(parts[1], 'E', 'W')?;
-    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng))
-        .then_some((lat, lng))
+    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng)).then_some((lat, lng))
 }
 
 /// A parsed location: a spot, and as much of the view as the text carried.
@@ -642,7 +661,12 @@ pub fn parse_location(input: &str) -> Option<LocationFix> {
         (Some(_), None) => return None,
         _ => None,
     };
-    Some(LocationFix { lat, lng, altitude, look })
+    Some(LocationFix {
+        lat,
+        lng,
+        altitude,
+        look,
+    })
 }
 
 /// Where this session should start, if the launch asked for a specific place:
@@ -707,7 +731,10 @@ async fn geocode_fetch(url: String) -> Result<Vec<GeoSuggestion>, String> {
     let body = http::fetch_string(http::Request::get(url)).await?;
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let items = json.as_array().ok_or("unexpected Nominatim response")?;
-    Ok(items.iter().filter_map(GeoSuggestion::from_nominatim).collect())
+    Ok(items
+        .iter()
+        .filter_map(GeoSuggestion::from_nominatim)
+        .collect())
 }
 
 // ─── How far away, and which way ─────────────────────────────────────────────
@@ -724,8 +751,7 @@ pub fn great_circle_m(from: (f64, f64), to: (f64, f64)) -> f64 {
     let (lat1, lat2) = (from.0.to_radians(), to.0.to_radians());
     let dlat = lat2 - lat1;
     let dlng = (to.1 - from.1).to_radians();
-    let a = (dlat * 0.5).sin().powi(2)
-        + lat1.cos() * lat2.cos() * (dlng * 0.5).sin().powi(2);
+    let a = (dlat * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlng * 0.5).sin().powi(2);
     2.0 * R * a.sqrt().clamp(0.0, 1.0).asin()
 }
 
@@ -794,48 +820,45 @@ pub fn suggestion_row(
     // Reserve the highlight's place in the paint list *before* the content, so the
     // fill lands behind the text rather than over it.
     let bg = ui.painter().add(egui::Shape::Noop);
-    let inner = ui.scope_builder(
-        egui::UiBuilder::new().sense(egui::Sense::click()),
-        |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 1.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+    let inner = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.add(
+                egui::Label::new(egui::RichText::new(&s.name).strong())
+                    .truncate()
+                    .selectable(false),
+            );
+            if let Some(kind) = &s.kind {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(&s.name).strong())
+                    egui::Label::new(egui::RichText::new(kind).small().weak())
                         .truncate()
                         .selectable(false),
                 );
-                if let Some(kind) = &s.kind {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(kind).small().weak())
-                            .truncate()
-                            .selectable(false),
-                    );
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                if let Some(here) = viewer {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(distance_label(here, (s.lat, s.lng)))
-                                .small()
-                                .color(theme::FOX_TEXT),
-                        )
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if let Some(here) = viewer {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(distance_label(here, (s.lat, s.lng)))
+                            .small()
+                            .color(theme::FOX_TEXT),
+                    )
+                    .selectable(false),
+                );
+            }
+            if !s.context.is_empty() {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&s.context).small().weak())
+                        .truncate()
                         .selectable(false),
-                    );
-                }
-                if !s.context.is_empty() {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&s.context).small().weak())
-                            .truncate()
-                            .selectable(false),
-                    );
-                }
-            });
-        },
-    );
+                );
+            }
+        });
+    });
     let resp = inner.response;
     if resp.hovered() {
         let v = ui.visuals().widgets.hovered;
@@ -887,15 +910,12 @@ pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
     }
 
     let query = nav.query.trim().to_string();
-    let debounced = nav
-        .last_edit
-        .is_some_and(|t| t.elapsed() >= DEBOUNCE);
+    let debounced = nav.last_edit.is_some_and(|t| t.elapsed() >= DEBOUNCE);
     let throttled = nav
         .last_sent_at
         .is_some_and(|t| t.elapsed() < *MIN_REQUEST_INTERVAL);
     let fresh = query != nav.last_sent || nav.force_search;
-    let eligible =
-        fresh && query.len() >= MIN_QUERY_LEN && parse_location(&query).is_none();
+    let eligible = fresh && query.len() >= MIN_QUERY_LEN && parse_location(&query).is_none();
 
     // A query we have already answered costs nothing, so it does not wait for
     // anything: not the debounce (which exists only to avoid firing a request
@@ -968,10 +988,12 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         // (and Enter re-submits the shown address without clearing it first).
         let len = nav.query.chars().count();
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
-            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                egui::text::CCursor::new(0),
-                egui::text::CCursor::new(len),
-            )));
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(len),
+                )));
             state.store(ui.ctx(), field.id);
         }
         if !nav.suggestions.is_empty() {
@@ -979,8 +1001,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         }
     }
 
-    let submitted =
-        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
         if let Some(fix) = parse_location(&nav.query) {
             nav.pending_teleport = Some(Teleport::fix(fix));
@@ -1004,11 +1025,8 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
     // direct "Go to" entry instead of a lookup.
     let coord_fix = parse_location(&nav.query);
     let coord_entry = coord_fix.map(|fix| {
-        let mut s = GeoSuggestion::plain(
-            format!("{:.5}, {:.5}", fix.lat, fix.lng),
-            fix.lat,
-            fix.lng,
-        );
+        let mut s =
+            GeoSuggestion::plain(format!("{:.5}, {:.5}", fix.lat, fix.lng), fix.lat, fix.lng);
         s.name = format!("Go to {:.5}, {:.5}", fix.lat, fix.lng);
         s.kind = Some("coordinates".to_string());
         if let Some(a) = fix.altitude {
@@ -1022,12 +1040,9 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         }
         s
     });
-    let has_content = coord_entry.is_some()
-        || !nav.suggestions.is_empty()
-        || nav.error.is_some();
+    let has_content = coord_entry.is_some() || !nav.suggestions.is_empty() || nav.error.is_some();
     let show_popup =
-        (nav.show_suggestions || (field.has_focus() && coord_entry.is_some()))
-            && has_content;
+        (nav.show_suggestions || (field.has_focus() && coord_entry.is_some())) && has_content;
     if !show_popup {
         return;
     }
@@ -1046,10 +1061,8 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
                     .min(ui.ctx().viewport_rect().width() - 32.0);
                 ui.set_min_width(width);
                 ui.set_max_width(width);
-                let entries: Vec<&GeoSuggestion> = coord_entry
-                    .iter()
-                    .chain(nav.suggestions.iter())
-                    .collect();
+                let entries: Vec<&GeoSuggestion> =
+                    coord_entry.iter().chain(nav.suggestions.iter()).collect();
                 for (i, s) in entries.iter().enumerate() {
                     if i > 0 {
                         ui.separator();
@@ -1091,10 +1104,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
 /// space camera drops onto a spot far from the current anchor) into a
 /// re-anchoring teleport: arrive in Earth mode, near top-down, over the
 /// sub-point, so detail streams there (ADR-025).
-pub fn apply_camera_reanchor(
-    mut camera_state: ResMut<CameraState>,
-    mut nav: ResMut<GeoNavState>,
-) {
+pub fn apply_camera_reanchor(mut camera_state: ResMut<CameraState>, mut nav: ResMut<GeoNavState>) {
     let Some((lat, lng, alt)) = camera_state.reanchor_request.take() else {
         return;
     };
@@ -1126,14 +1136,8 @@ pub fn apply_teleport(
     mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
     globe: Res<crate::systems::globe::GlobeState>,
-    mut cameras: Query<
-        (&mut GridCell, &mut Transform),
-        (With<FreeCamera>, Without<Avatar>),
-    >,
-    mut avatars: Query<
-        (&mut GridCell, &mut Transform),
-        (With<Avatar>, Without<FreeCamera>),
-    >,
+    mut cameras: Query<(&mut GridCell, &mut Transform), (With<FreeCamera>, Without<Avatar>)>,
+    mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
     if stream.geo_anchor().is_none() || nav.pending_teleport.is_none() {
         return; // nothing to do, or world not initialized yet (stay pending)
@@ -1151,7 +1155,10 @@ pub fn apply_teleport(
     }
     // The altitude we'll record in history when the target carries none (a plain
     // geo jump keeps the current altitude) — read before the camera moves.
-    let current_alt = cameras.single().ok().map(|(cell, tf)| globe.altitude_m(cell, tf));
+    let current_alt = cameras
+        .single()
+        .ok()
+        .map(|(cell, tf)| globe.altitude_m(cell, tf));
     let tp = nav.pending_teleport.take().unwrap();
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
     // Restore the saved camera orientation first, so the placement below and
@@ -1174,8 +1181,7 @@ pub fn apply_teleport(
     let (wx, wz) = lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
-    let (avatar_cell, avatar_local) =
-        grid.translation_to_grid(DVec3::new(wx, AVATAR_GROUND_Y, wz));
+    let (avatar_cell, avatar_local) = grid.translation_to_grid(DVec3::new(wx, AVATAR_GROUND_Y, wz));
     if let Ok((mut cell, mut tf)) = avatars.single_mut() {
         *cell = avatar_cell;
         tf.translation = avatar_local;
@@ -1208,8 +1214,7 @@ pub fn apply_teleport(
                         cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64
                     })
                     .max(MIN_TELEPORT_ALTITUDE);
-                let (new_cell, local) =
-                    grid.translation_to_grid(DVec3::new(wx, altitude, wz));
+                let (new_cell, local) = grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;
                 tf.translation = local;
                 // Land at rest: fly inertia carried across a teleport would slide
@@ -1229,9 +1234,8 @@ pub fn apply_teleport(
             // brings the globe up north-up. camera_controls repositions from these.
             CameraMode::Orbit
                 if globe.ready
-                    && target_alt.is_some_and(|a| {
-                        a > crate::systems::globe::GLOBE_SHOW_ALT as f64
-                    }) =>
+                    && target_alt
+                        .is_some_and(|a| a > crate::systems::globe::GLOBE_SHOW_ALT as f64) =>
             {
                 let alt = target_alt.unwrap();
                 let center = globe.center_local.as_dvec3();
@@ -1302,7 +1306,12 @@ pub fn apply_teleport(
     if !std::mem::take(&mut nav.from_history) {
         let altitude = target_alt.or(current_alt).unwrap_or(MIN_TELEPORT_ALTITUDE);
         let pose = CameraPose::capture(&camera_state);
-        nav.record_visit(NavEntry { lat, lng, altitude, pose });
+        nav.record_visit(NavEntry {
+            lat,
+            lng,
+            altitude,
+            pose,
+        });
     }
 
     tracing::info!(lat, lng, "teleported to geo target");
@@ -1543,8 +1552,18 @@ mod tests {
 
     #[test]
     fn parse_location_variants() {
-        let fix = |lat, lng, altitude, look| Some(LocationFix { lat, lng, altitude, look });
-        assert_eq!(parse_location("53.2194, 6.5665"), fix(53.2194, 6.5665, None, None));
+        let fix = |lat, lng, altitude, look| {
+            Some(LocationFix {
+                lat,
+                lng,
+                altitude,
+                look,
+            })
+        };
+        assert_eq!(
+            parse_location("53.2194, 6.5665"),
+            fix(53.2194, 6.5665, None, None)
+        );
         assert_eq!(
             parse_location("53.21940, 6.56650, 120"),
             fix(53.2194, 6.5665, Some(120.0), None)
@@ -1553,7 +1572,10 @@ mod tests {
             parse_location("53.2194, 6.5665, 120m"),
             fix(53.2194, 6.5665, Some(120.0), None)
         );
-        assert_eq!(parse_location("53.2194N 6.5665E"), fix(53.2194, 6.5665, None, None));
+        assert_eq!(
+            parse_location("53.2194N 6.5665E"),
+            fix(53.2194, 6.5665, None, None)
+        );
         assert_eq!(parse_location("Groningen"), None);
         assert_eq!(parse_location("300, 4"), None); // latitude out of range
         assert_eq!(parse_location("1, 2, 3, 4"), None); // a lone pitch is malformed

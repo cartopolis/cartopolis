@@ -231,7 +231,9 @@ fn fire_request(
     {
         let _ = (&api_key, &model, &messages);
         if let Ok(mut g) = cell.lock() {
-            *g = Some(Err("AI assistant is not available on the web build".to_string()));
+            *g = Some(Err(
+                "AI assistant is not available on the web build".to_string()
+            ));
         }
     }
     cell
@@ -297,10 +299,7 @@ pub fn render_ai_panel(
             }
 
             if config.api_key.is_none() {
-                ui.colored_label(
-                    theme::WARN,
-                    "Set ANTHROPIC_API_KEY in .env to enable.",
-                );
+                ui.colored_label(theme::WARN, "Set ANTHROPIC_API_KEY in .env to enable.");
                 return;
             }
 
@@ -316,15 +315,12 @@ pub fn render_ai_panel(
                 .show(ui, |ui| {
                     for msg in &state.display_messages {
                         if msg.is_user {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Min),
-                                |ui| {
-                                    ui.group(|ui| {
-                                        ui.set_max_width(ui.available_width() * 0.85);
-                                        ui.label(&msg.text);
-                                    });
-                                },
-                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                ui.group(|ui| {
+                                    ui.set_max_width(ui.available_width() * 0.85);
+                                    ui.label(&msg.text);
+                                });
+                            });
                         } else {
                             ui.group(|ui| {
                                 ui.set_max_width(ui.available_width());
@@ -516,8 +512,11 @@ pub fn poll_ai_response(
                 .push(serde_json::json!({"role": "user", "content": tool_results}));
 
             if let Some(key) = config.api_key.clone() {
-                state.pending =
-                    Some(fire_request(key, config.model.clone(), state.api_messages.clone()));
+                state.pending = Some(fire_request(
+                    key,
+                    config.model.clone(),
+                    state.api_messages.clone(),
+                ));
             }
         }
     }
@@ -671,9 +670,10 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            let _ = session
-                .intent_tx
-                .unbounded_send(NetMessage::DeletePrim { request_id: 0, prim_id });
+            let _ = session.intent_tx.unbounded_send(NetMessage::DeletePrim {
+                request_id: 0,
+                prim_id,
+            });
             format!("Deleted prim {} (sent to server)", prim_id)
         }
 

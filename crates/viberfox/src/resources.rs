@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
+use futures_channel::mpsc::UnboundedSender;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
-use futures_channel::mpsc::UnboundedSender;
 use viberfox_core::{NetMessage, PrimSurface, TextureEntry};
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,11 @@ pub enum RightPanel {
 impl RightPanel {
     /// Toggle a panel: open it, or close it if it was already the active one.
     pub fn toggle(&mut self, panel: RightPanel) {
-        *self = if *self == panel { RightPanel::None } else { panel };
+        *self = if *self == panel {
+            RightPanel::None
+        } else {
+            panel
+        };
     }
 
     #[must_use]
@@ -682,7 +686,9 @@ pub struct OsmTileUrlTemplate(pub Arc<Mutex<String>>);
 
 impl Default for OsmTileUrlTemplate {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(tile_url_override().unwrap_or_default())))
+        Self(Arc::new(Mutex::new(
+            tile_url_override().unwrap_or_default(),
+        )))
     }
 }
 

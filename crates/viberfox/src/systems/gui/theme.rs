@@ -103,8 +103,10 @@ pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xF6, 0xF4
 /// Also the face the street names on the map are rasterised in
 /// (`systems::street_labels`): a semibold reads at the size a road marking gets,
 /// where egui's light body face breaks up.
-pub const BRAND_TTF: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/PlusJakartaSans-SemiBold.ttf"));
+pub const BRAND_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/fonts/PlusJakartaSans-SemiBold.ttf"
+));
 const BRAND_FAMILY: &str = "viberfox-brand";
 
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a
@@ -251,12 +253,21 @@ pub fn style() -> egui::Style {
     s.scroll.bar_width = 10.0;
 
     style.text_styles = [
-        (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+        (
+            TextStyle::Small,
+            FontId::new(11.0, FontFamily::Proportional),
+        ),
         (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
+        (
+            TextStyle::Button,
+            FontId::new(14.0, FontFamily::Proportional),
+        ),
         // The one place the brand face appears in the app chrome.
         (TextStyle::Heading, FontId::new(19.0, brand_family())),
-        (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        (
+            TextStyle::Monospace,
+            FontId::new(13.0, FontFamily::Monospace),
+        ),
     ]
     .into();
 
@@ -443,10 +454,8 @@ const CLOSE_BUTTON_SIZE: f32 = 22.0;
 /// button size. Two line segments have neither problem: they land on the pixel
 /// grid at any scale and cannot depend on a font subset at all.
 pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::Vec2::splat(CLOSE_BUTTON_SIZE),
-        egui::Sense::click(),
-    );
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::Vec2::splat(CLOSE_BUTTON_SIZE), egui::Sense::click());
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {

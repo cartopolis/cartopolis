@@ -19,11 +19,7 @@
 
 use bevy::{
     core_pipeline::{upscaling::upscaling, Core3d},
-    input::{
-        keyboard::KeyboardInput,
-        mouse::MouseScrollUnit,
-        ButtonState,
-    },
+    input::{keyboard::KeyboardInput, mouse::MouseScrollUnit, ButtonState},
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -277,9 +273,7 @@ impl Plugin for EguiPlugin {
         #[cfg(not(target_arch = "wasm32"))]
         render_app.init_resource::<EguiWgpuRenderer>();
         #[cfg(target_arch = "wasm32")]
-        render_app
-            .world_mut()
-            .init_non_send::<EguiWgpuRenderer>();
+        render_app.world_mut().init_non_send::<EguiWgpuRenderer>();
         render_app.add_systems(
             Core3d,
             // Draw egui AFTER upscaling, onto the final presented output — a stable,
@@ -301,7 +295,10 @@ fn egui_surface(
     headless: Option<&Res<HeadlessSurface>>,
 ) -> Option<(UVec2, f32)> {
     if let Some(w) = windows.iter().next() {
-        return Some((UVec2::new(w.physical_width(), w.physical_height()), w.scale_factor() as f32));
+        return Some((
+            UVec2::new(w.physical_width(), w.physical_height()),
+            w.scale_factor() as f32,
+        ));
     }
     headless.map(|h| (h.size, h.scale))
 }
@@ -502,10 +499,7 @@ pub fn begin_egui_frame(
         }
     }
 
-    let screen_rect = egui::Rect::from_min_size(
-        egui::Pos2::ZERO,
-        egui::vec2(logical_w, logical_h),
-    );
+    let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(logical_w, logical_h));
 
     let mut viewport_info = egui::ViewportInfo::default();
     viewport_info.native_pixels_per_point = Some(scale);
@@ -756,8 +750,8 @@ pub fn egui_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::input::InputPlugin;
     use bevy::input::mouse::MouseButtonInput;
+    use bevy::input::InputPlugin;
     use bevy::window::{
         CursorMoved, ExitCondition, PrimaryWindow, WindowCloseRequested, WindowEvent, WindowPlugin,
     };
@@ -806,8 +800,16 @@ mod tests {
         assert_eq!(events.len(), 4);
         match (&events[1], &events[2]) {
             (
-                egui::Event::PointerButton { pos: p1, pressed: true, .. },
-                egui::Event::PointerButton { pos: p2, pressed: false, .. },
+                egui::Event::PointerButton {
+                    pos: p1,
+                    pressed: true,
+                    ..
+                },
+                egui::Event::PointerButton {
+                    pos: p2,
+                    pressed: false,
+                    ..
+                },
             ) => {
                 assert_eq!(*p1, target, "press teleported away from the pointer");
                 assert_eq!(*p2, target, "release teleported away from the pointer");
@@ -876,9 +878,7 @@ mod tests {
     /// `overlay` gets the map area (the root `Ui`'s leftover space, exactly what
     /// `place_pins` culls against) after the panel has taken its width, so a test
     /// can put a floating `Area` there and ask whether it eats the panel's clicks.
-    fn click_checkbox_through_root_ui(
-        overlay: impl Fn(&egui::Context, egui::Rect),
-    ) -> bool {
+    fn click_checkbox_through_root_ui(overlay: impl Fn(&egui::Context, egui::Rect)) -> bool {
         click_checkbox_with_drift(overlay, 0.0)
     }
 
@@ -886,10 +886,7 @@ mod tests {
     /// what a real hand does. The events interleave as
     /// `[moved, press]` … `[moved, release]`, which is the shape the live bridge
     /// hands egui.
-    fn click_checkbox_with_drift(
-        overlay: impl Fn(&egui::Context, egui::Rect),
-        drift: f32,
-    ) -> bool {
+    fn click_checkbox_with_drift(overlay: impl Fn(&egui::Context, egui::Rect), drift: f32) -> bool {
         let ctx = egui::Context::default();
         crate::systems::theme::install(&ctx);
         let mut checked = false;
@@ -1042,7 +1039,8 @@ mod tests {
             .query_filtered::<Entity, With<PrimaryWindow>>()
             .single(app.world())
             .expect("primary window");
-        app.world_mut().write_message(WindowCloseRequested { window });
+        app.world_mut()
+            .write_message(WindowCloseRequested { window });
 
         // `close_when_requested` marks on one frame and despawns on the next, so
         // give it both — then run the frames that used to panic.
@@ -1103,7 +1101,10 @@ mod tests {
         let mut files = Vec::new();
         let mut stack = vec![src.join("systems")];
         while let Some(dir) = stack.pop() {
-            for e in std::fs::read_dir(&dir).expect("systems/ is readable").flatten() {
+            for e in std::fs::read_dir(&dir)
+                .expect("systems/ is readable")
+                .flatten()
+            {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);

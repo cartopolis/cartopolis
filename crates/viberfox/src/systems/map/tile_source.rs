@@ -35,8 +35,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use futures_channel::oneshot;
 
 use crate::platform::{http, storage};
-use viberfox_core::{format_osm_tile_url, tile_source_kind, TileSourceKind};
 use viberfox_core::TileKey;
+use viberfox_core::{format_osm_tile_url, tile_source_kind, TileSourceKind};
 
 /// On-disk cache path for a tile, under the app's `cache/` folder (persists across
 /// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
@@ -109,7 +109,11 @@ impl TileSource {
     ///
     /// `fetch` is a closure so the two mechanisms can be tested against a stub
     /// source, and so the real one stays out of this file's arithmetic.
-    pub async fn bytes<F, Fut>(&self, ck: CacheKey, fetch: F) -> (Result<Arc<Vec<u8>>, String>, Origin)
+    pub async fn bytes<F, Fut>(
+        &self,
+        ck: CacheKey,
+        fetch: F,
+    ) -> (Result<Arc<Vec<u8>>, String>, Origin)
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
@@ -321,7 +325,11 @@ mod tests {
             release,
         ));
 
-        assert_eq!(fetches.load(Ordering::SeqCst), 1, "the fetch was duplicated");
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "the fetch was duplicated"
+        );
         assert_eq!(a.1, Origin::Fetched);
         assert_eq!(b.1, Origin::Coalesced);
         assert_eq!(a.0.unwrap().as_slice(), b"body");
@@ -369,9 +377,7 @@ mod tests {
         // alongside the other three, so exactly one must be evicted.
         let third = MAX_CACHE_BYTES / 3;
         for i in 0..3u8 {
-            let _ = run(source.bytes(key(10 + i64::from(i)), || async move {
-                Ok(vec![i; third])
-            }));
+            let _ = run(source.bytes(key(10 + i64::from(i)), || async move { Ok(vec![i; third]) }));
         }
         assert!(source.cached_bytes() <= MAX_CACHE_BYTES);
         // Re-read the oldest so the *middle* one becomes least-recently-used.
@@ -387,7 +393,10 @@ mod tests {
             source.cached_bytes()
         );
         assert!(source.cached(&key(11)).is_none(), "LRU entry survived");
-        assert!(source.cached(&key(10)).is_some(), "touched entry was evicted");
+        assert!(
+            source.cached(&key(10)).is_some(),
+            "touched entry was evicted"
+        );
         assert!(source.cached(&key(12)).is_some());
         assert!(source.cached(&key(13)).is_some());
     }
@@ -399,8 +408,14 @@ mod tests {
     fn cache_keys_separate_by_source_kind() {
         let source = TileSource::default();
         let k = TileKey::new(8490, 5319, 14);
-        let vector = CacheKey { key: k, kind: TileSourceKind::Vector };
-        let raster = CacheKey { key: k, kind: TileSourceKind::Raster };
+        let vector = CacheKey {
+            key: k,
+            kind: TileSourceKind::Vector,
+        };
+        let raster = CacheKey {
+            key: k,
+            kind: TileSourceKind::Raster,
+        };
         let _ = run(source.bytes(vector, || async { Ok(b"mvt".to_vec()) }));
         let (r, origin) = run(source.bytes(raster, || async { Ok(b"png".to_vec()) }));
         assert_eq!(origin, Origin::Fetched, "a kind switch reused cached bytes");

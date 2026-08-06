@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
+use bevy::asset::RenderAssetUsages;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
-use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, GridCell};
@@ -84,10 +84,18 @@ impl WorldClock {
     /// UTC; otherwise it is the UTC fallback.
     pub fn hms(&self) -> ((u32, u32, u32), bool) {
         let local = !self.show_utc && self.local_offset_secs.is_some();
-        let off = if local { self.local_offset_secs.unwrap_or(0) } else { 0 } as i64;
+        let off = if local {
+            self.local_offset_secs.unwrap_or(0)
+        } else {
+            0
+        } as i64;
         let secs = (self.now_unix as i64 + off).rem_euclid(86_400);
         (
-            ((secs / 3600) as u32, (secs / 60 % 60) as u32, (secs % 60) as u32),
+            (
+                (secs / 3600) as u32,
+                (secs / 60 % 60) as u32,
+                (secs % 60) as u32,
+            ),
             local,
         )
     }
@@ -131,8 +139,8 @@ pub fn update_local_timezone(
     let Ok(tz) = jiff::tz::TimeZone::get(name) else {
         return;
     };
-    let ts = jiff::Timestamp::from_second(clock.now_unix as i64)
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    let ts =
+        jiff::Timestamp::from_second(clock.now_unix as i64).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     clock.local_offset_secs = Some(tz.to_offset(ts).seconds());
 }
 
@@ -189,7 +197,6 @@ pub struct TransitLive {
     painter: Option<BoardPainter>,
 }
 
-
 /// Poll OVapi for the live-capable stops around the camera: one batched
 /// request per interval on a worker thread, results folded into `boards`.
 pub fn poll_transit_live(
@@ -227,7 +234,10 @@ pub fn poll_transit_live(
     // every frame — then the real interval check throws it all away, since polls
     // are 8–30 s apart. `WARMUP_INTERVAL` is the shorter of the two intervals, so
     // gating on it here can't delay a poll that the check below would have allowed.
-    if live.last_poll.is_some_and(|t| t.elapsed() < WARMUP_INTERVAL) {
+    if live
+        .last_poll
+        .is_some_and(|t| t.elapsed() < WARMUP_INTERVAL)
+    {
         return;
     }
     let Ok((cam_cell, cam_tf)) = camera.single() else {
@@ -250,7 +260,11 @@ pub fn poll_transit_live(
     if codes.is_empty() {
         return;
     }
-    let interval = if any_unfetched { WARMUP_INTERVAL } else { POLL_INTERVAL };
+    let interval = if any_unfetched {
+        WARMUP_INTERVAL
+    } else {
+        POLL_INTERVAL
+    };
     if live.last_poll.is_some_and(|t| t.elapsed() < interval) {
         return;
     }
@@ -421,14 +435,11 @@ pub fn update_transit_boards(
         let Ok(mut tf) = quads.get_mut(entry.entity) else {
             continue;
         };
-        let dx = (cam_cell.x - entry.cell.x) as f32 * WORLD_CELL_EDGE
-            + cam_tf.translation.x
+        let dx = (cam_cell.x - entry.cell.x) as f32 * WORLD_CELL_EDGE + cam_tf.translation.x
             - tf.translation.x;
-        let dy = (cam_cell.y - entry.cell.y) as f32 * WORLD_CELL_EDGE
-            + cam_tf.translation.y
+        let dy = (cam_cell.y - entry.cell.y) as f32 * WORLD_CELL_EDGE + cam_tf.translation.y
             - tf.translation.y;
-        let dz = (cam_cell.z - entry.cell.z) as f32 * WORLD_CELL_EDGE
-            + cam_tf.translation.z
+        let dz = (cam_cell.z - entry.cell.z) as f32 * WORLD_CELL_EDGE + cam_tf.translation.z
             - tf.translation.z;
         let pitch = dy.atan2((dx * dx + dz * dz).sqrt());
         tf.rotation = Quat::from_rotation_y(dx.atan2(dz)) * Quat::from_rotation_x(-pitch);
@@ -463,7 +474,12 @@ fn board_mesh(w: f32, h: f32) -> Mesh {
 
     // Display panel at z=0 (vertices BL, BR, TR, TL — CCW toward +Z).
     quad(
-        [[GAP, -h, 0.0], [GAP + w, -h, 0.0], [GAP + w, 0.0, 0.0], [GAP, 0.0, 0.0]],
+        [
+            [GAP, -h, 0.0],
+            [GAP + w, -h, 0.0],
+            [GAP + w, 0.0, 0.0],
+            [GAP, 0.0, 0.0],
+        ],
         [[0.0, 1.0], [PANEL_U1, 1.0], [PANEL_U1, 0.0], [0.0, 0.0]],
     );
 
@@ -477,11 +493,26 @@ fn board_mesh(w: f32, h: f32) -> Mesh {
         [[BOX_U0, 1.0], [BOX_U1, 1.0], [BOX_U1, 0.0], [BOX_U0, 0.0]],
     );
     // Back, sides, top, bottom: solid casing colour.
-    quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], solid);
-    quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], solid);
-    quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], solid);
-    quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], solid);
-    quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], solid);
+    quad(
+        [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]],
+        solid,
+    );
+    quad(
+        [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]],
+        solid,
+    );
+    quad(
+        [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
+        solid,
+    );
+    quad(
+        [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
+        solid,
+    );
+    quad(
+        [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        solid,
+    );
 
     let normals = vec![[0.0, 0.0, 1.0]; positions.len()];
     let mut mesh = Mesh::new(
@@ -535,8 +566,7 @@ impl BoardPainter {
         let defs = egui::FontDefinitions::default();
         let data = defs.font_data.get("Hack")?;
         let font =
-            fontdue::Font::from_bytes(data.font.as_ref(), fontdue::FontSettings::default())
-                .ok()?;
+            fontdue::Font::from_bytes(data.font.as_ref(), fontdue::FontSettings::default()).ok()?;
         Some(Self { font })
     }
 
@@ -547,7 +577,15 @@ impl BoardPainter {
     }
 
     /// Draw `text` with its baseline at (`x`, `baseline`); returns the end x.
-    fn text(&self, px: &mut [u8], x: f32, baseline: f32, size: f32, color: [u8; 3], text: &str) -> f32 {
+    fn text(
+        &self,
+        px: &mut [u8],
+        x: f32,
+        baseline: f32,
+        size: f32,
+        color: [u8; 3],
+        text: &str,
+    ) -> f32 {
         let mut cx = x;
         for ch in text.chars() {
             let (m, cov) = self.font.rasterize(ch, size);
@@ -620,15 +658,36 @@ fn paint_board(
     for (i, ch) in operator.chars().take(6).enumerate() {
         let glyph = ch.to_string();
         let gw = painter.measure(30.0, &glyph);
-        painter.text(&mut px, 474.0 - gw / 2.0, 48.0 + i as f32 * 36.0, 30.0, HEADER_TEXT, &glyph);
+        painter.text(
+            &mut px,
+            474.0 - gw / 2.0,
+            48.0 + i as f32 * 36.0,
+            30.0,
+            HEADER_TEXT,
+            &glyph,
+        );
     }
 
     // Header: stop name left, clock right.
     let name = poi.name.as_deref().unwrap_or("Halte");
-    painter.text(&mut px, 16.0, 37.0, 26.0, HEADER_TEXT, &fit(painter, name, 26.0, 300.0));
+    painter.text(
+        &mut px,
+        16.0,
+        37.0,
+        26.0,
+        HEADER_TEXT,
+        &fit(painter, name, 26.0, 300.0),
+    );
     let clock = format!("{hh:02}:{mm:02}");
     let cw = painter.measure(22.0, &clock);
-    painter.text(&mut px, w as f32 - 16.0 - cw, 36.0, 22.0, CLOCK_TEXT, &clock);
+    painter.text(
+        &mut px,
+        w as f32 - 16.0 - cw,
+        36.0,
+        22.0,
+        CLOCK_TEXT,
+        &clock,
+    );
 
     let rows: Vec<&Departure> = board
         .departures
@@ -759,7 +818,10 @@ fn parse_departures(text: &str) -> FetchResult {
         departures.sort_by_key(|d| d.expected_unix);
         boards.insert(
             code.clone(),
-            StopBoard { departures, fetched: Instant::now() },
+            StopBoard {
+                departures,
+                fetched: Instant::now(),
+            },
         );
     }
     Ok((boards, offset))
@@ -844,21 +906,31 @@ mod tests {
             addr: None,
         };
         let now = 1_800_000_000i64;
-        let dep = |line: &str, dest: &str, transport: &str, rel: i64, delay: i64, cancelled: bool| Departure {
-            line: line.to_string(),
-            destination: dest.to_string(),
-            transport: transport.to_string(),
-            operator: "QBUZZ".to_string(),
-            target_unix: now + rel - delay,
-            expected_unix: now + rel,
-            cancelled,
-            passed: false,
-        };
+        let dep =
+            |line: &str, dest: &str, transport: &str, rel: i64, delay: i64, cancelled: bool| {
+                Departure {
+                    line: line.to_string(),
+                    destination: dest.to_string(),
+                    transport: transport.to_string(),
+                    operator: "QBUZZ".to_string(),
+                    target_unix: now + rel - delay,
+                    expected_unix: now + rel,
+                    cancelled,
+                    passed: false,
+                }
+            };
         let board = StopBoard {
             departures: vec![
                 dep("2", "Zuidhorn", "BUS", 40, 0, false),
                 dep("6", "Hoofdstation", "BUS", 420, 120, false),
-                dep("5", "P+R Haren met lange naam die niet past", "TRAM", 600, 200, false),
+                dep(
+                    "5",
+                    "P+R Haren met lange naam die niet past",
+                    "TRAM",
+                    600,
+                    200,
+                    false,
+                ),
                 dep("61", "Uithuizen", "BUS", 900, 0, true),
             ],
             fetched: Instant::now(),

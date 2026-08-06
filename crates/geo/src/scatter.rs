@@ -34,7 +34,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 
 /// Altitude at which trees start merging into the flat fill.
@@ -600,23 +599,14 @@ fn unit_canopy() -> UnitCanopy {
             let key = if a < b { (a, b) } else { (b, a) };
             *midpoints.entry(key).or_insert_with(|| {
                 let (p, q) = (verts[a], verts[b]);
-                verts.push(normalize([
-                    p[0] + q[0],
-                    p[1] + q[1],
-                    p[2] + q[2],
-                ]));
+                verts.push(normalize([p[0] + q[0], p[1] + q[1], p[2] + q[2]]));
                 verts.len() - 1
             })
         };
         let ab = mid(f[0], f[1], &mut verts);
         let bc = mid(f[1], f[2], &mut verts);
         let ca = mid(f[2], f[0], &mut verts);
-        for t in [
-            [f[0], ab, ca],
-            [ab, f[1], bc],
-            [ca, bc, f[2]],
-            [ab, bc, ca],
-        ] {
+        for t in [[f[0], ab, ca], [ab, f[1], bc], [ca, bc, f[2]], [ab, bc, ca]] {
             indices.extend(t.iter().map(|&i| i as u32));
         }
     }
@@ -724,7 +714,10 @@ pub fn rand01(h: u64, stream: u32) -> f32 {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/groningen_z14.mvt"
+    ));
 
     /// The fixture, parsed. The scatter takes a shared [`TileData`] now (one parse
     /// per streamed cell, shared with the tessellators — `TileData`'s docs say
@@ -739,7 +732,10 @@ mod tests {
     fn scatters_trees_over_the_fixture() {
         let tile_m = 1472.0;
         let trees = scatter_vegetation(&fixture(), tile_m, 42).expect("scatter");
-        assert!(!trees.is_empty(), "no trees scattered over a tile with parks");
+        assert!(
+            !trees.is_empty(),
+            "no trees scattered over a tile with parks"
+        );
         assert!(trees.len() <= MAX_TREES_PER_CELL);
         for t in &trees {
             assert!(
@@ -748,8 +744,16 @@ mod tests {
                 t.x,
                 t.z
             );
-            assert!(t.height > 0.5 && t.height < 20.0, "implausible height {}", t.height);
-            assert!(t.radius > 0.5 && t.radius < 6.0, "implausible radius {}", t.radius);
+            assert!(
+                t.height > 0.5 && t.height < 20.0,
+                "implausible height {}",
+                t.height
+            );
+            assert!(
+                t.radius > 0.5 && t.radius < 6.0,
+                "implausible radius {}",
+                t.radius
+            );
         }
     }
 
@@ -761,9 +765,14 @@ mod tests {
     fn no_tree_stands_in_water() {
         let tile_m = 1472.0;
         let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
-        let extent = tile.layer("water_polygons").map_or(4096.0, TileData::extent);
+        let extent = tile
+            .layer("water_polygons")
+            .map_or(4096.0, TileData::extent);
         let mask = WaterMask::build(&tile, tile_m / extent, extent, tile_m);
-        assert!(!mask.tris.is_empty(), "fixture has no water to test against");
+        assert!(
+            !mask.tris.is_empty(),
+            "fixture has no water to test against"
+        );
 
         let trees = scatter_vegetation(&tile, tile_m, 42).expect("scatter");
         for t in &trees {

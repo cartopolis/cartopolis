@@ -232,7 +232,9 @@ async fn fetch_tcdc() -> FetchResult {
 /// the fix is the `jpeg`/`png` feature — check the template before assuming otherwise.
 fn decode_tcdc(bytes: &[u8]) -> FetchResult {
     let messages: Vec<_> = gribberish::message::read_messages(bytes).collect();
-    let msg = messages.first().ok_or_else(|| "no GRIB messages".to_string())?;
+    let msg = messages
+        .first()
+        .ok_or_else(|| "no GRIB messages".to_string())?;
 
     let (ny, nx) = msg.grid_dimensions().map_err(|e| e.to_string())?;
     if nx != GRID_W as usize || ny != GRID_H as usize {
@@ -263,7 +265,10 @@ mod tests {
         let (date, hh) = latest_cycle();
         assert_eq!(date.len(), 8);
         let hour: i32 = hh.parse().unwrap();
-        assert!(matches!(hour, 0 | 6 | 12 | 18), "cycle hour {hour} not a GFS run");
+        assert!(
+            matches!(hour, 0 | 6 | 12 | 18),
+            "cycle hour {hour} not a GFS run"
+        );
     }
 
     #[test]

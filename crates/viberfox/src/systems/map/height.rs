@@ -453,11 +453,15 @@ fn decode_float_tiff(bytes: &[u8], grid: usize) -> Result<Vec<f32>, String> {
     }
     let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("tiff open: {e}"))?;
-    let (w, h) = decoder.dimensions().map_err(|e| format!("tiff dims: {e}"))?;
+    let (w, h) = decoder
+        .dimensions()
+        .map_err(|e| format!("tiff dims: {e}"))?;
     if w as usize != grid || h as usize != grid {
         return Err(format!("asked for {grid}², got {w}×{h}"));
     }
-    let image = decoder.read_image().map_err(|e| format!("tiff read: {e}"))?;
+    let image = decoder
+        .read_image()
+        .map_err(|e| format!("tiff read: {e}"))?;
     let tiff::decoder::DecodingResult::F32(mut v) = image else {
         return Err("height raster is not float32".to_string());
     };
@@ -480,8 +484,7 @@ fn decode_float_tiff(bytes: &[u8], grid: usize) -> Result<Vec<f32>, String> {
 pub fn wgs84_to_rd(lat: f64, lng: f64) -> [f64; 2] {
     let dl = 0.36 * (lat - 52.155_174_40);
     let dp = 0.36 * (lng - 5.387_206_21);
-    let x = 155_000.0
-        + 190_094.945 * dp
+    let x = 155_000.0 + 190_094.945 * dp
         - 11_832.228 * dl * dp
         - 114.221 * dp * dl * dl
         - 32.391 * dp * dp * dp
@@ -490,10 +493,7 @@ pub fn wgs84_to_rd(lat: f64, lng: f64) -> [f64; 2] {
         - 0.608 * dp * dp * dp * dl
         + 0.008 * dl * dl
         - 0.192 * dp * dp * dp * dl * dl;
-    let y = 463_000.0
-        + 309_056.544 * dl
-        + 3_638.893 * dp * dp
-        + 73.077 * dl * dl
+    let y = 463_000.0 + 309_056.544 * dl + 3_638.893 * dp * dp + 73.077 * dl * dl
         - 157.984 * dl * dp * dp
         + 59.788 * dl * dl * dl
         + 0.433 * dp
@@ -514,7 +514,10 @@ pub fn rd_to_wgs84(x: f64, y: f64) -> (f64, f64) {
     let dx = (x - 155_000.0) / 100_000.0;
     let dy = (y - 463_000.0) / 100_000.0;
     let lat = 52.155_174_40
-        + (3_235.65389 * dy - 32.58297 * dx * dx - 0.24750 * dy * dy - 0.84978 * dx * dx * dy
+        + (3_235.65389 * dy
+            - 32.58297 * dx * dx
+            - 0.24750 * dy * dy
+            - 0.84978 * dx * dx * dy
             - 0.06550 * dy * dy * dy
             - 0.01709 * dx * dx * dy * dy
             - 0.00738 * dx
@@ -524,7 +527,8 @@ pub fn rd_to_wgs84(x: f64, y: f64) -> (f64, f64) {
             - 0.00012 * dx * dy)
             / 3600.0;
     let lng = 5.387_206_21
-        + (5_260.52916 * dx + 105.94684 * dx * dy + 2.45656 * dx * dy * dy - 0.81885 * dx * dx * dx
+        + (5_260.52916 * dx + 105.94684 * dx * dy + 2.45656 * dx * dy * dy
+            - 0.81885 * dx * dx * dx
             + 0.05594 * dx * dy * dy * dy
             - 0.05607 * dx * dx * dx * dy
             + 0.01199 * dy
@@ -554,11 +558,11 @@ mod tests {
     #[test]
     fn the_rd_conversion_round_trips_across_the_country() {
         for (lat, lng) in [
-            (53.2194, 6.5665),  // Groningen
-            (52.3676, 4.9041),  // Amsterdam
-            (51.9244, 4.4777),  // Rotterdam
-            (50.8514, 5.6910),  // Maastricht
-            (53.4000, 5.3000),  // Vlieland, up in the Wadden
+            (53.2194, 6.5665), // Groningen
+            (52.3676, 4.9041), // Amsterdam
+            (51.9244, 4.4777), // Rotterdam
+            (50.8514, 5.6910), // Maastricht
+            (53.4000, 5.3000), // Vlieland, up in the Wadden
         ] {
             let rd = wgs84_to_rd(lat, lng);
             let (back_lat, back_lng) = rd_to_wgs84(rd[0], rd[1]);

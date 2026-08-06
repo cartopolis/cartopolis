@@ -191,7 +191,6 @@ impl AvatarSex {
     }
 }
 
-
 /// Where the user was when Viberfox closed, camera included.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SavedLocation {
@@ -285,7 +284,12 @@ impl UserStore {
             },
             Err(_) => (UserData::default(), String::new()),
         };
-        Self { data, dirty: false, path, last_written }
+        Self {
+            data,
+            dirty: false,
+            path,
+            last_written,
+        }
     }
 
     /// Write to disk if the serialized form changed.
@@ -305,7 +309,9 @@ impl UserStore {
                 self.last_written = json;
                 self.dirty = false;
             }
-            Err(e) => tracing::warn!(error = %e, path = %self.path.display(), "user.json write failed"),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %self.path.display(), "user.json write failed")
+            }
         }
     }
 
@@ -333,17 +339,16 @@ impl UserStore {
         altitude: f64,
         pose: CameraPose,
     ) -> u64 {
-        let id = self
-            .data
-            .bookmarks
-            .iter()
-            .map(|b| b.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        self.data
-            .bookmarks
-            .push(Bookmark { id, name, lat, lng, altitude, pose, folder: None });
+        let id = self.data.bookmarks.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+        self.data.bookmarks.push(Bookmark {
+            id,
+            name,
+            lat,
+            lng,
+            altitude,
+            pose,
+            folder: None,
+        });
         self.dirty = true;
         id
     }
@@ -354,9 +359,13 @@ impl UserStore {
     pub fn add_folder(&mut self, name: String, parent: Option<u64>) -> u64 {
         let id = self.data.folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
         let color = FOLDER_PALETTE[self.data.folders.len() % FOLDER_PALETTE.len()];
-        self.data
-            .folders
-            .push(PlaceFolder { id, name, color, parent, collapsed: false });
+        self.data.folders.push(PlaceFolder {
+            id,
+            name,
+            color,
+            parent,
+            collapsed: false,
+        });
         self.dirty = true;
         id
     }
@@ -368,10 +377,20 @@ impl UserStore {
         let Some(parent) = self.folder(id).map(|f| f.parent) else {
             return;
         };
-        for f in self.data.folders.iter_mut().filter(|f| f.parent == Some(id)) {
+        for f in self
+            .data
+            .folders
+            .iter_mut()
+            .filter(|f| f.parent == Some(id))
+        {
             f.parent = parent;
         }
-        for b in self.data.bookmarks.iter_mut().filter(|b| b.folder == Some(id)) {
+        for b in self
+            .data
+            .bookmarks
+            .iter_mut()
+            .filter(|b| b.folder == Some(id))
+        {
             b.folder = parent;
         }
         self.data.folders.retain(|f| f.id != id);
@@ -442,7 +461,12 @@ impl UserStore {
     /// Set (or replace) the Home location — the spot the nav bar's Home button
     /// returns to. Pose included so Home restores the exact view.
     pub fn set_home(&mut self, lat: f64, lng: f64, altitude: f64, pose: CameraPose) {
-        self.data.home = Some(SavedLocation { lat, lng, altitude, pose });
+        self.data.home = Some(SavedLocation {
+            lat,
+            lng,
+            altitude,
+            pose,
+        });
         self.dirty = true;
     }
 }
@@ -657,7 +681,10 @@ mod tests {
             precipitation: 0.0,
         };
         let json = serde_json::to_string(&prefs).unwrap();
-        assert!(json.contains("\"night\""), "modes are named on disk: {json}");
+        assert!(
+            json.contains("\"night\""),
+            "modes are named on disk: {json}"
+        );
         assert_eq!(serde_json::from_str::<SkyPrefs>(&json).unwrap(), prefs);
     }
 
@@ -685,8 +712,16 @@ mod tests {
         store.remove_folder(inner);
 
         assert!(store.folder(inner).is_none(), "the folder itself is gone");
-        assert_eq!(store.folder(deep).unwrap().parent, Some(outer), "child folder lifted");
-        assert_eq!(store.data.bookmarks.len(), 1, "the place survives the delete");
+        assert_eq!(
+            store.folder(deep).unwrap().parent,
+            Some(outer),
+            "child folder lifted"
+        );
+        assert_eq!(
+            store.data.bookmarks.len(),
+            1,
+            "the place survives the delete"
+        );
         assert_eq!(store.data.bookmarks[0].folder, Some(outer), "place lifted");
     }
 
@@ -701,7 +736,10 @@ mod tests {
         let deep = store.add_folder("Deep".into(), Some(inner));
 
         assert!(!store.move_folder(outer, Some(deep)), "cycle refused");
-        assert!(!store.move_folder(outer, Some(outer)), "self-parent refused");
+        assert!(
+            !store.move_folder(outer, Some(outer)),
+            "self-parent refused"
+        );
         assert_eq!(store.folder(outer).unwrap().parent, None, "tree unchanged");
 
         // The legal direction still works, and lifting to the top level too.

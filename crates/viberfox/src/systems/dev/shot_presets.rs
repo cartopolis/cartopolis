@@ -148,10 +148,18 @@ impl Manifest {
         for want in only {
             if !self.shots.iter().any(|s| &s.name == want) {
                 let names: Vec<&str> = self.shots.iter().map(|s| s.name.as_str()).collect();
-                return Err(format!("unknown shot {:?}; manifest has: {}", want, names.join(", ")));
+                return Err(format!(
+                    "unknown shot {:?}; manifest has: {}",
+                    want,
+                    names.join(", ")
+                ));
             }
         }
-        Ok(self.shots.iter().filter(|s| only.contains(&s.name)).collect())
+        Ok(self
+            .shots
+            .iter()
+            .filter(|s| only.contains(&s.name))
+            .collect())
     }
 
     /// Absolute-ish output path for a preset: an explicit `out`, else
@@ -240,9 +248,15 @@ out = "img/custom.png"
         assert_eq!(m.shots.len(), 2);
         let path = PathBuf::from("docs/shots.toml");
         // Name-derived output, resolved against the manifest's directory.
-        assert_eq!(m.out_path(&path, &m.shots[0]), PathBuf::from("docs/img/city.png"));
+        assert_eq!(
+            m.out_path(&path, &m.shots[0]),
+            PathBuf::from("docs/img/city.png")
+        );
         // An explicit `out` is used verbatim (still manifest-relative).
-        assert_eq!(m.out_path(&path, &m.shots[1]), PathBuf::from("docs/img/custom.png"));
+        assert_eq!(
+            m.out_path(&path, &m.shots[1]),
+            PathBuf::from("docs/img/custom.png")
+        );
     }
 
     #[test]

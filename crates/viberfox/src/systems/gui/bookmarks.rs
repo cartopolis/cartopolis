@@ -102,7 +102,9 @@ impl BookmarksState {
                     .ok()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
                     .and_then(|json| {
-                        json.get("display_name").and_then(|v| v.as_str()).map(short_address)
+                        json.get("display_name")
+                            .and_then(|v| v.as_str())
+                            .map(short_address)
                     })
                     .unwrap_or_else(|| coord_label(lat, lng));
                 if let Ok(mut g) = resolved.lock() {
@@ -129,10 +131,7 @@ fn coord_label(lat: f64, lng: f64) -> String {
 }
 
 /// Fold finished reverse lookups into the bookmark names.
-pub fn poll_bookmark_addresses(
-    bookmarks: Res<BookmarksState>,
-    mut store: ResMut<UserStore>,
-) {
+pub fn poll_bookmark_addresses(bookmarks: Res<BookmarksState>, mut store: ResMut<UserStore>) {
     let resolved: Vec<(u64, String)> = bookmarks
         .resolved
         .lock()
@@ -249,8 +248,7 @@ fn egui_color(c: [f32; 3]) -> egui::Color32 {
 /// The fold arrow, painted rather than written: ▶/▼ are not in the bundled icon
 /// font and come out as tofu boxes next to every folder.
 fn fold_arrow(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let c = rect.center();
         let r = 4.0;
@@ -272,8 +270,11 @@ fn fold_arrow(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
                 egui::pos2(c.x, c.y + r * 0.8),
             ]
         };
-        ui.painter()
-            .add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            color,
+            egui::Stroke::NONE,
+        ));
     }
     response
 }
@@ -386,11 +387,8 @@ pub fn render_bookmarks_panel(
     )
     .show_collapsible(ui_root, &mut open, |ui| {
         let panel = crate::resources::RightPanel::Places;
-        act.close = crate::systems::theme::panel_header_with(
-            ui,
-            panel.icons(),
-            panel.label(),
-            |ui| {
+        act.close =
+            crate::systems::theme::panel_header_with(ui, panel.icons(), panel.label(), |ui| {
                 // Spelled out rather than an icon: 📁 is not in the bundled icon
                 // font and renders as a tofu box.
                 if ui
@@ -400,8 +398,7 @@ pub fn render_bookmarks_panel(
                 {
                     act.new_folder = true;
                 }
-            },
-        );
+            });
         if rows.is_empty() {
             ui.add_space(8.0);
             ui.label(
@@ -417,13 +414,35 @@ pub fn render_bookmarks_panel(
             for row in &rows {
                 ui.add_space(2.0);
                 match row {
-                    Row::Folder { id, depth, name, color, collapsed, count } => {
+                    Row::Folder {
+                        id,
+                        depth,
+                        name,
+                        color,
+                        collapsed,
+                        count,
+                    } => {
                         folder_row(
-                            ui, &mut act, &mut editing, *id, *depth, name, *color, *collapsed,
+                            ui,
+                            &mut act,
+                            &mut editing,
+                            *id,
+                            *depth,
+                            name,
+                            *color,
+                            *collapsed,
                             *count,
                         );
                     }
-                    Row::Place { id, depth, name, color, lat, lng, altitude } => {
+                    Row::Place {
+                        id,
+                        depth,
+                        name,
+                        color,
+                        lat,
+                        lng,
+                        altitude,
+                    } => {
                         place_row(
                             ui,
                             &mut act,
@@ -448,20 +467,9 @@ pub fn render_bookmarks_panel(
                     egui::Sense::hover(),
                 );
                 let hot = response.contains_pointer();
-                let stroke = egui::Stroke::new(
-                    1.0,
-                    if hot {
-                        theme::FOX
-                    } else {
-                        theme::LINE
-                    },
-                );
-                ui.painter().rect_stroke(
-                    rect.shrink(1.0),
-                    4.0,
-                    stroke,
-                    egui::StrokeKind::Inside,
-                );
+                let stroke = egui::Stroke::new(1.0, if hot { theme::FOX } else { theme::LINE });
+                ui.painter()
+                    .rect_stroke(rect.shrink(1.0), 4.0, stroke, egui::StrokeKind::Inside);
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -616,7 +624,11 @@ fn place_row(
         ui.add_space(depth as f32 * INDENT);
         // The dot is the map pin's colour, so the panel and the map read as
         // one thing.
-        ui.label(egui::RichText::new("📍").size(12.0).color(egui_color(color)));
+        ui.label(
+            egui::RichText::new("📍")
+                .size(12.0)
+                .color(egui_color(color)),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.small_button("🗑").on_hover_text("Delete").clicked() {
                 act.delete_place = Some(id);
@@ -680,12 +692,18 @@ fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
         return;
     };
     let Some((name, color)) = rows.iter().find_map(|row| match (row, *item) {
-        (Row::Folder { id, name, color, .. }, Item::Folder(dragged)) if *id == dragged => {
-            Some((name.as_str(), *color))
-        }
-        (Row::Place { id, name, color, .. }, Item::Place(dragged)) if *id == dragged => {
-            Some((name.as_str(), *color))
-        }
+        (
+            Row::Folder {
+                id, name, color, ..
+            },
+            Item::Folder(dragged),
+        ) if *id == dragged => Some((name.as_str(), *color)),
+        (
+            Row::Place {
+                id, name, color, ..
+            },
+            Item::Place(dragged),
+        ) if *id == dragged => Some((name.as_str(), *color)),
         _ => None,
     }) else {
         return;
@@ -1018,8 +1036,15 @@ mod tests {
                     .show(ui, |ui| {
                         let top = ui.cursor().min;
                         folder_row(
-                            ui, &mut act, &mut editing, FOLDER, 0, "Folder", [0.2, 0.5, 0.9],
-                            false, 0,
+                            ui,
+                            &mut act,
+                            &mut editing,
+                            FOLDER,
+                            0,
+                            "Folder",
+                            [0.2, 0.5, 0.9],
+                            false,
+                            0,
                         );
                         let mid = ui.cursor().min;
                         // Left of the ✏/🗑 buttons, so the drop lands on the row

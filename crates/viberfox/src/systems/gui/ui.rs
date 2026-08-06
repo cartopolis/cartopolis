@@ -2,19 +2,19 @@
 //!
 //! Renders context menus and edit dialogs using egui.
 
-use web_time::Instant;
-use crate::systems::egui_manager::EguiManager;
 use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region, Selected};
+use crate::resources::OnlineSession;
+use crate::resources::RightPanel;
 use crate::resources::{
     ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
 };
-use crate::resources::OnlineSession;
+use crate::systems::egui_manager::EguiManager;
+use crate::systems::theme;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 use egui::Window;
-use crate::resources::RightPanel;
-use crate::systems::theme;
 use viberfox_core::NetMessage;
+use web_time::Instant;
 
 /// Where the map controls (compass, locate) stack, clear of the logo card that
 /// now owns the top-left corner. Read by `hud::render_map_controls`; one constant
@@ -86,8 +86,7 @@ pub fn render_menu_bar(
 
     // Ctrl+L (browser address-bar shortcut): unfold the bar and grab the search
     // field's focus next frame (`nav.focus_search`, consumed in `nav_bar_ui`).
-    let ctrl =
-        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
         nav.focus_search = true;
     }
@@ -362,10 +361,8 @@ pub fn toggle_ai_panel_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut right_panel: ResMut<RightPanel>,
 ) {
-    let ctrl =
-        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    let shift =
-        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     if ctrl && shift && keyboard.just_pressed(KeyCode::KeyA) {
         right_panel.toggle(RightPanel::Assistant);
     }
@@ -376,10 +373,8 @@ pub fn toggle_dev_panel_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
 ) {
-    let ctrl =
-        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    let shift =
-        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
     if ctrl && shift && keyboard.just_pressed(KeyCode::KeyD) {
         dev_state.open = !dev_state.open;
     }
@@ -515,7 +510,11 @@ pub fn render_dev_panel(
             // Atmosphere / env-map IBL can't be hot-swapped — removing those
             // components at runtime hangs the GPU on this stack — so they apply at
             // startup only (a live flip needs a relaunch to take effect).
-            crate::systems::theme::checkbox(ui, &mut dev.atmosphere_enabled, "Atmosphere (restart)");
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dev.atmosphere_enabled,
+                "Atmosphere (restart)",
+            );
             ui.add_enabled(
                 dev.atmosphere_enabled,
                 egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
@@ -582,7 +581,9 @@ pub fn render_dev_panel(
                 // a held click from queuing more than one capture.
                 if ui
                     .button(format!("📷 Capture slot {}", shot.next_slot + 1))
-                    .on_hover_text("Hides the UI for one frame, then saves docs/img/screenshot-N.png")
+                    .on_hover_text(
+                        "Hides the UI for one frame, then saves docs/img/screenshot-N.png",
+                    )
                     .clicked()
                     && !shot.hide_ui
                 {
@@ -630,81 +631,81 @@ pub fn render_avatar_chooser(
         280.0,
     )
     .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
-            let panel = crate::resources::RightPanel::Appearance;
-            close = theme::panel_header(ui, panel.icons(), panel.label());
-            let d = &mut chooser.draft;
-            ui.label("Body");
-            ui.horizontal(|ui| {
-                for sex in AvatarSex::ALL {
-                    if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
-                        d.sex = sex;
-                        fix_styles_for_sex(d, sex);
-                    }
+        let panel = crate::resources::RightPanel::Appearance;
+        close = theme::panel_header(ui, panel.icons(), panel.label());
+        let d = &mut chooser.draft;
+        ui.label("Body");
+        ui.horizontal(|ui| {
+            for sex in AvatarSex::ALL {
+                if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
+                    d.sex = sex;
+                    fix_styles_for_sex(d, sex);
                 }
-            });
-            let sex = d.sex;
-
-            ui.add_space(6.0);
-            // Preset: set all four clothing slots at once (quick whole-look pick).
-            ui.label("Preset");
-            let preset = d.uniform_style().unwrap_or("Custom").to_string();
-            egui::ComboBox::from_id_salt("avatar_preset")
-                .selected_text(preset)
-                .show_ui(ui, |ui| {
-                    for style in styles_for(sex) {
-                        if ui
-                            .selectable_label(d.uniform_style() == Some(style), style)
-                            .clicked()
-                        {
-                            d.head = style.to_string();
-                            d.top = style.to_string();
-                            d.legs = style.to_string();
-                            d.feet = style.to_string();
-                        }
-                    }
-                });
-
-            ui.separator();
-            ui.label("Customize");
-            slot_combo(ui, "Head", sex, &mut d.head);
-            slot_combo(ui, "Top", sex, &mut d.top);
-            slot_combo(ui, "Legs", sex, &mut d.legs);
-            slot_combo(ui, "Shoes", sex, &mut d.feet);
-
-            // Accessory (optional, non-weapon).
-            egui::ComboBox::from_id_salt("avatar_accessory")
-                .selected_text(format!(
-                    "Accessory: {}",
-                    d.accessory.as_deref().unwrap_or("None")
-                ))
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
-                        d.accessory = None;
-                    }
-                    for acc in accessory_styles_for(sex) {
-                        if ui
-                            .selectable_label(d.accessory.as_deref() == Some(acc), acc)
-                            .clicked()
-                        {
-                            d.accessory = Some(acc.to_string());
-                        }
-                    }
-                });
-
-            ui.separator();
-            let changed = *d != saved;
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(changed, egui::Button::new("Apply"))
-                    .clicked()
-                {
-                    apply = true;
-                }
-                if !changed {
-                    ui.weak("This is your current avatar.");
-                }
-            });
+            }
         });
+        let sex = d.sex;
+
+        ui.add_space(6.0);
+        // Preset: set all four clothing slots at once (quick whole-look pick).
+        ui.label("Preset");
+        let preset = d.uniform_style().unwrap_or("Custom").to_string();
+        egui::ComboBox::from_id_salt("avatar_preset")
+            .selected_text(preset)
+            .show_ui(ui, |ui| {
+                for style in styles_for(sex) {
+                    if ui
+                        .selectable_label(d.uniform_style() == Some(style), style)
+                        .clicked()
+                    {
+                        d.head = style.to_string();
+                        d.top = style.to_string();
+                        d.legs = style.to_string();
+                        d.feet = style.to_string();
+                    }
+                }
+            });
+
+        ui.separator();
+        ui.label("Customize");
+        slot_combo(ui, "Head", sex, &mut d.head);
+        slot_combo(ui, "Top", sex, &mut d.top);
+        slot_combo(ui, "Legs", sex, &mut d.legs);
+        slot_combo(ui, "Shoes", sex, &mut d.feet);
+
+        // Accessory (optional, non-weapon).
+        egui::ComboBox::from_id_salt("avatar_accessory")
+            .selected_text(format!(
+                "Accessory: {}",
+                d.accessory.as_deref().unwrap_or("None")
+            ))
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
+                    d.accessory = None;
+                }
+                for acc in accessory_styles_for(sex) {
+                    if ui
+                        .selectable_label(d.accessory.as_deref() == Some(acc), acc)
+                        .clicked()
+                    {
+                        d.accessory = Some(acc.to_string());
+                    }
+                }
+            });
+
+        ui.separator();
+        let changed = *d != saved;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(changed, egui::Button::new("Apply"))
+                .clicked()
+            {
+                apply = true;
+            }
+            if !changed {
+                ui.weak("This is your current avatar.");
+            }
+        });
+    });
     if apply {
         store.data.appearance = chooser.draft.clone();
         store.dirty = true;
@@ -883,7 +884,12 @@ pub fn render_stats_overlay(
         .show(egui.ctx_mut(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
                 let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
-                    ui.label(egui::RichText::new(text).monospace().size(12.5).color(color));
+                    ui.label(
+                        egui::RichText::new(text)
+                            .monospace()
+                            .size(12.5)
+                            .color(color),
+                    );
                 };
                 // Let the rows set the box's width instead of wrapping inside it.
                 // A size-to-content `Area` settles at the width of its widest
@@ -902,11 +908,7 @@ pub fn render_stats_overlay(
 /// Fill the edit dialog's fields and revert snapshots from a prim. Leaves `visible` and
 /// `active_tab` untouched, so it serves both opening the dialog and following a selection
 /// change. Sets `is_new = false` and `prim_id` to this prim.
-pub fn populate_edit_dialog(
-    edit_dialog: &mut EditDialogState,
-    prim: &Prim,
-    transform: &Transform,
-) {
+pub fn populate_edit_dialog(edit_dialog: &mut EditDialogState, prim: &Prim, transform: &Transform) {
     edit_dialog.prim_id = Some(prim.id);
     edit_dialog.is_new = false;
     edit_dialog.name = prim.name.clone();
@@ -1437,17 +1439,13 @@ pub fn render_edit_dialog(
 
                             ui.label("Texture");
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    edit_dialog.texture_id.as_deref().unwrap_or("None"),
-                                );
-                                if !texture_lib.entries.is_empty()
-                                    && ui.button("Pick…").clicked()
+                                ui.label(edit_dialog.texture_id.as_deref().unwrap_or("None"));
+                                if !texture_lib.entries.is_empty() && ui.button("Pick…").clicked()
                                 {
                                     edit_dialog.texture_picker_open =
                                         !edit_dialog.texture_picker_open;
                                 }
-                                if edit_dialog.texture_id.is_some()
-                                    && ui.button("Clear").clicked()
+                                if edit_dialog.texture_id.is_some() && ui.button("Clear").clicked()
                                 {
                                     edit_dialog.texture_id = None;
                                 }
@@ -1483,7 +1481,11 @@ pub fn render_edit_dialog(
                             ui.end_row();
 
                             ui.label("Full Bright");
-                            crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.full_bright, "");
+                            crate::systems::theme::checkbox(
+                                ui,
+                                &mut edit_dialog.surface.full_bright,
+                                "",
+                            );
                             ui.end_row();
                         });
 
@@ -1499,7 +1501,11 @@ pub fn render_edit_dialog(
                                 .range(0.0..=100.0)
                                 .max_decimals(3),
                         );
-                        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_u, "Flip");
+                        crate::systems::theme::checkbox(
+                            ui,
+                            &mut edit_dialog.surface.flip_u,
+                            "Flip",
+                        );
                         ui.add(
                             egui::DragValue::new(&mut edit_dialog.surface.repeat_v)
                                 .prefix("V ")
@@ -1507,7 +1513,11 @@ pub fn render_edit_dialog(
                                 .range(0.0..=100.0)
                                 .max_decimals(3),
                         );
-                        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_v, "Flip");
+                        crate::systems::theme::checkbox(
+                            ui,
+                            &mut edit_dialog.surface.flip_v,
+                            "Flip",
+                        );
                     });
 
                     ui.add_space(4.0);
@@ -1603,70 +1613,73 @@ pub fn render_edit_dialog(
             .open(&mut picker_open)
             .default_width(380.0)
             .show(egui.ctx_mut(), |ui| {
-                egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                    let cols = 4usize;
-                    egui::Grid::new("tex_grid")
-                        .num_columns(cols)
-                        .spacing([8.0, 8.0])
-                        .show(ui, |ui| {
-                            for (i, entry) in texture_lib.entries.iter().enumerate() {
-                                let selected =
-                                    edit_dialog.texture_id.as_deref() == Some(&entry.id);
-                                let cell_clicked = ui
-                                    .vertical(|ui| {
-                                        let clicked = if let Some(handle) =
-                                            texture_lib.egui_handles.get(&entry.id)
-                                        {
-                                            let sized = egui::load::SizedTexture::new(
-                                                handle.id(),
-                                                egui::vec2(72.0, 72.0),
-                                            );
-                                            let resp = ui.add(
-                                                egui::Image::new(sized)
-                                                    .sense(egui::Sense::click()),
-                                            );
-                                            if selected {
-                                                ui.painter().rect_stroke(
-                                                    resp.rect,
-                                                    2.0,
-                                                    egui::Stroke::new(
-                                                        2.5_f32,
-                                                        ui.visuals().selection.bg_fill,
-                                                    ),
-                                                    egui::StrokeKind::Outside,
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        let cols = 4usize;
+                        egui::Grid::new("tex_grid")
+                            .num_columns(cols)
+                            .spacing([8.0, 8.0])
+                            .show(ui, |ui| {
+                                for (i, entry) in texture_lib.entries.iter().enumerate() {
+                                    let selected =
+                                        edit_dialog.texture_id.as_deref() == Some(&entry.id);
+                                    let cell_clicked = ui
+                                        .vertical(|ui| {
+                                            let clicked = if let Some(handle) =
+                                                texture_lib.egui_handles.get(&entry.id)
+                                            {
+                                                let sized = egui::load::SizedTexture::new(
+                                                    handle.id(),
+                                                    egui::vec2(72.0, 72.0),
                                                 );
-                                            }
-                                            resp.clicked()
-                                        } else {
-                                            // Fallback text tile while egui handle is pending.
-                                            ui.add_sized(
-                                                [72.0, 72.0],
-                                                egui::Button::new(&entry.name).selected(selected),
-                                            )
-                                            .clicked()
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(&entry.name)
-                                                .small()
-                                                .line_height(Some(14.0)),
-                                        );
-                                        clicked
-                                    })
-                                    .inner;
-                                if cell_clicked {
-                                    clicked_texture = Some(entry.id.clone());
+                                                let resp = ui.add(
+                                                    egui::Image::new(sized)
+                                                        .sense(egui::Sense::click()),
+                                                );
+                                                if selected {
+                                                    ui.painter().rect_stroke(
+                                                        resp.rect,
+                                                        2.0,
+                                                        egui::Stroke::new(
+                                                            2.5_f32,
+                                                            ui.visuals().selection.bg_fill,
+                                                        ),
+                                                        egui::StrokeKind::Outside,
+                                                    );
+                                                }
+                                                resp.clicked()
+                                            } else {
+                                                // Fallback text tile while egui handle is pending.
+                                                ui.add_sized(
+                                                    [72.0, 72.0],
+                                                    egui::Button::new(&entry.name)
+                                                        .selected(selected),
+                                                )
+                                                .clicked()
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(&entry.name)
+                                                    .small()
+                                                    .line_height(Some(14.0)),
+                                            );
+                                            clicked
+                                        })
+                                        .inner;
+                                    if cell_clicked {
+                                        clicked_texture = Some(entry.id.clone());
+                                    }
+                                    if (i + 1) % cols == 0 {
+                                        ui.end_row();
+                                    }
                                 }
-                                if (i + 1) % cols == 0 {
+                                if !texture_lib.entries.is_empty()
+                                    && texture_lib.entries.len() % cols != 0
+                                {
                                     ui.end_row();
                                 }
-                            }
-                            if !texture_lib.entries.is_empty()
-                                && texture_lib.entries.len() % cols != 0
-                            {
-                                ui.end_row();
-                            }
-                        });
-                });
+                            });
+                    });
             });
         if let Some(id) = clicked_texture {
             edit_dialog.texture_id = Some(id);
@@ -1717,8 +1730,11 @@ pub fn apply_live_prim_edits(
             edit_dialog.scale[1],
             edit_dialog.scale[2],
         );
-        let new_color =
-            Color::srgb(edit_dialog.color[0], edit_dialog.color[1], edit_dialog.color[2]);
+        let new_color = Color::srgb(
+            edit_dialog.color[0],
+            edit_dialog.color[1],
+            edit_dialog.color[2],
+        );
         prim.color = new_color;
         prim.name = edit_dialog.name.clone();
 
@@ -1995,7 +2011,11 @@ pub fn send_prim_mutations(
                         revert.rotation[1],
                         revert.rotation[2],
                     ))
-                    .with_scale(Vec3::new(revert.scale[0], revert.scale[1], revert.scale[2]));
+                    .with_scale(Vec3::new(
+                        revert.scale[0],
+                        revert.scale[1],
+                        revert.scale[2],
+                    ));
                     apply_material_edits(
                         &mut commands,
                         entity,
@@ -2021,9 +2041,10 @@ pub fn send_prim_mutations(
 
     for prim_id in std::mem::take(&mut game_state.prims_to_delete) {
         if let Some(sess) = online.as_ref() {
-            let _ = sess
-                .intent_tx
-                .unbounded_send(NetMessage::DeletePrim { request_id: 0, prim_id });
+            let _ = sess.intent_tx.unbounded_send(NetMessage::DeletePrim {
+                request_id: 0,
+                prim_id,
+            });
         }
         for (entity, prim, _, _, _) in prim_query.iter() {
             if prim.id == prim_id {
@@ -2055,9 +2076,13 @@ fn apply_material_edits(
     let Some(mat_handle) = mat_handle_opt else {
         return;
     };
-    let Some(mut mat) =
-        crate::systems::rendering::owned_material(commands, materials, entity, &mat_handle.0, owned)
-    else {
+    let Some(mut mat) = crate::systems::rendering::owned_material(
+        commands,
+        materials,
+        entity,
+        &mat_handle.0,
+        owned,
+    ) else {
         return;
     };
     if apply_texture {

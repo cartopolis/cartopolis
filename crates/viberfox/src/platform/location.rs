@@ -169,7 +169,11 @@ mod wasm {
             Some(on_err.as_ref().unchecked_ref()),
             &opts,
         ) {
-            Ok(id) => Some(Watch { id, _on_fix: on_fix, _on_err: on_err }),
+            Ok(id) => Some(Watch {
+                id,
+                _on_fix: on_fix,
+                _on_err: on_err,
+            }),
             Err(e) => {
                 tracing::warn!(error = ?e, "could not start watchPosition");
                 None

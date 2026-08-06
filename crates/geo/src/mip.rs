@@ -157,8 +157,7 @@ mod tests {
         })
     }
 
-
-/// [`halve_triangle`] exists only because it is faster than the resampler it
+    /// [`halve_triangle`] exists only because it is faster than the resampler it
     /// replaces — the moment it stops agreeing with it, every mip in the game
     /// silently changes. Agreement means the same tent and the same renormalised
     /// edges, to within the `.5`-tie rounding noted on the function: never more
@@ -180,7 +179,10 @@ mod tests {
                 .filter(|d| *d != 0)
                 .collect();
             let worst = deltas.iter().map(|d| d.abs()).max().unwrap_or(0);
-            assert!(worst <= 1, "{w}x{h}: max |delta| {worst} — that is a different filter, not a tie");
+            assert!(
+                worst <= 1,
+                "{w}x{h}: max |delta| {worst} — that is a different filter, not a tie"
+            );
             let budget = (got.as_raw().len() / 10_000).max(8);
             assert!(
                 deltas.len() <= budget,
@@ -195,7 +197,10 @@ mod tests {
     #[test]
     fn odd_and_tiny_sizes_fall_back() {
         for (w, h) in [(2, 2), (1, 8), (7, 8), (8, 7), (3, 3)] {
-            assert!(halve_triangle(&noise(w, h)).is_none(), "{w}x{h} must fall back");
+            assert!(
+                halve_triangle(&noise(w, h)).is_none(),
+                "{w}x{h} must fall back"
+            );
         }
     }
 

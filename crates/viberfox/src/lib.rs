@@ -1,9 +1,9 @@
 use bevy::asset::AssetPlugin;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::log::LogPlugin;
 use bevy::camera::Exposure;
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::log::LogPlugin;
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::mesh::MeshVertexBufferLayoutRef;
@@ -19,21 +19,21 @@ use std::time::Duration;
 mod components;
 mod login;
 mod platform;
-mod simd_baseline;
 mod resources;
+mod simd_baseline;
 #[cfg(feature = "solo")]
 mod solo;
 mod systems;
 mod utils;
 
+use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
-    ConnectAddr, ConnectAuth,
-    ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId,
-    MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
+    ConnectAddr, ConnectAuth, ContextMenuState, DevPanelState, EditDialogState, GameState,
+    LocalAvatarSimId, MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState,
+    TextureLibrary,
 };
-use big_space::prelude::{BigSpace, GridCell};
 use systems::egui_manager::EguiPlugin;
 use systems::*;
 use utils::sun::sun_direction;
@@ -258,8 +258,8 @@ impl Plugin for ForceCpuClusteringPlugin {
         // it is one of the fallbacks that made the web build cost seconds per
         // frame. Forcing it on where the hazard doesn't apply would spend that
         // cost for nothing. `VIBERFOX_FORCE_CPU_CLUSTERING=1` restores it anywhere.
-        let force = cfg!(not(target_arch = "wasm32"))
-            || crate::env_flag("VIBERFOX_FORCE_CPU_CLUSTERING");
+        let force =
+            cfg!(not(target_arch = "wasm32")) || crate::env_flag("VIBERFOX_FORCE_CPU_CLUSTERING");
         if !force {
             return;
         }
@@ -655,31 +655,32 @@ pub fn run() {
     // and ends the run, and the user store stays out of it (no restore, no
     // autosave). It was already built and validated above.
     if let Some(harness) = harness {
-        app.insert_resource(resources::HeadlessSurface { size: harness.size, scale: 1.0 })
-            .insert_resource(harness)
-            .init_resource::<systems::shot_harness::ShotProgress>()
-            .add_systems(
-                Startup,
-                systems::shot_harness::setup_offscreen_target
-                    .after(systems::free_camera::setup_camera),
-            )
-            .add_systems(
-                Update,
-                (
-                    systems::shot_harness::open_scripted_ui,
-                    systems::shot_harness::place_camera
-                        .before(systems::geo_nav::apply_teleport),
-                    systems::shot_harness::place_space_orbit
-                        .after(systems::geo_nav::apply_teleport)
-                        .before(systems::free_camera::camera_controls),
-                    // After drive_screenshots so the `hide_ui` it clears
-                    // each frame isn't cleared again before PostUpdate's
-                    // egui suppression reads it.
-                    systems::shot_harness::drive_capture
-                        .after(systems::free_camera::camera_controls)
-                        .after(systems::ui::drive_screenshots),
-                ),
-            );
+        app.insert_resource(resources::HeadlessSurface {
+            size: harness.size,
+            scale: 1.0,
+        })
+        .insert_resource(harness)
+        .init_resource::<systems::shot_harness::ShotProgress>()
+        .add_systems(
+            Startup,
+            systems::shot_harness::setup_offscreen_target.after(systems::free_camera::setup_camera),
+        )
+        .add_systems(
+            Update,
+            (
+                systems::shot_harness::open_scripted_ui,
+                systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
+                systems::shot_harness::place_space_orbit
+                    .after(systems::geo_nav::apply_teleport)
+                    .before(systems::free_camera::camera_controls),
+                // After drive_screenshots so the `hide_ui` it clears
+                // each frame isn't cleared again before PostUpdate's
+                // egui suppression reads it.
+                systems::shot_harness::drive_capture
+                    .after(systems::free_camera::camera_controls)
+                    .after(systems::ui::drive_screenshots),
+            ),
+        );
     }
 
     // Per-window OS icon via winit (Windows + Linux/X11; a no-op on Wayland and
@@ -706,19 +707,15 @@ pub fn run() {
         Update,
         (
             network::apply_network_snapshot,
-            network::create_egui_texture_handles
-                .after(network::apply_network_snapshot),
-            rendering::spawn_regions
-                .after(network::apply_network_snapshot),
+            network::create_egui_texture_handles.after(network::apply_network_snapshot),
+            rendering::spawn_regions.after(network::apply_network_snapshot),
             // ADR-029: derive geo-anchored prims' GridCell/Transform from the
             // current OSM anchor (and re-project on re-anchor) before meshing.
             systems::prim_geo::place_geo_prims
                 .after(network::apply_network_snapshot)
                 .before(rendering::spawn_prims),
-            rendering::spawn_prims
-                .after(network::apply_network_snapshot),
-            rendering::rebuild_prim_meshes
-                .after(rendering::spawn_prims),
+            rendering::spawn_prims.after(network::apply_network_snapshot),
+            rendering::rebuild_prim_meshes.after(rendering::spawn_prims),
             rendering::refresh_prim_textures
                 .after(rendering::spawn_prims)
                 .after(network::apply_network_snapshot),
@@ -747,8 +744,7 @@ pub fn run() {
                     .after(systems::map_stream::update_map_stream)
                     .after(rendering::spawn_regions),
             ),
-            systems::data_layers::handle_poi_click
-                .after(systems::data_layers::update_data_layers),
+            systems::data_layers::handle_poi_click.after(systems::data_layers::update_data_layers),
             // Transit polling, nested to stay under the per-tuple system limit.
             (
                 systems::transit_live::update_world_clock,
@@ -764,8 +760,7 @@ pub fn run() {
                     .after(systems::transit_live::update_world_clock),
                 // Live weather for the current anchor (met.no); folds onto the
                 // cloud/fog/rain knobs after the anchor is (re)established.
-                systems::weather::poll_weather
-                    .after(systems::map_stream::apply_reanchor),
+                systems::weather::poll_weather.after(systems::map_stream::apply_reanchor),
                 // Live global cloud cover (GFS/TCDC) for the planet layer (ADR-032):
                 // one background fetch → the coarse coverage texture the globe
                 // cloud shader samples. Independent of the anchor (it's global).
@@ -865,8 +860,7 @@ pub fn run() {
                 // Whole-globe quadtree tile streaming (ADR-025).
                 systems::globe::update_globe_tiles.after(systems::globe::setup_globe),
                 // Globe-descent re-anchor → teleport (must precede the teleport).
-                systems::geo_nav::apply_camera_reanchor
-                    .before(systems::geo_nav::apply_teleport),
+                systems::geo_nav::apply_camera_reanchor.before(systems::geo_nav::apply_teleport),
             ),
             attach_avatar_to_bigspace,
         ),
@@ -902,14 +896,11 @@ pub fn run() {
                     Duration::from_millis(50),
                 )),
             systems::free_camera::camera_controls.after(avatar::smooth_online_avatar_display),
-            systems::globe::update_globe_visibility
-                .after(systems::free_camera::camera_controls),
-            systems::globe::update_globe_albedo
-                .after(systems::free_camera::camera_controls),
+            systems::globe::update_globe_visibility.after(systems::free_camera::camera_controls),
+            systems::globe::update_globe_albedo.after(systems::free_camera::camera_controls),
             // Track the atmosphere's planet centre against the floating-origin
             // camera cell (correct sky altitude in every tier — see its doc).
-            systems::globe::update_atmosphere_origin
-                .after(systems::free_camera::camera_controls),
+            systems::globe::update_atmosphere_origin.after(systems::free_camera::camera_controls),
             avatar::respawn_avatar_on_appearance_change.before(avatar::spawn_avatar),
             avatar::spawn_avatar,
             avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
@@ -1010,8 +1001,7 @@ pub fn run() {
                 update_globe_clouds.after(systems::free_camera::camera_controls),
                 update_rain.after(systems::free_camera::camera_controls),
             ),
-            systems::ai_assistant::poll_ai_response
-                .after(systems::ai_assistant::render_ai_panel),
+            systems::ai_assistant::poll_ai_response.after(systems::ai_assistant::render_ai_panel),
         ),
     )
     // Phase 7b: the right-hand panel chain — ONE ordered declaration.
@@ -1052,8 +1042,7 @@ pub fn run() {
             systems::chat::render_chat_panel,
             systems::ui::render_avatar_chooser,
             // Also after the camera has moved, so pins project onto this frame's view.
-            systems::place_pins::render_place_pins
-                .after(systems::free_camera::camera_controls),
+            systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
         )
             .chain(),
     )
@@ -1065,12 +1054,10 @@ pub fn run() {
             // Draws into the same root `Ui` as the other right-hand panels, so its
             // call order fixes its placement — keep it last in that chain.
             systems::navigation::drive_route_geocoding,
-            systems::navigation::drive_route_solver
-                .after(systems::navigation::render_route_panel),
+            systems::navigation::drive_route_solver.after(systems::navigation::render_route_panel),
             // After the camera has moved, so the cursor ray matches the frame the
             // user actually clicked on.
-            systems::navigation::handle_route_map_pick
-                .after(systems::free_camera::camera_controls),
+            systems::navigation::handle_route_map_pick.after(systems::free_camera::camera_controls),
             systems::navigation::update_route_visuals
                 .after(systems::navigation::drive_route_solver),
             // Saved-place pins over the map. Last of the UI systems on purpose:
@@ -1112,8 +1099,7 @@ pub fn run() {
             // What lies ahead on the route (the rail's markers, the speed limit).
             // After the drive tick, which is what turns driver mode on, and before
             // the chrome that reads it.
-            systems::route_ahead::drive_route_ahead
-                .after(systems::driver::drive_driver_mode),
+            systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
             systems::driver::render_driver_hud
                 .after(systems::ui::render_menu_bar)
                 .after(systems::route_ahead::drive_route_ahead),
@@ -1140,8 +1126,7 @@ pub fn run() {
     // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
     .add_systems(
         PostUpdate,
-        systems::ui::suppress_egui_for_screenshot
-            .after(systems::egui_manager::end_egui_frame),
+        systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
     )
     .add_systems(Last, frame_limiter);
 
@@ -1297,7 +1282,8 @@ const SHADOW_CASCADES: usize = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
 
 fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
-    let (sun_color, illuminance) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
+    let (sun_color, illuminance) =
+        sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     commands.spawn((
         DirectionalLight {
             color: sun_color,
@@ -1525,7 +1511,10 @@ fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
     let peak = t.max_element().max(1e-4);
     // Hue in the color (peak-normalized), magnitude in the illuminance. Desaturated
     // toward white so the sun light doesn't compound the atmosphere's own sunset red.
-    let hue = Vec3::ONE.lerp(Vec3::new(t.x / peak, t.y / peak, t.z / peak), SUN_COLOR_SATURATION);
+    let hue = Vec3::ONE.lerp(
+        Vec3::new(t.x / peak, t.y / peak, t.z / peak),
+        SUN_COLOR_SATURATION,
+    );
     let color = Color::linear_rgb(hue.x, hue.y, hue.z);
     // Fog diffuses sunlight: dim the direct sun (softening shadows) as density rises.
     let sun_through_fog = 1.0 - 0.75 * fog_density;
@@ -1685,10 +1674,7 @@ fn setup_moon(
             .map(|&(u, v)| [u * s, v * s, 0.0])
             .collect::<Vec<_>>(),
     );
-    mesh.insert_attribute(
-        Mesh::ATTRIBUTE_NORMAL,
-        vec![[0.0, 0.0, 1.0]; 4],
-    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 4]);
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_UV_0,
         corners.iter().map(|&(u, v)| [u, v]).collect::<Vec<_>>(),
@@ -1759,7 +1745,11 @@ fn update_moon(
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         // Phase-consistent sunlight (not the raw sun direction — see sun.rs).
         let sun_local = rotation.inverse()
-            * utils::sun::moon_sunlight_direction(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad);
+            * utils::sun::moon_sunlight_direction(
+                dev.time_of_day,
+                dev.moon_age_days,
+                dev.sun_declination_rad,
+            );
         mat.sun_local = sun_local.extend(brightness);
     }
 }
@@ -1880,8 +1870,7 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
     dev.time_of_day = (dev.time_of_day + dh).rem_euclid(24.0);
     // The moon ages with the cycling days, so moonrise drifts ~50 min later per
     // day and the phase creeps through the month, just like the real moon.
-    dev.moon_age_days =
-        (dev.moon_age_days + dh / 24.0).rem_euclid(utils::sun::LUNAR_CYCLE_DAYS);
+    dev.moon_age_days = (dev.moon_age_days + dh / 24.0).rem_euclid(utils::sun::LUNAR_CYCLE_DAYS);
 }
 
 /// Drives the sun direction, sun light intensity, and ambient brightness from the dev
@@ -1907,7 +1896,10 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 ///
 /// Sleeping — not spinning: the point is to leave the GPU idle, so burning a core
 /// for sub-millisecond deadline precision would defeat it.
-fn frame_limiter(mut deadline: Local<Option<std::time::Instant>>, mut period: Local<Option<Duration>>) {
+fn frame_limiter(
+    mut deadline: Local<Option<std::time::Instant>>,
+    mut period: Local<Option<Duration>>,
+) {
     // Native only: a `thread::sleep`-based FPS cap. The browser paces frames itself
     // (requestAnimationFrame), and `Instant::now()`/`thread::sleep` would panic on
     // wasm, so this is a no-op there.
@@ -2174,10 +2166,8 @@ fn apply_day_night_cycle(
         // the limb is a few pixels of arc, and glare is most of what makes it
         // read as an atmosphere rather than a drawn outline. Near the ground
         // that much bloom just smears the map.
-        bloom.intensity = systems::free_camera::GROUND_BLOOM_INTENSITY.lerp(
-            systems::free_camera::SPACE_BLOOM_INTENSITY,
-            space,
-        );
+        bloom.intensity = systems::free_camera::GROUND_BLOOM_INTENSITY
+            .lerp(systems::free_camera::SPACE_BLOOM_INTENSITY, space);
     }
 
     // Above the atmosphere the sun is unfiltered: no air mass to redden or dim
@@ -2186,9 +2176,12 @@ fn apply_day_night_cycle(
     // at 18:00 and unlit at all at night, when what the view should show is a
     // fully sunlit day side and a dark night side, terminator between. Crossfaded
     // rather than switched, or climbing out at dusk changed the light in a step.
-    let (ground_color, ground_lux) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
+    let (ground_color, ground_lux) =
+        sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
     let mut sun_color = Color::from(LinearRgba::from_vec4(
-        LinearRgba::from(ground_color).to_vec4().lerp(LinearRgba::WHITE.to_vec4(), space),
+        LinearRgba::from(ground_color)
+            .to_vec4()
+            .lerp(LinearRgba::WHITE.to_vec4(), space),
     ));
     let mut illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
     if overcast > 0.0 {
@@ -2297,7 +2290,8 @@ fn update_window_glow(
     // Begin glowing as the sun lowers in the evening (elevation ~0.18), reaching
     // full a little after dusk — a gentle ramp, not an on/off at full dark.
     let glow = ((0.18 - elevation) / 0.33).clamp(0.0, 1.0);
-    let mut apply = |bucket: &systems::osm_buildings::WindowGlow, mat: &MeshMaterial3d<StandardMaterial>| {
+    let mut apply = |bucket: &systems::osm_buildings::WindowGlow,
+                     mat: &MeshMaterial3d<StandardMaterial>| {
         if let Some(mut m) = materials.get_mut(&mat.0) {
             let e = 1.2 * glow * bucket.0; // subtle, warm; per-bucket brightness
             m.emissive = LinearRgba::rgb(e, 0.72 * e, 0.34 * e);
@@ -2463,7 +2457,11 @@ fn update_horizon_haze(
         (With<Camera3d>, Without<HorizonHaze>),
     >,
     mut haze: Query<
-        (&mut Transform, &mut Visibility, &MeshMaterial3d<HorizonHazeMaterial>),
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<HorizonHazeMaterial>,
+        ),
         With<HorizonHaze>,
     >,
     mut materials: ResMut<Assets<HorizonHazeMaterial>>,
@@ -2502,13 +2500,17 @@ fn update_horizon_haze(
     // band that no amount of fog colour behind it can cover — see
     // `fog_saturation_distance`. Capped at the ground disc so a thin, high-altitude
     // haze never pulls the shell in over map the fog has genuinely left visible.
-    let radius = systems::free_camera::fog_saturation_distance(&fog.falloff)
-        .clamp(1_000.0, 150_000.0);
+    let radius =
+        systems::free_camera::fog_saturation_distance(&fog.falloff).clamp(1_000.0, 150_000.0);
     tf.scale = Vec3::splat(radius);
 
     // Once it carries no haze at all, drop the shell out of the frame rather than
     // drawing a fully transparent shell over the whole view every frame.
-    let want = if peak <= 0.0 { Visibility::Hidden } else { Visibility::Inherited };
+    let want = if peak <= 0.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
     if *vis != want {
         *vis = want;
     }
@@ -2520,12 +2522,7 @@ fn update_horizon_haze(
         // a base veil just tinted the (already correct) sky with the warm fog colour.
         // The zenith floor (w) grows quadratically so light haze leaves the sky
         // blue while dense fog closes over the whole dome.
-        mat.params = Vec4::new(
-            0.25 * d,
-            peak,
-            fog.directional_light_exponent,
-            d * d,
-        );
+        mat.params = Vec4::new(0.25 * d, peak, fog.directional_light_exponent, d * d);
         mat.dir_light_color = fog.directional_light_color.to_linear();
         // Where the shell's rim meets the ground, in view-direction `y`: the ray
         // that grazes the sphere at `radius` is the same one that hits the ground
@@ -2551,10 +2548,7 @@ fn update_star_sky(
     camera: Query<&GlobalTransform, With<Camera3d>>,
     free_camera: Query<
         (&GridCell, &Transform),
-        (
-            With<crate::components::FreeCamera>,
-            Without<StarSky>,
-        ),
+        (With<crate::components::FreeCamera>, Without<StarSky>),
     >,
     mut star: Query<(&mut Transform, &MeshMaterial3d<StarFieldMaterial>), With<StarSky>>,
     mut materials: ResMut<Assets<StarFieldMaterial>>,
@@ -2717,12 +2711,13 @@ fn update_clouds(
     dev: Res<DevPanelState>,
     time: Res<Time>,
     globe: Res<systems::globe::GlobeState>,
-    camera: Query<
-        (&GridCell, &GlobalTransform, &Transform),
-        (With<Camera3d>, Without<Clouds>),
-    >,
+    camera: Query<(&GridCell, &GlobalTransform, &Transform), (With<Camera3d>, Without<Clouds>)>,
     mut clouds: Query<
-        (&mut Transform, &mut Visibility, &MeshMaterial3d<CloudMaterial>),
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<CloudMaterial>,
+        ),
         With<Clouds>,
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
@@ -2736,9 +2731,8 @@ fn update_clouds(
     tf.translation = cam.translation();
 
     let altitude = globe.altitude_m(cell, cam_local) as f32;
-    let alt_fade = (1.0
-        - ((altitude - CLOUD_FADE_LOW) / (CLOUD_FADE_HIGH - CLOUD_FADE_LOW)))
-        .clamp(0.0, 1.0);
+    let alt_fade =
+        (1.0 - ((altitude - CLOUD_FADE_LOW) / (CLOUD_FADE_HIGH - CLOUD_FADE_LOW))).clamp(0.0, 1.0);
     let space = globe.space_factor(cell, cam_local);
 
     // Drop the shell out of the frame entirely once it carries no cloud, rather
@@ -2869,10 +2863,7 @@ fn update_rain(
     dev: Res<DevPanelState>,
     time: Res<Time>,
     globe: Res<systems::globe::GlobeState>,
-    camera: Query<
-        (&GridCell, &GlobalTransform, &Transform),
-        (With<Camera3d>, Without<Rain>),
-    >,
+    camera: Query<(&GridCell, &GlobalTransform, &Transform), (With<Camera3d>, Without<Rain>)>,
     mut rain: Query<(&mut Transform, &MeshMaterial3d<RainMaterial>), With<Rain>>,
     mut materials: ResMut<Assets<RainMaterial>>,
 ) {
@@ -2884,9 +2875,8 @@ fn update_rain(
     };
 
     let altitude = globe.altitude_m(cell, cam_local) as f32;
-    let alt_fade = (1.0
-        - ((altitude - RAIN_FADE_LOW) / (RAIN_FADE_HIGH - RAIN_FADE_LOW)))
-        .clamp(0.0, 1.0);
+    let alt_fade =
+        (1.0 - ((altitude - RAIN_FADE_LOW) / (RAIN_FADE_HIGH - RAIN_FADE_LOW))).clamp(0.0, 1.0);
     let intensity = dev.precipitation * alt_fade;
 
     tf.translation = cam.translation();
@@ -3031,7 +3021,11 @@ fn update_globe_clouds(
         (With<crate::components::FreeCamera>, Without<GlobeClouds>),
     >,
     mut clouds: Query<
-        (&mut Transform, &mut Visibility, &MeshMaterial3d<GlobeCloudMaterial>),
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<GlobeCloudMaterial>,
+        ),
         With<GlobeClouds>,
     >,
     mut materials: ResMut<Assets<GlobeCloudMaterial>>,

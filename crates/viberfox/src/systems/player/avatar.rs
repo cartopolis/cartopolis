@@ -1,13 +1,13 @@
 use crate::components::AvatarModelLoaded;
+use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
+use crate::resources::AvatarState;
+use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
 use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::ecs::query::Or;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
-use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
-use crate::resources::AvatarState;
-use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
 use viberfox_core::wrap_angle_pi;
 
 /// One glTF scene to spawn for an avatar, showing only the meshes for the slots in
@@ -47,7 +47,13 @@ pub(crate) struct SlotMask {
 }
 
 impl SlotMask {
-    const ALL: Self = Self { head: true, top: true, legs: true, feet: true, accessory: true };
+    const ALL: Self = Self {
+        head: true,
+        top: true,
+        legs: true,
+        feet: true,
+        accessory: true,
+    };
     fn shows(&self, slot: Slot) -> bool {
         match slot {
             Slot::Head => self.head,
@@ -91,8 +97,8 @@ fn classify_slot(name: &str) -> Option<Slot> {
 // all embed the same 24-clip set — see `jq '.animations'`).
 const CHAR_IDLE: usize = 4; // Idle
 const CHAR_RUN: usize = 16; // Run
-// The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
-// it read as flight is the forward lean in `update_avatar_flight_pose`.
+                            // The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
+                            // it read as flight is the forward lean in `update_avatar_flight_pose`.
 
 /// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
 /// showing the slots in `mask`.
@@ -119,12 +125,20 @@ pub(crate) struct CharacterStyle {
 
 macro_rules! man {
     ($label:literal, $file:literal) => {
-        CharacterStyle { sex: AvatarSex::Man, label: $label, file: concat!("models/avatar/characters/", $file) }
+        CharacterStyle {
+            sex: AvatarSex::Man,
+            label: $label,
+            file: concat!("models/avatar/characters/", $file),
+        }
     };
 }
 macro_rules! woman {
     ($label:literal, $file:literal) => {
-        CharacterStyle { sex: AvatarSex::Woman, label: $label, file: concat!("models/avatar/characters/", $file) }
+        CharacterStyle {
+            sex: AvatarSex::Woman,
+            label: $label,
+            file: concat!("models/avatar/characters/", $file),
+        }
     };
 }
 
@@ -337,7 +351,6 @@ const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent 
 /// building footprints are 2D, so they only apply to something standing on them.
 pub(crate) const AIRBORNE_EPS: f32 = 0.2;
 
-
 /// Animation data attached to an avatar (and each of its model "holder" children),
 /// read once a scene is ready. `Clone` so the body and outfit holders can share it.
 #[derive(Component, Clone)]
@@ -357,7 +370,10 @@ pub fn spawn_avatar(
     store: Res<UserStore>,
     mut avatar_query: Query<
         (Entity, Has<Avatar>, &mut Transform),
-        (Without<AvatarModelLoaded>, Or<(With<Avatar>, With<RemoteAvatar>)>),
+        (
+            Without<AvatarModelLoaded>,
+            Or<(With<Avatar>, With<RemoteAvatar>)>,
+        ),
     >,
 ) {
     for (entity, is_local, mut transform) in avatar_query.iter_mut() {
@@ -537,7 +553,14 @@ pub fn play_avatar_animation_when_ready(
         return;
     };
     let mut path: Vec<Name> = Vec::new();
-    bind_external_animations(&mut commands, armature, armature, &mut path, &children, &names);
+    bind_external_animations(
+        &mut commands,
+        armature,
+        armature,
+        &mut path,
+        &children,
+        &names,
+    );
 
     let mut player = AnimationPlayer::default();
     player.play(anim.idle_index).repeat().set_speed(anim.speed);
@@ -563,9 +586,10 @@ fn bind_external_animations(
         return;
     };
     path.push(name.clone());
-    commands
-        .entity(entity)
-        .insert((AnimationTargetId::from_names(path.iter()), AnimatedBy(player)));
+    commands.entity(entity).insert((
+        AnimationTargetId::from_names(path.iter()),
+        AnimatedBy(player),
+    ));
     if let Ok(kids) = children.get(entity) {
         for child in kids.iter() {
             bind_external_animations(commands, child, player, path, children, names);
@@ -828,8 +852,7 @@ pub fn smooth_online_avatar_display(
         // `display_position`) in the whole view. Extrapolating the target by
         // `snapshot_age` compares like with like: the error signal is smooth, so
         // reconciliation only corrects genuine divergence.
-        avatar_state.snapshot_age =
-            (avatar_state.snapshot_age + dt).min(ONLINE_MAX_EXTRAPOLATION);
+        avatar_state.snapshot_age = (avatar_state.snapshot_age + dt).min(ONLINE_MAX_EXTRAPOLATION);
         let mut target =
             avatar_state.position + avatar_state.predicted_velocity * avatar_state.snapshot_age;
         let mut display = avatar_state.display_position + avatar_state.predicted_velocity * dt;
@@ -925,9 +948,7 @@ pub fn handle_avatar_movement(
     // thumb key is bad at and a tap is exactly right for. F stays as an alias.
     // Landing needs no descent code: `SimWorld::step` (and the offline path below)
     // falls an avatar that isn't flying.
-    if keyboard_input.just_pressed(KeyCode::Space)
-        || keyboard_input.just_pressed(KeyCode::KeyF)
-    {
+    if keyboard_input.just_pressed(KeyCode::Space) || keyboard_input.just_pressed(KeyCode::KeyF) {
         avatar_state.is_flying = !avatar_state.is_flying;
     }
 
@@ -959,7 +980,11 @@ pub fn handle_avatar_movement(
     avatar_state.display_position = transform.translation;
 
     if avatar_state.is_walking {
-        let speed = if avatar_state.is_flying { FLY_SPEED } else { WALK_SPEED };
+        let speed = if avatar_state.is_flying {
+            FLY_SPEED
+        } else {
+            WALK_SPEED
+        };
         let delta = wish * speed * delta_time;
         // Collide against buildings while walking (anything off the ground passes
         // over roofs — the footprints are 2D, so they'd otherwise divert a flight
@@ -1039,11 +1064,20 @@ mod tests {
     /// rests on.
     #[test]
     fn yaw_faces_the_direction_it_came_from() {
-        for dir in [Vec3::Z, Vec3::X, -Vec3::Z, -Vec3::X, Vec3::new(1.0, 0.0, 1.0).normalize()] {
+        for dir in [
+            Vec3::Z,
+            Vec3::X,
+            -Vec3::Z,
+            -Vec3::X,
+            Vec3::new(1.0, 0.0, 1.0).normalize(),
+        ] {
             let yaw = yaw_from_dir(dir).expect("non-zero direction");
             assert_dir(facing(yaw), dir);
         }
-        assert!(yaw_from_dir(Vec3::ZERO).is_none(), "no input must not steer");
+        assert!(
+            yaw_from_dir(Vec3::ZERO).is_none(),
+            "no input must not steer"
+        );
     }
 
     /// Every WASD combination turns the avatar onto the direction it travels:
@@ -1079,7 +1113,10 @@ mod tests {
         let target = std::f32::consts::PI; // the worst case: an about-face
         let mut yaw = 0.0_f32;
         let first = advance_facing(yaw, target, dt);
-        assert!(first > 0.0 && first < target, "turn is eased, not a snap: {first}");
+        assert!(
+            first > 0.0 && first < target,
+            "turn is eased, not a snap: {first}"
+        );
         assert!(
             first <= MAX_TURN_RATE * dt + 1e-6,
             "first frame respects the rate cap: {first}"
@@ -1089,7 +1126,10 @@ mod tests {
             yaw = advance_facing(yaw, target, dt);
             frames += 1;
         }
-        assert!(frames < 60, "an about-face lands within a second: {frames} frames");
+        assert!(
+            frames < 60,
+            "an about-face lands within a second: {frames} frames"
+        );
         assert_eq!(
             advance_facing(yaw, target, dt),
             wrap_angle_pi(target),
@@ -1116,7 +1156,10 @@ mod tests {
         let head = Vec3::new(0.0, 1.7, 0.0);
         let leant = pose.transform_point(head);
         assert!(leant.z > 0.5, "head leads, toward model-forward: {leant:?}");
-        assert!(leant.y < head.y, "and drops below standing height: {leant:?}");
+        assert!(
+            leant.y < head.y,
+            "and drops below standing height: {leant:?}"
+        );
         let feet = pose.transform_point(Vec3::ZERO);
         assert!(feet.z < 0.0, "feet trail behind: {feet:?}");
     }

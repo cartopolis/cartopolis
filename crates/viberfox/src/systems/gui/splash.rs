@@ -25,7 +25,10 @@ use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
 
 /// Baked in at compile time; see the module note on why this is not an asset.
-const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/icon/viberfox.png"));
+const LOGO_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/icon/viberfox.png"
+));
 
 /// Shortest time the splash stays up. Long enough to be read rather than
 /// glimpsed: a warm cache otherwise dismisses it within a frame or two, which
@@ -88,7 +91,8 @@ pub fn boot_splash(
             let img = img.to_rgba8();
             let size = [img.width() as usize, img.height() as usize];
             let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-            splash.texture = Some(ctx.load_texture("boot_logo", color, egui::TextureOptions::LINEAR));
+            splash.texture =
+                Some(ctx.load_texture("boot_logo", color, egui::TextureOptions::LINEAR));
         }
     }
 
@@ -102,16 +106,13 @@ pub fn boot_splash(
     // `RawInput` — so take the size from the window itself, in the same logical
     // points egui works in.
     let Ok(win) = window.single() else { return };
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(0.0, 0.0),
-        egui::vec2(win.width(), win.height()),
-    );
+    let rect =
+        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(win.width(), win.height()));
     let a = |v: f32| (v * alpha * 255.0) as u8;
     // Every colour here is a brand constant faded by the dismissal alpha, so the
     // splash and the UI it uncovers are painted from the same palette.
-    let fade = |c: egui::Color32, v: f32| {
-        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a(v))
-    };
+    let fade =
+        |c: egui::Color32, v: f32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a(v));
 
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
@@ -120,10 +121,7 @@ pub fn boot_splash(
     let c = rect.center();
     if let Some(tex) = &splash.texture {
         let s = 168.0;
-        let logo = egui::Rect::from_center_size(
-            egui::pos2(c.x, c.y - 104.0),
-            egui::vec2(s, s),
-        );
+        let logo = egui::Rect::from_center_size(egui::pos2(c.x, c.y - 104.0), egui::vec2(s, s));
         painter.image(
             tex.id(),
             logo,

@@ -494,12 +494,7 @@ fn remark_of(text: &str) -> Option<String> {
 }
 
 /// Turn one corridor response into rail markers and a speed-limit sample array.
-fn parse_corridor(
-    text: &str,
-    points: &[[f64; 2]],
-    cum: &[f64],
-    total_m: f64,
-) -> CorridorResult {
+fn parse_corridor(text: &str, points: &[[f64; 2]], cum: &[f64], total_m: f64) -> CorridorResult {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if let Some(remark) = json.get("remark").and_then(|r| r.as_str()) {
         return Err(format!("Overpass remark: {}", remark.trim()));
@@ -667,7 +662,10 @@ fn parse_maxspeed(raw: &str) -> Option<u16> {
     let raw = raw.trim().to_ascii_lowercase();
     let (number, factor) = match raw.strip_suffix("mph") {
         Some(n) => (n.trim(), 1.609_344),
-        None => (raw.trim_end_matches("km/h").trim_end_matches("kph").trim(), 1.0),
+        None => (
+            raw.trim_end_matches("km/h").trim_end_matches("kph").trim(),
+            1.0,
+        ),
     };
     let value: f64 = number.parse().ok()?;
     if !(1.0..=200.0).contains(&value) {
@@ -683,7 +681,9 @@ mod tests {
     /// A straight 1 km route due north, in latitude steps (a degree of latitude is
     /// a constant 110.54 km, so the metres are exact).
     fn geom() -> (Vec<[f64; 2]>, Vec<f64>, f64) {
-        let points: Vec<[f64; 2]> = (0..=10).map(|i| [53.0 + f64::from(i) * 0.001, 6.0]).collect();
+        let points: Vec<[f64; 2]> = (0..=10)
+            .map(|i| [53.0 + f64::from(i) * 0.001, 6.0])
+            .collect();
         let mut cum = vec![0.0];
         let mut total = 0.0;
         for w in points.windows(2) {
@@ -773,9 +773,17 @@ mod tests {
     #[test]
     fn corridor_thins_the_polyline_but_keeps_the_end() {
         let (points, cum, total) = geom();
-        let g = RouteGeom { points: points.clone(), cum, total_m: total, step_along: vec![] };
+        let g = RouteGeom {
+            points: points.clone(),
+            cum,
+            total_m: total,
+            step_along: vec![],
+        };
         let c = corridor_points(&g);
-        assert!(c.len() < points.len(), "a 1 km route should thin below 11 points");
+        assert!(
+            c.len() < points.len(),
+            "a 1 km route should thin below 11 points"
+        );
         assert_eq!(c.first(), points.first());
         assert_eq!(c.last(), points.last(), "the destination end must survive");
     }
@@ -818,7 +826,10 @@ mod tests {
 
         let (items, _) = parse_corridor(&text, &points, &cum, total).expect("parses");
         assert_eq!(
-            items.iter().filter(|i| i.kind == AheadKind::Parking).count(),
+            items
+                .iter()
+                .filter(|i| i.kind == AheadKind::Parking)
+                .count(),
             MAX_PARKING
         );
         assert!(
@@ -847,11 +858,18 @@ mod tests {
         .to_string();
 
         let (items, limits) = parse_corridor(&text, &points, &cum, total).expect("parses");
-        assert_eq!(items.len(), 2, "the far fuel station is out of the corridor");
+        assert_eq!(
+            items.len(),
+            2,
+            "the far fuel station is out of the corridor"
+        );
         assert_eq!(items[0].kind, AheadKind::Fuel);
         assert_eq!(items[0].name.as_deref(), Some("Tank"));
         assert_eq!(items[1].kind, AheadKind::Parking);
-        assert!(items[0].along_m < items[1].along_m, "sorted along the route");
+        assert!(
+            items[0].along_m < items[1].along_m,
+            "sorted along the route"
+        );
         assert_eq!(limits[0], Some(30));
         assert_eq!(limits[20], None, "beyond the tagged way");
     }
@@ -866,7 +884,12 @@ mod tests {
     #[test]
     fn the_destination_sorts_last_and_saved_places_project() {
         let (points, cum, total) = geom();
-        let g = RouteGeom { points, cum, total_m: total, step_along: vec![] };
+        let g = RouteGeom {
+            points,
+            cum,
+            total_m: total,
+            step_along: vec![],
+        };
         let mut store = UserStore::load();
         store.data.bookmarks = vec![
             crate::systems::user_store::Bookmark {
@@ -901,13 +924,26 @@ mod tests {
     fn ahead_of_a_position_drops_what_is_behind() {
         let ahead = RouteAhead {
             items: vec![
-                AheadItem { along_m: 100.0, off_m: 0.0, kind: AheadKind::Fuel, name: None },
-                AheadItem { along_m: 900.0, off_m: 0.0, kind: AheadKind::Parking, name: None },
+                AheadItem {
+                    along_m: 100.0,
+                    off_m: 0.0,
+                    kind: AheadKind::Fuel,
+                    name: None,
+                },
+                AheadItem {
+                    along_m: 900.0,
+                    off_m: 0.0,
+                    kind: AheadKind::Parking,
+                    name: None,
+                },
             ],
             ..default()
         };
         assert_eq!(ahead.ahead_of(0.0).count(), 2);
-        assert_eq!(ahead.next_ahead(500.0).map(|i| i.kind), Some(AheadKind::Parking));
+        assert_eq!(
+            ahead.next_ahead(500.0).map(|i| i.kind),
+            Some(AheadKind::Parking)
+        );
         assert!(ahead.next_ahead(1000.0).is_none());
     }
 }

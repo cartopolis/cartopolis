@@ -31,7 +31,10 @@ pub struct VegetationLod {
 
 impl Default for VegetationLod {
     fn default() -> Self {
-        Self { factor: 0.0, enabled: true }
+        Self {
+            factor: 0.0,
+            enabled: true,
+        }
     }
 }
 
@@ -47,7 +50,6 @@ impl VegetationLod {
         }
     }
 }
-
 
 /// Ramp the trees into the fill with altitude.
 ///
@@ -142,4 +144,3 @@ fn set_base_color(
     };
     mat.base_color = Color::linear_rgb(linear[0], linear[1], linear[2]);
 }
-

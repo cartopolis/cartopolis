@@ -24,7 +24,10 @@ pub fn list_textures(dir: &str) -> Vec<TextureEntry> {
                 if !seen_stems.insert(stem.to_string()) {
                     continue; // prefer first file when stem collides across extensions
                 }
-                let name = manifest.get(stem).cloned().unwrap_or_else(|| title_case(stem));
+                let name = manifest
+                    .get(stem)
+                    .cloned()
+                    .unwrap_or_else(|| title_case(stem));
                 entries.push(TextureEntry {
                     id: stem.to_string(),
                     name,

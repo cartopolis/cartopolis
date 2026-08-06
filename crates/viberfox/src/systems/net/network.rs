@@ -1,6 +1,9 @@
 //! TCP client for `--connect` (ADR-008, ADR-009).
 
-use crate::components::{Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar, RemoteAvatarMotionHint};
+use crate::components::{
+    Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar,
+    RemoteAvatarMotionHint,
+};
 use crate::resources::{
     AuthIdentity, AvatarState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
     NetworkMailbox, NetworkSyncState, OnlineSession, OsmTileUrlTemplate, PrimTextureCache,
@@ -21,16 +24,16 @@ pub struct AuthWriteback<'w> {
     chat: ResMut<'w, crate::systems::chat::ChatState>,
 }
 use crate::systems::avatar::{wish_dir_camera_relative, AIRBORNE_EPS};
-use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
+use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 #[cfg(not(target_arch = "wasm32"))]
 use bytes::Bytes;
+use futures_channel::mpsc::UnboundedReceiver;
 #[cfg(not(target_arch = "wasm32"))]
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::sync::{mpsc, Arc, Mutex};
-use futures_channel::mpsc::UnboundedReceiver;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]
@@ -107,7 +110,14 @@ pub fn spawn_network_thread(
         }
     });
     #[cfg(target_arch = "wasm32")]
-    let _ = (connect_to, primary, fallback, out_tx, intent_rx, tile_for_thread);
+    let _ = (
+        connect_to,
+        primary,
+        fallback,
+        out_tx,
+        intent_rx,
+        tile_for_thread,
+    );
 
     commands.insert_resource(NetworkMailbox {
         rx: Mutex::new(out_rx),
@@ -174,8 +184,7 @@ async fn client_loop(
             other => anyhow::bail!("unexpected first server message: {other:?}"),
         }
     }
-    let (mut framed, ack_msg) =
-        authed.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
+    let (mut framed, ack_msg) = authed.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
     if out_tx.send(ack_msg).is_err() {
         return Ok(());
     }
@@ -267,9 +276,7 @@ pub fn apply_network_snapshot(
                 tick,
             } => {
                 tracing::debug!(tick, "world snapshot");
-                let repeat_tick = sync
-                    .as_ref()
-                    .is_some_and(|s| s.received_initial_world);
+                let repeat_tick = sync.as_ref().is_some_and(|s| s.received_initial_world);
 
                 if repeat_tick {
                     apply_local_avatar_pose(&avatars, local_sim_id.0, &mut avatar_state);
@@ -381,7 +388,11 @@ pub fn apply_network_snapshot(
                 }
                 tracing::info!(count = textures.len(), "texture catalog received");
             }
-            NetMessage::TextureData { texture_id, png_bytes, .. } => {
+            NetMessage::TextureData {
+                texture_id,
+                png_bytes,
+                ..
+            } => {
                 texture_cache.pending.remove(&texture_id);
                 match decode_png_to_image(&png_bytes) {
                     Some(img) => {
@@ -452,7 +463,10 @@ fn apply_local_avatar_pose_full(
     }
 }
 
-fn local_avatar_dto<'a>(avatars: &'a [AvatarStateDto], local_id: Option<u64>) -> Option<&'a AvatarStateDto> {
+fn local_avatar_dto<'a>(
+    avatars: &'a [AvatarStateDto],
+    local_id: Option<u64>,
+) -> Option<&'a AvatarStateDto> {
     if let Some(id) = local_id {
         avatars.iter().find(|a| a.id == id)
     } else {
@@ -623,7 +637,9 @@ pub fn create_egui_texture_handles(
             .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
             .collect();
         let color_image = egui::ColorImage::new([w as usize, h as usize], pixels);
-        let handle = egui_manager.ctx.load_texture(&id, color_image, egui::TextureOptions::LINEAR);
+        let handle = egui_manager
+            .ctx
+            .load_texture(&id, color_image, egui::TextureOptions::LINEAR);
         texture_lib.egui_handles.insert(id, handle);
     }
 }
@@ -713,11 +729,7 @@ pub fn send_network_intent(
     // ground is exempt: the footprints are 2D, so a fall past a facade would be
     // steered around a building the avatar is nowhere near the height of.
     let airborne = avatar_state.display_position.y > AIRBORNE_EPS;
-    if !avatar_state.is_flying
-        && !airborne
-        && layers.buildings_enabled
-        && !colliders.is_empty()
-    {
+    if !avatar_state.is_flying && !airborne && layers.buildings_enabled && !colliders.is_empty() {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
         let steered = colliders.steer_velocity(pos, Vec2::new(v.x, v.z));
         v.x = steered.x;

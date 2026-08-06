@@ -6,12 +6,10 @@ use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
-use crate::systems::furniture::{
-    paving_base, FURNITURE_FADE_END, FURNITURE_FADE_START,
-};
-use crate::systems::vector_tiles::SurfaceGroup;
+use crate::systems::furniture::{paving_base, FURNITURE_FADE_END, FURNITURE_FADE_START};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
+use crate::systems::vector_tiles::SurfaceGroup;
 
 #[derive(Resource)]
 pub struct FurnitureLod {
@@ -41,7 +39,6 @@ impl FurnitureLod {
         }
     }
 }
-
 
 /// Ramp the furniture into the ground with altitude.
 ///
@@ -110,5 +107,3 @@ pub fn update_furniture_lod(
         }
     }
 }
-
-

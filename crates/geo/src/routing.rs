@@ -46,8 +46,8 @@ use mvt_reader::feature::{Feature, Value};
 
 use viberfox_core::world::tile_to_meters;
 
-use viberfox_core::lat_lng_to_tile_frac;
 use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
+use viberfox_core::lat_lng_to_tile_frac;
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at
 /// its top zoom and nothing finer exists, so this is both the best and the only
@@ -433,8 +433,9 @@ impl RoadGraph {
             let scale = EXTENT / extent;
             let ox = tile.0 as f64 * EXTENT;
             let oy = tile.1 as f64 * EXTENT;
-            let to_global =
-                |c: &geo_types::Coord<f32>| (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale);
+            let to_global = |c: &geo_types::Coord<f32>| {
+                (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale)
+            };
 
             for feature in features {
                 if routable {
@@ -552,7 +553,16 @@ impl RoadGraph {
         let bike_denied = matches!(str_prop(props, "bicycle"), Some("no"));
         let unpaved = matches!(
             str_prop(props, "surface"),
-            Some("unpaved" | "gravel" | "ground" | "dirt" | "sand" | "grass" | "compacted" | "cobblestone")
+            Some(
+                "unpaved"
+                    | "gravel"
+                    | "ground"
+                    | "dirt"
+                    | "sand"
+                    | "grass"
+                    | "compacted"
+                    | "cobblestone"
+            )
         );
 
         // `oneway_reverse` says the legal direction runs *against* the digitised
@@ -733,7 +743,8 @@ impl RoadGraph {
                 }
             }
         }
-        best.filter(|(d2, _)| d2.sqrt() <= max_units).map(|(_, id)| id)
+        best.filter(|(d2, _)| d2.sqrt() <= max_units)
+            .map(|(_, id)| id)
     }
 
     /// Membership mask of the graph's **routable core** for a mode: the largest
@@ -900,7 +911,11 @@ impl RoadGraph {
     #[cfg(test)]
     fn largest_component(&self, mode: TravelMode) -> (usize, usize) {
         let usable: Vec<bool> = (0..self.coords.len())
-            .map(|i| self.edges[i].iter().any(|e| self.edge_cost(e, mode).is_some()))
+            .map(|i| {
+                self.edges[i]
+                    .iter()
+                    .any(|e| self.edge_cost(e, mode).is_some())
+            })
             .collect();
         let mut seen = vec![false; self.coords.len()];
         let mut best = 0;
@@ -1402,8 +1417,7 @@ pub fn corridor_tiles(
     let a = lat_lng_to_tile_frac(from.0, from.1, ROUTING_ZOOM);
     let b = lat_lng_to_tile_frac(to.0, to.1, ROUTING_ZOOM);
     let direct = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-    let half_width =
-        (CORRIDOR_BASE + CORRIDOR_SPREAD * direct.sqrt()).min(CORRIDOR_MAX_HALF_WIDTH);
+    let half_width = (CORRIDOR_BASE + CORRIDOR_SPREAD * direct.sqrt()).min(CORRIDOR_MAX_HALF_WIDTH);
 
     let (x0, x1) = minmax(a.0, b.0);
     let (y0, y1) = minmax(a.1, b.1);
@@ -1559,7 +1573,10 @@ mod tests {
     use super::*;
 
     /// The same real z14 Groningen tile the renderer tests use.
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/groningen_z14.mvt"
+    ));
     /// Its tile coordinates (see `vector_tiles::tests`).
     const TILE: (i64, i64) = (8490, 5319);
 
@@ -1642,7 +1659,9 @@ mod tests {
         let b = tile_point(0.6, 0.55);
         let mut seen = Vec::new();
         for mode in TravelMode::ALL {
-            let r = g.route(a, b, mode).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            let r = g
+                .route(a, b, mode)
+                .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             seen.push((mode, r.distance_m, r.duration_s));
         }
         let car = seen.iter().find(|(m, ..)| *m == TravelMode::Car).unwrap();
@@ -1661,12 +1680,26 @@ mod tests {
     /// table rather than through a route that might happen to avoid them anyway.
     #[test]
     fn access_filter_matches_the_mode() {
-        for kind in [RoadKind::Footway, RoadKind::Cycleway, RoadKind::Steps, RoadKind::Pedestrian] {
-            assert!(kind.speed_kmh(TravelMode::Car).is_none(), "{kind:?} open to cars");
+        for kind in [
+            RoadKind::Footway,
+            RoadKind::Cycleway,
+            RoadKind::Steps,
+            RoadKind::Pedestrian,
+        ] {
+            assert!(
+                kind.speed_kmh(TravelMode::Car).is_none(),
+                "{kind:?} open to cars"
+            );
         }
         for kind in [RoadKind::Motorway, RoadKind::Trunk] {
-            assert!(kind.speed_kmh(TravelMode::Bike).is_none(), "{kind:?} open to bikes");
-            assert!(kind.speed_kmh(TravelMode::Foot).is_none(), "{kind:?} open to walkers");
+            assert!(
+                kind.speed_kmh(TravelMode::Bike).is_none(),
+                "{kind:?} open to bikes"
+            );
+            assert!(
+                kind.speed_kmh(TravelMode::Foot).is_none(),
+                "{kind:?} open to walkers"
+            );
         }
         assert!(RoadKind::Rail.speed_kmh(TravelMode::Foot).is_none());
         // …and a motorway is the fastest thing a car has.
@@ -1706,7 +1739,11 @@ mod tests {
     fn steps_carry_street_names_from_the_label_layer() {
         let g = graph();
         let route = g
-            .route(tile_point(0.3, 0.35), tile_point(0.7, 0.65), TravelMode::Car)
+            .route(
+                tile_point(0.3, 0.35),
+                tile_point(0.7, 0.65),
+                TravelMode::Car,
+            )
             .expect("route");
         let named = route
             .steps
@@ -1735,20 +1772,33 @@ mod tests {
         let g = graph();
         for mode in TravelMode::ALL {
             let core = g.routable_core(mode);
-            let members: Vec<u32> = (0..core.len() as u32).filter(|&i| core[i as usize]).collect();
-            assert!(members.len() > 100, "{mode:?}: core is only {} nodes", members.len());
+            let members: Vec<u32> = (0..core.len() as u32)
+                .filter(|&i| core[i as usize])
+                .collect();
+            assert!(
+                members.len() > 100,
+                "{mode:?}: core is only {} nodes",
+                members.len()
+            );
 
             // From an arbitrary core node, the forward-reachable set covers the core.
             let reach: std::collections::HashSet<u32> =
                 g.reachable(members[0], mode).into_iter().collect();
             for &m in &members {
-                assert!(reach.contains(&m), "{mode:?}: core node {m} not reachable from the core");
+                assert!(
+                    reach.contains(&m),
+                    "{mode:?}: core node {m} not reachable from the core"
+                );
             }
 
             // The car network has one-way stubs and service loops the core drops;
             // if the core equalled every usable node it would not be filtering them.
             let usable = (0..core.len() as u32)
-                .filter(|&i| g.edges[i as usize].iter().any(|e| g.edge_cost(e, mode).is_some()))
+                .filter(|&i| {
+                    g.edges[i as usize]
+                        .iter()
+                        .any(|e| g.edge_cost(e, mode).is_some())
+                })
                 .count();
             if mode == TravelMode::Car {
                 assert!(
@@ -1844,7 +1894,10 @@ mod tests {
         // Bearings wrap: north-ish to north-ish across 0° is a small turn, not the
         // 340° one a naive subtraction would report.
         assert_eq!(signed_turn(350.0, 5.0), 15.0);
-        assert_eq!(Maneuver::from_turn(signed_turn(350.0, 5.0)), Maneuver::Continue);
+        assert_eq!(
+            Maneuver::from_turn(signed_turn(350.0, 5.0)),
+            Maneuver::Continue
+        );
     }
 
     #[test]
@@ -1872,8 +1925,8 @@ mod tests {
         let tiles = corridor_tiles(a, b, MAX_ROUTE_TILES).expect("within budget");
         let ta = lat_lng_to_tile_frac(a.0, a.1, ROUTING_ZOOM);
         let tb = lat_lng_to_tile_frac(b.0, b.1, ROUTING_ZOOM);
-        let bbox = ((ta.0 - tb.0).abs().floor() as usize + 3)
-            * ((ta.1 - tb.1).abs().floor() as usize + 3);
+        let bbox =
+            ((ta.0 - tb.0).abs().floor() as usize + 3) * ((ta.1 - tb.1).abs().floor() as usize + 3);
         assert!(
             tiles.len() < bbox,
             "corridor {} tiles vs bbox {bbox}",
@@ -1919,7 +1972,10 @@ mod tests {
         let RouteError::TooFar { km } = err else {
             panic!("expected TooFar, got {err:?}");
         };
-        assert!((100.0..250.0).contains(&km), "implausible distance {km:.0} km");
+        assert!(
+            (100.0..250.0).contains(&km),
+            "implausible distance {km:.0} km"
+        );
         // The message leads with the distance, not a tile count.
         let msg = err.to_string();
         assert!(msg.contains("Too far") && msg.contains("km"), "{msg}");

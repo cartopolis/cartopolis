@@ -99,7 +99,11 @@ impl TileData {
         let Some(slot) = self.features.get(layer.layer_index) else {
             return &[];
         };
-        slot.get_or_init(|| self.reader.get_features(layer.layer_index).unwrap_or_default())
+        slot.get_or_init(|| {
+            self.reader
+                .get_features(layer.layer_index)
+                .unwrap_or_default()
+        })
     }
 
     /// A layer's extent, with Shortbread's default substituted for a source that
@@ -451,11 +455,23 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
                 }
                 Draw::Line { color, width } => {
                     paint.shader = shader(*color);
-                    stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width * f);
+                    stroke_geometry(
+                        &mut pixmap,
+                        &paint,
+                        &feature.geometry,
+                        &transform,
+                        width * f,
+                    );
                 }
                 Draw::Outline { color, width } => {
                     paint.shader = shader(*color);
-                    stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width * f);
+                    stroke_geometry(
+                        &mut pixmap,
+                        &paint,
+                        &feature.geometry,
+                        &transform,
+                        width * f,
+                    );
                 }
                 Draw::Streets { casing } => {
                     let (w, fill, case) = street_style(kind.unwrap_or(""));
@@ -769,8 +785,8 @@ impl SurfaceGroup {
 fn land_group(kind: &str) -> Option<SurfaceGroup> {
     Some(match kind {
         "forest" | "wood" => SurfaceGroup::Forest,
-        "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub"
-        | "heath" | "allotments" | "village_green" | "recreation_ground" => SurfaceGroup::Grass,
+        "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub" | "heath"
+        | "allotments" | "village_green" | "recreation_ground" => SurfaceGroup::Grass,
         "sand" | "beach" | "bare_rock" | "scree" => SurfaceGroup::Sand,
         "residential" | "industrial" | "commercial" | "retail" | "quarry" => SurfaceGroup::Built,
         _ => return None,
@@ -1245,12 +1261,11 @@ pub fn tessellate_roads(
         }
 
         for ls in lines {
-            let pts: Vec<[f32; 2]> = ls
-                .0
-                .iter()
-                .filter(|c| c.x.is_finite() && c.y.is_finite())
-                .map(|c| [c.x, c.y])
-                .collect();
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
             let (Some(head), Some(tail)) = (pts.first().copied(), pts.last().copied()) else {
                 continue;
             };
@@ -1279,7 +1294,11 @@ pub fn tessellate_roads(
                 // from under the structure.
                 let whole = parts.len() == 1 && parts[0].len() == run.len();
                 for part in parts {
-                    let extend = if whole { [ext_head, ext_tail] } else { [0.0, 0.0] };
+                    let extend = if whole {
+                        [ext_head, ext_tail]
+                    } else {
+                        [0.0, 0.0]
+                    };
                     ribbon(
                         &part,
                         half,
@@ -1402,12 +1421,11 @@ pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetL
             _ => continue,
         }
         for ls in lines {
-            let pts: Vec<[f32; 2]> = ls
-                .0
-                .iter()
-                .filter(|c| c.x.is_finite() && c.y.is_finite())
-                .map(|c| [c.x, c.y])
-                .collect();
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
             for run in clip_polyline(&pts, 0.0, extent) {
                 let metres: Vec<[f32; 2]> =
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
@@ -1454,9 +1472,7 @@ fn simplify_polyline(points: &[[f32; 2]], min_step: f32) -> Vec<[f32; 2]> {
         let last = out.last().copied();
         let keep = match last {
             None => true,
-            Some(q) => {
-                i == points.len() - 1 || (p[0] - q[0]).hypot(p[1] - q[1]) >= min_step
-            }
+            Some(q) => i == points.len() - 1 || (p[0] - q[0]).hypot(p[1] - q[1]) >= min_step,
         };
         if keep {
             out.push(*p);
@@ -1650,9 +1666,8 @@ fn ribbon(
         pts.push([last[0] + tail[0] * extend[1], last[1] + tail[1] * extend[1]]);
     }
 
-    let seg_len = |i: usize| -> f32 {
-        (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1])
-    };
+    let seg_len =
+        |i: usize| -> f32 { (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1]) };
     // The `(u = 0, u = 1)` vertex pair the *incoming* quad closes on and the pair
     // the *outgoing* quad opens from, per point. A miter join shares one pair; a
     // bevel splits the outer vertex in two and keeps the inner one shared, so the
@@ -1664,7 +1679,11 @@ fn ribbon(
         if i > 0 {
             travelled += (pts[i][0] - pts[i - 1][0]).hypot(pts[i][1] - pts[i - 1][1]);
         }
-        let d_in = if i > 0 { dir(pts[i - 1], pts[i]) } else { dir(pts[0], pts[1]) };
+        let d_in = if i > 0 {
+            dir(pts[i - 1], pts[i])
+        } else {
+            dir(pts[0], pts[1])
+        };
         let d_out = if i + 1 < pts.len() {
             dir(pts[i], pts[i + 1])
         } else {
@@ -1715,7 +1734,11 @@ fn ribbon(
         let v = travelled / tex_len_m;
         // `u = 0` is the `-m` side and `u = 1` the `+m` side — the across-road
         // axis the centre line registers against (see `road_texture`).
-        let (u_outer, u_inner) = if outer_s > 0.0 { (1.0, 0.0) } else { (0.0, 1.0) };
+        let (u_outer, u_inner) = if outer_s > 0.0 {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        };
         let bevelled = miter > MITER_LIMIT;
 
         let inner_p = [
@@ -2253,7 +2276,10 @@ mod tests {
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
     /// (now self-hosted at tiles.garage44.eu; the archive is identical).
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/groningen_z14.mvt"
+    ));
 
     /// A `TileData` shared by several consumers must produce byte-for-byte what
     /// each of them produced from its own parse. This is the whole safety claim
@@ -2291,16 +2317,19 @@ mod tests {
             &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
         );
         assert_eq!(
-            super::water_shore_field(&tile, tile_m).unwrap().unwrap().data,
-            water_shore_field(GRONINGEN_Z14, tile_m).unwrap().unwrap().data,
+            super::water_shore_field(&tile, tile_m)
+                .unwrap()
+                .unwrap()
+                .data,
+            water_shore_field(GRONINGEN_Z14, tile_m)
+                .unwrap()
+                .unwrap()
+                .data,
         );
         let trees = crate::scatter::scatter_vegetation(&tile, tile_m, 7).unwrap();
-        let fresh = crate::scatter::scatter_vegetation(
-            &TileData::parse(GRONINGEN_Z14).unwrap(),
-            tile_m,
-            7,
-        )
-        .unwrap();
+        let fresh =
+            crate::scatter::scatter_vegetation(&TileData::parse(GRONINGEN_Z14).unwrap(), tile_m, 7)
+                .unwrap();
         assert_eq!(trees.len(), fresh.len(), "vegetation scatter diverged");
 
         // …and asking twice for the same layer really is memoised, not just
@@ -2339,7 +2368,10 @@ mod tests {
             "tile rendered nearly flat ({} colours) — style or geometry is wrong",
             seen.len()
         );
-        assert!(rgba.chunks_exact(4).all(|p| p[3] == 255), "alpha must be opaque");
+        assert!(
+            rgba.chunks_exact(4).all(|p| p[3] == 255),
+            "alpha must be opaque"
+        );
     }
 
     #[test]
@@ -2368,7 +2400,10 @@ mod tests {
         // The rank is what decides who survives a crowded frame, so the tile has
         // to actually carry a spread of classes rather than one default.
         let ranks: std::collections::HashSet<u8> = labels.iter().map(|l| l.rank).collect();
-        assert!(ranks.len() > 2, "every street came out the same class: {ranks:?}");
+        assert!(
+            ranks.len() > 2,
+            "every street came out the same class: {ranks:?}"
+        );
     }
 
     #[test]
@@ -2566,11 +2601,11 @@ mod tests {
                 continue;
             }
             let len: f32 = match &f.geometry {
-                Geometry::LineString(ls) => ls
-                    .0
-                    .windows(2)
-                    .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
-                    .sum(),
+                Geometry::LineString(ls) => {
+                    ls.0.windows(2)
+                        .map(|w| ((w[1].x - w[0].x).powi(2) + (w[1].y - w[0].y).powi(2)).sqrt())
+                        .sum()
+                }
                 _ => 0.0,
             };
             println!(
@@ -2632,9 +2667,7 @@ mod tests {
                     .iter()
                     .map(|p| count(&Geometry::Polygon(p.clone())))
                     .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2)),
-                Geometry::LineString(ls) => {
-                    (ls.0.len(), 0, ls.0.len().saturating_sub(1) * 2)
-                }
+                Geometry::LineString(ls) => (ls.0.len(), 0, ls.0.len().saturating_sub(1) * 2),
                 Geometry::MultiLineString(mls) => mls
                     .iter()
                     .map(|ls| count(&Geometry::LineString(ls.clone())))
@@ -2643,7 +2676,10 @@ mod tests {
             }
         }
 
-        println!("{:<24} {:>8} {:>9} {:>10}", "layer", "features", "vertices", "triangles");
+        println!(
+            "{:<24} {:>8} {:>9} {:>10}",
+            "layer", "features", "vertices", "triangles"
+        );
         let mut tri_total = 0usize;
         let mut tri_without_buildings = 0usize;
         for l in &meta {
@@ -2658,7 +2694,10 @@ mod tests {
                 tri_without_buildings += tris;
             }
             if v > 0 {
-                println!("{:<24} {:>8} {:>9} {:>10}", l.name, l.feature_count, v, tris);
+                println!(
+                    "{:<24} {:>8} {:>9} {:>10}",
+                    l.name, l.feature_count, v, tris
+                );
             }
         }
         println!("\ntriangles/tile, all layers      : {tri_total}");
@@ -2676,10 +2715,10 @@ mod tests {
         let touches_edge = streets
             .iter()
             .filter(|f| match &f.geometry {
-                Geometry::LineString(ls) => ls
-                    .0
-                    .iter()
-                    .any(|c| c.x <= 0.0 || c.y <= 0.0 || c.x >= 4096.0 || c.y >= 4096.0),
+                Geometry::LineString(ls) => {
+                    ls.0.iter()
+                        .any(|c| c.x <= 0.0 || c.y <= 0.0 || c.x >= 4096.0 || c.y >= 4096.0)
+                }
                 Geometry::MultiLineString(mls) => mls.iter().any(|ls| {
                     ls.0.iter()
                         .any(|c| c.x <= 0.0 || c.y <= 0.0 || c.x >= 4096.0 || c.y >= 4096.0)
@@ -2687,11 +2726,11 @@ mod tests {
                 _ => false,
             })
             .count();
+        println!("\nstreets with a feature id : {with_id}/{}", streets.len());
         println!(
-            "\nstreets with a feature id : {with_id}/{}",
+            "streets clipped at a seam : {touches_edge}/{}",
             streets.len()
         );
-        println!("streets clipped at a seam : {touches_edge}/{}", streets.len());
 
         // Raster path CPU cost, for comparison.
         let t0 = std::time::Instant::now();
@@ -2743,7 +2782,8 @@ mod tests {
                         })
                         .fold(f32::INFINITY, f32::min);
                     assert_eq!(
-                        grid[y * size + x], want,
+                        grid[y * size + x],
+                        want,
                         "size {size}, seed every {seed_every}, at ({x}, {y})"
                     );
                 }
@@ -2817,10 +2857,7 @@ mod tests {
             if area <= 1.0 {
                 continue; // a zero-width connector along the seam — invisible
             }
-            let (cx, cz) = (
-                (a[0] + b[0] + c[0]) / 3.0,
-                (a[2] + b[2] + c[2]) / 3.0,
-            );
+            let (cx, cz) = ((a[0] + b[0] + c[0]) / 3.0, (a[2] + b[2] + c[2]) / 3.0);
             assert!(
                 point_in_rings(cx, cz, &rings),
                 "triangle of {area:.0} m² at ({cx:.0}, {cz:.0}) lies outside the polygon"
@@ -2852,7 +2889,11 @@ mod tests {
         let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("tessellate");
         let heights: std::collections::BTreeSet<u32> = meshes
             .iter()
-            .flat_map(|m| m.positions.iter().map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32))
+            .flat_map(|m| {
+                m.positions
+                    .iter()
+                    .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
+            })
             .collect();
         assert!(
             heights.len() > 1,
@@ -2939,21 +2980,32 @@ mod tests {
                     .iter()
                     .map(|i| {
                         let v = m.positions[*i as usize];
-                        [
-                            (v[0] - wx) / ws * PX as f32,
-                            (v[2] - wz) / ws * PX as f32,
-                        ]
+                        [(v[0] - wx) / ws * PX as f32, (v[2] - wz) / ws * PX as f32]
                     })
                     .collect();
                 let (x0, x1) = (
-                    p.iter().map(|q| q[0]).fold(f32::MAX, f32::min).floor().max(0.0) as usize,
-                    p.iter().map(|q| q[0]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0)
-                        as usize,
+                    p.iter()
+                        .map(|q| q[0])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize,
+                    p.iter()
+                        .map(|q| q[0])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize,
                 );
                 let (y0, y1) = (
-                    p.iter().map(|q| q[1]).fold(f32::MAX, f32::min).floor().max(0.0) as usize,
-                    p.iter().map(|q| q[1]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0)
-                        as usize,
+                    p.iter()
+                        .map(|q| q[1])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize,
+                    p.iter()
+                        .map(|q| q[1])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize,
                 );
                 let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
                     - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
@@ -3035,24 +3087,26 @@ mod tests {
             // Inside the tile, flat, and a plausible size for a structure.
             for p in &d.positions {
                 assert!((0.0..=1000.0).contains(&p[0]) && (0.0..=1000.0).contains(&p[2]));
-                assert_eq!(p[1], 0.0, "a deck leaves the worker flat; height is measured");
+                assert_eq!(
+                    p[1], 0.0,
+                    "a deck leaves the worker flat; height is measured"
+                );
             }
             let span = d.span_m();
             assert!((1.0..=600.0).contains(&span), "deck span {span} m");
             // The centre of the bounding box is a weak test of `contains`, but a
             // deck that answers "no" everywhere would silently disable both the
             // ribbon suppression and the height sampling.
-            let mid = [
-                (d.min[0] + d.max[0]) * 0.5,
-                (d.min[1] + d.max[1]) * 0.5,
-            ];
-            assert!(!d.contains([d.min[0] - 5.0, mid[1]]), "outside is not inside");
+            let mid = [(d.min[0] + d.max[0]) * 0.5, (d.min[1] + d.max[1]) * 0.5];
+            assert!(
+                !d.contains([d.min[0] - 5.0, mid[1]]),
+                "outside is not inside"
+            );
         }
         assert!(
-            decks.iter().any(|d| d.contains([
-                (d.min[0] + d.max[0]) * 0.5,
-                (d.min[1] + d.max[1]) * 0.5
-            ])),
+            decks
+                .iter()
+                .any(|d| d.contains([(d.min[0] + d.max[0]) * 0.5, (d.min[1] + d.max[1]) * 0.5])),
             "no deck contains its own centre — point-in-polygon is broken"
         );
     }
@@ -3074,7 +3128,11 @@ mod tests {
         // a fifth of its streets. A big drop here means ordinary roads are being
         // eaten by a deck they merely pass under.
         let dropped = 1.0 - count(&with_decks) as f32 / count(&bare) as f32;
-        assert!(dropped < 0.1, "decks removed {:.0}% of the road mesh", dropped * 100.0);
+        assert!(
+            dropped < 0.1,
+            "decks removed {:.0}% of the road mesh",
+            dropped * 100.0
+        );
     }
 
     /// Which of two overlapping ribbons wins has to be a property of the *roads*,
@@ -3085,10 +3143,16 @@ mod tests {
         let street = road_rung(7.0, false, 0);
         let main = road_rung(14.0, false, 0);
         let motorway = road_rung(22.0, false, 0);
-        assert!(street < main && main < motorway, "the wider road must be on top");
+        assert!(
+            street < main && main < motorway,
+            "the wider road must be on top"
+        );
         // A flyover and the road under it are both flat sheets on this plane; the
         // deck is the only one that can be on top, whatever it flies over.
-        assert!(road_rung(4.0, true, 0) > motorway, "a bridge deck must be on top");
+        assert!(
+            road_rung(4.0, true, 0) > motorway,
+            "a bridge deck must be on top"
+        );
         // …and the whole ladder has to stay inside the millimetre window under the
         // buildings' base that `SurfaceGroup::y_offset` documents.
         for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
@@ -3100,8 +3164,7 @@ mod tests {
             }
         }
         assert!(
-            SurfaceGroup::Road(RoadClass::Minor).y_offset()
-                + ROAD_LAYERS as f32 * ROAD_LAYER_STEP
+            SurfaceGroup::Road(RoadClass::Minor).y_offset() + ROAD_LAYERS as f32 * ROAD_LAYER_STEP
                 < 0.0,
             "the ladder pushes roads through the buildings' base"
         );
@@ -3118,7 +3181,11 @@ mod tests {
             .find(|m| m.group == SurfaceGroup::Water)
             .expect("Groningen has canals");
         assert!(water.indices.len() >= 3);
-        assert_eq!(water.indices.len() % 3, 0, "indices must be whole triangles");
+        assert_eq!(
+            water.indices.len() % 3,
+            0,
+            "indices must be whole triangles"
+        );
 
         for m in &meshes {
             let n = m.positions.len() as u32;
@@ -3129,8 +3196,18 @@ mod tests {
             );
             // Tile-local metres, inside the tile (clamped) and flat on the ground.
             for p in &m.positions {
-                assert!((0.0..=tile_m).contains(&p[0]), "{:?}: x {} out of tile", m.group, p[0]);
-                assert!((0.0..=tile_m).contains(&p[2]), "{:?}: z {} out of tile", m.group, p[2]);
+                assert!(
+                    (0.0..=tile_m).contains(&p[0]),
+                    "{:?}: x {} out of tile",
+                    m.group,
+                    p[0]
+                );
+                assert!(
+                    (0.0..=tile_m).contains(&p[2]),
+                    "{:?}: z {} out of tile",
+                    m.group,
+                    p[2]
+                );
                 assert_eq!(p[1], 0.0);
             }
             // Every triangle wound to face up, so the ground is not backface-culled.
@@ -3166,7 +3243,10 @@ mod tests {
                 y > TILE_TOP && y < BUILDING_BASE,
                 "{group:?} at y={y} escapes the ground window"
             );
-            assert!(group.depth_bias() > 0.0, "{group:?} must outrank the map tile");
+            assert!(
+                group.depth_bias() > 0.0,
+                "{group:?} must outrank the map tile"
+            );
         }
         // Water draws over land, and its bias must agree with its height.
         assert!(SurfaceGroup::Water.y_offset() > SurfaceGroup::Grass.y_offset());
@@ -3226,7 +3306,9 @@ mod tests {
         assert!(
             SurfaceGroup::Road(RoadClass::Path).depth_bias() > SurfaceGroup::Water.depth_bias()
         );
-        assert!(SurfaceGroup::Canopy.depth_bias() > SurfaceGroup::Road(RoadClass::Rail).depth_bias());
+        assert!(
+            SurfaceGroup::Canopy.depth_bias() > SurfaceGroup::Road(RoadClass::Rail).depth_bias()
+        );
     }
 
     #[test]
@@ -3441,8 +3523,7 @@ mod tests {
                     let (ux, uy) = (dx / len, dy / len);
                     // How far each end of this quad's inner rail has advanced
                     // along the segment it belongs to.
-                    let along =
-                        |p: [f32; 2]| (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+                    let along = |p: [f32; 2]| (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
                     let (from, to) = (along(inner[k]), along(inner[k + 1]));
                     assert!(
                         to >= from - 1e-3,
@@ -3465,11 +3546,7 @@ mod tests {
         assert_eq!(runs[0].last().unwrap()[0], 100.0);
 
         // Out, in, out again → one run, and it is the middle stretch only.
-        let runs = clip_polyline(
-            &[[-10.0, 50.0], [50.0, 50.0], [110.0, 50.0]],
-            0.0,
-            100.0,
-        );
+        let runs = clip_polyline(&[[-10.0, 50.0], [50.0, 50.0], [110.0, 50.0]], 0.0, 100.0);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len(), 3);
 
@@ -3493,4 +3570,3 @@ mod tests {
         assert!(!looks_like_raster(GRONINGEN_Z14));
     }
 }
-

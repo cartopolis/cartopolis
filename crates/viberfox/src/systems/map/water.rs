@@ -132,11 +132,10 @@ pub struct WaterSeaState {
 
 impl FromWorld for WaterSeaState {
     fn from_world(world: &mut World) -> Self {
-        let open_water = world.resource_mut::<Assets<Image>>().add(shore_image(
-            &[u8::MAX],
-            1,
-            "open water",
-        ));
+        let open_water =
+            world
+                .resource_mut::<Assets<Image>>()
+                .add(shore_image(&[u8::MAX], 1, "open water"));
         let s = sea_state(UNKNOWN_WIND);
         Self {
             wave: s.0,
@@ -150,7 +149,12 @@ impl FromWorld for WaterSeaState {
 impl WaterSeaState {
     /// The material for one streamed cell: the shared sea state, plus this cell's
     /// own shore field and the frame to sample it in.
-    pub fn material(&self, shore: Option<Handle<Image>>, origin: Vec2, tile_m: f32) -> WaterMaterial {
+    pub fn material(
+        &self,
+        shore: Option<Handle<Image>>,
+        origin: Vec2,
+        tile_m: f32,
+    ) -> WaterMaterial {
         WaterMaterial {
             base: StandardMaterial {
                 base_color: WATER_ALBEDO,

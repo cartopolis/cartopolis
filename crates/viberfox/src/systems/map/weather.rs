@@ -70,7 +70,10 @@ pub struct WeatherState {
 impl WeatherState {
     /// Construct with live application on/off (from the `--weather-live` flag).
     pub fn with_live(live: bool) -> Self {
-        Self { live, ..Default::default() }
+        Self {
+            live,
+            ..Default::default()
+        }
     }
 
     /// True once a sample has landed — the shot harness waits on this so a
@@ -125,9 +128,7 @@ pub fn poll_weather(
 
     // Refetch when the anchor moved, on the refresh cadence, or on the first tick.
     let anchor_moved = weather.fetched_gen != Some(stream.anchor_generation);
-    let stale = weather
-        .last_poll
-        .is_none_or(|t| t.elapsed() >= REFRESH);
+    let stale = weather.last_poll.is_none_or(|t| t.elapsed() >= REFRESH);
     if weather.in_flight || !(anchor_moved || stale) {
         return;
     }
@@ -227,7 +228,7 @@ mod tests {
         let o = parse_weather(body, 0.0, 0.0).unwrap();
         assert_eq!(o.cloud_cover, 1.0);
         assert_eq!(o.precipitation, 1.0); // 6 mm > RAIN_FULL_MM, clamped
-        // fog_area_fraction 0.40 dominates the humidity haze, plus the floor.
+                                          // fog_area_fraction 0.40 dominates the humidity haze, plus the floor.
         assert!((o.fog_density - (HAZE_FLOOR + 0.40)).abs() < 1e-4);
     }
 

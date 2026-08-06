@@ -45,8 +45,8 @@
 //! (`vector_tiles::DEPTH_BIAS_STEP`) — you want to read the street you are being
 //! routed along — and below the driver arrow.
 
-use crate::components::StreetLabelSign;
 use crate::components::FreeCamera;
+use crate::components::StreetLabelSign;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -69,12 +69,8 @@ use crate::systems::vector_tiles::{StreetLabelLine, DEPTH_BIAS_STEP};
 /// the ground is **foreshortened**: at the 30° pitch a city view is usually flown
 /// at, a label loses half its height to the projection. Sized for a plan view it
 /// reads as a squashed smear from anywhere else.
-const HEIGHT_BANDS: [(f32, f32); 4] = [
-    (150.0, 7.0),
-    (400.0, 11.0),
-    (800.0, 18.0),
-    (f32::MAX, 28.0),
-];
+const HEIGHT_BANDS: [(f32, f32); 4] =
+    [(150.0, 7.0), (400.0, 11.0), (800.0, 18.0), (f32::MAX, 28.0)];
 
 /// Ground radius around the view centre that labels are chosen for.
 ///
@@ -169,7 +165,6 @@ const fn srgb_of(c: egui::Color32) -> [f32; 3] {
         c.b() as f32 / 255.0 / a,
     ]
 }
-
 
 /// The pool, as the placer writes it: where the quad goes, whether it is shown,
 /// and the material whose texture carries the name.
@@ -319,7 +314,8 @@ pub fn update_street_labels(
         return;
     };
     let alt = globe.altitude_m(cam_cell, cam_tf) as f32;
-    let on = layers.map_enabled && layers.street_labels && !store.is_empty() && alt <= MAX_LABEL_ALT;
+    let on =
+        layers.map_enabled && layers.street_labels && !store.is_empty() && alt <= MAX_LABEL_ALT;
     if !on {
         if signs.placed.take().is_some() {
             for (_, _, mut vis, _) in placed_query.iter_mut() {
@@ -599,10 +595,7 @@ fn choose_labels<'a>(
 fn footprint(p: &Placement, height_m: f32) -> Rect {
     let (c, s) = (p.dir.x.abs(), p.dir.y.abs());
     let (hw, hh) = (p.width_m * 0.5, height_m * 0.5);
-    Rect::from_center_size(
-        p.centre,
-        Vec2::new(hw * c + hh * s, hw * s + hh * c) * 2.0,
-    )
+    Rect::from_center_size(p.centre, Vec2::new(hw * c + hh * s, hw * s + hh * c) * 2.0)
 }
 
 /// Where a name sits on its street and which way the baseline runs.
@@ -650,22 +643,25 @@ fn polyline_len(points: &[Vec2]) -> f32 {
 /// rotation that sends +X down the street writes the name along it.
 fn label_quad() -> Mesh {
     use bevy::render::mesh::{Indices, PrimitiveTopology};
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            vec![
-                [-0.5f32, 0.0, -0.5],
-                [0.5, 0.0, -0.5],
-                [0.5, 0.0, 0.5],
-                [-0.5, 0.0, 0.5],
-            ],
-        )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; 4])
-        .with_inserted_attribute(
-            Mesh::ATTRIBUTE_UV_0,
-            vec![[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-        )
-        .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        vec![
+            [-0.5f32, 0.0, -0.5],
+            [0.5, 0.0, -0.5],
+            [0.5, 0.0, 0.5],
+            [-0.5, 0.0, 0.5],
+        ],
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; 4])
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        vec![[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    )
+    .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]))
 }
 
 /// The rasteriser, over the brand semibold the app already embeds
@@ -674,10 +670,8 @@ fn label_quad() -> Mesh {
 /// up into grey mush at that size. Falls back to egui's own stack if the brand
 /// face ever stops parsing.
 fn load_font() -> Option<fontdue::Font> {
-    if let Ok(font) = fontdue::Font::from_bytes(
-        theme::BRAND_TTF,
-        fontdue::FontSettings::default(),
-    ) {
+    if let Ok(font) = fontdue::Font::from_bytes(theme::BRAND_TTF, fontdue::FontSettings::default())
+    {
         return Some(font);
     }
     let defs = egui::FontDefinitions::default();
@@ -887,7 +881,10 @@ mod tests {
         let west = choose_labels(&store, &font, 5.0, -Vec2::X, Vec2::ZERO);
         assert_eq!(east.len(), 1);
         assert_eq!(east[0].centre, west[0].centre, "the name stays on its spot");
-        assert_eq!(east[0].dir, -west[0].dir, "only the reading direction turns");
+        assert_eq!(
+            east[0].dir, -west[0].dir,
+            "only the reading direction turns"
+        );
         assert!(east[0].dir.dot(Vec2::X) > 0.0, "written left-to-right");
     }
 
@@ -915,9 +912,15 @@ mod tests {
     /// Two names crossing at a junction must not both be written.
     #[test]
     fn overlapping_names_lose_the_lesser_one() {
-        let mut a = line("Grote Markt", vec![Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)]);
+        let mut a = line(
+            "Grote Markt",
+            vec![Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)],
+        );
         a.rank = 1;
-        let mut b = line("Kleine Steeg", vec![Vec2::new(0.0, -200.0), Vec2::new(0.0, 200.0)]);
+        let mut b = line(
+            "Kleine Steeg",
+            vec![Vec2::new(0.0, -200.0), Vec2::new(0.0, 200.0)],
+        );
         b.rank = 4;
         let store = store_with(vec![a, b]);
         let chosen = choose_labels(&store, &font(), 8.0, Vec2::X, Vec2::ZERO);
@@ -930,8 +933,14 @@ mod tests {
     #[test]
     fn the_same_name_is_not_repeated_on_top_of_itself() {
         let a = line("Hereweg", vec![Vec2::new(0.0, 0.0), Vec2::new(300.0, 0.0)]);
-        let b = line("Hereweg", vec![Vec2::new(0.0, 30.0), Vec2::new(300.0, 30.0)]);
-        let far = line("Hereweg", vec![Vec2::new(0.0, 400.0), Vec2::new(300.0, 400.0)]);
+        let b = line(
+            "Hereweg",
+            vec![Vec2::new(0.0, 30.0), Vec2::new(300.0, 30.0)],
+        );
+        let far = line(
+            "Hereweg",
+            vec![Vec2::new(0.0, 400.0), Vec2::new(300.0, 400.0)],
+        );
         let store = store_with(vec![a, b, far]);
         let chosen = choose_labels(&store, &font(), 5.0, Vec2::X, Vec2::ZERO);
         assert_eq!(chosen.len(), 2, "near repeat dropped, far one kept");
@@ -953,7 +962,10 @@ mod tests {
         ];
         let (_, wide) = place_along(&dogleg, 90.0).expect("placeable");
         let (_, narrow) = place_along(&dogleg, 4.0).expect("placeable");
-        assert!(narrow.y.abs() < 1e-3, "a short word follows the local segment");
+        assert!(
+            narrow.y.abs() < 1e-3,
+            "a short word follows the local segment"
+        );
         assert!(wide.y > 0.05, "a long word follows the chord it spans");
     }
 
@@ -978,11 +990,15 @@ mod tests {
         assert_eq!(px.len(), (w * h * 4) as usize);
         let alphas: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
         assert!(alphas.iter().any(|a| *a > 250), "no solid text at all");
-        assert!(alphas.iter().any(|a| *a == 0), "the texture is a solid block");
+        assert!(
+            alphas.iter().any(|a| *a == 0),
+            "the texture is a solid block"
+        );
         // Somewhere there must be a pale halo pixel: opaque, but far lighter than
         // the ink. Without it the names vanish over dark tarmac.
         assert!(
-            px.chunks_exact(4).any(|p| p[3] > 200 && p[0] > 200 && p[1] > 200),
+            px.chunks_exact(4)
+                .any(|p| p[3] > 200 && p[0] > 200 && p[1] > 200),
             "no halo — the ink has nothing to sit on"
         );
         assert!(
@@ -1014,6 +1030,9 @@ mod tests {
         let before = store.revision;
         store.remove_cell(&(3, 4));
         assert!(store.is_empty());
-        assert_ne!(store.revision, before, "a change must be visible to the placer");
+        assert_ne!(
+            store.revision, before,
+            "a change must be visible to the placer"
+        );
     }
 }

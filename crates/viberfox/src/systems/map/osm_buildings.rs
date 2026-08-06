@@ -19,8 +19,8 @@
 //! (relative to the anchor region tile); heights use the interim quad-to-metre
 //! scale until the real-metre frame (ADR-019) lands.
 
-use crate::components::OsmBuildingMesh;
 use crate::components::FreeCamera;
+use crate::components::OsmBuildingMesh;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,9 +28,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use web_time::Instant;
 
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
-use bevy::asset::RenderAssetUsages;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
@@ -506,7 +506,6 @@ const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
 /// `lod22`'s cap because these meshes are the simplified tier and far cheaper.
 const MAX_FAR_DESPAWNS_PER_FRAME: usize = 6;
 
-
 /// An emissive window mesh; the value is its brightness multiplier (0 = never lit),
 /// scaled by the night factor in `update_window_glow`.
 #[derive(Component)]
@@ -790,72 +789,76 @@ pub fn update_buildings(
             .translation_to_grid(Vec3::new(world_x, 0.0, world_z).as_dvec3());
         // The ground travels with the job (see `MeshData::set_base`).
         let ground = terrain.snapshot();
-        IoTaskPool::get().spawn(async move {
-            let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
-            crate::platform::workers::submit(Box::new(move || {
-                let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
-                let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-                let result = Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east)).map(|mut buildings| {
-                    // 3DBAG territory: the real meshes own covered cells, and the
-                    // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
-                    // inside the LoD2.2 keep ring, so covered cells here have real
-                    // geometry — an extrusion would stack under or poke through
-                    // it. This bites when the camera stands just OUTSIDE coverage
-                    // and the patch reaches across the edge (the camera-cell skip
-                    // below can't help there). Filtering the Vec, not the mesh
-                    // loop, keeps hit-testing consistent with what is drawn.
-                    buildings.retain(|b| {
-                        b.ring.first().is_none_or(|&(la, lo)| {
-                            let (bx, by) = lat_lng_to_tile(la, lo, CACHE_ZOOM);
-                            !lod22_covers(bx, by)
-                        })
-                    });
-                    // Deduped: with consistent windings the fan-triangulated flat caps
-                    // and shared footprint corners collapse to one vertex each.
-                    let mut bld = MeshData::with_dedup();
-                    let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
-                    for b in &buildings {
-                        let ring: Vec<Vec2> = b
-                            .ring
-                            .iter()
-                            .map(|&(la, lo)| {
-                                let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
-                                Vec2::new(w.x - cell_ox, w.y - cell_oz)
+        IoTaskPool::get()
+            .spawn(async move {
+                let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
+                crate::platform::workers::submit(Box::new(move || {
+                    let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
+                    let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
+                    let result = Ok::<_, String>(parse_patch(
+                        &texts, d_south, d_west, d_north, d_east,
+                    ))
+                    .map(|mut buildings| {
+                        // 3DBAG territory: the real meshes own covered cells, and the
+                        // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
+                        // inside the LoD2.2 keep ring, so covered cells here have real
+                        // geometry — an extrusion would stack under or poke through
+                        // it. This bites when the camera stands just OUTSIDE coverage
+                        // and the patch reaches across the edge (the camera-cell skip
+                        // below can't help there). Filtering the Vec, not the mesh
+                        // loop, keeps hit-testing consistent with what is drawn.
+                        buildings.retain(|b| {
+                            b.ring.first().is_none_or(|&(la, lo)| {
+                                let (bx, by) = lat_lng_to_tile(la, lo, CACHE_ZOOM);
+                                !lod22_covers(bx, by)
                             })
-                            .collect();
-                        // Stand it on the measured ground, one height for the whole
-                        // footprint (see `MeshData::set_base`).
-                        let base =
-                            ground.level_over(ring.iter().map(|p| [p.x + cell_ox, p.y + cell_oz]));
-                        bld.set_base(base);
-                        wins.iter_mut().for_each(|w| w.set_base(base));
-                        push_building(
-                            &mut bld,
-                            &mut wins,
-                            b.id as u64,
-                            &ring,
-                            b.height_m,
-                            b.height_is_eaves,
-                            b.wall_color,
-                            b.roof_color,
-                            b.roof_shape,
-                            b.roof_height,
-                            b.roof_across,
-                        );
+                        });
+                        // Deduped: with consistent windings the fan-triangulated flat caps
+                        // and shared footprint corners collapse to one vertex each.
+                        let mut bld = MeshData::with_dedup();
+                        let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+                        for b in &buildings {
+                            let ring: Vec<Vec2> = b
+                                .ring
+                                .iter()
+                                .map(|&(la, lo)| {
+                                    let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                                    Vec2::new(w.x - cell_ox, w.y - cell_oz)
+                                })
+                                .collect();
+                            // Stand it on the measured ground, one height for the whole
+                            // footprint (see `MeshData::set_base`).
+                            let base = ground
+                                .level_over(ring.iter().map(|p| [p.x + cell_ox, p.y + cell_oz]));
+                            bld.set_base(base);
+                            wins.iter_mut().for_each(|w| w.set_base(base));
+                            push_building(
+                                &mut bld,
+                                &mut wins,
+                                b.id as u64,
+                                &ring,
+                                b.height_m,
+                                b.height_is_eaves,
+                                b.wall_color,
+                                b.roof_color,
+                                b.roof_shape,
+                                b.roof_height,
+                                b.roof_across,
+                            );
+                        }
+                        BuiltPatch {
+                            buildings,
+                            patch_cell,
+                            detail: bld.into_mesh(),
+                            windows: wins.map(MeshData::into_mesh),
+                        }
+                    });
+                    if let Ok(mut g) = slot.lock() {
+                        *g = Some(result);
                     }
-                    BuiltPatch {
-                        buildings,
-                        patch_cell,
-                        detail: bld.into_mesh(),
-                        windows: wins.map(MeshData::into_mesh),
-                    }
-                });
-                if let Ok(mut g) = slot.lock() {
-                    *g = Some(result);
-                }
-            }));
-        })
-        .detach();
+                }));
+            })
+            .detach();
     }
 
     let Ok(root) = bigspace.single() else {
@@ -922,7 +925,11 @@ pub fn update_buildings(
         }
         let sinks = (osm.far.sink(), osm.far_tdbag.sink());
         for (tdbag, (cx, cy)) in jobs {
-            let results = if tdbag { sinks.1.clone() } else { sinks.0.clone() };
+            let results = if tdbag {
+                sinks.1.clone()
+            } else {
+                sinks.0.clone()
+            };
             // The ground travels with the job — footprints only exist in there.
             let ground = terrain.snapshot();
             // Fetch on the task pool, parse + mesh on the worker pool (ADR-033):
@@ -933,7 +940,8 @@ pub fn update_buildings(
                     match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
                         Ok(text) => {
                             crate::platform::workers::submit(Box::new(move || {
-                                let built = build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                                let built =
+                                    build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
                                 if let Ok(mut g) = results.lock() {
                                     g.push(((cx, cy), built));
                                 }
@@ -972,27 +980,25 @@ pub fn update_buildings(
                             })
                         })
                         .clone();
-                    let mut entities = vec![
-                        commands
-                            .spawn((
-                                Mesh3d(meshes.add(mesh)),
-                                MeshMaterial3d(material),
-                                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                                grid_cell,
-                                ChildOf(root),
-                                OsmBuildingMesh,
-                                // Far cells are 1–5 km out: at the cascades'
-                                // 2048²/3 km settings their shadows are sub-texel,
-                                // but their double-sided (cull_mode None) geometry
-                                // is most of what up to 8 night cascade passes
-                                // would rasterize. Pure waste — skip it.
-                                bevy::light::NotShadowCaster,
-                                // From orbit the patch reads as a grey blob over
-                                // the anchor; hidden with the tiles (ADR-025).
-                                crate::components::HideInSpace,
-                            ))
-                            .id(),
-                    ];
+                    let mut entities = vec![commands
+                        .spawn((
+                            Mesh3d(meshes.add(mesh)),
+                            MeshMaterial3d(material),
+                            Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                            grid_cell,
+                            ChildOf(root),
+                            OsmBuildingMesh,
+                            // Far cells are 1–5 km out: at the cascades'
+                            // 2048²/3 km settings their shadows are sub-texel,
+                            // but their double-sided (cull_mode None) geometry
+                            // is most of what up to 8 night cascade passes
+                            // would rasterize. Pure waste — skip it.
+                            bevy::light::NotShadowCaster,
+                            // From orbit the patch reads as a grey blob over
+                            // the anchor; hidden with the tiles (ADR-025).
+                            crate::components::HideInSpace,
+                        ))
+                        .id()];
                     // Window meshes: same recipe as the detail patch, but the four
                     // bucket materials are shared across every far cell.
                     let win_mats = osm
@@ -1057,8 +1063,7 @@ pub fn update_buildings(
             .filter(|(cx2, cy2)| {
                 let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
                 d > FAR_CELL_RADIUS + 1
-                    || (d <= crate::systems::lod22::LOD22_RADIUS + 1
-                        && lod22_covers(*cx2, *cy2))
+                    || (d <= crate::systems::lod22::LOD22_RADIUS + 1 && lod22_covers(*cx2, *cy2))
             })
             .copied()
             .collect();
@@ -1091,9 +1096,9 @@ pub fn update_buildings(
     let patch_cell = patch.patch_cell;
     let count = patch.buildings.len();
     osm.buildings = patch.buildings; // retain footprints for future per-building conversion
-    // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
-    // collision. `ax/ay/z/tile_m` are the anchor established above, so these land
-    // in the same frame as the avatar's absolute position.
+                                     // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
+                                     // collision. `ax/ay/z/tile_m` are the anchor established above, so these land
+                                     // in the same frame as the avatar's absolute position.
     let detail_fps = osm
         .buildings
         .iter()
@@ -1147,7 +1152,14 @@ fn build_far_from_text(
     let tile_m = tile_to_meters(z, lat) as f32;
 
     // Anchor vertices to the BigSpace cell at the cell's centre.
-    let c_world = lat_lng_to_local((north + south) / 2.0, (west + east) / 2.0, ax, ay, z, tile_m);
+    let c_world = lat_lng_to_local(
+        (north + south) / 2.0,
+        (west + east) / 2.0,
+        ax,
+        ay,
+        z,
+        tile_m,
+    );
     let (grid_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
         .translation_to_grid(Vec3::new(c_world.x, 0.0, c_world.y).as_dvec3());
     let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
@@ -1466,14 +1478,7 @@ impl MeshData {
     /// wall — and the winding follows. Note this fixes shading too: `tri` derives
     /// its flat normal from the winding, so inward-wound roofs were previously
     /// lit via `double_sided`'s normal flip rather than being correct.
-    pub(crate) fn tri_facing(
-        &mut self,
-        a: Vec3,
-        b: Vec3,
-        c: Vec3,
-        color: [f32; 4],
-        outward: Vec3,
-    ) {
+    pub(crate) fn tri_facing(&mut self, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4], outward: Vec3) {
         if (b - a).cross(c - a).dot(outward) < 0.0 {
             self.tri(a, c, b, color);
         } else {
@@ -1545,7 +1550,15 @@ fn oriented_bbox(ring: &[Vec2]) -> Obb {
         }
         let area = (umax - umin) * (vmax - vmin);
         if best.as_ref().is_none_or(|b| area < b.area) {
-            best = Some(Obb { u, v, umin, umax, vmin, vmax, area });
+            best = Some(Obb {
+                u,
+                v,
+                umin,
+                umax,
+                vmin,
+                vmax,
+                area,
+            });
         }
     }
     best.unwrap_or(Obb {
@@ -1595,7 +1608,11 @@ fn simplify_ring(ring: &[Vec2], tol: f32) -> Vec<Vec2> {
             out.push(cur);
         }
     }
-    if out.len() >= 3 { out } else { ring.to_vec() }
+    if out.len() >= 3 {
+        out
+    } else {
+        ring.to_vec()
+    }
 }
 
 /// The eaves (wall-top) height the *detail* mesh uses for this building — the
@@ -1655,7 +1672,11 @@ fn push_building_lod(
         .map(|&p| {
             let to_c = centroid - p;
             let d = to_c.length();
-            if d > 1.5 { p + to_c / d * 0.35 } else { p }
+            if d > 1.5 {
+                p + to_c / d * 0.35
+            } else {
+                p
+            }
         })
         .collect();
     let height = (height - 0.25).max(1.5);
@@ -1731,7 +1752,11 @@ fn push_building(
         (height - rh, height)
     };
     let roof_h = ridge_y - wall_h;
-    let shape = if roof_h <= 0.1 { RoofShape::Flat } else { roof_shape };
+    let shape = if roof_h <= 0.1 {
+        RoofShape::Flat
+    } else {
+        roof_shape
+    };
 
     // --- Walls: footprint 0 → eaves, oriented outward via the centroid ---
     let centroid = ring.iter().copied().sum::<Vec2>() / n as f32;
@@ -1853,10 +1878,8 @@ fn push_wall_windows(
 /// Deterministically bucket a window (per building + floor + column) into a
 /// brightness level, weighted toward dark/dim so not every window blazes.
 fn window_bucket(seed: u64, row: i32, col: i32) -> usize {
-    let h = unit_rand(
-        seed ^ ((row as u64) << 20)
-            ^ (col as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
-    );
+    let h =
+        unit_rand(seed ^ ((row as u64) << 20) ^ (col as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     if h < 0.35 {
         0
     } else if h < 0.60 {
@@ -2088,7 +2111,13 @@ async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     if let Some(cached) = storage::get_string(&key).await {
         return Ok(cached);
     }
-    let url = format!("{}/buildings/{}/{}/{}.json", tdbag_url(), CACHE_ZOOM, cx, cy);
+    let url = format!(
+        "{}/buildings/{}/{}/{}.json",
+        tdbag_url(),
+        CACHE_ZOOM,
+        cx,
+        cy
+    );
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     // No validating parse here, unlike the Overpass path: this is our own static
@@ -2255,10 +2284,13 @@ fn derive_colors(tags: Option<&serde_json::Value>, ring0: (f64, f64)) -> ([f32; 
     let seed = color_seed(ring0);
     let btype = tag_str(tags, "building").unwrap_or("yes");
 
-    let wall_base = tag_color(tags, &["building:colour", "building:color", "colour", "color"])
-        .or_else(|| tag_str(tags, "building:material").and_then(material_color))
-        .or_else(|| type_color(btype))
-        .unwrap_or_else(|| palette_color(ring0));
+    let wall_base = tag_color(
+        tags,
+        &["building:colour", "building:color", "colour", "color"],
+    )
+    .or_else(|| tag_str(tags, "building:material").and_then(material_color))
+    .or_else(|| type_color(btype))
+    .unwrap_or_else(|| palette_color(ring0));
     let wall = jitter(wall_base, seed, 0.12);
 
     let roof_base = tag_color(tags, &["roof:colour", "roof:color"])
@@ -2311,7 +2343,8 @@ fn tag_str<'a>(tags: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str
 }
 
 fn tag_color(tags: Option<&serde_json::Value>, keys: &[&str]) -> Option<[f32; 3]> {
-    keys.iter().find_map(|k| tag_str(tags, k).and_then(parse_color))
+    keys.iter()
+        .find_map(|k| tag_str(tags, k).and_then(parse_color))
 }
 
 /// Parse an OSM colour value: `#RRGGBB` hex or a common named colour.
@@ -2616,7 +2649,11 @@ mod tests {
 
         let hashes: Vec<u64> = keys.iter().map(|k| build.hash_one(k)).collect();
         let distinct: std::collections::HashSet<u64> = hashes.iter().copied().collect();
-        assert_eq!(distinct.len(), keys.len(), "distinct keys must hash distinctly");
+        assert_eq!(
+            distinct.len(),
+            keys.len(),
+            "distinct keys must hash distinctly"
+        );
 
         // hashbrown buckets on the low bits and tags on the high seven. A hash
         // that ignored either would pile every key into a few buckets.

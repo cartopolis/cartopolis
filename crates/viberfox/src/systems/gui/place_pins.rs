@@ -123,7 +123,8 @@ pub fn render_place_pins(
     let mut jump: Option<Teleport> = None;
     let mut drawn = 0usize;
     for b in &store.data.bookmarks {
-        let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain) else {
+        let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain)
+        else {
             continue;
         };
         let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
@@ -134,7 +135,14 @@ pub fn render_place_pins(
             continue;
         }
         drawn += 1;
-        if pin(&ctx, map_rect, b.id, tip, store.pin_color(b.folder), &b.name) {
+        if pin(
+            &ctx,
+            map_rect,
+            b.id,
+            tip,
+            store.pin_color(b.folder),
+            &b.name,
+        ) {
             // Same jump the panel's row does: keep the current camera mode and
             // move it to the spot (`pose: None`).
             jump = Some(Teleport {
@@ -275,7 +283,9 @@ fn pin(
         })
         .inner;
 
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 /// Outline of the pin: the tip, then the head circle's arc from one tangent
@@ -304,11 +314,9 @@ fn teardrop(tip: egui::Pos2, centre: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
 /// it is describing, and the panel is where the list lives.
 fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: &str) {
     let font = egui::FontId::proportional(12.0);
-    let galley = ui.painter().layout_no_wrap(
-        name.to_string(),
-        font,
-        theme::CREAM,
-    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_string(), font, theme::CREAM);
     let pad = egui::vec2(6.0, 3.0);
     let mut chip = egui::Rect::from_center_size(
         egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
@@ -360,7 +368,10 @@ mod tests {
         let last = p.len() - 1;
         for (a, b, c) in [(p[last - 1], p[last], p[0]), (p[last], p[0], p[1])] {
             let turn = cross(a, b, c);
-            assert!(turn.abs() < 1e-4 || turn.signum() == sign, "closing edge is concave");
+            assert!(
+                turn.abs() < 1e-4 || turn.signum() == sign,
+                "closing edge is concave"
+            );
         }
     }
 
@@ -396,16 +407,18 @@ mod tests {
     #[test]
     fn the_floating_origin_camera_is_its_own_global_transform() {
         let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-        let tf = Transform::from_xyz(12.0, -34.0, 56.0)
-            .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.7, -0.4, 0.2));
+        let tf = Transform::from_xyz(12.0, -34.0, 56.0).with_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            0.7,
+            -0.4,
+            0.2,
+        ));
         // The camera's own cell: `compute_all` seeds the origin's grid with it, so
         // the cell offset is zero whatever the cell happens to be.
         let propagated = grid.global_transform(&GridCell::default(), &tf);
         let rebuilt = GlobalTransform::from(tf);
         assert!(
-            propagated
-                .affine()
-                .abs_diff_eq(rebuilt.affine(), 1e-5),
+            propagated.affine().abs_diff_eq(rebuilt.affine(), 1e-5),
             "rebuilding the camera basis from its Transform must match propagation:\n\
              propagated {:?}\nrebuilt    {:?}",
             propagated.affine(),

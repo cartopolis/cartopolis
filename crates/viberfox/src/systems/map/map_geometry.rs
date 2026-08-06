@@ -144,7 +144,6 @@ const DECK_SAMPLE_M: f32 = 1.5;
 const DECK_GRID_MIN: u32 = 16;
 const DECK_GRID_MAX: u32 = 64;
 
-
 /// Streaming state for the vector surface meshes.
 #[derive(Resource)]
 pub struct MapSurfaces {
@@ -327,8 +326,7 @@ impl MapSurfaces {
     /// capture taken on the imagery alone shows a city with no buildings in it.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.stream.busy()
-            || !self.pending_decks.is_empty()
+        self.stream.busy() || !self.pending_decks.is_empty()
     }
 
     /// The shared material for a surface group, once some cell has created it.
@@ -554,9 +552,7 @@ pub fn update_map_surfaces(
                         })
                     })
                     .clone();
-                commands
-                    .spawn((placement, MeshMaterial3d(material)))
-                    .id()
+                commands.spawn((placement, MeshMaterial3d(material))).id()
             };
             if matches!(sm.group, SurfaceGroup::Canopy | SurfaceGroup::Trunk) {
                 // Read the *current* ramp at spawn, the way new globe tiles read
@@ -774,7 +770,11 @@ fn deck_height(
     match (deck_top, ground) {
         (Some(top), Some(ground)) => {
             let clearance = (top - ground).clamp(0.0, MAX_DECK_M);
-            Some(if clearance < MIN_LIFT_M { 0.0 } else { clearance })
+            Some(if clearance < MIN_LIFT_M {
+                0.0
+            } else {
+                clearance
+            })
         }
         _ if layer.settled(&surface) && layer.settled(&terrain) => Some(0.0),
         _ => None,
@@ -1058,7 +1058,8 @@ fn stand_on_terrain(
     // water body is level, and a viaduct is straight — the ground under it dipping
     // into a valley is precisely what it does not do.
     if matches!(group, SurfaceGroup::Water | SurfaceGroup::BridgeDeck) {
-        let level = terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
+        let level =
+            terrain.level_over(positions.iter().map(|p| [origin.x + p[0], origin.y + p[2]]));
         for p in positions.iter_mut() {
             p[1] += level;
         }
@@ -1080,7 +1081,11 @@ fn stand_on_terrain(
     if !volumetric {
         *normals = positions
             .iter()
-            .map(|p| terrain.normal_at(origin.x + p[0], origin.y + p[2]).to_array())
+            .map(|p| {
+                terrain
+                    .normal_at(origin.x + p[0], origin.y + p[2])
+                    .to_array()
+            })
             .collect();
     }
 }

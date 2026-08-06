@@ -156,9 +156,7 @@ fn find_hit_axis(
         GizmoMode::Translate | GizmoMode::Scale => {
             find_hit_axis_tip(camera, cam_gt, prim_pos, arm, cursor)
         }
-        GizmoMode::Rotate => {
-            find_hit_axis_ring(camera, cam_gt, prim_pos, arm, cursor)
-        }
+        GizmoMode::Rotate => find_hit_axis_ring(camera, cam_gt, prim_pos, arm, cursor),
     }
 }
 
@@ -255,10 +253,13 @@ pub fn handle_gizmo_interaction(
     };
 
     // ── On press: hit-test axis handles (skip if egui is consuming the click) ─
-    if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.egui_wants_pointer_input() {
+    if mouse_buttons.just_pressed(MouseButton::Left) && !egui_manager.ctx.egui_wants_pointer_input()
+    {
         // Read prim position without a mutable borrow.
         let (prim_pos, arm, start_tr) = {
-            let Ok((tr, _, _)) = selected_query.single() else { return; };
+            let Ok((tr, _, _)) = selected_query.single() else {
+                return;
+            };
             (tr.translation, arm_length(tr.scale.max_element()), *tr)
         };
 
@@ -301,16 +302,24 @@ pub fn handle_gizmo_interaction(
     }
 
     // ── Drag: apply axis-constrained transform ────────────────────────────────
-    let Some(active_axis) = gizmo_state.active_axis else { return; };
-    let Some(start_tr) = gizmo_state.drag_start_transform else { return; };
+    let Some(active_axis) = gizmo_state.active_axis else {
+        return;
+    };
+    let Some(start_tr) = gizmo_state.drag_start_transform else {
+        return;
+    };
 
     let mouse_delta = cursor - gizmo_state.drag_start_screen;
     let dir = axis_vec(active_axis);
     let arm = arm_length(start_tr.scale.max_element());
 
     // Project the axis into screen space to get a pixels-per-world-unit ratio.
-    let Ok(ss_origin) = camera.world_to_viewport(cam_gt, start_tr.translation) else { return; };
-    let Ok(ss_tip) = camera.world_to_viewport(cam_gt, start_tr.translation + dir * arm) else { return; };
+    let Ok(ss_origin) = camera.world_to_viewport(cam_gt, start_tr.translation) else {
+        return;
+    };
+    let Ok(ss_tip) = camera.world_to_viewport(cam_gt, start_tr.translation + dir * arm) else {
+        return;
+    };
 
     let screen_axis = ss_tip - ss_origin;
     let screen_arm_px = screen_axis.length();
@@ -321,7 +330,9 @@ pub fn handle_gizmo_interaction(
     // Signed distance the cursor moved along this axis (in world units).
     let world_delta = screen_norm.dot(mouse_delta) / screen_arm_px * arm;
 
-    let Ok((mut transform, prim, cell)) = selected_query.single_mut() else { return; };
+    let Ok((mut transform, prim, cell)) = selected_query.single_mut() else {
+        return;
+    };
 
     match gizmo_state.mode {
         GizmoMode::Translate => {

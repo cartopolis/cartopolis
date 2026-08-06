@@ -149,7 +149,11 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
             } else {
                 theme::OVERLAY_LINE
             };
-            p.circle_stroke(c, r, egui::Stroke::new(if locked { 2.0 } else { 1.5 }, ring));
+            p.circle_stroke(
+                c,
+                r,
+                egui::Stroke::new(if locked { 2.0 } else { 1.5 }, ring),
+            );
             // Screen direction of north when screen-up is the view heading.
             let th = heading_deg.to_radians();
             let north = egui::vec2(-th.sin(), -th.cos());
@@ -263,14 +267,26 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
             p.circle_filled(c, r, theme::OVERLAY);
             let (mark, ring, filled) = match state {
                 LocateState::Off => (
-                    if hovered { theme::CREAM } else { theme::TEXT_DIM },
-                    if hovered { theme::FOX } else { theme::OVERLAY_LINE },
+                    if hovered {
+                        theme::CREAM
+                    } else {
+                        theme::TEXT_DIM
+                    },
+                    if hovered {
+                        theme::FOX
+                    } else {
+                        theme::OVERLAY_LINE
+                    },
                     false,
                 ),
                 LocateState::Follow => (accent, accent, true),
                 LocateState::FollowRotate => (rotate_accent, rotate_accent, true),
             };
-            p.circle_stroke(c, r, egui::Stroke::new(if filled { 2.0 } else { 1.5 }, ring));
+            p.circle_stroke(
+                c,
+                r,
+                egui::Stroke::new(if filled { 2.0 } else { 1.5 }, ring),
+            );
             // Navigation "location arrow" (a kite), pointing up.
             let s = LOCATE_SIZE * 0.30;
             let arrow = vec![
@@ -415,7 +431,12 @@ pub fn render_map_controls(
 pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
     let mut actions = HudActions::default();
     let mono = |ui: &mut egui::Ui, text: String, size: f32, color: egui::Color32| {
-        ui.label(egui::RichText::new(text).monospace().size(size).color(color));
+        ui.label(
+            egui::RichText::new(text)
+                .monospace()
+                .size(size)
+                .color(color),
+        );
     };
 
     // Top-right: keeps clear of the bottom chat/action bar. The caller drops the
@@ -423,162 +444,171 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
     egui::Area::new(egui::Id::new("status_hud"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
         .show(ctx, |ui| {
-            theme::overlay_frame()
-                .show(ui, |ui| {
-                    // Pin the width first — this is what stops the runaway.
-                    ui.set_width(HUD_WIDTH);
-                    // Overlay density. The theme's rhythm is sized for a panel of
-                    // place rows and layer toggles; in a 150 pt corner readout the
-                    // same values add ~40 pt of air to a box that is mostly
-                    // numbers. These switchers are chips, not buttons — so tighten
-                    // locally, while keeping a 20 pt hit target.
-                    ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                    ui.spacing_mut().interact_size.y = 20.0;
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        // Profile chip: a placeholder avatar dot with the account
-                        // initial, plus the username. Extends into a presence/chat
-                        // affordance later (ADR-016 / ADR-028).
-                        if let Some(user) = &data.user {
-                            ui.horizontal(|ui| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(15.0, 15.0),
-                                    egui::Sense::hover(),
+            theme::overlay_frame().show(ui, |ui| {
+                // Pin the width first — this is what stops the runaway.
+                ui.set_width(HUD_WIDTH);
+                // Overlay density. The theme's rhythm is sized for a panel of
+                // place rows and layer toggles; in a 150 pt corner readout the
+                // same values add ~40 pt of air to a box that is mostly
+                // numbers. These switchers are chips, not buttons — so tighten
+                // locally, while keeping a 20 pt hit target.
+                ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                ui.spacing_mut().interact_size.y = 20.0;
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    // Profile chip: a placeholder avatar dot with the account
+                    // initial, plus the username. Extends into a presence/chat
+                    // affordance later (ADR-016 / ADR-028).
+                    if let Some(user) = &data.user {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+                            let c = rect.center();
+                            ui.painter().circle_filled(c, 7.0, theme::FOX);
+                            if let Some(ch) = user.chars().next() {
+                                ui.painter().text(
+                                    c,
+                                    egui::Align2::CENTER_CENTER,
+                                    ch.to_uppercase().to_string(),
+                                    egui::FontId::proportional(9.5),
+                                    // Ink on the accent, not white — the same
+                                    // 6:1 pairing every filled orange uses.
+                                    theme::INK,
                                 );
-                                let c = rect.center();
-                                ui.painter().circle_filled(c, 7.0, theme::FOX);
-                                if let Some(ch) = user.chars().next() {
-                                    ui.painter().text(
-                                        c,
-                                        egui::Align2::CENTER_CENTER,
-                                        ch.to_uppercase().to_string(),
-                                        egui::FontId::proportional(9.5),
-                                        // Ink on the accent, not white — the same
-                                        // 6:1 pairing every filled orange uses.
-                                        theme::INK,
-                                    );
-                                }
-                                ui.label(egui::RichText::new(user).size(12.5).color(theme::CREAM));
-                            });
-                        }
-                        // Clock + a small Local/UTC toggle, then the sun-mode
-                        // switcher (Auto/Day/Night) — a light/dark/auto control
-                        // for the sky, the way a website theme toggle reads.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            mono(ui, data.time.clone(), 15.0, theme::CREAM);
-                            let zone = if data.utc { "UTC" } else { "Local" };
-                            if ui
-                                .add(egui::Button::new(egui::RichText::new(zone).size(10.5)).small())
-                                .on_hover_text("Toggle the clock between local time and UTC")
-                                .clicked()
-                            {
-                                actions.toggle_utc = true;
                             }
+                            ui.label(egui::RichText::new(user).size(12.5).color(theme::CREAM));
                         });
-                        ui.horizontal(|ui| {
-                            use crate::resources::SunMode;
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            let mut choice =
-                                |ui: &mut egui::Ui, mode: SunMode, label: &str, tip: &str| {
-                                    if ui
-                                        .selectable_label(
-                                            data.sun_mode == mode,
-                                            egui::RichText::new(label).size(11.0),
-                                        )
-                                        .on_hover_text(tip)
-                                        .clicked()
-                                    {
-                                        actions.set_sun_mode = Some(mode);
-                                    }
-                                };
-                            choice(ui, SunMode::Auto, "Auto", "Sun follows the real local time");
-                            choice(ui, SunMode::Day, "☀", "Force daylight (noon)");
-                            choice(ui, SunMode::Night, "🌙", "Force night (midnight)");
-                        });
-                        // Weather: an Auto/Manual toggle mirroring the sun switcher,
-                        // plus the live forecast readout for the map location.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            if ui
-                                .selectable_label(
-                                    data.weather_live,
-                                    egui::RichText::new("Auto").size(11.0),
-                                )
-                                .on_hover_text("Live weather for the map location (met.no)")
-                                .clicked()
-                            {
-                                actions.set_weather_live = Some(true);
-                            }
-                            if ui
-                                .selectable_label(
-                                    !data.weather_live,
-                                    egui::RichText::new("Manual").size(11.0),
-                                )
-                                .on_hover_text("Hold the weather; adjust it in the dev panel")
-                                .clicked()
-                            {
-                                actions.set_weather_live = Some(false);
-                            }
-                        });
-                        if let Some((short, full)) = &data.weather_info {
-                            ui.label(
-                                egui::RichText::new(short)
-                                    .monospace()
-                                    .size(11.0)
-                                    .color(theme::TEXT_DIM),
-                            )
-                            .on_hover_text(full);
-                        }
-                        if let Some((lat, lng)) = data.geo {
-                            let ns = if lat >= 0.0 { 'N' } else { 'S' };
-                            let ew = if lng >= 0.0 { 'E' } else { 'W' };
-                            mono(ui, format!("{:.5}° {}", lat.abs(), ns), 11.5, theme::TEXT_DIM);
-                            mono(ui, format!("{:.5}° {}", lng.abs(), ew), 11.5, theme::TEXT_DIM);
-                        }
-                        if let Some(alt) = data.altitude {
-                            let alt = alt.max(0.0);
-                            let text = if alt >= 1000.0 {
-                                format!("alt {:.1} km", alt / 1000.0)
-                            } else {
-                                format!("alt {alt:.0} m")
-                            };
-                            mono(ui, text, 11.5, theme::TEXT_DIM);
-                        }
-                        // Heading now lives in the top-right compass overlay.
-                        // Location actions.
-                        if data.geo.is_some() && data.altitude.is_some() {
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add(egui::Button::new(if data.home_set { "✔" } else { "🏠" }))
-                                    .on_hover_text(
-                                        "Set Home (the nav bar's Home button returns here)",
-                                    )
-                                    .clicked()
-                                {
-                                    actions.set_home = true;
-                                }
-                                if ui
-                                    .add(egui::Button::new(if data.copied { "✔" } else { "⧉" }))
-                                    .on_hover_text(
-                                        "Copy place — position and view (paste in the \
-                                         search bar to return)",
-                                    )
-                                    .clicked()
-                                {
-                                    actions.copy = true;
-                                }
-                                if ui
-                                    .add(egui::Button::new("☆"))
-                                    .on_hover_text("Bookmark this location")
-                                    .clicked()
-                                {
-                                    actions.bookmark = true;
-                                }
-                            });
+                    }
+                    // Clock + a small Local/UTC toggle, then the sun-mode
+                    // switcher (Auto/Day/Night) — a light/dark/auto control
+                    // for the sky, the way a website theme toggle reads.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        mono(ui, data.time.clone(), 15.0, theme::CREAM);
+                        let zone = if data.utc { "UTC" } else { "Local" };
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(zone).size(10.5)).small())
+                            .on_hover_text("Toggle the clock between local time and UTC")
+                            .clicked()
+                        {
+                            actions.toggle_utc = true;
                         }
                     });
+                    ui.horizontal(|ui| {
+                        use crate::resources::SunMode;
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        let mut choice =
+                            |ui: &mut egui::Ui, mode: SunMode, label: &str, tip: &str| {
+                                if ui
+                                    .selectable_label(
+                                        data.sun_mode == mode,
+                                        egui::RichText::new(label).size(11.0),
+                                    )
+                                    .on_hover_text(tip)
+                                    .clicked()
+                                {
+                                    actions.set_sun_mode = Some(mode);
+                                }
+                            };
+                        choice(ui, SunMode::Auto, "Auto", "Sun follows the real local time");
+                        choice(ui, SunMode::Day, "☀", "Force daylight (noon)");
+                        choice(ui, SunMode::Night, "🌙", "Force night (midnight)");
+                    });
+                    // Weather: an Auto/Manual toggle mirroring the sun switcher,
+                    // plus the live forecast readout for the map location.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        if ui
+                            .selectable_label(
+                                data.weather_live,
+                                egui::RichText::new("Auto").size(11.0),
+                            )
+                            .on_hover_text("Live weather for the map location (met.no)")
+                            .clicked()
+                        {
+                            actions.set_weather_live = Some(true);
+                        }
+                        if ui
+                            .selectable_label(
+                                !data.weather_live,
+                                egui::RichText::new("Manual").size(11.0),
+                            )
+                            .on_hover_text("Hold the weather; adjust it in the dev panel")
+                            .clicked()
+                        {
+                            actions.set_weather_live = Some(false);
+                        }
+                    });
+                    if let Some((short, full)) = &data.weather_info {
+                        ui.label(
+                            egui::RichText::new(short)
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .on_hover_text(full);
+                    }
+                    if let Some((lat, lng)) = data.geo {
+                        let ns = if lat >= 0.0 { 'N' } else { 'S' };
+                        let ew = if lng >= 0.0 { 'E' } else { 'W' };
+                        mono(
+                            ui,
+                            format!("{:.5}° {}", lat.abs(), ns),
+                            11.5,
+                            theme::TEXT_DIM,
+                        );
+                        mono(
+                            ui,
+                            format!("{:.5}° {}", lng.abs(), ew),
+                            11.5,
+                            theme::TEXT_DIM,
+                        );
+                    }
+                    if let Some(alt) = data.altitude {
+                        let alt = alt.max(0.0);
+                        let text = if alt >= 1000.0 {
+                            format!("alt {:.1} km", alt / 1000.0)
+                        } else {
+                            format!("alt {alt:.0} m")
+                        };
+                        mono(ui, text, 11.5, theme::TEXT_DIM);
+                    }
+                    // Heading now lives in the top-right compass overlay.
+                    // Location actions.
+                    if data.geo.is_some() && data.altitude.is_some() {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(egui::Button::new(if data.home_set {
+                                    "✔"
+                                } else {
+                                    "🏠"
+                                }))
+                                .on_hover_text("Set Home (the nav bar's Home button returns here)")
+                                .clicked()
+                            {
+                                actions.set_home = true;
+                            }
+                            if ui
+                                .add(egui::Button::new(if data.copied { "✔" } else { "⧉" }))
+                                .on_hover_text(
+                                    "Copy place — position and view (paste in the \
+                                         search bar to return)",
+                                )
+                                .clicked()
+                            {
+                                actions.copy = true;
+                            }
+                            if ui
+                                .add(egui::Button::new("☆"))
+                                .on_hover_text("Bookmark this location")
+                                .clicked()
+                            {
+                                actions.bookmark = true;
+                            }
+                        });
+                    }
                 });
+            });
         });
     actions
 }
@@ -796,7 +826,10 @@ mod tests {
             Transform::from_translation(cam.as_vec3()).looking_at(globe.center_local, up.as_vec3());
 
         let h = space_view_heading(&tf, north).expect("heading defined off the polar axis");
-        assert!(h < 0.05 || h > 359.95, "space heading should be north-up, got {h}");
+        assert!(
+            h < 0.05 || h > 359.95,
+            "space heading should be north-up, got {h}"
+        );
         let flat = view_heading(&tf).expect("flat bearing defined");
         assert!(
             flat.min(360.0 - flat) > 5.0,
@@ -821,7 +854,10 @@ mod tests {
             utc: false,
             sun_mode: crate::resources::SunMode::Auto,
             weather_live: true,
-            weather_info: Some(("60% cloud · 16°C".to_string(), "60% cloud · 16°C".to_string())),
+            weather_info: Some((
+                "60% cloud · 16°C".to_string(),
+                "60% cloud · 16°C".to_string(),
+            )),
             geo: Some((53.21952, 6.58220)),
             altitude: Some(17.0),
             copied: false,
@@ -881,7 +917,10 @@ mod tests {
         // that this test exists for.
         assert!(last.height() < 200.0, "HUD too tall: {}", last.height());
         assert!(last.min.y >= 0.0, "HUD grew off the top: {}", last.min.y);
-        assert!(screen.contains_rect(last), "HUD outside the screen: {last:?}");
+        assert!(
+            screen.contains_rect(last),
+            "HUD outside the screen: {last:?}"
+        );
         assert!(
             (last.width() - prev.width()).abs() < 0.5
                 && (last.height() - prev.height()).abs() < 0.5,

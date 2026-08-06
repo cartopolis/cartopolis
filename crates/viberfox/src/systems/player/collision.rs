@@ -150,8 +150,7 @@ impl BuildingColliders {
     }
 
     pub fn is_empty(&self) -> bool {
-        (self.detail_off || self.detail.is_empty())
-            && (self.lod22_off || self.lod22.is_empty())
+        (self.detail_off || self.detail.is_empty()) && (self.lod22_off || self.lod22.is_empty())
     }
 
     fn iter(&self) -> impl Iterator<Item = &Footprint> {
@@ -260,7 +259,11 @@ pub fn convex_hull_xz(mut pts: Vec<Vec2>) -> Vec<Vec2> {
     if pts.len() < 3 {
         return pts;
     }
-    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
+    pts.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap()
+            .then(a.y.partial_cmp(&b.y).unwrap())
+    });
     pts.dedup();
     if pts.len() < 3 {
         return pts;
@@ -308,12 +311,13 @@ pub fn eject_avatar_from_buildings(
     // Only a pedestrian is ejected. The footprints have no height, so shoving a
     // flying — or falling — avatar sideways would move it around a building it is
     // passing well above.
-    if avatar_state.is_flying
-        || tf.translation.y > crate::systems::avatar::AIRBORNE_EPS
-    {
+    if avatar_state.is_flying || tf.translation.y > crate::systems::avatar::AIRBORNE_EPS {
         return;
     }
-    let base = Vec2::new(cell.x as f32 * WORLD_CELL_EDGE, cell.z as f32 * WORLD_CELL_EDGE);
+    let base = Vec2::new(
+        cell.x as f32 * WORLD_CELL_EDGE,
+        cell.z as f32 * WORLD_CELL_EDGE,
+    );
     let p = base + Vec2::new(tf.translation.x, tf.translation.z);
     let fixed = colliders.eject(p, EJECT_MARGIN);
     if fixed != p {
@@ -419,10 +423,16 @@ mod tests {
         // Just inside the east wall (nearest boundary is x=5).
         let inside = Vec2::new(4.0, 0.0);
         let out = c.eject(inside, EJECT_MARGIN);
-        assert!(!c.blocked(out), "ejected point must be outside every building");
+        assert!(
+            !c.blocked(out),
+            "ejected point must be outside every building"
+        );
         // Nearest wall is +X, so it should exit eastward past x = 5 + margin.
         assert!(out.x >= 5.0 + EJECT_MARGIN - 1e-3, "got {out:?}");
-        assert!((out.y - 0.0).abs() < 1e-3, "should not drift along the wall: {out:?}");
+        assert!(
+            (out.y - 0.0).abs() < 1e-3,
+            "should not drift along the wall: {out:?}"
+        );
     }
 
     #[test]
@@ -443,8 +453,14 @@ mod tests {
         let pos = Vec2::new(-5.0 - COLLIDE_PROBE_M * 0.5, 0.0);
         let wish = Vec2::new(1.0, 1.0);
         let v = c.steer_velocity(pos, wish);
-        assert!((v.length() - wish.length()).abs() < 1e-4, "speed preserved: {v:?}");
-        assert!(v.y > 0.5 && v.x.abs() < 1e-4, "should slide north only: {v:?}");
+        assert!(
+            (v.length() - wish.length()).abs() < 1e-4,
+            "speed preserved: {v:?}"
+        );
+        assert!(
+            v.y > 0.5 && v.x.abs() < 1e-4,
+            "should slide north only: {v:?}"
+        );
     }
 
     #[test]

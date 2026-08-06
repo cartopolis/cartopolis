@@ -341,8 +341,7 @@ pub fn road_texture(class: RoadClass) -> RoadTexture {
             }
 
             for m in &markings {
-                let across = span_overlap(u0, u1, m.u - m.half_u, m.u + m.half_u)
-                    / (u1 - u0);
+                let across = span_overlap(u0, u1, m.u - m.half_u, m.u + m.half_u) / (u1 - u0);
                 if across <= 0.0 {
                     continue;
                 }
@@ -507,7 +506,10 @@ mod tests {
         let (lo, hi) = (0..t.height).fold((u32::MAX, 0), |(lo, hi), y| {
             (lo.min(lum(y)), hi.max(lum(y)))
         });
-        assert!(hi > lo + 200, "centre line looks continuous (lo {lo}, hi {hi})");
+        assert!(
+            hi > lo + 200,
+            "centre line looks continuous (lo {lo}, hi {hi})"
+        );
     }
 
     #[test]

@@ -36,7 +36,6 @@ pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_ico
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.
-pub use viberfox_geo::{furniture, mip, road_texture, routing, scatter, vector_tiles};
 pub use gui::{
     ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, place_pins, splash, theme,
     ui,
@@ -49,3 +48,4 @@ pub use map::{
 pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
 pub use net::{network, user_store};
 pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo};
+pub use viberfox_geo::{furniture, mip, road_texture, routing, scatter, vector_tiles};

@@ -1,6 +1,6 @@
 use crate::resources::OsmTileUrlTemplate;
-use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
+use bevy::prelude::*;
 use bevy_image::{Image, ImageSampler};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -109,8 +109,6 @@ pub struct RegionTile {
     pub tile_key: TileKey,
     pub lod_level: u32, // 0 = high-res (2x2), 1 = medium-res (1x1), 2 = low-res (1x1)
 }
-
-
 
 /// Fetch a single tile's raw bytes. A thin wrapper over
 /// [`tile_source::tile_bytes`], which owns the in-memory byte cache, the
@@ -489,7 +487,10 @@ mod tests {
         let key = TileKey::new(8490, 5319, 14);
         let raster = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Raster);
         let vector = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Vector);
-        assert_ne!(raster, vector, "a source switch must not reuse cached bytes");
+        assert_ne!(
+            raster, vector,
+            "a source switch must not reuse cached bytes"
+        );
         assert!(raster.ends_with("5319.png"));
         assert!(vector.ends_with("5319.mvt"));
     }

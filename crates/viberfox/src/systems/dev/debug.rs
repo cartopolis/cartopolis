@@ -1,6 +1,6 @@
-use bevy::prelude::*;
 use crate::components::Region;
 use crate::components::RegionMesh;
+use bevy::prelude::*;
 
 pub fn debug_region_entities(
     all_regions: Query<(Entity, &Region)>,
@@ -14,6 +14,11 @@ pub fn debug_region_entities(
         "region mesh status"
     );
     for (entity, region) in all_regions.iter() {
-        tracing::trace!("region entity {:?} id={} name={}", entity, region.id, region.name);
+        tracing::trace!(
+            "region entity {:?} id={} name={}",
+            entity,
+            region.id,
+            region.name
+        );
     }
 }

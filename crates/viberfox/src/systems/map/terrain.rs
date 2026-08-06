@@ -423,12 +423,12 @@ pub fn refine_for_terrain(
     for _ in 0..MAX_REFINE_PASSES {
         let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
         let split = |a: u32,
-                         b: u32,
-                         positions: &mut Vec<[f32; 3]>,
-                         uvs: &mut Vec<[f32; 2]>,
-                         normals: &mut Vec<[f32; 3]>,
-                         colors: &mut Vec<[f32; 4]>,
-                         midpoints: &mut HashMap<(u32, u32), u32>|
+                     b: u32,
+                     positions: &mut Vec<[f32; 3]>,
+                     uvs: &mut Vec<[f32; 2]>,
+                     normals: &mut Vec<[f32; 3]>,
+                     colors: &mut Vec<[f32; 4]>,
+                     midpoints: &mut HashMap<(u32, u32), u32>|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
             if let Some(m) = midpoints.get(&key) {
@@ -488,9 +488,7 @@ pub fn refine_for_terrain(
                     out.extend_from_slice(&[m1, a, m2, c, m1, m2, c, m2, b]);
                 }
                 (Some(mab), Some(mbc), Some(mca)) => {
-                    out.extend_from_slice(&[
-                        a, mab, mca, mab, b, mbc, mca, mbc, c, mab, mbc, mca,
-                    ]);
+                    out.extend_from_slice(&[a, mab, mca, mab, b, mbc, mca, mbc, c, mab, mbc, mca]);
                 }
             }
         }
@@ -690,7 +688,10 @@ mod tests {
         }
         fill_holes(&mut grid, n);
         assert!(grid[12 * n + 12].is_finite(), "small hole not filled");
-        assert!((grid[12 * n + 12] - 5.0).abs() < 1e-3, "fill invented a slope");
+        assert!(
+            (grid[12 * n + 12] - 5.0).abs() < 1e-3,
+            "fill invented a slope"
+        );
         assert!(
             !grid[150 * n + 150].is_finite(),
             "a 2.5 km void must not be smeared shut"
@@ -700,11 +701,7 @@ mod tests {
     /// Signed area doubled — the sign is the winding, and the winding is whether
     /// the triangle is visible at all.
     fn winding(p: &[[f32; 3]], t: &[u32]) -> f32 {
-        let (a, b, c) = (
-            p[t[0] as usize],
-            p[t[1] as usize],
-            p[t[2] as usize],
-        );
+        let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
         (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2])
     }
 
@@ -782,7 +779,11 @@ mod tests {
         // Every position is used by some triangle, and no position is duplicated:
         // both are what "the seam is stitched" means in index terms.
         let used: std::collections::HashSet<u32> = indices.iter().copied().collect();
-        assert_eq!(used.len(), positions.len(), "orphaned or duplicated vertices");
+        assert_eq!(
+            used.len(),
+            positions.len(),
+            "orphaned or duplicated vertices"
+        );
         let mut seen = std::collections::HashSet::new();
         for p in &positions {
             let key = (
@@ -790,7 +791,10 @@ mod tests {
                 (p[1] * 100.0).round() as i64,
                 (p[2] * 100.0).round() as i64,
             );
-            assert!(seen.insert(key), "duplicate vertex at {p:?} — that is a crack");
+            assert!(
+                seen.insert(key),
+                "duplicate vertex at {p:?} — that is a crack"
+            );
         }
     }
 
@@ -800,7 +804,11 @@ mod tests {
         let mut indices = vec![0, 1, 2];
         let mut uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let mut normals = vec![[0.0, 1.0, 0.0]; 3];
-        let mut colors = vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]];
+        let mut colors = vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ];
         refine_for_terrain(
             &mut positions,
             &mut indices,
@@ -858,11 +866,15 @@ mod tests {
         // tolerance is the synthetic patch's own 125 m sample spacing: `at` takes
         // the nearest measurement, deliberately, so the centre reads the cell it
         // lands in rather than an interpolation of four.
-        assert!((datum - 20.0).abs() < 1.0, "datum {datum} should be ~20 m NAP");
+        assert!(
+            (datum - 20.0).abs() < 1.0,
+            "datum {datum} should be ~20 m NAP"
+        );
         let n = TERRAIN_GRID;
         assert!(baked[(n / 2) * n + n / 2].abs() < 0.5);
         // A kilometre east is ~10 m up, relative — not 30 m absolute.
-        let one_km = ((1_000.0 + TERRAIN_HALF_M) / (TERRAIN_HALF_M * 2.0) * (n - 1) as f32) as usize;
+        let one_km =
+            ((1_000.0 + TERRAIN_HALF_M) / (TERRAIN_HALF_M * 2.0) * (n - 1) as f32) as usize;
         let east = baked[(n / 2) * n + one_km];
         assert!((east - 10.0).abs() < 1.5, "1 km east read {east} m");
         // Every edge sample is flattened, so the field meets the flat world outside.

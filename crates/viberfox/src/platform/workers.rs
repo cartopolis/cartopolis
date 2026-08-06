@@ -89,10 +89,7 @@ mod imp {
                             match q.pop_front() {
                                 Some(job) => break job,
                                 None => {
-                                    q = pool
-                                        .idle
-                                        .wait(q)
-                                        .unwrap_or_else(|e| e.into_inner());
+                                    q = pool.idle.wait(q).unwrap_or_else(|e| e.into_inner());
                                 }
                             }
                         }

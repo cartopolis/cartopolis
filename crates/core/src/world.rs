@@ -138,7 +138,9 @@ pub fn lat_lng_to_tile(lat: f64, lng: f64, zoom: u32) -> (i64, i64) {
 pub fn tile_to_lat_lng(x: i64, y: i64, zoom: u32) -> (f64, f64) {
     let n = 2.0_f64.powi(zoom as i32);
     let lng = (x as f64 / n) * 360.0 - 180.0;
-    let lat_rad = ((1.0 - (2.0 * y as f64) / n) * std::f64::consts::PI).sinh().atan();
+    let lat_rad = ((1.0 - (2.0 * y as f64) / n) * std::f64::consts::PI)
+        .sinh()
+        .atan();
     let lat = lat_rad.to_degrees();
     (lat, lng)
 }

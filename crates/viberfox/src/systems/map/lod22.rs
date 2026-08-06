@@ -430,7 +430,14 @@ fn build_lod22_from_text(
     let tile_m = tile_to_meters(z, lat) as f32;
 
     // Anchor vertices to the BigSpace cell at the cell centre.
-    let c_world = lat_lng_to_local((north + south) / 2.0, (west + east) / 2.0, ax, ay, z, tile_m);
+    let c_world = lat_lng_to_local(
+        (north + south) / 2.0,
+        (west + east) / 2.0,
+        ax,
+        ay,
+        z,
+        tile_m,
+    );
     let (grid_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
         .translation_to_grid(Vec3::new(c_world.x, 0.0, c_world.y).as_dvec3());
     let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
@@ -453,15 +460,19 @@ fn build_lod22_from_text(
         let (wall, roof_tile) = building_palette(blat, blng);
         let wall = [wall[0], wall[1], wall[2], 1.0];
         let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], 1.0];
-        let flat = [FLAT_ROOF_COLOR[0], FLAT_ROOF_COLOR[1], FLAT_ROOF_COLOR[2], 1.0];
+        let flat = [
+            FLAT_ROOF_COLOR[0],
+            FLAT_ROOF_COLOR[1],
+            FLAT_ROOF_COLOR[2],
+            1.0,
+        ];
 
         // World-XZ position of each vertex (before the cell offset); the hull of
         // these is the building's footprint no-go polygon.
-        let world_xz: Vec<Vec2> = b
-            .p
-            .iter()
-            .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
-            .collect();
+        let world_xz: Vec<Vec2> =
+            b.p.iter()
+                .map(|&(la, lo, _)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                .collect();
         if let Some(fp) = crate::systems::collision::Footprint::new(
             crate::systems::collision::convex_hull_xz(world_xz.clone()),
         ) {
@@ -474,12 +485,11 @@ fn build_lod22_from_text(
         // walls out of plumb and tilt the roof; a building on a hillside is level,
         // it is the ground that slopes.
         let base = ground.level_over(world_xz.iter().map(|w| [w.x, w.y]));
-        let local: Vec<Vec3> = b
-            .p
-            .iter()
-            .zip(&world_xz)
-            .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
-            .collect();
+        let local: Vec<Vec3> =
+            b.p.iter()
+                .zip(&world_xz)
+                .map(|(&(_, _, h), &w)| Vec3::new(w.x - ox, h + base, w.y - oz))
+                .collect();
         for &(i, j, k, is_roof) in &b.t {
             let (a, bb, c) = (local[i], local[j], local[k]);
             let color = if is_roof == 1 {

@@ -17,8 +17,8 @@
 //! graph is cached against its tile list, so flipping between Car/Bike/Walk re-runs
 //! only the A* — which is what makes the mode tabs feel instant.
 
-use crate::components::RouteVisual;
 use crate::components::FreeCamera;
+use crate::components::RouteVisual;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -395,9 +395,13 @@ fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoin
                 .ok()
                 .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
                 .and_then(|json| {
-                    json.get("display_name")
-                        .and_then(|v| v.as_str())
-                        .map(|n| n.split(',').map(str::trim).take(3).collect::<Vec<_>>().join(", "))
+                    json.get("display_name").and_then(|v| v.as_str()).map(|n| {
+                        n.split(',')
+                            .map(str::trim)
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                 });
             if let (Some(name), Ok(mut g)) = (name, sink.lock()) {
                 g.push((end, name));
@@ -486,11 +490,7 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
 
 /// Hand a finished solve to the main thread. Stamped with the request's `seq` so a
 /// result the user has already superseded is discarded rather than drawn.
-fn publish_solve(
-    sink: &Mutex<Option<SolveJob>>,
-    seq: u64,
-    result: Result<Route, RouteError>,
-) {
+fn publish_solve(sink: &Mutex<Option<SolveJob>>, seq: u64, result: Result<Route, RouteError>) {
     if let Ok(mut g) = sink.lock() {
         *g = Some(SolveJob { seq, result });
     }
@@ -536,11 +536,11 @@ async fn fetch_corridor(
     progress.0.store(0, Ordering::Relaxed);
 
     // Same corridor as last time → skip the fetch entirely and reuse the graph.
-    if let Some(graph) = cache
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().filter(|(t, _)| *t == tiles).map(|(_, g)| g.clone()))
-    {
+    if let Some(graph) = cache.lock().ok().and_then(|g| {
+        g.as_ref()
+            .filter(|(t, _)| *t == tiles)
+            .map(|(_, g)| g.clone())
+    }) {
         progress.0.store(tiles.len(), Ordering::Relaxed);
         return Ok(SolveInput::Graph(graph));
     }
@@ -683,7 +683,6 @@ pub fn handle_route_map_pick(
 }
 
 // ─── World rendering ─────────────────────────────────────────────────────────
-
 
 /// Materials for the route line, built once.
 #[derive(Resource)]
@@ -845,7 +844,11 @@ pub fn update_route_visuals(
     };
 
     let base = DVec3::new(origin.x, f64::from(ROUTE_Y), origin.z);
-    spawn(ribbon(&road, CASING_HALF_WIDTH), palette.casing.clone(), base);
+    spawn(
+        ribbon(&road, CASING_HALF_WIDTH),
+        palette.casing.clone(),
+        base,
+    );
     spawn(ribbon(&road, ROUTE_HALF_WIDTH), palette.fill.clone(), base);
 
     // Pin-to-road connectors, drawn thin so a long one (the pin snapped across
@@ -856,7 +859,11 @@ pub fn update_route_visuals(
         (to_pin, *road.last().unwrap(), palette.casing.clone()),
     ] {
         if pin.distance(road_end) > CONNECTOR_MIN_M {
-            spawn(ribbon(&[pin, road_end], CONNECTOR_HALF_WIDTH), material, base);
+            spawn(
+                ribbon(&[pin, road_end], CONNECTOR_HALF_WIDTH),
+                material,
+                base,
+            );
         }
     }
 
@@ -945,10 +952,16 @@ fn ribbon(points: &[Vec2], half_width: f32) -> Mesh {
         tri(c, c - nin, c - nout);
     }
 
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; positions.len()])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_indices(Indices::U32(indices))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        vec![[0.0, 1.0, 0.0]; positions.len()],
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 /// A flat disc in the XZ plane, for the start/finish markers.
@@ -1135,11 +1148,9 @@ pub fn render_route_panel(
                 }
                 (SolveStatus::Idle, None) => {
                     ui.label(
-                        egui::RichText::new(
-                            "Set a start and a destination to plan a route.",
-                        )
-                        .size(12.5)
-                        .color(theme::TEXT_DIM),
+                        egui::RichText::new("Set a start and a destination to plan a route.")
+                            .size(12.5)
+                            .color(theme::TEXT_DIM),
                     );
                 }
             }
@@ -1158,13 +1169,10 @@ pub fn render_route_panel(
                                         step.maneuver.icon_candidates(),
                                     ))
                                     .size(15.0)
-                                        .color(theme::FOX_TEXT),
+                                    .color(theme::FOX_TEXT),
                                 );
                                 ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(step.instruction())
-                                            .size(12.5),
-                                    );
+                                    ui.label(egui::RichText::new(step.instruction()).size(12.5));
                                     if step.distance_m >= 1.0 {
                                         ui.label(
                                             egui::RichText::new(format_distance(step.distance_m))
@@ -1283,11 +1291,9 @@ fn start_row(
         };
         if ui
             .add(
-                egui::Label::new(
-                    egui::RichText::new(label).size(12.0).color(theme::TEXT),
-                )
-                .truncate()
-                .sense(egui::Sense::click()),
+                egui::Label::new(egui::RichText::new(label).size(12.0).color(theme::TEXT))
+                    .truncate()
+                    .sense(egui::Sense::click()),
             )
             .on_hover_text("Click to change the starting point")
             .clicked()
@@ -1330,7 +1336,11 @@ fn endpoint_row(
         Endpoint::From => (icons.start, egui::Color32::from_rgb(80, 190, 110), "Start"),
         // Phrased as the question rather than as a field name: this is the one
         // thing the panel asks for, and "Destination" reads like a form label.
-        Endpoint::To => (icons.finish, egui::Color32::from_rgb(225, 95, 85), "Where to?"),
+        Endpoint::To => (
+            icons.finish,
+            egui::Color32::from_rgb(225, 95, 85),
+            "Where to?",
+        ),
     };
     let wp = match end {
         Endpoint::From => &mut route.from,
@@ -1513,7 +1523,10 @@ mod tests {
         // A due-east segment is offset purely in z, by the half-width each way.
         let max_z = positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
         let min_z = positions.iter().map(|p| p[2]).fold(f32::MAX, f32::min);
-        assert!((max_z - 3.0).abs() < 1e-3 && (min_z + 3.0).abs() < 1e-3, "width off: {min_z}..{max_z}");
+        assert!(
+            (max_z - 3.0).abs() < 1e-3 && (min_z + 3.0).abs() < 1e-3,
+            "width off: {min_z}..{max_z}"
+        );
         assert!(positions.iter().all(|p| p[1] == 0.0), "ribbon must be flat");
 
         let Some(Indices::U32(indices)) = mesh.indices() else {
@@ -1654,7 +1667,7 @@ mod tests {
                 Vec2::new(0.0, 0.0),
                 Vec2::new(0.0, 0.0),
                 Vec2::new(MIN_SEGMENT_M * 0.5, 0.0), // sub-segment: merges
-                Vec2::new(50.0, 0.0),               // far: kept
+                Vec2::new(50.0, 0.0),                // far: kept
             ]
             .into_iter(),
         );

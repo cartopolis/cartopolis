@@ -1,19 +1,18 @@
-use crate::components::{OwnedMaterial, PrimMesh, RegionMesh};
 use crate::components::{NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimShape, Region};
+use crate::components::{OwnedMaterial, PrimMesh, RegionMesh};
 use crate::resources::PrimTextureCache;
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::tile_loader::{RegionTile, TileKey};
-use big_space::prelude::{BigSpace, Grid};
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::primitives::{Cuboid, Cylinder, Sphere, Torus};
+use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::math::Affine2;
-use bevy::asset::RenderAssetUsages;
+use big_space::prelude::{BigSpace, Grid};
 use std::collections::HashMap;
 use viberfox_core::world::tile_to_meters;
 use viberfox_core::PrimSurface;
-
 
 /// Linear-filtered sampler with repeat addressing, so texture repeats (`repeat_u/v > 1`)
 /// tile instead of clamping at the edge. Used for all prim textures.
@@ -26,9 +25,6 @@ pub fn repeat_linear_sampler() -> ImageSampler {
     })
 }
 
-
-
-
 /// Convenience: build a mipmapped [`Image`] from a mip-0 RGBA8 buffer in one call
 /// (mip generation + upload assembly), for on-main-thread callers like prim textures.
 pub fn mipmapped_image(
@@ -40,7 +36,9 @@ pub fn mipmapped_image(
     sampler: ImageSampler,
 ) -> Image {
     let (data, mip_count) = crate::systems::mip::build_mip_chain(width, height, mip0);
-    crate::systems::tile_loader::image_from_mip_chain(width, height, data, mip_count, format, usage, sampler)
+    crate::systems::tile_loader::image_from_mip_chain(
+        width, height, data, mip_count, format, usage, sampler,
+    )
 }
 
 /// Subtle selection cue added on top of a surfaced material: a faint additive blue
@@ -189,7 +187,6 @@ pub struct MeshCache(HashMap<MeshKey, Handle<Mesh>>);
 #[derive(Resource, Default)]
 pub struct MaterialCache(HashMap<MaterialKey, Handle<StandardMaterial>>);
 
-
 /// Return the pooled mesh handle for `prim`, building and caching it on first use.
 fn cached_prim_mesh(prim: &Prim, meshes: &mut Assets<Mesh>, cache: &mut MeshCache) -> Handle<Mesh> {
     let key = MeshKey::from_prim(prim);
@@ -261,7 +258,6 @@ pub fn owned_material<'a>(
         .insert((MeshMaterial3d(new.clone()), OwnedMaterial));
     materials.get_mut(&new)
 }
-
 
 /// Spawn region meshes with tile loading setup
 pub fn spawn_regions(
@@ -455,7 +451,8 @@ pub fn refresh_prim_textures(
     for (entity, prim, mat_handle, owned) in query.iter() {
         // Copy-on-write: a texture swap is a per-prim mutation, so it must not
         // touch the shared pooled material.
-        if let Some(mut mat) = owned_material(&mut commands, &mut materials, entity, &mat_handle.0, owned)
+        if let Some(mut mat) =
+            owned_material(&mut commands, &mut materials, entity, &mat_handle.0, owned)
         {
             mat.base_color_texture = prim
                 .texture_id
@@ -973,8 +970,14 @@ fn build_box_mesh(
         let ob1 = Vec3::new(o1.x, y_bot, o1.z);
 
         let n_out = face_normal((o0 + o1) * 0.5);
-        push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-            [ot0, ot1, ob1, ob0], n_out);
+        push_quad(
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut indices,
+            [ot0, ot1, ob1, ob0],
+            n_out,
+        );
 
         if is_hollow {
             let i0 = square_pt(a0, inner_half);
@@ -985,20 +988,50 @@ fn build_box_mesh(
             let ib1 = Vec3::new(i1.x, y_bot, i1.z);
 
             // Inner wall (normal points inward) + top/bottom rings.
-            push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                [it0, it1, ib1, ib0], -n_out);
-            push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                [ot0, it0, it1, ot1], Vec3::Y);
-            push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                [ob0, ib0, ib1, ob1], Vec3::NEG_Y);
+            push_quad(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut indices,
+                [it0, it1, ib1, ib0],
+                -n_out,
+            );
+            push_quad(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut indices,
+                [ot0, it0, it1, ot1],
+                Vec3::Y,
+            );
+            push_quad(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut indices,
+                [ob0, ib0, ib1, ob1],
+                Vec3::NEG_Y,
+            );
         } else {
             // Solid caps: fan from the central axis.
             let ct = Vec3::new(0.0, y_top, 0.0);
             let cb = Vec3::new(0.0, y_bot, 0.0);
-            push_tri(&mut positions, &mut normals, &mut uvs, &mut indices,
-                [ct, ot0, ot1], Vec3::Y);
-            push_tri(&mut positions, &mut normals, &mut uvs, &mut indices,
-                [cb, ob0, ob1], Vec3::NEG_Y);
+            push_tri(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut indices,
+                [ct, ot0, ot1],
+                Vec3::Y,
+            );
+            push_tri(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut indices,
+                [cb, ob0, ob1],
+                Vec3::NEG_Y,
+            );
         }
     }
 
@@ -1014,13 +1047,25 @@ fn build_box_mesh(
                 let i = square_pt(angle, inner_half);
                 let it = Vec3::new(i.x, y_top, i.z);
                 let ib = Vec3::new(i.x, y_bot, i.z);
-                push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                    [ot, ob, ib, it], n);
+                push_quad(
+                    &mut positions,
+                    &mut normals,
+                    &mut uvs,
+                    &mut indices,
+                    [ot, ob, ib, it],
+                    n,
+                );
             } else {
                 let ct = Vec3::new(0.0, y_top, 0.0);
                 let cb = Vec3::new(0.0, y_bot, 0.0);
-                push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                    [ot, ob, cb, ct], n);
+                push_quad(
+                    &mut positions,
+                    &mut normals,
+                    &mut uvs,
+                    &mut indices,
+                    [ot, ob, cb, ct],
+                    n,
+                );
             }
         }
     }
@@ -1070,11 +1115,11 @@ fn build_sphere_mesh(
 
     // Build one sphere shell over the swept region (outward or inward facing).
     let surface = |positions: &mut Vec<[f32; 3]>,
-                       normals: &mut Vec<[f32; 3]>,
-                       uvs: &mut Vec<[f32; 2]>,
-                       indices: &mut Vec<u32>,
-                       rad: f32,
-                       outward: bool| {
+                   normals: &mut Vec<[f32; 3]>,
+                   uvs: &mut Vec<[f32; 2]>,
+                   indices: &mut Vec<u32>,
+                   rad: f32,
+                   outward: bool| {
         let base = positions.len() as u32;
         for i in 0..=stacks {
             let v = i as f32 / stacks as f32;
@@ -1106,9 +1151,23 @@ fn build_sphere_mesh(
         }
     };
 
-    surface(&mut positions, &mut normals, &mut uvs, &mut indices, r, true);
+    surface(
+        &mut positions,
+        &mut normals,
+        &mut uvs,
+        &mut indices,
+        r,
+        true,
+    );
     if is_hollow {
-        surface(&mut positions, &mut normals, &mut uvs, &mut indices, inner_r, false);
+        surface(
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut indices,
+            inner_r,
+            false,
+        );
     }
 
     // Cut faces: a meridian half-disc (or half-annulus when hollow) at each end.
@@ -1130,8 +1189,14 @@ fn build_sphere_mesh(
                     // Collapse to the central axis at the matching latitude.
                     (Vec3::new(0.0, o0.y, 0.0), Vec3::new(0.0, o1.y, 0.0))
                 };
-                push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                    [o0, o1, inner1, inner0], n);
+                push_quad(
+                    &mut positions,
+                    &mut normals,
+                    &mut uvs,
+                    &mut indices,
+                    [o0, o1, inner1, inner0],
+                    n,
+                );
             }
         }
     }
@@ -1156,12 +1221,24 @@ fn build_sphere_mesh(
                 if is_hollow {
                     let i0 = Vec3::new(inner_ring_r * a0.cos(), y, inner_ring_r * a0.sin());
                     let i1 = Vec3::new(inner_ring_r * a1.cos(), y, inner_ring_r * a1.sin());
-                    push_quad(&mut positions, &mut normals, &mut uvs, &mut indices,
-                        [o0, o1, i1, i0], n);
+                    push_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [o0, o1, i1, i0],
+                        n,
+                    );
                 } else {
                     let center = Vec3::new(0.0, y, 0.0);
-                    push_tri(&mut positions, &mut normals, &mut uvs, &mut indices,
-                        [center, o0, o1], n);
+                    push_tri(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [center, o0, o1],
+                        n,
+                    );
                 }
             }
         }
@@ -1230,6 +1307,4 @@ fn finish_mesh(
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}

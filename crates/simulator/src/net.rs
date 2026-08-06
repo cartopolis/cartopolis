@@ -548,7 +548,15 @@ mod tests {
         // Create a prim
         let prim_result = {
             let mut w = world.write().await;
-            w.add_prim(region_id, Vec3::new(10.0, 5.0, 20.0), "box", viberfox_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
+            w.add_prim(
+                region_id,
+                Vec3::new(10.0, 5.0, 20.0),
+                "box",
+                viberfox_core::GeoAnchor {
+                    latitude: 0.0,
+                    longitude: 0.0,
+                },
+            )
         };
 
         assert!(prim_result.is_ok(), "prim creation should succeed");
@@ -581,7 +589,15 @@ mod tests {
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
-                .add_prim(region_id, Vec3::ZERO, "sphere", viberfox_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
+                .add_prim(
+                    region_id,
+                    Vec3::ZERO,
+                    "sphere",
+                    viberfox_core::GeoAnchor {
+                        latitude: 0.0,
+                        longitude: 0.0,
+                    },
+                )
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
         };
@@ -599,7 +615,10 @@ mod tests {
                 "Updated Prim",
                 viberfox_core::PrimSurface::default(),
                 viberfox_core::PrimGeometry::default(),
-                viberfox_core::GeoAnchor { latitude: 0.0, longitude: 0.0 },
+                viberfox_core::GeoAnchor {
+                    latitude: 0.0,
+                    longitude: 0.0,
+                },
             )
         };
 
@@ -629,7 +648,15 @@ mod tests {
         let prim_id = {
             let mut w = world.write().await;
             let prim = w
-                .add_prim(region_id, Vec3::ZERO, "cube", viberfox_core::GeoAnchor { latitude: 0.0, longitude: 0.0 })
+                .add_prim(
+                    region_id,
+                    Vec3::ZERO,
+                    "cube",
+                    viberfox_core::GeoAnchor {
+                        latitude: 0.0,
+                        longitude: 0.0,
+                    },
+                )
                 .map_err(|e| anyhow::anyhow!(e))?;
             prim.id
         };

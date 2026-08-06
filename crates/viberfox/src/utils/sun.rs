@@ -78,9 +78,9 @@ const AEROSOL: Vec3 = Vec3::new(0.037, 0.048, 0.063);
 /// symmetry of a pure position model.
 fn haze(hours: f32) -> f32 {
     let phase = ((hours - 6.0) / 24.0 * std::f32::consts::TAU).cos(); // 1 at 06:00, −1 at 18:00
-    // Swing kept moderate (0.75–1.45×): at 0.6–1.8× the evening beam was so far
-    // into the red that dusk read as a single saturated red sheet once the sky,
-    // the fog glow and the sunlight all took their cut of the same tint.
+                                                                      // Swing kept moderate (0.75–1.45×): at 0.6–1.8× the evening beam was so far
+                                                                      // into the red that dusk read as a single saturated red sheet once the sky,
+                                                                      // the fog glow and the sunlight all took their cut of the same tint.
     1.1 - 0.35 * phase
 }
 
@@ -261,7 +261,7 @@ mod tests {
         assert!(approx(solar_time_of_day(noon_utc, 15.0), 13.0)); // 15°E → +1h
         assert!(approx(solar_time_of_day(noon_utc, -15.0), 11.0)); // 15°W → −1h
         assert!(approx(solar_time_of_day(noon_utc, 180.0), 0.0)); // date line → midnight
-        // Wraps cleanly at UTC midnight on the prime meridian.
+                                                                  // Wraps cleanly at UTC midnight on the prime meridian.
         assert!(approx(solar_time_of_day(0.0, 0.0), 0.0));
     }
 }

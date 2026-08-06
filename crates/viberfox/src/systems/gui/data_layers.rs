@@ -16,8 +16,8 @@
 //!
 //! First layer: public transport stops (rail stations, tram stops, bus stops).
 
-use crate::components::{DataLayerMarkers, StopRing};
 use crate::components::FreeCamera;
+use crate::components::{DataLayerMarkers, StopRing};
 use std::collections::HashMap;
 
 use bevy::pbr::{
@@ -34,11 +34,9 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::theme;
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::osm_buildings::{
-    lat_lng_to_local, overpass_query, MeshData,
-};
+use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
+use crate::systems::theme;
 use viberfox_core::world::{tile_to_lat_lng, tile_to_meters};
 
 /// Material for the floating shop-pin heads: a plain `StandardMaterial` (unlit,
@@ -219,8 +217,16 @@ fn classify_shops(tags: Option<&serde_json::Value>) -> Option<usize> {
         "supermarket" | "convenience" | "bakery" | "butcher" | "greengrocer" | "deli"
         | "cheese" | "confectionery" | "chocolate" | "seafood" | "alcohol" | "beverages"
         | "health_food" | "frozen_food" | "pastry" | "coffee" | "tea" => 0,
-        "clothes" | "shoes" | "boutique" | "jewelry" | "jewellery" | "bag" | "watches"
-        | "fashion_accessories" | "leather" | "fabric" => 1,
+        "clothes"
+        | "shoes"
+        | "boutique"
+        | "jewelry"
+        | "jewellery"
+        | "bag"
+        | "watches"
+        | "fashion_accessories"
+        | "leather"
+        | "fabric" => 1,
         _ => 2,
     })
 }
@@ -430,8 +436,18 @@ impl DataLayers {
         weather: &crate::systems::weather::WeatherState,
     ) -> crate::systems::user_store::SkyPrefs {
         let (weather_live, fog_density, cloud_cover, precipitation) = match &self.minimal {
-            Some(m) => (m.weather_live, m.fog_density, m.cloud_cover, m.precipitation),
-            None => (weather.live, dev.fog_density, dev.cloud_cover, dev.precipitation),
+            Some(m) => (
+                m.weather_live,
+                m.fog_density,
+                m.cloud_cover,
+                m.precipitation,
+            ),
+            None => (
+                weather.live,
+                dev.fog_density,
+                dev.cloud_cover,
+                dev.precipitation,
+            ),
         };
         crate::systems::user_store::SkyPrefs {
             sun_mode: dev.sun_mode,
@@ -545,8 +561,6 @@ impl DataLayers {
     }
 }
 
-
-
 /// Info card for a clicked POI, anchored above its pole.
 #[derive(Clone)]
 pub struct PoiPopup {
@@ -602,7 +616,11 @@ pub fn update_data_layers(
             .iter_mut()
             .flat_map(|layer| {
                 layer.pois.clear();
-                layer.cells.drain().flat_map(|(_, ents)| ents).collect::<Vec<_>>()
+                layer
+                    .cells
+                    .drain()
+                    .flat_map(|(_, ents)| ents)
+                    .collect::<Vec<_>>()
             })
             .collect();
         dl.cells.retire_all(retired);
@@ -681,8 +699,7 @@ pub fn update_data_layers(
                 match fetch_cell_text(&LAYER_DEFS[li], cx, cy).await {
                     Ok(text) => {
                         crate::platform::workers::submit(Box::new(move || {
-                            let built =
-                                build_layer_cell(li, &text, cx, cy, ax, ay, z, lat, ground);
+                            let built = build_layer_cell(li, &text, cx, cy, ax, ay, z, lat, ground);
                             if let Ok(mut g) = results.lock() {
                                 g.push(((li, cx, cy), built));
                             }
@@ -799,9 +816,7 @@ pub fn update_data_layers(
                                     0.08,
                                     poi.anchor.z,
                                 ))
-                                .with_rotation(Quat::from_rotation_x(
-                                    -std::f32::consts::FRAC_PI_2,
-                                ))
+                                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                                 .with_scale(Vec3::splat(0.4)),
                                 poi.cell,
                                 ChildOf(root),
@@ -930,10 +945,9 @@ pub fn handle_poi_click(
                     PoiPopup {
                         cell: poi.cell,
                         anchor: poi.anchor,
-                        title: poi
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| LAYER_DEFS[li].categories[poi.category].0.to_string()),
+                        title: poi.name.clone().unwrap_or_else(|| {
+                            LAYER_DEFS[li].categories[poi.category].0.to_string()
+                        }),
                         subtitle: String::new(),
                         website: poi.website.clone(),
                         osm_id: poi.osm_id,
@@ -946,8 +960,7 @@ pub fn handle_poi_click(
     }
     dl.popup = best.map(|(_, _, mut popup, li, cat)| {
         let category = LAYER_DEFS[li].categories[cat].0;
-        popup.subtitle = match dl
-            .layers[li]
+        popup.subtitle = match dl.layers[li]
             .pois
             .values()
             .flatten()
@@ -1006,14 +1019,11 @@ pub fn render_poi_popup(
                                 .size(14.0)
                                 .color(theme::CREAM),
                         );
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if theme::close_button(ui).clicked() {
-                                    close = true;
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::close_button(ui).clicked() {
+                                close = true;
+                            }
+                        });
                     });
                     ui.label(
                         egui::RichText::new(&popup.subtitle)
@@ -1062,7 +1072,9 @@ fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(&url).spawn();
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+    let result = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn();
     // Web: opening a real link in a new tab is the browser's job (ADR-030). Wired
     // to `web-sys` `window.open` later; a compiling no-op keeps the click harmless.
     #[cfg(target_arch = "wasm32")]
@@ -1337,7 +1349,8 @@ fn buildings_section(
     dl: &mut DataLayers,
     tdbag_available: bool,
 ) -> Option<egui::Response> {
-    crate::systems::theme::checkbox(ui, 
+    crate::systems::theme::checkbox(
+        ui,
         &mut dl.buildings_enabled,
         egui::RichText::new("Buildings").size(14.0),
     );
@@ -1346,12 +1359,14 @@ fn buildings_section(
         // an active-looking sub-checkbox would promise something it can't do.
         ui.add_enabled_ui(dl.buildings_enabled, |ui| {
             let tdbag = tdbag_available.then(|| {
-                crate::systems::theme::checkbox(ui, 
+                crate::systems::theme::checkbox(
+                    ui,
                     &mut dl.tdbag_enabled,
                     egui::RichText::new("3DBAG (NL)").size(13.0),
                 )
             });
-            crate::systems::theme::checkbox(ui, 
+            crate::systems::theme::checkbox(
+                ui,
                 &mut dl.osm_buildings_enabled,
                 egui::RichText::new("OSM 3D buildings and windows").size(13.0),
             );
@@ -1375,104 +1390,120 @@ pub fn render_data_layers_panel(
     let mut close = false;
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
-    crate::systems::egui_manager::responsive_right_panel("layers_panel", compact, viewport_w, 260.0)
-        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            let panel = crate::resources::RightPanel::Layers;
-            close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
-            for (i, def) in LAYER_DEFS.iter().enumerate() {
-                ui.add_space(4.0);
-                crate::systems::theme::checkbox(ui, 
-                    &mut dl.layers[i].enabled,
-                    egui::RichText::new(def.name).size(14.0),
-                );
-                ui.indent(def.key, |ui| {
-                    for (label, style) in def.categories {
-                        let c = egui::Color32::from_rgb(
-                            (style.color[0] * 255.0) as u8,
-                            (style.color[1] * 255.0) as u8,
-                            (style.color[2] * 255.0) as u8,
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("●").size(12.0).color(c));
-                            ui.label(egui::RichText::new(*label).size(13.0));
-                        });
-                    }
-                    // Live moving vehicles ride on the transit layer (ADR-026).
-                    if i == TRANSIT_LAYER {
-                        ui.add_space(2.0);
-                        crate::systems::theme::checkbox(ui, 
-                            &mut dl.vehicles_enabled,
-                            egui::RichText::new("Live vehicles").size(13.0),
-                        );
-                    }
-                });
-                ui.add_space(4.0);
-                ui.separator();
-            }
-            ui.add_space(4.0);
-            let tdbag_resp = buildings_section(
-                ui,
-                &mut dl,
-                crate::systems::osm_buildings::tdbag_attribution().is_some(),
-            );
-            // One line per click, so a live session can tell "the click never
-            // reached the widget" from "it toggled and something reverted it"
-            // without a debugger (#12 reported the checkbox stuck).
-            if tdbag_resp.is_some_and(|r| r.clicked()) {
-                tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            crate::systems::theme::checkbox(ui, &mut dl.map_enabled, egui::RichText::new("Map").size(14.0));
-            ui.indent("map", |ui| {
-                ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
-                ui.add_space(2.0);
-                crate::systems::theme::checkbox(ui, 
-                    &mut dl.trees_enabled,
-                    egui::RichText::new("Trees").size(13.0),
-                );
-                crate::systems::theme::checkbox(ui,
-                    &mut dl.furniture_enabled,
-                    egui::RichText::new("Street furniture").size(13.0),
-                );
-                crate::systems::theme::checkbox(ui,
-                    &mut dl.roads_textured,
-                    egui::RichText::new("Road textures").size(13.0),
-                );
-                crate::systems::theme::checkbox(ui, 
-                    &mut dl.water_shading,
-                    egui::RichText::new("Water shading").size(13.0),
-                );
-                crate::systems::theme::checkbox(ui,
-                    &mut dl.street_labels,
-                    egui::RichText::new("Street labels").size(13.0),
-                );
-            });
-            ui.add_space(4.0);
-            ui.separator();
+    crate::systems::egui_manager::responsive_right_panel(
+        "layers_panel",
+        compact,
+        viewport_w,
+        260.0,
+    )
+    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+        let panel = crate::resources::RightPanel::Layers;
+        close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+        for (i, def) in LAYER_DEFS.iter().enumerate() {
             ui.add_space(4.0);
             crate::systems::theme::checkbox(
                 ui,
-                &mut dl.height_enabled,
-                egui::RichText::new("Height").size(14.0),
+                &mut dl.layers[i].enabled,
+                egui::RichText::new(def.name).size(14.0),
             );
-            ui.indent("height", |ui| {
-                // Say where it works, in the panel rather than in a doc comment: a
-                // toggle that silently does nothing over Berlin is a bug report.
-                ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
+            ui.indent(def.key, |ui| {
+                for (label, style) in def.categories {
+                    let c = egui::Color32::from_rgb(
+                        (style.color[0] * 255.0) as u8,
+                        (style.color[1] * 255.0) as u8,
+                        (style.color[2] * 255.0) as u8,
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("●").size(12.0).color(c));
+                        ui.label(egui::RichText::new(*label).size(13.0));
+                    });
+                }
+                // Live moving vehicles ride on the transit layer (ADR-026).
+                if i == TRANSIT_LAYER {
+                    ui.add_space(2.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.vehicles_enabled,
+                        egui::RichText::new("Live vehicles").size(13.0),
+                    );
+                }
             });
             ui.add_space(4.0);
             ui.separator();
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(6.0);
-                if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
-                    ui.small(credit);
-                }
-                ui.small("Data © OpenStreetMap contributors (ODbL), via Overpass API");
-                ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
-            });
+        }
+        ui.add_space(4.0);
+        let tdbag_resp = buildings_section(
+            ui,
+            &mut dl,
+            crate::systems::osm_buildings::tdbag_attribution().is_some(),
+        );
+        // One line per click, so a live session can tell "the click never
+        // reached the widget" from "it toggled and something reverted it"
+        // without a debugger (#12 reported the checkbox stuck).
+        if tdbag_resp.is_some_and(|r| r.clicked()) {
+            tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        crate::systems::theme::checkbox(
+            ui,
+            &mut dl.map_enabled,
+            egui::RichText::new("Map").size(14.0),
+        );
+        ui.indent("map", |ui| {
+            ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
+            ui.add_space(2.0);
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.trees_enabled,
+                egui::RichText::new("Trees").size(13.0),
+            );
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.furniture_enabled,
+                egui::RichText::new("Street furniture").size(13.0),
+            );
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.roads_textured,
+                egui::RichText::new("Road textures").size(13.0),
+            );
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.water_shading,
+                egui::RichText::new("Water shading").size(13.0),
+            );
+            crate::systems::theme::checkbox(
+                ui,
+                &mut dl.street_labels,
+                egui::RichText::new("Street labels").size(13.0),
+            );
         });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        crate::systems::theme::checkbox(
+            ui,
+            &mut dl.height_enabled,
+            egui::RichText::new("Height").size(14.0),
+        );
+        ui.indent("height", |ui| {
+            // Say where it works, in the panel rather than in a doc comment: a
+            // toggle that silently does nothing over Berlin is a bug report.
+            ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            ui.add_space(6.0);
+            if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
+                ui.small(credit);
+            }
+            ui.small("Data © OpenStreetMap contributors (ODbL), via Overpass API");
+            ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
+        });
+    });
     if close || (open_before && !open) {
         *right_panel = crate::resources::RightPanel::None;
     }
@@ -1518,7 +1549,14 @@ fn build_layer_cell(
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LAYER_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
 
-    let c_world = lat_lng_to_local((north + south) / 2.0, (west + east) / 2.0, ax, ay, z, tile_m);
+    let c_world = lat_lng_to_local(
+        (north + south) / 2.0,
+        (west + east) / 2.0,
+        ax,
+        ay,
+        z,
+        tile_m,
+    );
     let (grid_cell, _) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
         .translation_to_grid(Vec3::new(c_world.x, 0.0, c_world.y).as_dvec3());
     let ox = grid_cell.x as f32 * WORLD_CELL_EDGE;
@@ -1675,11 +1713,41 @@ fn push_pole(buf: &mut MeshData, p: Vec2, style: &MarkerStyle) {
     let (z0, z1) = (p.y - hz, p.y + hz);
     let v = Vec3::new;
 
-    buf.quad(v(x0, 0.0, z1), v(x1, 0.0, z1), v(x1, h, z1), v(x0, h, z1), POLE_COLOR);
-    buf.quad(v(x0, 0.0, z0), v(x1, 0.0, z0), v(x1, h, z0), v(x0, h, z0), POLE_COLOR);
-    buf.quad(v(x0, 0.0, z0), v(x0, 0.0, z1), v(x0, h, z1), v(x0, h, z0), POLE_COLOR);
-    buf.quad(v(x1, 0.0, z0), v(x1, 0.0, z1), v(x1, h, z1), v(x1, h, z0), POLE_COLOR);
-    buf.quad(v(x0, h, z0), v(x1, h, z0), v(x1, h, z1), v(x0, h, z1), POLE_COLOR);
+    buf.quad(
+        v(x0, 0.0, z1),
+        v(x1, 0.0, z1),
+        v(x1, h, z1),
+        v(x0, h, z1),
+        POLE_COLOR,
+    );
+    buf.quad(
+        v(x0, 0.0, z0),
+        v(x1, 0.0, z0),
+        v(x1, h, z0),
+        v(x0, h, z0),
+        POLE_COLOR,
+    );
+    buf.quad(
+        v(x0, 0.0, z0),
+        v(x0, 0.0, z1),
+        v(x0, h, z1),
+        v(x0, h, z0),
+        POLE_COLOR,
+    );
+    buf.quad(
+        v(x1, 0.0, z0),
+        v(x1, 0.0, z1),
+        v(x1, h, z1),
+        v(x1, h, z0),
+        POLE_COLOR,
+    );
+    buf.quad(
+        v(x0, h, z0),
+        v(x1, h, z0),
+        v(x1, h, z1),
+        v(x0, h, z1),
+        POLE_COLOR,
+    );
 }
 
 /// Append one floating map pin at ground point `p`: a small colour disc on the
@@ -1723,10 +1791,34 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
     let (x0, x1) = (p.x - s, p.x + s);
     let (z0, z1) = (p.y - s, p.y + s);
     let (y0, y1) = (0.05, tip);
-    base.quad(v(x0, y0, z1), v(x1, y0, z1), v(x1, y1, z1), v(x0, y1, z1), POLE_COLOR);
-    base.quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y1, z0), v(x0, y1, z0), POLE_COLOR);
-    base.quad(v(x0, y0, z0), v(x0, y0, z1), v(x0, y1, z1), v(x0, y1, z0), POLE_COLOR);
-    base.quad(v(x1, y0, z0), v(x1, y0, z1), v(x1, y1, z1), v(x1, y1, z0), POLE_COLOR);
+    base.quad(
+        v(x0, y0, z1),
+        v(x1, y0, z1),
+        v(x1, y1, z1),
+        v(x0, y1, z1),
+        POLE_COLOR,
+    );
+    base.quad(
+        v(x0, y0, z0),
+        v(x1, y0, z0),
+        v(x1, y1, z0),
+        v(x0, y1, z0),
+        POLE_COLOR,
+    );
+    base.quad(
+        v(x0, y0, z0),
+        v(x0, y0, z1),
+        v(x0, y1, z1),
+        v(x0, y1, z0),
+        POLE_COLOR,
+    );
+    base.quad(
+        v(x1, y0, z0),
+        v(x1, y0, z1),
+        v(x1, y1, z1),
+        v(x1, y1, z0),
+        POLE_COLOR,
+    );
 
     // Ground disc marking the exact footprint (category hue, hexagonal fan).
     const DR: f32 = 0.6;
@@ -1756,8 +1848,7 @@ mod tests {
         dl.layers[0].enabled = true;
 
         let json = serde_json::to_string(&dl.prefs()).unwrap();
-        let prefs: crate::systems::user_store::LayerPrefs =
-            serde_json::from_str(&json).unwrap();
+        let prefs: crate::systems::user_store::LayerPrefs = serde_json::from_str(&json).unwrap();
 
         let mut restored = DataLayers::default();
         restored.apply_prefs(&prefs);
@@ -1765,7 +1856,10 @@ mod tests {
         assert!(!restored.trees_enabled);
         assert!(restored.vehicles_enabled);
         assert!(restored.layers[0].enabled);
-        assert!(restored.buildings_enabled, "untouched toggles keep defaults");
+        assert!(
+            restored.buildings_enabled,
+            "untouched toggles keep defaults"
+        );
         assert_eq!(restored.prefs(), prefs);
     }
 
@@ -1778,7 +1872,11 @@ mod tests {
         use crate::systems::weather::WeatherState;
 
         let dl = DataLayers::default();
-        let dev = DevPanelState { fog_density: 0.4, cloud_cover: 0.7, ..default() };
+        let dev = DevPanelState {
+            fog_density: 0.4,
+            cloud_cover: 0.7,
+            ..default()
+        };
         let weather = WeatherState::with_live(true);
 
         // Not driving: what's on screen is what the user set.
@@ -1810,7 +1908,10 @@ mod tests {
             ..default()
         };
         let saved = driving.sky_prefs(&bare, &WeatherState::default());
-        assert!(saved.weather_live, "live weather was only frozen for the drive");
+        assert!(
+            saved.weather_live,
+            "live weather was only frozen for the drive"
+        );
         assert_eq!(saved.cloud_cover, 0.7);
         assert_eq!(saved.precipitation, 0.2);
         assert_eq!(saved.time_of_day, Some(6.5), "Manual saves its hour");

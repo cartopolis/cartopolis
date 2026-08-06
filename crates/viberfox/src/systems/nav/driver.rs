@@ -388,7 +388,12 @@ impl RouteGeom {
             .map(|s| nearest_on_polyline(&points, &cum, s.at).0)
             .collect();
 
-        Some(Self { points, cum, total_m: total, step_along })
+        Some(Self {
+            points,
+            cum,
+            total_m: total,
+            step_along,
+        })
     }
 }
 
@@ -431,13 +436,20 @@ fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress
     // Time is scaled from the planner's own answer rather than from the current
     // speed: the planner knows the speed limits of the road ahead, and a driver
     // stopped at a light does not have an infinite ETA.
-    let fraction = if geom.total_m > 1.0 { remaining_m / geom.total_m } else { 0.0 };
+    let fraction = if geom.total_m > 1.0 {
+        remaining_m / geom.total_m
+    } else {
+        0.0
+    };
     let step = geom
         .step_along
         .iter()
         .position(|&s| s > along - STEP_PASSED_M)
         .unwrap_or(route.steps.len().saturating_sub(1));
-    let step_distance_m = geom.step_along.get(step).map_or(0.0, |&s| (s - along).max(0.0));
+    let step_distance_m = geom
+        .step_along
+        .get(step)
+        .map_or(0.0, |&s| (s - along).max(0.0));
     Progress {
         along_m: along,
         off_route_m: off,
@@ -756,7 +768,6 @@ pub fn steady_driver_camera(
 
 // ─── The arrow ───────────────────────────────────────────────────────────────
 
-
 /// Material for the arrow, built once (mirrors `navigation::RouteMaterials`).
 #[derive(Resource)]
 pub struct ArrowMaterials {
@@ -785,7 +796,10 @@ pub fn update_driver_arrow(
     avatars: Query<(Entity, &GridCell, &Transform), With<Avatar>>,
     children: Query<&Children>,
     visibility: Query<&Visibility>,
-    mut arrows: Query<(Entity, &mut GridCell, &mut Transform), (With<DriverArrow>, Without<Avatar>)>,
+    mut arrows: Query<
+        (Entity, &mut GridCell, &mut Transform),
+        (With<DriverArrow>, Without<Avatar>),
+    >,
     mut hidden: Local<bool>,
 ) {
     // Reconciled every frame while driving, not once on the edge: the model holders
@@ -864,7 +878,11 @@ pub fn update_driver_arrow(
             commands.spawn((
                 Mesh3d(meshes.add(arrow_mesh())),
                 MeshMaterial3d(fill),
-                Transform { translation, rotation, ..default() },
+                Transform {
+                    translation,
+                    rotation,
+                    ..default()
+                },
                 *cell,
                 ChildOf(root),
                 bevy::camera::visibility::NoFrustumCulling,
@@ -906,10 +924,16 @@ fn arrow_mesh() -> Mesh {
         }
         indices.extend([base, base + 1, base + 2]);
     }
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; positions.len()])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_indices(Indices::U32(indices))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        vec![[0.0, 1.0, 0.0]; positions.len()],
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 // ─── The navigation chrome ───────────────────────────────────────────────────
@@ -1032,75 +1056,70 @@ pub fn render_driver_hud(
             } else {
                 DRIVE_BLUE
             })
-                .show(ui, |ui| {
-                    ui.set_width(CARD_WIDTH - 20.0);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        if rerouting {
-                            ui.label(big("Rerouting…", 19.0, theme::INK));
-                            ui.label(small("from your current position", theme::INK));
+            .show(ui, |ui| {
+                ui.set_width(CARD_WIDTH - 20.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    if rerouting {
+                        ui.label(big("Rerouting…", 19.0, theme::INK));
+                        ui.label(small("from your current position", theme::INK));
+                        return;
+                    }
+                    if off_route {
+                        // Reached only when a reroute cannot be asked for yet
+                        // (the cooldown, or a solve that failed) — otherwise
+                        // the card above has already taken over.
+                        ui.label(big("Off route", 20.0, theme::INK));
+                        ui.label(small(
+                            &format!("{} from the route", format_distance(progress.off_route_m)),
+                            theme::INK,
+                        ));
+                        return;
+                    }
+                    // Glyph and distance on one line, street name under it —
+                    // the satnav arrangement, and it keeps the card short
+                    // enough to leave the compass its place below.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
+                        ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
+                        ui.label(big(
+                            &format_distance(progress.step_distance_m),
+                            24.0,
+                            theme::CREAM,
+                        ));
+                    });
+                    // Street name, and — when the manoeuvre after this one
+                    // follows immediately — a preview of it on the same row.
+                    // Right-aligned so it reads as a footnote to the turn
+                    // rather than as a competing instruction, and inside the
+                    // card so the compass below keeps its place.
+                    ui.horizontal(|ui| {
+                        if let Some(name) = step.and_then(|s| s.name.as_deref()) {
+                            ui.label(egui::RichText::new(name).size(12.5).color(theme::CREAM));
+                        }
+                        let Some(next) = r.steps.get(progress.step + 1) else {
+                            return;
+                        };
+                        if next_step_gap(r, progress) > THEN_PREVIEW_M {
                             return;
                         }
-                        if off_route {
-                            // Reached only when a reroute cannot be asked for yet
-                            // (the cooldown, or a solve that failed) — otherwise
-                            // the card above has already taken over.
-                            ui.label(big("Off route", 20.0, theme::INK));
-                            ui.label(small(
-                                &format!("{} from the route", format_distance(progress.off_route_m)),
-                                theme::INK,
-                            ));
-                            return;
-                        }
-                        // Glyph and distance on one line, street name under it —
-                        // the satnav arrangement, and it keeps the card short
-                        // enough to leave the compass its place below.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
-                            ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
-                            ui.label(big(
-                                &format_distance(progress.step_distance_m),
-                                24.0,
-                                theme::CREAM,
-                            ));
-                        });
-                        // Street name, and — when the manoeuvre after this one
-                        // follows immediately — a preview of it on the same row.
-                        // Right-aligned so it reads as a footnote to the turn
-                        // rather than as a competing instruction, and inside the
-                        // card so the compass below keeps its place.
-                        ui.horizontal(|ui| {
-                            if let Some(name) = step.and_then(|s| s.name.as_deref()) {
-                                ui.label(
-                                    egui::RichText::new(name).size(12.5).color(theme::CREAM),
-                                );
-                            }
-                            let Some(next) = r.steps.get(progress.step + 1) else {
-                                return;
-                            };
-                            if next_step_gap(r, progress) > THEN_PREVIEW_M {
-                                return;
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.x = 3.0;
-                                    ui.label(
-                                        egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
-                                            .size(16.0)
-                                            .color(theme::CREAM),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new("then")
-                                            .size(11.0)
-                                            .color(theme::CREAM.gamma_multiply(0.75)),
-                                    );
-                                },
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            ui.label(
+                                egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
+                                    .size(16.0)
+                                    .color(theme::CREAM),
+                            );
+                            ui.label(
+                                egui::RichText::new("then")
+                                    .size(11.0)
+                                    .color(theme::CREAM.gamma_multiply(0.75)),
                             );
                         });
                     });
                 });
+            });
         });
 
     // ── Permission trouble. Nothing else would ever say why the arrow is not
@@ -1149,8 +1168,15 @@ pub fn render_driver_hud(
                         ui.label(big(&arrival, 24.0, theme::CREAM));
                         ui.label(small("arrival", theme::TEXT_DIM));
                         ui.add_space(6.0);
-                        ui.label(big(&format_distance(progress.remaining_m), 21.0, theme::TEXT));
-                        ui.label(small(&format_duration(progress.remaining_s), theme::TEXT_DIM));
+                        ui.label(big(
+                            &format_distance(progress.remaining_m),
+                            21.0,
+                            theme::TEXT,
+                        ));
+                        ui.label(small(
+                            &format_duration(progress.remaining_s),
+                            theme::TEXT_DIM,
+                        ));
                         ui.add_space(8.0);
                         route_rail(ui, &ctx, &ahead, progress);
                         ui.add_space(6.0);
@@ -1243,15 +1269,9 @@ fn next_step_gap(route: &Route, progress: Progress) -> f64 {
 /// of car parks in one street becomes a legible column rather than one smudge;
 /// anything pushed past the destination cap is dropped and counted, because a
 /// badge drawn over the flag would claim to be the end of the route.
-fn route_rail(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    ahead: &RouteAhead,
-    progress: Progress,
-) {
+fn route_rail(ui: &mut egui::Ui, ctx: &egui::Context, ahead: &RouteAhead, progress: Progress) {
     let width = ui.available_width();
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, RAIL_HEIGHT), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, RAIL_HEIGHT), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let x = rect.center().x;
     let top = rect.top() + RAIL_BADGE_R;
@@ -1276,7 +1296,10 @@ fn route_rail(
     if remaining > RAIL_NEAR_SPAN_M {
         let y = y_of(RAIL_NEAR_SPAN_M);
         painter.line_segment(
-            [egui::pos2(x - RAIL_HALF_W - 3.0, y), egui::pos2(x + RAIL_HALF_W + 3.0, y)],
+            [
+                egui::pos2(x - RAIL_HALF_W - 3.0, y),
+                egui::pos2(x + RAIL_HALF_W + 3.0, y),
+            ],
             egui::Stroke::new(1.0, theme::OVERLAY_LINE),
         );
     }
@@ -1315,13 +1338,17 @@ fn route_rail(
         // tooltip. `interact` rather than a widget: the rail is one allocated
         // rect, and hover regions inside it are hit-tested by hand.
         let hit = egui::Rect::from_center_size(c, egui::Vec2::splat(RAIL_BADGE_R * 2.0));
-        ui.interact(hit, ui.id().with(("rail", item.along_m.to_bits())), egui::Sense::hover())
-            .on_hover_text(format!(
-                "{}\n{} ahead · {} off the route",
-                item.title(),
-                format_distance(item.along_m - base),
-                format_distance(item.off_m),
-            ));
+        ui.interact(
+            hit,
+            ui.id().with(("rail", item.along_m.to_bits())),
+            egui::Sense::hover(),
+        )
+        .on_hover_text(format!(
+            "{}\n{} ahead · {} off the route",
+            item.title(),
+            format_distance(item.along_m - base),
+            format_distance(item.off_m),
+        ));
     }
 
     // The destination cap, and the vehicle at the foot.
@@ -1361,7 +1388,11 @@ fn route_rail(
     // asked while driving.
     match ahead.next_ahead(base) {
         Some(next) => {
-            ui.label(big(&format_distance(next.along_m - base), 15.0, theme::CREAM));
+            ui.label(big(
+                &format_distance(next.along_m - base),
+                15.0,
+                theme::CREAM,
+            ));
             // Truncated, not wrapped: a long POI name is three lines in a 96 px
             // column, and the strip is a fixed-height box with a button under it —
             // the wrap pushed Stop off the bottom of the panel.
@@ -1401,8 +1432,7 @@ fn rail_t(d: f64, remaining: f64) -> f32 {
 /// the real sign, which is what makes it readable without being read.
 fn speed_limit_sign(ui: &mut egui::Ui, limit: u16) {
     const R: f32 = 13.0;
-    let (rect, _) =
-        ui.allocate_exact_size(egui::Vec2::splat(R * 2.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(R * 2.0), egui::Sense::hover());
     let c = rect.center();
     let painter = ui.painter();
     painter.circle_filled(c, R, SIGN_WHITE);
@@ -1464,7 +1494,9 @@ mod tests {
     fn fixture() -> Route {
         // ~0.001° of longitude at 53°N is ~67 m; use latitude steps instead, where
         // a degree is a constant 110.54 km, so the expected distances are exact.
-        let pts: Vec<[f64; 2]> = (0..=10).map(|i| [53.0 + f64::from(i) * 0.001, 6.0]).collect();
+        let pts: Vec<[f64; 2]> = (0..=10)
+            .map(|i| [53.0 + f64::from(i) * 0.001, 6.0])
+            .collect();
         let mut points = vec![[52.9995, 6.0]]; // start pin
         points.extend(pts.iter().copied());
         points.push([53.0105, 6.0]); // end pin
@@ -1514,7 +1546,11 @@ mod tests {
         );
         // Steps land where their coordinates say, not where their distances do.
         assert!(geom.step_along[0].abs() < 1.0);
-        assert!((geom.step_along[1] - 552.7).abs() < 1.0, "{:?}", geom.step_along);
+        assert!(
+            (geom.step_along[1] - 552.7).abs() < 1.0,
+            "{:?}",
+            geom.step_along
+        );
         assert!((geom.step_along[2] - 1105.4).abs() < 1.0);
     }
 
@@ -1530,7 +1566,11 @@ mod tests {
         let p = project_onto_route(&geom, &route, [53.0025, 6.0 + side]);
         assert!((p.along_m - 276.35).abs() < 2.0, "along {}", p.along_m);
         assert!((p.off_route_m - 20.0).abs() < 1.0, "off {}", p.off_route_m);
-        assert!((p.remaining_m - 829.05).abs() < 2.0, "remaining {}", p.remaining_m);
+        assert!(
+            (p.remaining_m - 829.05).abs() < 2.0,
+            "remaining {}",
+            p.remaining_m
+        );
         // Time is scaled from the planner's answer, so three quarters left of 120 s.
         assert!((p.remaining_s - 90.0).abs() < 1.0, "eta {}", p.remaining_s);
     }
@@ -1596,8 +1636,14 @@ mod tests {
             _ => panic!("positions are not Float32x3"),
         };
         let max_z = positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
-        assert!((max_z - ARROW_HALF_LENGTH).abs() < 1e-3, "nose is not at +Z: {max_z}");
-        assert!(positions.iter().all(|p| p[1] == 0.0), "the arrow must be flat");
+        assert!(
+            (max_z - ARROW_HALF_LENGTH).abs() < 1e-3,
+            "nose is not at +Z: {max_z}"
+        );
+        assert!(
+            positions.iter().all(|p| p[1] == 0.0),
+            "the arrow must be flat"
+        );
 
         let Some(Indices::U32(indices)) = mesh.indices() else {
             panic!("expected u32 indices")
@@ -1662,13 +1708,14 @@ mod tests {
     fn a_reroute_waits_out_its_cooldown() {
         let mut driver = DriverState::default();
         let now = Instant::now();
-        assert!(driver.reroute_ready(now), "the first reroute is never blocked");
+        assert!(
+            driver.reroute_ready(now),
+            "the first reroute is never blocked"
+        );
         driver.reroute_at = Some(now);
         assert!(!driver.reroute_ready(now));
-        assert!(!driver
-            .reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN * 0.5)));
-        assert!(driver
-            .reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN + 0.1)));
+        assert!(!driver.reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN * 0.5)));
+        assert!(driver.reroute_ready(now + Duration::from_secs_f32(REROUTE_COOLDOWN + 0.1)));
     }
 
     /// Entering driver mode a second time must not inherit the previous drive's
@@ -1692,13 +1739,19 @@ mod tests {
     #[test]
     fn the_then_preview_only_fires_on_a_close_pair() {
         let mut route = fixture();
-        let far = Progress { step: 0, ..default() };
+        let far = Progress {
+            step: 0,
+            ..default()
+        };
         route.steps[1].distance_m = 900.0;
         assert!(next_step_gap(&route, far) > THEN_PREVIEW_M);
         route.steps[1].distance_m = 120.0;
         assert!(next_step_gap(&route, far) <= THEN_PREVIEW_M);
         // No step after the last one: never previews, never panics.
-        let last = Progress { step: route.steps.len() - 1, ..default() };
+        let last = Progress {
+            step: route.steps.len() - 1,
+            ..default()
+        };
         assert!(next_step_gap(&route, last).is_infinite());
     }
 }

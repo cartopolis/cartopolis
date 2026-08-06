@@ -6,11 +6,11 @@
 //! Shift+drag: add marquee hits to existing selection.
 //! Delete / Backspace: delete all selected prims.
 
+use crate::components::PrimMesh;
 use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use crate::components::PrimMesh;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -172,8 +172,7 @@ pub fn prim_picking(
             //
             // Note this takes the *first* region, not the one under the cursor —
             // pre-existing, and only harmless while a world has one.
-            context_menu.hit_region_id =
-                region_query.iter().next().map(|(_, region, _)| region.id);
+            context_menu.hit_region_id = region_query.iter().next().map(|(_, region, _)| region.id);
             let plane_y = region_query
                 .iter()
                 .next()
@@ -331,9 +330,16 @@ pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>)
     );
     let rect = egui::Rect::from_min_max(min, max);
 
-    let fill = egui::Color32::from_rgba_unmultiplied(theme::FOX.r(), theme::FOX.g(), theme::FOX.b(), 28);
+    let fill =
+        egui::Color32::from_rgba_unmultiplied(theme::FOX.r(), theme::FOX.g(), theme::FOX.b(), 28);
     let stroke = egui::Stroke::new(1.0_f32, theme::FOX_BRIGHT);
-    painter.rect(rect, egui::CornerRadius::default(), fill, stroke, egui::StrokeKind::Outside);
+    painter.rect(
+        rect,
+        egui::CornerRadius::default(),
+        fill,
+        stroke,
+        egui::StrokeKind::Outside,
+    );
 }
 
 // ─── Delete key ──────────────────────────────────────────────────────────────

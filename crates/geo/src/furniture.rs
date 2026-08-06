@@ -45,8 +45,8 @@ use std::collections::HashMap;
 
 use mvt_reader::feature::{Feature, Value};
 
-use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 use crate::scatter::{hash3, rand01, srgb_to_linear_rgb};
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 
 /// Altitude at which furniture starts merging into the paving.
 ///
@@ -309,7 +309,10 @@ impl WayField {
             for line in lines {
                 for w in line.0.windows(2) {
                     let out_of_range = |c: &geo_types::Coord<f32>| {
-                        c.x < -margin || c.y < -margin || c.x > extent + margin || c.y > extent + margin
+                        c.x < -margin
+                            || c.y < -margin
+                            || c.x > extent + margin
+                            || c.y > extent + margin
                     };
                     if out_of_range(&w[0]) && out_of_range(&w[1]) {
                         continue;
@@ -569,12 +572,7 @@ pub fn build_furniture_meshes(items: &[FurnitureInstance]) -> Vec<SurfaceMesh> {
         let (sn, cs) = item.yaw.sin_cos();
         for p in parts(item.kind) {
             let m = p.tone.multiplier();
-            let tint = [
-                m[0] * item.luma,
-                m[1] * item.luma,
-                m[2] * item.luma,
-                1.0,
-            ];
+            let tint = [m[0] * item.luma, m[1] * item.luma, m[2] * item.luma, 1.0];
             push_box(&mut buf, item.x, item.z, (sn, cs), p, tint);
         }
     }
@@ -609,38 +607,76 @@ impl MeshBuf {
 /// apart from a smudge at this size.
 fn push_box(buf: &mut MeshBuf, ox: f32, oz: f32, (sn, cs): (f32, f32), p: &Part, tint: [f32; 4]) {
     // Object frame → world: rotate (x, z) about +y, then translate.
-    let place = |lx: f32, ly: f32, lz: f32| {
-        [
-            ox + lx * cs + lz * sn,
-            ly,
-            oz - lx * sn + lz * cs,
-        ]
-    };
+    let place = |lx: f32, ly: f32, lz: f32| [ox + lx * cs + lz * sn, ly, oz - lx * sn + lz * cs];
     let rotate = |nx: f32, nz: f32| [nx * cs + nz * sn, 0.0, -nx * sn + nz * cs];
 
     // (normal, and the four corners of that face as ±1 in the box's own axes)
     const FACES: [([f32; 3], [[f32; 3]; 4]); 6] = [
         // +x
-        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]]),
+        (
+            [1.0, 0.0, 0.0],
+            [
+                [1.0, -1.0, -1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [1.0, 1.0, -1.0],
+            ],
+        ),
         // −x
-        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0]]),
+        (
+            [-1.0, 0.0, 0.0],
+            [
+                [-1.0, -1.0, 1.0],
+                [-1.0, -1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+        ),
         // +y
-        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
+        (
+            [0.0, 1.0, 0.0],
+            [
+                [-1.0, 1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [1.0, 1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+            ],
+        ),
         // −y
-        ([0.0, -1.0, 0.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, -1.0, -1.0]]),
+        (
+            [0.0, -1.0, 0.0],
+            [
+                [-1.0, -1.0, 1.0],
+                [1.0, -1.0, 1.0],
+                [1.0, -1.0, -1.0],
+                [-1.0, -1.0, -1.0],
+            ],
+        ),
         // +z
-        ([0.0, 0.0, 1.0], [[1.0, -1.0, 1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]),
+        (
+            [0.0, 0.0, 1.0],
+            [
+                [1.0, -1.0, 1.0],
+                [-1.0, -1.0, 1.0],
+                [-1.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0],
+            ],
+        ),
         // −z
-        ([0.0, 0.0, -1.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]]),
+        (
+            [0.0, 0.0, -1.0],
+            [
+                [-1.0, -1.0, -1.0],
+                [1.0, -1.0, -1.0],
+                [1.0, 1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+            ],
+        ),
     ];
 
     for (n, corners) in FACES {
         let base = buf.positions.len() as u32;
-        let world_n = if n[1] == 0.0 {
-            rotate(n[0], n[2])
-        } else {
-            n
-        };
+        let world_n = if n[1] == 0.0 { rotate(n[0], n[2]) } else { n };
         for c in corners {
             buf.positions.push(place(
                 p.at[0] + c[0] * p.half[0],
@@ -675,7 +711,10 @@ pub fn paving_base(factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../geo/tests/fixtures/groningen_z14.mvt"));
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../geo/tests/fixtures/groningen_z14.mvt"
+    ));
     const TILE_M: f32 = 1000.0;
 
     /// The fixture, parsed. `extract_furniture` takes a `TileData` because on the
@@ -730,7 +769,10 @@ mod tests {
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(x.kind, y.kind);
-            assert!((x.yaw - y.yaw).abs() < 1e-6, "a re-streamed cell re-rolled an angle");
+            assert!(
+                (x.yaw - y.yaw).abs() < 1e-6,
+                "a re-streamed cell re-rolled an angle"
+            );
         }
     }
 

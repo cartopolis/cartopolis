@@ -250,8 +250,12 @@ impl GlobeState {
         let frame = TangentFrame::new(self.anchor_lat, self.anchor_lng, 0.0);
         // ECEF spin axis (0,0,1) → ENU (dot with the frame basis) → Bevy
         // (E, U, −N), the same mapping `sub_point` inverts.
-        Vec3::new(frame.east.z as f32, frame.up.z as f32, -frame.north.z as f32)
-            .normalize_or_zero()
+        Vec3::new(
+            frame.east.z as f32,
+            frame.up.z as f32,
+            -frame.north.z as f32,
+        )
+        .normalize_or_zero()
     }
 
     /// Are globe tiles still being fetched or retired? Used by the `--shot`
@@ -317,8 +321,7 @@ pub fn sub_point(anchor_lat: f64, anchor_lng: f64, dir_bevy: Vec3) -> (f64, f64)
     // Bevy (E, U, −N) → ENU (E, N, U), then rotate ENU → ECEF by the frame basis.
     let enu = DVec3::new(dir_bevy.x as f64, -dir_bevy.z as f64, dir_bevy.y as f64);
     let ecef_dir = frame.east * enu.x + frame.north * enu.y + frame.up * enu.z;
-    let (lat, lng, _) =
-        viberfox_core::ecef_to_geodetic(ecef_dir.normalize_or_zero() * 6_378_137.0);
+    let (lat, lng, _) = viberfox_core::ecef_to_geodetic(ecef_dir.normalize_or_zero() * 6_378_137.0);
     (lat, lng)
 }
 
@@ -354,7 +357,10 @@ fn over_the_horizon(normal: DVec3, to_cam: DVec3, ground_span_m: f64, radius: f6
 /// Latitude (deg) of a fractional Web-Mercator tile row at a zoom.
 fn tile_frac_to_lat(fy: f64, zoom: u32) -> f64 {
     let n = 2.0_f64.powi(zoom as i32);
-    ((1.0 - 2.0 * fy / n) * std::f64::consts::PI).sinh().atan().to_degrees()
+    ((1.0 - 2.0 * fy / n) * std::f64::consts::PI)
+        .sinh()
+        .atan()
+        .to_degrees()
 }
 
 /// Longitude (deg) of a fractional tile column at a zoom.
@@ -368,8 +374,7 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 /// (the fetch + decode/render itself is `tile_loader::fetch_globe_tile_payload`).
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
-    let (data, mip_count) =
-        crate::systems::mip::build_mip_chain(width, height, rgba.into_raw());
+    let (data, mip_count) = crate::systems::mip::build_mip_chain(width, height, rgba.into_raw());
     DecodedTile {
         data,
         width,
@@ -437,7 +442,11 @@ pub fn setup_globe(
     let frame = TangentFrame::new(clat, clng, 0.0);
     // Earth centre (ECEF origin) expressed in the anchor's Bevy-local frame.
     let center_enu = frame.world_to_local(DVec3::ZERO);
-    let center = Vec3::new(center_enu.x as f32, center_enu.z as f32, -center_enu.y as f32);
+    let center = Vec3::new(
+        center_enu.x as f32,
+        center_enu.z as f32,
+        -center_enu.y as f32,
+    );
     globe.center_local = center;
     globe.radius = center.length();
 
@@ -539,13 +548,10 @@ pub fn setup_globe(
     tracing::info!(radius = globe.radius, "globe placed");
 }
 
-
-
 /// Altitude (m) above which the globe is drawn. Below it the detailed flat-tile
 /// city view fully covers the sky-facing hemisphere, so the globe stays hidden
 /// (and can't z-fight the tiles that sit on its surface).
 pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
-
 
 /// Render the atmosphere from orbit? `true`: the space tier switches the camera
 /// to `AtmosphereMode::Raymarched` (at [`GLOBE_SKY_SAMPLES`]) so the planet shows
@@ -696,10 +702,7 @@ pub fn update_globe_visibility(
     mut scattering_media: ResMut<Assets<bevy::light::atmosphere::ScatteringMedium>>,
     // Density multiplier the current `media.space` asset was built for.
     mut applied_density: Local<f32>,
-    mut globe_vis: Query<
-        &mut Visibility,
-        (With<GlobeMesh>, Without<HideInSpace>),
-    >,
+    mut globe_vis: Query<&mut Visibility, (With<GlobeMesh>, Without<HideInSpace>)>,
     // Only the ground props NOT owned by the Layers toggles (i.e. the horizon
     // disc): tiles, region quads, buildings and windows are excluded because
     // `data_layers::apply_feature_toggles` is their single visibility writer —
@@ -805,7 +808,11 @@ pub fn update_globe_visibility(
         }
     }
 
-    let want_globe = if show_globe { Visibility::Visible } else { Visibility::Hidden };
+    let want_globe = if show_globe {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
     for mut v in globe_vis.iter_mut() {
         if *v != want_globe {
             *v = want_globe;
@@ -814,7 +821,11 @@ pub fn update_globe_visibility(
     // Hide the skybox and the local ground props while the globe is up (so the
     // sky reads as black space and no bright disc floats over the anchor); show
     // them again on the way back down.
-    let want_local = if show_globe { Visibility::Hidden } else { Visibility::Inherited };
+    let want_local = if show_globe {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
     for mut v in hide_vis.iter_mut() {
         if *v != want_local {
             *v = want_local;
@@ -834,10 +845,7 @@ pub fn update_globe_visibility(
 /// albedo, so anything that arrives early puts a step in the middle of a climb.
 pub fn update_globe_albedo(
     globe: Res<GlobeState>,
-    camera: Query<
-        (&GridCell, &Transform),
-        With<crate::components::FreeCamera>,
-    >,
+    camera: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut albedo: ResMut<GlobeSurfaceAlbedo>,
     mut gloss: ResMut<GlobeOceanGloss>,
     tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<GlobeSurfaceMaterial>), With<GlobeMesh>>,
@@ -929,10 +937,7 @@ pub fn update_globe_tiles(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     tile_url: Res<OsmTileUrlTemplate>,
-    camera: Query<
-        (&GridCell, &Transform, &Projection),
-        With<crate::components::FreeCamera>,
-    >,
+    camera: Query<(&GridCell, &Transform, &Projection), With<crate::components::FreeCamera>>,
     windows: Query<&Window>,
     headless: Option<Res<crate::resources::HeadlessSurface>>,
     bigspace: Query<Entity, With<BigSpace>>,
@@ -1185,10 +1190,16 @@ pub fn update_globe_tiles(
         // the split chain whenever a coarse tile was larger than the view (its
         // centre off-screen while the tile sat under the camera) — fine levels
         // then never loaded and the view fell back to the backstop.
-        let view_angle = ((centre - cam).normalize_or_zero().dot(fwd)).clamp(-1.0, 1.0).acos();
+        let view_angle = ((centre - cam).normalize_or_zero().dot(fwd))
+            .clamp(-1.0, 1.0)
+            .acos();
         let ang_radius = ((gs * 0.75) / d).atan();
         let in_view = view_angle < view_cone + ang_radius;
-        if px > QT_SPLIT_PX && key.z < QT_MAX_Z && in_view && desired.len() + stack.len() < QT_MAX_TILES {
+        if px > QT_SPLIT_PX
+            && key.z < QT_MAX_Z
+            && in_view
+            && desired.len() + stack.len() < QT_MAX_TILES
+        {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 stack.push(TileKey::new(key.x * 2 + dx, key.y * 2 + dy, key.z + 1));
             }

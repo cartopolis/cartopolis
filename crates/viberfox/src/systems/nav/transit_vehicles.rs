@@ -29,8 +29,8 @@
 //! the transit layer being on, the camera being near the ground, and vehicles
 //! being in range — the same discipline the boards and building streaming use.
 
-use crate::components::{VehicleBox, VehicleLabel};
 use crate::components::FreeCamera;
+use crate::components::{VehicleBox, VehicleLabel};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -193,8 +193,6 @@ pub struct TransitVehicles {
     painter: Option<LabelPainter>,
 }
 
-
-
 /// Interpolated flat-frame position of a vehicle at time `now`.
 fn interp(s: &VehicleState, now: f64) -> Vec2 {
     let a = ((now - s.t0) as f32 / POLL_INTERVAL.as_secs_f32()).clamp(0.0, 1.0);
@@ -219,7 +217,6 @@ pub fn poll_transit_vehicles(
     stream: Res<MapStream>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
-
     // Re-anchor: the flat frame moved, so the frame-relative track is stale.
     // In-flight/queued fixes are absolute lat/lng and re-fold correctly.
     if tv.synced_gen != stream.anchor_generation {
@@ -256,7 +253,11 @@ pub fn poll_transit_vehicles(
                             // Glide from where it is shown now to the new fix,
                             // unless the jump is too big to be real motion.
                             let cur = interp(s, now);
-                            s.from = if cur.distance(flat) > SNAP_DIST { flat } else { cur };
+                            s.from = if cur.distance(flat) > SNAP_DIST {
+                                flat
+                            } else {
+                                cur
+                            };
                             s.to = flat;
                             s.t0 = now;
                             // Re-aim along the travel direction (only once it has
@@ -289,7 +290,8 @@ pub fn poll_transit_vehicles(
             Err(e) => tracing::warn!(error = %e, "vehicle feed fetch failed"),
         }
     }
-    tv.vehicles.retain(|_, s| s.last_seen.elapsed() < VEHICLE_TTL);
+    tv.vehicles
+        .retain(|_, s| s.last_seen.elapsed() < VEHICLE_TTL);
 
     // Decide whether to poll now.
     if tv.in_flight || !(dl.layers[TRANSIT_LAYER].enabled && dl.vehicles_enabled) {
@@ -350,10 +352,7 @@ fn resolve_line_map(
         }
         return map;
     }
-    slot.lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_default()
+    slot.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
 }
 
 /// Spawn / move / retire the vehicle boxes and their line-number labels:
@@ -478,7 +477,11 @@ pub fn update_transit_vehicles(
                 .spawn((
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(material),
-                    Transform { translation, rotation, ..default() },
+                    Transform {
+                        translation,
+                        rotation,
+                        ..default()
+                    },
                     cell,
                     ChildOf(root),
                     VehicleBox,
@@ -534,7 +537,11 @@ pub fn update_transit_vehicles(
                 .spawn((
                     Mesh3d(label_mesh.clone()),
                     MeshMaterial3d(material),
-                    Transform { translation: lbl_translation, rotation: lbl_rot, ..default() },
+                    Transform {
+                        translation: lbl_translation,
+                        rotation: lbl_rot,
+                        ..default()
+                    },
                     cell,
                     ChildOf(root),
                     VehicleLabel,
@@ -807,12 +814,29 @@ impl LabelPainter {
         let (w, h) = (LABEL_PX_W, LABEL_PX_H);
         let mut px = vec![0u8; w * h * 4];
         let dim = |c: u8| (c as f32 * 0.55) as u8;
-        fill_rect(&mut px, 0, 0, w, h, [dim(color[0]), dim(color[1]), dim(color[2]), 255]);
-        fill_rect(&mut px, 4, 4, w - 4, h - 4, [color[0], color[1], color[2], 255]);
+        fill_rect(
+            &mut px,
+            0,
+            0,
+            w,
+            h,
+            [dim(color[0]), dim(color[1]), dim(color[2]), 255],
+        );
+        fill_rect(
+            &mut px,
+            4,
+            4,
+            w - 4,
+            h - 4,
+            [color[0], color[1], color[2], 255],
+        );
 
         if let Some(font) = &self.font {
-            let measure =
-                |s: f32| line.chars().map(|c| font.metrics(c, s).advance_width).sum::<f32>();
+            let measure = |s: f32| {
+                line.chars()
+                    .map(|c| font.metrics(c, s).advance_width)
+                    .sum::<f32>()
+            };
             // Shrink to fit the badge width.
             let mut size = 46.0f32;
             while size > 16.0 && measure(size) > w as f32 - 20.0 {
@@ -851,7 +875,11 @@ impl LabelPainter {
         }
 
         Image::new(
-            Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+            Extent3d {
+                width: w as u32,
+                height: h as u32,
+                depth_or_array_layers: 1,
+            },
             TextureDimension::D2,
             px,
             TextureFormat::Rgba8UnormSrgb,
@@ -945,8 +973,14 @@ mod tests {
             "NL_5302_1": {"LinePlanningNumber":"5302","LinePublicNumber":"302","TransportType":"BUS"}
         }"#;
         let map = parse_line_map(json);
-        assert_eq!(map.get("293"), Some(&(Some("N93".to_string()), Transport::Tram)));
-        assert_eq!(map.get("5302"), Some(&(Some("302".to_string()), Transport::Bus)));
+        assert_eq!(
+            map.get("293"),
+            Some(&(Some("N93".to_string()), Transport::Tram))
+        );
+        assert_eq!(
+            map.get("5302"),
+            Some(&(Some("302".to_string()), Transport::Bus))
+        );
     }
 
     /// Motion-derived heading maps to the right Bevy yaw (north = −Z, east = +X

@@ -208,7 +208,11 @@ fn densify_path(waypoints: &[ShotSpec], frames: u32) -> Vec<ShotSpec> {
     let segs = (waypoints.len() - 1) as f64;
     (0..frames)
         .map(|k| {
-            let t = if frames == 1 { 0.0 } else { k as f64 / (frames - 1) as f64 };
+            let t = if frames == 1 {
+                0.0
+            } else {
+                k as f64 / (frames - 1) as f64
+            };
             // Map the global parameter onto a segment. Clamping `seg` (rather than
             // `pos`) means the final sample resolves to `local == 1.0` on the last
             // segment — landing exactly on the last waypoint, not a hair short.
@@ -345,12 +349,19 @@ impl Expectation {
         let want = match raw_value {
             "true" => 1.0,
             "false" => 0.0,
-            v => v.parse::<f64>().map_err(|e| format!("{spec:?}: {v:?} is not a number ({e})"))?,
+            v => v
+                .parse::<f64>()
+                .map_err(|e| format!("{spec:?}: {v:?} is not a number ({e})"))?,
         };
         if want.is_nan() {
             return Err(format!("{spec:?}: NaN compares false against everything"));
         }
-        Ok(Self { key: key.to_string(), op, want, text: spec.trim().to_string() })
+        Ok(Self {
+            key: key.to_string(),
+            op,
+            want,
+            text: spec.trim().to_string(),
+        })
     }
 
     /// Check against one capture. `Ok(())` holds; `Err` is the reason, ready to log.
@@ -371,7 +382,9 @@ impl Expectation {
 /// second time, so a new metric reaches the flag on the same commit it reaches
 /// the CSV — and `expectation_keys_match_the_metrics` fails if they ever part.
 fn metric_keys() -> impl Iterator<Item = &'static str> {
-    CSV_HEADER.split(',').filter(|k| !matches!(*k, "name" | "busy"))
+    CSV_HEADER
+        .split(',')
+        .filter(|k| !matches!(*k, "name" | "busy"))
 }
 
 /// Parse every `--expect` spec, failing on the first bad one. Done while the CLI
@@ -655,7 +668,9 @@ impl ShotHarness {
             path: manifest_path.with_extension("png"),
             shots,
             size,
-            settle: settle_override.or(manifest.settle).unwrap_or(DEFAULT_SETTLE),
+            settle: settle_override
+                .or(manifest.settle)
+                .unwrap_or(DEFAULT_SETTLE),
             wait: wait_override.or(manifest.wait).unwrap_or(DEFAULT_WAIT),
             hide_ui: manifest.hide_ui.unwrap_or(false),
             ui: Vec::new(),
@@ -680,7 +695,10 @@ impl ShotHarness {
 
     /// Whether shot `i` drops the egui overlay.
     pub fn hide_ui_for(&self, i: usize) -> bool {
-        self.shots.get(i).and_then(|s| s.hide_ui).unwrap_or(self.hide_ui)
+        self.shots
+            .get(i)
+            .and_then(|s| s.hide_ui)
+            .unwrap_or(self.hide_ui)
     }
 
     /// Panels to open for shot `i`.
@@ -704,8 +722,12 @@ impl ShotHarness {
             }
             out.push('\n');
             match std::fs::write(path, out) {
-                Ok(()) => tracing::info!(path = %path.display(), rows = metrics.len(), "shot harness: wrote CSV"),
-                Err(e) => tracing::error!(path = %path.display(), error = %e, "shot harness: CSV write failed"),
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), rows = metrics.len(), "shot harness: wrote CSV")
+                }
+                Err(e) => {
+                    tracing::error!(path = %path.display(), error = %e, "shot harness: CSV write failed")
+                }
             }
         }
         if let Some(path) = &self.dump_state {
@@ -715,8 +737,12 @@ impl ShotHarness {
             };
             match json {
                 Ok(s) => match std::fs::write(path, s) {
-                    Ok(()) => tracing::info!(path = %path.display(), shots = metrics.len(), "shot harness: wrote state dump"),
-                    Err(e) => tracing::error!(path = %path.display(), error = %e, "shot harness: dump write failed"),
+                    Ok(()) => {
+                        tracing::info!(path = %path.display(), shots = metrics.len(), "shot harness: wrote state dump")
+                    }
+                    Err(e) => {
+                        tracing::error!(path = %path.display(), error = %e, "shot harness: dump write failed")
+                    }
                 },
                 Err(e) => tracing::error!(error = %e, "shot harness: dump serialize failed"),
             }
@@ -738,8 +764,14 @@ impl ShotHarness {
         if self.shots.len() == 1 {
             return self.path.clone();
         }
-        let stem = self.path.file_stem().map(|s| s.to_string_lossy().into_owned());
-        let ext = self.path.extension().map(|s| s.to_string_lossy().into_owned());
+        let stem = self
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        let ext = self
+            .path
+            .extension()
+            .map(|s| s.to_string_lossy().into_owned());
         let width = (self.shots.len() - 1).to_string().len();
         let name = format!(
             "{}_{:0width$}_{}m.{}",
@@ -911,8 +943,12 @@ pub fn open_scripted_ui(
                 .and_then(|s| crate::systems::geo_nav::parse_lat_lng(&s))
                 .unwrap_or(default)
         };
-        route.from.set("Route start", seed("VIBE_ROUTE_FROM", (53.2194, 6.5665)));
-        route.to.set("Route end", seed("VIBE_ROUTE_TO", (53.2109, 6.5642)));
+        route
+            .from
+            .set("Route start", seed("VIBE_ROUTE_FROM", (53.2194, 6.5665)));
+        route
+            .to
+            .set("Route end", seed("VIBE_ROUTE_TO", (53.2109, 6.5642)));
     }
     // The address bar is the one piece of chrome that cannot be *asked* for: it
     // auto-hides and reveals on a pointer at the top edge, which a headless run
@@ -926,8 +962,18 @@ pub fn open_scripted_ui(
     }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
     let known = [
-        "dev", "stats", "ai", "avatar", "appearance", "layers", "places", "bookmarks", "route",
-        "driver", "search", "all",
+        "dev",
+        "stats",
+        "ai",
+        "avatar",
+        "appearance",
+        "layers",
+        "places",
+        "bookmarks",
+        "route",
+        "driver",
+        "search",
+        "all",
     ];
     for u in &panels {
         if !known.contains(&u.as_str()) {
@@ -960,9 +1006,8 @@ pub fn setup_offscreen_target(
     );
     // RENDER_ATTACHMENT to draw into it, COPY_SRC so the screenshot readback can
     // pull it back to the CPU.
-    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
-        | TextureUsages::COPY_SRC
-        | TextureUsages::RENDER_ATTACHMENT;
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC | TextureUsages::RENDER_ATTACHMENT;
     let handle = images.add(image);
     if let Ok(mut target) = camera.single_mut() {
         *target = RenderTarget::Image(handle.clone().into());
@@ -1211,7 +1256,13 @@ pub fn drive_capture(
                     outstanding = crate::platform::workers::outstanding(),
                     "shot harness: no readback within the grace — re-firing the shutter once"
                 );
-                fire_capture(&mut commands, &harness, &mut progress, target.as_deref(), &mut shot_state);
+                fire_capture(
+                    &mut commands,
+                    &harness,
+                    &mut progress,
+                    target.as_deref(),
+                    &mut shot_state,
+                );
                 return;
             }
             tracing::error!(
@@ -1341,7 +1392,10 @@ pub fn drive_capture(
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
             globe_entities: globe_meshes.iter().count(),
-            globe_visible: globe_meshes.iter().filter(|(_, v)| **v == Visibility::Visible).count(),
+            globe_visible: globe_meshes
+                .iter()
+                .filter(|(_, v)| **v == Visibility::Visible)
+                .count(),
             globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
             ground_m: readouts.2.ground_m.unwrap_or(f32::NAN),
             height_patches: readouts.2.fetched,
@@ -1356,33 +1410,33 @@ pub fn drive_capture(
         macro_rules! shot_state {
             ($level:ident) => {
                 tracing::$level!(
-            shot = m.shot,
-            name = m.name.as_deref().unwrap_or("-"),
-            settled = m.settled,
-            busy = m.busy.join("|"),
-            settled_in = format!("{:.1}s", m.settled_s),
-            frame_ms = format!("{:.1}", m.frame_ms),
-            alt_m = m.alt_m,
-            space_factor = format!("{:.3}", m.space_factor),
-            in_space = m.in_space,
-            orbit_space = m.orbit_space,
-            near_m = m.near_m,
-            far_m = m.far_m,
-            exposure_ev100 = format!("{:.2}", m.exposure_ev100),
-            bloom = format!("{:.3}", m.bloom),
-            globe_albedo = format!("{:.3}", m.globe_albedo),
-            veg_factor = format!("{:.3}", m.veg_factor),
-            furniture_factor = format!("{:.3}", m.furniture_factor),
-            route_meshes = m.route_meshes,
-            route_rendered = m.route_rendered,
-            globe_entities = m.globe_entities,
-            globe_visible = m.globe_visible,
-            globe_rendered = m.globe_rendered,
-            ground_m = format!("{:.2}", m.ground_m),
-            height_patches = m.height_patches,
-            terrain_ready = m.terrain_ready,
-            terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
-            software_renderer = m.software_renderer,
+                    shot = m.shot,
+                    name = m.name.as_deref().unwrap_or("-"),
+                    settled = m.settled,
+                    busy = m.busy.join("|"),
+                    settled_in = format!("{:.1}s", m.settled_s),
+                    frame_ms = format!("{:.1}", m.frame_ms),
+                    alt_m = m.alt_m,
+                    space_factor = format!("{:.3}", m.space_factor),
+                    in_space = m.in_space,
+                    orbit_space = m.orbit_space,
+                    near_m = m.near_m,
+                    far_m = m.far_m,
+                    exposure_ev100 = format!("{:.2}", m.exposure_ev100),
+                    bloom = format!("{:.3}", m.bloom),
+                    globe_albedo = format!("{:.3}", m.globe_albedo),
+                    veg_factor = format!("{:.3}", m.veg_factor),
+                    furniture_factor = format!("{:.3}", m.furniture_factor),
+                    route_meshes = m.route_meshes,
+                    route_rendered = m.route_rendered,
+                    globe_entities = m.globe_entities,
+                    globe_visible = m.globe_visible,
+                    globe_rendered = m.globe_rendered,
+                    ground_m = format!("{:.2}", m.ground_m),
+                    height_patches = m.height_patches,
+                    terrain_ready = m.terrain_ready,
+                    terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
+                    software_renderer = m.software_renderer,
                     "shot state"
                 )
             };
@@ -1401,7 +1455,13 @@ pub fn drive_capture(
         progress.metrics.push(m);
     }
 
-    fire_capture(&mut commands, &harness, &mut progress, target.as_deref(), &mut shot_state);
+    fire_capture(
+        &mut commands,
+        &harness,
+        &mut progress,
+        target.as_deref(),
+        &mut shot_state,
+    );
 }
 
 /// Spawn the capture request for the current shot and start its readback budget.
@@ -1457,15 +1517,30 @@ mod tests {
     use super::*;
 
     fn spec(lat: f64, lng: f64, alt: f64) -> ShotSpec {
-        ShotSpec { lat, lng, alt, pitch_deg: -90.0, yaw_deg: 0.0, ..default() }
+        ShotSpec {
+            lat,
+            lng,
+            alt,
+            pitch_deg: -90.0,
+            yaw_deg: 0.0,
+            ..default()
+        }
     }
 
     #[test]
     fn densify_passthrough_when_off_or_single() {
         let wp = vec![spec(0.0, 0.0, 2000.0), spec(1.0, 1.0, 4000.0)];
-        assert_eq!(densify_path(&wp, 0).len(), 2, "frames=0 leaves waypoints as-is");
+        assert_eq!(
+            densify_path(&wp, 0).len(),
+            2,
+            "frames=0 leaves waypoints as-is"
+        );
         let one = vec![spec(0.0, 0.0, 2000.0)];
-        assert_eq!(densify_path(&one, 8).len(), 1, "a single waypoint can't be swept");
+        assert_eq!(
+            densify_path(&one, 8).len(),
+            1,
+            "a single waypoint can't be swept"
+        );
     }
 
     #[test]
@@ -1491,10 +1566,17 @@ mod tests {
     fn densify_spans_multiple_segments() {
         // Three waypoints, even frame count: the middle waypoint is passed through
         // exactly at the sweep's centre.
-        let wp = vec![spec(0.0, 0.0, 1000.0), spec(5.0, 0.0, 1000.0), spec(10.0, 0.0, 1000.0)];
+        let wp = vec![
+            spec(0.0, 0.0, 1000.0),
+            spec(5.0, 0.0, 1000.0),
+            spec(10.0, 0.0, 1000.0),
+        ];
         let out = densify_path(&wp, 5);
         assert_eq!(out.len(), 5);
-        assert!((out[2].lat - 5.0).abs() < 1e-9, "centre sample is the middle waypoint");
+        assert!(
+            (out[2].lat - 5.0).abs() < 1e-9,
+            "centre sample is the middle waypoint"
+        );
     }
 
     #[test]
@@ -1540,7 +1622,10 @@ mod tests {
         .unwrap();
         // 12 frames → indices 00..11, zero-padded to width 2, altitude-tagged.
         assert_eq!(h.path_for(0), PathBuf::from("/tmp/sweep_00_2000m.png"));
-        assert!(h.path_for(11).to_string_lossy().starts_with("/tmp/sweep_11_"));
+        assert!(h
+            .path_for(11)
+            .to_string_lossy()
+            .starts_with("/tmp/sweep_11_"));
     }
 
     #[test]
@@ -1550,7 +1635,10 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
         let h = ShotHarness::from_manifest(&path, &[], None, Some(0.1), Some(1.0), None, None, &[])
             .expect("checked-in docs/shots.toml must load");
-        assert!(h.shots.len() >= 2, "manifest should describe a set of views");
+        assert!(
+            h.shots.len() >= 2,
+            "manifest should describe a set of views"
+        );
         for (i, s) in h.shots.iter().enumerate() {
             let name = s.name.clone().expect("preset shots are named");
             let out = h.path_for(i);
@@ -1574,8 +1662,9 @@ mod tests {
     #[test]
     fn manifest_size_can_be_overridden_from_the_cli() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
-        let h = ShotHarness::from_manifest(&path, &[], Some("640x360"), None, None, None, None, &[])
-            .unwrap();
+        let h =
+            ShotHarness::from_manifest(&path, &[], Some("640x360"), None, None, None, None, &[])
+                .unwrap();
         assert_eq!(h.size, UVec2::new(640, 360));
     }
 
@@ -1641,7 +1730,10 @@ mod tests {
                 assert!(m.measure(key).is_none(), "NaN should read as unmeasured");
                 continue;
             }
-            assert!(m.measure(key).is_some(), "{key} is an --expect key but has no value");
+            assert!(
+                m.measure(key).is_some(),
+                "{key} is an --expect key but has no value"
+            );
         }
         // The two non-numeric fields are excluded on purpose, not by accident.
         assert!(!metric_keys().any(|k| k == "name" || k == "busy"));
@@ -1670,8 +1762,13 @@ mod tests {
     /// parse time, before the app is even built.
     #[test]
     fn malformed_expectations_are_rejected_at_parse_time() {
-        for bad in ["globe_renderd>0", "settled=true", "globe_rendered", "alt_m>banana", "alt_m>NaN"]
-        {
+        for bad in [
+            "globe_renderd>0",
+            "settled=true",
+            "globe_rendered",
+            "alt_m>banana",
+            "alt_m>NaN",
+        ] {
             assert!(Expectation::parse(bad).is_err(), "{bad:?} should not parse");
         }
         // And the error names the metrics, so a typo is one message from a fix.
@@ -1684,15 +1781,27 @@ mod tests {
         let mut m = sample_metrics();
         m.globe_rendered = 42;
 
-        assert!(Expectation::parse("globe_rendered>0").unwrap().check(&m).is_ok());
-        assert!(Expectation::parse("settled==true").unwrap().check(&m).is_err());
+        assert!(Expectation::parse("globe_rendered>0")
+            .unwrap()
+            .check(&m)
+            .is_ok());
+        assert!(Expectation::parse("settled==true")
+            .unwrap()
+            .check(&m)
+            .is_err());
 
         // A failure carries the number, so a red run needs no second run to say why.
-        let why = Expectation::parse("globe_rendered>100").unwrap().check(&m).unwrap_err();
+        let why = Expectation::parse("globe_rendered>100")
+            .unwrap()
+            .check(&m)
+            .unwrap_err();
         assert!(why.contains("42"), "{why}");
 
         // An unmeasured metric is its own message, not a comparison against nothing.
-        let why = Expectation::parse("ground_m>0").unwrap().check(&m).unwrap_err();
+        let why = Expectation::parse("ground_m>0")
+            .unwrap()
+            .check(&m)
+            .unwrap_err();
         assert!(why.contains("not measured"), "{why}");
     }
 

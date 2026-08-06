@@ -2,8 +2,8 @@
 //! (ADR-007). Loads layered config (ADR-014), serves, and runs until Ctrl-C.
 
 use clap::Parser;
-use std::sync::Arc;
 use simulator::{cli::SimCli, serve, SimConfig};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
