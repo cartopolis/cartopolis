@@ -94,9 +94,16 @@ into `geo::scatter` and `systems::vegetation`, which is what finally freed the
 crate — `vector_tiles`' fixture called `scatter_vegetation`, so the boundary
 would have compiled and then failed under `cargo test`.
 
-A second tier (`street_furniture`, `terrain`, `height`, `route_ahead`,
-`collision` — ~4k lines) touches Bevy fewer than 15 times each and is likely to
-split the same way, but has not been done.
+`street_furniture` went the same way on the same day (990 pure / 110 ECS),
+which took `mvt-reader` and `geo-types` out of the client's manifest — it was
+the last file in `viberfox` parsing MVT. geo is now 7,945 lines and 74 tests,
+with a ~1 s edit-to-green loop.
+
+A remaining tier (`terrain`, `height`, `route_ahead`, `collision`, `tile_source`
+— ~3.3k lines, ~36 tests) touches Bevy fewer than 15 times each and would likely
+split the same way. Not done, and worth weighing rather than assuming: the build
+win from the first two splits is already banked, so the third is mostly about
+where code lives.
 
 ## Not measured
 
