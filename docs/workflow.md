@@ -405,6 +405,38 @@ Commits style, push the branch. `main` is protected; the bot cannot push to it.
 
 `agent:done` means **a branch is waiting for review**, not shipped.
 
+### The verdict is CI's, not the session's
+
+A session that pushes commits does not get `agent:done`. It gets `agent:ci`, and
+the watcher resolves that on a later poll from Forgejo's commit status for the
+pushed head: green → `agent:done`, any failing check → `agent:failed` with the
+job named in a comment.
+
+The reason is the one the post on harness engineering keeps returning to: **an
+evaluator the agent can influence is not an evaluator.** The session reported its
+own success, and its own verification step was the command above — which, until
+2026-08-06, ran zero tests. Two layers of judgement, both inside the loop.
+
+Four details are load-bearing:
+
+- **The wait does not hold a slot.** `pollCi` runs in the poll loop, not inline in
+  `handleIssue`; blocking there would occupy one of `AGENT_MAX_CONCURRENT` (2) for
+  the length of a cold Bevy build with nothing running in it.
+- **It gates on the head as `origin` holds it**, not as the worktree does. They
+  differ exactly when the push failed — and a local commit has no CI run behind
+  it, so gating on it would wait forever.
+- **A timeout lands on `done`, never on `failed`** (`AGENT_CI_TIMEOUT_MIN`, 45),
+  with a comment saying there was no verdict. "CI did not answer" is not "the
+  work is wrong". Same for a commit no workflow claimed.
+- **It is failure-tolerant**, like every board call: a status API that breaks logs
+  a warning and the ticket still lands. `AGENT_CI_GATE=off` disables it, and the
+  startup banner says so in as many words when it is off.
+
+Note that `Deploy web` runs only on `main`, so an agent branch is judged by the
+`CI` workflow alone. If that ever gains a branch trigger, every agent ticket
+inherits its result — which matters, because the web deploy has been failing on
+`main` since at least 2026-08-06.
+
 ### Talking to it
 
 - `@agent <instruction>` — resume that issue's session with a new instruction.
@@ -477,7 +509,8 @@ The labels are the state machine. The column follows.
 | `agent` | To Do | Explicit "implement this now" — skips refinement. Also the takeover gesture. |
 | *(any, issue closed)* | Done | Forgejo does not do this itself; the watcher moves cards it placed. |
 | `agent:running` | In Progress | A session is running **right now**. |
-| `agent:done` | Done | Branch pushed, waiting for review. |
+| `agent:ci` | In Progress | Session over, branch pushed, waiting for CI's verdict. |
+| `agent:done` | Done | Branch pushed **and CI passed**, waiting for review. |
 | `agent:failed` | To Do | Needs a human. |
 
 ¹ Seeded once, then never moved again. A card the agent did not place is one you
@@ -698,6 +731,7 @@ directory". No second mechanism.
 | Watcher + board driver | `issue-watcher/watcher.ts`, `issue-watcher/board.ts` |
 | Token, bot password | `watcher.env`, `0600` |
 | Modes, labels, column ids | `docker-compose.yml` → `environment:` |
+| CI gate | `AGENT_CI_GATE` (default on), `AGENT_CI_TIMEOUT_MIN` (45) |
 
 The `Stop` hook exists in two places on purpose — ① and ② are separate
 environments — but it is the same script. `md5sum` both after editing either;
