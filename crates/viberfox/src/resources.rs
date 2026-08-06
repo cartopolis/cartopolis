@@ -776,10 +776,15 @@ impl NetworkMailbox {
 /// to hold. See `docs/notes/module-graph.md`.
 ///
 /// `MapStream` remains the owner and the only writer; this is its published view.
+///
+/// Deliberately only the position. The re-anchor *generation* is not mirrored
+/// here: every consumer of it (`osm_buildings`, `lod22`, `map_geometry`,
+/// `data_layers`, `globe`, `weather`, `navigation`) also needs the streamer
+/// itself, so a copy here would have no readers. That is also why the systems
+/// below need no ordering against `apply_reanchor` — they compare generations
+/// rather than assuming a fresh anchor. See `docs/notes/module-graph.md`.
 #[derive(Resource, Default)]
 pub struct MapAnchor {
     /// `(lat, lng, base zoom)`. `None` until the first anchor is placed.
     pub geo: Option<(f64, f64, u32)>,
-    /// Bumped on every re-anchor. Streamers rebuild their cells when it changes.
-    pub generation: u32,
 }

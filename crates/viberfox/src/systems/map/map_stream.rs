@@ -248,6 +248,10 @@ pub fn apply_reanchor(
     // buildings and pins keep sharing one placement convention.
     let (lat, lng) = snap_anchor(lat, lng, base_zoom);
     stream.anchor = Some((lat, lng, base_zoom));
+    // Republish. Without this the resource keeps whatever `init_map_stream` set
+    // and every consumer places against the *first* anchor for the rest of the
+    // run — invisible until you teleport.
+    published.geo = stream.anchor;
     stream.current_zoom = base_zoom;
     stream.anchor_generation = stream.anchor_generation.wrapping_add(1);
     // Retire queued fetches from the old anchor: the workers drop any job whose
