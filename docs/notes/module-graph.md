@@ -12,7 +12,8 @@ list, then computing in-degree and mutual pairs.
 
 ## The shape
 
-**26 mutual dependency cycles** exist between modules. Rust crates cannot be
+**26 mutual dependency cycles** exist between modules (22 after the `geo` crate
+extraction on 2026-08-06 removed four). Rust crates cannot be
 cyclic, so each one is a hard blocker for any crate split — this is the reason a
 split cannot simply be done, and it is worth knowing before proposing one again.
 
@@ -54,6 +55,44 @@ describes *where types were filed*. Hoisting shared types and constants out of
 `systems/` breaks most of the 26 cycles mechanically, without changing any
 system's behaviour — that is the cheap part of any future split, and the reason
 the mesh looks worse than it is.
+
+## The hub types cannot simply be moved to a state layer — attempted 2026-08-06
+
+The obvious fix for the cycles is to hoist the shared types into a layer nothing
+depends back on. Tried it; it does not work as a move, and the reason is worth
+knowing before someone budgets for it again.
+
+**The hub "types" are not state. They are streamers wearing a `Resource` hat.**
+Counting the fields that carry machinery — a `CellStream`, a `HashMap` keyed to
+`Entity`, an asset `Handle`, a task or channel:
+
+| Type | Fields | Of which machinery |
+|---|---|---|
+| `GlobeState` | 8 | **6** |
+| `DataLayers` | 8 | **5** |
+| `MapStream` | 9 | **5** |
+| `DriverState` | 10 | 0 |
+| `BuildingColliders` | 2 | 0 |
+| `TerrainField` | 2 | 0 |
+
+`GlobeState` reads as the cleanest of the three from its first few fields and its
+`impl` — which is how the first attempt picked it — but it carries
+`CellStream<TileKey, TileFetch>` and `HashMap<TileKey, Entity>`, and its methods
+call `free_camera::WORLD_CELL_EDGE` and `utils::sun::smoothstep`. Moving it
+produced 33 errors and had to be reverted. **Check a struct's fields, not just
+its `impl`, before calling it portable.**
+
+So the three highest-in-degree types are precisely the three that cannot move.
+The cheap half — `DriverState`, `BuildingColliders`, `TerrainField` and friends —
+is genuinely portable but only breaks two or three of the 22 cycles, because most
+cycles have one of the big three on the other side.
+
+The precondition is therefore a **split, not a move**: each hub has to be divided
+into the state half everyone reads and the machinery half one system owns, the
+same operation `vegetation` needed (870 pure lines / 130 ECS). Until that is
+done, a state crate buys little. That is three non-trivial refactors ahead of the
+one the ticket describes, and it is why phase 2 stalled here rather than
+shipping.
 
 ## A crate named `core` is not available
 
