@@ -10,6 +10,23 @@ name = "Viberfox"
 identifier = "eu.garage44.viberfox"
 icon = ["assets/icon/viberfox.png"]
 
+# A lib target plus a shim bin, rather than bin-only. `cargo test` links the
+# rlib; bin-only forced it to recompile the whole crate under `cfg(test)` as a
+# second artifact. See docs/notes/client-build-cost.md.
+[lib]
+name = "viberfox"
+path = "src/lib.rs"
+# A lib target makes `cargo test` collect doc-tests, and rustdoc does NOT receive
+# `.cargo/config.toml`'s `rustflags` — those only reach rustc; rustdoc needs
+# `rustdocflags`. So every doc-test built without `target-cpu=x86-64-v3` and
+# tripped `simd_baseline`'s AVX2 `compile_error!`. Nothing here is a library API
+# whose examples need executing, so collect none rather than duplicate the flag.
+doctest = false
+
+[[bin]]
+name = "viberfox"
+path = "src/main.rs"
+
 [features]
 # `solo`: one-command dev — run an in-process vibe_sim and connect to it (ADR-016).
 # On by default for dev; turn off for lean/release client builds (then `--connect`
