@@ -946,16 +946,11 @@ pub fn run() {
     .add_systems(
         Update,
         (
-            // Auto-hiding top address bar (floating overlay, reserves no layout
-            // space); ordered before the side panels for deterministic input.
-            (
-                systems::ui::render_menu_bar.before(systems::ai_assistant::render_ai_panel),
-                // The bottom dock — a floating `Area` of round panel toggles, so
-                // it reserves no root-`Ui` space and stays out of the panel chain
-                // below. After the address bar only so input order is
-                // deterministic within a frame.
-                systems::dock::render_dock.after(systems::ui::render_menu_bar),
-            ),
+            // The bottom dock — a floating `Area` of round panel toggles, so it
+            // reserves no root-`Ui` space and stays out of the panel chain (Phase
+            // 7b). After the address bar only so input order is deterministic
+            // within a frame.
+            systems::dock::render_dock.after(systems::ui::render_menu_bar),
             systems::ui::toggle_ai_panel_shortcut,
             systems::ui::toggle_dev_panel_shortcut,
             // Nested to stay under the per-tuple system limit: the driver runs after
@@ -963,45 +958,15 @@ pub fn run() {
             (
                 systems::ui::render_dev_panel,
                 systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
-                // Also a root-`Ui` panel — tail of the chain (see below).
-                systems::ui::render_avatar_chooser
-                    .after(systems::ui::render_menu_bar)
-                    .after(systems::chat::render_chat_panel),
             ),
             systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
-            // The right-hand panels draw into the shared root `Ui`, so their call
-            // order fixes their right-to-left placement. They must be **totally**
-            // ordered, and the full chain is:
-            //
-            //   menu_bar → ai → layers → bookmarks → route → chat → appearance
-            //                                                        → place_pins
-            //
-            // Every one of those draws into the *same* `Ui`, so any pair Bevy is
-            // free to run in either order composes the panel column differently
-            // from frame to frame. That is not merely a visual swap: panels share
-            // the one `Background` layer, so a panel that lands over another on
-            // some frames wins egui's hit test on those frames — while
-            // `layer_id_at` still answers `Background`, because the contest is
-            // *within* a layer. The symptom is a checkbox that ignores roughly
-            // half the clicks aimed at it, and it is invisible to every
-            // layer-level diagnostic. `chat` and `appearance` were the two left
-            // out (2026-07-31); they are the panels the bottom bar owns.
-            //
-            // Adding a panel here means adding a link. There is no run-time guard.
-            systems::data_layers::render_data_layers_panel
-                .after(systems::ui::render_menu_bar)
-                .after(systems::ai_assistant::render_ai_panel),
+            // The right-hand panel chain lives in Phase 7b, declared once with
+            // `.chain()`. A panel added here rather than there is NOT in it.
             (
                 systems::hud::render_hud.after(systems::ui::render_menu_bar),
                 // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
                 // belongs in the chain below — last, after the route panel.
-                systems::chat::render_chat_panel
-                    .after(systems::ui::render_menu_bar)
-                    .after(systems::navigation::render_route_panel),
             ),
-            systems::bookmarks::render_bookmarks_panel
-                .after(systems::ui::render_menu_bar)
-                .after(systems::data_layers::render_data_layers_panel),
             systems::data_layers::render_poi_popup
                 .after(systems::ui::render_menu_bar)
                 .after(systems::free_camera::camera_controls),
@@ -1035,10 +1000,52 @@ pub fn run() {
                 update_globe_clouds.after(systems::free_camera::camera_controls),
                 update_rain.after(systems::free_camera::camera_controls),
             ),
-            systems::ai_assistant::render_ai_panel,
             systems::ai_assistant::poll_ai_response
                 .after(systems::ai_assistant::render_ai_panel),
         ),
+    )
+    // Phase 7b: the right-hand panel chain — ONE ordered declaration.
+    //
+    // Every system here draws into the *same* shared root `Ui`, so their call
+    // order fixes their right-to-left placement, and every one of them takes
+    // `ResMut<EguiManager>`, so Bevy already runs them one at a time regardless.
+    // The only thing ordering decides is *which* order — and where two are
+    // unconstrained, Bevy is free to pick differently from frame to frame.
+    //
+    // That is not a visual swap. The panels share the single `Background` layer,
+    // so a panel that lands over another on some frames wins egui's hit test on
+    // those frames, while `layer_id_at` still answers `Background` because the
+    // contest is *within* a layer. The symptom is a checkbox that ignores about
+    // half the clicks aimed at it, invisible to every layer-level diagnostic and
+    // impossible to reproduce in a single-panel test. `chat` and `appearance`
+    // were the two left unlinked once (fixed 2026-07-31).
+    //
+    // This used to be ~12 `.after()` links scattered over seven places in two
+    // `add_systems` calls, with the intended chain recorded only in a comment and
+    // the note "adding a panel here means adding a link; there is no run-time
+    // guard". `.chain()` makes the order structural: a panel added to this tuple
+    // is ordered by construction, and one added anywhere else is visibly not in
+    // the chain. Since these systems cannot run concurrently anyway, the total
+    // order costs no parallelism.
+    //
+    // `render_place_pins` must stay last: it culls against the root `Ui`'s
+    // leftover space, which is only the map area once every side panel has taken
+    // its width.
+    .add_systems(
+        Update,
+        (
+            systems::ui::render_menu_bar,
+            systems::ai_assistant::render_ai_panel,
+            systems::data_layers::render_data_layers_panel,
+            systems::bookmarks::render_bookmarks_panel,
+            systems::navigation::render_route_panel,
+            systems::chat::render_chat_panel,
+            systems::ui::render_avatar_chooser,
+            // Also after the camera has moved, so pins project onto this frame's view.
+            systems::place_pins::render_place_pins
+                .after(systems::free_camera::camera_controls),
+        )
+            .chain(),
     )
     // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
     // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
@@ -1047,8 +1054,6 @@ pub fn run() {
         (
             // Draws into the same root `Ui` as the other right-hand panels, so its
             // call order fixes its placement — keep it last in that chain.
-            systems::navigation::render_route_panel
-                .after(systems::bookmarks::render_bookmarks_panel),
             systems::navigation::drive_route_geocoding,
             systems::navigation::drive_route_solver
                 .after(systems::navigation::render_route_panel),
@@ -1063,14 +1068,6 @@ pub fn run() {
             // map area once every side panel has taken its width — otherwise a
             // pin would paint on top of the panel covering it. And after the
             // camera has moved, so pins project onto this frame's view.
-            systems::place_pins::render_place_pins
-                .after(systems::navigation::render_route_panel)
-                .after(systems::chat::render_chat_panel)
-                // Tail of the panel chain — the avatar chooser is a root-`Ui`
-                // panel too, and a pin placed before it took its width sees a map
-                // area that still includes it.
-                .after(systems::ui::render_avatar_chooser)
-                .after(systems::free_camera::camera_controls),
             // Street names, laid on the streets themselves. World geometry, not
             // an overlay — after the camera so a turn that flips the letters is
             // acted on in the frame it happened.
