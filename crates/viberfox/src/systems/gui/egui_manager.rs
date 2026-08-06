@@ -1082,4 +1082,102 @@ mod tests {
         mgr.set_surface(UVec2::new(2560, 1440), 2.0);
         assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
     }
+
+    /// Every system that draws into the **shared root `Ui`** must be in the panel
+    /// chain in `lib.rs`, and this test is the guard the chain's comment used to
+    /// say did not exist.
+    ///
+    /// Leaving one out does not misplace a panel — it makes two panels swap
+    /// composition order between frames, and because they share egui's single
+    /// `Background` layer the one that lands underneath stops receiving clicks on
+    /// those frames. The symptom is a control that ignores about half its
+    /// presses; `layer_id_at` still answers `Background`, so no layer-level
+    /// diagnostic sees it, and it cannot reproduce in a single-panel test.
+    ///
+    /// This reads the sources rather than the schedule because the invariant is
+    /// "draws into the root `Ui`" — a property of a function body, which the type
+    /// system cannot express and a running `App` cannot be asked about.
+    #[test]
+    fn every_root_ui_panel_is_in_the_chain() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        let mut stack = vec![src.join("systems")];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).expect("systems/ is readable").flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p);
+                }
+            }
+        }
+
+        // The frame lifecycle brackets the panels by *schedule* (PreUpdate /
+        // Update / PostUpdate + the render graph), not by ordering links, so it is
+        // deliberately not in the chain.
+        const LIFECYCLE: [&str; 3] = ["begin_egui_frame", "end_egui_frame", "egui_pass"];
+
+        let mut drawers = Vec::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f).expect("source is readable");
+            // Split on top-level `fn ` starts; a body owns everything up to the next one.
+            let mut idx: Vec<usize> = text
+                .match_indices("\nfn ")
+                .chain(text.match_indices("\npub fn "))
+                .map(|(i, _)| i)
+                .collect();
+            idx.sort_unstable();
+            idx.push(text.len());
+            for w in idx.windows(2) {
+                let chunk = &text[w[0]..w[1]];
+                // A *system* that draws into the root `Ui` takes the manager
+                // mutably; helpers like `responsive_right_panel` take plain
+                // arguments and only build a widget, so they order nothing.
+                if !chunk.contains("ui_mut()") || !chunk.contains("ResMut<EguiManager>") {
+                    continue;
+                }
+                let name = chunk
+                    .trim_start_matches(['\n'])
+                    .trim_start_matches("pub ")
+                    .trim_start_matches("fn ")
+                    .split(['(', '<'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !name.is_empty() && !LIFECYCLE.contains(&name.as_str()) {
+                    drawers.push(name);
+                }
+            }
+        }
+        assert!(
+            drawers.len() >= 5,
+            "found only {drawers:?} root-`Ui` drawers — the scan has broken, not the chain"
+        );
+
+        let lib = std::fs::read_to_string(src.join("lib.rs")).expect("lib.rs is readable");
+        let chain = lib
+            .split_once("Phase 7b")
+            // Past the prose, which quotes `.chain()` while explaining it.
+            .and_then(|(_, rest)| rest.split_once(".add_systems("))
+            .and_then(|(_, rest)| rest.split_once(".chain()"))
+            .map(|(block, _)| block.to_string())
+            .expect("the Phase 7b panel chain still exists in lib.rs");
+        assert!(
+            chain.contains("render_place_pins"),
+            "the chain block was extracted but looks wrong — anchors in lib.rs moved"
+        );
+
+        let missing: Vec<_> = drawers
+            .iter()
+            .filter(|d| !chain.contains(d.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these draw into the shared root `Ui` but are not in the Phase 7b chain: \
+             {missing:?}\nAdd them to that tuple — an unordered pair swaps composition \
+             order between frames and the panel underneath stops taking clicks."
+        );
+    }
 }
