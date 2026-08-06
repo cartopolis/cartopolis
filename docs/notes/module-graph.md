@@ -124,6 +124,35 @@ The distinction that matters when picking the next one: both of these moved
 things that have **no runtime semantics** — types with no state, and pure
 functions. The remaining cycles mostly do not.
 
+## This codebase orders by change detection, not by schedule position
+
+Worth knowing before proposing ordering edges for freshness, because the
+measurement looks alarming and the conclusion is the opposite.
+
+`MapStream`'s anchor is written by two systems and read by 23, and 17 of those 23
+have **no ordering relation to `apply_reanchor`** — on a re-anchor frame Bevy is
+free to run them either side of it. That reads like a latent bug. It is not.
+
+`apply_reanchor` moves the anchor *and* retires the tiles in one system, so a
+reader that runs before it sees old-anchor-plus-old-world and is self-consistent;
+one that runs after sees new-and-new. Neither is wrong. And every consumer that
+builds geometry compares generations rather than assuming freshness —
+`osm_buildings`, `lod22`, `map_geometry` and `data_layers` call
+`stream.sync(anchor_generation)`, `weather` keeps `fetched_gen`, `prim_geo` holds
+a `Local` copy of the last anchor, `navigation` keys its cache on
+`(route.generation, anchor_generation, terrain.revision)`. The same shape as
+`TerrainField::revision`.
+
+So the 17 `.after()` edges were rejected: they constrain the schedule for no
+behavioural gain, and two of the candidates (`apply_teleport`,
+`restore_start_location`) sit *upstream* of `apply_reanchor` and would have made
+the graph cyclic — a startup panic.
+
+The corollary is where the real risk lives: not in ordering, but in a consumer
+that forgets to compare a generation, or in the publisher failing to bump one.
+`MapAnchor` shipped with exactly that fault for one commit — `apply_reanchor`
+stopped republishing and nothing failed, because no reader checks freshness.
+
 ## A crate named `core` is not available
 
 Verified 2026-08-06 with a throwaway workspace, not reasoned from docs. A
