@@ -11,7 +11,7 @@
 //! 1.0° product's `f000` analysis, which carries a single global instantaneous
 //! `TCDC:entire atmosphere` record — 360×181 points, north row first, percent.
 //!
-//! Same worker-thread + `ureq` shape as [`super::weather`]: one blocking fetch on a
+//! Same worker-thread + `ureq` shape as [`crate::systems::weather`]: one blocking fetch on a
 //! background thread, results handed back through an `Arc<Mutex<_>>` and folded on
 //! the main thread, where the pixels are written into the existing `Image` (no new
 //! handle, no churn). Weight ramps 0→1 so the live field fades in over the

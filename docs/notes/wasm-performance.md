@@ -41,7 +41,7 @@ Parsing is still into **untyped `serde_json::Value`** rather than derived struct
 more than building it. That cost merely moved off the main thread; it was not
 removed. Typing these is the next win if 3DBAG streaming latency matters.
 
-check: `grep -q "serde_json::Value" crates/viberfox/src/systems/lod22.rs`
+check: `grep -q "serde_json::Value" crates/viberfox/src/systems/map/lod22.rs`
 
 Overpass's validate-before-persist survived the move via a derived
 `OverpassRemark` struct (serde skips `elements` without allocating). Its

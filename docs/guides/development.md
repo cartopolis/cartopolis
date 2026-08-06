@@ -46,18 +46,25 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
 
 Inside the client, `components.rs` / `resources.rs` hold the ECS types and
-`systems/` is one file per concern, registered in ordered phases in `lib.rs`:
+`systems/` is one file per concern, grouped into folders and registered in ordered
+phases in `lib.rs`:
 
-| Group | Files |
-|-------|-------|
-| Map streaming | `map_stream`, `tile_loader`, `vector_tiles`, `map_geometry`, `osm_buildings`, `lod22`, `road_texture`, `vegetation`, `water` |
-| Planet & sky | `globe`, `globe_ocean`, `globe_weather`, `weather` |
-| Avatar & camera | `avatar`, `free_camera`, `collision`, `picking`, `gizmo` |
-| Networking | `network`, `chat`, `../login.rs`, `../solo.rs` |
-| Navigation | `geo_nav`, `routing`, `navigation`, `driver`, `transit_live`, `transit_vehicles` |
-| UI | `egui_manager`, `theme`, `ui`, `hud`, `splash`, `data_layers`, `bookmarks`, `place_pins`, `ai_assistant`, `debug` |
-| Headless | `shot_harness`, `shot_presets` |
-| Platform | `platform/` — `http`, `storage`, `location`, `work`, `workers` (native vs wasm behind one API) |
+| Folder | Files |
+|--------|-------|
+| `systems/geo/` | `vector_tiles`, `road_texture`, `routing` — **no Bevy**; slated to become its own crate |
+| `systems/map/` | `map_stream`, `map_geometry`, `tile_loader`, `tile_source`, `rendering`, `globe`, `globe_ocean`, `globe_weather`, `osm_buildings`, `lod22`, `terrain`, `height`, `water`, `vegetation`, `street_furniture`, `street_labels`, `weather` |
+| `systems/nav/` | `navigation`, `route_ahead`, `driver`, `geo_nav`, `transit_live`, `transit_vehicles` |
+| `systems/player/` | `avatar`, `collision`, `free_camera`, `picking`, `gizmo`, `prim_geo` |
+| `systems/gui/` | `egui_manager`, `theme`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
+| `systems/net/` | `network`, `user_store` (plus `../login.rs`, `../solo.rs`) |
+| `systems/dev/` | `shot_harness`, `shot_presets`, `debug`, `desktop_integration`, `window_icon` |
+| `platform/` | `http`, `storage`, `location`, `work`, `workers` (native vs wasm behind one API) |
+
+**The folders group files; they are not the import path.** `systems/mod.rs`
+re-exports every module flat, so a system is named for what it is
+(`systems::water`) and not for where it is filed. Adding one means a `pub mod` in
+the group's `mod.rs` and a name in the `pub use` list — both alphabetical. The
+group is `gui`, not `ui`, because `systems::ui` is one of the panels.
 
 **System order is load-bearing**, not cosmetic — e.g. `place_pins` must run after
 every panel system to cull itself against the leftover map area. Add new systems to

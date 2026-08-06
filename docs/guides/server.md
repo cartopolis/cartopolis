@@ -7,7 +7,7 @@ OSM extract, behind a [Caddy](https://caddyserver.com/) reverse proxy with
 automatic TLS.
 
 The viberfox client streams building footprints and POI layers from Overpass
-(`overpass_query` in `crates/viberfox/src/systems/osm_buildings.rs`). The public
+(`overpass_query` in `crates/viberfox/src/systems/map/osm_buildings.rs`). The public
 `overpass-api.de` endpoint rate-limits (429/504) under the client's streaming
 load, so we run our own instance and point the client at it with
 `VIBE_OVERPASS_URL`. Nominatim provides geocoding / reverse-geocoding for the
@@ -446,7 +446,7 @@ curl 'http://127.0.0.1:8080/reverse?lat=52.373&lon=4.892&format=jsonv2'
 
 ## 7. Point the client at it
 
-The client (`overpass_query` in `crates/viberfox/src/systems/osm_buildings.rs`)
+The client (`overpass_query` in `crates/viberfox/src/systems/map/osm_buildings.rs`)
 **defaults** to the self-hosted endpoint (`DEFAULT_OVERPASS_URL`), so a plain run
 already uses it:
 

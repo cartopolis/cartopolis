@@ -3,7 +3,7 @@
 //! Renders context menus and edit dialogs using egui.
 
 use web_time::Instant;
-use super::egui_manager::EguiManager;
+use crate::systems::egui_manager::EguiManager;
 use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Region, Selected};
 use crate::resources::{
     ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
@@ -485,7 +485,7 @@ pub fn render_dev_panel(
                     ui.label(format!(
                         "{:.0}% cloud · {:.1} mm/h · {:.0}°C · {:.0} m/s wind",
                         o.cloud_cover * 100.0,
-                        o.precipitation * super::weather::RAIN_FULL_MM,
+                        o.precipitation * crate::systems::weather::RAIN_FULL_MM,
                         o.air_temp_c,
                         o.wind_ms,
                     ))
@@ -818,7 +818,7 @@ fn save_screenshot_fixed_resolution(
 /// cleared — `textures_delta` is left intact so egui's font/texture uploads aren't lost.
 pub fn suppress_egui_for_screenshot(
     shot: Res<crate::resources::ScreenshotState>,
-    mut output: ResMut<super::egui_manager::EguiRenderOutput>,
+    mut output: ResMut<crate::systems::egui_manager::EguiRenderOutput>,
 ) {
     if shot.hide_ui {
         output.clipped_primitives.clear();

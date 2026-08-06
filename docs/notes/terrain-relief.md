@@ -1,6 +1,6 @@
 ---
 triggers:
-  - working on systems/terrain.rs, or anything that places geometry on the ground
+  - working on systems/map/terrain.rs, or anything that places geometry on the ground
   - "why is the terrain flat here" / "why doesn't the relief go further out"
   - considering a different height source, resolution, or extent
   - adding a new thing that stands on the map (a marker, a vehicle, a mesh)

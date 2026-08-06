@@ -1,4 +1,4 @@
-use super::egui_manager::EguiManager;
+use crate::systems::egui_manager::EguiManager;
 use crate::components::{Prim, Region};
 use crate::resources::{AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse};
 use crate::systems::map_stream::MapStream;

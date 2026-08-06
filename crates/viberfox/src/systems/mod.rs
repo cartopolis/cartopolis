@@ -1,50 +1,49 @@
-pub mod ai_assistant;
-pub mod avatar;
-pub mod bookmarks;
-pub mod chat;
-pub mod collision;
-pub mod data_layers;
-pub mod debug;
-pub mod desktop_integration;
-pub mod dock;
-pub mod driver;
-pub mod egui_manager;
-pub mod free_camera;
-pub mod geo_nav;
-pub mod globe;
-pub mod globe_ocean;
-pub mod globe_weather;
-pub mod height;
-pub mod map_geometry;
-pub mod map_stream;
-pub mod gizmo;
-pub mod hud;
-pub mod lod22;
-pub mod navigation;
-pub mod network;
-pub mod osm_buildings;
-pub mod picking;
-pub mod place_pins;
-pub mod prim_geo;
-pub mod rendering;
-pub mod route_ahead;
-pub mod routing;
-pub mod road_texture;
-pub mod shot_harness;
-pub mod shot_presets;
-pub mod theme;
-pub mod tile_loader;
-pub mod tile_source;
-pub mod transit_live;
-pub mod splash;
-pub mod street_furniture;
-pub mod street_labels;
-pub mod terrain;
-pub mod transit_vehicles;
-pub mod ui;
-pub mod user_store;
-pub mod vector_tiles;
-pub mod vegetation;
-pub mod water;
-pub mod weather;
-pub mod window_icon;
+//! The client's systems, grouped by concern.
+//!
+//! | Group | Holds |
+//! |-------|-------|
+//! | [`geo`] | Bevy-free geodata: MVT decode/raster, road classes, the routing graph |
+//! | [`map`] | Everything streamed and drawn as world geometry — tiles, globe, buildings, terrain, water, vegetation, labels |
+//! | [`nav`] | Route planning and following, geocoding, transit |
+//! | [`player`] | Avatar, camera, collision, picking, gizmos |
+//! | [`gui`] | egui: the manager, the theme, and every panel |
+//! | [`net`] | Sim transport and the user store |
+//! | [`dev`] | Headless capture, debug overlays, desktop integration |
+//!
+//! **The flat re-exports below are this module's public surface**, not a
+//! transitional shim to be cleaned up later. The folders group the *files* — the
+//! thing that was unmanageable at 50 in one directory — while callers keep naming a
+//! system by what it is (`systems::water`) rather than by where it is filed. That
+//! split is deliberate, because the filing is expected to keep moving: `geo` is
+//! slated to leave for a crate of its own, and a group rename must not become a
+//! 151-call-site edit across `lib.rs`, which reaches most systems through
+//! `use systems::*`.
+//!
+//! Adding a system means one `pub mod` in the group's `mod.rs` and one name in the
+//! matching `pub use` here. Both are alphabetical; keep them that way.
+//!
+//! The group is named `gui` rather than `ui` deliberately — `systems::ui` is one of
+//! the panels, and a group of the same name could not coexist with its re-export.
+
+pub mod dev;
+pub mod geo;
+pub mod gui;
+pub mod map;
+pub mod nav;
+pub mod net;
+pub mod player;
+
+pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_icon};
+pub use geo::{road_texture, routing, vector_tiles};
+pub use gui::{
+    ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, place_pins, splash, theme,
+    ui,
+};
+pub use map::{
+    globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
+    rendering, street_furniture, street_labels, terrain, tile_loader, tile_source, vegetation,
+    water, weather,
+};
+pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
+pub use net::{network, user_store};
+pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo};

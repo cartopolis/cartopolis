@@ -25,7 +25,7 @@ mod linux {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use super::super::window_icon::ICON_PNG;
+    use crate::systems::window_icon::ICON_PNG;
 
     /// `$XDG_DATA_HOME`, or `$HOME/.local/share`.
     fn data_home() -> Option<PathBuf> {
