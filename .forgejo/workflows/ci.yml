@@ -73,3 +73,45 @@ jobs:
       # The vendored fork carries the floating-origin correctness tests; they are
       # the reason a `big_space` change can be trusted at all.
       - run: cargo test -p big_space --lib
+
+      # The only check here that renders anything. Everything above proves the
+      # code compiles and its units behave; this one launches the app, streams a
+      # world and asserts the frame had a planet in it — the class of failure that
+      # type-checks perfectly and ships a black screen.
+      #
+      # A step in this job rather than a job of its own, deliberately: it reuses
+      # the dependency graph the tests just compiled, where a separate job means a
+      # second cold Bevy build against its own cache, and the runner's capacity is
+      # 2.
+      #
+      # Four constraints, all measured in docs/notes/headless-shots-software-renderer.md:
+      #   * Orbit only. The image has no GPU — Mesa lavapipe is baked into
+      #     `viberfox-ci:latest` and `WGPU_BACKEND=vulkan` with it — and a 400 m
+      #     ground view never settles on a CPU rasteriser (~5 min). Orbit settles
+      #     in 6.7 s at 250 ms/frame. Ground level is triage, not a gate: raising
+      #     `--wait` does not fix it, it just fails slower.
+      #   * Geometry, placement, culling and visibility are the same picture on
+      #     llvmpipe as on a GPU. **Colour, exposure, bloom and lighting are not**,
+      #     so nothing here may assert on them; that tuning belongs on a
+      #     workstation. `software_renderer` is in the dump so a capture says which
+      #     it was.
+      #   * `--wait` counts *virtual* seconds, clamped at 0.25 s/frame, so on a
+      #     slow renderer it runs several times longer than it reads. 60 is the
+      #     ceiling, not the plan — a settled shot leaves immediately.
+      #   * The tile source is pinned. A scripted run gets no server handshake and
+      #     the built-in fallback is the public raster basemap; the globe should be
+      #     imaged off our own mirror, not a third party's, on every push.
+      - name: Headless scene smoke (orbit)
+        timeout-minutes: 15
+        env:
+          VIBE_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+        run: |
+          cargo run -p viberfox -- \
+            --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
+            --at 53.2194,6.5665,180000 --look=-90,0 \
+            --size 640x360 --settle 2 --wait 60 \
+            --expect 'settled==true' --expect 'globe_rendered>0' || {
+              echo "::error::scene smoke failed — the metrics behind it:"
+              cat /tmp/orbit.json 2>/dev/null || echo "(no dump: the run died before it captured)"
+              exit 1
+            }

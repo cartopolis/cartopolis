@@ -253,6 +253,135 @@ pub struct ShotHarness {
     /// object for one shot, an array for a sweep. The "inspect the settled world
     /// from a shell" snapshot.
     pub dump_state: Option<PathBuf>,
+    /// Assertions over each capture's [`ShotMetrics`] (`--expect`). Every one is
+    /// checked against every shot; any that does not hold makes the run exit
+    /// non-zero. Empty = the harness only reports, and only a render failure can
+    /// fail the process.
+    pub expect: Vec<Expectation>,
+}
+
+/// The comparison in an [`Expectation`].
+///
+/// `==` is exact, which is what the boolean metrics want (`settled==true`) and
+/// what a float rarely does — assert a float with `>=` / `<=` unless you mean
+/// the bit pattern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectOp {
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Eq,
+    Ne,
+}
+
+impl ExpectOp {
+    fn holds(self, measured: f64, want: f64) -> bool {
+        match self {
+            Self::Ge => measured >= want,
+            Self::Gt => measured > want,
+            Self::Le => measured <= want,
+            Self::Lt => measured < want,
+            Self::Eq => measured == want,
+            Self::Ne => measured != want,
+        }
+    }
+}
+
+/// One `--expect <key><op><value>` assertion over a capture's metrics — the flag
+/// that turns the harness from an instrument into a **gate**.
+///
+/// Everything the harness measures is already in [`ShotMetrics`]; what was
+/// missing was a way for a caller that cannot look at the image to state what it
+/// expected. Without it a CI job can only assert "the process exited 0", which
+/// the harness reports for a rendered-but-empty scene too.
+///
+/// Booleans are written `settled==true`; every other metric is a number
+/// (`globe_rendered>0`). An **unknown key is a hard error at startup**, on the
+/// same reasoning as the preset manifest's unknown-key rule: a typo'd assertion
+/// that quietly holds is worse than no assertion, because a green job now claims
+/// something nobody checked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Expectation {
+    key: String,
+    op: ExpectOp,
+    want: f64,
+    /// The spec exactly as typed, for log lines — `settled==true` reads better
+    /// than `settled == 1`.
+    text: String,
+}
+
+impl std::fmt::Display for Expectation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl Expectation {
+    /// Parse one `--expect` spec. Two-character operators are tried first, or
+    /// `a>=1` would split on `>` and try to parse `=1` as a number.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        const OPS: [(&str, ExpectOp); 6] = [
+            (">=", ExpectOp::Ge),
+            ("<=", ExpectOp::Le),
+            ("==", ExpectOp::Eq),
+            ("!=", ExpectOp::Ne),
+            (">", ExpectOp::Gt),
+            ("<", ExpectOp::Lt),
+        ];
+        let (key, op, raw_value) = OPS
+            .iter()
+            .find_map(|(sym, op)| spec.split_once(sym).map(|(k, v)| (k.trim(), *op, v.trim())))
+            .ok_or_else(|| {
+                format!("{spec:?} needs one of >= <= == != > < , e.g. \"globe_rendered>0\"")
+            })?;
+
+        if !metric_keys().any(|k| k == key) {
+            return Err(format!(
+                "{key:?} is not a metric; known metrics are: {}",
+                metric_keys().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        let want = match raw_value {
+            "true" => 1.0,
+            "false" => 0.0,
+            v => v.parse::<f64>().map_err(|e| format!("{spec:?}: {v:?} is not a number ({e})"))?,
+        };
+        if want.is_nan() {
+            return Err(format!("{spec:?}: NaN compares false against everything"));
+        }
+        Ok(Self { key: key.to_string(), op, want, text: spec.trim().to_string() })
+    }
+
+    /// Check against one capture. `Ok(())` holds; `Err` is the reason, ready to log.
+    fn check(&self, m: &ShotMetrics) -> Result<(), String> {
+        match m.measure(&self.key) {
+            Some(v) if self.op.holds(v, self.want) => Ok(()),
+            Some(v) => Err(format!("measured {} = {v}", self.key)),
+            // `ground_m` is `NaN` when the height layer is off or out of AHN's
+            // coverage, and `NaN` serialises to JSON null. Saying so beats
+            // reporting a comparison against a number that was never taken.
+            None => Err(format!("{} was not measured in this capture", self.key)),
+        }
+    }
+}
+
+/// The metric names an `--expect` may use: every [`ShotMetrics`] field except the
+/// two that are not a number. Derived from [`CSV_HEADER`] rather than listed a
+/// second time, so a new metric reaches the flag on the same commit it reaches
+/// the CSV — and `expectation_keys_match_the_metrics` fails if they ever part.
+fn metric_keys() -> impl Iterator<Item = &'static str> {
+    CSV_HEADER.split(',').filter(|k| !matches!(*k, "name" | "busy"))
+}
+
+/// Parse every `--expect` spec, failing on the first bad one. Done while the CLI
+/// is being read — before the window, the app and several minutes of streaming —
+/// so a mistyped assertion costs a second rather than a whole run.
+fn parse_expectations(specs: &[String]) -> Result<Vec<Expectation>, String> {
+    specs
+        .iter()
+        .map(|s| Expectation::parse(s).map_err(|e| format!("--expect {e}")))
+        .collect()
 }
 
 /// The numbers behind one settled capture: the image is the *what*, this is the
@@ -343,6 +472,18 @@ globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches
 terrain_ready,terrain_relief_m,software_renderer";
 
 impl ShotMetrics {
+    /// One metric by name, as a number — booleans as 1/0. Read back out of the
+    /// `Serialize` impl rather than a hand-written match, which cannot drift from
+    /// the struct. `None` means the field is not a number (`name`, `busy`) or was
+    /// serialised as null, which is what a `NaN` float becomes.
+    fn measure(&self, key: &str) -> Option<f64> {
+        match serde_json::to_value(self).ok()?.get(key)? {
+            serde_json::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            serde_json::Value::Number(n) => n.as_f64(),
+            _ => None,
+        }
+    }
+
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
@@ -399,6 +540,7 @@ impl ShotHarness {
         frames: u32,
         csv: Option<PathBuf>,
         dump_state: Option<PathBuf>,
+        expect: &[String],
     ) -> Result<Self, String> {
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
             let v: Vec<f64> = s
@@ -437,7 +579,21 @@ impl ShotHarness {
         }
         let shots = densify_path(&shots, frames);
         let size = parse_size(size).ok_or_else(|| format!("--size wants WxH, got {size:?}"))?;
-        Ok(Self { path, shots, size, settle, wait, hide_ui, ui, mode, tile_url: None, csv, dump_state })
+        let expect = parse_expectations(expect)?;
+        Ok(Self {
+            path,
+            shots,
+            size,
+            settle,
+            wait,
+            hide_ui,
+            ui,
+            mode,
+            tile_url: None,
+            csv,
+            dump_state,
+            expect,
+        })
     }
 
     /// Build from a preset manifest (`--shots`): every remembered camera
@@ -455,6 +611,7 @@ impl ShotHarness {
         wait_override: Option<f32>,
         csv: Option<PathBuf>,
         dump_state: Option<PathBuf>,
+        expect: &[String],
     ) -> Result<Self, String> {
         use crate::systems::shot_presets::Manifest;
 
@@ -506,6 +663,10 @@ impl ShotHarness {
             tile_url: manifest.tile_url.clone(),
             csv,
             dump_state,
+            // Manifest-wide, not per preset: `--shots --expect settled==true` asks
+            // that *every* documentation image landed on a finished world, which is
+            // the question worth asking of the set as a whole.
+            expect: parse_expectations(expect)?,
         })
     }
 
@@ -651,6 +812,11 @@ pub struct ShotProgress {
     /// One [`ShotMetrics`] per captured viewpoint, flushed to `--csv`/`--dump-state`
     /// when the run completes.
     metrics: Vec<ShotMetrics>,
+    /// `--expect` assertions that did not hold, over the whole run. Counted rather
+    /// than fatal on the spot: the remaining viewpoints still get captured, so a
+    /// red CI job hands back the PNG and the metrics that explain it. The count is
+    /// what turns into a non-zero exit at the end.
+    unmet: usize,
 }
 
 /// True while a scripted capture is configured — the run condition the user
@@ -971,10 +1137,23 @@ pub fn drive_capture(
         With<crate::components::RouteVisual>,
     >,
 ) {
-    if let Some(frames) = progress.exit_in.as_mut() {
-        *frames = frames.saturating_sub(1);
-        if *frames == 0 {
-            exit.write(AppExit::Success);
+    if let Some(frames) = progress.exit_in {
+        let left = frames.saturating_sub(1);
+        progress.exit_in = Some(left);
+        if left == 0 {
+            // The one place the harness gets to have an opinion about the world it
+            // photographed. Without `--expect` this is always Success and only a
+            // render failure can fail the run — which is exactly why a caller that
+            // cannot look at the image needs the flag.
+            if progress.unmet > 0 {
+                tracing::error!(
+                    unmet = progress.unmet,
+                    "shot harness: expectations not met — see the `shot expect failed` lines above"
+                );
+                exit.write(AppExit::error());
+            } else {
+                exit.write(AppExit::Success);
+            }
         }
         return;
     }
@@ -1213,6 +1392,12 @@ pub fn drive_capture(
         } else {
             shot_state!(warn);
         }
+        for e in &harness.expect {
+            if let Err(why) = e.check(&m) {
+                progress.unmet += 1;
+                tracing::error!(shot = m.shot, expect = %e, why = %why, "shot expect failed");
+            }
+        }
         progress.metrics.push(m);
     }
 
@@ -1327,6 +1512,7 @@ mod tests {
             8,
             None,
             None,
+            &[],
         );
         match result {
             Err(e) => assert!(e.contains("--frames"), "got {e:?}"),
@@ -1349,6 +1535,7 @@ mod tests {
             12,
             None,
             None,
+            &[],
         )
         .unwrap();
         // 12 frames → indices 00..11, zero-padded to width 2, altitude-tagged.
@@ -1361,7 +1548,7 @@ mod tests {
         // The checked-in manifest is the docs' source of truth — if it stops
         // loading, `cargo shots` silently stops regenerating the README images.
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
-        let h = ShotHarness::from_manifest(&path, &[], None, Some(0.1), Some(1.0), None, None)
+        let h = ShotHarness::from_manifest(&path, &[], None, Some(0.1), Some(1.0), None, None, &[])
             .expect("checked-in docs/shots.toml must load");
         assert!(h.shots.len() >= 2, "manifest should describe a set of views");
         for (i, s) in h.shots.iter().enumerate() {
@@ -1378,7 +1565,7 @@ mod tests {
         // `--only` narrows the same set without changing anything else.
         let first = h.shots[0].name.clone().unwrap();
         let one =
-            ShotHarness::from_manifest(&path, &[first.clone()], None, None, None, None, None)
+            ShotHarness::from_manifest(&path, &[first.clone()], None, None, None, None, None, &[])
                 .unwrap();
         assert_eq!(one.shots.len(), 1);
         assert_eq!(one.shots[0].name.as_deref(), Some(first.as_str()));
@@ -1387,14 +1574,15 @@ mod tests {
     #[test]
     fn manifest_size_can_be_overridden_from_the_cli() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/shots.toml");
-        let h = ShotHarness::from_manifest(&path, &[], Some("640x360"), None, None, None, None)
+        let h = ShotHarness::from_manifest(&path, &[], Some("640x360"), None, None, None, None, &[])
             .unwrap();
         assert_eq!(h.size, UVec2::new(640, 360));
     }
 
-    #[test]
-    fn csv_header_and_row_have_matching_arity() {
-        let m = ShotMetrics {
+    /// A capture that measured nothing: every count zero, nothing settled, and
+    /// `ground_m` the `NaN` a run without the height layer really produces.
+    fn sample_metrics() -> ShotMetrics {
+        ShotMetrics {
             shot: 1,
             name: Some("city".into()),
             lat: 0.0,
@@ -1427,11 +1615,107 @@ mod tests {
             terrain_ready: false,
             terrain_relief_m: 0.0,
             software_renderer: true,
-        };
+        }
+    }
+
+    #[test]
+    fn csv_header_and_row_have_matching_arity() {
         assert_eq!(
             CSV_HEADER.split(',').count(),
-            m.csv_row().split(',').count(),
+            sample_metrics().csv_row().split(',').count(),
             "CSV header and row column counts drifted"
         );
+    }
+
+    /// The `--expect` key set is derived from `CSV_HEADER`, and the values are read
+    /// back out of `Serialize`. Those are two different views of the struct, so
+    /// this is the test that keeps them one: a field renamed on one side and not
+    /// the other would otherwise make every assertion on it silently unmeasurable.
+    #[test]
+    fn expectation_keys_match_the_metrics() {
+        let m = sample_metrics();
+        for key in metric_keys() {
+            // `ground_m` is the deliberate exception: it is `NaN` here, which is
+            // JSON null, which is "not measured" — and that is the answer.
+            if key == "ground_m" {
+                assert!(m.measure(key).is_none(), "NaN should read as unmeasured");
+                continue;
+            }
+            assert!(m.measure(key).is_some(), "{key} is an --expect key but has no value");
+        }
+        // The two non-numeric fields are excluded on purpose, not by accident.
+        assert!(!metric_keys().any(|k| k == "name" || k == "busy"));
+    }
+
+    #[test]
+    fn expectations_parse_every_operator_and_booleans() {
+        let cases = [
+            ("globe_rendered>0", 0.0),
+            ("globe_rendered >= 1", 1.0),
+            ("space_factor<0.5", 0.5),
+            ("alt_m<=180000", 180000.0),
+            ("settled==true", 1.0),
+            ("software_renderer!=false", 0.0),
+        ];
+        for (spec, want) in cases {
+            let e = Expectation::parse(spec).unwrap_or_else(|err| panic!("{spec:?}: {err}"));
+            assert_eq!(e.want, want, "{spec:?}");
+            // The log line shows what was typed, not the parsed form.
+            assert_eq!(e.to_string(), spec);
+        }
+    }
+
+    /// A typo'd assertion that quietly holds is worse than no assertion — a green
+    /// job then claims something nobody checked. Every malformed spec must die at
+    /// parse time, before the app is even built.
+    #[test]
+    fn malformed_expectations_are_rejected_at_parse_time() {
+        for bad in ["globe_renderd>0", "settled=true", "globe_rendered", "alt_m>banana", "alt_m>NaN"]
+        {
+            assert!(Expectation::parse(bad).is_err(), "{bad:?} should not parse");
+        }
+        // And the error names the metrics, so a typo is one message from a fix.
+        let err = Expectation::parse("globe_renderd>0").unwrap_err();
+        assert!(err.contains("globe_rendered"), "{err}");
+    }
+
+    #[test]
+    fn expectations_hold_or_report_the_measured_value() {
+        let mut m = sample_metrics();
+        m.globe_rendered = 42;
+
+        assert!(Expectation::parse("globe_rendered>0").unwrap().check(&m).is_ok());
+        assert!(Expectation::parse("settled==true").unwrap().check(&m).is_err());
+
+        // A failure carries the number, so a red run needs no second run to say why.
+        let why = Expectation::parse("globe_rendered>100").unwrap().check(&m).unwrap_err();
+        assert!(why.contains("42"), "{why}");
+
+        // An unmeasured metric is its own message, not a comparison against nothing.
+        let why = Expectation::parse("ground_m>0").unwrap().check(&m).unwrap_err();
+        assert!(why.contains("not measured"), "{why}");
+    }
+
+    #[test]
+    fn a_bad_expectation_fails_the_whole_run_setup() {
+        let result = ShotHarness::from_cli(
+            "/tmp/s.png".into(),
+            &["0,0,1000".into()],
+            &[],
+            "64x64",
+            0.1,
+            1.0,
+            false,
+            vec![],
+            "free".into(),
+            0,
+            None,
+            None,
+            &["globe_rendered>0".into(), "nonsense>1".into()],
+        );
+        match result {
+            Err(e) => assert!(e.starts_with("--expect"), "got {e:?}"),
+            Ok(_) => panic!("an unknown metric must not build a harness"),
+        }
     }
 }

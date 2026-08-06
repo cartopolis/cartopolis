@@ -131,6 +131,15 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     dump_state: Option<PathBuf>,
 
+    /// Assert a metric on every capture and exit non-zero if it does not hold —
+    /// what makes `--shot` a CI gate rather than only an instrument. Repeatable:
+    /// `--expect settled==true --expect globe_rendered>0`. Any `--dump-state`
+    /// field is a valid key (an unknown one is an error, not a silent pass);
+    /// operators are `>= <= == != > <`, booleans are `true`/`false`. Use `>=`
+    /// rather than `==` on a float.
+    #[arg(long, value_name = "KEY<OP>VALUE")]
+    expect: Vec<String>,
+
     /// Time of day in hours (0–24) to start at — the main knob for checking the
     /// lighting curves in a `--shot` capture (e.g. `--time 6` for sunrise).
     #[arg(long, value_name = "HOURS")]
@@ -189,6 +198,7 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
             cli.wait,
             cli.csv.clone(),
             cli.dump_state.clone(),
+            &cli.expect,
         )
         .map(Some)
         .map_err(|e| format!("--shots: {e}"));
@@ -212,6 +222,7 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
         cli.frames,
         cli.csv.clone(),
         cli.dump_state.clone(),
+        &cli.expect,
     )
     .map(Some)
     .map_err(|e| format!("--shot: {e}"))

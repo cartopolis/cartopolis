@@ -137,6 +137,22 @@ jump between adjacent rows of the `space_factor` / `exposure` / `bloom` /
 *actual* camera state (e.g. the placed altitude after the teleport snaps it), not
 the requested `--at` — which is the point.
 
+**`--expect` turns the instrument into a gate.** `--expect 'settled==true'
+--expect 'globe_rendered>0'` (quote them — `>` is a shell redirect) asserts any
+`--dump-state` field on every capture and exits
+non-zero when one doesn't hold, logging `shot expect failed` with the *measured*
+value beside it. It is repeatable, operators are `>= <= == != > <`, booleans are
+`true`/`false`, and an **unknown key is a hard error at startup** (same rule as an
+unknown manifest key — a typo'd assertion that quietly holds is worse than none,
+because a green run then claims something nobody checked). Two deliberate
+choices: a failure does not abort the run, so the remaining viewpoints are still
+captured and a red CI job hands back the PNG and the metrics that explain it; and
+`==` is exact, so assert a float with `>=`/`<=` unless you mean the bit pattern.
+This is what the `scene-smoke` CI job is built on — and note what it may *not*
+assert: on the CI runner's software rasteriser, colour, exposure, bloom and
+lighting are not evidence (`docs/notes/headless-shots-software-renderer.md`), so
+gate on geometry, placement and visibility.
+
 With no window, `--size` *is* the screen: `resources::HeadlessSurface` stands in
 for the primary `Window` so egui has something to lay out and scissor against
 (the overlay renders into the capture as usual) and the globe LOD keeps its

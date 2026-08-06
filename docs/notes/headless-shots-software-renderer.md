@@ -1,6 +1,6 @@
 ---
 topic: headless-shots-software-renderer
-triggers: [shot_harness.rs, "--shot", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image"]
+triggers: [shot_harness.rs, "--shot", "--expect", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, ci.yml, "scene smoke", "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image"]
 updated: 2026-08-06
 ---
 
@@ -52,6 +52,19 @@ Both at 640×360, `debug` profile, `CARGO_BUILD_JOBS=6`:
 
 Orbit-and-above is cheap enough to run per-branch. Ground level is triage, not a
 gate.
+
+**It is a gate now** (2026-08-06). `build-test` in `.forgejo/workflows/ci.yml`
+ends with an orbit capture asserting `settled==true` and `globe_rendered>0` via
+the harness's `--expect` flag, which exits non-zero when a metric does not hold.
+It is a step in that job rather than a job of its own so it reuses the dependency
+graph the tests just compiled — a separate job pays a second cold Bevy build
+against its own cache, and the runner's capacity is 2. This is the only check in
+CI that renders anything: everything else proves the code compiles and its units
+behave, which a black screen does too.
+
+What it may assert is bounded by the section below — geometry, placement, culling
+and visibility, never colour or lighting. Ground level is still not a gate, and
+raising `--wait` does not change that; it fails slower.
 
 ## What it cannot tell you
 
