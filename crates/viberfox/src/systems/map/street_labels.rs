@@ -47,6 +47,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::StreetLabelSign;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -55,7 +56,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
 use crate::systems::data_layers::DataLayers;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::theme;
 use crate::systems::vector_tiles::{StreetLabelLine, DEPTH_BIAS_STEP};

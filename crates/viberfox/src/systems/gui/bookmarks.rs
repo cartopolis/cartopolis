@@ -42,10 +42,10 @@ use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::GridCell;
 
+use crate::grid::WORLD_CELL_EDGE;
 use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{
     nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };

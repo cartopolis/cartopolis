@@ -16,6 +16,7 @@
 //! with an identifying User-Agent.
 
 use crate::components::FreeCamera;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use web_time::Instant;
@@ -29,7 +30,6 @@ use serde::{Deserialize, Serialize};
 use crate::components::Avatar;
 use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState};
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::theme;
 use viberfox_core::world::tile_to_meters;

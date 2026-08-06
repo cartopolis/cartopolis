@@ -19,6 +19,7 @@
 //! CLAUDE.md).
 
 use crate::components::{FreeCamera, HideInSpace};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -27,7 +28,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{

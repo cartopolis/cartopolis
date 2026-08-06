@@ -37,9 +37,9 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, GridCell};
 
+use crate::grid::WORLD_CELL_EDGE;
 use crate::platform::http;
 use crate::systems::data_layers::{DataLayers, PoiInstance, LAYER_DEFS, TRANSIT_LAYER};
-use crate::systems::free_camera::WORLD_CELL_EDGE;
 
 /// Refresh cadence for the departure data.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);

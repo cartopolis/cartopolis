@@ -1,4 +1,5 @@
 use crate::components::FreeCamera;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::camera::Exposure;
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::{AmbientLight, Atmosphere, AtmosphereEnvironmentMapLight, NotShadowCaster};
@@ -372,12 +373,6 @@ pub const SPACE_BLOOM_INTENSITY: f32 = 0.35;
 /// entity sits this far below the local ground so the atmosphere's surface aligns
 /// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
 const EARTH_ATMOSPHERE_INNER_RADIUS: f32 = 6_360_000.0;
-
-/// Grid cell edge for the world `BigSpace` (ADR-019/021). Large enough that local
-/// play rarely recenters; small enough to keep within-cell f32 precise.
-pub const WORLD_CELL_EDGE: f32 = 10_000.0;
-/// Hysteresis buffer past a cell edge before big_space recenters an entity.
-pub const WORLD_SWITCH_THRESHOLD: f32 = 100.0;
 
 /// Spawn the world [`BigSpace`] root with the camera as its [`FloatingOrigin`]
 /// (ADR-019). Other content currently spawns at the origin (cell 0) and renders

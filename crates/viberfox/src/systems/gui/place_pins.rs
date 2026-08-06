@@ -38,8 +38,8 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
+use crate::grid::WORLD_CELL_EDGE;
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{lat_lng_to_world, GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
 use crate::systems::theme;
@@ -336,7 +336,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::free_camera::WORLD_SWITCH_THRESHOLD;
+    use crate::grid::WORLD_SWITCH_THRESHOLD;
     use big_space::prelude::Grid;
 
     /// The silhouette has to be convex — `Shape::convex_polygon` renders a

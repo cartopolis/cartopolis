@@ -996,7 +996,7 @@ pub fn handle_avatar_movement(
                 + terrain.at(transform.translation.x, transform.translation.z)
                 + AIRBORNE_EPS;
         if !airborne && layers.buildings_enabled && !colliders.is_empty() {
-            use crate::systems::free_camera::WORLD_CELL_EDGE;
+            use crate::grid::WORLD_CELL_EDGE;
             let base = Vec2::new(
                 grid_cell.x as f32 * WORLD_CELL_EDGE,
                 grid_cell.z as f32 * WORLD_CELL_EDGE,

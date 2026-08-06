@@ -13,8 +13,8 @@
 //! aren't modelled, so the avatar is kept outside the footprint entirely.
 
 use crate::components::Avatar;
+use crate::grid::WORLD_CELL_EDGE;
 use crate::resources::AvatarState;
-use crate::systems::free_camera::WORLD_CELL_EDGE;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use std::collections::HashMap;

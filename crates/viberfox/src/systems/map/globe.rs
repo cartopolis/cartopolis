@@ -216,7 +216,7 @@ impl GlobeState {
     /// made every y-based check (tile freeze, globe visibility, fog, skybox)
     /// misfire in space. Falls back to local `y` until the globe exists.
     pub fn altitude_m(&self, cell: &GridCell, tf: &Transform) -> f64 {
-        let edge = crate::systems::free_camera::WORLD_CELL_EDGE as f64;
+        let edge = crate::grid::WORLD_CELL_EDGE as f64;
         let cam = DVec3::new(
             cell.x as f64 * edge + tf.translation.x as f64,
             cell.y as f64 * edge + tf.translation.y as f64,
@@ -660,7 +660,7 @@ pub fn update_atmosphere_origin(
     let (Ok(cell), Ok((mut tf, mut atmosphere))) = (camera.single(), planet.single_mut()) else {
         return;
     };
-    let edge = crate::systems::free_camera::WORLD_CELL_EDGE as f64;
+    let edge = crate::grid::WORLD_CELL_EDGE as f64;
     let centre = globe.center_local.as_dvec3()
         - DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * edge;
     let new = centre.as_vec3();
@@ -1130,12 +1130,9 @@ pub fn update_globe_tiles(
 
     // ── Quadtree selection (throttled; skipped near the ground) ─────────────
     let cam = DVec3::new(
-        cell.x as f64 * crate::systems::free_camera::WORLD_CELL_EDGE as f64
-            + tf.translation.x as f64,
-        cell.y as f64 * crate::systems::free_camera::WORLD_CELL_EDGE as f64
-            + tf.translation.y as f64,
-        cell.z as f64 * crate::systems::free_camera::WORLD_CELL_EDGE as f64
-            + tf.translation.z as f64,
+        cell.x as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.x as f64,
+        cell.y as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.y as f64,
+        cell.z as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.z as f64,
     );
     let altitude = (cam - earth_c).length() - globe.radius as f64;
     if altitude < QT_MIN_ALT {

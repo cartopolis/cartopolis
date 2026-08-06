@@ -21,6 +21,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::OsmBuildingMesh;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,7 +37,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the

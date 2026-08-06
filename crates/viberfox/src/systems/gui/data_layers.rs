@@ -18,6 +18,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::HashMap;
 
 use bevy::pbr::{
@@ -34,7 +35,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::theme;
 use viberfox_core::world::{tile_to_lat_lng, tile_to_meters};

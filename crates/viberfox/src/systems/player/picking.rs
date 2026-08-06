@@ -205,7 +205,7 @@ fn map_geo_at(
     if dir.y > -1e-4 {
         return None; // at or above the horizon — no ground hit
     }
-    let edge = f64::from(crate::systems::free_camera::WORLD_CELL_EDGE);
+    let edge = f64::from(crate::grid::WORLD_CELL_EDGE);
     let cam_world = DVec3::new(
         cell.x as f64 * edge + f64::from(tf.translation.x),
         cell.y as f64 * edge + f64::from(tf.translation.y),

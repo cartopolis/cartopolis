@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod components;
+mod grid;
 mod login;
 mod platform;
 mod resources;
@@ -2773,7 +2774,7 @@ fn update_clouds(
         // World-anchor: the camera's horizontal position in the local anchor
         // frame (× FREQ, matching the shader) so the deck stays fixed over the
         // ground as you fly under it, rather than sliding with the camera.
-        let edge = systems::free_camera::WORLD_CELL_EDGE as f32;
+        let edge = crate::grid::WORLD_CELL_EDGE as f32;
         let world_x = cell.x as f32 * edge + cam_local.translation.x;
         let world_z = cell.z as f32 * edge + cam_local.translation.z;
         mat.params2 = Vec4::new(world_x * CLOUD_FREQ, world_z * CLOUD_FREQ, 0.0, 0.0);
@@ -3058,7 +3059,7 @@ fn update_globe_clouds(
 
     // Earth's centre in render coords (camera is the floating origin), same as
     // the planet atmosphere entity.
-    let edge = systems::free_camera::WORLD_CELL_EDGE as f64;
+    let edge = crate::grid::WORLD_CELL_EDGE as f64;
     let centre = globe.center_local.as_dvec3()
         - bevy::math::DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * edge;
     let centre = centre.as_vec3();

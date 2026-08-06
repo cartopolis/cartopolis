@@ -24,6 +24,7 @@
 
 use crate::components::MapSurface;
 use crate::components::{FreeCamera, FurnitureSurface, VegetationSurface};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -35,7 +36,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::furniture;
 use crate::systems::globe::GlobeState;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};

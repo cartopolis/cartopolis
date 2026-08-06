@@ -11,6 +11,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +26,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 use viberfox_core::TileKey;
 

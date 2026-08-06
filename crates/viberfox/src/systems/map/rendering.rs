@@ -1,7 +1,7 @@
 use crate::components::{NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimShape, Region};
 use crate::components::{OwnedMaterial, PrimMesh, RegionMesh};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::PrimTextureCache;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::tile_loader::{RegionTile, TileKey};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};

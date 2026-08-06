@@ -19,6 +19,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::RouteVisual;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,7 +35,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::http;
 use crate::resources::{MapAnchor, OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{
     camera_geo, lat_lng_to_world, nominatim_base_url, percent_encode, world_to_lat_lng,
     GeoNavState, GeoSuggestion, Teleport,

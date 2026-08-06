@@ -7,13 +7,13 @@
 //! whenever that anchor moves. This is the prim-side mirror of how
 //! `rendering::spawn_regions` rebases regions into the grid.
 
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::MapAnchor;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::{Prim, PrimGeo};
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
 use viberfox_core::GeoAnchor;
 

@@ -55,6 +55,7 @@
 //! motion when the feed carries none.
 
 use crate::components::DriverArrow;
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -66,7 +67,6 @@ use crate::components::Avatar;
 use crate::platform::location::LocationWatch;
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
 use crate::systems::navigation::RouteState;
 use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};

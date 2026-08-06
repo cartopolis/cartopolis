@@ -31,6 +31,7 @@
 
 use crate::components::FreeCamera;
 use crate::components::{VehicleBox, VehicleLabel};
+use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,7 +46,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::{http, storage};
 use crate::systems::data_layers::{DataLayers, TRANSIT_LAYER};
-use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::lat_lng_to_local;
