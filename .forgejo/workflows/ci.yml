@@ -34,6 +34,11 @@ jobs:
           # finds out at runtime. See `.gitattributes`.
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
+      # Formatting is a convention now (d5c301d), so it needs a gate or it decays
+      # back into per-change churn. Cheap and first: no compilation involved.
+      # `crates/big_space` is excluded on purpose — it is a vendored fork kept
+      # diff-comparable with upstream, so it is listed nowhere here.
+      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p simulator --check
       # `--all-targets` now that the vendored big_space fork's test target
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.

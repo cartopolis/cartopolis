@@ -41,7 +41,7 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in
 
 | Path | Contents |
 |------|----------|
-| `crates/viberfox_core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) |
+| `crates/core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) — the `viberfox_core` crate |
 | `crates/geo/` | Bevy-free map geodata (`viberfox_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
 | `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs` |
 | `crates/viberfox/` | Bevy client — everything below |
@@ -59,7 +59,7 @@ phases in `lib.rs`:
 | `systems/gui/` | `egui_manager`, `theme`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
 | `systems/net/` | `network`, `user_store` (plus `../login.rs`, `../solo.rs`) |
 | `systems/dev/` | `shot_harness`, `shot_presets`, `debug`, `desktop_integration`, `window_icon` |
-| `platform/` | `http`, `storage`, `location`, `work`, `workers` (native vs wasm behind one API) |
+| `platform/` | `http`, `storage`, `location`, `stream`, `work`, `workers` (native vs wasm behind one API) |
 
 **The folders group files; they are not the import path.** `systems/mod.rs`
 re-exports every module flat, so a system is named for what it is
@@ -83,6 +83,10 @@ the phase they belong to, not the end.
   history, don't add to them.
 - **UI colour, spacing and type come from `systems::theme`.** A fresh
   `Color32::from_rgb` in a panel is how the chrome drifted last time.
+- **Run `cargo fmt` before committing.** The four owned crates are rustfmt-clean
+  as of `d5c301d` and CI checks it. `crates/big_space` is excluded — it is a
+  vendored fork kept diff-comparable with upstream. If a bulk reformat is ever
+  needed again, add its SHA to `.git-blame-ignore-revs`.
 - **Dependency versions live in the root `Cargo.toml`** `[workspace.dependencies]`.
 - **Protocol changes append a `PROTOCOL_HISTORY` row**; `PROTOCOL_VERSION` is
   derived from it — never write the number anywhere else.
@@ -98,7 +102,7 @@ Client env vars (also read from `.env`):
 | `VIBE_CACHE_DIR` | Tile/asset cache root (defaults to the workspace root) |
 | `VIBE_USER` / `VIBE_PASSWORD` | Handshake credentials; `--login` and a login file take precedence |
 | `VIBERFOX_PLACE` | Start at `lat,lng,alt,pitch,yaw` — the value the HUD's ⧉ button copies |
-| `VIBERFOX_NO_ATMOSPHERE\|_HAZE\|_ENVMAP\|_OCEAN\|_CLOUDS\|_RAIN\|_SHADOWS` | Bisect a render problem by removing one layer |
+| `VIBERFOX_NO_ATMOSPHERE\|_HAZE\|_ENVMAP\|_OCEAN\|_CLOUDS\|_RAIN\|_SHADOWS\|_SPACE` | Bisect a render problem by removing one layer |
 | `ANTHROPIC_KEY` | AI assistant panel — copy `.env.example` to `.env` |
 
 The server takes `vibe.toml` → `VIBE_*` env → CLI flags, in that order.
@@ -112,10 +116,20 @@ background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
 
 ## CI
 
-[`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on every push:
-`cargo check --workspace --all-targets` in a fast lane, plus the client and
-`big_space` test suites. Both jobs use the prebuilt `viberfox-ci` image and check
-out with `lfs: true` — add that to any new job.
+[`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on every push, as
+two jobs in parallel (runner capacity is 2):
+
+- **`check`** — `cargo check --workspace --all-targets`, the fast lane; fails within
+  ~1 min on an obvious compile error.
+- **`build-test`** — the suites in cost order (`viberfox_geo` first: no Bevy in its
+  graph, so a geodata regression fails in seconds rather than after the client's full
+  codegen), then `viberfox`, then `big_space --lib`. It ends with a **headless scene
+  smoke**: an orbit `--shot` asserting `settled==true` and `globe_rendered>0`, which
+  catches the failure class that type-checks perfectly and ships a black screen. On
+  failure it dumps the metrics that explain it.
+
+Both jobs use the prebuilt `viberfox-ci` image and check out with `lfs: true` — add
+that to any new job. `deploy-web.yml` and `release.yml` are separate workflows.
 
 That image carries Mesa **lavapipe** (a CPU Vulkan driver) and `WGPU_BACKEND=vulkan`,
 so `--shot` / `cargo shots` work in a job with no GPU and no `/dev/dri`. What a

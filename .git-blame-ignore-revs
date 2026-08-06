@@ -1,0 +1,11 @@
+# Revisions to skip when running `git blame`.
+#
+# Enable locally with:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (Forgejo and GitHub honour this file automatically.)
+#
+# Only whole-tree mechanical rewrites belong here — a commit listed below must
+# contain no semantic change, or blame will skip past the change that matters.
+
+# style: adopt rustfmt across the four owned crates
+d5c301d32d6201c01e871e51655379df5425e703
