@@ -368,7 +368,7 @@ fn tile_frac_to_lng(fx: f64, zoom: u32) -> f64 {
 fn decode_globe_tile(rgba: image::RgbaImage, has_ocean_mask: bool) -> DecodedTile {
     let (width, height) = (rgba.width(), rgba.height());
     let (data, mip_count) =
-        crate::systems::rendering::build_mip_chain(width, height, rgba.into_raw());
+        crate::systems::mip::build_mip_chain(width, height, rgba.into_raw());
     DecodedTile {
         data,
         width,
@@ -1022,7 +1022,7 @@ pub fn update_globe_tiles(
         globe.tiles.succeeded(&key);
         let has_ocean_mask = tile.has_ocean_mask;
         // Decode + mips already done on the worker; just assemble and upload.
-        let image = crate::systems::rendering::image_from_mip_chain(
+        let image = crate::systems::tile_loader::image_from_mip_chain(
             tile.width,
             tile.height,
             tile.data,

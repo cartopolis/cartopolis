@@ -8,6 +8,7 @@
 //! `viberfox` re-exports these four modules from `systems`, so client code still
 //! writes `systems::vector_tiles` and does not name this crate directly.
 
+pub mod mip;
 pub mod road_texture;
 pub mod furniture;
 pub mod routing;

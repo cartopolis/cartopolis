@@ -43,7 +43,8 @@ use crate::systems::theme;
 use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
 };
-use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
+use crate::systems::tile_loader::load_tile_image;
+use viberfox_core::{TileSourceKind, tile_source_kind};
 use crate::systems::vector_tiles::{self, TileData};
 use viberfox_core::TileKey;
 

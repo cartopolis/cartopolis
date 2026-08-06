@@ -52,6 +52,66 @@ pub const REGION_SIZE_METERS: f64 = 256.0;
 /// `.png`) still works and falls back to the pre-rendered path.
 pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}";
 
+/// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
+/// ([`DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
+/// only reaches here offline / under `--shot`; solo and split mode fill it from the
+/// sim handshake first.
+#[must_use]
+pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
+    let template = if template.is_empty() {
+        DEFAULT_TILE_URL_TEMPLATE
+    } else {
+        template
+    };
+    template
+        .replace("{z}", &key.z.to_string())
+        .replace("{x}", &key.x.to_string())
+        .replace("{y}", &key.y.to_string())
+}
+
+/// What a tile endpoint serves. Raster payloads are decoded by the `image` crate;
+/// vector payloads are drawn by `viberfox_geo::vector_tiles`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TileSourceKind {
+    Raster,
+    Vector,
+}
+
+/// Classify a URL template by the tail after its `{y}` placeholder: `.png`/`.webp`
+/// → raster, nothing at all → vector (VersaTiles serves `/tiles/osm/{z}/{x}/{y}`
+/// with no extension). `VIBE_TILE_FORMAT=vector|raster` overrides.
+///
+/// This has to be decided *before* the fetch rather than sniffed from the bytes,
+/// because a vector source caps out at `MAX_SOURCE_ZOOM` and the deeper tiles the
+/// map streamer asks for must be redirected to an ancestor — which changes which
+/// URL we request. The byte sniff in `looks_like_raster` still runs afterwards as
+/// a backstop, so a misclassified source degrades to "no overzoom" rather than to
+/// a decode failure.
+#[must_use]
+pub fn tile_source_kind(template: &str) -> TileSourceKind {
+    if let Ok(v) = std::env::var("VIBE_TILE_FORMAT") {
+        match v.to_ascii_lowercase().as_str() {
+            "vector" | "mvt" | "pbf" => return TileSourceKind::Vector,
+            "raster" | "png" | "webp" | "jpeg" => return TileSourceKind::Raster,
+            _ => {}
+        }
+    }
+    match template.rsplit_once("{y}") {
+        // An extension right after `{y}` means pre-rendered pixels.
+        Some((_, tail)) => {
+            let tail = tail.split('?').next().unwrap_or("");
+            if tail.starts_with('.') {
+                TileSourceKind::Raster
+            } else {
+                TileSourceKind::Vector
+            }
+        }
+        // Empty/!templated → the built-in default, which is now the VersaTiles
+        // vector source (`DEFAULT_TILE_URL_TEMPLATE`), so classify it as such.
+        None => TileSourceKind::Vector,
+    }
+}
+
 /// WGS84 → fractional Web Mercator tile coordinate at a zoom (no flooring).
 ///
 /// The sub-tile fraction is what anything positioning *within* a tile needs — the

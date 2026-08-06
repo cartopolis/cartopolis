@@ -398,7 +398,7 @@ fn spawn_map_tile(
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
                                 let (data, mip_count) =
-                                    crate::systems::rendering::build_mip_chain(
+                                    crate::systems::mip::build_mip_chain(
                                         width,
                                         height,
                                         rgba.into_raw(),
@@ -868,7 +868,7 @@ pub fn apply_stream_textures(
             }
             Some(decoded) => {
                 // Decode + mipmaps already done off-thread; just assemble and upload.
-                let bevy_image = crate::systems::rendering::image_from_mip_chain(
+                let bevy_image = crate::systems::tile_loader::image_from_mip_chain(
                     decoded.width,
                     decoded.height,
                     decoded.data,

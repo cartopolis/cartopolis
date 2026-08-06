@@ -6,10 +6,8 @@ use big_space::prelude::GridCell;
 
 use crate::systems::free_camera::FreeCamera;
 use crate::systems::furniture::{
-    build_furniture_meshes, extract_furniture, paving_base, parts, point_seg_dist2,
-    FurnitureInstance, FurnitureKind, Tone, FURNITURE_FADE_END, FURNITURE_FADE_START,
+    paving_base, FURNITURE_FADE_END, FURNITURE_FADE_START,
 };
-use crate::systems::scatter::srgb_to_linear_rgb;
 use crate::systems::vector_tiles::SurfaceGroup;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;

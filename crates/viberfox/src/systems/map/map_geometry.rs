@@ -37,7 +37,8 @@ use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
-use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
+use crate::systems::tile_loader::load_tile_image;
+use viberfox_core::{TileSourceKind, tile_source_kind};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
@@ -887,8 +888,8 @@ fn road_surface_image(class: RoadClass) -> Image {
     use bevy::render::render_resource::TextureFormat;
 
     let t = road_texture(class);
-    let (data, mip_count) = crate::systems::rendering::build_mip_chain(t.width, t.height, t.rgba);
-    crate::systems::rendering::image_from_mip_chain(
+    let (data, mip_count) = crate::systems::mip::build_mip_chain(t.width, t.height, t.rgba);
+    crate::systems::tile_loader::image_from_mip_chain(
         t.width,
         t.height,
         data,

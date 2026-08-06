@@ -695,7 +695,7 @@ impl Default for OsmTileUrlTemplate {
 /// VIBE_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
 /// ```
 ///
-/// Vector vs raster is inferred from the template — see `tile_loader::tile_source_kind`.
+/// Vector vs raster is inferred from the template — see `viberfox_core::tile_source_kind`.
 #[must_use]
 pub fn tile_url_override() -> Option<String> {
     std::env::var("VIBE_TILE_URL")

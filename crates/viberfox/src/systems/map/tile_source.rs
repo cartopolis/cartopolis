@@ -35,10 +35,20 @@ use std::sync::{Arc, Mutex, OnceLock};
 use futures_channel::oneshot;
 
 use crate::platform::{http, storage};
-use crate::systems::tile_loader::{
-    format_osm_tile_url, tile_cache_key, tile_source_kind, TileSourceKind,
-};
+use viberfox_core::{format_osm_tile_url, tile_source_kind, TileSourceKind};
 use viberfox_core::TileKey;
+
+/// On-disk cache path for a tile, under the app's `cache/` folder (persists across
+/// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
+/// The extension tracks the source kind so a raster and a vector cache can coexist
+/// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
+pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
+    let ext = match kind {
+        TileSourceKind::Raster => "png",
+        TileSourceKind::Vector => "mvt",
+    };
+    format!("tiles/{}/{}/{}.{ext}", key.z, key.x, key.y)
+}
 
 /// Ceiling on the in-memory byte cache.
 ///
@@ -51,7 +61,7 @@ use viberfox_core::TileKey;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 /// What identifies a cached body. Carries the [`TileSourceKind`] for the same
-/// reason `tile_loader::tile_cache_key` does: a source switch must not hand MVT
+/// reason [`tile_cache_key`] does: a source switch must not hand MVT
 /// bytes to the PNG decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CacheKey {

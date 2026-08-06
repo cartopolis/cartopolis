@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::work::Dispatcher;
-pub use viberfox_core::TileKey;
+pub use viberfox_core::{tile_source_kind, TileKey, TileSourceKind};
 
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
@@ -69,7 +69,7 @@ fn spawn_tile_task(
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
                                 let (data, mip_count) =
-                                    crate::systems::rendering::build_mip_chain(
+                                    crate::systems::mip::build_mip_chain(
                                         width,
                                         height,
                                         rgba.into_raw(),
@@ -110,77 +110,7 @@ pub struct RegionTile {
     pub lod_level: u32, // 0 = high-res (2x2), 1 = medium-res (1x1), 2 = low-res (1x1)
 }
 
-/// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
-/// ([`viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
-/// only reaches here offline / under `--shot`; solo and split mode fill it from the
-/// sim handshake first.
-#[must_use]
-pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
-    let template = if template.is_empty() {
-        viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE
-    } else {
-        template
-    };
-    template
-        .replace("{z}", &key.z.to_string())
-        .replace("{x}", &key.x.to_string())
-        .replace("{y}", &key.y.to_string())
-}
 
-/// What a tile endpoint serves. Raster payloads are decoded by the `image` crate;
-/// vector payloads are drawn by [`crate::systems::vector_tiles`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TileSourceKind {
-    Raster,
-    Vector,
-}
-
-/// Classify a URL template by the tail after its `{y}` placeholder: `.png`/`.webp`
-/// → raster, nothing at all → vector (VersaTiles serves `/tiles/osm/{z}/{x}/{y}`
-/// with no extension). `VIBE_TILE_FORMAT=vector|raster` overrides.
-///
-/// This has to be decided *before* the fetch rather than sniffed from the bytes,
-/// because a vector source caps out at `MAX_SOURCE_ZOOM` and the deeper tiles the
-/// map streamer asks for must be redirected to an ancestor — which changes which
-/// URL we request. The byte sniff in `looks_like_raster` still runs afterwards as
-/// a backstop, so a misclassified source degrades to "no overzoom" rather than to
-/// a decode failure.
-#[must_use]
-pub fn tile_source_kind(template: &str) -> TileSourceKind {
-    if let Ok(v) = std::env::var("VIBE_TILE_FORMAT") {
-        match v.to_ascii_lowercase().as_str() {
-            "vector" | "mvt" | "pbf" => return TileSourceKind::Vector,
-            "raster" | "png" | "webp" | "jpeg" => return TileSourceKind::Raster,
-            _ => {}
-        }
-    }
-    match template.rsplit_once("{y}") {
-        // An extension right after `{y}` means pre-rendered pixels.
-        Some((_, tail)) => {
-            let tail = tail.split('?').next().unwrap_or("");
-            if tail.starts_with('.') {
-                TileSourceKind::Raster
-            } else {
-                TileSourceKind::Vector
-            }
-        }
-        // Empty/!templated → the built-in default, which is now the VersaTiles
-        // vector source (`DEFAULT_TILE_URL_TEMPLATE`), so classify it as such.
-        None => TileSourceKind::Vector,
-    }
-}
-
-/// On-disk cache path for a tile, under the app's `cache/` folder (persists across
-/// runs so revisits/LOD bursts don't re-hit the tile server and trip rate limits).
-/// The extension tracks the source kind so a raster and a vector cache can coexist
-/// (and so switching sources doesn't serve MVT bytes to the PNG decoder).
-pub(crate) fn tile_cache_key(key: &TileKey, kind: TileSourceKind) -> String {
-    let ext = match kind {
-        TileSourceKind::Raster => "png",
-        TileSourceKind::Vector => "mvt",
-    };
-    format!("tiles/{}/{}/{}.{ext}", key.z, key.x, key.y)
-}
 
 /// Fetch a single tile's raw bytes. A thin wrapper over
 /// [`tile_source::tile_bytes`], which owns the in-memory byte cache, the
@@ -410,7 +340,7 @@ pub fn load_region_tiles(
     for (tile_key, outcome) in finished {
         match outcome {
             Some(tile) => {
-                let bevy_image = crate::systems::rendering::image_from_mip_chain(
+                let bevy_image = crate::systems::tile_loader::image_from_mip_chain(
                     tile.width,
                     tile.height,
                     tile.data,
@@ -548,7 +478,7 @@ mod tests {
     fn empty_template_resolves_to_the_default_vector_source() {
         let key = TileKey::new(8490, 5319, 14);
         assert_eq!(
-            format_osm_tile_url("", &key),
+            viberfox_core::format_osm_tile_url("", &key),
             "https://tiles.garage44.eu/tiles/osm/14/8490/5319",
             "an empty template must fall back to the default vector source, not raster OSM"
         );
@@ -557,10 +487,35 @@ mod tests {
     #[test]
     fn cache_keys_separate_by_kind() {
         let key = TileKey::new(8490, 5319, 14);
-        let raster = tile_cache_key(&key, TileSourceKind::Raster);
-        let vector = tile_cache_key(&key, TileSourceKind::Vector);
+        let raster = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Raster);
+        let vector = crate::systems::tile_source::tile_cache_key(&key, TileSourceKind::Vector);
         assert_ne!(raster, vector, "a source switch must not reuse cached bytes");
         assert!(raster.ends_with("5319.png"));
         assert!(vector.ends_with("5319.mvt"));
     }
+}
+
+/// Assemble an [`Image`] from a pre-packed mipmap chain (see [`build_mip_chain`]).
+/// Uses `new_uninit` to skip `Image::new`'s mip-0-only length assertion, then
+/// points the descriptor at all levels; wgpu uploads each from the packed data.
+pub fn image_from_mip_chain(
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+    mip_count: u32,
+    format: bevy::render::render_resource::TextureFormat,
+    usage: RenderAssetUsages,
+    sampler: ImageSampler,
+) -> Image {
+    use bevy::render::render_resource::{Extent3d, TextureDimension};
+    let size = Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let mut image = Image::new_uninit(size, TextureDimension::D2, format, usage);
+    image.texture_descriptor.mip_level_count = mip_count;
+    image.data = Some(data);
+    image.sampler = sampler;
+    image
 }
