@@ -102,6 +102,19 @@ conclusion that rasterisation dominates — it means the parse figures were neve
 the whole parse bill, and any future comparison must say how many parses it is
 counting.
 
+How much that repetition was worth, measured on the same Groningen z14 fixture
+(2026-08-03, in the CI container): one decode 41.8 ms, and the five tessellators
+that share it 85.7 ms together. At seven decodes per cell that is 379 ms, of which
+**251 ms — two thirds — was the six redundant decodes**. Worker time, not frame
+time, but it is what a burst of 400 cells after a teleport is made of.
+
+**Do not compare 41.8 ms against the ~2.7 ms parse in the table above.** Different
+box and different profile (that table forced `viberfox` to `opt-level = 3`; this
+was a `dev-bevy` container build), so only the *ratio* carries over. The harness
+that produced it was a `dump_parse_cost` test on the branch this measurement came
+from, which did not merge — nothing in the tree measures it now, exactly as the
+top of this note says of the original benchmarks.
+
 **Not measured: whether removing that duplication moves `ShotMetrics::settled_s`.**
 It is a `--csv` column and a fresh-anchor capture is exactly the 424-request
 burst, so the before/after is one command — but it needs a GPU, and the container
