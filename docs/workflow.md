@@ -17,6 +17,10 @@ store](#why-the-board-cannot-be-the-state-store).
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
 
+This document is about who *owns* a ticket. For the other half — what disagrees
+with a session when it says it is finished, and what still has no verifier at all
+— see [notes/agent-verification.md](notes/agent-verification.md).
+
 ## The three workflows
 
 Two independent questions, not one. Keeping them apart is the whole point of
