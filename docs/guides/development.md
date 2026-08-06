@@ -20,7 +20,7 @@ files and succeeds, then panics at runtime. Same reason every CI job sets
 | Fast incremental links (local only) | `cargo run -p viberfox --features fast-dev` |
 | Client tests | `cargo test -p viberfox` |
 | Geodata tests (no Bevy — ~2 s) | `cargo test -p viberfox_geo` |
-| Server tests | `cargo test -p simulator` |
+| Server tests | `cargo test -p viberfox_simulator` |
 | Floating-origin tests | `cargo test -p big_space --lib` |
 | Regenerate README images | `cargo shots` |
 
