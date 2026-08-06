@@ -1,0 +1,1003 @@
+//! Street furniture extraction and meshing — the pure half.
+//!
+//! No Bevy: this turns a tile's point features into [`FurnitureInstance`]s and
+//! then into meshes. The ECS half — the distance LOD and the materials — is
+//! `viberfox`'s `systems::street_furniture`.
+//!
+//! Street furniture — benches, bins, shelters, picnic tables — read out of the
+//! vector tile the map is already made of.
+//!
+//! This is the cheapest realism there is: `map_geometry` fetches one MVT body per
+//! cell and Shortbread's **`pois`** layer is already inside it (467 features in the
+//! Groningen z14 fixture, against 8,552 buildings and 95 streets). Nothing here
+//! costs a request. Until now the whole layer was decoded and dropped —
+//! `vector_tiles::PAINT_ORDER` skips it as a *label* layer, which it is on a paper
+//! map and is not in a world you stand in.
+//!
+//! Three things shape the design, and two of them are inherited:
+//!
+//! * **`pois` has no `kind`.** Every other Shortbread layer discriminates on one
+//!   `kind` property; this one carries the raw OSM tags through instead
+//!   (`amenity`, `leisure`, `tourism`, `shop`, `man_made`, `information`, …), so
+//!   [`furniture_kind`] matches on key *and* value. [`FURNITURE_TABLE`] is the
+//!   whole vocabulary, and anything unlisted gets **nothing** — the same "an
+//!   unstyled polygon beats a wrongly styled one" rule the fills and the tree
+//!   scatter follow. Most of the layer is shops, doctors and restaurants: indoor
+//!   things whose node is a point inside a building we already draw.
+//! * **The map is pale cartographic paper** (see `systems::vegetation`), so the
+//!   tones here are the muted timber/grey family of [`palette::TRUNK`] and
+//!   [`palette::BUILDING_EDGE`], never the primary colours real playground
+//!   equipment is painted in. A saturated bench at walking distance is the
+//!   loudest thing on screen.
+//! * **Mass mesh churn loses the device** (CLAUDE.md). Furniture is merged into
+//!   *one* mesh per cell, rides `map_geometry`'s existing worker, build cap and
+//!   despawn cap, and is hard-capped per cell by [`MAX_FURNITURE_PER_CELL`].
+//!
+//! The part that is genuinely new is orientation. A POI is a bare point: OSM
+//! records that a bench exists, never which way it looks. Scattered at a hashed
+//! angle a row of benches along a canal reads as litter, so [`WayField`] answers
+//! "which way does the nearest street or footpath run, and which side of it am I
+//! on" out of the same tile's `streets` layer, and the objects that have a front
+//! ([`FurnitureKind::faces_the_path`]) turn to face it. That single number is most
+//! of the difference between furniture and boxes.
+
+use std::collections::HashMap;
+
+use mvt_reader::feature::{Feature, Value};
+
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
+use crate::scatter::{hash3, rand01, srgb_to_linear_rgb};
+
+/// Altitude at which furniture starts merging into the paving.
+///
+/// An order of magnitude lower than [`vegetation::TREE_FADE_START`](crate::systems::vegetation::TREE_FADE_START),
+/// because the objects are an order of magnitude smaller: a 1.8 m bench is already
+/// under a pixel at the altitude where a 12 m tree is still a recognisable blob.
+pub const FURNITURE_FADE_START: f32 = 150.0;
+
+/// Altitude by which it has merged completely and the geometry can be hidden.
+pub const FURNITURE_FADE_END: f32 = 450.0;
+
+/// Hard ceiling on furniture per streamed cell. A dense city-centre z14 cell runs
+/// to a few hundred; this is headroom, not a working limit, and exists for the
+/// same reason [`MAX_TREES_PER_CELL`](crate::systems::vegetation::MAX_TREES_PER_CELL)
+/// does — one command buffer must not be handed a million triangles. Truncation is
+/// logged rather than silent.
+pub const MAX_FURNITURE_PER_CELL: usize = 1_500;
+
+/// Radius within which a piece of furniture looks for a path to face. Beyond this
+/// there is nothing to orient against and the angle falls back to the hash.
+///
+/// 20 m is about as far as a bench is ever set back from the way it belongs to;
+/// much wider and a bench in the middle of a square starts squaring up to a road
+/// it has nothing to do with.
+const ORIENT_RADIUS_M: f32 = 20.0;
+
+// ─── What we know how to build ───────────────────────────────────────────────
+
+/// One placed object, in the tessellator's tile-local metre frame (origin at the
+/// cell's north-west corner, +x east, +z south, ground at y = 0).
+#[derive(Debug, Clone, Copy)]
+pub struct FurnitureInstance {
+    pub x: f32,
+    pub z: f32,
+    /// Rotation about +y, radians. See [`WayField`] for where it comes from.
+    pub yaw: f32,
+    pub kind: FurnitureKind,
+    /// Per-instance brightness multiplier, centred on 1.0. The same trick the tree
+    /// scatter uses: one shared material, and a street's worth of objects that are
+    /// not all the identical grey.
+    pub luma: f32,
+}
+
+/// The vocabulary of things this module can stand on a street.
+///
+/// Deliberately short. Each entry is a form that is unmistakable in six boxes at
+/// walking distance and harmless at a hundred metres; a kind that would need a
+/// texture, a curve or a survey to read correctly is better left undrawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FurnitureKind {
+    Bench,
+    /// A litter bin.
+    Bin,
+    /// A bottle bank / recycling container — the big one, not the bin.
+    Recycling,
+    /// A bus or picnic shelter: posts, a roof and a back panel.
+    Shelter,
+    PicnicTable,
+    /// Post box, vending machine, parcel locker: a box on a plinth.
+    Cabinet,
+    /// An information board or map on two posts.
+    Board,
+    /// A basin with water in it.
+    Fountain,
+    /// A plinth with a form on it — what a `tourism=artwork` node gets.
+    Artwork,
+    /// A swing frame. The token for `leisure=playground`, whose node is the
+    /// *centroid* of a play area we have no geometry for; see [`FURNITURE_TABLE`].
+    Swing,
+}
+
+impl FurnitureKind {
+    /// Whether this form takes its angle from the nearest path.
+    ///
+    /// False for the two forms that belong to an open space rather than to a way:
+    /// a fountain and a plinth are close to radially symmetric and stand in the
+    /// middle of a square, where squaring up to the nearest side street is a
+    /// worse answer than any angle at all.
+    #[must_use]
+    fn takes_angle_from_path(self) -> bool {
+        !matches!(self, Self::Fountain | Self::Artwork)
+    }
+}
+
+/// OSM tag → form. Matched on key **and** value, in order, first hit wins.
+///
+/// `pois` carries raw OSM tags rather than a Shortbread `kind`, and a feature
+/// routinely holds several of them (a `tourism=information` that is also an
+/// `information=map`), so this cannot be a lookup on one key.
+///
+/// What is *not* here matters as much as what is. `amenity=atm`, `telephone` and
+/// `defibrillator` are usually mounted on or in a wall, and standing them free in
+/// the street would put a box in the middle of a pavement they are not on.
+/// Everything without an outdoor, free-standing, roughly-known shape is skipped.
+const FURNITURE_TABLE: &[(&str, &str, FurnitureKind)] = &[
+    ("amenity", "bench", FurnitureKind::Bench),
+    ("amenity", "waste_basket", FurnitureKind::Bin),
+    ("amenity", "waste_disposal", FurnitureKind::Recycling),
+    ("amenity", "recycling", FurnitureKind::Recycling),
+    ("amenity", "shelter", FurnitureKind::Shelter),
+    ("amenity", "fountain", FurnitureKind::Fountain),
+    ("amenity", "post_box", FurnitureKind::Cabinet),
+    ("amenity", "vending_machine", FurnitureKind::Cabinet),
+    ("amenity", "parcel_locker", FurnitureKind::Cabinet),
+    ("tourism", "picnic_site", FurnitureKind::PicnicTable),
+    ("leisure", "picnic_table", FurnitureKind::PicnicTable),
+    ("tourism", "artwork", FurnitureKind::Artwork),
+    ("information", "map", FurnitureKind::Board),
+    ("information", "board", FurnitureKind::Board),
+    ("tourism", "information", FurnitureKind::Board),
+    // A playground's node is the centroid of an area, so this is a token for the
+    // place rather than a survey of its equipment — one swing frame in the middle
+    // of the `land` polygon that is already painted as a playground. Standing a
+    // whole play park on one point would be inventing geometry; standing nothing
+    // leaves the most child-legible place on the map blank.
+    ("leisure", "playground", FurnitureKind::Swing),
+];
+
+/// Classify one `pois` feature. `None` for everything the table does not name.
+#[must_use]
+pub fn furniture_kind(feature: &Feature) -> Option<FurnitureKind> {
+    FURNITURE_TABLE
+        .iter()
+        .find(|(key, value, _)| tag_str(feature, key) == Some(value))
+        .map(|(_, _, kind)| *kind)
+}
+
+fn tag_str<'a>(feature: &'a Feature, key: &str) -> Option<&'a str> {
+    match feature.properties.as_ref()?.get(key)? {
+        Value::String(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+// ─── Extraction ──────────────────────────────────────────────────────────────
+
+/// Read a tile's `pois` layer as placed, oriented furniture.
+///
+/// `seed` must be stable for a given cell (its x/y are the natural choice) so a
+/// cell that streams out and back does not re-roll the angle of every unoriented
+/// object — the tree scatter documents why a reshuffle is instantly visible.
+///
+/// Takes the cell's already-parsed [`TileData`] rather than the tile body: every
+/// consumer on this worker reads a different layer out of the same bytes, and
+/// `Reader::new` is a whole-tile decode (see `vector_tiles::TileData`).
+pub fn extract_furniture(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+) -> Result<Vec<FurnitureInstance>, String> {
+    let Some(meta) = tile.layer("pois") else {
+        return Ok(Vec::new());
+    };
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
+    let scale = tile_m / extent;
+
+    let ways = WayField::build(tile, scale, extent);
+
+    let mut out = Vec::new();
+    let mut truncated = false;
+
+    for (fi, feature) in features.iter().enumerate() {
+        let Some(kind) = furniture_kind(feature) else {
+            continue;
+        };
+        // MVT layers carry a buffer past the tile edge, so the same bench appears
+        // in two neighbouring tiles. Owning exactly `[0, extent)` is the dedup:
+        // every point lands in exactly one cell, with no tolerance to tune.
+        let Some((tx, ty)) = single_point(&feature.geometry) else {
+            continue;
+        };
+        if tx < 0.0 || ty < 0.0 || tx >= extent || ty >= extent {
+            continue;
+        }
+        let (x, z) = (tx * scale, ty * scale);
+
+        let h = hash3(seed, fi as i32, kind as i32);
+        let yaw = kind
+            .takes_angle_from_path()
+            .then(|| ways.facing(x, z, ORIENT_RADIUS_M))
+            .flatten()
+            // Nothing to line up with: a hashed angle beats a grid of objects all
+            // squared to Mercator north.
+            .unwrap_or_else(|| rand01(h, 0) * std::f32::consts::TAU);
+
+        out.push(FurnitureInstance {
+            x,
+            z,
+            yaw,
+            kind,
+            luma: 1.0 + (rand01(h, 1) - 0.5) * 0.10,
+        });
+        if out.len() >= MAX_FURNITURE_PER_CELL {
+            truncated = true;
+            break;
+        }
+    }
+
+    if truncated {
+        tracing::warn!(
+            cap = MAX_FURNITURE_PER_CELL,
+            "street furniture hit the per-cell cap; this cell is furnished short"
+        );
+    }
+    Ok(out)
+}
+
+/// The one coordinate of a `pois` feature. Shortbread emits them as single-point
+/// `MultiPoint`s, so both spellings are accepted and anything with more than one
+/// point is not a POI we know how to place.
+fn single_point(geometry: &geo_types::Geometry<f32>) -> Option<(f32, f32)> {
+    use geo_types::Geometry;
+    match geometry {
+        Geometry::Point(p) => Some((p.x(), p.y())),
+        Geometry::MultiPoint(mp) if mp.0.len() == 1 => Some((mp.0[0].x(), mp.0[0].y())),
+        _ => None,
+    }
+}
+
+// ─── Which way does the street run? ──────────────────────────────────────────
+
+/// Every street, path and railway in the tile, bucketed on a uniform grid so
+/// "which way does the nearest one run" costs a 3×3 cell lookup rather than a
+/// scan over the layer.
+///
+/// Segments are taken **unclipped**. The clip that
+/// [`clipped_rings`](crate::systems::vector_tiles::clipped_rings) exists for
+/// matters when a shape's *area* is being filled; here only a direction is read
+/// off, and a segment that runs out past the tile edge points the same way
+/// whether or not its far end is trimmed. Dropping the ones fully outside is
+/// enough.
+struct WayField {
+    segs: Vec<([f32; 2], [f32; 2])>,
+    buckets: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl WayField {
+    const CELL: f32 = 24.0;
+
+    fn build(tile: &TileData, scale: f32, extent: f32) -> Self {
+        use geo_types::Geometry;
+
+        let mut field = Self {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+        };
+        let Some(meta) = tile.layer("streets") else {
+            return field;
+        };
+        let features = tile.features(meta);
+
+        let margin = extent * 0.25;
+        for feature in features {
+            let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
+                Geometry::LineString(ls) => vec![ls],
+                Geometry::MultiLineString(ml) => ml.iter().collect(),
+                _ => continue,
+            };
+            for line in lines {
+                for w in line.0.windows(2) {
+                    let out_of_range = |c: &geo_types::Coord<f32>| {
+                        c.x < -margin || c.y < -margin || c.x > extent + margin || c.y > extent + margin
+                    };
+                    if out_of_range(&w[0]) && out_of_range(&w[1]) {
+                        continue;
+                    }
+                    field.push(
+                        [w[0].x * scale, w[0].y * scale],
+                        [w[1].x * scale, w[1].y * scale],
+                    );
+                }
+            }
+        }
+        field
+    }
+
+    fn push(&mut self, a: [f32; 2], b: [f32; 2]) {
+        if (b[0] - a[0]).abs() < 1e-4 && (b[1] - a[1]).abs() < 1e-4 {
+            return;
+        }
+        let idx = self.segs.len() as u32;
+        self.segs.push((a, b));
+        let (minx, maxx) = (a[0].min(b[0]), a[0].max(b[0]));
+        let (minz, maxz) = (a[1].min(b[1]), a[1].max(b[1]));
+        for i in (minx / Self::CELL).floor() as i32..=(maxx / Self::CELL).floor() as i32 {
+            for j in (minz / Self::CELL).floor() as i32..=(maxz / Self::CELL).floor() as i32 {
+                self.buckets.entry((i, j)).or_default().push(idx);
+            }
+        }
+    }
+
+    /// The yaw that turns an object at `(x, z)` to face the nearest way within
+    /// `max_r` metres — its front (+z) toward the way, its long axis (+x) along it.
+    /// `None` if nothing is in range.
+    ///
+    /// Facing is a **quarter turn** off the way's own direction, which is the part
+    /// that is easy to get wrong: a bench lined up *with* the street direction has
+    /// its long axis pointing at the kerb. And the quarter turn has a side to it,
+    /// so the seat looks at the path rather than at the wall behind it — hence the
+    /// perpendicular is signed by which half-plane the object sits in.
+    ///
+    /// The search widens by whole grid cells until it has covered `max_r`, so a
+    /// radius larger than [`Self::CELL`] still finds everything — a bench 20 m off
+    /// a road is nearly a full cell away.
+    fn facing(&self, x: f32, z: f32, max_r: f32) -> Option<f32> {
+        let reach = (max_r / Self::CELL).ceil() as i32;
+        let (cx, cz) = (
+            (x / Self::CELL).floor() as i32,
+            (z / Self::CELL).floor() as i32,
+        );
+        let mut best: Option<(f32, usize)> = None;
+        for i in cx - reach..=cx + reach {
+            for j in cz - reach..=cz + reach {
+                let Some(ids) = self.buckets.get(&(i, j)) else {
+                    continue;
+                };
+                for &id in ids {
+                    let (a, b) = self.segs[id as usize];
+                    let d2 = point_seg_dist2(x, z, a, b);
+                    if best.is_none_or(|(bd2, _)| d2 < bd2) {
+                        best = Some((d2, id as usize));
+                    }
+                }
+            }
+        }
+        let (d2, id) = best?;
+        if d2 > max_r * max_r {
+            return None;
+        }
+        let (a, b) = self.segs[id];
+        let (wx, wz) = (b[0] - a[0], b[1] - a[1]);
+        // Which side of the way the object is on: the sign of the 2D cross product
+        // of the way with the offset from it. Zero means the object sits *on* the
+        // line, where "toward the way" has no direction — take the left-hand
+        // perpendicular rather than collapsing the rotation to nothing.
+        let (ox, oz) = (x - a[0], z - a[1]);
+        let side = if wx * oz - wz * ox >= 0.0 { 1.0 } else { -1.0 };
+        // Right-hand perpendicular of the way, signed to point back at it.
+        let (fx, fz) = (side * wz, side * -wx);
+        // atan2(x, z) and not (z, x): a yaw of 0 in the object frame points along
+        // +z, so this is the rotation that takes +z onto the facing direction.
+        Some(fx.atan2(fz))
+    }
+}
+
+pub fn point_seg_dist2(x: f32, z: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dz * dz;
+    let t = if len2 <= f32::EPSILON {
+        0.0
+    } else {
+        (((x - a[0]) * dx + (z - a[1]) * dz) / len2).clamp(0.0, 1.0)
+    };
+    let (px, pz) = (a[0] + dx * t, a[1] + dz * t);
+    (x - px) * (x - px) + (z - pz) * (z - pz)
+}
+
+// ─── Geometry ────────────────────────────────────────────────────────────────
+
+/// A material tone. Kept to a handful, because the palette is the point: the map
+/// is pale paper and every one of these is a muted step off it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Timber: slats, table tops, swing seats.
+    Wood,
+    /// Painted steel: posts, frames, bins.
+    Metal,
+    /// The lighter tone of a roof panel or a sign face, so a shelter's roof reads
+    /// against its own posts from directly above — which is the angle the orbit
+    /// camera spends most of its time at.
+    Roof,
+    /// Masonry: a fountain rim, an artwork plinth.
+    Stone,
+    /// Standing water in a basin. The one saturated tone here, and it is
+    /// [`palette::WATER`] — the same colour the canals are, so a fountain is
+    /// recognisably the same substance.
+    Water,
+}
+
+impl Tone {
+    fn rgb(self) -> u32 {
+        match self {
+            Self::Wood => palette::FURNITURE_WOOD,
+            Self::Metal => palette::FURNITURE_METAL,
+            Self::Roof => palette::FURNITURE_ROOF,
+            Self::Stone => palette::FURNITURE_STONE,
+            Self::Water => palette::WATER,
+        }
+    }
+
+    /// The vertex-colour multiplier that turns the group's shared base colour into
+    /// this tone, computed in **linear** space because that is where the shader
+    /// multiplies. Same mechanism as the canopy's two tones: one material for the
+    /// whole layer, the variety carried by the mesh.
+    fn multiplier(self) -> [f32; 3] {
+        let base = srgb_to_linear_rgb(palette::FURNITURE);
+        let want = srgb_to_linear_rgb(self.rgb());
+        [
+            want[0] / base[0].max(1e-4),
+            want[1] / base[1].max(1e-4),
+            want[2] / base[2].max(1e-4),
+        ]
+    }
+}
+
+/// One box of one object, in the object's own frame: +x right, +y up, +z **front**
+/// (the side that turns toward the path).
+pub struct Part {
+    /// Centre of the box.
+    at: [f32; 3],
+    /// Half-extents.
+    half: [f32; 3],
+    tone: Tone,
+}
+
+const fn part(at: [f32; 3], half: [f32; 3], tone: Tone) -> Part {
+    Part { at, half, tone }
+}
+
+/// The parts of each form. Metres, and measured rather than stylised: a bench seat
+/// really is 45 cm off the ground, and getting that wrong is what makes a scene
+/// read as a doll's house.
+///
+/// Named consts rather than array literals in the match arms — a `const fn` call
+/// is not implicitly promoted to `'static`, so the literals would be temporaries
+/// rebuilt on every lookup, which is once per object per cell.
+mod form {
+    use super::{part, Part, Tone::*};
+
+    pub const BENCH: [Part; 4] = [
+        part([0.0, 0.45, 0.0], [0.90, 0.03, 0.22], Wood),
+        part([0.0, 0.68, -0.20], [0.90, 0.20, 0.03], Wood),
+        part([-0.75, 0.225, 0.0], [0.05, 0.225, 0.20], Metal),
+        part([0.75, 0.225, 0.0], [0.05, 0.225, 0.20], Metal),
+    ];
+    pub const BIN: [Part; 2] = [
+        part([0.0, 0.40, 0.0], [0.18, 0.40, 0.18], Metal),
+        part([0.0, 0.84, 0.0], [0.21, 0.04, 0.21], Roof),
+    ];
+    pub const RECYCLING: [Part; 2] = [
+        part([0.0, 0.70, 0.0], [0.75, 0.70, 0.65], Metal),
+        part([0.0, 1.44, 0.0], [0.78, 0.05, 0.68], Roof),
+    ];
+    pub const SHELTER: [Part; 7] = [
+        part([0.0, 2.36, 0.0], [1.70, 0.06, 0.90], Roof),
+        part([0.0, 1.25, -0.80], [1.60, 0.95, 0.04], Metal),
+        part([-1.55, 1.15, -0.75], [0.06, 1.15, 0.06], Metal),
+        part([1.55, 1.15, -0.75], [0.06, 1.15, 0.06], Metal),
+        part([-1.55, 1.15, 0.75], [0.06, 1.15, 0.06], Metal),
+        part([1.55, 1.15, 0.75], [0.06, 1.15, 0.06], Metal),
+        part([0.0, 0.42, -0.50], [1.40, 0.03, 0.20], Wood),
+    ];
+    pub const PICNIC_TABLE: [Part; 5] = [
+        part([0.0, 0.74, 0.0], [0.90, 0.03, 0.35], Wood),
+        part([0.0, 0.45, -0.62], [0.90, 0.03, 0.15], Wood),
+        part([0.0, 0.45, 0.62], [0.90, 0.03, 0.15], Wood),
+        part([-0.75, 0.37, 0.0], [0.04, 0.37, 0.62], Wood),
+        part([0.75, 0.37, 0.0], [0.04, 0.37, 0.62], Wood),
+    ];
+    pub const CABINET: [Part; 3] = [
+        part([0.0, 0.20, 0.0], [0.08, 0.20, 0.08], Metal),
+        part([0.0, 0.85, 0.0], [0.25, 0.45, 0.20], Metal),
+        part([0.0, 1.33, 0.0], [0.27, 0.03, 0.22], Roof),
+    ];
+    pub const BOARD: [Part; 3] = [
+        part([-0.50, 0.50, 0.0], [0.04, 0.50, 0.04], Metal),
+        part([0.50, 0.50, 0.0], [0.04, 0.50, 0.04], Metal),
+        part([0.0, 1.45, 0.0], [0.60, 0.45, 0.04], Roof),
+    ];
+    pub const FOUNTAIN: [Part; 6] = [
+        part([0.0, 0.20, -1.50], [1.60, 0.20, 0.10], Stone),
+        part([0.0, 0.20, 1.50], [1.60, 0.20, 0.10], Stone),
+        part([-1.50, 0.20, 0.0], [0.10, 0.20, 1.40], Stone),
+        part([1.50, 0.20, 0.0], [0.10, 0.20, 1.40], Stone),
+        part([0.0, 0.26, 0.0], [1.40, 0.02, 1.40], Water),
+        part([0.0, 0.55, 0.0], [0.15, 0.55, 0.15], Stone),
+    ];
+    pub const ARTWORK: [Part; 2] = [
+        part([0.0, 0.35, 0.0], [0.45, 0.35, 0.45], Stone),
+        part([0.0, 1.10, 0.0], [0.25, 0.40, 0.25], Metal),
+    ];
+    pub const SWING: [Part; 7] = [
+        part([-1.30, 1.10, -0.70], [0.05, 1.10, 0.05], Metal),
+        part([-1.30, 1.10, 0.70], [0.05, 1.10, 0.05], Metal),
+        part([1.30, 1.10, -0.70], [0.05, 1.10, 0.05], Metal),
+        part([1.30, 1.10, 0.70], [0.05, 1.10, 0.05], Metal),
+        part([0.0, 2.22, 0.0], [1.40, 0.06, 0.06], Metal),
+        part([-0.60, 0.50, 0.0], [0.22, 0.03, 0.12], Wood),
+        part([0.60, 0.50, 0.0], [0.22, 0.03, 0.12], Wood),
+    ];
+}
+
+pub fn parts(kind: FurnitureKind) -> &'static [Part] {
+    match kind {
+        FurnitureKind::Bench => &form::BENCH,
+        FurnitureKind::Bin => &form::BIN,
+        FurnitureKind::Recycling => &form::RECYCLING,
+        FurnitureKind::Shelter => &form::SHELTER,
+        FurnitureKind::PicnicTable => &form::PICNIC_TABLE,
+        FurnitureKind::Cabinet => &form::CABINET,
+        FurnitureKind::Board => &form::BOARD,
+        FurnitureKind::Fountain => &form::FOUNTAIN,
+        FurnitureKind::Artwork => &form::ARTWORK,
+        FurnitureKind::Swing => &form::SWING,
+    }
+}
+
+/// Merge a cell's furniture into a single mesh.
+///
+/// One mesh, one group, one material — the same contract the canopies and trunks
+/// hold to, and the reason a street's worth of objects costs one draw call.
+#[must_use]
+pub fn build_furniture_meshes(items: &[FurnitureInstance]) -> Vec<SurfaceMesh> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let mut buf = MeshBuf::default();
+    for item in items {
+        let (sn, cs) = item.yaw.sin_cos();
+        for p in parts(item.kind) {
+            let m = p.tone.multiplier();
+            let tint = [
+                m[0] * item.luma,
+                m[1] * item.luma,
+                m[2] * item.luma,
+                1.0,
+            ];
+            push_box(&mut buf, item.x, item.z, (sn, cs), p, tint);
+        }
+    }
+    vec![buf.finish(SurfaceGroup::Furniture)]
+}
+
+#[derive(Default)]
+struct MeshBuf {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+impl MeshBuf {
+    fn finish(self, group: SurfaceGroup) -> SurfaceMesh {
+        SurfaceMesh {
+            group,
+            positions: self.positions,
+            indices: self.indices,
+            uvs: Vec::new(),
+            normals: self.normals,
+            colors: self.colors,
+        }
+    }
+}
+
+/// Emit one yaw-rotated box: 6 flat-shaded faces, 24 vertices, 12 triangles.
+///
+/// Faces are not shared between vertices — a box shaded off averaged corner
+/// normals loses its edges, and a crisp edge is the only thing telling a 40 cm bin
+/// apart from a smudge at this size.
+fn push_box(buf: &mut MeshBuf, ox: f32, oz: f32, (sn, cs): (f32, f32), p: &Part, tint: [f32; 4]) {
+    // Object frame → world: rotate (x, z) about +y, then translate.
+    let place = |lx: f32, ly: f32, lz: f32| {
+        [
+            ox + lx * cs + lz * sn,
+            ly,
+            oz - lx * sn + lz * cs,
+        ]
+    };
+    let rotate = |nx: f32, nz: f32| [nx * cs + nz * sn, 0.0, -nx * sn + nz * cs];
+
+    // (normal, and the four corners of that face as ±1 in the box's own axes)
+    const FACES: [([f32; 3], [[f32; 3]; 4]); 6] = [
+        // +x
+        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]]),
+        // −x
+        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0]]),
+        // +y
+        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
+        // −y
+        ([0.0, -1.0, 0.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, -1.0, -1.0]]),
+        // +z
+        ([0.0, 0.0, 1.0], [[1.0, -1.0, 1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]),
+        // −z
+        ([0.0, 0.0, -1.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]]),
+    ];
+
+    for (n, corners) in FACES {
+        let base = buf.positions.len() as u32;
+        let world_n = if n[1] == 0.0 {
+            rotate(n[0], n[2])
+        } else {
+            n
+        };
+        for c in corners {
+            buf.positions.push(place(
+                p.at[0] + c[0] * p.half[0],
+                p.at[1] + c[1] * p.half[1],
+                p.at[2] + c[2] * p.half[2],
+            ));
+            buf.normals.push(world_n);
+            buf.colors.push(tint);
+        }
+        buf.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+// ─── Altitude LOD ────────────────────────────────────────────────────────────
+
+/// How far the furniture has merged into the paving, 0 → 1 over
+/// [`FURNITURE_FADE_START`]..[`FURNITURE_FADE_END`]. Read at spawn by
+/// `map_geometry` so a cell streaming in above the band does not flash a street
+/// full of benches for one frame.
+/// The group's shared base colour at a given fade `factor`, in linear RGB.
+///
+/// Most street furniture stands on paving, so [`palette::ROAD_FILL`] is what it
+/// merges into. Split out from the system so the convergence is a plain function
+/// of the ramp and can be asserted on without a running app.
+#[must_use]
+pub fn paving_base(factor: f32) -> [f32; 3] {
+    crate::scatter::mix(palette::FURNITURE, palette::ROAD_FILL, factor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../geo/tests/fixtures/groningen_z14.mvt"));
+    const TILE_M: f32 = 1000.0;
+
+    /// The fixture, parsed. `extract_furniture` takes a `TileData` because on the
+    /// worker it shares one with every other consumer of the same tile body.
+    fn fixture() -> TileData {
+        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
+    }
+
+    #[test]
+    fn the_fixture_furnishes_a_street() {
+        let items = extract_furniture(&fixture(), TILE_M, 7).expect("extract");
+        assert!(
+            items.len() > 100,
+            "a city tile should furnish more than a handful: {}",
+            items.len()
+        );
+        let benches = items
+            .iter()
+            .filter(|i| i.kind == FurnitureKind::Bench)
+            .count();
+        assert!(benches > 50, "benches are the bulk of the layer: {benches}");
+        // Every piece lands inside the cell it was read from — the tile buffer
+        // duplicate would otherwise be drawn by two neighbouring cells at once.
+        for i in &items {
+            assert!(
+                (0.0..TILE_M).contains(&i.x) && (0.0..TILE_M).contains(&i.z),
+                "{:?} at ({}, {}) is outside the tile",
+                i.kind,
+                i.x,
+                i.z
+            );
+        }
+    }
+
+    #[test]
+    fn indoor_pois_are_left_undrawn() {
+        // The layer is mostly shops, doctors and restaurants: points inside
+        // buildings we already draw. Standing a box on each would put furniture
+        // through the floor of every terrace on the map.
+        let items = extract_furniture(&fixture(), TILE_M, 7).expect("extract");
+        assert!(
+            items.len() < 400,
+            "the whole `pois` layer is 467 features; {} of them were furnished",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn extraction_is_stable_for_a_cell() {
+        let a = extract_furniture(&fixture(), TILE_M, 11).expect("extract");
+        let b = extract_furniture(&fixture(), TILE_M, 11).expect("extract");
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.kind, y.kind);
+            assert!((x.yaw - y.yaw).abs() < 1e-6, "a re-streamed cell re-rolled an angle");
+        }
+    }
+
+    #[test]
+    fn benches_line_up_with_the_streets_they_stand_on() {
+        // The claim this layer lives or dies on: a bench takes its angle from the
+        // nearest path, not from a hash. Measured as "how many benches are within
+        // 15° of *some* street direction" — a hashed angle would land ~17% of them
+        // there by chance.
+        let items = extract_furniture(&fixture(), TILE_M, 3).expect("extract");
+        let ways = WayField::build(&fixture(), TILE_M / 4096.0, 4096.0);
+
+        let benches: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == FurnitureKind::Bench)
+            .collect();
+        assert!(benches.len() > 50, "not enough benches to measure");
+
+        // Independently of how the yaw was produced: find the nearest segment by
+        // brute force, and check the bench's *long axis* ended up parallel to it.
+        // A hashed angle would clear a 15° window about one in six times.
+        let mut aligned = 0;
+        let mut oriented = 0;
+        for b in &benches {
+            let Some((_, seg)) = ways
+                .segs
+                .iter()
+                .map(|&(p, q)| (point_seg_dist2(b.x, b.z, p, q), (p, q)))
+                .filter(|(d2, _)| *d2 <= ORIENT_RADIUS_M * ORIENT_RADIUS_M)
+                .min_by(|a, c| a.0.partial_cmp(&c.0).unwrap())
+            else {
+                continue;
+            };
+            oriented += 1;
+            // The bench's long axis is local +x, which the yaw maps to this.
+            let (sn, cs) = b.yaw.sin_cos();
+            let axis = (cs, -sn);
+            let way = (seg.1[0] - seg.0[0], seg.1[1] - seg.0[1]);
+            let len = (way.0 * way.0 + way.1 * way.1).sqrt();
+            // |cos| of the angle between them: 1 is parallel, 0 perpendicular.
+            let para = ((axis.0 * way.0 + axis.1 * way.1) / len).abs();
+            if para > 0.966 {
+                aligned += 1;
+            }
+        }
+        assert!(oriented > 40, "only {oriented} benches had a way in range");
+        assert!(
+            aligned * 10 > oriented * 9,
+            "only {aligned} of {oriented} benches lie along their nearest way"
+        );
+    }
+
+    /// Where the object's front (+z) and long axis (+x) end up in world XZ.
+    fn frame(yaw: f32) -> ((f32, f32), (f32, f32)) {
+        let (sn, cs) = yaw.sin_cos();
+        ((sn, cs), (cs, -sn))
+    }
+
+    #[test]
+    fn a_bench_looks_at_the_path_from_either_side_of_it() {
+        // One way running east along z = 0. A bench two metres south of it must
+        // look north, and one two metres north of it must look south — in both
+        // cases with its long axis running east–west, along the way.
+        let mut ways = WayField {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+        };
+        ways.push([0.0, 0.0], [100.0, 0.0]);
+
+        let south = ways.facing(50.0, 2.0, ORIENT_RADIUS_M).expect("a path");
+        let (front, axis) = frame(south);
+        assert!(front.0.abs() < 1e-4 && front.1 < -0.99, "front {front:?}");
+        assert!(axis.0.abs() > 0.99 && axis.1.abs() < 1e-4, "axis {axis:?}");
+
+        let north = ways.facing(50.0, -2.0, ORIENT_RADIUS_M).expect("a path");
+        let (front, axis) = frame(north);
+        assert!(front.0.abs() < 1e-4 && front.1 > 0.99, "front {front:?}");
+        assert!(axis.0.abs() > 0.99 && axis.1.abs() < 1e-4, "axis {axis:?}");
+    }
+
+    #[test]
+    fn facing_is_a_quarter_turn_off_the_way_not_a_half_one() {
+        // The bug this module was written around: lining a bench up *with* the
+        // street direction points its long axis at the kerb. Whatever the way's
+        // bearing, the front must come out perpendicular to it.
+        for (dx, dz) in [(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (-3.0, 1.0), (2.0, -5.0)] {
+            let mut ways = WayField {
+                segs: Vec::new(),
+                buckets: HashMap::new(),
+            };
+            ways.push([-dx * 50.0, -dz * 50.0], [dx * 50.0, dz * 50.0]);
+            let yaw = ways.facing(3.0, 3.0, ORIENT_RADIUS_M).expect("a path");
+            let (front, _) = frame(yaw);
+            let len = (dx * dx + dz * dz).sqrt();
+            let along = (front.0 * dx + front.1 * dz) / len;
+            assert!(
+                along.abs() < 1e-4,
+                "way ({dx}, {dz}): the front has a {along} component along it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fountain_ignores_the_street_grid() {
+        // Radially symmetric forms in open spaces take a hashed angle instead, so
+        // a fountain does not square up to whichever side street passes nearest.
+        assert!(!FurnitureKind::Fountain.takes_angle_from_path());
+        assert!(!FurnitureKind::Artwork.takes_angle_from_path());
+        assert!(FurnitureKind::Bench.takes_angle_from_path());
+    }
+
+    #[test]
+    fn every_form_stands_on_the_ground_and_none_of_it_is_a_skyscraper() {
+        for (_, _, kind) in FURNITURE_TABLE {
+            let ps = parts(*kind);
+            assert!(!ps.is_empty(), "{kind:?} has no geometry");
+            let lowest = ps
+                .iter()
+                .map(|p| p.at[1] - p.half[1])
+                .fold(f32::MAX, f32::min);
+            let highest = ps
+                .iter()
+                .map(|p| p.at[1] + p.half[1])
+                .fold(f32::MIN, f32::max);
+            assert!(
+                lowest >= -0.01,
+                "{kind:?} reaches {lowest} m, below the ground plane"
+            );
+            assert!(
+                lowest < 0.05,
+                "{kind:?} floats: its lowest part is at {lowest} m"
+            );
+            assert!(
+                (0.5..4.0).contains(&highest),
+                "{kind:?} tops out at {highest} m, which is not street furniture"
+            );
+        }
+    }
+
+    #[test]
+    fn a_merged_cell_is_one_mesh_with_matching_attribute_counts() {
+        let items = extract_furniture(&fixture(), TILE_M, 5).expect("extract");
+        let meshes = build_furniture_meshes(&items);
+        assert_eq!(meshes.len(), 1, "furniture must merge into one draw");
+        let m = &meshes[0];
+        assert_eq!(m.group, SurfaceGroup::Furniture);
+        assert_eq!(m.positions.len(), m.normals.len());
+        assert_eq!(m.positions.len(), m.colors.len());
+        assert!(m.uvs.is_empty(), "the group's material has no texture");
+        assert_eq!(m.indices.len() % 3, 0);
+        for &i in &m.indices {
+            assert!((i as usize) < m.positions.len(), "index out of range");
+        }
+        // 24 verts per box, and every listed form is at least two boxes.
+        assert!(m.positions.len() >= items.len() * 48);
+    }
+
+    #[test]
+    fn empty_input_builds_nothing() {
+        assert!(build_furniture_meshes(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_rotated_box_keeps_its_size() {
+        // The rotation is written out by hand; this is the check that it is a
+        // rotation and not a shear.
+        let one = [FurnitureInstance {
+            x: 0.0,
+            z: 0.0,
+            yaw: 0.9,
+            kind: FurnitureKind::Bin,
+            luma: 1.0,
+        }];
+        let m = &build_furniture_meshes(&one)[0];
+        let extent = |axis: usize| {
+            let lo = m.positions.iter().map(|p| p[axis]).fold(f32::MAX, f32::min);
+            let hi = m.positions.iter().map(|p| p[axis]).fold(f32::MIN, f32::max);
+            hi - lo
+        };
+        // Every part of a bin is square in xz, so the widest one rotated by θ spans
+        // its own width times (|cos θ| + |sin θ|). Derived from the form rather
+        // than hardcoded, so re-proportioning a bin does not silently rot this into
+        // a test of nothing — the claim under test is the *rotation*.
+        let widest = form::BIN
+            .iter()
+            .map(|p| p.half[0].max(p.half[2]) * 2.0)
+            .fold(0.0f32, f32::max);
+        let span = widest * (0.9f32.cos().abs() + 0.9f32.sin().abs());
+        assert!((extent(0) - span).abs() < 0.01, "x span {}", extent(0));
+        assert!((extent(2) - span).abs() < 0.01, "z span {}", extent(2));
+        // Height is unaffected by yaw: a shear would show up here and nowhere else.
+        let tall = form::BIN
+            .iter()
+            .map(|p| p.at[1] + p.half[1])
+            .fold(f32::MIN, f32::max);
+        assert!((extent(1) - tall).abs() < 0.01, "y span {}", extent(1));
+    }
+
+    #[test]
+    fn normals_stay_unit_length_through_the_rotation() {
+        let one = [FurnitureInstance {
+            x: 3.0,
+            z: -2.0,
+            yaw: 2.1,
+            kind: FurnitureKind::Shelter,
+            luma: 1.0,
+        }];
+        let m = &build_furniture_meshes(&one)[0];
+        for n in &m.normals {
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-4, "normal {n:?} has length {len}");
+        }
+    }
+
+    #[test]
+    fn the_fade_walks_every_tone_toward_the_paving() {
+        // What the ramp has to buy: by the top of the band each object is much
+        // closer in tone to the ground it stands on than it was at the bottom, so
+        // hiding the geometry is a non-event rather than a pop. It does not reach
+        // zero — see `update_furniture_lod` for why that residue is affordable.
+        let ground = srgb_to_linear_rgb(palette::ROAD_FILL);
+        let gap = |tone: Tone, factor: f32| {
+            let base = paving_base(factor);
+            let m = tone.multiplier();
+            (0..3)
+                .map(|i| (m[i] * base[i] - ground[i]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        for tone in [Tone::Wood, Tone::Metal, Tone::Roof, Tone::Stone] {
+            let (near, far) = (gap(tone, 0.0), gap(tone, 1.0));
+            assert!(
+                far < near,
+                "{tone:?} does not close on the paving: {near} → {far}"
+            );
+        }
+        // The base itself lands exactly on the paving at the top of the band, and
+        // starts exactly on the group's own colour at the bottom.
+        assert_eq!(paving_base(1.0), ground);
+        assert_eq!(paving_base(0.0), srgb_to_linear_rgb(palette::FURNITURE));
+    }
+
+    #[test]
+    fn the_tones_are_muted_against_the_paper() {
+        // The palette rule this module inherits: nothing here may be more saturated
+        // than the buildings already on the map, or a bench becomes the loudest
+        // thing on screen.
+        let saturation = |rgb: u32| {
+            let c = [
+                ((rgb >> 16) & 0xFF) as f32,
+                ((rgb >> 8) & 0xFF) as f32,
+                (rgb & 0xFF) as f32,
+            ];
+            let hi = c[0].max(c[1]).max(c[2]);
+            let lo = c[0].min(c[1]).min(c[2]);
+            if hi <= 0.0 {
+                0.0
+            } else {
+                (hi - lo) / hi
+            }
+        };
+        // Water is exempt: it is the canal colour, which the map already carries.
+        for tone in [Tone::Wood, Tone::Metal, Tone::Roof, Tone::Stone] {
+            let s = saturation(tone.rgb());
+            assert!(
+                s <= saturation(palette::TRUNK) + 0.02,
+                "{tone:?} at saturation {s} is louder than a tree trunk"
+            );
+        }
+    }
+}

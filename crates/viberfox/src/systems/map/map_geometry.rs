@@ -42,7 +42,8 @@ use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightReques
 use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
-use crate::systems::street_furniture::{self, FurnitureLod, FurnitureSurface};
+use crate::systems::furniture;
+use crate::systems::street_furniture::{FurnitureLod, FurnitureSurface};
 use crate::systems::scatter;
 use crate::systems::vegetation::{VegetationLod, VegetationSurface};
 use crate::systems::vector_tiles::ShoreField;
@@ -265,13 +266,13 @@ fn spawn_geometry_task(
                             // Shortbread's `pois` layer is already in these bytes
                             // and was being decoded and dropped
                             // (`systems::street_furniture`).
-                            match street_furniture::extract_furniture(
+                            match furniture::extract_furniture(
                                 &tile,
                                 tile_m,
                                 veg_seed(cell),
                             ) {
                                 Ok(items) => {
-                                    meshes.extend(street_furniture::build_furniture_meshes(&items));
+                                    meshes.extend(furniture::build_furniture_meshes(&items));
                                 }
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");

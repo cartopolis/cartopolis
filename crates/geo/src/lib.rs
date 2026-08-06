@@ -9,6 +9,7 @@
 //! writes `systems::vector_tiles` and does not name this crate directly.
 
 pub mod road_texture;
+pub mod furniture;
 pub mod routing;
 pub mod scatter;
 pub mod vector_tiles;
