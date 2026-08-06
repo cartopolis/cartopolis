@@ -111,6 +111,12 @@ background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
 `big_space` test suites. Both jobs use the prebuilt `viberfox-ci` image and check
 out with `lfs: true` — add that to any new job.
 
+That image carries Mesa **lavapipe** (a CPU Vulkan driver) and `WGPU_BACKEND=vulkan`,
+so `--shot` / `cargo shots` work in a job with no GPU and no `/dev/dri`. What a
+software capture can and cannot be trusted to tell you — and why `--wait` means
+longer than it says there — is
+[`docs/notes/headless-shots-software-renderer.md`](../notes/headless-shots-software-renderer.md).
+
 ## When something is weird
 
 `CLAUDE.md`'s [**Known issues / workarounds**](../../CLAUDE.md#known-issues--workarounds)

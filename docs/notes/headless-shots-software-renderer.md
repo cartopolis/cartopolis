@@ -1,7 +1,7 @@
 ---
 topic: headless-shots-software-renderer
-triggers: [shot_harness.rs, "--shot", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, "capture never completed", software renderer]
-updated: 2026-08-04
+triggers: [shot_harness.rs, "--shot", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image"]
+updated: 2026-08-06
 ---
 
 # `--shot` on a software renderer
@@ -11,20 +11,35 @@ Measured 2026-08-04 in the `viberfox-agent` container (Ubuntu 24.04, no
 driver. Nothing here is about a GPU workstation, where `cargo shots` behaves as
 it always did.
 
-## It works, and it needs no root
+## It is in the image now
 
-`libvulkan1` + `mesa-vulkan-drivers` + deps come to 14 packages / 234 MB. With no
-root, `apt-get download` into a temp dir and `dpkg -x` into `~/vulkan-prefix` is
-enough — the lavapipe ICD's `library_path` is *relative*, so the loader finds the
-driver from `LD_LIBRARY_PATH` and no system path is touched:
+`libvulkan1` + `mesa-vulkan-drivers` + `vulkan-tools` are installed in
+**`viberfox-ci:latest`** (`~/build/viberfox-ci-image/Dockerfile` on the VPS), which
+`viberfox-agent` is built `FROM` — so every CI job and every agent container has a
+Vulkan adapter with no setup at all. `WGPU_BACKEND=vulkan` is set in the image; the
+build asserts `vulkaninfo --summary | grep -q llvmpipe`, so a broken driver stack
+fails the image build instead of showing up later as a job that renders nothing.
+
+`VK_ICD_FILENAMES` is deliberately **not** pinned. `mesa-vulkan-drivers` ships every
+Mesa ICD and only lavapipe initialises on a host with no `/dev/dri`, so the loader
+already picks it — pinning would force software rendering if the runner ever moved
+to hardware.
+
+The predecessor is worth remembering as a technique, since it needs no root:
+`apt-get download` into a temp dir and `dpkg -x` into `~/vulkan-prefix`, because the
+lavapipe ICD's `library_path` is *relative* and the loader will find the driver off
+`LD_LIBRARY_PATH` without touching a system path:
 
     LD_LIBRARY_PATH=$PREFIX/usr/lib/x86_64-linux-gnu
     VK_ICD_FILENAMES=$PREFIX/usr/share/vulkan/icd.d/lvp_icd.json
     WGPU_BACKEND=vulkan
 
 `vulkaninfo` then reports `llvmpipe (LLVM 20.1.2)`, `PHYSICAL_DEVICE_TYPE_CPU`,
-Vulkan 1.4.318. The harness was already headless by construction (no window, no
-winit, offscreen render target), so nothing else had to change.
+Vulkan 1.4.318. What made it worth promoting into the image: 234 MB in a container's
+writable layer is re-done by hand after every `docker compose up` that recreates the
+container, and it is invisible to CI. The harness was already headless by
+construction (no window, no winit, offscreen render target), so nothing else had to
+change.
 
 ## What it costs
 
@@ -50,21 +65,74 @@ It also cannot see the `VK_ERROR_DEVICE_LOST` class at all: those are Intel iGPU
 command-buffer timeouts, and a CPU rasteriser has no such failure mode. The
 per-frame streaming caps stay a rule enforced by reading, not by testing.
 
-## A capture that fires while the map is still streaming never completes
+## The shutter and the map share one thread pool
 
-**Open, not fixed.** Below the `--wait` cap at ground level the capture fires,
-the world keeps rendering *healthily* — 194 further frames at ~400 ms, 591 draws,
-206 meshes, 433 images, no validation errors — and the `ScreenshotCaptured`
-observer never runs. Reproduced at `--wait 5` and `--wait 30`; both die on the
-60 s readback grace with no PNG. The same viewpoint at `--wait 120` *did* save,
-which fits the readback starving only while texture uploads are continuous
-(`awaiting_upload` was 81 when it hung, ~0 when it worked).
+**Fixed 2026-08-06.** This was the note's open bug — a capture firing below the
+`--wait` cap at ground level, the world rendering *healthily* for 194 further
+frames, and `ScreenshotCaptured` never running. The cause is not the renderer at
+all, which is why it looked so much like one:
 
-Consequence, and the reason this is worth knowing before trusting a capture:
-**on a software renderer you can only reliably capture a scene that settled.**
-The `--wait` timeout path — the one that exists to photograph a half-built world
-— is the path that doesn't produce an image. Whether this reproduces on a real
-GPU is untested.
+* `platform::workers::submit` **is** `AsyncComputeTaskPool` on native, and our jobs
+  are blocking closures — a full MVT rasterise, ~120 ms each
+  ([`tile-raster-cost.md`](tile-raster-cost.md)) — so each owns a pool thread
+  outright with no yield point.
+* `bevy_render`'s `collect_screenshots` spawns the readback future onto **the same
+  pool** and detaches it.
+
+A teleport queues hundreds of jobs; the pool is 3 threads wide on an 8-core host
+(`min(12, 8 × 0.45)`); the streamers keep refilling it. The readback future is
+FIFO'd behind all of them and may never be polled. Nothing logs, because nothing is
+wrong — the frames really are healthy, and the queue really is being served.
+
+The fix is [`workers::set_paused`]: once the settle test has returned its verdict
+the harness stops admitting jobs, waits for `workers::outstanding()` to reach zero
+(capped by `QUIESCE_MAX_S`), and only then fires. Everything the streamers would do
+after the verdict is invisible in that frame's image anyway. Pausing **parks** jobs
+rather than dropping them — the streamers de-duplicate on "a fetch is in flight", so
+a discarded decode is never re-queued and the tile would be missing for every later
+shot in a `--shots` run.
+
+### The failure has a second face, and it is worse
+
+Reproduced on a GPU workstation by squeezing the pool to one thread (the mechanism
+is starvation, not software rasterisation — so it does **not** need lavapipe). At
+`--wait 5` over Groningen at 400 m:
+
+| | image | `shot state` |
+|---|---|---|
+| before | **black scene, chrome only** — 22 KB | `settled=false busy="surfaces\|lod22"`, exit 0 |
+| after | the city — 400 KB | `settled=false busy="surfaces"`, exit 0 |
+
+So the pool starvation does not always withhold the PNG; sometimes it writes a
+*wrong* one and reports success, which is strictly harder to catch. At 400 m the
+ground is vector `surfaces` geometry, not raster imagery, and that geometry was
+still sitting on the worker queue. Cost of the fix in that run: 3.3 s.
+
+`--shot` retries the shutter **once** if the grace expires, which also covers an
+independent trap: a `Screenshot` gets exactly one frame. `extract_screenshots`
+inserts `Capturing` and its own query is `Without<Capturing>`, while
+`prepare_screenshots` rebuilds its prepared set every frame — so if that single
+frame's prepare skips the entity (render-target image not in `RenderAssets`,
+pipeline not yet compiled) the request is dropped silently and no later frame
+reconsiders it.
+
+## `--wait` and `--settle` are virtual seconds, and the clock is clamped
+
+Not fixed, and worth knowing before you reach for a bigger number. Both are
+accumulated from `Res<Time>`'s per-frame delta, and Bevy clamps
+`Time<Virtual>::max_delta` to **0.25 s**. So a run whose frames take 1.6 s advances
+the harness clock at ~1/6 wall-clock speed: measured on the one-thread A/B above,
+`settled_in="5.0s"` took **33 s** of real time. On a GPU workstation frames are
+under 0.25 s and the two coincide exactly, which is why the flags read as honest
+there.
+
+Consequences: `--wait 45` in `docs/shots.toml` is up to several minutes on a
+software renderer (this is what "~5 min, never settles" in the table above actually
+was), and the `--shot` help calling `--wait` a "hard cap … in seconds" is wrong off
+a fast machine. Making the harness use real time would be a small change and would
+make the flags mean what they say — but it would also make every CI capture *less*
+complete for the same flag values, so it is a deliberate trade rather than an
+oversight.
 
 ## Two things that made the first failure unreadable
 
