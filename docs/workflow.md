@@ -3,6 +3,32 @@
 How work gets from an idea to a branch, across a desktop editor and a headless
 agent on the VPS, with a Forgejo kanban board as the shared view.
 
+## What this is for
+
+One maintainer, several agents, more work in flight than one person can watch.
+The harness exists to make that safe to leave alone: **an agent must be able to
+work unattended, and you must be able to trust the result without re-reading
+everything it did.**
+
+Five things follow, and every mechanism below is one of them:
+
+1. **Sessions are disposable; tickets are not.** A session dies, is killed, or
+   wanders off. State therefore lives in Forgejo labels and a marker file, never
+   in a conversation — [States](#states).
+2. **How much a session may assume is a decision, not a default.** A person in
+   the room costs one sentence to correct; an unattended wrong inference costs a
+   branch nobody asked for. Hence two lanes, and refinement before building —
+   [the lane axis](#the-lane-axis--how-much-it-may-assume).
+3. **Reasoning is published, not reconstructed.** A diff shows what was done, not
+   what was considered and rejected — so the next agent redoes the rejected
+   thing. Digests go up every turn — [Handover](#handover).
+4. **Nothing may gate on what the agent controls.** `agent:done` means CI agreed,
+   not that the session said so —
+   [notes/agent-verification.md](notes/agent-verification.md).
+5. **Standing facts live outside the agent.** What constrains all future work
+   goes in `docs/notes/`, what explains one diff goes in the commit body. Context
+   is the scarce resource, not tokens.
+
 Everything below is driven by **Forgejo labels**. The board column is a
 *projection* of them, never the source — see [Why the board cannot be the state
 store](#why-the-board-cannot-be-the-state-store).
@@ -16,11 +42,6 @@ store](#why-the-board-cannot-be-the-state-store).
 - [The sync model](#the-sync-model) — how the three stay in step
 - [Setup](#setup)
 - [When it goes wrong](#when-it-goes-wrong)
-
-This document is about who *owns* a ticket. Before adding a check that decides
-one — or trusting one that already does — read
-[notes/agent-verification.md](notes/agent-verification.md): a gate may not depend
-on anything the agent controls.
 
 ## The three workflows
 
