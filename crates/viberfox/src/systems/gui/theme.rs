@@ -104,7 +104,7 @@ pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0xF6, 0xF4
 /// (`systems::street_labels`): a semibold reads at the size a road marking gets,
 /// where egui's light body face breaks up.
 pub const BRAND_TTF: &[u8] =
-    include_bytes!("../../../../assets/fonts/PlusJakartaSans-SemiBold.ttf");
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/PlusJakartaSans-SemiBold.ttf"));
 const BRAND_FAMILY: &str = "viberfox-brand";
 
 /// The brand face: Plus Jakarta Sans SemiBold, backed by egui's own stack so a

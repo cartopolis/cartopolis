@@ -25,7 +25,7 @@ use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
 
 /// Baked in at compile time; see the module note on why this is not an asset.
-const LOGO_PNG: &[u8] = include_bytes!("../../../../assets/icon/viberfox.png");
+const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/icon/viberfox.png"));
 
 /// Shortest time the splash stays up. Long enough to be read rather than
 /// glimpsed: a warm cache otherwise dismisses it within a frame or two, which

@@ -854,7 +854,7 @@ pub(crate) fn rand01(h: u64, stream: u32) -> f32 {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
 
     /// The fixture, parsed. The scatter takes a shared [`TileData`] now (one parse
     /// per streamed cell, shared with the tessellators — `TileData`'s docs say

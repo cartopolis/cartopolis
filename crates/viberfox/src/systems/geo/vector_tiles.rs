@@ -2253,7 +2253,7 @@ mod tests {
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
     /// (now self-hosted at tiles.garage44.eu; the archive is identical).
-    const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
 
     /// A `TileData` shared by several consumers must produce byte-for-byte what
     /// each of them produced from its own parse. This is the whole safety claim

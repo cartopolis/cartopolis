@@ -1559,7 +1559,7 @@ mod tests {
     use super::*;
 
     /// The same real z14 Groningen tile the renderer tests use.
-    const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
     /// Its tile coordinates (see `vector_tiles::tests`).
     const TILE: (i64, i64) = (8490, 5319);
 

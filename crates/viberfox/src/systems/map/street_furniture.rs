@@ -775,7 +775,7 @@ fn paving_base(factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+    const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/groningen_z14.mvt"));
     const TILE_M: f32 = 1000.0;
 
     /// The fixture, parsed. `extract_furniture` takes a `TileData` because on the
