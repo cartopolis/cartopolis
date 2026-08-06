@@ -19,6 +19,7 @@ files and succeeds, then panics at runtime. Same reason every CI job sets
 | Play it (already playable — `dev` builds deps at opt-level 3) | `cargo run -p viberfox` |
 | Fast incremental links (local only) | `cargo run -p viberfox --features fast-dev` |
 | Client tests | `cargo test -p viberfox` |
+| Geodata tests (no Bevy — ~2 s) | `cargo test -p viberfox_geo` |
 | Server tests | `cargo test -p vibe_sim` |
 | Floating-origin tests | `cargo test -p big_space --lib` |
 | Regenerate README images | `cargo shots` |
@@ -41,6 +42,7 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in
 | Path | Contents |
 |------|----------|
 | `crates/vibe_core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) |
+| `crates/geo/` | Bevy-free map geodata (`viberfox_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
 | `crates/vibe_sim/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs` |
 | `crates/viberfox/` | Bevy client — everything below |
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
@@ -51,7 +53,6 @@ phases in `lib.rs`:
 
 | Folder | Files |
 |--------|-------|
-| `systems/geo/` | `vector_tiles`, `road_texture`, `routing` — **no Bevy**; slated to become its own crate |
 | `systems/map/` | `map_stream`, `map_geometry`, `tile_loader`, `tile_source`, `rendering`, `globe`, `globe_ocean`, `globe_weather`, `osm_buildings`, `lod22`, `terrain`, `height`, `water`, `vegetation`, `street_furniture`, `street_labels`, `weather` |
 | `systems/nav/` | `navigation`, `route_ahead`, `driver`, `geo_nav`, `transit_live`, `transit_vehicles` |
 | `systems/player/` | `avatar`, `collision`, `free_camera`, `picking`, `gizmo`, `prim_geo` |

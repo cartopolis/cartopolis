@@ -32,7 +32,7 @@ use tiny_skia::{
 
 use std::collections::HashMap;
 
-use crate::systems::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
 
 /// One tile body, parsed **once**, with its decoded features memoised per layer.
 ///
@@ -585,7 +585,7 @@ pub enum SurfaceGroup {
     Sand,
     Built,
     /// A road ribbon. Textured rather than flat-coloured — see
-    /// [`road_texture`](crate::systems::road_texture).
+    /// [`road_texture`](crate::road_texture).
     Road(RoadClass),
     /// A bridge deck: the structure's own surface, standing at its measured
     /// height (`systems::height`) rather than lying in the coplanar ground stack.
@@ -909,7 +909,7 @@ pub struct SurfaceMesh {
     /// material has no texture to sample). Roads fill it: `u` runs 0→1 straight
     /// across the carriageway so the markings register with the geometry, and `v`
     /// is metres travelled along the road over
-    /// [`RoadClass::texture_length_m`](crate::systems::road_texture::RoadClass::texture_length_m).
+    /// [`RoadClass::texture_length_m`](crate::road_texture::RoadClass::texture_length_m).
     pub uvs: Vec<[f32; 2]>,
     /// Vertex normals, **empty for the flat ground surfaces** — the caller then
     /// fills in a straight-up normal per vertex. Only the vegetation meshes, which
@@ -2294,8 +2294,8 @@ mod tests {
             super::water_shore_field(&tile, tile_m).unwrap().unwrap().data,
             water_shore_field(GRONINGEN_Z14, tile_m).unwrap().unwrap().data,
         );
-        let trees = crate::systems::scatter::scatter_vegetation(&tile, tile_m, 7).unwrap();
-        let fresh = crate::systems::scatter::scatter_vegetation(
+        let trees = crate::scatter::scatter_vegetation(&tile, tile_m, 7).unwrap();
+        let fresh = crate::scatter::scatter_vegetation(
             &TileData::parse(GRONINGEN_Z14).unwrap(),
             tile_m,
             7,

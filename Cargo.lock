@@ -6947,6 +6947,7 @@ dependencies = [
  "uuid",
  "vibe_core",
  "vibe_sim",
+ "viberfox_geo",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm_thread",
@@ -6954,6 +6955,20 @@ dependencies = [
  "web-time",
  "winit",
  "winresource",
+]
+
+[[package]]
+name = "viberfox_geo"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "earcutr",
+ "geo-types",
+ "image",
+ "mvt-reader",
+ "tiny-skia 0.12.0",
+ "tracing",
+ "vibe_core",
 ]
 
 [[package]]

@@ -47,10 +47,37 @@ compile `cfg(test)` code at all, which is why the suite can rot unseen.
 `cargo run --profile dev-bevy`, so alternating between them rebuilds the other
 set from scratch. The 9.5 s "no-op" check above is entirely that.
 
-## The Bevy-free code paying Bevy's compile cost
+## What was done about it (2026-08-06)
 
-7,313 lines carrying **69 of the crate's 290 tests** import no Bevy at all, yet
-are compiled and linked as part of a Bevy binary:
+Measured on the same machine, same method, after the changes:
+
+| | Before | After |
+|---|---|---|
+| Edit a geodata file → its tests green | part of a 52.4 s binary compile | **2.2 s** (`cargo test -p viberfox_geo`, 60 tests, no Bevy in the graph) |
+| Edit a leaf system → full client suite green | second full `cfg(test)` build | **5.4 s** |
+| `cargo check -p viberfox` | — | 7.5 s |
+| `cargo check -p viberfox --all-targets` | — | 8.2 s |
+| `target/` | 197 GB | **118 GB** |
+
+Four changes, in order of what they bought:
+
+1. **A lib target plus a shim bin.** Bin-only meant `cargo test` had no rlib to
+   link and recompiled the whole crate under `cfg(test)`.
+2. **One dev profile.** `dev` and `dev-bevy` were both maintained; collapsing
+   them removed a duplicate artifact set and the 9.5 s no-op check, and dropped
+   workspace debuginfo to `line-tables-only`.
+3. **`crates/geo` (`viberfox_geo`).** The Bevy-free half, below.
+4. **Deleting the orphaned `target/dev-bevy`** — 79 GB no build config could
+   reach any more.
+
+Note the ordering trap this exposed: `cargo check` does **not** compile
+`cfg(test)` code, so it missed four broken `include_bytes!` fixture paths that
+only `--all-targets` (or `cargo test`) catches.
+
+## The Bevy-free code that used to pay Bevy's compile cost
+
+7,313 lines carrying **69 of the crate's 290 tests** imported no Bevy at all, yet
+were compiled and linked as part of a Bevy binary. They are now `crates/geo`:
 
 | Module | Lines | Tests |
 |---|---|---|
@@ -61,9 +88,15 @@ are compiled and linked as part of a Bevy binary:
 | `systems/shot_presets` | 282 | 5 |
 | `utils/sun` | 267 | 3 |
 
-A second tier (`street_furniture`, `vegetation`, `terrain`, `height`,
-`route_ahead`, `collision` — ~5k lines) touches Bevy fewer than 15 times each
-and is mostly extractable too, but is not Bevy-free as written.
+`vegetation` turned out to be the same story one level down: 1007 lines of which
+~870 were pure scatter and meshing, with a 130-line ECS half on top. It split
+into `geo::scatter` and `systems::vegetation`, which is what finally freed the
+crate — `vector_tiles`' fixture called `scatter_vegetation`, so the boundary
+would have compiled and then failed under `cargo test`.
+
+A second tier (`street_furniture`, `terrain`, `height`, `route_ahead`,
+`collision` — ~4k lines) touches Bevy fewer than 15 times each and is likely to
+split the same way, but has not been done.
 
 ## Not measured
 

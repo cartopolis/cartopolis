@@ -66,6 +66,9 @@ jobs:
             exit 1
           }
       # `cargo test` compiles the crate and runs its tests in one pass.
+      # Cheap and first: no Bevy in this crate's graph, so it fails in seconds on a
+      # geodata regression instead of after the client's full codegen.
+      - run: cargo test -p viberfox_geo
       - run: cargo test -p viberfox
       # The vendored fork carries the floating-origin correctness tests; they are
       # the reason a `big_space` change can be trusted at all.

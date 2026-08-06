@@ -35,7 +35,7 @@
 use std::collections::{HashMap, HashSet};
 
 
-use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 
 /// Altitude at which trees start merging into the flat fill.
 pub const TREE_FADE_START: f32 = 500.0;
@@ -141,7 +141,7 @@ pub fn scatter_vegetation(
     tile_m: f32,
     seed: u64,
 ) -> Result<Vec<TreeInstance>, String> {
-    use crate::systems::vector_tiles::{clipped_rings, kind_of, tessellate_polygon};
+    use crate::vector_tiles::{clipped_rings, kind_of, tessellate_polygon};
     use geo_types::Geometry;
 
     let Some(meta) = tile.layer("land") else {
@@ -291,7 +291,7 @@ impl WaterMask {
     const CELL: f32 = 16.0;
 
     fn build(tile: &TileData, scale: f32, extent: f32, tile_m: f32) -> Self {
-        use crate::systems::vector_tiles::{clipped_rings, tessellate_polygon};
+        use crate::vector_tiles::{clipped_rings, tessellate_polygon};
         use geo_types::Geometry;
 
         let border = BorderGuard::new(tile_m);
@@ -636,7 +636,7 @@ pub fn tone_multiplier() -> [f32; 3] {
     [b[0] / a[0], b[1] / a[1], b[2] / a[2]]
 }
 
-pub(crate) fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
+pub fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
     let ch = |shift: u32| {
         let s = ((rgb >> shift) & 0xFF) as f32 / 255.0;
         if s <= 0.040_45 {
@@ -648,7 +648,7 @@ pub(crate) fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
     [ch(16), ch(8), ch(0)]
 }
 
-pub(crate) fn mix(a: u32, b: u32, t: f32) -> [f32; 3] {
+pub fn mix(a: u32, b: u32, t: f32) -> [f32; 3] {
     mix_rgb(srgb_to_linear_rgb(a), srgb_to_linear_rgb(b), t)
 }
 
@@ -702,7 +702,7 @@ pub fn point_seg_dist2(x: f32, z: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
 
 /// Deterministic per-lattice-cell hash. `rand01` pulls independent streams out of
 /// it by byte, which is enough decorrelation for jitter and size.
-pub(crate) fn hash3(seed: u64, i: i32, j: i32) -> u64 {
+pub fn hash3(seed: u64, i: i32, j: i32) -> u64 {
     let mut h = seed ^ (i as u32 as u64).wrapping_mul(0xA24B_AED4_963E_E407);
     h ^= (j as u32 as u64).wrapping_mul(0x9FB2_1C65_1E98_DF25);
     h ^= h >> 29;
@@ -712,7 +712,7 @@ pub(crate) fn hash3(seed: u64, i: i32, j: i32) -> u64 {
     h ^ (h >> 31)
 }
 
-pub(crate) fn rand01(h: u64, stream: u32) -> f32 {
+pub fn rand01(h: u64, stream: u32) -> f32 {
     let mut x = h.rotate_left(stream * 11 + 7);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);

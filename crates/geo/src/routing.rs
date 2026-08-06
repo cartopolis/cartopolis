@@ -47,7 +47,7 @@ use mvt_reader::feature::{Feature, Value};
 use vibe_core::world::tile_to_meters;
 
 use vibe_core::lat_lng_to_tile_frac;
-use crate::systems::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
+use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at
 /// its top zoom and nothing finer exists, so this is both the best and the only

@@ -2,7 +2,7 @@
 //!
 //! | Group | Holds |
 //! |-------|-------|
-//! | [`geo`] | Bevy-free geodata: MVT decode/raster, road classes, the routing graph |
+//! | `viberfox_geo` | Bevy-free geodata: MVT decode/raster, road classes, tree scatter, the routing graph — its own crate, re-exported here |
 //! | [`map`] | Everything streamed and drawn as world geometry — tiles, globe, buildings, terrain, water, vegetation, labels |
 //! | [`nav`] | Route planning and following, geocoding, transit |
 //! | [`player`] | Avatar, camera, collision, picking, gizmos |
@@ -26,7 +26,6 @@
 //! the panels, and a group of the same name could not coexist with its re-export.
 
 pub mod dev;
-pub mod geo;
 pub mod gui;
 pub mod map;
 pub mod nav;
@@ -34,7 +33,10 @@ pub mod net;
 pub mod player;
 
 pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_icon};
-pub use geo::{road_texture, routing, scatter, vector_tiles};
+// `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
+// writing `systems::vector_tiles` — the same separation of filing from naming the
+// group folders use, and the reason the move cost no call-site edits.
+pub use viberfox_geo::{road_texture, routing, scatter, vector_tiles};
 pub use gui::{
     ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, place_pins, splash, theme,
     ui,

@@ -151,11 +151,12 @@ Startup switches for bisecting a render problem, each removing one layer:
 
 ## Architecture
 
-This is a **Cargo workspace** with four crates:
+This is a **Cargo workspace** with five crates:
 
 | Crate | Role | Notable deps |
 |-------|------|-------------|
 | `vibe_core` | Shared protocol types, `NetMessage`, tile/coordinate math | `serde`, `postcard`, `glam` |
+| `viberfox_geo` (`crates/geo`) | Bevy-free map geodata: MVT decode/raster, road classes, tree scatter, the routing graph. ~6,900 lines and 60 tests that used to be recompiled and relinked behind the Bevy binary. **Nothing here may depend on `bevy`** — if a type needs a `Component` it belongs in `viberfox`, and the pure part it wraps belongs here. Re-exported by `systems/mod.rs`, so client code still writes `systems::vector_tiles`. | `mvt-reader`, `tiny-skia`, `earcutr`, `image` — **no Bevy** |
 | `vibe_sim` | Headless TCP simulation server; SQLite authority; tick loop | `tokio`, `rusqlite`, `refinery` — **no Bevy** |
 | `viberfox` | Bevy 0.19 client; rendering, ECS systems, UI | Bevy 0.19 + `big_space` (path dep), `egui` 0.35 |
 | `big_space` | **Vendored fork** of `big_space` 0.10 ported to Bevy 0.19 (floating-origin transform propagation, ADR-019). Upstream tops out at Bevy 0.18, so we keep a copy under `crates/big_space` and advance it on each Bevy bump — re-sync the vendored transform-propagation code (`bevy_compat.rs`) against Bevy when upgrading. | Bevy sub-crates |

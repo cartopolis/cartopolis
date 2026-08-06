@@ -1,0 +1,33 @@
+# The Bevy-free half of the map pipeline: MVT decode and rasterisation, road
+# classification, tree scattering, and the routing graph.
+#
+# It is a separate crate for a measured reason, not tidiness. These ~6,900 lines
+# carry ~70 of the client's tests and import no Bevy at all, but as part of the
+# `viberfox` binary they were recompiled and relinked behind it — and every
+# profile switch or feature flip that discarded the incremental cache paid the
+# client's full 52 s codegen to run them. See docs/notes/client-build-cost.md.
+#
+# The rule that keeps it that way: nothing here may depend on `bevy`. If a type
+# needs an ECS `Component`, it belongs in `viberfox`, and the pure part it wraps
+# belongs here — that is exactly how `scatter` and `vegetation` were split.
+[package]
+name = "viberfox_geo"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "viberfox_geo"
+path = "src/lib.rs"
+# Same reason as viberfox's: rustdoc does not receive .cargo/config.toml's
+# `rustflags`, so a doc-test would build without target-cpu=x86-64-v3.
+doctest = false
+
+[dependencies]
+bytes.workspace = true
+earcutr.workspace = true
+geo-types.workspace = true
+image.workspace = true
+mvt-reader.workspace = true
+tiny-skia.workspace = true
+tracing.workspace = true
+vibe_core = { path = "../vibe_core" }

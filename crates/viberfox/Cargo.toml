@@ -64,6 +64,7 @@ serde_json.workspace = true
 # Parse the optional `--login` credentials file (ADR-016).
 toml = "0.8"
 vibe_core = { path = "../vibe_core" }
+viberfox_geo = { path = "../geo" }
 # Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
 vibe_sim = { path = "../vibe_sim", optional = true }
 bytes.workspace = true
