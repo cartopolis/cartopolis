@@ -1,8 +1,13 @@
 ---
 topic: sccache-parallel-builds
 triggers: [sccache, parallel agents, worktree, CARGO_TARGET_DIR, build cache, cold build, rustc-wrapper]
-updated: 2026-07-30
+updated: 2026-08-06
 ---
+
+> The measurements below were taken against the `dev-bevy` profile, which on
+> 2026-08-06 absorbed `dev` and took its name — there is one dev profile now.
+> Read `dev-bevy` as today's `dev`; the mechanism and the rules are unchanged.
+
 
 # sccache shares builds across worktrees — unless CARGO_TARGET_DIR is exported
 
@@ -48,7 +53,7 @@ exists for cwd normalisation; not needed for this reason.)
 2. The wrapper lives in `~/.cargo/config.toml`, never the repo's committed
    `.cargo/config.toml` — CI has no sccache and a missing rustc-wrapper fails
    every job.
-3. `dev-bevy` deps build with `debug = false` (committed): their `.dwo` files
+3. Dev deps build with `debug = false` (committed): their `.dwo` files
    embed the absolute target-dir path, so a shared artifact would point its
    debug info at another worktree's (possibly deleted) target. Also most of the
    profile's disk weight. Workspace crates keep full debug.

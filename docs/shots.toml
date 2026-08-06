@@ -6,7 +6,7 @@
 #     cargo shots --only globe,route  # just these
 #
 # `cargo shots` is an alias for
-# `cargo run -p viberfox --profile dev-bevy -- --shots`, so it takes the rest of
+# `cargo run -p viberfox -- --shots`, so it takes the rest of
 # the harness's flags too (`--csv /tmp/shots.csv`, `--size 2560x1440`, …).
 #
 # To add or move a view: fly there in the app, then Dev panel ▸ README

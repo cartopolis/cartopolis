@@ -237,7 +237,7 @@ cargo shots --only globe,route   # just these two
 cargo shots --size 2560x1440     # override the manifest's size
 ```
 
-`cargo shots` is an alias for `cargo run -p viberfox --profile dev-bevy --
+`cargo shots` is an alias for `cargo run -p viberfox --
 --shots`, so it accepts the rest of the scripted-shot flags too (`--csv`,
 `--dump-state`, `--settle`, … — see [`CLAUDE.md`](../CLAUDE.md)). Because it
 needs no display, it is a build step: it works over SSH and in CI.

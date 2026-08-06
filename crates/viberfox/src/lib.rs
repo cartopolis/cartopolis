@@ -382,7 +382,7 @@ pub fn run() {
         // the thing making you wait.
         //
         // Measured 2026-07-31 on a 22-core box, `--shot` over Groningen on
-        // `dev-bevy`, seconds for the streamer to go quiet — 4/4 → these widths
+        // `dev-bevy` (the profile now called `dev`), seconds for the streamer to go quiet — 4/4 → these widths
         // (io=7, cpu=10): 3 km cold 12.6 → 7.5, street cold 15.7 → 9.8, street
         // **warm** 13.3 → 4.1. That warm row is the tell: a full on-disk cache
         // barely helped at 4/4, because what you were waiting for was never the
@@ -1937,8 +1937,8 @@ fn frame_limiter(mut deadline: Local<Option<std::time::Instant>>, mut period: Lo
 /// Opt-in per-second frame stats (`VIBERFOX_FPS_LOG=1`): sustained FPS, worst
 /// frame this second, and how much the frame time varies (jitter). Motion that
 /// reads as "stutter" is usually low or jittery FPS, not the movement code — this
-/// tells them apart. Debug builds run Bevy at `opt-level=0`; use `--profile
-/// dev-bevy` for a playable framerate (see CLAUDE.md).
+/// tells them apart. The `dev` profile already builds Bevy at `opt-level=3`, so
+/// a plain `cargo run` is playable (see CLAUDE.md).
 fn frame_stats(
     time: Res<Time<Real>>,
     // (elapsed_s, frames, worst_ms, sum_ms, sum_ms_sq)

@@ -10,11 +10,11 @@
 //!
 //! ```bash
 //! # one shot
-//! cargo run -p viberfox --profile dev-bevy -- \
+//! cargo run -p viberfox -- \
 //!     --shot /tmp/shot.png --at 53.2194,6.5665,180000 --look=-90,0
 //!
 //! # a sweep: one app launch, one PNG per --at (index- and altitude-tagged)
-//! cargo run -p viberfox --profile dev-bevy -- --shot /tmp/sweep.png \
+//! cargo run -p viberfox -- --shot /tmp/sweep.png \
 //!     --at 53.2194,6.5665,60000 --at 53.2194,6.5665,180000 --look=-90,0
 //! ```
 //!
@@ -63,7 +63,7 @@
 //!
 //! ```bash
 //! # 24-frame fly-out, straight down over Groningen, ramps logged to CSV
-//! cargo run -p viberfox --profile dev-bevy -- --shot /tmp/sweep.png \
+//! cargo run -p viberfox -- --shot /tmp/sweep.png \
 //!     --at 53.2194,6.5665,2000 --at 53.2194,6.5665,4000000 --frames 24 \
 //!     --look=-90,0 --csv /tmp/ramps.csv
 //! ```

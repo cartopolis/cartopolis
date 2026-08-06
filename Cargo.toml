@@ -98,26 +98,31 @@ dotenvy = "0.15"
 serde_json = "1"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
-# Default dev: fast dependency rebuilds; workspace crates at O1 (Bevy suggests O1+ for playable debug — see link in README).
-# https://bevy.org/learn/quick-start/getting-started/setup/#compile-with-performance-optimizations
+# The single dev profile — the full Bevy book recipe (O3 on every dependency,
+# our own crates left cheap to rebuild), which is what makes a debug build
+# playable. https://bevy.org/learn/quick-start/getting-started/setup/#compile-with-performance-optimizations
+#
+# There used to be two: `dev` with dependencies at opt-level 0, and `dev-bevy`
+# with this shape. Nobody ran the client on `dev` — it is unplayable, and the
+# visual work this project does needs a real framerate — but `cargo check`
+# defaulted to it, so the two commands in CLAUDE.md landed in different artifact
+# sets and alternating between them rebuilt the other from scratch. Measured
+# 2026-08-06: target/ at 170 GB across the two, and a `cargo check` no-op after
+# a `dev-bevy` run costing 9.5 s. One profile, so `--profile` disappears from
+# every command. See docs/notes/client-build-cost.md.
 [profile.dev]
 opt-level = 1
 incremental = true
 codegen-units = 256
-debug = 1
+# Line tables only, matching what CI already sets. Panic backtraces keep their
+# function names and line numbers; what goes is type- and variable-level info,
+# which is codegen this crate's 45 s tail cannot spare. Step-debugging a
+# workspace crate wants `CARGO_PROFILE_DEV_DEBUG=full` for that one build.
+debug = "line-tables-only"
 # Faster incremental links on Linux: debug info in `.dwo` files instead of monolithic binary.
 split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
-opt-level = 0
-codegen-units = 256
-
-# Full Bevy book recipe: O3 on all dependencies — better dev *runtime*, much slower clean / dep rebuilds.
-# https://bevy.org/learn/quick-start/getting-started/setup/#compile-with-performance-optimizations
-[profile.dev-bevy]
-inherits = "dev"
-
-[profile.dev-bevy.package."*"]
 opt-level = 3
 codegen-units = 256
 # No debuginfo for dependencies. Three reasons, one measurement each: their
@@ -125,10 +130,12 @@ codegen-units = 256
 # an sccache-shared artifact would point its debug info at another worktree's
 # (possibly deleted) target; dep debuginfo is most of the profile's disk
 # weight; and nobody steps through Bevy internals at opt-level=3 anyway —
-# backtraces keep symbol names without it. Workspace crates keep full debug.
+# backtraces keep symbol names without it.
 debug = false
 
-[profile.dev-bevy.package.vibe_core]
+# `package."*"` catches path dependencies too, and vibe_core is small, pure and
+# rebuilt constantly — O3 on it buys nothing and costs every edit.
+[profile.dev.package.vibe_core]
 opt-level = 0
 
 # Shipped builds: trade compile time for runtime frame times (per the Bevy
@@ -144,7 +151,7 @@ incremental = false
 debug = false
 panic = "abort"
 
-# The web build's working profile (ADR-033), and the reason it is not `dev-bevy`:
+# The web build's working profile (ADR-033), and the reason it is not `dev`:
 # that profile optimises *dependencies* and leaves this crate at opt-level 1, which
 # is backwards for the browser. Bevy is hot, but so are our own streaming,
 # tessellation and collision systems, and on wasm there is no fast native fallback

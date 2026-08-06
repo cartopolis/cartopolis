@@ -46,4 +46,4 @@ incremental = true
 # `docs/shots.toml` — headless, one launch, no window. Extra flags pass through:
 #   cargo shots --only globe,route
 #   cargo shots --size 2560x1440 --csv /tmp/shots.csv
-shots = ["run", "--profile", "dev-bevy", "-p", "viberfox", "--", "--shots"]
+shots = ["run", "-p", "viberfox", "--", "--shots"]

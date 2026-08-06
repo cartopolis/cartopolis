@@ -43,13 +43,14 @@ export CARGO_UNSTABLE_BUILD_STD="std,panic_abort"
 
 cd "$(dirname "$0")"
 
-# `dev-bevy`, never plain `dev`. The dev profile builds every dependency at
-# `[profile.dev.package."*"] opt-level = 0`, and on the web that is not a slow
-# build — it is an unusable one: WebGL2 exposes no storage buffers, so Bevy falls
+# `dev` — which since 2026-08-06 *is* the old `dev-bevy`: dependencies at
+# opt-level 3, our own crates left cheap to rebuild. That shape is load-bearing
+# here, not a preference. With dependencies at opt-level 0 the web build is not
+# merely slow, it is unusable: WebGL2 exposes no storage buffers, so Bevy falls
 # back to CPU light clustering and CPU batching preprocessing, and running those
-# unoptimised over a few hundred draws cost ~10 s per frame on real hardware.
-# `dev-bevy` puts dependencies at opt-level 3 and leaves our own crate cheap to
-# rebuild. Not `--release`: that pulls `wasm-opt` from GitHub (and fat LTO), which
+# unoptimised over a few hundred draws cost ~10 s per frame on real hardware. So
+# if anyone ever reintroduces a dependencies-at-O0 dev profile, this script needs
+# its own. Not `--release`: that pulls `wasm-opt` from GitHub (and fat LTO), which
 # is a long detour for a dev loop.
 #
 # `--port`/`--address` are serve-only flags — `trunk build` rejects them outright
@@ -60,4 +61,4 @@ shift || true
 if [ "$cmd" = "serve" ]; then
     set -- --port "${PORT:-8195}" --address 127.0.0.1 "$@"
 fi
-exec trunk "$cmd" --cargo-profile "${PROFILE:-dev-bevy}" "$@"
+exec trunk "$cmd" --cargo-profile "${PROFILE:-dev}" "$@"

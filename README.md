@@ -59,7 +59,7 @@ cargo check -p vibe_sim      # server only (no Bevy — fast)
 cargo check -p viberfox      # Bevy client
 ```
 
-Faster iteration: `--profile dev-bevy` (deps at full opt) for smoother runtime, or `--features fast-dev` (Bevy dynamic linking, local dev only — never with `--release`).
+Faster iteration: `--features fast-dev` (Bevy dynamic linking, local dev only — never with `--release`). The default `dev` profile already builds dependencies at full opt, so a plain `cargo run` is playable.
 
 The sim server runs standalone via `cargo run -p vibe_sim`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`docs/guides/server.md`](docs/guides/server.md).
 

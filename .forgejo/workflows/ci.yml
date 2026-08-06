@@ -66,7 +66,7 @@ jobs:
             exit 1
           }
       # `cargo test` compiles the crate and runs its tests in one pass.
-      - run: cargo test -p viberfox --bin viberfox
+      - run: cargo test -p viberfox
       # The vendored fork carries the floating-origin correctness tests; they are
       # the reason a `big_space` change can be trusted at all.
       - run: cargo test -p big_space --lib
