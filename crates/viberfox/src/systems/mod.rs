@@ -34,7 +34,7 @@ pub mod net;
 pub mod player;
 
 pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_icon};
-pub use geo::{road_texture, routing, vector_tiles};
+pub use geo::{road_texture, routing, scatter, vector_tiles};
 pub use gui::{
     ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, place_pins, splash, theme,
     ui,

@@ -1,7 +1,7 @@
 //! Road surfaces: which OSM class a street is, how wide it is, and what its
 //! surface looks like up close.
 //!
-//! The raster path ([`crate::systems::vector_tiles::render_mvt`]) draws streets as flat
+//! The raster path (`systems::vector_tiles::render_mvt`) draws streets as flat
 //! coloured strokes, which is right for a map you look at from above. Once the
 //! geometry path puts a road under the avatar's feet, a flat stroke is exactly
 //! what a road does *not* look like: real tarmac has grain, edge lines and lane
@@ -12,7 +12,7 @@
 //! as an asset:
 //!
 //! * The markings have to line up with the geometry. The ribbon in
-//!   [`crate::systems::vector_tiles::tessellate_roads`] runs `u` from 0 to 1 straight
+//!   `systems::vector_tiles::tessellate_roads` runs `u` from 0 to 1 straight
 //!   across the carriageway, so a centre line is at `u = 0.5` *whatever* the road
 //!   is wide — a photographic tile could never keep that registration.
 //! * `v` is metres along the road divided by [`RoadClass::texture_length_m`], so
@@ -35,7 +35,7 @@ const TEX_H: u32 = 256;
 /// What a street is made of. Coarser than the OSM `kind` because this is a
 /// *material*: one class = one texture = one Bevy material, and every extra
 /// material is another mesh per streamed cell (see the batching note in
-/// [`crate::systems::map_geometry`]). Width varies per `kind` inside a class — a
+/// `systems::map_geometry`). Width varies per `kind` inside a class — a
 /// residential street and a tertiary road share tarmac and share nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoadClass {

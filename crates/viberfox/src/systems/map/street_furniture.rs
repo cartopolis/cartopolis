@@ -45,7 +45,7 @@ use crate::systems::free_camera::FreeCamera;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
 use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
-use crate::systems::vegetation::{hash3, mix, rand01, srgb_to_linear_rgb};
+use crate::systems::scatter::{hash3, mix, rand01, srgb_to_linear_rgb};
 
 /// Altitude at which furniture starts merging into the paving.
 ///

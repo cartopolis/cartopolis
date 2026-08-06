@@ -43,7 +43,8 @@ use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
 use crate::systems::street_furniture::{self, FurnitureLod, FurnitureSurface};
-use crate::systems::vegetation::{self, VegetationLod, VegetationSurface};
+use crate::systems::scatter;
+use crate::systems::vegetation::{VegetationLod, VegetationSurface};
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
 use vibe_core::world::tile_to_meters;
@@ -252,9 +253,9 @@ fn spawn_geometry_task(
                             // merging thousands of canopies is pure CPU work, so
                             // it belongs on this worker and not on the frame that
                             // uploads the result.
-                            match vegetation::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
+                            match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
                                 Ok(trees) => {
-                                    meshes.extend(vegetation::build_vegetation_meshes(&trees));
+                                    meshes.extend(scatter::build_vegetation_meshes(&trees));
                                 }
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");

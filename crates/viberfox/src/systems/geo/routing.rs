@@ -8,7 +8,7 @@
 //! area whose tiles are in the on-disk cache.
 //!
 //! Everything here is pure CPU and free of Bevy — the Bevy side (streaming the
-//! tiles, drawing the line, the planner UI) lives in [`crate::systems::navigation`].
+//! tiles, drawing the line, the planner UI) lives in `systems::navigation`.
 //!
 //! **Why tile seams don't break connectivity.** MVT coordinates are integers on a
 //! per-tile grid of `extent` units, and every tile at a zoom shares one global

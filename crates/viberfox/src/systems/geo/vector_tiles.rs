@@ -1585,7 +1585,7 @@ fn junction_extent(
 ///   hairpin. The outer corner therefore keeps the full half-width and is
 ///   **bevelled** past the limit — two vertices, one square on each segment, with
 ///   a fill triangle across the gap. That cannot spike (the same reasoning
-///   [`crate::systems::navigation::ribbon`] documents for the route line) and cannot pinch.
+///   `systems::navigation::ribbon` documents for the route line) and cannot pinch.
 /// * **Inside.** The inner miter backtracks `half / tan(θ/2)` along *both*
 ///   adjacent segments, and nothing bounded it against how long they actually
 ///   are. On a 22 m motorway a 60° turn overruns a 6 m segment — and z14
@@ -2294,8 +2294,8 @@ mod tests {
             super::water_shore_field(&tile, tile_m).unwrap().unwrap().data,
             water_shore_field(GRONINGEN_Z14, tile_m).unwrap().unwrap().data,
         );
-        let trees = crate::systems::vegetation::scatter_vegetation(&tile, tile_m, 7).unwrap();
-        let fresh = crate::systems::vegetation::scatter_vegetation(
+        let trees = crate::systems::scatter::scatter_vegetation(&tile, tile_m, 7).unwrap();
+        let fresh = crate::systems::scatter::scatter_vegetation(
             &TileData::parse(GRONINGEN_Z14).unwrap(),
             tile_m,
             7,
