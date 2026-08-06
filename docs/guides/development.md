@@ -119,8 +119,9 @@ background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
 [`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on every push, as
 two jobs in parallel (runner capacity is 2):
 
-- **`check`** — `cargo check --workspace --all-targets`, the fast lane; fails within
-  ~1 min on an obvious compile error.
+- **`check`** — `cargo fmt --check` over the four owned crates, then
+  `cargo check --workspace --all-targets`; the fast lane, failing within ~1 min on a
+  formatting slip or an obvious compile error.
 - **`build-test`** — the suites in cost order (`viberfox_geo` first: no Bevy in its
   graph, so a geodata regression fails in seconds rather than after the client's full
   codegen), then `viberfox`, then `big_space --lib`. It ends with a **headless scene
@@ -130,6 +131,15 @@ two jobs in parallel (runner capacity is 2):
 
 Both jobs use the prebuilt `viberfox-ci` image and check out with `lfs: true` — add
 that to any new job. `deploy-web.yml` and `release.yml` are separate workflows.
+
+**A step may only use a tool the image already has.** The image is built by hand on
+the VPS (`~/build/viberfox-ci-image/Dockerfile`, then `docker build -t
+viberfox-ci:latest .`) and the runner never pulls it, so a new tool in a workflow is
+an image change — nothing in this repo will tell you it is missing. The `cargo fmt`
+gate landed against a toolchain installed `--profile minimal`, which omits rustfmt,
+and every run since died on `'cargo-fmt' is not installed for the toolchain`. Rebuild
+`viberfox-agent:latest` after the CI image: it is `FROM viberfox-ci:latest`, so the
+autonomous agent otherwise still can't run what CI demands.
 
 That image carries Mesa **lavapipe** (a CPU Vulkan driver) and `WGPU_BACKEND=vulkan`,
 so `--shot` / `cargo shots` work in a job with no GPU and no `/dev/dri`. What a
