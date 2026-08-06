@@ -1,4 +1,4 @@
-# Self-hosted geo services (Overpass + Nominatim)
+# Self-hosted geo services (Overpass + Nominatim + 3DBAG)
 
 Operational guide for the `example.com` server: a Docker Compose stack running a
 local [Overpass API](https://dev.overpass-api.de/) and
@@ -537,8 +537,11 @@ and the `Caddyfile` has:
 3dbag.garage44.eu {
 	root * /srv/3dbag
 	encode gzip
-	file_server
+	file_server {
+		precompressed gzip
+	}
 	header Access-Control-Allow-Origin "*"
+	header /coverage.json Cache-Control "public, max-age=3600"
 	header /buildings/* Cache-Control "public, max-age=86400"
 }
 ```
@@ -553,6 +556,96 @@ Smoke test: `curl --compressed https://3dbag.garage44.eu/coverage.json`.
 `VIBE_3DBAG_URL` (default `https://3dbag.garage44.eu`) and falls back to Overpass
 (OSM) on a 404 — see `osm_buildings.rs`. Attribution
 (`coverage.json.attribution`, CC BY 4.0) is shown in the client.
+
+## 9. VersaTiles vector basemap (self-hosted)
+
+The client's **default basemap** (`DEFAULT_TILE_URL_TEMPLATE`, and the `VIBE_TILE_URL`
+the CI scene smoke pins) is a self-hosted mirror of the VersaTiles planet build —
+Shortbread-schema MVT, every zoom, worldwide. Routing needs a *vector* source, so
+this is not just a cosmetic basemap: against a raster template the planner refuses
+to plan.
+
+Like 3DBAG it is **static, download-once** data — but as a single 62 GB archive
+rather than a file tree, served by the `versatiles` binary rather than by Caddy.
+
+**The archive.** One file, `/srv/versatiles/osm.versatiles`:
+
+```bash
+# 62 GB over ~35 min at 40 MB/s. Run it in `screen`, not nohup, and use a single
+# `wget -c` writer — a second one racing the same path corrupts the archive.
+screen -S tiles
+cd /srv/versatiles
+wget -c https://download.versatiles.org/osm.versatiles 2>&1 | tee download.log
+```
+
+Budget for it: the box's root volume is 193 GB and this is a third of it. Refreshing
+to a newer planet means re-downloading the whole archive — there are no diffs — so
+keep enough headroom to hold the new one *beside* the old if you want a swap with no
+downtime.
+
+**The service.** The `latest-scratch` image has no shell, hence the explicit
+`entrypoint`; the `[osm]` prefix names the source, which is what puts `osm` in the
+tile path. No published ports — it is reachable only through Caddy on `geonet`:
+
+```yaml
+  tiles:
+    image: ghcr.io/versatiles-org/versatiles:latest-scratch
+    container_name: tiles
+    restart: unless-stopped
+    entrypoint: /app/versatiles
+    command: serve -i 0.0.0.0 -p 8080 "[osm]/data/osm.versatiles"
+    volumes:
+      - /srv/versatiles/osm.versatiles:/data/osm.versatiles:ro
+    networks: [geonet]
+```
+
+**Serving** — a plain proxy, because the `versatiles` server already sets CORS (`*`)
+and a long `Cache-Control` itself:
+
+```caddy
+tiles.garage44.eu {
+	reverse_proxy tiles:8080
+}
+```
+
+A DNS record `tiles` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist for Let's Encrypt.
+
+Smoke test — a tile is a gzipped protobuf, so check the status and size, not the body:
+
+```bash
+curl -sI https://tiles.garage44.eu/tiles/osm/14/8490/5319 | head -3
+```
+
+**Client wiring:** `https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}` is the default;
+`VIBE_TILE_URL` overrides it and `VIBE_TILE_FORMAT` forces `vector|raster` when a
+template's kind can't be inferred. A scripted run (`--shot` / `cargo shots`) never
+sees the server handshake that would supply one, which is why `docs/shots.toml` pins
+`tile_url` — the built-in fallback is the *raster* basemap.
+
+## 10. PDOK AHN height proxy (web build only)
+
+The height layer (`systems::height`) reads AHN elevation rasters straight from
+`https://service.pdok.nl` on native. The browser build can't: PDOK is a third party
+and its CORS rules are not ours to negotiate, so the wasm client asks *its own
+origin* for `/up/ahn/…` (`http::upstream_url`) and Caddy forwards it. `Trunk.toml`
+provides the same path as a `[[proxy]]` in dev, so one code path works in both.
+
+This block lives on the web client's site, beside the identical `/up/nomads/*` proxy
+the globe's cloud cover needs:
+
+```caddy
+handle_path /up/ahn/* {
+	reverse_proxy https://service.pdok.nl {
+		header_up Host service.pdok.nl
+		header_up User-Agent "viberfox/0.2 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)"
+	}
+}
+```
+
+The `User-Agent` is not decoration: a browser `fetch` silently drops the header, and
+putting it back here is what lets PDOK see who is calling a public service they run
+for free. Nothing is cached or stored on our side — the layer is off by default in
+the client for the same reason.
 
 ## Maintenance
 
