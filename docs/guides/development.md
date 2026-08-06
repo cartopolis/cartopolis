@@ -1,15 +1,33 @@
 # Development
 
-Onboarding for new contributors. Prerequisites, first run and the crate layout are
-in the [README](../../README.md); this is what comes after it.
+Onboarding for new contributors. The [README](../../README.md) says what Viberfox
+is and how to start it; this is what comes after it.
 
 ## Before anything else: Git LFS
 
-`git lfs install` **before** cloning. Binary assets are in LFS, and four of them
-(brand font, app icon, star catalog, tile fixtures) are `include_bytes!`-ed at
-compile time — without the smudge filter `cargo build` embeds 130-byte pointer
-files and succeeds, then panics at runtime. Same reason every CI job sets
-`lfs: true`.
+`git lfs install` **before** cloning. Binary assets — models, textures, fonts,
+icons, audio, the `docs/img` screenshots — are in LFS by default (`.gitattributes`
+matches by extension, so a new one needs no setup), and four of them (brand font,
+app icon, star catalog, tile fixtures) are `include_bytes!`-ed at compile time —
+without the smudge filter `cargo build` embeds 130-byte pointer files and
+succeeds, then panics at runtime. Same reason every CI job sets `lfs: true`. See
+[`assets/README.md`](../../assets/README.md).
+
+## Prerequisites
+
+- **Rust** — install via [rustup.rs](https://rustup.rs/).
+- **A C toolchain** (for the bundled SQLite):
+  - **Linux** — `clang` + `lld`; the workspace links with them (see
+    `.cargo/config.toml`). On Arch: `pacman -S clang lld`. For faster links,
+    switch to `mold` (`fuse-ld=mold`).
+  - **macOS** — Xcode Command Line Tools (`xcode-select --install`). No linker
+    config needed; the default toolchain is used.
+  - **Windows** — the MSVC build tools.
+- **A GPU with working drivers** — rendering is through `wgpu` (Vulkan on Linux,
+  Metal on macOS, DX12/Vulkan on Windows). Wayland and X11 are both supported.
+
+macOS and Windows use no platform-specific code and should build with a stock
+Rust toolchain; Linux is the primary development target.
 
 ## The loop
 
@@ -107,12 +125,83 @@ Client env vars (also read from `.env`):
 
 The server takes `vibe.toml` → `VIBE_*` env → CLI flags, in that order.
 
-## Web build
+## Shipping: two builds from one codebase
 
-`crates/viberfox/serve-threads.sh` builds and serves the wasm client with real
-threads (shared memory + `-Z build-std` + COOP/COEP headers — the script's header
-comment explains what breaks if one of the three is missing). Performance
-background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
+**Desktop (native).** `cargo build -p viberfox --release` → `target/release/viberfox`
+(fat LTO: slow to compile, fastest at runtime). `release.yml` builds the Linux
+x86_64 tarball and cross-compiles the Windows x86_64 zip in one job, publishing
+both to a Forgejo release — a versioned one on a `v*` tag, or the rolling
+`continuous` prerelease on demand.
+
+**Web (WebAssembly).** `crates/viberfox/serve-threads.sh` builds and serves the wasm
+client with real threads (shared memory + `-Z build-std` + COOP/COEP headers — the
+script's header comment explains what breaks if one of the three is missing).
+`deploy-web.yml` does the same with LTO and publishes to
+[viberfox.garage44.eu](https://viberfox.garage44.eu) on every push to `main`; it is a
+separate workflow because rebuilding std and linking ~70 MB would block the test
+lanes. The web target runs against WebGL2 (no storage buffers — hence the CPU
+fallbacks the `dev` profile's opt-level-3 dependencies exist to make bearable) and
+proxies genuinely third-party upstreams under its own origin (`Trunk.toml`).
+Performance background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
+
+Platform differences live behind one API in `platform/` — native and wasm
+implementations of `http`, `storage`, `location`, `stream`, `work`, `workers`.
+
+### Running the web build locally
+
+Two rungs. Take the first unless you actually need a browser.
+
+**1. Does it still compile for wasm?** No trunk, no `-Z build-std`, no linking —
+seconds once warm, and it is what CI's `cargo check` job runs:
+
+```bash
+rustup target add wasm32-unknown-unknown --toolchain nightly     # once
+RUSTUP_TOOLCHAIN=nightly \
+  cargo check -p viberfox --no-default-features --target wasm32-unknown-unknown
+```
+
+**Nightly is required even for the check**, and this is not the `-Z build-std` the
+full build needs — it is `wasm_thread`, which opens `feature(stdarch_wasm_atomic_wait)`
+in a `cfg_attr(target_arch = "wasm32")`. On stable that is a hard `E0554` from a
+dependency, before any of our code is reached, and no flag turns it off.
+
+`--no-default-features` is not optional: it is what drops `solo`, and the web build
+has no in-process sim. This rung catches essentially everything that rots, because
+what rots is `cfg(target_arch = "wasm32")` code that no other lane ever compiles.
+
+**2. Run it in a browser:**
+
+```bash
+crates/viberfox/serve-threads.sh                  # → http://127.0.0.1:8195
+crates/viberfox/serve-threads.sh build            # build only, no server
+PROFILE=web-release crates/viberfox/serve-threads.sh build   # what CI ships
+```
+
+The script sets everything up itself — nightly, `-Z build-std`, the shared-memory
+link flags, `--cfg=web_sys_unstable_apis`, and `PATH` — so run it rather than
+assembling the flags by hand; its header comment says what breaks when one goes
+missing. Trunk fetches a `wasm-bindgen` matching the lockfile on its own, so only
+`trunk` itself has to be installed (`cargo install trunk`, or drop it in
+`~/.wasm-toolchain/bin`, which the script also puts on `PATH`).
+
+Expect a **cold first build of many minutes** — it rebuilds `std` and every
+dependency at `opt-level = 3` for a target nothing else in the workspace shares.
+It is incremental afterwards. Note that *any* `RUSTFLAGS` change invalidates the
+whole graph, so treat editing that line as a "go and do something else" event.
+
+**If `cargo` cannot find the wasm target, you have two rusts.** A distro-installed
+rust (`/usr/bin/cargo`, e.g. Arch's `rust` package) shadows rustup's shims on
+`PATH`, and it carries neither the wasm32 `std` nor `rust-src`. The tell is
+`error: can't find crate for 'std' ... the wasm32-unknown-unknown target may not be
+installed` *immediately after* `rustup target add` reported success — the two
+commands were talking about different toolchains. `RUSTUP_TOOLCHAIN=nightly` and
+`cargo +nightly` do **not** fix it; both are read by rustup's shim, which is the
+binary being shadowed. Put rustup first instead:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"      # what serve-threads.sh already does
+rustc --print sysroot                     # must NOT say /usr
+```
 
 ## CI
 

@@ -2,11 +2,11 @@
 
 A networked 3D virtual world built with Rust and Bevy, anchored in the real planet. Walk a street of buildings imported from [OpenStreetMap](https://www.openstreetmap.org/), then keep flying up — through the atmosphere, past the planet turning below you, into space — and drop back down anywhere on Earth. Build in place, and share the world with others in real time.
 
-- **The real world, streamed** — live OSM tiles for the ground; move the anchor and the world re-streams around you.
-- **Street to orbit, seamlessly** — one continuous space from the pavement to a full planetary globe, on a floating-origin coordinate model with no loading screens.
-- **3D from the map** — buildings raised from OSM footprints, toggleable data layers, live transit boards.
-- **Build in place** — create, texture, and reshape prims (path-cut, hollow, twist, taper, slice) with a gizmo and edit dialog.
-- **A sky that moves** — physically-based atmosphere with a day/night cycle, sun, moon, and stars.
+- **The real world, streamed** — live map data for the ground; move the anchor and the world re-streams around you.
+- **Street to orbit, seamlessly** — one continuous space from the pavement to a full planetary globe, with no loading screens.
+- **3D from the map** — buildings raised from OSM footprints, measured terrain relief, toggleable data layers, routing and live transit boards.
+- **Build in place** — create, texture, and reshape objects with a gizmo and edit dialog.
+- **A sky that moves** — physically-based atmosphere with a day/night cycle, sun, moon, stars and weather.
 - **Shared, in real time** — an authoritative headless sim keeps avatars and world state in sync across clients.
 - **An AI copilot** — an in-client panel for LLM-assisted world building.
 
@@ -19,18 +19,16 @@ A networked 3D virtual world built with Rust and Bevy, anchored in the real plan
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
 
-## Prerequisites
+## Two builds
 
-- **Rust** — install via [rustup.rs](https://rustup.rs/).
-- **A C toolchain** (for the bundled SQLite):
-  - **Linux** — `clang` + `lld`; the workspace links with them (see `.cargo/config.toml`). On Arch: `pacman -S clang lld`. For faster links, switch to `mold` (`fuse-ld=mold`).
-  - **macOS** — Xcode Command Line Tools (`xcode-select --install`). No linker config is needed; the default toolchain is used.
-  - **Windows** — the MSVC build tools.
-- **A GPU with working drivers** — rendering is through `wgpu` (Vulkan on Linux, Metal on macOS, DX12/Vulkan on Windows). On Linux, Wayland and X11 are both supported.
+The same client ships two ways, from one codebase:
 
-macOS and Windows use no platform-specific code and should build with a stock Rust toolchain; Linux is the primary development target.
+- **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`.
+- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target.
 
-## Running
+Native is the faster and more capable of the two — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
+
+## Running from source
 
 ```bash
 cargo run -p viberfox
@@ -41,31 +39,17 @@ Starts in **solo mode**: an in-process sim runs on loopback and the client conne
 ```bash
 cargo run -p viberfox -- --connect <host:port>   # split mode: connect to a live sim
 cargo run -p viberfox -- --offline               # no sim: single user, no auth or persistence
+cargo run -p viberfox_simulator                  # the sim server, standalone
 ```
 
-New here? The [user manual](docs/manual.md) covers controls, getting around, authoring objects, the developer panel, and screenshots.
+You need a Rust toolchain, a C compiler and a working GPU driver — details, release builds and the web build are in the [development guide](docs/guides/development.md). **Run `git lfs install` before cloning**: binary assets live in Git LFS and several are compiled into the binary, so a pointer file fails at runtime rather than at build time.
 
-## Building
+## Documentation
 
-```bash
-cargo build -p viberfox --release   # → target/release/viberfox (LTO; slow to compile, fastest at runtime)
-```
-
-Scope checks to the crate you changed:
-
-```bash
-cargo check -p viberfox_core     # shared protocol types
-cargo check -p viberfox_simulator      # server only (no Bevy — fast)
-cargo check -p viberfox      # Bevy client
-```
-
-Faster iteration: `--features fast-dev` (Bevy dynamic linking, local dev only — never with `--release`). The default `dev` profile already builds dependencies at full opt, so a plain `cargo run` is playable.
-
-The sim server runs standalone via `cargo run -p viberfox_simulator`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`docs/guides/server.md`](docs/guides/server.md).
-
-## Assets
-
-Binary assets — models, textures, fonts, icons, audio, the `docs/img` screenshots — are stored in **Git LFS** by default (`.gitattributes` matches by extension, so a new one needs no setup). Run `git lfs install` before cloning: without it you get pointer files, and since the font, app icon and star catalog are compiled *into* the binary, the build fails at runtime rather than at `cargo build`. See [`assets/README.md`](assets/README.md).
+- [User manual](docs/manual.md) — controls, getting around, authoring, the developer panel.
+- [Development guide](docs/guides/development.md) — prerequisites, dev loop, tests, code map, conventions, CI.
+- [Server guide](docs/guides/server.md) — deploying the sim and the self-hosted geo services.
+- [`docs/notes/`](docs/notes/) — standing constraints and measurements; [`CLAUDE.md`](CLAUDE.md)'s *Known issues* is the trap list worth skimming first. `docs/adr/` and `docs/abstract/` are a frozen archive of the earlier decision log.
 
 ## Architecture
 
@@ -74,30 +58,16 @@ Binary assets — models, textures, fonts, icons, audio, the `docs/img` screensh
 | `viberfox_core` | Shared protocol types and tile/coordinate math |
 | `viberfox_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
 | `viberfox_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
-| `viberfox` | Bevy 0.19 game client (rendering, ECS systems, UI) |
-| `big_space` | Vendored fork of `big_space` 0.10, ported to Bevy 0.19 for planet-scale floating-origin transforms |
-
-## Development
-
-New here? [`docs/guides/development.md`](docs/guides/development.md) is the contributor
-guide — the dev loop, tests, a map of the code, conventions, config and CI.
-
-```bash
-cargo test -p viberfox_geo   # the Bevy-free geodata suite — ~2 s, run it first
-cargo test -p viberfox       # the client suite (links the rlib; --bin runs nothing)
-```
-
-Standing constraints and measurements live in [`docs/notes/`](docs/notes/); the traps
-worth knowing before a first non-trivial change are in [`CLAUDE.md`](CLAUDE.md)'s
-*Known issues*. `docs/adr/` and `docs/abstract/` are a frozen archive of the earlier
-decision log.
+| `viberfox` | Bevy game client — rendering, ECS systems, UI |
+| `big_space` | Vendored floating-origin fork, for planet-scale coordinates |
 
 ## Credits
 
+- **Engine** — built with [Bevy](https://bevy.org/).
+- **Floating origin** — [`big_space`](https://github.com/aevyrie/big_space) by Aevyrie, MIT OR Apache-2.0. Vendored here as a fork ported to the Bevy release we track.
 - **Avatar characters** — [Quaternius](https://quaternius.com/) *Ultimate Modular Men/Women*, CC0. Consider supporting the work on [Patreon](https://www.patreon.com/quaternius).
 - **Map data** — © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, under the ODbL. Building detail and POIs come from [Overpass](https://overpass-api.de/), place search and reverse geocoding from [Nominatim](https://nominatim.org/) — both self-hosted, and usable against the public instances under the [OSMF usage policies](https://operations.osmfoundation.org/policies/).
 - **Vector tiles** — [VersaTiles](https://versatiles.org/), in the [Shortbread](https://shortbread-tiles.org/) schema. Self-hosted mirror of their OSM-derived planet build.
 - **Buildings (LoD2.2)** — [3DBAG](https://3dbag.nl/) by the 3D geoinformation group, TU Delft, CC BY 4.0 — derived from the Kadaster's [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) registry and AHN, both via [PDOK](https://www.pdok.nl/). Netherlands only.
 - **Elevation** — [AHN](https://www.ahn.nl/) height rasters (DTM/DSM), served by [PDOK](https://www.pdok.nl/), CC0. Netherlands only.
 - **Public transport** — live departures and vehicle positions from [OVapi](https://ovapi.nl/), the open key-free feed of Dutch [NDOV](https://ndovloket.nl/) operator data. Netherlands only.
-- **Engine** — built with [Bevy](https://bevy.org/).

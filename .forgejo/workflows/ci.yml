@@ -43,6 +43,31 @@ jobs:
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.
       - run: cargo check --workspace --all-targets
+      # The wasm split-rot gate ADR-030 always claimed existed and didn't. Only
+      # `deploy-web.yml` ever compiled for the web, and it runs on `main` pushes
+      # alone — so `platform::location` shipped code that had never once compiled
+      # for wasm and the deploy job failed on every push for weeks with nobody
+      # watching. A `cfg(target_arch = "wasm32")` block is invisible to every
+      # other lane in this file.
+      #
+      # Deliberately a *check*: no `-Z build-std`, no atomics, no LTO, no link
+      # step, no wasm-bindgen. That skips the expensive half of the web build and
+      # still catches what actually rots — missing web-sys features, `!Send` types
+      # reaching a `Resource`, wasm-only paths referring to renamed items.
+      # `--cfg=web_sys_unstable_apis` is inherited from `.cargo/config.toml` here
+      # precisely because this does NOT set RUSTFLAGS.
+      # `--no-default-features` matches the web build: no `solo`, hence no sim.
+      #
+      # Nightly is not optional and is *not* about `-Z build-std`, which this lane
+      # does not use: `wasm_thread` opens `feature(stdarch_wasm_atomic_wait)` under
+      # `cfg_attr(target_arch = "wasm32")`, so on stable this dies with E0554 in a
+      # dependency before reaching our code, and no flag disables it.
+      - name: Check the web target compiles
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p viberfox --no-default-features --target wasm32-unknown-unknown
 
   build-test:
     name: build & test viberfox

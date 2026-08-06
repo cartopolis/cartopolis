@@ -64,11 +64,19 @@ jobs:
       # rather than merging with it, so `+simd128` is repeated — without it
       # tiny-skia silently falls back to scalar. `simd_baseline.rs` fails the
       # build if this is ever dropped.
+      #
+      # `--cfg=web_sys_unstable_apis` is repeated for the same reason and is the
+      # harder one to spot, because nothing about the error names it: web-sys
+      # gates the Geolocation family on that cfg, and without it
+      # `platform::location` cannot see `GeolocationPosition` at all, which
+      # cascades through `DriverState` into ~99 errors across driver mode. This
+      # job failed on every push for exactly that reason until 2026-08-06.
       - name: Build (web-release, threads + SIMD)
         env:
           RUSTUP_TOOLCHAIN: nightly
           CARGO_UNSTABLE_BUILD_STD: std,panic_abort
           RUSTFLAGS: >-
+            --cfg=web_sys_unstable_apis
             -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128
             -C link-arg=--shared-memory
             -C link-arg=--import-memory
@@ -95,7 +103,15 @@ jobs:
       - name: Verify the module is threaded
         run: |
           wasm=$(ls crates/viberfox/dist/*_bg.wasm)
-          js=$(ls crates/viberfox/dist/*.js | head -1)
+          # Derived from the wasm name, never `ls *.js | head -1`: trunk emits two
+          # JS files — the wasm-bindgen glue `<name>-<hash>.js` beside its
+          # `<name>-<hash>_bg.wasm`, and the separate `<hash>-loader.js` from
+          # `data-initializer`. Which one sorts first depends on the content
+          # hashes, so `head -1` picked the loader roughly at random, and the
+          # loader never constructs a `WebAssembly.Memory` — the check below would
+          # then fail on a perfectly good build (or, worse, pass without ever
+          # having looked at the glue).
+          js="${wasm%_bg.wasm}.js"
           echo "module: $wasm ($(( $(stat -c%s "$wasm") / 1000000 )) MB)"
           # These two exports exist only if wasm-bindgen's thread transform ran,
           # and it only runs when the link produced shared memory and the TLS

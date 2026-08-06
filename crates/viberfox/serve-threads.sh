@@ -30,7 +30,14 @@ export RUSTUP_TOOLCHAIN=nightly
 # would silently vanish from this build — leaving tiny-skia's tile raster fully
 # scalar, which is precisely the work the worker pool exists to speed up.
 # `simd_baseline.rs` turns that into a compile error instead of a slow mystery.
-export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128 \
+#
+# `--cfg=web_sys_unstable_apis` is carried for the same replaces-not-appends
+# reason, and dropping it is not slow, it is fatal: web-sys hides the whole
+# Geolocation family behind that cfg, so `platform::location` stops compiling and
+# takes `DriverState` and every driver-mode consumer down with it (~99 errors from
+# one missing flag). `.cargo/config.toml` explains the trap in full.
+export RUSTFLAGS="--cfg=web_sys_unstable_apis \
+-C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128 \
 -C link-arg=--shared-memory \
 -C link-arg=--import-memory \
 -C link-arg=--max-memory=4294967296 \

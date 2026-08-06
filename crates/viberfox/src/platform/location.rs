@@ -107,17 +107,47 @@ impl Drop for LocationWatch {
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::{GpsFix, Slot};
+    use std::cell::RefCell;
     use wasm_bindgen::prelude::Closure;
     use wasm_bindgen::JsCast;
 
-    /// The `watchPosition` id plus the two callbacks it invokes. The closures must
-    /// outlive the watch — dropping one and then having the browser call it is a
-    /// use-after-free — so they are owned here and released together in [`stop`].
+    /// A live `watchPosition`, identified by the id the browser handed back.
+    ///
+    /// **This holds an `i32` and nothing else, and that is the whole point.** The
+    /// two callbacks must outlive the watch — dropping one and then having the
+    /// browser call it is a use-after-free — but they cannot be *stored here* to
+    /// achieve that: a `Closure` is `!Send + !Sync` (it wraps a `JsValue`, whose
+    /// `PhantomData<*mut u8>` is what the compiler actually complains about), this
+    /// travels inside `LocationWatch` into `driver::DriverState`, and a Bevy
+    /// `Resource` must be `Send + Sync`. Keeping them inline made `DriverState`
+    /// un-`Resource`-able and broke every one of its ~10 consumers, which is a
+    /// ~180-error wall a long way from its cause.
+    ///
+    /// So the closures live in [`CALLBACKS`] on the thread that created them and
+    /// are dropped by id in [`stop`]. Same lifetime guarantee, no `!Send` field,
+    /// and no `unsafe impl Send` asserting something about Bevy's executor that a
+    /// future Bevy is free to invalidate.
     pub struct Watch {
         id: i32,
-        _on_fix: Closure<dyn FnMut(web_sys::GeolocationPosition)>,
-        _on_err: Closure<dyn FnMut(web_sys::GeolocationPositionError)>,
     }
+
+    thread_local! {
+        /// Callbacks for the live watches on this thread, keyed by watch id.
+        ///
+        /// Thread-local rather than a global: a JS function is reachable only from
+        /// the realm that created it — under `--shared-memory` the linear memory is
+        /// shared but the function table is per-instance — so a closure made on the
+        /// main thread is meaningless to a worker anyway. Being thread-local makes
+        /// that structural instead of a comment. If a `LocationWatch` were somehow
+        /// dropped on another thread the entry is simply not found and the callbacks
+        /// outlive the process; that leaks two closures, it cannot be unsound.
+        static CALLBACKS: RefCell<Vec<(i32, CallbackPair)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    type CallbackPair = (
+        Closure<dyn FnMut(web_sys::GeolocationPosition)>,
+        Closure<dyn FnMut(web_sys::GeolocationPositionError)>,
+    );
 
     pub fn start(slot: Slot) -> Option<Watch> {
         let geo = web_sys::window()
@@ -164,29 +194,35 @@ mod wasm {
         opts.set_maximum_age(0);
         opts.set_timeout(20_000);
 
-        match geo.watch_position_with_error_callback_and_options(
+        // Returns a bare `i32`, not a `Result` — and that is a consequence of
+        // `--cfg=web_sys_unstable_apis`, not of the API. web-sys carries *two*
+        // overloads of this method: the stable one takes untyped `js_sys::Function`
+        // callbacks and is `catch`-annotated (`Result<i32, JsValue>`), while the
+        // unstable one — the only one that exists once the cfg selects the typed
+        // `GeolocationPosition` family — takes typed functions and does not catch.
+        // The cfg silently swaps which one resolves here, so a call that used to
+        // need a `match` now must not have one. If this ever stops compiling after
+        // a web-sys bump, check the overload before changing the logic.
+        let id = geo.watch_position_with_error_callback_and_options(
             on_fix.as_ref().unchecked_ref(),
             Some(on_err.as_ref().unchecked_ref()),
             &opts,
-        ) {
-            Ok(id) => Some(Watch {
-                id,
-                _on_fix: on_fix,
-                _on_err: on_err,
-            }),
-            Err(e) => {
-                tracing::warn!(error = ?e, "could not start watchPosition");
-                None
-            }
-        }
+        );
+        // Registered only once the watch exists, so the pair is never held for a
+        // watch the browser is not running.
+        CALLBACKS.with(|c| c.borrow_mut().push((id, (on_fix, on_err))));
+        Some(Watch { id })
     }
 
     pub fn stop(watch: Watch) {
+        // Clear the watch *before* releasing the callbacks, never after: between
+        // the two the browser must already be unable to invoke them.
         if let Some(geo) = web_sys::window()
             .map(|w| w.navigator())
             .and_then(|n| n.geolocation().ok())
         {
             geo.clear_watch(watch.id);
         }
+        CALLBACKS.with(|c| c.borrow_mut().retain(|(id, _)| *id != watch.id));
     }
 }

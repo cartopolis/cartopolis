@@ -35,8 +35,21 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 #
 # simd128 is baseline in every browser we target (Chrome 91+, Firefox 89+,
 # Safari 16.4+).
+#
+# `web_sys_unstable_apis` is not a preference either — it is the only way to reach
+# the Geolocation API, which `platform::location` is built on (driver mode's
+# position fix on the web). web-sys puts the whole family — `Geolocation`,
+# `GeolocationPosition`, `GeolocationCoordinates`, `GeolocationPositionError` —
+# behind `#[cfg(web_sys_unstable_apis)]`, and the Cargo features of the same names
+# are necessary but **not sufficient**: with the features on and the cfg off the
+# types simply do not exist, and the error says `cannot find type ... in crate
+# web_sys` rather than anything about a cfg. The cfg gates web-sys's own source, so
+# it cannot come from our `build.rs` — it has to be a rustflag, which means every
+# place that sets RUSTFLAGS for wasm needs it (see below). "Unstable" here is
+# wasm-bindgen's own churn warning, not a browser one: `navigator.geolocation` has
+# shipped everywhere for fifteen years.
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128"]
+rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 
 [build]
 incremental = true
