@@ -31,7 +31,7 @@ use crate::resources::{AvatarState, CameraMode, CameraState};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::theme;
-use vibe_core::world::tile_to_meters;
+use viberfox_core::world::tile_to_meters;
 
 
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
@@ -1168,7 +1168,7 @@ pub fn apply_teleport(
     let base_zoom = stream
         .geo_anchor()
         .map(|(_, _, z)| z)
-        .unwrap_or(vibe_core::world::REGION_ZOOM_LEVEL);
+        .unwrap_or(viberfox_core::world::REGION_ZOOM_LEVEL);
     let snapped = crate::systems::map_stream::snap_anchor(lat, lng, base_zoom);
     let (wx, wz) = lat_lng_to_world((snapped.0, snapped.1, base_zoom), lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);

@@ -5965,6 +5965,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "simulator"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "bytes",
+ "clap",
+ "figment",
+ "futures-util",
+ "glam",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "viberfox_core",
+]
+
+[[package]]
 name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6871,41 +6894,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vibe_core"
-version = "0.1.0"
-dependencies = [
- "approx",
- "glam",
- "postcard",
- "serde",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "vibe_sim"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "argon2",
- "bytes",
- "clap",
- "figment",
- "futures-util",
- "glam",
- "refinery",
- "rusqlite",
- "serde",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vibe_core",
-]
-
-[[package]]
 name = "viberfox"
 version = "0.2.0"
 dependencies = [
@@ -6935,6 +6923,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "simulator",
  "tiff",
  "tiny-skia 0.12.0",
  "tokio",
@@ -6945,8 +6934,7 @@ dependencies = [
  "tzf-rs",
  "ureq",
  "uuid",
- "vibe_core",
- "vibe_sim",
+ "viberfox_core",
  "viberfox_geo",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -6955,6 +6943,18 @@ dependencies = [
  "web-time",
  "winit",
  "winresource",
+]
+
+[[package]]
+name = "viberfox_core"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "glam",
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -6968,7 +6968,7 @@ dependencies = [
  "mvt-reader",
  "tiny-skia 0.12.0",
  "tracing",
- "vibe_core",
+ "viberfox_core",
 ]
 
 [[package]]

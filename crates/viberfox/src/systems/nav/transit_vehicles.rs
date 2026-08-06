@@ -48,7 +48,7 @@ use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::lat_lng_to_local;
 use crate::systems::transit_live::WorldClock;
-use vibe_core::world::tile_to_meters;
+use viberfox_core::world::tile_to_meters;
 
 /// OVapi's GTFS-Realtime vehicle-position feed (all live Dutch vehicles).
 const FEED_URL: &str = "https://gtfs.ovapi.nl/nl/vehiclePositions.pb";

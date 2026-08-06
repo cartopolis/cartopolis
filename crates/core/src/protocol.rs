@@ -128,7 +128,7 @@ pub struct RegionDto {
     pub tile_x: i64,
     pub tile_y: i64,
     pub tile_z: i64,
-    /// Sim-space origin for this region’s tile (matches `vibe_sim` grid layout).
+    /// Sim-space origin for this region’s tile (matches `simulator` grid layout).
     pub sim_x: f32,
     pub sim_y: f32,
     pub sim_z: f32,

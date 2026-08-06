@@ -35,7 +35,7 @@ use futures_channel::mpsc::UnboundedReceiver;
 use tokio::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use vibe_core::{
+use viberfox_core::{
     decode_app_frame, encode_app_frame, snap_yaw_continuation, wrap_angle_pi, AuthCredential,
     AvatarStateDto, NetMessage, PrimDto, RegionDto, PROTOCOL_VERSION,
 };
@@ -632,7 +632,7 @@ pub fn create_egui_texture_handles(
 /// scalar (capped), so flying traverses this many times faster than walking.
 const FLY_MOVE_MULT: f32 = 4.0;
 
-// Sim intent → world velocity scaling, mirrored from `vibe_sim::state::apply_intent`
+// Sim intent → world velocity scaling, mirrored from `simulator::state::apply_intent`
 // so the client can predict the local avatar's motion between snapshots. Keep in
 // sync with the sim (a mismatch just makes reconciliation fight prediction —
 // visible rubber-banding — it won't desync authority).

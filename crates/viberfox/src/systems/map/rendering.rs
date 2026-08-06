@@ -10,8 +10,8 @@ use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine2;
 use bevy::asset::RenderAssetUsages;
 use std::collections::HashMap;
-use vibe_core::world::tile_to_meters;
-use vibe_core::PrimSurface;
+use viberfox_core::world::tile_to_meters;
+use viberfox_core::PrimSurface;
 
 #[derive(Component)]
 pub struct RegionMesh;

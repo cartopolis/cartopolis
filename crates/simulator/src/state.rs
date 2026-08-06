@@ -1,7 +1,7 @@
 use glam::Vec3;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vibe_core::{
+use viberfox_core::{
     snap_yaw_continuation, AvatarStateDto, GeoAnchor, NetMessage, PrimDto, PrimGeometry,
     PrimSurface, RegionDto,
 };

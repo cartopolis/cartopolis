@@ -39,7 +39,7 @@ fn default_aoi() -> f32 {
 }
 
 fn default_osm_tile_url_template() -> String {
-    vibe_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
+    viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
 }
 
 fn default_texture_dir() -> String {

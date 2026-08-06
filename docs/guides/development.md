@@ -15,12 +15,12 @@ files and succeeds, then panics at runtime. Same reason every CI job sets
 
 | Task | Command |
 |------|---------|
-| Type-check what you touched | `cargo check -p vibe_core \| vibe_sim \| viberfox` |
+| Type-check what you touched | `cargo check -p viberfox_core \| simulator \| viberfox` |
 | Play it (already playable — `dev` builds deps at opt-level 3) | `cargo run -p viberfox` |
 | Fast incremental links (local only) | `cargo run -p viberfox --features fast-dev` |
 | Client tests | `cargo test -p viberfox` |
 | Geodata tests (no Bevy — ~2 s) | `cargo test -p viberfox_geo` |
-| Server tests | `cargo test -p vibe_sim` |
+| Server tests | `cargo test -p simulator` |
 | Floating-origin tests | `cargo test -p big_space --lib` |
 | Regenerate README images | `cargo shots` |
 
@@ -41,9 +41,9 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in
 
 | Path | Contents |
 |------|----------|
-| `crates/vibe_core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) |
+| `crates/viberfox_core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) |
 | `crates/geo/` | Bevy-free map geodata (`viberfox_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
-| `crates/vibe_sim/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs` |
+| `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs` |
 | `crates/viberfox/` | Bevy client — everything below |
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
 

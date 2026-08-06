@@ -1,5 +1,5 @@
-//! `vibe_sim` as a library: the headless simulation server, usable standalone via
-//! the `vibe_sim` binary or embedded in-process (viberfox solo/dev mode, ADR-016).
+//! `simulator` as a library: the headless simulation server, usable standalone via
+//! the `simulator` binary or embedded in-process (viberfox solo/dev mode, ADR-016).
 //!
 //! Embedding runs the *real* server on a background tokio runtime and connects to
 //! it over loopback TCP — the same wire protocol and (once ADR-016 lands) the same

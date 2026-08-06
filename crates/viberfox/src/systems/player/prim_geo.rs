@@ -15,7 +15,7 @@ use crate::components::{Prim, PrimGeo};
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
 use crate::systems::map_stream::MapStream;
-use vibe_core::GeoAnchor;
+use viberfox_core::GeoAnchor;
 
 /// Reconstruct a prim's absolute world position from its `GridCell` + local
 /// `Transform`. A missing cell means the prim still sits at the big_space root

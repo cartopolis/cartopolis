@@ -37,7 +37,7 @@ use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRE
 use crate::systems::osm_buildings::{
     lat_lng_to_local, overpass_query, MeshData,
 };
-use vibe_core::world::{tile_to_lat_lng, tile_to_meters};
+use viberfox_core::world::{tile_to_lat_lng, tile_to_meters};
 
 /// Material for the floating shop-pin heads: a plain `StandardMaterial` (unlit,
 /// per-vertex hue) whose depth test is forced to always pass, so the gem heads
@@ -619,7 +619,7 @@ pub fn update_data_layers(
     // Establish the anchor (from the map origin).
     if dl.anchor.is_none() {
         let z = base_zoom;
-        let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
+        let (ax, ay) = viberfox_core::world::lat_lng_to_tile(clat, clng, z);
         let lat = clat;
         dl.anchor = Some((ax, ay, z, lat));
     }
@@ -1279,7 +1279,7 @@ pub fn apply_feature_toggles(
     // is broken" rather than "you are somewhere else". Hide it once the map
     // anchor has left its tile; the streamed tiles cover that ground now.
     let anchor_tile = stream.geo_anchor().map(|(clat, clng, z)| {
-        let (ax, ay) = vibe_core::world::lat_lng_to_tile(clat, clng, z);
+        let (ax, ay) = viberfox_core::world::lat_lng_to_tile(clat, clng, z);
         (ax, ay, z as i64)
     });
     for (region, mut vis) in region_quads.iter_mut() {

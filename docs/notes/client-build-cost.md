@@ -16,7 +16,7 @@ first, which is what CI and every profile switch effectively do.
 |---|---|
 | Edit a leaf system (`water.rs`) | 3.8 s |
 | Edit a widely-imported module (`resources.rs`) | 3.9 s |
-| Edit `vibe_core` (rebuilds sim + client) | 4.8 s |
+| Edit `viberfox_core` (rebuilds sim + client) | 4.8 s |
 | Compile `viberfox`, deps warm, **incremental cache cold** | **52.4 s** |
 | …of which `cargo check` (frontend only) | 7.1 s |
 | `cargo check` no-op after working in `dev-bevy` | 9.5 s |

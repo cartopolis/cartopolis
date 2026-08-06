@@ -30,4 +30,4 @@ image.workspace = true
 mvt-reader.workspace = true
 tiny-skia.workspace = true
 tracing.workspace = true
-vibe_core = { path = "../vibe_core" }
+viberfox_core = { path = "../core" }

@@ -7,7 +7,7 @@ use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
 use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
-use vibe_core::wrap_angle_pi;
+use viberfox_core::wrap_angle_pi;
 
 /// One glTF scene to spawn for an avatar, showing only the meshes for the slots in
 /// `mask`. Complete Quaternius characters embed their own clips, so `anims` is the
@@ -243,7 +243,7 @@ const WALK_SPEED: f32 = 8.0;
 /// Offline flight, mirroring what the sim gives an online client so the same keys
 /// move the avatar at the same rate in every run mode: horizontal is the sim's
 /// speed cap (`SimWorld::apply_intent` MAX_SPEED, which `FLY_MOVE_MULT` reaches),
-/// vertical and the fall rate are `vibe_sim::state`'s. Offline used to fly 40 m/s
+/// vertical and the fall rate are `simulator::state`'s. Offline used to fly 40 m/s
 /// in both axes — a third faster sideways, three times faster up.
 const FLY_SPEED: f32 = 32.0;
 const FLY_VERTICAL_SPEED: f32 = 12.0;

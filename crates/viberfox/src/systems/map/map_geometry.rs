@@ -47,8 +47,8 @@ use crate::systems::scatter;
 use crate::systems::vegetation::{VegetationLod, VegetationSurface};
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
-use vibe_core::world::tile_to_meters;
-use vibe_core::TileKey;
+use viberfox_core::world::tile_to_meters;
+use viberfox_core::TileKey;
 
 /// Cells are streamed at the vector source's own zoom — no overzoom, because
 /// geometry needs no LOD pyramid: the same mesh is correct at any distance. This

@@ -1,9 +1,9 @@
-//! Headless simulation server binary — a thin wrapper over the `vibe_sim` lib
+//! Headless simulation server binary — a thin wrapper over the `simulator` lib
 //! (ADR-007). Loads layered config (ADR-014), serves, and runs until Ctrl-C.
 
 use clap::Parser;
 use std::sync::Arc;
-use vibe_sim::{cli::SimCli, serve, SimConfig};
+use simulator::{cli::SimCli, serve, SimConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,11 +25,11 @@ async fn main() -> anyhow::Result<()> {
         aoi = config.aoi_radius,
         tile_template = %config.osm_tile_url_template,
         texture_dir = %config.texture_dir,
-        "vibe_sim"
+        "simulator"
     );
 
     let handle = serve(config).await?;
-    tracing::info!(addr = %handle.local_addr, "vibe_sim ready");
+    tracing::info!(addr = %handle.local_addr, "simulator ready");
 
     // Hold the handle so the server keeps running until Ctrl-C; on exit it drops
     // and the accept/tick tasks are aborted.

@@ -24,8 +24,8 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
-use vibe_core::TileKey;
+use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
+use viberfox_core::TileKey;
 
 /// Snap a (lat, lng) to the **centre of its base-zoom tile** — the anchor
 /// convention every placement consumer assumes (`osm_buildings` and the data
@@ -41,12 +41,12 @@ pub fn snap_anchor(lat: f64, lng: f64, zoom: u32) -> (f64, f64) {
 
 /// Fractional Web Mercator tile coordinate (no flooring) of a lat/lng at a zoom.
 ///
-/// Re-exported from `vibe_core`, where it lives next to the integer
-/// [`vibe_core::lat_lng_to_tile`] it used to duplicate verbatim. Kept visible here
+/// Re-exported from `viberfox_core`, where it lives next to the integer
+/// [`viberfox_core::lat_lng_to_tile`] it used to duplicate verbatim. Kept visible here
 /// because a dozen call sites reach for it through this module, and because the
 /// routing graph needs it *without* needing the streamer — that dependency was the
 /// last non-doc tie from `systems::geo` to a Bevy module.
-pub use vibe_core::lat_lng_to_tile_frac;
+pub use viberfox_core::lat_lng_to_tile_frac;
 
 /// Tiles to keep loaded in each direction from the camera at the finest zoom
 /// (radius 4 → 9×9).
@@ -250,7 +250,7 @@ pub fn apply_reanchor(
     let base_zoom = stream
         .anchor
         .map(|(_, _, z)| z)
-        .unwrap_or(vibe_core::world::REGION_ZOOM_LEVEL);
+        .unwrap_or(viberfox_core::world::REGION_ZOOM_LEVEL);
     // Queue the whole old-anchor patch for bounded despawn rather than freeing it
     // all in one frame (mass-despawn device-loss guard; drained by
     // `update_map_stream`). The queued entities are still live StreamTiles, so the

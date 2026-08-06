@@ -45,7 +45,7 @@ use crate::systems::routing::{
 };
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
 use crate::systems::vector_tiles::{self, TileData};
-use vibe_core::TileKey;
+use viberfox_core::TileKey;
 
 /// Typing pause before an endpoint field is geocoded — the search bar's value, so
 /// the two feel the same.

@@ -6,7 +6,7 @@
 //! extra tabs with no change to this panel.
 
 use bevy::prelude::*;
-use vibe_core::{ChatScope, NetMessage};
+use viberfox_core::{ChatScope, NetMessage};
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;

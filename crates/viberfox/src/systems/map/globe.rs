@@ -1,7 +1,7 @@
 //! Planetary globe / space tier (ADR-025).
 //!
 //! A true-scale WGS84 Earth built in the sim anchor's ENU tangent frame
-//! (`vibe_core::geo`), so the flat streamed-tile city view sits on the sphere's
+//! (`viberfox_core::geo`), so the flat streamed-tile city view sits on the sphere's
 //! surface at the anchor and Earth's centre lands at ≈ `(0, −R, 0)` in Bevy-local
 //! metres. Everything lives under the world `BigSpace`, so `big_space` rebases
 //! it for render precision at any camera distance (ADR-019).
@@ -36,9 +36,9 @@ use crate::resources::OsmTileUrlTemplate;
 use crate::systems::map_stream::MapStream;
 use crate::systems::globe_ocean::{GlobeOcean, GlobeOceanGloss, GlobeSurfaceMaterial};
 use crate::systems::tile_loader::fetch_globe_tile_payload;
-use vibe_core::geo::TangentFrame;
-use vibe_core::world::tile_to_meters;
-use vibe_core::TileKey;
+use viberfox_core::geo::TangentFrame;
+use viberfox_core::world::tile_to_meters;
+use viberfox_core::TileKey;
 
 /// Surface-imagery albedo in deep space. The OSM basemap is a *map*: pale beige
 /// land on near-white paper, reflecting ~0.8 where the real Earth averages ~0.3.
@@ -317,7 +317,7 @@ pub fn sub_point(anchor_lat: f64, anchor_lng: f64, dir_bevy: Vec3) -> (f64, f64)
     let enu = DVec3::new(dir_bevy.x as f64, -dir_bevy.z as f64, dir_bevy.y as f64);
     let ecef_dir = frame.east * enu.x + frame.north * enu.y + frame.up * enu.z;
     let (lat, lng, _) =
-        vibe_core::ecef_to_geodetic(ecef_dir.normalize_or_zero() * 6_378_137.0);
+        viberfox_core::ecef_to_geodetic(ecef_dir.normalize_or_zero() * 6_378_137.0);
     (lat, lng)
 }
 

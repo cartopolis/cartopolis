@@ -41,7 +41,7 @@ use utils::sun::sun_direction;
 #[derive(Parser, Debug)]
 #[command(name = "viberfox")]
 struct Cli {
-    /// Connect to an external `vibe_sim` instance (TCP, postcard messages).
+    /// Connect to an external `simulator` instance (TCP, postcard messages).
     /// Omit for solo mode (an in-process sim); see `--offline`.
     #[arg(long)]
     connect: Option<String>,

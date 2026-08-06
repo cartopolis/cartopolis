@@ -54,14 +54,14 @@ cargo build -p viberfox --release   # → target/release/viberfox (LTO; slow to 
 Scope checks to the crate you changed:
 
 ```bash
-cargo check -p vibe_core     # shared protocol types
-cargo check -p vibe_sim      # server only (no Bevy — fast)
+cargo check -p viberfox_core     # shared protocol types
+cargo check -p simulator      # server only (no Bevy — fast)
 cargo check -p viberfox      # Bevy client
 ```
 
 Faster iteration: `--features fast-dev` (Bevy dynamic linking, local dev only — never with `--release`). The default `dev` profile already builds dependencies at full opt, so a plain `cargo run` is playable.
 
-The sim server runs standalone via `cargo run -p vibe_sim`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`docs/guides/server.md`](docs/guides/server.md).
+The sim server runs standalone via `cargo run -p simulator`; configure it with `vibe.toml`, `VIBE_*` env vars, or CLI flags. Deploying? See [`docs/guides/server.md`](docs/guides/server.md).
 
 ## Assets
 
@@ -71,8 +71,8 @@ Binary assets — models, textures, fonts, icons, audio, the `docs/img` screensh
 
 | Crate | Role |
 |-------|------|
-| `vibe_core` | Shared protocol types and tile/coordinate math |
-| `vibe_sim` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
+| `viberfox_core` | Shared protocol types and tile/coordinate math |
+| `simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
 | `viberfox` | Bevy 0.19 game client (rendering, ECS systems, UI) |
 | `big_space` | Vendored fork of `big_space` 0.10, ported to Bevy 0.19 for planet-scale floating-origin transforms |
 

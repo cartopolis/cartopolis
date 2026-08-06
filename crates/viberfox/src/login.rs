@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use vibe_core::AuthCredential;
+use viberfox_core::AuthCredential;
 
 /// Default login file checked when `--login` is omitted. Gitignored.
 const DEFAULT_LOGIN_FILE: &str = "data/dev-login.toml";

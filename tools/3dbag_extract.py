@@ -59,7 +59,7 @@ ATTRIBUTION = (
 
 
 def lat_lng_to_tile(lat, lng, z):
-    """Slippy-map tile (x, y) for a lat/lng — identical to vibe_core::world."""
+    """Slippy-map tile (x, y) for a lat/lng — identical to viberfox_core::world."""
     n = 2.0 ** z
     x = int((lng + 180.0) / 360.0 * n)
     lat_rad = math.radians(lat)

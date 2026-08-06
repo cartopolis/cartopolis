@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vibe_core", "crates/geo", "crates/vibe_sim", "crates/viberfox", "crates/big_space"]
+members = ["crates/core", "crates/geo", "crates/simulator", "crates/viberfox", "crates/big_space"]
 default-members = ["crates/viberfox"]
 
 [workspace.package]
@@ -133,9 +133,9 @@ codegen-units = 256
 # backtraces keep symbol names without it.
 debug = false
 
-# `package."*"` catches path dependencies too, and vibe_core is small, pure and
+# `package."*"` catches path dependencies too, and viberfox_core is small, pure and
 # rebuilt constantly — O3 on it buys nothing and costs every edit.
-[profile.dev.package.vibe_core]
+[profile.dev.package.viberfox_core]
 opt-level = 0
 
 # Shipped builds: trade compile time for runtime frame times (per the Bevy

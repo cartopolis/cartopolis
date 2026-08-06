@@ -1,8 +1,8 @@
 use anyhow::Context;
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
-use vibe_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
-use vibe_core::{GeoAnchor, PrimDto, PrimGeometry, PrimSurface, RegionDto};
+use viberfox_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
+use viberfox_core::{GeoAnchor, PrimDto, PrimGeometry, PrimSurface, RegionDto};
 
 /// Column list (in order) for selecting a full [`PrimDto`]; consumed by [`row_to_prim`].
 const PRIM_COLUMNS: &str = "id, region_id, name, shape, \

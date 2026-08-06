@@ -5,7 +5,7 @@ use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
 use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
-use vibe_core::{NetMessage, PrimSurface};
+use viberfox_core::{NetMessage, PrimSurface};
 
 const SYSTEM_PROMPT: &str = r#"You are the in-world building assistant for Viberfox, a 3D world editor. You construct
 scenes by composing primitives ("prims") with the create_prim, update_prim, delete_prim,
@@ -771,8 +771,8 @@ impl PrimGeom {
     }
 
     /// Build the wire geometry payload (ADR-018) for a Create/UpdatePrim message.
-    fn geometry(&self) -> vibe_core::PrimGeometry {
-        vibe_core::PrimGeometry {
+    fn geometry(&self) -> viberfox_core::PrimGeometry {
+        viberfox_core::PrimGeometry {
             path_cut_begin: self.path_cut_begin,
             path_cut_end: self.path_cut_end,
             hollow: self.hollow,

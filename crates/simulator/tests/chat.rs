@@ -8,10 +8,10 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use vibe_core::{
+use viberfox_core::{
     decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, PROTOCOL_VERSION,
 };
-use vibe_sim::{ensure_account, serve, SimConfig};
+use simulator::{ensure_account, serve, SimConfig};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
@@ -58,7 +58,7 @@ async fn global_delivery_and_scrollback() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("chat.db").to_str().unwrap().to_string();
     {
-        let conn = vibe_sim::db::open_and_migrate(&db).unwrap();
+        let conn = simulator::db::open_and_migrate(&db).unwrap();
         ensure_account(&conn, "dev", "dev").unwrap();
     }
     let config = SimConfig {

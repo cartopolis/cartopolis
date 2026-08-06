@@ -11,7 +11,7 @@ updated: 2026-08-06
 
 # sccache shares builds across worktrees — unless CARGO_TARGET_DIR is exported
 
-Measured 2026-07-30, workstation, sccache 0.17.0, `vibe_sim --profile dev-bevy`
+Measured 2026-07-30, workstation, sccache 0.17.0, `simulator --profile dev-bevy`
 (154 cacheable rustc invocations). **An earlier version of this note concluded
 sccache could not share across target dirs at all. That conclusion was wrong**,
 and the correction matters more than the original: the failure was a single
@@ -58,7 +58,7 @@ exists for cwd normalisation; not needed for this reason.)
    debug info at another worktree's (possibly deleted) target. Also most of the
    profile's disk weight. Workspace crates keep full debug.
 
-Per-worktree disk after the debug change: **518 MB** for the vibe_sim graph
+Per-worktree disk after the debug change: **518 MB** for the simulator graph
 (was ~700 MB with dep debuginfo; the full client profile was 51 GB, dominated
 by exactly this).
 

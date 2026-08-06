@@ -11,7 +11,7 @@ use crate::systems::map_stream::MapStream;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use std::f32::consts::TAU;
-use vibe_core::NetMessage;
+use viberfox_core::NetMessage;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -658,7 +658,7 @@ directory". No second mechanism.
 
 - **Parallel builds work: sccache, measured at 85.6 % hits.** Each worktree
   builds into its own default `target/` — no cargo lock — and sccache refills it
-  from cache (76 s → 49 s on the vibe_sim graph). The one rule: **never export
+  from cache (76 s → 49 s on the simulator graph). The one rule: **never export
   `CARGO_TARGET_DIR`**; sccache hashes that env var and it silently zeroes the
   hit rate. See [notes/sccache-parallel-builds.md](notes/sccache-parallel-builds.md)
   for the root cause and the earlier wrong conclusion it replaces.

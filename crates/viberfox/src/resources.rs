@@ -3,7 +3,7 @@ use big_space::prelude::GridCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use futures_channel::mpsc::UnboundedSender;
-use vibe_core::{NetMessage, PrimSurface, TextureEntry};
+use viberfox_core::{NetMessage, PrimSurface, TextureEntry};
 
 // ---------------------------------------------------------------------------
 // AI assistant
@@ -448,8 +448,8 @@ impl Default for EditDialogState {
 impl EditDialogState {
     /// Geometry deformation params (path-cut / hollow / warp) as a protocol value,
     /// for online `CreatePrim` / `UpdatePrim`.
-    pub fn geometry(&self) -> vibe_core::PrimGeometry {
-        vibe_core::PrimGeometry {
+    pub fn geometry(&self) -> viberfox_core::PrimGeometry {
+        viberfox_core::PrimGeometry {
             path_cut_begin: self.path_cut_begin,
             path_cut_end: self.path_cut_end,
             hollow: self.hollow,
@@ -703,7 +703,7 @@ pub fn tile_url_override() -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// When set, client connects to `vibe_sim` instead of loading local SQLite world.
+/// When set, client connects to `simulator` instead of loading local SQLite world.
 #[derive(Resource, Clone)]
 pub struct ConnectAddr(pub String);
 
@@ -711,7 +711,7 @@ pub struct ConnectAddr(pub String);
 /// file, env, or the solo dev default). Read by `network::spawn_network_thread`.
 #[derive(Resource, Clone)]
 pub struct ConnectAuth {
-    pub credential: vibe_core::AuthCredential,
+    pub credential: viberfox_core::AuthCredential,
     /// Persist the issued session token for silent reconnect. True for external
     /// sims only — solo mode's loopback port is ephemeral, so a token is useless.
     pub persist_token: bool,

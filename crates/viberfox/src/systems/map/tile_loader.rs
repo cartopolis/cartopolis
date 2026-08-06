@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::work::Dispatcher;
-pub use vibe_core::TileKey;
+pub use viberfox_core::TileKey;
 
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
@@ -111,13 +111,13 @@ pub struct RegionTile {
 }
 
 /// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
-/// ([`vibe_core::world::DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
+/// ([`viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
 /// only reaches here offline / under `--shot`; solo and split mode fill it from the
 /// sim handshake first.
 #[must_use]
 pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
     let template = if template.is_empty() {
-        vibe_core::world::DEFAULT_TILE_URL_TEMPLATE
+        viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE
     } else {
         template
     };

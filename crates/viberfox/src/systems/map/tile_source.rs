@@ -38,7 +38,7 @@ use crate::platform::{http, storage};
 use crate::systems::tile_loader::{
     format_osm_tile_url, tile_cache_key, tile_source_kind, TileSourceKind,
 };
-use vibe_core::TileKey;
+use viberfox_core::TileKey;
 
 /// Ceiling on the in-memory byte cache.
 ///

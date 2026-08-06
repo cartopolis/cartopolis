@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use vibe_core::PrimSurface;
+use viberfox_core::PrimSurface;
 
 #[derive(Component, Debug, Clone)]
 #[allow(dead_code)] // latitude/longitude kept for future geo display

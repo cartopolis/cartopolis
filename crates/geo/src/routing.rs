@@ -44,9 +44,9 @@ use std::collections::{BinaryHeap, HashMap};
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
 
-use vibe_core::world::tile_to_meters;
+use viberfox_core::world::tile_to_meters;
 
-use vibe_core::lat_lng_to_tile_frac;
+use viberfox_core::lat_lng_to_tile_frac;
 use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at

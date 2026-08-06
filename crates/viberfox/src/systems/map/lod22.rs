@@ -32,7 +32,7 @@ use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{
     building_palette, lat_lng_to_local, lod22_covers, tdbag_url, MeshData,
 };
-use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
+use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed cache/streaming zoom — must match `osm_buildings::CACHE_ZOOM` (the cells
 /// the server binned into, and the cells `osm_buildings` skips).

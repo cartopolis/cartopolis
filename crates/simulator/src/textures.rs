@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use vibe_core::TextureEntry;
+use viberfox_core::TextureEntry;
 
 pub fn list_textures(dir: &str) -> Vec<TextureEntry> {
     let path = Path::new(dir);

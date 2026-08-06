@@ -87,7 +87,7 @@ puts the corners of a 6.4 km field ~80 m out, which is a hill in the wrong place
 
 ## The physics stays flat; only the picture stands on the ground
 
-`vibe_sim` is authoritative for the avatar and holds **no map data at all** — the
+`simulator` is authoritative for the avatar and holds **no map data at all** — the
 terrain streams only on the client, so the sim cannot know about it. Rather than teach
 it (a protocol change, for data it has no way to obtain), the terrain is added on the
 display side: `AvatarState::position` stays on the flat plane the sim simulates,

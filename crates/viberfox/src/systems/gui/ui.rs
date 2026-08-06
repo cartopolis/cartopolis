@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use egui::Window;
 use crate::resources::RightPanel;
 use crate::systems::theme;
-use vibe_core::NetMessage;
+use viberfox_core::NetMessage;
 
 /// Where the map controls (compass, locate) stack, clear of the logo card that
 /// now owns the top-left corner. Read by `hud::render_map_controls`; one constant
@@ -1078,7 +1078,7 @@ pub fn render_context_menu(
                     edit_dialog.path_cut_end = 1.0;
                     edit_dialog.hollow = 0.0;
                     edit_dialog.warp = crate::resources::PrimWarp::default();
-                    edit_dialog.surface = vibe_core::PrimSurface::default();
+                    edit_dialog.surface = viberfox_core::PrimSurface::default();
                     edit_dialog.repeats_per_meter = 0.0;
                     let hit = context_menu.hit_point;
                     // Offset Y so the prim rests on the surface instead of being centred in it.
@@ -2041,7 +2041,7 @@ fn apply_material_edits(
     texture_id: Option<&str>,
     apply_texture: bool,
     color: Color,
-    surface: &vibe_core::PrimSurface,
+    surface: &viberfox_core::PrimSurface,
 ) {
     let Some(mat_handle) = mat_handle_opt else {
         return;

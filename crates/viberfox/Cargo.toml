@@ -28,11 +28,11 @@ name = "viberfox"
 path = "src/main.rs"
 
 [features]
-# `solo`: one-command dev — run an in-process vibe_sim and connect to it (ADR-016).
+# `solo`: one-command dev — run an in-process simulator and connect to it (ADR-016).
 # On by default for dev; turn off for lean/release client builds (then `--connect`
 # is required for online play).
 default = ["solo"]
-solo = ["dep:vibe_sim"]
+solo = ["dep:simulator"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
@@ -63,10 +63,10 @@ dotenvy.workspace = true
 serde_json.workspace = true
 # Parse the optional `--login` credentials file (ADR-016).
 toml = "0.8"
-vibe_core = { path = "../vibe_core" }
+viberfox_core = { path = "../core" }
 viberfox_geo = { path = "../geo" }
 # Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
-vibe_sim = { path = "../vibe_sim", optional = true }
+simulator = { path = "../simulator", optional = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true

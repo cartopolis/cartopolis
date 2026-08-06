@@ -35,7 +35,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
+use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the
 /// requested patch size, so changing the patch radius never invalidates the cache
