@@ -34,7 +34,7 @@ use big_space::prelude::GridCell;
 use crate::systems::free_camera::FreeCamera;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
-use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh};
+use crate::systems::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 
 /// Altitude at which trees start merging into the flat fill.
 pub const TREE_FADE_START: f32 = 500.0;
@@ -135,21 +135,19 @@ const TRUNK_MIN_HEIGHT: f32 = 4.0;
 /// cell that streams out and back in regrows the *same* forest instead of
 /// reshuffling every tree — a reshuffle is instantly visible as a shimmer when the
 /// ring moves back and forth over a boundary.
-pub fn scatter_vegetation(bytes: &[u8], tile_m: f32, seed: u64) -> Result<Vec<TreeInstance>, String> {
-    use crate::systems::vector_tiles::{clipped_rings, kind_of, mvt_reader, tessellate_polygon};
+pub fn scatter_vegetation(
+    tile: &TileData,
+    tile_m: f32,
+    seed: u64,
+) -> Result<Vec<TreeInstance>, String> {
+    use crate::systems::vector_tiles::{clipped_rings, kind_of, tessellate_polygon};
     use geo_types::Geometry;
 
-    let reader = mvt_reader(bytes)?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "land") else {
+    let Some(meta) = tile.layer("land") else {
         return Ok(Vec::new());
     };
-    let Ok(features) = reader.get_features(meta.layer_index) else {
-        return Ok(Vec::new());
-    };
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
     // A park polygon routinely *contains* the pond and the canal running through
@@ -157,7 +155,7 @@ pub fn scatter_vegetation(bytes: &[u8], tile_m: f32, seed: u64) -> Result<Vec<Tr
     // a hole in the landuse. Insetting from the park's own boundary therefore does
     // nothing for the water inside it, and the first render planted a wood down
     // the middle of the Noorderhaven. Water is a separate mask.
-    let water = WaterMask::build(&reader, &layers, scale, extent, tile_m);
+    let water = WaterMask::build(tile, scale, extent, tile_m);
 
     let mut out: Vec<TreeInstance> = Vec::new();
     let mut truncated = false;
@@ -291,13 +289,7 @@ struct WaterMask {
 impl WaterMask {
     const CELL: f32 = 16.0;
 
-    fn build(
-        reader: &mvt_reader::Reader,
-        layers: &[mvt_reader::layer::Layer],
-        scale: f32,
-        extent: f32,
-        tile_m: f32,
-    ) -> Self {
+    fn build(tile: &TileData, scale: f32, extent: f32, tile_m: f32) -> Self {
         use crate::systems::vector_tiles::{clipped_rings, tessellate_polygon};
         use geo_types::Geometry;
 
@@ -306,14 +298,11 @@ impl WaterMask {
         let mut positions = Vec::new();
         let mut indices = Vec::new();
 
-        for meta in layers {
+        for meta in tile.layers() {
             if !matches!(meta.name.as_str(), "water_polygons" | "ocean") {
                 continue;
             }
-            let Ok(features) = reader.get_features(meta.layer_index) else {
-                continue;
-            };
-            for feature in &features {
+            for feature in tile.features(meta) {
                 let polys: Vec<&geo_types::Polygon<f32>> = match &feature.geometry {
                     Geometry::Polygon(p) => vec![p],
                     Geometry::MultiPolygon(mp) => mp.iter().collect(),
@@ -867,12 +856,19 @@ mod tests {
 
     const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
 
+    /// The fixture, parsed. The scatter takes a shared [`TileData`] now (one parse
+    /// per streamed cell, shared with the tessellators — `TileData`'s docs say
+    /// why), so each test that wants it in isolation makes its own.
+    fn fixture() -> TileData {
+        TileData::parse(GRONINGEN_Z14).expect("parse fixture")
+    }
+
     /// The fixture is a city tile with woodland and parks in it, so the scatter
     /// must produce trees, keep them inside the tile, and stay under the cap.
     #[test]
     fn scatters_trees_over_the_fixture() {
         let tile_m = 1472.0;
-        let trees = scatter_vegetation(GRONINGEN_Z14, tile_m, 42).expect("scatter");
+        let trees = scatter_vegetation(&fixture(), tile_m, 42).expect("scatter");
         assert!(!trees.is_empty(), "no trees scattered over a tile with parks");
         assert!(trees.len() <= MAX_TREES_PER_CELL);
         for t in &trees {
@@ -894,16 +890,12 @@ mod tests {
     #[test]
     fn no_tree_stands_in_water() {
         let tile_m = 1472.0;
-        let reader = crate::systems::vector_tiles::mvt_reader(GRONINGEN_Z14).expect("parse");
-        let layers = reader.get_layer_metadata().expect("layers");
-        let extent = layers
-            .iter()
-            .find(|l| l.name == "water_polygons")
-            .map_or(4096.0, |l| if l.extent == 0 { 4096 } else { l.extent } as f32);
-        let mask = WaterMask::build(&reader, &layers, tile_m / extent, extent, tile_m);
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let extent = tile.layer("water_polygons").map_or(4096.0, TileData::extent);
+        let mask = WaterMask::build(&tile, tile_m / extent, extent, tile_m);
         assert!(!mask.tris.is_empty(), "fixture has no water to test against");
 
-        let trees = scatter_vegetation(GRONINGEN_Z14, tile_m, 42).expect("scatter");
+        let trees = scatter_vegetation(&tile, tile_m, 42).expect("scatter");
         for t in &trees {
             assert!(
                 !mask.blocks(t.x, t.z, 0.0),
@@ -918,8 +910,8 @@ mod tests {
     /// identically, or the ring moving over a boundary shimmers.
     #[test]
     fn scatter_is_deterministic() {
-        let a = scatter_vegetation(GRONINGEN_Z14, 1472.0, 7).expect("a");
-        let b = scatter_vegetation(GRONINGEN_Z14, 1472.0, 7).expect("b");
+        let a = scatter_vegetation(&fixture(), 1472.0, 7).expect("a");
+        let b = scatter_vegetation(&fixture(), 1472.0, 7).expect("b");
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(x.x.to_bits(), y.x.to_bits());
@@ -932,8 +924,8 @@ mod tests {
     /// visibly repeat.
     #[test]
     fn scatter_varies_with_the_seed() {
-        let a = scatter_vegetation(GRONINGEN_Z14, 1472.0, 1).expect("a");
-        let b = scatter_vegetation(GRONINGEN_Z14, 1472.0, 2).expect("b");
+        let a = scatter_vegetation(&fixture(), 1472.0, 1).expect("a");
+        let b = scatter_vegetation(&fixture(), 1472.0, 2).expect("b");
         let same = a
             .iter()
             .zip(&b)
@@ -948,7 +940,7 @@ mod tests {
 
     #[test]
     fn builds_merged_meshes_with_normals_and_colours() {
-        let trees = scatter_vegetation(GRONINGEN_Z14, 1472.0, 3).expect("scatter");
+        let trees = scatter_vegetation(&fixture(), 1472.0, 3).expect("scatter");
         let meshes = build_vegetation_meshes(&trees);
         assert!(!meshes.is_empty());
         // One mesh per group, never one per tree — this is the device-loss guard.
@@ -985,7 +977,7 @@ mod tests {
     #[ignore]
     fn dump_vegetation_cost() {
         let tile_m = 1472.0;
-        let trees = scatter_vegetation(GRONINGEN_Z14, tile_m, 42).expect("scatter");
+        let trees = scatter_vegetation(&fixture(), tile_m, 42).expect("scatter");
         let meshes = build_vegetation_meshes(&trees);
         println!("trees            : {}", trees.len());
         println!(

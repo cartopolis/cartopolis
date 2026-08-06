@@ -44,7 +44,7 @@ use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
 };
 use crate::systems::tile_loader::{load_tile_image, tile_source_kind, TileSourceKind};
-use crate::systems::vector_tiles;
+use crate::systems::vector_tiles::{self, TileData};
 use vibe_core::TileKey;
 
 /// Typing pause before an endpoint field is geocoded — the search bar's value, so
@@ -461,72 +461,151 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
     progress.0.store(0, Ordering::Relaxed);
     progress.1.store(0, Ordering::Relaxed);
 
+    // Two halves on two executors (ADR-033), like every other loader: the corridor
+    // fetch is awaited here, and the graph build + A* — which is `add_tile`'s MVT
+    // parse per tile plus `finish`'s segment splitting, easily the heaviest CPU
+    // job in the client — goes to `platform::workers`. On wasm this future *is* the
+    // main thread, so solving a 96-tile route there froze the frame loop outright.
     IoTaskPool::get()
         .spawn(async move {
-            let result = solve(from, to, mode, &template, &progress, &cache).await;
-            if let Ok(mut g) = sink.lock() {
-                *g = Some(SolveJob { seq, result });
+            match fetch_corridor(from, to, &template, &progress, &cache).await {
+                Err(e) => publish_solve(&sink, seq, Err(e)),
+                Ok(input) => {
+                    crate::platform::workers::submit(Box::new(move || {
+                        let result = build_and_search(input, from, to, mode, &cache);
+                        publish_solve(&sink, seq, result);
+                    }));
+                }
             }
         })
         .detach();
 }
 
-/// Corridor → tiles → graph → A*. Runs on an `IoTaskPool` task (ADR-033 seam); the
-/// per-tile fetch goes through `load_tile_image`, the graph build stays CPU-side.
-async fn solve(
+/// Hand a finished solve to the main thread. Stamped with the request's `seq` so a
+/// result the user has already superseded is discarded rather than drawn.
+fn publish_solve(
+    sink: &Mutex<Option<SolveJob>>,
+    seq: u64,
+    result: Result<Route, RouteError>,
+) {
+    if let Ok(mut g) = sink.lock() {
+        *g = Some(SolveJob { seq, result });
+    }
+}
+
+/// How many corridor tiles are fetched at once.
+///
+/// The loop this replaces awaited one tile at a time, so a 96-tile route paid 96
+/// sequential round trips even natively — on a cold cache that is the whole of the
+/// user-visible solve time, and none of it was work. Bounded rather than
+/// unlimited for the reason every other streamer is bounded: 96 simultaneous
+/// requests is the burst shape that trips the tile server's rate limiting, and
+/// this matches `platform::workers`' own ceiling.
+const ROUTE_FETCH_CONCURRENCY: usize = 8;
+
+/// What the fetch half hands the CPU half.
+enum SolveInput {
+    /// Same corridor as the last solve — the graph is reusable as-is. This is what
+    /// makes switching travel mode cost one A* instead of a whole refetch.
+    Graph(Arc<RoadGraph>),
+    /// A fresh corridor: its tile list, and the bodies that answered.
+    ///
+    /// Holding every body at once costs up to `MAX_ROUTE_TILES` × ~500 KB, which is
+    /// the "tens of megabytes" that const's own comment is sized around; the
+    /// alternative — interleaving parse with fetch — would put the parse back on
+    /// the fetching thread, i.e. on the browser's frame loop.
+    Bodies {
+        tiles: Vec<(i64, i64)>,
+        bodies: Vec<((i64, i64), Arc<Vec<u8>>)>,
+    },
+}
+
+/// Corridor → tiles → bytes. The I/O half of a solve.
+async fn fetch_corridor(
     from: (f64, f64),
     to: (f64, f64),
-    mode: TravelMode,
     template: &str,
     progress: &(AtomicUsize, AtomicUsize),
     cache: &Mutex<Option<(Vec<(i64, i64)>, Arc<RoadGraph>)>>,
-) -> Result<Route, RouteError> {
+) -> Result<SolveInput, RouteError> {
     let tiles = routing::corridor_tiles(from, to, routing::MAX_ROUTE_TILES)?;
     progress.1.store(tiles.len(), Ordering::Relaxed);
+    progress.0.store(0, Ordering::Relaxed);
 
-    // Same corridor as last time → same graph. This is what makes switching travel
-    // mode cost one A* instead of a whole refetch.
-    let cached = cache
+    // Same corridor as last time → skip the fetch entirely and reuse the graph.
+    if let Some(graph) = cache
         .lock()
         .ok()
-        .and_then(|g| g.as_ref().filter(|(t, _)| *t == tiles).map(|(_, g)| g.clone()));
+        .and_then(|g| g.as_ref().filter(|(t, _)| *t == tiles).map(|(_, g)| g.clone()))
+    {
+        progress.0.store(tiles.len(), Ordering::Relaxed);
+        return Ok(SolveInput::Graph(graph));
+    }
 
-    let graph = match cached {
-        Some(g) => {
-            progress.0.store(tiles.len(), Ordering::Relaxed);
-            g
+    let mut bodies: Vec<((i64, i64), Arc<Vec<u8>>)> = Vec::with_capacity(tiles.len());
+    let mut done = 0usize;
+    for chunk in tiles.chunks(ROUTE_FETCH_CONCURRENCY) {
+        let fetched = futures_util::future::join_all(chunk.iter().map(|tile| async move {
+            let key = TileKey::new(tile.0, tile.1, routing::ROUTING_ZOOM);
+            (*tile, key, load_tile_image(&key, template).await)
+        }))
+        .await;
+        for (tile, key, got) in fetched {
+            match got {
+                Ok(bytes) => bodies.push((tile, bytes)),
+                // One missing tile is a hole in the corridor, not a failure: the
+                // search may well route around it. All of them missing is a
+                // failure, and falls out of the empty-body check below.
+                Err(e) => {
+                    tracing::warn!(tile = %key.to_path(), error = %e, "route tile fetch failed");
+                }
+            }
+            done += 1;
+            progress.0.store(done, Ordering::Relaxed);
         }
-        None => {
+    }
+
+    if bodies.is_empty() {
+        return Err(RouteError::Fetch(format!(
+            "none of the {} map tiles could be read",
+            tiles.len()
+        )));
+    }
+    Ok(SolveInput::Bodies { tiles, bodies })
+}
+
+/// Graph → A*. The CPU half of a solve; runs on `platform::workers`.
+fn build_and_search(
+    input: SolveInput,
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: TravelMode,
+    cache: &Mutex<Option<(Vec<(i64, i64)>, Arc<RoadGraph>)>>,
+) -> Result<Route, RouteError> {
+    let graph = match input {
+        SolveInput::Graph(g) => g,
+        SolveInput::Bodies { tiles, bodies } => {
+            let total = tiles.len();
             let mut graph = RoadGraph::new((from.0 + to.0) / 2.0);
-            let mut failures = 0usize;
-            for (i, tile) in tiles.iter().enumerate() {
+            let mut failures = total - bodies.len();
+            for (tile, bytes) in bodies {
                 let key = TileKey::new(tile.0, tile.1, routing::ROUTING_ZOOM);
-                match load_tile_image(&key, template).await {
-                    Ok(bytes) => {
-                        if let Err(e) = graph.add_tile(&bytes, *tile) {
-                            tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");
-                            failures += 1;
-                        }
-                    }
+                match TileData::parse(&bytes).and_then(|t| graph.add_tile(&t, tile)) {
+                    Ok(()) => {}
                     Err(e) => {
-                        // One missing tile is a hole in the corridor, not a failure:
-                        // the search may well route around it. All of them missing
-                        // is a failure, and falls out of the empty-graph check below.
-                        tracing::warn!(tile = %key.to_path(), error = %e, "route tile fetch failed");
+                        tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");
                         failures += 1;
                     }
                 }
-                progress.0.store(i + 1, Ordering::Relaxed);
             }
-            if failures == tiles.len() {
+            if failures == total {
                 return Err(RouteError::Fetch(format!(
-                    "none of the {} map tiles could be read",
-                    tiles.len()
+                    "none of the {total} map tiles could be read"
                 )));
             }
             graph.finish();
             tracing::info!(
-                tiles = tiles.len(),
+                tiles = total,
                 unreadable = failures,
                 nodes = graph.node_count(),
                 edges = graph.edge_count(),
@@ -1525,9 +1604,14 @@ mod tests {
 
         for mode in TravelMode::ALL {
             let t0 = Instant::now();
-            let route =
-                futures_lite::future::block_on(solve(from, to, mode, &template, &progress, &cache))
-                    .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            // The two halves the live solve runs on two executors: the corridor
+            // fetch on the `IoTaskPool`, the graph build + A* on a worker. Driving
+            // them back to back here is the same sequence, minus the hand-off.
+            let route = futures_lite::future::block_on(fetch_corridor(
+                from, to, &template, &progress, &cache,
+            ))
+            .and_then(|input| build_and_search(input, from, to, mode, &cache))
+            .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             println!(
                 "{:<5} {:>8} {:>10} in {:>5} ms  ({} steps, {} tiles)",
                 mode.label(),

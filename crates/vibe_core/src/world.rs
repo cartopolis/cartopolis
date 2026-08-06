@@ -3,7 +3,13 @@
 use serde::{Deserialize, Serialize};
 
 /// OSM slippy-map tile key (z/x/y).
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Copy`, not just `Clone`: it is 20 bytes of plain data, and the client's tile
+/// streamers rebuild whole desired-sets of it every frame — the z10–z17 clipmap
+/// alone is ~850 keys per pass (`viberfox::systems::map_stream`). As `Clone`-only
+/// every one of those was an explicit `.clone()` in a hot loop that reads as if it
+/// meant something.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TileKey {
     pub x: i64,
     pub y: i64,

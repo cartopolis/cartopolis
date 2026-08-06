@@ -19,13 +19,12 @@
 //! CLAUDE.md).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
-use crate::platform::work::Dispatcher;
+use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::{GlobeState, HideInSpace, GLOBE_SHOW_ALT};
@@ -45,6 +44,17 @@ const LOD22_ZOOM: u32 = 14;
 /// ceil(25/3) serial rounds of network), the parse runs on the worker pool, and
 /// the GPU guard is the per-frame upload cap, not this.
 const LOD22_CONCURRENCY: usize = 6;
+/// Bounded attempts per cell. A 3DBAG cell that fails three times is either absent
+/// upstream or corrupt in the cache (which the error path invalidates), so the
+/// fourth attempt would cost a fetch to learn the same thing.
+const LOD22_MAX_ATTEMPTS: u32 = 3;
+/// Cells despawned per frame. One is a whole merged LoD2.2 mesh — the single
+/// heaviest entity the client frees, which is why the *upload* cap next door is 1 —
+/// and a re-anchor retires all `(2·LOD22_RADIUS+1)² = 25` of them at once. Freeing
+/// that many in one command buffer is the documented `VK_ERROR_DEVICE_LOST` burst;
+/// this streamer used to do exactly that and is the reason `platform::stream` owns
+/// the queue now.
+const MAX_DESPAWNS_PER_FRAME: usize = 2;
 /// CACHE_ZOOM cells streamed around the camera at full LoD2.2 detail (radius 2 →
 /// 5×5 ≈ ±3.5 km). Covered cells *beyond* this fall back to the simplified,
 /// inset, non-shadow far-cell extrusion in `osm_buildings` (a distance LOD): the
@@ -90,23 +100,13 @@ type Lod22Build = (GridCell, Mesh, Vec<crate::systems::collision::Footprint>);
 
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
 /// streamer: a worker builds one cell at a time; cells are kept while in range.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Lod22Buildings {
     /// Anchor tile (tile_x, tile_y, zoom, latitude) from the map origin.
     anchor: Option<(i64, i64, u32, f64)>,
-    /// `MapStream::anchor_generation` this streamer is built for; a change resets it.
-    synced_gen: u32,
-    established: bool,
-    /// Frame-gated cell fetch+mesh dispatcher (ADR-033), replacing the old worker
-    /// thread + channel.
-    dispatch: Dispatcher<(i64, i64)>,
-    /// Completed cells from the worker (None for cells with no buildings).
-    #[allow(clippy::type_complexity)]
-    results: Arc<Mutex<Vec<((i64, i64), Result<Option<Lod22Build>, String>)>>>,
-    /// Cells ever queued (kept so completed/empty cells aren't re-queried).
-    requested: HashSet<(i64, i64)>,
-    /// Failed cells (bounded retry).
-    failed: HashMap<(i64, i64), u32>,
+    /// Requested/failed bookkeeping, the results sink, the concurrency bound, the
+    /// bounded despawn queue and the anchor generation (`platform::stream`).
+    stream: CellStream<(i64, i64), Result<Option<Lod22Build>, String>>,
     /// Spawned cell entities, despawned when out of range.
     cells: HashMap<(i64, i64), Entity>,
     /// Cells currently marked `NotShadowCaster` (beyond `SHADOW_RADIUS`), so the
@@ -129,7 +129,29 @@ impl Lod22Buildings {
     /// harness's settle test — these are the buildings a city shot is *of*.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.dispatch.busy()
+        self.stream.busy()
+    }
+}
+
+impl Default for Lod22Buildings {
+    fn default() -> Self {
+        Self {
+            anchor: None,
+            stream: CellStream::new(Policy {
+                max_in_flight: LOD22_CONCURRENCY,
+                min_interval_secs: 0.0,
+                max_attempts: LOD22_MAX_ATTEMPTS,
+                backoff_secs: 0.0,
+                backoff_doublings: 0,
+                cooldown_secs: 0.0,
+                despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
+            }),
+            cells: HashMap::new(),
+            no_shadow: HashSet::new(),
+            material: None,
+            enabled_was: true,
+            terrain_revision: 0,
+        }
     }
 }
 
@@ -152,51 +174,51 @@ pub fn update_lod22(
         return;
     };
 
-    // Re-anchor (ADR-025): tear down and re-establish at the new origin. A fresh
-    // `results` orphans any in-flight push; `established` re-inits the dispatcher.
-    // The ground moving under the buildings invalidates them exactly as a re-anchor
-    // does — every base was computed against the field as it stood.
-    if lod.synced_gen != stream.anchor_generation || lod.terrain_revision != terrain.revision {
-        lod.synced_gen = stream.anchor_generation;
+    // Free retired cells at MAX_DESPAWNS_PER_FRAME, ahead of every early return
+    // below: a re-anchor at ground level must keep clearing even if the camera then
+    // climbs into space and the streamer freezes.
+    lod.stream.drain_despawns(&mut commands);
+    let now = time.elapsed_secs_f64();
+
+    // Re-anchor (ADR-025): tear down and re-establish at the new origin. The
+    // teardown goes through the shared despawn queue rather than freeing 25 merged
+    // meshes in one frame, which is what it used to do; `CellStream::reset` orphans
+    // any in-flight push. The ground moving under the buildings invalidates them
+    // exactly as a re-anchor does — every base was computed against the field as it
+    // stood — so it takes the same path. `sync` runs unconditionally so it adopts
+    // the new generation either way.
+    let reanchored = lod.stream.sync(stream.anchor_generation);
+    if reanchored || lod.terrain_revision != terrain.revision {
         lod.terrain_revision = terrain.revision;
-        for (_, e) in lod.cells.drain() {
-            commands.entity(e).despawn();
-        }
+        let retired: Vec<Entity> = lod.cells.drain().map(|(_, e)| e).collect();
+        lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
-        lod.requested.clear();
-        lod.failed.clear();
-        lod.results = Arc::new(Mutex::new(Vec::new()));
+        lod.stream.reset();
         lod.anchor = None;
-        lod.established = false;
     }
 
     // The Layers panel's 3DBAG toggle: on the off-edge, tear down like a
-    // re-anchor — despawn the meshes, drop their colliders (the OSM streamers
-    // publish replacements as they take the cells over), orphan any in-flight
-    // results, and forget `requested` so re-checking re-queues every covered
-    // cell. While off, `lod22_covers()` reports no coverage, so the queue loop
-    // below stays empty on its own.
+    // re-anchor — retire the meshes (through the shared queue, at the per-frame
+    // cap), drop their colliders (the OSM streamers publish replacements as they
+    // take the cells over), orphan any in-flight results, and forget `requested`
+    // so re-checking re-queues every covered cell. While off, `lod22_covers()`
+    // reports no coverage, so the queue loop below stays empty on its own.
     let enabled = crate::systems::osm_buildings::tdbag_user_enabled();
     if lod.enabled_was && !enabled {
-        for (_, e) in lod.cells.drain() {
-            commands.entity(e).despawn();
-        }
+        let retired: Vec<Entity> = lod.cells.drain().map(|(_, e)| e).collect();
+        lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
-        lod.requested.clear();
-        lod.failed.clear();
-        lod.results = Arc::new(Mutex::new(Vec::new()));
+        lod.stream.reset();
     }
     lod.enabled_was = enabled;
 
-    // Establish the anchor and reset the fetch+mesh dispatcher.
-    if !lod.established {
+    // Establish the anchor.
+    if lod.anchor.is_none() {
         let z = base_zoom;
         let (ax, ay) = lat_lng_to_tile(clat, clng, z);
         lod.anchor = Some((ax, ay, z, clat));
-        lod.established = true;
-        lod.dispatch = Dispatcher::new(LOD22_CONCURRENCY, 0.0);
     }
     let (ax, ay, z, lat) = lod.anchor.unwrap();
     let tile_m = tile_to_meters(z, lat) as f32;
@@ -227,30 +249,26 @@ pub fn update_lod22(
         center.1.div_euclid(1i64 << shift),
     );
 
-    // Queue missing covered cells, nearest first.
+    // Queue missing covered cells, nearest first. `CellStream::request` is also the
+    // retry pump — it refuses a cell that has spent its attempts.
     let mut to_request: Vec<(i64, i64)> = Vec::new();
     for dy in -LOD22_RADIUS..=LOD22_RADIUS {
         for dx in -LOD22_RADIUS..=LOD22_RADIUS {
             let c = (ccx + dx, ccy + dy);
-            if !lod.requested.contains(&c)
-                && *lod.failed.get(&c).unwrap_or(&0) < 3
-                && lod22_covers(c.0, c.1)
-            {
+            if lod22_covers(c.0, c.1) {
                 to_request.push(c);
             }
         }
     }
     to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
     for c in to_request {
-        lod.requested.insert(c);
-        lod.dispatch.queue(c);
+        lod.stream.request(c, now);
     }
 
     // Dispatch queued cells up to the concurrency cap: each becomes a detached
-    // fetch+mesh task (ADR-033 seam) pushing to `results` — no OS thread.
-    let now = time.elapsed_secs_f64();
-    let results = lod.results.clone();
-    while let Some((cx, cy)) = lod.dispatch.next(now) {
+    // fetch+mesh task (ADR-033 seam) pushing to the sink — no OS thread.
+    let results = lod.stream.sink();
+    while let Some((cx, cy)) = lod.stream.next_job(now) {
         let results = results.clone();
         // The terrain travels with the job: a building's base is one height for the
         // whole footprint, and the footprints only exist inside the worker.
@@ -281,19 +299,11 @@ pub fn update_lod22(
             .detach();
     }
 
-    // Apply completed cells — at most MAX_BUILDS_PER_FRAME uploads per frame.
-    let done: Vec<((i64, i64), Result<Option<Lod22Build>, String>)> = lod
-        .results
-        .lock()
-        .map(|mut g| {
-            let n = g.len().min(MAX_BUILDS_PER_FRAME);
-            g.drain(..n).collect()
-        })
-        .unwrap_or_default();
-    // Each drained result frees one concurrency slot.
-    for _ in 0..done.len() {
-        lod.dispatch.completed();
-    }
+    // Apply completed cells — at most MAX_BUILDS_PER_FRAME uploads per frame; the
+    // rest go back into the sink still holding their concurrency slots.
+    let mut done = lod.stream.take_results();
+    let deferred = done.split_off(done.len().min(MAX_BUILDS_PER_FRAME));
+    lod.stream.defer(deferred);
     for (c, built) in done {
         match built {
             Ok(Some((grid_cell, mesh, footprints))) => {
@@ -327,6 +337,7 @@ pub fn update_lod22(
                     .id();
                 // Shadow-caster state is set by the shadow-LOD pass below.
                 lod.cells.insert(c, e);
+                lod.stream.succeeded(&c);
                 // The far tier may already hold this cell — queued before the
                 // coverage manifest loaded, or while the 3DBAG toggle was off.
                 // Evict it now that the real mesh is up, or both tiers render
@@ -334,7 +345,8 @@ pub fn update_lod22(
                 osm.evict_far_cell(&mut commands, c);
                 tracing::info!(cell = ?c, live = lod.cells.len(), "lod22 cell rendered");
             }
-            Ok(None) => {} // empty cell; stays requested so it isn't re-queried
+            // Empty cell; stays requested so it isn't re-queried.
+            Ok(None) => lod.stream.succeeded(&c),
             Err(err) => {
                 tracing::warn!(cell = ?c, error = %err, "lod22 cell failed");
                 // Drop any cached copy. The fetch no longer validates a cache hit
@@ -347,8 +359,7 @@ pub fn update_lod22(
                 IoTaskPool::get()
                     .spawn(async move { storage::remove(&key).await })
                     .detach();
-                *lod.failed.entry(c).or_insert(0) += 1;
-                lod.requested.remove(&c); // allow a bounded re-queue later
+                lod.stream.failed(&c, now); // allows a bounded re-queue later
             }
         }
     }
@@ -363,11 +374,11 @@ pub fn update_lod22(
         .collect();
     for c in stale {
         if let Some(e) = lod.cells.remove(&c) {
-            commands.entity(e).despawn();
+            lod.stream.retire(e);
         }
         colliders.remove_cell(c);
         lod.no_shadow.remove(&c);
-        lod.requested.remove(&c);
+        lod.stream.forget(&c);
     }
 
     // Shadow LOD: cells within SHADOW_RADIUS cast shadows, the rest don't. Only act

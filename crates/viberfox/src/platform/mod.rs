@@ -12,5 +12,6 @@
 pub mod http;
 pub mod location;
 pub mod storage;
+pub mod stream;
 pub mod work;
 pub mod workers;

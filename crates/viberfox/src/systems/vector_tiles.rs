@@ -20,8 +20,11 @@
 //! * **Styling.** There is no cartography in the data. [`PAINT_ORDER`] *is* the
 //!   map's look, bottom layer first.
 
+use std::cell::OnceCell;
+
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
+use mvt_reader::layer::Layer;
 use mvt_reader::Reader;
 use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
@@ -30,6 +33,85 @@ use tiny_skia::{
 use std::collections::HashMap;
 
 use crate::systems::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
+
+/// One tile body, parsed **once**, with its decoded features memoised per layer.
+///
+/// Everything that reads an MVT used to take `&[u8]` and open its own [`Reader`],
+/// which meant `Reader::new(bytes.to_vec())` — a full copy plus a prost decode of
+/// the whole tile — per *function*. A single `map_geometry` cell ran four of them
+/// over the same body ([`tessellate_surfaces`], [`tessellate_roads`],
+/// [`vegetation::scatter_vegetation`], [`water_shore_field`]) and a globe tile ran
+/// two ([`render_mvt`], [`ocean_mask`]). Taking `&TileData` instead makes the
+/// parse the caller's, once, and every consumer of that body shares it.
+///
+/// The per-layer memo matters for a second reason: `Reader::get_features` decodes
+/// geometry *and* properties into a fresh `Vec<Feature>` on **every** call, and
+/// [`PAINT_ORDER`] lists `streets` twice (casing then fill) and `buildings` twice
+/// (fill then outline) — so the two heaviest layers of every rendered tile were
+/// decoded twice each. `OnceCell` (not `RefCell`) because a decoded layer is never
+/// invalidated; the interior mutability is initialise-once, so `&TileData` stays
+/// the shape every consumer wants.
+///
+/// Deliberately **not** cached across tasks: a parsed reader holds `geo_types`
+/// f32 geometry for every feature in the tile and nothing here measures how much
+/// that is, whereas `tile_source`'s byte cache holds things whose size is exactly
+/// known. Collapsing the ~179 repeat parses a fresh anchor makes is the obvious
+/// follow-up, once someone has a number for the memory.
+pub struct TileData {
+    reader: Reader,
+    layers: Vec<Layer>,
+    /// Decoded features per `Layer::layer_index`. Empty for a layer that failed
+    /// to decode — the byte-taking callers all treated that as "skip the layer",
+    /// and folding it in here keeps that behaviour in one place.
+    features: Vec<OnceCell<Vec<Feature>>>,
+}
+
+impl TileData {
+    /// Parse a tile body. The one `Reader::new` in the client.
+    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
+        let layers = reader
+            .get_layer_metadata()
+            .map_err(|e| format!("mvt layers: {e:?}"))?;
+        // Indexed by `layer_index`, which the reader assigns as the layer's
+        // position — but size from the maximum rather than the count, so a source
+        // that ever numbered them otherwise cannot index out of bounds.
+        let slots = layers.iter().map(|l| l.layer_index + 1).max().unwrap_or(0);
+        Ok(Self {
+            reader,
+            layers,
+            features: (0..slots).map(|_| OnceCell::new()).collect(),
+        })
+    }
+
+    /// Every layer's metadata, in tile order.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    /// A named layer's metadata, or `None` if the tile has no such layer.
+    pub fn layer(&self, name: &str) -> Option<&Layer> {
+        self.layers.iter().find(|l| l.name == name)
+    }
+
+    /// A layer's decoded features, decoded on first ask and reused after.
+    pub fn features(&self, layer: &Layer) -> &[Feature] {
+        let Some(slot) = self.features.get(layer.layer_index) else {
+            return &[];
+        };
+        slot.get_or_init(|| self.reader.get_features(layer.layer_index).unwrap_or_default())
+    }
+
+    /// A layer's extent, with Shortbread's default substituted for a source that
+    /// reports none. Every consumer needs this and every one of them wrote it out.
+    pub fn extent(layer: &Layer) -> f32 {
+        if layer.extent == 0 {
+            4096.0
+        } else {
+            layer.extent as f32
+        }
+    }
+}
 
 /// Edge length in pixels of a rendered tile. Larger than the 256 px raster tiles
 /// we used to fetch: the texture is stretched across a whole region on the ground,
@@ -313,12 +395,7 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
 ///
 /// `sub` selects the magnified sub-rectangle for overzoomed requests; pass
 /// [`SubTile::WHOLE`] to draw the source tile as-is.
-pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     let mut pixmap =
         Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
     pixmap.fill(tiny_skia::Color::from_rgba8(
@@ -339,17 +416,16 @@ pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
     };
 
     for (layer_name, draw) in PAINT_ORDER {
-        let Some(meta) = layers.iter().find(|l| l.name == *layer_name) else {
+        let Some(meta) = tile.layer(layer_name) else {
             continue;
         };
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
+        // Memoised (`TileData::features`), which is what makes the two `streets`
+        // passes and the two `buildings` passes one decode each rather than two.
+        let features = tile.features(meta);
         if features.is_empty() {
             continue;
         }
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
-        let scale = px * f / extent;
+        let scale = px * f / TileData::extent(meta);
         let transform = Transform::from_row(
             scale,
             0.0,
@@ -359,7 +435,7 @@ pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
             -(sub.y as f32) * px,
         );
 
-        for feature in &features {
+        for feature in features {
             let kind = kind_of(feature);
             match draw {
                 Draw::Fill(rgb) => {
@@ -701,12 +777,6 @@ fn land_group(kind: &str) -> Option<SurfaceGroup> {
     })
 }
 
-/// Open an MVT body. Shared with `systems::vegetation`, which reads the same
-/// `land` layer for a different purpose and should not re-derive the error text.
-pub(crate) fn mvt_reader(bytes: &[u8]) -> Result<Reader, String> {
-    Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))
-}
-
 /// Clip one ring to the square `[0, extent]²` (Sutherland–Hodgman), returning it
 /// **open** — no repeated last point — with consecutive duplicates dropped.
 ///
@@ -858,15 +928,10 @@ pub struct SurfaceMesh {
 /// units. Only water and landuse are handled here — buildings deliberately are not,
 /// because 3DBAG (ADR-027) and the Overpass detail patches (ADR-022) already supply
 /// them in 3D, and they are ~75% of a tile's triangles.
-pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn tessellate_surfaces(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
 
-    for meta in &layers {
+    for meta in tile.layers() {
         // (layer, fixed group) — `land` resolves its group per feature instead.
         let fixed = match meta.name.as_str() {
             "ocean" | "water_polygons" => Some(SurfaceGroup::Water),
@@ -874,13 +939,10 @@ pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>
             "land" => None,
             _ => continue,
         };
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let extent = TileData::extent(meta);
         let scale = tile_m / extent;
 
-        for feature in &features {
+        for feature in tile.features(meta) {
             let group = match fixed {
                 Some(g) => g,
                 None => match kind_of(feature).and_then(land_group) {
@@ -984,22 +1046,16 @@ impl BridgeDeck {
 /// why a viaduct was nothing but the road ribbon crossing it. Measured over
 /// Groningen station: the Emmaviaduct arrives as 34 × 149 m and 68 × 176 m of
 /// footprint. That is a deck you can stand geometry on.
-pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "bridges") else {
+pub fn tessellate_bridges(tile: &TileData, tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+    let Some(meta) = tile.layer("bridges") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
     let mut decks = Vec::new();
-    for feature in &features {
+    for feature in features {
         let mut polys: Vec<&geo_types::Polygon<f32>> = Vec::new();
         match &feature.geometry {
             Geometry::Polygon(p) => polys.push(p),
@@ -1104,10 +1160,24 @@ fn road_rung(width_m: f32, bridge: bool, feature_index: usize) -> u32 {
     band * ROAD_TIE_LAYERS + tie
 }
 
-/// Miter limit: how far a join may push a vertex out relative to the half-width,
-/// before it is allowed to pinch instead. Unbounded miters spike to infinity at a
-/// hairpin, which OSM has plenty of (motorway sliproads, switchbacks).
+/// Miter limit: how far a join may push the **outer** corner out relative to the
+/// half-width before it is bevelled off instead. Unbounded miters spike to
+/// infinity at a hairpin, which OSM has plenty of (motorway sliproads,
+/// switchbacks).
+///
+/// Past this the join emits two outer vertices and a fill triangle rather than a
+/// single stretched one — see [`ribbon`] on why clamping the miter *in place* is
+/// not the same thing.
 const MITER_LIMIT: f32 = 2.5;
+
+/// Fraction of the shorter adjacent segment that the **inner** corner may
+/// backtrack over. See [`ribbon`]: the inner miter runs back `half / tan(θ/2)`
+/// along both segments, and past their far end the ribbon folds through itself.
+///
+/// Half, not all, because the segment's *other* end has a join of its own eating
+/// into the same length — two joins each taking half meet exactly, and never
+/// cross.
+const INNER_BACKTRACK_BUDGET: f32 = 0.5;
 
 /// Tessellate a tile's `streets` layer into textured road ribbons, one mesh per
 /// [`RoadClass`].
@@ -1134,22 +1204,15 @@ const MITER_LIMIT: f32 = 2.5;
 /// under a structure standing several metres above it. Only `bridge` features are
 /// dropped, so the road *under* a viaduct keeps every metre of its own ribbon.
 pub fn tessellate_roads(
-    bytes: &[u8],
+    tile: &TileData,
     tile_m: f32,
     decks: &[BridgeDeck],
 ) -> Result<Vec<SurfaceMesh>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
-    let Some(meta) = layers.iter().find(|l| l.name == "streets") else {
+    let Some(meta) = tile.layer("streets") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     let nodes = street_nodes(&features);
 
@@ -1318,22 +1381,16 @@ const LABEL_MIN_LEN_M: f32 = 15.0;
 /// crossing a cell boundary contributes its own stretch to each cell rather than a
 /// full copy to both — the label renderer's same-name spacing rule then thins the
 /// repeats by *screen* distance, which is the only place that judgement can be made.
-pub fn extract_street_labels(bytes: &[u8], tile_m: f32) -> Result<Vec<StreetLabelLine>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-    let Some(meta) = layers.iter().find(|l| l.name == "street_labels") else {
+pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetLabelLine>, String> {
+    let Some(meta) = tile.layer("street_labels") else {
         return Ok(Vec::new());
     };
-    let features = reader
-        .get_features(meta.layer_index)
-        .map_err(|e| format!("mvt features: {e:?}"))?;
-    let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+    let features = tile.features(meta);
+    let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
     let mut out = Vec::new();
-    for feature in &features {
+    for feature in features {
         let Some(name) = str_prop(feature, "name").filter(|n| !n.is_empty()) else {
             continue;
         };
@@ -1518,6 +1575,27 @@ fn junction_extent(
 /// quad-per-segment alternative leaves a wedge of gap on the outside of every
 /// corner, and OSM road geometry is nothing but corners.
 ///
+/// **The two sides of a corner are not symmetric**, and treating them as one
+/// number is what made junctions look bad. A single `ext` along the bisector,
+/// clamped by [`MITER_LIMIT`], fails at both ends of the range:
+///
+/// * **Outside.** Clamping pulls the *outer* edge in along with the inner one, so
+///   a sharp bend necks the carriageway down instead of just blunting the corner:
+///   a 22 m motorway measured 14.2 m through a 150° turn and 4.8 m through a 170°
+///   hairpin. The outer corner therefore keeps the full half-width and is
+///   **bevelled** past the limit — two vertices, one square on each segment, with
+///   a fill triangle across the gap. That cannot spike (the same reasoning
+///   [`super::navigation::ribbon`] documents for the route line) and cannot pinch.
+/// * **Inside.** The inner miter backtracks `half / tan(θ/2)` along *both*
+///   adjacent segments, and nothing bounded it against how long they actually
+///   are. On a 22 m motorway a 60° turn overruns a 6 m segment — and z14
+///   Shortbread geometry is full of sub-10 m segments — so the ribbon folded
+///   through itself: doubled triangles whose two layers carry different `v`, which
+///   is the centre line fighting its own reflection along the bend. The inner
+///   extension is capped at [`INNER_BACKTRACK_BUDGET`] of the shorter neighbour.
+///   A capped inner corner is slightly narrow on the inside of a turn tighter than
+///   the road is wide; a fold is a rendering artefact.
+///
 /// `y` is the feature's rung on the [`ROAD_LAYER_STEP`] ladder — sub-millimetre,
 /// and the only thing that keeps two overlapping ribbons from flickering against
 /// each other at a junction.
@@ -1572,7 +1650,14 @@ fn ribbon(
         pts.push([last[0] + tail[0] * extend[1], last[1] + tail[1] * extend[1]]);
     }
 
-    let base = positions.len() as u32;
+    let seg_len = |i: usize| -> f32 {
+        (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1])
+    };
+    // The `(u = 0, u = 1)` vertex pair the *incoming* quad closes on and the pair
+    // the *outgoing* quad opens from, per point. A miter join shares one pair; a
+    // bevel splits the outer vertex in two and keeps the inner one shared, so the
+    // strip can no longer be indexed as `base + i * 2`.
+    let mut joins: Vec<((u32, u32), (u32, u32))> = Vec::with_capacity(pts.len());
     let mut travelled = 0.0f32;
 
     for i in 0..pts.len() {
@@ -1598,20 +1683,100 @@ fn ribbon(
             m = [m[0] / m_len, m[1] / m_len];
         }
         // Lengthen the miter so the *edge* stays `half` from the centre line
-        // through the join, capped so a hairpin pinches instead of spiking.
+        // through the join.
         let cos_half = (m[0] * n_out[0] + m[1] * n_out[1]).abs().max(1e-3);
-        let ext = half * (1.0 / cos_half).min(MITER_LIMIT);
+        let miter = 1.0 / cos_half;
+
+        // Which side of the bisector the corner opens away from. `m` points into
+        // the inside of the turn when the cross product is positive, so the outer
+        // side is the other one; a straight point has no inside and takes neither
+        // branch below.
+        let cross = d_in[0] * d_out[1] - d_in[1] * d_out[0];
+        let inner_s = if cross > 0.0 { 1.0f32 } else { -1.0f32 };
+        let outer_s = -inner_s;
+
+        // Outside: full half-width always, bevelled rather than stretched.
+        let ext_outer = half * miter.min(MITER_LIMIT);
+        // Inside: the same miter, but never further back than the segments it
+        // eats into are long.
+        let back_per_m = (m[0] * d_in[0] + m[1] * d_in[1]).abs();
+        let neighbour = match (i > 0, i + 1 < pts.len()) {
+            (true, true) => seg_len(i - 1).min(seg_len(i)),
+            (true, false) => seg_len(i - 1),
+            (false, true) => seg_len(i),
+            (false, false) => 0.0,
+        };
+        let mut ext_inner = half * miter;
+        let budget = INNER_BACKTRACK_BUDGET * neighbour;
+        if back_per_m * ext_inner > budget {
+            ext_inner = budget / back_per_m.max(1e-3);
+        }
 
         let v = travelled / tex_len_m;
-        positions.push([pts[i][0] - m[0] * ext, y, pts[i][1] - m[1] * ext]);
-        uvs.push([0.0, v]);
-        positions.push([pts[i][0] + m[0] * ext, y, pts[i][1] + m[1] * ext]);
-        uvs.push([1.0, v]);
+        // `u = 0` is the `-m` side and `u = 1` the `+m` side — the across-road
+        // axis the centre line registers against (see `road_texture`).
+        let (u_outer, u_inner) = if outer_s > 0.0 { (1.0, 0.0) } else { (0.0, 1.0) };
+        let bevelled = miter > MITER_LIMIT;
 
+        let inner_p = [
+            pts[i][0] + inner_s * m[0] * ext_inner,
+            pts[i][1] + inner_s * m[1] * ext_inner,
+        ];
+        // One outer vertex for a miter, two square ones for a bevel.
+        let (outer_in_p, outer_out_p) = if bevelled {
+            (
+                [
+                    pts[i][0] + outer_s * n_in[0] * half,
+                    pts[i][1] + outer_s * n_in[1] * half,
+                ],
+                [
+                    pts[i][0] + outer_s * n_out[0] * half,
+                    pts[i][1] + outer_s * n_out[1] * half,
+                ],
+            )
+        } else {
+            let p = [
+                pts[i][0] + outer_s * m[0] * ext_outer,
+                pts[i][1] + outer_s * m[1] * ext_outer,
+            ];
+            (p, p)
+        };
+
+        let inner = positions.len() as u32;
+        positions.push([inner_p[0], y, inner_p[1]]);
+        uvs.push([u_inner, v]);
+        let outer_in = positions.len() as u32;
+        positions.push([outer_in_p[0], y, outer_in_p[1]]);
+        uvs.push([u_outer, v]);
+        let outer_out = if bevelled {
+            let idx = positions.len() as u32;
+            positions.push([outer_out_p[0], y, outer_out_p[1]]);
+            uvs.push([u_outer, v]);
+            idx
+        } else {
+            outer_in
+        };
+
+        // Order a pair as (u = 0 vertex, u = 1 vertex) so the strip stitches the
+        // same way whichever direction the road turns.
+        let pair = |outer: u32| {
+            if outer_s > 0.0 {
+                (inner, outer)
+            } else {
+                (outer, inner)
+            }
+        };
+        joins.push((pair(outer_in), pair(outer_out)));
+
+        if bevelled {
+            // The wedge between the two square ends, filled back to the shared
+            // inner vertex. This is the bevel.
+            push_triangle_up(positions, indices, outer_in, outer_out, inner);
+        }
         if i > 0 {
-            let (a, b) = (base + (i as u32 - 1) * 2, base + i as u32 * 2);
-            push_triangle_up(positions, indices, a, b, b + 1);
-            push_triangle_up(positions, indices, a, b + 1, a + 1);
+            let ((a0, a1), (b0, b1)) = (joins[i - 1].1, joins[i].0);
+            push_triangle_up(positions, indices, a0, b0, b1);
+            push_triangle_up(positions, indices, a0, b1, a1);
         }
     }
 }
@@ -1798,12 +1963,7 @@ pub const WATER_LAYERS: [&str; 2] = ["ocean", "water_polygons"];
 ///
 /// Anti-aliased on purpose: the mask feeds a roughness blend, and a hard-edged
 /// coastline would put a stair-stepped gloss boundary along every shore.
-pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn ocean_mask(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     let mut pixmap =
         Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
@@ -1814,15 +1974,11 @@ pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
 
     let f = sub.factor as f32;
     let px = TILE_PX as f32;
-    for meta in &layers {
+    for meta in tile.layers() {
         if !WATER_LAYERS.contains(&meta.name.as_str()) {
             continue;
         }
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
-        let scale = px * f / extent;
+        let scale = px * f / TileData::extent(meta);
         let transform = Transform::from_row(
             scale,
             0.0,
@@ -1831,7 +1987,7 @@ pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
             -(sub.x as f32) * px,
             -(sub.y as f32) * px,
         );
-        for feature in &features {
+        for feature in tile.features(meta) {
             fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
         }
     }
@@ -1877,12 +2033,7 @@ pub struct ShoreField {
 /// — which is why nothing is padded around the raster. Treating the border as
 /// land instead (the obvious padding) would draw a shoreline straight down the
 /// middle of every river that crosses a tile edge.
-pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>, String> {
-    let reader = Reader::new(bytes.to_vec()).map_err(|e| format!("mvt parse: {e:?}"))?;
-    let layers = reader
-        .get_layer_metadata()
-        .map_err(|e| format!("mvt layers: {e:?}"))?;
-
+pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreField>, String> {
     let size = SHORE_FIELD_PX;
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
@@ -1892,16 +2043,13 @@ pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>
     };
 
     let mut any_water = false;
-    for meta in &layers {
+    for meta in tile.layers() {
         if !WATER_LAYERS.contains(&meta.name.as_str()) {
             continue;
         }
-        let Ok(features) = reader.get_features(meta.layer_index) else {
-            continue;
-        };
-        let extent = if meta.extent == 0 { 4096 } else { meta.extent } as f32;
+        let extent = TileData::extent(meta);
         let transform = Transform::from_scale(size as f32 / extent, size as f32 / extent);
-        for feature in &features {
+        for feature in tile.features(meta) {
             if area_path(&feature.geometry).is_some() {
                 any_water = true;
             }
@@ -2049,13 +2197,120 @@ pub fn looks_like_raster(bytes: &[u8]) -> bool {
         || (bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
 }
 
+/// Parse-then-call shims, for callers that hold only bytes: the fixture tests
+/// (which are asserting about one tile in isolation, where a shared [`TileData`]
+/// would only be ceremony) and the `TileData`-vs-bytes equivalence test.
+///
+/// Production code must **not** use these — a `&[u8]` call site is exactly the
+/// duplicate parse `TileData` exists to remove.
+#[cfg(test)]
+mod bytes {
+    use super::*;
+
+    pub fn render_mvt(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
+        super::render_mvt(&TileData::parse(bytes)?, sub)
+    }
+
+    pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
+        super::tessellate_surfaces(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn tessellate_roads(
+        bytes: &[u8],
+        tile_m: f32,
+        decks: &[BridgeDeck],
+    ) -> Result<Vec<SurfaceMesh>, String> {
+        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks)
+    }
+
+    pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
+        super::tessellate_bridges(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn extract_street_labels(
+        bytes: &[u8],
+        tile_m: f32,
+    ) -> Result<Vec<StreetLabelLine>, String> {
+        super::extract_street_labels(&TileData::parse(bytes)?, tile_m)
+    }
+
+    pub fn ocean_mask(bytes: &[u8], sub: SubTile) -> Result<Vec<u8>, String> {
+        super::ocean_mask(&TileData::parse(bytes)?, sub)
+    }
+
+    pub fn water_shore_field(bytes: &[u8], tile_m: f32) -> Result<Option<ShoreField>, String> {
+        super::water_shore_field(&TileData::parse(bytes)?, tile_m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::bytes::{
+        extract_street_labels, ocean_mask, render_mvt, tessellate_bridges, tessellate_roads,
+        tessellate_surfaces, water_shore_field,
+    };
     use super::*;
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
     /// (now self-hosted at tiles.garage44.eu; the archive is identical).
     const GRONINGEN_Z14: &[u8] = include_bytes!("../../tests/fixtures/groningen_z14.mvt");
+
+    /// A `TileData` shared by several consumers must produce byte-for-byte what
+    /// each of them produced from its own parse. This is the whole safety claim
+    /// of step 2 — the outputs feed the map's pixels, its meshes and the globe's
+    /// ocean mask, and a wrong hand-off shows up as missing water or roads, which
+    /// only a screenshot would otherwise catch.
+    #[test]
+    fn one_shared_parse_matches_a_parse_per_call() {
+        let tile_m = 1500.0;
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse once");
+
+        assert_eq!(
+            super::render_mvt(&tile, SubTile::WHOLE).unwrap(),
+            render_mvt(GRONINGEN_Z14, SubTile::WHOLE).unwrap(),
+        );
+        assert_eq!(
+            super::ocean_mask(&tile, SubTile::WHOLE).unwrap(),
+            ocean_mask(GRONINGEN_Z14, SubTile::WHOLE).unwrap(),
+        );
+        let same = |a: &[SurfaceMesh], b: &[SurfaceMesh]| {
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(b) {
+                assert_eq!(x.group, y.group);
+                assert_eq!(x.positions, y.positions);
+                assert_eq!(x.indices, y.indices);
+                assert_eq!(x.uvs, y.uvs);
+            }
+        };
+        same(
+            &super::tessellate_surfaces(&tile, tile_m).unwrap(),
+            &tessellate_surfaces(GRONINGEN_Z14, tile_m).unwrap(),
+        );
+        same(
+            &super::tessellate_roads(&tile, tile_m, &[]).unwrap(),
+            &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
+        );
+        assert_eq!(
+            super::water_shore_field(&tile, tile_m).unwrap().unwrap().data,
+            water_shore_field(GRONINGEN_Z14, tile_m).unwrap().unwrap().data,
+        );
+        let trees = crate::systems::vegetation::scatter_vegetation(&tile, tile_m, 7).unwrap();
+        let fresh = crate::systems::vegetation::scatter_vegetation(
+            &TileData::parse(GRONINGEN_Z14).unwrap(),
+            tile_m,
+            7,
+        )
+        .unwrap();
+        assert_eq!(trees.len(), fresh.len(), "vegetation scatter diverged");
+
+        // …and asking twice for the same layer really is memoised, not just
+        // consistent: the paint order visits `streets` and `buildings` twice.
+        let streets = tile.layer("streets").expect("fixture has streets");
+        assert!(std::ptr::eq(
+            tile.features(streets).as_ptr(),
+            tile.features(streets).as_ptr(),
+        ));
+    }
 
     #[test]
     fn fixture_has_expected_shortbread_layers() {
@@ -2641,11 +2896,10 @@ mod tests {
         // decide how wide each one is drawn and whether it is drawn at all, so
         // this is the difference between "the styling lost that road" and "the
         // data never had it".
-        let reader = mvt_reader(tile).unwrap();
-        let meta = reader.get_layer_metadata().unwrap();
-        let streets = meta.iter().find(|l| l.name == "streets").unwrap();
+        let parsed = TileData::parse(tile).unwrap();
+        let streets = parsed.layer("streets").unwrap();
         let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
-        for f in &reader.get_features(streets.layer_index).unwrap() {
+        for f in parsed.features(streets) {
             let flags = ["bridge", "tunnel", "oneway", "oneway_reverse", "link"]
                 .iter()
                 .filter(|n| flag_of(f, n))
@@ -3061,6 +3315,143 @@ mod tests {
         // `v` counts metres travelled over the class's texture length.
         let v_max = uvs.iter().fold(0.0f32, |a, uv| a.max(uv[1]));
         assert!((v_max - 105.0 / 12.0).abs() < 1e-2, "v_max {v_max}");
+    }
+
+    /// Build one corner and hand back the ribbon's vertices in the XZ plane, each
+    /// tagged with its `u` (which side of the road it is), plus the centre line
+    /// the ribbon was actually built around.
+    ///
+    /// Built with no junction stubs (`extend = [0, 0]`): this is about what the
+    /// join does to the two segments meeting at the corner, and a stub only ever
+    /// lengthens the outer *ends*, which both tests filter away anyway.
+    fn corner(turn_deg: f32, seg_m: f32, half: f32) -> (Vec<([f32; 2], f32)>, Vec<[f32; 2]>) {
+        let t = turn_deg.to_radians();
+        let centre = vec![
+            [-seg_m, 0.0],
+            [0.0, 0.0],
+            [seg_m * t.cos(), seg_m * t.sin()],
+        ];
+        let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        ribbon(
+            &centre,
+            half,
+            0.0,
+            12.0,
+            [0.0, 0.0],
+            &mut positions,
+            &mut uvs,
+            &mut indices,
+        );
+        assert_eq!(uvs.len(), positions.len());
+        assert!(!indices.is_empty());
+        (
+            positions
+                .iter()
+                .zip(&uvs)
+                .map(|(p, uv)| ([p[0], p[2]], uv[0]))
+                .collect(),
+            centre,
+        )
+    }
+
+    /// The **outer** edge of a bend keeps the full carriageway, however sharp.
+    ///
+    /// A single miter clamped by `MITER_LIMIT` pulled both edges in together, so a
+    /// hairpin necked the road down instead of blunting its corner: a 22 m
+    /// motorway measured 14.2 m across through a 150° turn and 4.8 m through a
+    /// 170° one. Past the limit the corner is bevelled — two square ends at the
+    /// full half-width — so the outer edge stays a genuine offset of the
+    /// carriageway it belongs to.
+    ///
+    /// Measured against the segment *lines*, not the nearest point on the centre
+    /// line: on the outside of a corner the nearest centre-line point is the
+    /// corner vertex itself, which reports `half × miter` and so cannot tell a
+    /// stretched join from a necked one.
+    #[test]
+    fn a_sharp_bend_keeps_the_full_carriageway_width() {
+        let half = 11.0; // a 22 m motorway, the widest class and the worst case
+        for turn in [5.0f32, 60.0, 120.0, 150.0, 170.0] {
+            let t = turn.to_radians();
+            let (verts, _) = corner(turn, 60.0, half);
+            // Both segments run through the corner at the origin, so a vertex's
+            // distance from each carriageway is just the cross product.
+            let perp = |p: [f32; 2], d: [f32; 2]| (p[0] * d[1] - p[1] * d[0]).abs();
+            // A positive turn puts the inside of the corner on `+m`, which is
+            // `u = 1`; the outer edge is therefore the `u = 0` one. The segments
+            // are 60 m long so that the corner's own vertices are the only ones
+            // anywhere near the origin — every other vertex is a plain
+            // perpendicular offset with nothing to say about the join.
+            let at_corner = verts
+                .iter()
+                .filter(|(_, u)| *u == 0.0)
+                .filter(|(p, _)| p[0].hypot(p[1]) < 45.0);
+            let mut seen = 0;
+            for (p, _) in at_corner {
+                // Every outer vertex serves one of the two segments; it must sit
+                // the full half-width off of that one.
+                let reach = perp(*p, [1.0, 0.0]).max(perp(*p, [t.cos(), t.sin()]));
+                assert!(
+                    reach >= half - 1e-2,
+                    "{turn}° turn necks the carriageway to {reach:.2} m of {half} m"
+                );
+                assert!(
+                    reach <= half * MITER_LIMIT + 1e-2,
+                    "{turn}° turn spikes the outer corner to {reach:.2} m"
+                );
+                seen += 1;
+            }
+            assert!(seen > 0, "{turn}° turn: no outer vertex at the corner");
+        }
+    }
+
+    /// The **inner** edge must not fold back through the ribbon.
+    ///
+    /// The inner miter backtracks `half / tan(θ/2)` along both neighbours, and
+    /// nothing bounded that against how long they actually are: on a 22 m
+    /// motorway a 60° turn overran a 6 m segment — and z14 Shortbread geometry is
+    /// full of sub-10 m segments. The fold is a self-intersecting quad, whose two
+    /// layers carry different `v`, i.e. the centre line fighting its own
+    /// reflection along the bend.
+    ///
+    /// A fold is the inner rail *reversing* along the road, so that is what this
+    /// measures. It is not about quads overlapping each other: a 22 m carriageway
+    /// around a 3 m corner has to double back over itself, and the union of that
+    /// overlap is still the right piece of road.
+    #[test]
+    fn a_tight_corner_does_not_fold_the_ribbon() {
+        for turn in [30.0f32, 60.0, 90.0, 120.0, 150.0, 170.0] {
+            for seg in [3.0f32, 6.0, 15.0, 60.0] {
+                let (verts, centre) = corner(turn, seg, 11.0);
+                // A bevel splits the *outer* vertex in two and shares the inner
+                // one, so the inner rail is the one with a vertex per centre-line
+                // point — exactly the rail a fold shows up on, and the pairing
+                // that lets each vertex be measured against its own segment
+                // rather than whichever happens to be nearest (with a 22 m road
+                // on 3 m segments, that is routinely the wrong one).
+                let inner: Vec<[f32; 2]> = verts
+                    .iter()
+                    .filter(|(_, u)| *u == 1.0)
+                    .map(|(p, _)| *p)
+                    .collect();
+                assert_eq!(inner.len(), centre.len(), "one inner vertex per point");
+                for k in 0..centre.len() - 1 {
+                    let (a, b) = (centre[k], centre[k + 1]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let len = dx.hypot(dy);
+                    let (ux, uy) = (dx / len, dy / len);
+                    // How far each end of this quad's inner rail has advanced
+                    // along the segment it belongs to.
+                    let along =
+                        |p: [f32; 2]| (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+                    let (from, to) = (along(inner[k]), along(inner[k + 1]));
+                    assert!(
+                        to >= from - 1e-3,
+                        "{turn}° turn on {seg} m segments folds the ribbon: over segment \
+                         {k} the inner edge runs backwards, {from:.2} m to {to:.2} m"
+                    );
+                }
+            }
+        }
     }
 
     /// Clipping, not clamping: geometry in the MVT buffer zone must be *cut* at

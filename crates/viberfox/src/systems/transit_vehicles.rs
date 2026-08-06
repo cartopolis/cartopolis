@@ -315,27 +315,49 @@ pub fn poll_transit_vehicles(
     // these, so there is no double-load race.
     let results = tv.results.clone();
     let lines = tv.lines.clone();
+    // Two halves on two executors (ADR-033): both bodies are awaited here — free
+    // on wasm, where this is the main thread but the browser does the transfer —
+    // while the GTFS-RT protobuf decode and the `serde_json` line-list parse go to
+    // `platform::workers`. Every `POLL_INTERVAL`, on the frame loop, is what they
+    // used to be.
     IoTaskPool::get()
         .spawn(async move {
-            let map = get_or_load_lines(&lines).await;
-            let fetched = fetch_feed(&map).await;
-            if let Ok(mut g) = results.lock() {
-                g.push(fetched);
-            }
+            let have_lines = lines.lock().is_ok_and(|g| g.is_some());
+            let line_body = if have_lines {
+                None
+            } else {
+                Some(load_line_body().await)
+            };
+            let feed = fetch_feed_bytes().await;
+            crate::platform::workers::submit(Box::new(move || {
+                let map = resolve_line_map(&lines, line_body);
+                let fetched = feed.map(|buf| parse_vehicle_positions(&buf, &map));
+                if let Ok(mut g) = results.lock() {
+                    g.push(fetched);
+                }
+            }));
         })
         .detach();
 }
 
-/// Return the shared line map, loading (and caching) it once on first use.
-async fn get_or_load_lines(slot: &Arc<Mutex<Option<Arc<LineMap>>>>) -> Arc<LineMap> {
-    if let Some(map) = slot.lock().ok().and_then(|g| g.clone()) {
+/// The shared line map: parse `line_body` into it on first use, else read the slot
+/// the earlier poll filled. `in_flight` serialises the polls, so there is no
+/// double-load race here.
+fn resolve_line_map(
+    slot: &Arc<Mutex<Option<Arc<LineMap>>>>,
+    line_body: Option<Option<String>>,
+) -> Arc<LineMap> {
+    if let Some(body) = line_body {
+        let map = Arc::new(body.as_deref().map(parse_line_map).unwrap_or_default());
+        if let Ok(mut g) = slot.lock() {
+            *g = Some(map.clone());
+        }
         return map;
     }
-    let map = Arc::new(load_line_map().await);
-    if let Ok(mut g) = slot.lock() {
-        *g = Some(map.clone());
-    }
-    map
+    slot.lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
 }
 
 /// Spawn / move / retire the vehicle boxes and their line-number labels:
@@ -533,15 +555,15 @@ pub fn update_transit_vehicles(
 
 /// Fetch and parse the vehicle-position feed (raw protobuf bytes over HTTP),
 /// resolving each vehicle's public line + mode against the line list.
-async fn fetch_feed(lines: &LineMap) -> FetchResult {
-    let buf = http::fetch(http::Request::get(FEED_URL).timeout(Duration::from_secs(15))).await?;
-    Ok(parse_vehicle_positions(&buf, lines))
+async fn fetch_feed_bytes() -> Result<Vec<u8>, String> {
+    http::fetch(http::Request::get(FEED_URL).timeout(Duration::from_secs(15))).await
 }
 
-/// Load OVapi's line list (public number + `TransportType` per line-planning
-/// number), from the disk cache when fresh, else fetched once and cached. A
-/// failure yields an empty map — vehicles then show without labels, as buses.
-async fn load_line_map() -> LineMap {
+/// OVapi's line list **as text** (public number + `TransportType` per
+/// line-planning number), from the disk cache when fresh, else fetched once and
+/// cached. `None` means neither worked — vehicles then show without labels, as
+/// buses. The `serde_json` parse of it happens on a worker, not here.
+async fn load_line_body() -> Option<String> {
     let key = LINES_CACHE.join("/");
     let fresh = storage::age_secs(&key)
         .await
@@ -561,7 +583,7 @@ async fn load_line_map() -> LineMap {
             }
         }
     };
-    body.as_deref().map(parse_line_map).unwrap_or_default()
+    body
 }
 
 /// GET the OVapi `/line/` JSON. Plain `http://`, so the web build reaches it via

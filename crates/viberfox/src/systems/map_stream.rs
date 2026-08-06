@@ -9,19 +9,19 @@
 //! Textures are fetched on a background worker (one Overpass/tile HTTP call per
 //! tile, via an mpsc queue) so roaming never blocks the frame.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
-use web_time::Instant;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
+use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use vibe_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
@@ -59,6 +59,23 @@ const COARSE_RADIUS: i64 = 3;
 const MIN_ZOOM: u32 = 10;
 /// Give up on a tile fetch after this many failed attempts (leaves the placeholder).
 const MAX_FETCH_ATTEMPTS: u32 = 4;
+/// Wait between attempts, so a transient error or a rate limit doesn't burn the
+/// whole attempt budget in four frames.
+const FETCH_RETRY_SECS: f64 = 3.0;
+/// Concurrent tile fetch+decode tasks.
+///
+/// This streamer had **no** bound at all: it spawned one detached task per
+/// newly-wanted tile, so a fresh anchor or a re-anchor released the whole z10–z17
+/// clipmap — 424 requests — in a single frame. It was the only tile streamer
+/// without one, and the cost is two-sided. A burst that size is what trips the tile
+/// server's rate limiting (`globe`'s `QT_FETCH_BUDGET` comment records the same
+/// lesson), and every *finished* tile holds a full 512² mip chain (~1.4 MB) until
+/// the render loop uploads it at `MAX_UPLOADS_PER_FRAME` — so an unbounded burst
+/// also decides how much decoded memory is live at once.
+///
+/// 8 matches `map_geometry::SURFACE_MAX_IN_FLIGHT` and the `platform::workers` pool
+/// ceiling, so every worker stays fed while the decoded backlog stays around 11 MB.
+const TILE_MAX_IN_FLIGHT: usize = 8;
 /// Max ground tiles to despawn per frame — the mass-*despawn* twin of
 /// `MAX_UPLOADS_PER_FRAME`. A zoom-out steps the LOD zoom down and retires the
 /// whole previous finest-zoom ring at once; freeing all those per-tile textures in
@@ -85,9 +102,14 @@ fn zoom_for_altitude(altitude_m: f32, base_zoom: u32) -> u32 {
     z.max(MIN_ZOOM)
 }
 
+/// Marker for a streamed ground tile, carrying its key.
+///
+/// The streamer itself works key-first (`MapStream::loaded` maps key → entity),
+/// but `apply_terrain_to_tiles` walks the tiles the other way and needs to know
+/// which one it is holding to sample the field under it.
 #[derive(Component)]
 pub struct StreamTile {
-    key: TileKey,
+    pub key: TileKey,
 }
 
 /// Marker: imagery applied — don't reprocess, and safe to show.
@@ -143,30 +165,46 @@ pub struct MapStream {
     /// levels are derived from it down to `MIN_ZOOM`.
     current_zoom: u32,
     loaded: HashMap<TileKey, Entity>,
-    /// Tiles with a fetch **in flight** (job sent, result not yet applied). Purely
-    /// an in-flight guard so a pending tile isn't re-queued every frame — a tile is
-    /// dropped from here when its result is consumed, and when it's retired, because
-    /// the texture dies with the entity and a re-entering tile must fetch again (the
-    /// on-disk cache makes that cheap). Treating it as a permanent "ever requested"
-    /// set left every re-streamed tile grey forever — and it also pinned
-    /// [`MapStream::streaming_busy`] true for the whole session, so every `--shot`
-    /// sat out its full `--wait` instead of capturing once the map went quiet.
-    requested: HashSet<TileKey>,
-    /// Failed fetches awaiting a bounded retry: attempt count + time of last try.
-    failed: HashMap<TileKey, (u32, Instant)>,
-    results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
+    /// The requested/in-flight/failed bookkeeping, the results sink, the
+    /// concurrency bound and the bounded despawn queue (`platform::stream`).
+    ///
+    /// `requested` there is an in-flight-and-served guard, not a permanent "ever
+    /// requested" set: a retired tile is *forgotten*, because its texture died with
+    /// its entity and a re-entering tile has to fetch again (the byte cache makes
+    /// that cheap). Treating it as permanent left every re-streamed tile grey
+    /// forever — and it also pinned [`MapStream::streaming_busy`] true for the
+    /// whole session, so every `--shot` sat out its full `--wait` instead of
+    /// capturing once the map went quiet.
+    tiles: CellStream<TileKey, Option<DecodedTile>>,
     /// The live anchor generation a fetch task compares against (main thread
     /// stores, task loads) — a re-anchor's stale in-flight fetches drop themselves.
     gen_shared: Arc<AtomicU32>,
     /// Shared ground-quad mesh per zoom level (each zoom has its own tile size).
     quads: HashMap<u32, Handle<Mesh>>,
     placeholder: Option<Handle<StandardMaterial>>,
-    /// Tiles retired from `loaded`, despawned under `MAX_TILE_DESPAWNS_PER_FRAME`
-    /// per frame. A LOD zoom-out retires a whole finest-zoom ring at once and a
-    /// re-anchor retires the entire patch; freeing hundreds of tile textures in one
-    /// command buffer is the mass-despawn burst that hangs a weak GPU
-    /// (`VK_ERROR_DEVICE_LOST`) — the same failure the upload cap already guards.
-    despawn_queue: Vec<Entity>,
+    /// The last computed clipmap: each level's centre tile (the cache key) and the
+    /// desired set it produced. Rebuilding 424 entries plus a 424-entry spawn order
+    /// every frame was pure waste — the desired set only changes when the camera
+    /// crosses a tile centre at some level, or the LOD zoom steps.
+    desired: DesiredTiles,
+}
+
+/// The clipmap's desired set, cached against the centres that produced it.
+///
+/// Keyed on **every level's** centre tile, not just the finest. The centres are
+/// `round()`ed, so the levels' step points are not nested — a coarse ring can cross
+/// its own centre line on a frame the finest ring does not, and keying on the
+/// finest alone would leave that level's set one tile stale. Computing 8 centres is
+/// a handful of flops; it is the 424 hash inserts behind them that were the cost.
+#[derive(Default)]
+struct DesiredTiles {
+    /// `(zoom, centre x, centre y)` per clipmap level, plus the anchor generation.
+    key: Option<(Vec<(u32, i64, i64)>, u32)>,
+    /// Wanted tile → its spawn height.
+    wanted: HashMap<TileKey, f32>,
+    /// Spawn/fetch order: coarsest zoom first, so a fresh anchor gets full — if
+    /// blurry — ground coverage after a handful of fetches.
+    spawn_order: Vec<TileKey>,
 }
 
 impl MapStream {
@@ -188,7 +226,7 @@ impl MapStream {
     /// Are tiles still being fetched or retired? Used by the `--shot` harness to
     /// capture as soon as the view has settled instead of on a fixed timer.
     pub fn streaming_busy(&self) -> bool {
-        !self.requested.is_empty() || !self.failed.is_empty() || !self.despawn_queue.is_empty()
+        self.tiles.busy()
     }
 
     /// Request a re-anchor to a new (lat, lng); applied by `apply_reanchor`, which
@@ -217,16 +255,15 @@ pub fn apply_reanchor(
     // all in one frame (mass-despawn device-loss guard; drained by
     // `update_map_stream`). The queued entities are still live StreamTiles, so the
     // query re-captures them — clear any prior queue first to avoid double-frees.
-    stream.despawn_queue.clear();
-    for e in tiles.iter() {
-        stream.despawn_queue.push(e);
-    }
+    stream.tiles.clear_despawn_queue();
+    let retired: Vec<Entity> = tiles.iter().collect();
+    stream.tiles.retire_all(retired);
     stream.loaded.clear();
     // Clear the fetch bookkeeping so the re-streamed tiles request again (served
-    // from the on-disk cache when already fetched); the anchor is unchanged tiles
+    // from the byte cache when already fetched); the anchor is unchanged tiles
     // would otherwise be treated as still-in-flight and never re-textured.
-    stream.requested.clear();
-    stream.failed.clear();
+    stream.tiles.reset();
+    stream.desired = DesiredTiles::default();
     // Quad meshes are sized by tile metres *at the anchor latitude*; stale sizes
     // at a new latitude would leave gaps or overlaps between tiles.
     stream.quads.clear();
@@ -253,13 +290,21 @@ impl Default for MapStream {
             pending_reanchor: None,
             current_zoom: 0,
             loaded: HashMap::new(),
-            requested: HashSet::new(),
-            failed: HashMap::new(),
-            results: Arc::new(Mutex::new(HashMap::new())),
+            tiles: CellStream::new(Policy {
+                max_in_flight: TILE_MAX_IN_FLIGHT,
+                min_interval_secs: 0.0,
+                max_attempts: MAX_FETCH_ATTEMPTS,
+                backoff_secs: FETCH_RETRY_SECS,
+                backoff_doublings: 0,
+                // No cooldown: once the attempts are spent the grey placeholder is
+                // final, until the tile leaves the pyramid and comes back.
+                cooldown_secs: 0.0,
+                despawns_per_frame: MAX_TILE_DESPAWNS_PER_FRAME,
+            }),
             gen_shared: Arc::new(AtomicU32::new(0)),
             quads: HashMap::new(),
             placeholder: None,
-            despawn_queue: Vec::new(),
+            desired: DesiredTiles::default(),
         }
     }
 }
@@ -325,7 +370,7 @@ fn spawn_map_tile(
     key: TileKey,
     gen: u32,
     template: String,
-    results: Arc<Mutex<HashMap<TileKey, Option<DecodedTile>>>>,
+    results: Arc<Mutex<Vec<(TileKey, Option<DecodedTile>)>>>,
     live_gen: Arc<AtomicU32>,
 ) {
     // Two halves on two kinds of executor (ADR-033): the fetch is awaited here on
@@ -336,10 +381,13 @@ fn spawn_map_tile(
     IoTaskPool::get()
         .spawn(async move {
             if gen != live_gen.load(Ordering::Relaxed) {
-                // Stale (re-anchored while queued); insert a miss so `requested`
-                // clears and a still-wanted tile re-queues on the fresh anchor.
+                // Stale (re-anchored while queued): drop it before the fetch. The
+                // miss goes into whichever sink we were handed, which after a
+                // re-anchor is the orphan `CellStream::reset` left behind — the new
+                // anchor's bookkeeping is already clear, so a still-wanted tile
+                // re-requests on its own.
                 if let Ok(mut g) = results.lock() {
-                    g.insert(key, None);
+                    g.push((key, None));
                 }
                 return;
             }
@@ -368,14 +416,14 @@ fn spawn_map_tile(
                             }
                         };
                         if let Ok(mut g) = results.lock() {
-                            g.insert(key, decoded);
+                            g.push((key, decoded));
                         }
                     }));
                 }
                 Err(e) => {
                     tracing::warn!(tile = %key.to_path(), error = %e, "map tile load failed");
                     if let Ok(mut g) = results.lock() {
-                        g.insert(key, None);
+                        g.push((key, None));
                     }
                 }
             }
@@ -534,6 +582,46 @@ pub fn apply_terrain_to_tiles(
     }
 }
 
+/// The clipmap's desired tiles: every level's ring around its own centre, with the
+/// spawn height each tile takes, plus the coarse-first order to fetch them in.
+///
+/// Split out of [`update_map_stream`] because this is the arithmetic that decides
+/// the fan-out — 424 tiles for a z10–z17 pyramid — and the number is worth being
+/// able to assert (see the tests).
+fn clipmap(
+    centres: &[(u32, i64, i64)],
+    base_zoom: u32,
+    finest_zoom: u32,
+) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
+    let mut wanted: HashMap<TileKey, f32> = HashMap::new();
+    let mut spawn_order: Vec<TileKey> = Vec::new();
+    for &(zoom, ctx, cty) in centres {
+        let radius = if zoom == finest_zoom {
+            LOAD_RADIUS
+        } else {
+            COARSE_RADIUS
+        };
+        let y = level_y(base_zoom, zoom);
+        // Within a level, nearest-first. The fetches are queued in this order and
+        // the pools drain it roughly FIFO, so the ground under the camera is the
+        // first thing to sharpen; row-major from a corner instead put the tile you
+        // are standing on ~40th of 81 at the finest zoom, which is most of a fill
+        // spent watching the periphery resolve.
+        let mut level: Vec<(i64, TileKey)> =
+            Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
+        for b in -radius..=radius {
+            for a in -radius..=radius {
+                let tile = TileKey::new(ctx + a, cty + b, zoom);
+                wanted.insert(tile, y);
+                level.push((a * a + b * b, tile));
+            }
+        }
+        level.sort_by_key(|(d2, _)| *d2);
+        spawn_order.extend(level.into_iter().map(|(_, tile)| tile));
+    }
+    (wanted, spawn_order)
+}
+
 /// Spawn ground tiles within `LOAD_RADIUS` of the camera; despawn the rest.
 pub fn update_map_stream(
     mut commands: Commands,
@@ -543,6 +631,7 @@ pub fn update_map_stream(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<crate::systems::globe::GlobeState>,
+    time: Res<Time>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.anchor else {
         return;
@@ -561,12 +650,8 @@ pub fn update_map_stream(
     // Drain the tile despawn queue under a per-frame budget (mass-despawn guard).
     // Above the space-freeze return below nothing is queued, but draining here
     // keeps a zoom-out's retired rings clearing steadily as the camera climbs.
-    if !stream.despawn_queue.is_empty() {
-        let n = stream.despawn_queue.len().min(MAX_TILE_DESPAWNS_PER_FRAME);
-        for e in stream.despawn_queue.drain(..n) {
-            commands.entity(e).despawn();
-        }
-    }
+    stream.tiles.drain_despawns(&mut commands);
+    let now = time.elapsed_secs_f64();
 
     // Freeze streaming from orbit (ADR-025): above the globe-show altitude the
     // detailed tiles are hidden anyway (globe::HideInSpace), so keep the pyramid
@@ -607,49 +692,46 @@ pub fn update_map_stream(
     // hole-cutting, and part-loaded levels are backstopped by the level beneath.
     // A tile (tx,ty) centre sits at world ((tx+0.5 - fcx)*gs, (ty+0.5 - fcy)*gs)
     // relative to the fixed anchor, so the map never shifts across zoom changes.
-    let mut wanted: HashMap<TileKey, f32> = HashMap::new();
-    // Spawn/fetch order: coarsest zoom first, so a fresh anchor (teleport or
-    // globe descent) gets full — if blurry — ground coverage after a handful of
-    // fetches, refined by the finer rings as they land.
-    let mut spawn_order: Vec<TileKey> = Vec::new();
+    // Cheap every frame: each level's centre tile, plus its shared quad mesh.
+    let mut centres: Vec<(u32, i64, i64)> = Vec::with_capacity(8);
     for zoom in MIN_ZOOM..=stream.current_zoom {
         let gs = tile_to_meters(zoom, clat) as f32;
         let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
         let ctx = (world_x as f64 / gs as f64 + fcx - 0.5).round() as i64;
         let cty = (world_z as f64 / gs as f64 + fcy - 0.5).round() as i64;
-        let radius = if zoom == stream.current_zoom {
-            LOAD_RADIUS
-        } else {
-            COARSE_RADIUS
-        };
-        let y = level_y(base_zoom, zoom);
+        centres.push((zoom, ctx, cty));
         stream
             .quads
             .entry(zoom)
             .or_insert_with(|| meshes.add(Cuboid::new(gs, 0.04, gs)));
-        // Within a level, nearest-first. The fetches are queued in this order and
-        // the pools drain it roughly FIFO, so the ground under the camera is the
-        // first thing to sharpen; row-major from a corner instead put the tile you
-        // are standing on ~40th of 81 at the finest zoom, which is most of a fill
-        // spent watching the periphery resolve.
-        let mut level: Vec<(i64, TileKey)> = Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
-        for b in -radius..=radius {
-            for a in -radius..=radius {
-                let key = TileKey::new(ctx + a, cty + b, zoom);
-                wanted.insert(key.clone(), y);
-                level.push((a * a + b * b, key));
-            }
-        }
-        level.sort_by_key(|(d2, _)| *d2);
-        spawn_order.extend(level.into_iter().map(|(_, key)| key));
     }
 
-    // Spawn newly-needed tiles (coarse-first, see spawn_order above).
+    // Expensive, and only when the answer can have changed: the 424-entry desired
+    // set and its spawn order. See `DesiredTiles` on why the key is every level's
+    // centre rather than just the finest.
+    let key = (centres, stream.anchor_generation);
+    if stream.desired.key.as_ref() != Some(&key) {
+        let (wanted, spawn_order) = clipmap(&key.0, base_zoom, stream.current_zoom);
+        stream.desired = DesiredTiles {
+            key: Some(key),
+            wanted,
+            spawn_order,
+        };
+    }
+
+    // Spawn newly-needed tiles and ask for their imagery, coarse-first (see
+    // `DesiredTiles::spawn_order`). Indexed rather than iterated because the body
+    // mutably borrows `stream`; `TileKey` is `Copy`, so reading one out costs
+    // nothing and no 424-entry clone is needed.
     let gen = stream.anchor_generation;
-    let mut queued = 0u32;
-    for key in &spawn_order {
-        let y = wanted[key];
-        if stream.loaded.contains_key(key) {
+    for i in 0..stream.desired.spawn_order.len() {
+        let key = stream.desired.spawn_order[i];
+        let y = stream.desired.wanted[&key];
+        // `CellStream::request` de-dups and is also the retry pump — a failed tile
+        // waits out `FETCH_RETRY_SECS` and stops being offered once its attempts
+        // are spent, so there is no second retry loop.
+        stream.tiles.request(key, now);
+        if stream.loaded.contains_key(&key) {
             continue;
         }
         let Some(quad) = stream.quads.get(&key.z).cloned() else {
@@ -672,7 +754,7 @@ pub fn update_map_stream(
             ChildOf(root),
             // Flat tiles + big_space rebasing confuse frustum culling; opt out.
             NoFrustumCulling,
-            StreamTile { key: key.clone() },
+            StreamTile { key },
             // Hidden from orbit alongside the ground disc (ADR-025).
             crate::systems::globe::HideInSpace,
             // Untextured tiles start hidden so the coarser level shows through
@@ -686,52 +768,24 @@ pub fn update_map_stream(
             tile.insert(MapBackstop);
         }
         let entity = tile.id();
-        stream.loaded.insert(key.clone(), entity);
-        if stream.requested.insert(key.clone()) {
-            spawn_map_tile(
-                key.clone(),
-                gen,
-                template.clone(),
-                stream.results.clone(),
-                stream.gen_shared.clone(),
-            );
+        stream.loaded.insert(key, entity);
+    }
+
+    // Dispatch under TILE_MAX_IN_FLIGHT: the coarse-first queue order is preserved,
+    // and what doesn't fit starts on a later frame as slots free.
+    let mut queued = 0u32;
+    {
+        let results = stream.tiles.sink();
+        let live_gen = stream.gen_shared.clone();
+        while let Some(key) = stream.tiles.next_job(now) {
+            spawn_map_tile(key, gen, template.clone(), results.clone(), live_gen.clone());
             queued += 1;
         }
     }
     // Terse fetch accounting: one line per burst, not per tile (served from the
-    // on-disk cache when already seen; only new tiles hit the network).
+    // byte cache when already seen; only new tiles hit the network).
     if queued > 0 {
         tracing::info!(queued, finest_zoom = stream.current_zoom, "tile fetches queued");
-    }
-
-    // Re-queue failed fetches after a short backoff (bounded attempts, so a
-    // transient network error or rate limit doesn't leave permanent grey tiles).
-    let now = Instant::now();
-    let retry: Vec<TileKey> = stream
-        .failed
-        .iter()
-        .filter(|(k, (attempts, last))| {
-            *attempts < MAX_FETCH_ATTEMPTS
-                && last.elapsed().as_secs() >= 3
-                && stream.loaded.contains_key(*k)
-        })
-        .map(|(k, _)| k.clone())
-        .collect();
-    for key in retry {
-        if let Some((_, last)) = stream.failed.get_mut(&key) {
-            *last = now;
-        }
-        // A retry is a fetch in flight like any other, so it goes back into
-        // `requested` — that is what `apply_stream_textures` matches its arriving
-        // result against before keeping it.
-        stream.requested.insert(key.clone());
-        spawn_map_tile(
-            key,
-            gen,
-            template.clone(),
-            stream.results.clone(),
-            stream.gen_shared.clone(),
-        );
     }
 
     // Despawn tiles that drifted out of range or left the pyramid after a LOD
@@ -739,22 +793,21 @@ pub fn update_map_stream(
     let stale: Vec<TileKey> = stream
         .loaded
         .keys()
-        .filter(|k| !wanted.contains_key(*k))
-        .cloned()
+        .filter(|k| !stream.desired.wanted.contains_key(*k))
+        .copied()
         .collect();
     for key in stale {
         if let Some(entity) = stream.loaded.remove(&key) {
             // Queue rather than despawn inline: a LOD zoom-out retires a whole
             // ring at once, and the per-frame drain keeps the teardown bounded.
-            stream.despawn_queue.push(entity);
+            stream.tiles.retire(entity);
         }
         // Clear the fetch bookkeeping: the material/texture is dropped with the
         // entity, so a tile that comes back into range (pan back, or a LOD
-        // zoom-in restoring a finer ring) has to fetch again. Leaving the key in
+        // zoom-in restoring a finer ring) has to fetch again. Leaving the key
         // `requested` suppressed that job and the re-spawned tile kept the grey
         // placeholder permanently — the "tiles stop loading" instability.
-        stream.requested.remove(&key);
-        stream.failed.remove(&key);
+        stream.tiles.forget(&key);
     }
 }
 
@@ -764,15 +817,10 @@ pub fn apply_stream_textures(
     mut stream: ResMut<MapStream>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    tiles: Query<(Entity, &StreamTile), (Without<StreamTileReady>, Without<StreamTileFailed>)>,
+    tiles: Query<Entity, (With<StreamTile>, Without<StreamTileReady>, Without<StreamTileFailed>)>,
     time: Res<Time>,
     mut next_report: Local<f64>,
 ) {
-    let results_arc = stream.results.clone();
-    let Ok(mut results) = results_arc.lock() else {
-        return;
-    };
-
     // Decode and upload run on different clocks now (worker pool vs. the render
     // frame), so "the map is filling slowly" has two very different causes and the
     // fix differs: a small `decoded` backlog with tiles still awaiting means the
@@ -786,62 +834,35 @@ pub fn apply_stream_textures(
     if now >= *next_report {
         *next_report = now + 2.0;
         tracing::info!(
-            decoded_pending = results.len(),
+            in_flight = stream.tiles.in_flight(),
             awaiting_upload = tiles.iter().count(),
             loaded = stream.loaded.len(),
             "tile fill"
         );
     }
-    // Drop results nobody will ever consume — they hold a full decoded mip chain
-    // each (~1.4 MB at 512², mips included), so a leak here grows without bound as
-    // you roam. Two ways to become unconsumable, and the second was leaking:
-    //
-    // * the tile was **retired** before its fetch landed (entity gone). A tile
-    //   re-entering range re-queues its own fetch, so nothing is lost.
-    // * a **second** fetch for a still-loaded tile landed after the first one had
-    //   already textured it. Two can be in flight at once — a retry racing the
-    //   attempt it gave up on, or a pre-re-anchor task for a key the new anchor
-    //   wants too — and the loser's mip chain then sat in this map forever. A
-    //   settled cold start was holding ~150 of these.
-    //
-    // `requested` is exactly "a fetch is in flight whose result is still wanted",
-    // which answers both.
-    results.retain(|key, _| stream.loaded.contains_key(key) && stream.requested.contains(key));
 
     // Cap texture finalizations per frame: a fast pan can land dozens of decoded
-    // tiles at once, and uploading them all in one frame hitches. The rest keep
-    // their decoded data queued (Without<StreamTileReady>) and upload next frame.
+    // tiles at once, and uploading them all in one frame hitches. The rest go back
+    // into the sink — still holding their concurrency slots, so the bound also
+    // bounds how much decoded mip chain is live — and upload next frame.
     const MAX_UPLOADS_PER_FRAME: usize = 8;
-    let mut uploaded = 0;
-    for (entity, tile) in tiles.iter() {
-        if uploaded >= MAX_UPLOADS_PER_FRAME {
-            break;
-        }
-        // Take ownership so the decoded mip chain is freed once uploaded (leaving
-        // it in `results` would grow the map unboundedly as you move).
-        let Some(outcome) = results.remove(&tile.key) else {
+    let mut ready = stream.tiles.take_results();
+    let deferred = ready.split_off(ready.len().min(MAX_UPLOADS_PER_FRAME));
+    stream.tiles.defer(deferred);
+    for (key, outcome) in ready {
+        // Retired before its fetch landed: the entity is gone, so nobody will ever
+        // consume this mip chain. A tile re-entering range re-fetches, so dropping
+        // it loses nothing. (`update_map_stream` already forgot the key.)
+        let Some(&entity) = stream.loaded.get(&key) else {
             continue;
         };
-        // The fetch is no longer in flight. `failed` takes over the bookkeeping for
-        // anything the retry pump still owes, so `streaming_busy` stays honest —
-        // this is what lets it fall to false at all, and with it `--settle`.
-        stream.requested.remove(&tile.key);
         match outcome {
             None => {
-                // Fetch/decode failed. Record the failure so the retry pump in
-                // update_map_stream can re-queue it; only after the attempt budget
-                // is spent do we give up and leave the coarser level showing.
-                let attempts = {
-                    let entry = stream
-                        .failed
-                        .entry(tile.key.clone())
-                        .or_insert((0, Instant::now()));
-                    entry.0 += 1;
-                    entry.1 = Instant::now();
-                    entry.0
-                };
-                if attempts >= MAX_FETCH_ATTEMPTS {
-                    stream.failed.remove(&tile.key);
+                // Fetch/decode failed. `CellStream` holds the backoff and the
+                // attempt budget; only once it is spent do we give up and leave
+                // the coarser level showing.
+                stream.tiles.failed(&key, now);
+                if stream.tiles.exhausted(&key) {
                     commands.entity(entity).insert(StreamTileFailed);
                 }
             }
@@ -864,10 +885,10 @@ pub fn apply_stream_textures(
                     reflectance: 0.0,
                     ..default()
                 });
-                commands.entity(entity).insert(MeshMaterial3d(mat));
-                stream.failed.remove(&tile.key);
-                commands.entity(entity).insert(StreamTileReady);
-                uploaded += 1;
+                commands
+                    .entity(entity)
+                    .insert((MeshMaterial3d(mat), StreamTileReady));
+                stream.tiles.succeeded(&key);
             }
         }
     }
@@ -926,5 +947,74 @@ mod tests {
     fn relief_grid_is_bounded() {
         assert_eq!(relief_divisions(1.0e6), 128);
         assert_eq!(relief_divisions(0.0), 1);
+    }
+
+    use crate::systems::vector_tiles::SubTile;
+
+    /// Each clipmap level's centre tile for a camera sitting on the anchor — the
+    /// same arithmetic `update_map_stream` runs every frame.
+    fn centres(lat: f64, lng: f64, finest_zoom: u32) -> Vec<(u32, i64, i64)> {
+        (MIN_ZOOM..=finest_zoom)
+            .map(|zoom| {
+                let (fcx, fcy) = lat_lng_to_tile_frac(lat, lng, zoom);
+                ((zoom), (fcx - 0.5).round() as i64, (fcy - 0.5).round() as i64)
+            })
+            .collect()
+    }
+
+    /// The fan-out, stated so a change to a radius or a zoom has to restate it.
+    ///
+    /// A fresh anchor opens at [`DEFAULT_ANCHOR_ZOOM`] and the pyramid runs
+    /// `MIN_ZOOM..=17`: the finest ring is `LOAD_RADIUS` (9×9 = 81) and the seven
+    /// coarser ones are `COARSE_RADIUS` (7×7 = 49 each), so **424** tiles are
+    /// wanted at once. That burst is what `TILE_MAX_IN_FLIGHT` now meters out and
+    /// what used to be released in a single frame.
+    #[test]
+    fn a_fresh_anchor_wants_424_tiles() {
+        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+        let (wanted, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, DEFAULT_ANCHOR_ZOOM);
+        assert_eq!(order.len(), 424, "the clipmap fan-out changed");
+        assert_eq!(wanted.len(), order.len(), "a tile was wanted twice in one pass");
+
+        // Coarsest first: a fresh anchor gets full, blurry coverage from a handful
+        // of fetches before the finer rings refine it.
+        assert_eq!(order.first().unwrap().z, MIN_ZOOM);
+        assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
+    }
+
+    /// …and how few *bodies* those 424 requests actually are.
+    ///
+    /// Shortbread stops at `vector_tiles::MAX_SOURCE_ZOOM` = 14, so every request
+    /// above it resolves to a z14 ancestor. The 179 requests at z15/z16/z17 land
+    /// entirely inside the z14 ring the same pass is already asking for, which
+    /// leaves **245** distinct source tiles — 49 per zoom for z10–z14 and nothing
+    /// new above. Those 179 duplicates were 179 independent disk reads (or, on the
+    /// web build, network fetches) and 179 independent MVT parses before
+    /// `tile_source` coalesced them.
+    #[test]
+    fn the_overzoomed_requests_collapse_onto_a_few_dozen_source_tiles() {
+        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, DEFAULT_ANCHOR_ZOOM);
+
+        let sources: std::collections::HashSet<(u32, i64, i64)> = order
+            .iter()
+            .map(|k| SubTile::resolve(k.z, k.x, k.y).0)
+            .collect();
+        assert!(sources.len() < order.len(), "no requests were deduplicated");
+        assert_eq!(sources.len(), 245, "the source-tile fan-in changed");
+
+        let overzoomed = order
+            .iter()
+            .filter(|k| k.z > crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
+            .count();
+        assert_eq!(overzoomed, 179, "the overzoomed share of the pyramid changed");
+        // Every one of them resolves onto a tile the z14 ring already wants, so
+        // they add no distinct body at all.
+        let below: std::collections::HashSet<(u32, i64, i64)> = order
+            .iter()
+            .filter(|k| k.z <= crate::systems::vector_tiles::MAX_SOURCE_ZOOM)
+            .map(|k| (k.z, k.x, k.y))
+            .collect();
+        assert_eq!(sources, below, "an overzoomed request needed a new source tile");
     }
 }
