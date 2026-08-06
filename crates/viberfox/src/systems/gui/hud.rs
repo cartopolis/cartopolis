@@ -23,7 +23,7 @@ use big_space::prelude::GridCell;
 use crate::resources::CameraState;
 use crate::systems::bookmarks::{BookmarksState, PLACEHOLDER_NAME};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::FreeCamera;
+use crate::components::FreeCamera;
 use crate::systems::geo_nav::{camera_geo, CameraPose};
 use crate::systems::map_stream::MapStream;
 use crate::systems::theme;

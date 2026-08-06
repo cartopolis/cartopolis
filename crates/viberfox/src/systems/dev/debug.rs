@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use crate::components::Region;
-use crate::systems::rendering::RegionMesh;
+use crate::components::RegionMesh;
 
 pub fn debug_region_entities(
     all_regions: Query<(Entity, &Region)>,

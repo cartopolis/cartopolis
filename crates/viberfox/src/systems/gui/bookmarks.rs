@@ -34,6 +34,7 @@
 //! which is the alternative egui documents for this; it paints no ghost at the
 //! cursor, so [`drag_ghost`] does.
 
+use crate::components::FreeCamera;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
@@ -44,7 +45,7 @@ use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
+use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{
     nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };

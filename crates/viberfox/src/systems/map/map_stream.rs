@@ -9,6 +9,8 @@
 //! Textures are fetched on a background worker (one Overpass/tile HTTP call per
 //! tile, via an mpsc queue) so roaming never blocks the frame.
 
+use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
+use crate::components::FreeCamera;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,7 +25,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 use viberfox_core::TileKey;
 
@@ -112,31 +114,8 @@ pub struct StreamTile {
     pub key: TileKey,
 }
 
-/// Marker: imagery applied — don't reprocess, and safe to show.
-#[derive(Component)]
-pub struct StreamTileReady;
 
-/// Marker: the fetch attempt budget is spent and this tile will never get imagery.
-///
-/// Kept distinct from [`StreamTileReady`] because the two want opposite treatment
-/// on screen: a textured tile is revealed, a permanently failed one stays hidden so
-/// the coarser level beneath keeps covering that ground. Both stop reprocessing.
-#[derive(Component)]
-pub struct StreamTileFailed;
 
-/// Marker on the **coarsest** clipmap level (`MIN_ZOOM`) — the one level allowed to
-/// show its untextured placeholder.
-///
-/// Every finer tile stays hidden until its imagery lands, so what shows through the
-/// gap is the coarser level already stacked beneath it: the map arrives blurry and
-/// sharpens, instead of arriving as grey squares. That backstop-from-below is what
-/// the pyramid was built for, and an opaque placeholder quad was defeating it — the
-/// finer tile spawned *on top* of the coarse imagery it was supposed to be refining.
-/// `MIN_ZOOM` has nothing beneath it, so it keeps a visible placeholder or the
-/// horizon would be a hole; it is painted the basemap's own paper colour, which
-/// reads as unsurveyed ground rather than as a slab of concrete.
-#[derive(Component)]
-pub struct MapBackstop;
 
 /// A tile decoded and mipmapped **off the main thread** by a fetch worker. Holds
 /// the full packed mip chain ready for a cheap `Image` assembly + GPU upload on
@@ -654,7 +633,7 @@ pub fn update_map_stream(
     let now = time.elapsed_secs_f64();
 
     // Freeze streaming from orbit (ADR-025): above the globe-show altitude the
-    // detailed tiles are hidden anyway (globe::HideInSpace), so keep the pyramid
+    // detailed tiles are hidden anyway (crate::components::HideInSpace), so keep the pyramid
     // loaded instead of despawning it — returning to the surface is then instant,
     // and the space camera doesn't spam tile requests for wherever it roams.
     // Geocentric altitude, NOT local y: orbiting to the far side of the globe
@@ -756,7 +735,7 @@ pub fn update_map_stream(
             NoFrustumCulling,
             StreamTile { key },
             // Hidden from orbit alongside the ground disc (ADR-025).
-            crate::systems::globe::HideInSpace,
+            crate::components::HideInSpace,
             // Untextured tiles start hidden so the coarser level shows through
             // (see `MapBackstop`). `data_layers::apply_feature_toggles` is the sole
             // visibility writer for a `StreamTile` and keeps them that way until

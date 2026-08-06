@@ -5,10 +5,11 @@
 //! The altitude transition is the part that needs care, and it is the reason
 //! nothing here switches on a boolean — see [`update_vegetation_lod`].
 
+use crate::components::VegetationSurface;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
-use crate::systems::free_camera::FreeCamera;
+use crate::components::FreeCamera;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_geometry::MapSurfaces;
 use crate::systems::scatter::{mix, mix_rgb, srgb_to_linear_rgb, TREE_FADE_END, TREE_FADE_START};
@@ -47,9 +48,6 @@ impl VegetationLod {
     }
 }
 
-/// Marker on the canopy/trunk entities, so the ramp can hide them wholesale.
-#[derive(Component)]
-pub struct VegetationSurface;
 
 /// Ramp the trees into the fill with altitude.
 ///

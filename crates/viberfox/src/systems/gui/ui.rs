@@ -57,7 +57,7 @@ pub fn render_menu_bar(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<
         (&big_space::prelude::GridCell, &Transform),
-        With<crate::systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
     // Follow mode needs an avatar to follow (logged-in viewer only).
     avatars: Query<(), With<crate::components::Avatar>>,
@@ -397,7 +397,7 @@ pub fn render_dev_panel(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<
         (&big_space::prelude::GridCell, &Transform),
-        With<crate::systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
     mut copied_at: Local<Option<Instant>>,
 ) {
@@ -1678,7 +1678,7 @@ pub fn apply_live_prim_edits(
         &mut Prim,
         &mut Transform,
         Option<&MeshMaterial3d<StandardMaterial>>,
-        Has<crate::systems::rendering::OwnedMaterial>,
+        Has<crate::components::OwnedMaterial>,
     )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -1808,7 +1808,7 @@ pub fn send_prim_mutations(
         &mut Prim,
         &mut Transform,
         Option<&MeshMaterial3d<StandardMaterial>>,
-        Has<crate::systems::rendering::OwnedMaterial>,
+        Has<crate::components::OwnedMaterial>,
     )>,
     region_query: Query<&Region>,
     mut materials: ResMut<Assets<StandardMaterial>>,

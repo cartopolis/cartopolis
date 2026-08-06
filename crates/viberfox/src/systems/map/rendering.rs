@@ -1,3 +1,4 @@
+use crate::components::{OwnedMaterial, PrimMesh, RegionMesh};
 use crate::components::{NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimShape, Region};
 use crate::resources::PrimTextureCache;
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -13,8 +14,6 @@ use std::collections::HashMap;
 use viberfox_core::world::tile_to_meters;
 use viberfox_core::PrimSurface;
 
-#[derive(Component)]
-pub struct RegionMesh;
 
 /// Linear-filtered sampler with repeat addressing, so texture repeats (`repeat_u/v > 1`)
 /// tile instead of clamping at the edge. Used for all prim textures.
@@ -190,11 +189,6 @@ pub struct MeshCache(HashMap<MeshKey, Handle<Mesh>>);
 #[derive(Resource, Default)]
 pub struct MaterialCache(HashMap<MaterialKey, Handle<StandardMaterial>>);
 
-/// Marker: this prim owns a private material copied out of the shared pool (it
-/// was selected / edited / re-textured), so mutating it is safe. See
-/// [`owned_material`].
-#[derive(Component)]
-pub struct OwnedMaterial;
 
 /// Return the pooled mesh handle for `prim`, building and caching it on first use.
 fn cached_prim_mesh(prim: &Prim, meshes: &mut Assets<Mesh>, cache: &mut MeshCache) -> Handle<Mesh> {
@@ -268,8 +262,6 @@ pub fn owned_material<'a>(
     materials.get_mut(&new)
 }
 
-#[derive(Component)]
-pub struct PrimMesh;
 
 /// Spawn region meshes with tile loading setup
 pub fn spawn_regions(
@@ -362,7 +354,7 @@ pub fn spawn_regions(
             Visibility::Visible,
             RegionMesh,
             // Hidden from orbit with the other ground props (ADR-025).
-            crate::systems::globe::HideInSpace,
+            crate::components::HideInSpace,
             RegionTile {
                 tile_key,
                 lod_level: 1, // Start with medium quality

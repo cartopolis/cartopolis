@@ -45,6 +45,8 @@
 //! (`vector_tiles::DEPTH_BIAS_STEP`) — you want to read the street you are being
 //! routed along — and below the driver arrow.
 
+use crate::components::StreetLabelSign;
+use crate::components::FreeCamera;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -53,7 +55,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
 use crate::systems::data_layers::DataLayers;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::theme;
 use crate::systems::vector_tiles::{StreetLabelLine, DEPTH_BIAS_STEP};
@@ -168,9 +170,6 @@ const fn srgb_of(c: egui::Color32) -> [f32; 3] {
     ]
 }
 
-/// Marker for a pooled label quad.
-#[derive(Component)]
-pub struct StreetLabelSign;
 
 /// The pool, as the placer writes it: where the quad goes, whether it is shown,
 /// and the material whose texture carries the name.

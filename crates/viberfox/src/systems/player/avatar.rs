@@ -1,3 +1,4 @@
+use crate::components::AvatarModelLoaded;
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
 use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::ecs::query::Or;
@@ -336,8 +337,6 @@ const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent 
 /// building footprints are 2D, so they only apply to something standing on them.
 pub(crate) const AIRBORNE_EPS: f32 = 0.2;
 
-#[derive(Component)]
-pub struct AvatarModelLoaded;
 
 /// Animation data attached to an avatar (and each of its model "holder" children),
 /// read once a scene is ready. `Clone` so the body and outfit holders can share it.

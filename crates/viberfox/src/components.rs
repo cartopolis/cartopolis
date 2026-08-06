@@ -111,3 +111,129 @@ impl PrimShape {
         }
     }
 }
+
+// ─── Markers lifted out of `systems/` ─────────────────────────────────────────
+//
+// Zero-sized identity tags: no fields, no behaviour, nothing to depend on. They
+// were declared next to whichever system spawned them, which is what made
+// `free_camera` import `rendering` and `globe` import `rendering` — a marker is
+// the cheapest possible thing to share and was creating cycles by being filed
+// rather than by being used.
+
+#[derive(Component)]
+pub struct AvatarModelLoaded;
+
+/// Marker for in-world departure-board quads.
+#[derive(Component)]
+pub struct BoardQuad;
+
+/// Marker component for spawned data-layer cell meshes.
+#[derive(Component)]
+pub struct DataLayerMarkers;
+
+/// The position marker drawn while driving.
+#[derive(Component)]
+pub struct DriverArrow;
+
+#[derive(Component)]
+pub struct FreeCamera;
+
+/// Marker on the furniture entities, so the ramp can hide them wholesale.
+#[derive(Component)]
+pub struct FurnitureSurface;
+
+/// Marker for globe imagery entities (base sphere + quadtree tiles).
+#[derive(Component)]
+pub struct GlobeMesh;
+
+/// Local-scene ground props (the horizon disc, region quads, streamed map tiles)
+/// that should be hidden once the globe is in view — from space they read as
+/// bright specks/discs floating over the anchor. Attached where each is spawned.
+#[derive(Component)]
+pub struct HideInSpace;
+
+/// Marker on the **coarsest** clipmap level (`MIN_ZOOM`) — the one level allowed to
+/// show its untextured placeholder.
+///
+/// Every finer tile stays hidden until its imagery lands, so what shows through the
+/// gap is the coarser level already stacked beneath it: the map arrives blurry and
+/// sharpens, instead of arriving as grey squares. That backstop-from-below is what
+/// the pyramid was built for, and an opaque placeholder quad was defeating it — the
+/// finer tile spawned *on top* of the coarse imagery it was supposed to be refining.
+/// `MIN_ZOOM` has nothing beneath it, so it keeps a visible placeholder or the
+/// horizon would be a hole; it is painted the basemap's own paper colour, which
+/// reads as unsurveyed ground rather than as a slab of concrete.
+#[derive(Component)]
+pub struct MapBackstop;
+
+/// Marker for a spawned surface mesh, so the whole layer can be found and cleared.
+#[derive(Component)]
+pub struct MapSurface;
+
+/// Marker for spawned building meshes.
+#[derive(Component)]
+pub struct OsmBuildingMesh;
+
+/// Marker: this prim owns a private material copied out of the shared pool (it
+/// was selected / edited / re-textured), so mutating it is safe. See
+/// [`owned_material`].
+#[derive(Component)]
+pub struct OwnedMaterial;
+
+/// Marker for the planet-centred entity that carries the built-in atmosphere's
+/// [`Atmosphere`] component (spawned in `free_camera::setup_camera`), keeping a
+/// copy of that component. `update_atmosphere_origin` reads it to keep the
+/// atmosphere centred on Earth in render coords.
+///
+/// NOTE: do NOT add/remove the `Atmosphere` component (or the camera's
+/// `AtmosphereEnvironmentMapLight`) at runtime as an on/off switch — that
+/// teardown frees GPU resources still in flight and hangs the device on this
+/// stack (confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
+/// (`VIBERFOX_NO_ATMOSPHERE` / `VIBERFOX_NO_ENVMAP`); the only safe runtime
+/// change is the in-place render-*mode* switch below.
+#[derive(Component)]
+pub struct PlanetAtmosphere;
+
+#[derive(Component)]
+pub struct PrimMesh;
+
+#[derive(Component)]
+pub struct RegionMesh;
+
+/// Marker for every entity making up the drawn route, so the whole lot can be
+/// cleared in one query.
+#[derive(Component)]
+pub struct RouteVisual;
+
+/// A radiating ground ring at a POI (subtle visibility aid; the signs
+/// themselves are real-world sized and easy to miss from a distance).
+#[derive(Component)]
+pub struct StopRing;
+
+/// Marker: the fetch attempt budget is spent and this tile will never get imagery.
+///
+/// Kept distinct from [`StreamTileReady`] because the two want opposite treatment
+/// on screen: a textured tile is revealed, a permanently failed one stays hidden so
+/// the coarser level beneath keeps covering that ground. Both stop reprocessing.
+#[derive(Component)]
+pub struct StreamTileFailed;
+
+/// Marker: imagery applied — don't reprocess, and safe to show.
+#[derive(Component)]
+pub struct StreamTileReady;
+
+/// Marker for a pooled label quad.
+#[derive(Component)]
+pub struct StreetLabelSign;
+
+/// Marker on the canopy/trunk entities, so the ramp can hide them wholesale.
+#[derive(Component)]
+pub struct VegetationSurface;
+
+/// Marker for the in-world vehicle boxes.
+#[derive(Component)]
+pub struct VehicleBox;
+
+/// Marker for the billboarded line-number labels above the boxes.
+#[derive(Component)]
+pub struct VehicleLabel;

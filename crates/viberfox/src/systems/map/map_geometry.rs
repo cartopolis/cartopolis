@@ -22,6 +22,8 @@
 //! Only vector sources produce geometry; against a raster template (the OSM PNG
 //! default, or the VersaTiles satellite layer) this module does nothing at all.
 
+use crate::components::MapSurface;
+use crate::components::{FreeCamera, FurnitureSurface, VegetationSurface};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +36,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::road_texture::{road_texture, RoadClass};
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::tile_loader::load_tile_image;
@@ -44,9 +46,9 @@ use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
 use crate::systems::furniture;
-use crate::systems::street_furniture::{FurnitureLod, FurnitureSurface};
+use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::scatter;
-use crate::systems::vegetation::{VegetationLod, VegetationSurface};
+use crate::systems::vegetation::VegetationLod;
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
 use viberfox_core::world::tile_to_meters;
@@ -142,9 +144,6 @@ const DECK_SAMPLE_M: f32 = 1.5;
 const DECK_GRID_MIN: u32 = 16;
 const DECK_GRID_MAX: u32 = 64;
 
-/// Marker for a spawned surface mesh, so the whole layer can be found and cleared.
-#[derive(Component)]
-pub struct MapSurface;
 
 /// Streaming state for the vector surface meshes.
 #[derive(Resource)]
@@ -522,7 +521,7 @@ pub fn update_map_surfaces(
                 ChildOf(root),
                 MapSurface,
                 // Hidden from orbit alongside the ground tiles (ADR-025).
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             );
             let id = if let (SurfaceGroup::Water, Some(water)) = (sm.group, &water_material) {
                 // Water gets the wave material (`systems::water`), which owns its
@@ -689,7 +688,7 @@ pub fn resolve_bridge_decks(
                 grid_cell,
                 ChildOf(root),
                 MapSurface,
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             ))
             .id();
         if let Some(entities) = surfaces.loaded.get_mut(&c) {

@@ -1710,7 +1710,7 @@ fn update_moon(
     camera: Query<&GlobalTransform, With<Camera3d>>,
     free_camera: Query<
         (&GridCell, &Transform),
-        (With<systems::free_camera::FreeCamera>, Without<Moon>),
+        (With<crate::components::FreeCamera>, Without<Moon>),
     >,
     mut moon: Query<(&mut Transform, &MeshMaterial3d<MoonMaterial>), With<Moon>>,
     mut materials: ResMut<Assets<MoonMaterial>>,
@@ -1974,12 +1974,12 @@ fn frame_stats(
 
 fn frame_time_watchdog(
     time: Res<Time<Real>>,
-    globe_meshes: Query<(), With<systems::globe::GlobeMesh>>,
+    globe_meshes: Query<(), With<crate::components::GlobeMesh>>,
     meshes: Res<Assets<Mesh>>,
     images: Res<Assets<Image>>,
     materials: Res<Assets<StandardMaterial>>,
     globe: Res<systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &Transform), With<systems::free_camera::FreeCamera>>,
+    camera: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut census: Local<f32>,
 ) {
     // NB: RenderDiagnosticsPlugin (per-pass GPU timestamp queries) was tried here
@@ -2032,10 +2032,10 @@ fn log_render_cost(
         &Mesh3d,
         &bevy::camera::visibility::ViewVisibility,
         Has<bevy::light::NotShadowCaster>,
-        Has<systems::osm_buildings::OsmBuildingMesh>,
+        Has<crate::components::OsmBuildingMesh>,
         Has<systems::lod22::Lod22Mesh>,
         Has<systems::map_stream::StreamTile>,
-        Has<systems::globe::GlobeMesh>,
+        Has<crate::components::GlobeMesh>,
     )>,
 ) {
     *next -= time.delta_secs();
@@ -2110,7 +2110,7 @@ fn apply_day_night_cycle(
             &mut bevy::post_process::bloom::Bloom,
         ),
         (
-            With<systems::free_camera::FreeCamera>,
+            With<crate::components::FreeCamera>,
             Without<SunLight>,
             Without<MoonLight>,
         ),
@@ -2250,7 +2250,7 @@ fn apply_distance_fog(
     globe: Res<systems::globe::GlobeState>,
     mut camera: Query<
         (&GridCell, &Transform, &mut DistanceFog),
-        With<systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
 ) {
     let Ok((cell, tf, mut fog)) = camera.single_mut() else {
@@ -2545,7 +2545,7 @@ fn update_star_sky(
     free_camera: Query<
         (&GridCell, &Transform),
         (
-            With<systems::free_camera::FreeCamera>,
+            With<crate::components::FreeCamera>,
             Without<StarSky>,
         ),
     >,
@@ -3021,7 +3021,7 @@ fn update_globe_clouds(
     globe: Res<systems::globe::GlobeState>,
     camera: Query<
         (&GridCell, &Transform),
-        (With<systems::free_camera::FreeCamera>, Without<GlobeClouds>),
+        (With<crate::components::FreeCamera>, Without<GlobeClouds>),
     >,
     mut clouds: Query<
         (&mut Transform, &mut Visibility, &MeshMaterial3d<GlobeCloudMaterial>),

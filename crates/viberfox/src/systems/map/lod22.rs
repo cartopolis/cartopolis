@@ -18,6 +18,7 @@
 //! what trips the Intel iGPU's command-buffer timeout (`VK_ERROR_DEVICE_LOST`, see
 //! CLAUDE.md).
 
+use crate::components::{FreeCamera, HideInSpace};
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -26,8 +27,8 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::globe::{GlobeState, HideInSpace, GLOBE_SHOW_ALT};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{
     building_palette, lat_lng_to_local, lod22_covers, tdbag_url, MeshData,

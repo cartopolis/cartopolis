@@ -68,6 +68,7 @@
 //!     --look=-90,0 --csv /tmp/ramps.csv
 //! ```
 
+use crate::components::GlobeMesh;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -83,9 +84,9 @@ use big_space::prelude::GridCell;
 use serde::Serialize;
 
 use crate::resources::{CameraState, ScreenshotState};
-use crate::systems::free_camera::FreeCamera;
+use crate::components::FreeCamera;
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
-use crate::systems::globe::{GlobeMesh, GlobeState, GlobeSurfaceAlbedo};
+use crate::systems::globe::{GlobeState, GlobeSurfaceAlbedo};
 use crate::systems::map_stream::MapStream;
 use crate::systems::weather::WeatherState;
 
@@ -967,7 +968,7 @@ pub fn drive_capture(
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
     route_meshes: Query<
         &bevy::camera::visibility::ViewVisibility,
-        With<crate::systems::navigation::RouteVisual>,
+        With<crate::components::RouteVisual>,
     >,
 ) {
     if let Some(frames) = progress.exit_in.as_mut() {

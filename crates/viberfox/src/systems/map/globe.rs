@@ -17,6 +17,7 @@
 //! surface↔space handoff) lives in `free_camera`; this module owns the globe
 //! geometry, its tile streaming, and the Earth-centre / radius the camera reads.
 
+use crate::components::{GlobeMesh, HideInSpace, PlanetAtmosphere};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -538,34 +539,13 @@ pub fn setup_globe(
     tracing::info!(radius = globe.radius, "globe placed");
 }
 
-/// Marker for globe imagery entities (base sphere + quadtree tiles).
-#[derive(Component)]
-pub struct GlobeMesh;
 
-/// Local-scene ground props (the horizon disc, region quads, streamed map tiles)
-/// that should be hidden once the globe is in view — from space they read as
-/// bright specks/discs floating over the anchor. Attached where each is spawned.
-#[derive(Component)]
-pub struct HideInSpace;
 
 /// Altitude (m) above which the globe is drawn. Below it the detailed flat-tile
 /// city view fully covers the sky-facing hemisphere, so the globe stays hidden
 /// (and can't z-fight the tiles that sit on its surface).
 pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
 
-/// Marker for the planet-centred entity that carries the built-in atmosphere's
-/// [`Atmosphere`] component (spawned in `free_camera::setup_camera`), keeping a
-/// copy of that component. `update_atmosphere_origin` reads it to keep the
-/// atmosphere centred on Earth in render coords.
-///
-/// NOTE: do NOT add/remove the `Atmosphere` component (or the camera's
-/// `AtmosphereEnvironmentMapLight`) at runtime as an on/off switch — that
-/// teardown frees GPU resources still in flight and hangs the device on this
-/// stack (confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
-/// (`VIBERFOX_NO_ATMOSPHERE` / `VIBERFOX_NO_ENVMAP`); the only safe runtime
-/// change is the in-place render-*mode* switch below.
-#[derive(Component)]
-pub struct PlanetAtmosphere;
 
 /// Render the atmosphere from orbit? `true`: the space tier switches the camera
 /// to `AtmosphereMode::Raymarched` (at [`GLOBE_SKY_SAMPLES`]) so the planet shows
@@ -665,7 +645,7 @@ const GROUND_SKY_SAMPLES: u32 = 16;
 /// grows with the real geocentric altitude and the raymarched limb is correct.
 pub fn update_atmosphere_origin(
     globe: Res<GlobeState>,
-    camera: Query<&GridCell, With<crate::systems::free_camera::FreeCamera>>,
+    camera: Query<&GridCell, With<crate::components::FreeCamera>>,
     mut planet: Query<(&mut Transform, &mut bevy::light::Atmosphere), With<PlanetAtmosphere>>,
 ) {
     if !globe.ready {
@@ -709,7 +689,7 @@ pub fn update_globe_visibility(
     globe: Res<GlobeState>,
     mut camera: Query<
         (&GridCell, &Transform, &mut AtmosphereSettings),
-        With<crate::systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
     mut planet: Query<&mut bevy::light::Atmosphere, With<PlanetAtmosphere>>,
     media: Option<Res<AtmosphereMedia>>,
@@ -732,14 +712,14 @@ pub fn update_globe_visibility(
             With<HideInSpace>,
             Without<GlobeMesh>,
             Without<crate::systems::map_stream::StreamTile>,
-            Without<crate::systems::rendering::RegionMesh>,
-            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::components::RegionMesh>,
+            Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             // Trees are owned by `vegetation::update_vegetation_lod`, which hides
             // them at the top of its altitude ramp — far below the space tier, so
             // they are already gone by the time this system would care. Two
             // visibility writers on one entity is the documented race.
-            Without<crate::systems::vegetation::VegetationSurface>,
+            Without<crate::components::VegetationSurface>,
         ),
     >,
 ) {
@@ -856,7 +836,7 @@ pub fn update_globe_albedo(
     globe: Res<GlobeState>,
     camera: Query<
         (&GridCell, &Transform),
-        With<crate::systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
     mut albedo: ResMut<GlobeSurfaceAlbedo>,
     mut gloss: ResMut<GlobeOceanGloss>,
@@ -951,7 +931,7 @@ pub fn update_globe_tiles(
     tile_url: Res<OsmTileUrlTemplate>,
     camera: Query<
         (&GridCell, &Transform, &Projection),
-        With<crate::systems::free_camera::FreeCamera>,
+        With<crate::components::FreeCamera>,
     >,
     windows: Query<&Window>,
     headless: Option<Res<crate::resources::HeadlessSurface>>,

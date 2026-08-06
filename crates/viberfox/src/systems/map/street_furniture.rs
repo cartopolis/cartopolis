@@ -1,10 +1,11 @@
 //! Street furniture's ECS half: the distance LOD and the materials. The
 //! extraction and meshing it drives are pure and live in `systems::furniture`.
 
+use crate::components::FurnitureSurface;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
-use crate::systems::free_camera::FreeCamera;
+use crate::components::FreeCamera;
 use crate::systems::furniture::{
     paving_base, FURNITURE_FADE_END, FURNITURE_FADE_START,
 };
@@ -41,9 +42,6 @@ impl FurnitureLod {
     }
 }
 
-/// Marker on the furniture entities, so the ramp can hide them wholesale.
-#[derive(Component)]
-pub struct FurnitureSurface;
 
 /// Ramp the furniture into the ground with altitude.
 ///

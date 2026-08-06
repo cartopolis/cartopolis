@@ -22,6 +22,8 @@
 //! feed itself, no timezone database needed — and teaches [`WorldClock`] the
 //! local offset so clocks can show local wall time.
 
+use crate::components::BoardQuad;
+use crate::components::FreeCamera;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,7 +39,7 @@ use big_space::prelude::{BigSpace, GridCell};
 
 use crate::platform::http;
 use crate::systems::data_layers::{DataLayers, PoiInstance, LAYER_DEFS, TRANSIT_LAYER};
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
+use crate::systems::free_camera::WORLD_CELL_EDGE;
 
 /// Refresh cadence for the departure data.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -187,9 +189,6 @@ pub struct TransitLive {
     painter: Option<BoardPainter>,
 }
 
-/// Marker for in-world departure-board quads.
-#[derive(Component)]
-pub struct BoardQuad;
 
 /// Poll OVapi for the live-capable stops around the camera: one batched
 /// request per interval on a worker thread, results folded into `boards`.

@@ -54,6 +54,7 @@
 //! standing still, exactly as ADR-026's live vehicles derive a bearing from
 //! motion when the feed carries none.
 
+use crate::components::DriverArrow;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
@@ -756,9 +757,6 @@ pub fn steady_driver_camera(
 
 // ─── The arrow ───────────────────────────────────────────────────────────────
 
-/// The position marker drawn while driving.
-#[derive(Component)]
-pub struct DriverArrow;
 
 /// Material for the arrow, built once (mirrors `navigation::RouteMaterials`).
 #[derive(Resource)]
@@ -872,7 +870,7 @@ pub fn update_driver_arrow(
                 ChildOf(root),
                 bevy::camera::visibility::NoFrustumCulling,
                 DriverArrow,
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             ));
         }
     }

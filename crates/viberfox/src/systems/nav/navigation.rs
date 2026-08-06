@@ -17,6 +17,8 @@
 //! graph is cached against its tile list, so flipping between Car/Bike/Walk re-runs
 //! only the A* — which is what makes the mode tabs feel instant.
 
+use crate::components::RouteVisual;
+use crate::components::FreeCamera;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,7 +34,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::platform::http;
 use crate::resources::{OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{
     camera_geo, lat_lng_to_world, nominatim_base_url, percent_encode, world_to_lat_lng,
     GeoNavState, GeoSuggestion, Teleport,
@@ -682,10 +684,6 @@ pub fn handle_route_map_pick(
 
 // ─── World rendering ─────────────────────────────────────────────────────────
 
-/// Marker for every entity making up the drawn route, so the whole lot can be
-/// cleared in one query.
-#[derive(Component)]
-pub struct RouteVisual;
 
 /// Materials for the route line, built once.
 #[derive(Resource)]
@@ -842,7 +840,7 @@ pub fn update_route_visuals(
             bevy::camera::visibility::NoFrustumCulling,
             RouteVisual,
             // Hidden from orbit with the rest of the ground detail (ADR-025).
-            crate::systems::globe::HideInSpace,
+            crate::components::HideInSpace,
         ));
     };
 

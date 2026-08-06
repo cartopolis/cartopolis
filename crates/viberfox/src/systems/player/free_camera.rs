@@ -1,3 +1,4 @@
+use crate::components::FreeCamera;
 use bevy::math::{DQuat, DVec3};
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::camera::Exposure;
@@ -10,10 +11,8 @@ use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
 use crate::resources::{AvatarState, CameraState, CameraMode};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::gizmo::GizmoState;
-use crate::systems::rendering::RegionMesh;
+use crate::components::RegionMesh;
 
-#[derive(Component)]
-pub struct FreeCamera;
 
 /// Builds the camera's [`DistanceFog`] for a dev-panel density in 0.0–1.0 and a
 /// time of day. The falloff is exponential-squared so the near field stays clear
@@ -533,7 +532,7 @@ pub fn setup_camera(
                 NotShadowCaster,
                 // From orbit this 150 km disc reads as a bright circle over the
                 // anchor; hide it (and the tiles/regions) while the globe is up.
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             ));
         },
     );
@@ -548,7 +547,7 @@ pub fn setup_camera(
     // Spawned only when the atmosphere is enabled (startup choice — see above).
     if want_atmosphere {
         commands.spawn((
-            crate::systems::globe::PlanetAtmosphere,
+            crate::components::PlanetAtmosphere,
             Atmosphere::earth(medium),
             Transform::from_xyz(0.0, -EARTH_ATMOSPHERE_INNER_RADIUS, 0.0),
         ));

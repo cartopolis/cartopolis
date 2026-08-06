@@ -29,6 +29,8 @@
 //! the transit layer being on, the camera being near the ground, and vehicles
 //! being in range — the same discipline the boards and building streaming use.
 
+use crate::components::{VehicleBox, VehicleLabel};
+use crate::components::FreeCamera;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,7 +45,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::{http, storage};
 use crate::systems::data_layers::{DataLayers, TRANSIT_LAYER};
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::lat_lng_to_local;
@@ -191,13 +193,7 @@ pub struct TransitVehicles {
     painter: Option<LabelPainter>,
 }
 
-/// Marker for the in-world vehicle boxes.
-#[derive(Component)]
-pub struct VehicleBox;
 
-/// Marker for the billboarded line-number labels above the boxes.
-#[derive(Component)]
-pub struct VehicleLabel;
 
 /// Interpolated flat-frame position of a vehicle at time `now`.
 fn interp(s: &VehicleState, now: f64) -> Vec2 {

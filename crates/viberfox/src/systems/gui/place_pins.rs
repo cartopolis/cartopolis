@@ -32,13 +32,14 @@
 //! taken on the globe itself (`globe::GlobeState::direction_local`) and pins on
 //! the far side are dropped by the horizon test.
 
+use crate::components::FreeCamera;
 use bevy::prelude::*;
 use bevy::math::DVec3;
 use big_space::prelude::GridCell;
 
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE};
+use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{lat_lng_to_world, GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;

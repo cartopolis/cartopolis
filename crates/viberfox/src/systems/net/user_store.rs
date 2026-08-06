@@ -15,7 +15,7 @@ use big_space::prelude::GridCell;
 use serde::{Deserialize, Serialize};
 
 use crate::resources::CameraState;
-use crate::systems::free_camera::FreeCamera;
+use crate::components::FreeCamera;
 use crate::systems::geo_nav::{camera_geo, CameraPose, GeoNavState, Teleport};
 use crate::systems::map_stream::MapStream;
 

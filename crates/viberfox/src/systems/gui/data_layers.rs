@@ -16,6 +16,8 @@
 //!
 //! First layer: public transport stops (rail stations, tram stops, bus stops).
 
+use crate::components::{DataLayerMarkers, StopRing};
+use crate::components::FreeCamera;
 use std::collections::HashMap;
 
 use bevy::pbr::{
@@ -33,7 +35,7 @@ use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::osm_buildings::{
     lat_lng_to_local, overpass_query, MeshData,
 };
@@ -543,14 +545,7 @@ impl DataLayers {
     }
 }
 
-/// Marker component for spawned data-layer cell meshes.
-#[derive(Component)]
-pub struct DataLayerMarkers;
 
-/// A radiating ground ring at a POI (subtle visibility aid; the signs
-/// themselves are real-world sized and easy to miss from a distance).
-#[derive(Component)]
-pub struct StopRing;
 
 /// Info card for a clicked POI, anchored above its pole.
 #[derive(Clone)]
@@ -1171,7 +1166,7 @@ pub fn apply_feature_toggles(
         &mut Visibility,
         (
             Or<(
-                With<crate::systems::osm_buildings::OsmBuildingMesh>,
+                With<crate::components::OsmBuildingMesh>,
                 With<crate::systems::osm_buildings::WindowGlow>,
             )>,
             Without<crate::systems::lod22::Lod22Mesh>,
@@ -1181,7 +1176,7 @@ pub fn apply_feature_toggles(
         &mut Visibility,
         (
             With<crate::systems::lod22::Lod22Mesh>,
-            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
         ),
     >,
@@ -1189,13 +1184,13 @@ pub fn apply_feature_toggles(
     mut map: Query<
         (
             &mut Visibility,
-            Has<crate::systems::map_stream::StreamTileReady>,
-            Has<crate::systems::map_stream::MapBackstop>,
+            Has<crate::components::StreamTileReady>,
+            Has<crate::components::MapBackstop>,
         ),
         (
             With<crate::systems::map_stream::StreamTile>,
-            Without<crate::systems::rendering::RegionMesh>,
-            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::components::RegionMesh>,
+            Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             Without<crate::systems::lod22::Lod22Mesh>,
         ),
@@ -1203,9 +1198,9 @@ pub fn apply_feature_toggles(
     mut region_quads: Query<
         (&crate::components::Region, &mut Visibility),
         (
-            With<crate::systems::rendering::RegionMesh>,
+            With<crate::components::RegionMesh>,
             Without<crate::systems::map_stream::StreamTile>,
-            Without<crate::systems::osm_buildings::OsmBuildingMesh>,
+            Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
             Without<crate::systems::lod22::Lod22Mesh>,
         ),
@@ -1255,7 +1250,7 @@ pub fn apply_feature_toggles(
         Visibility::Hidden
     };
     // A tile with no imagery yet stays hidden so the coarser clipmap level beneath
-    // it shows through — blurry map, not grey squares (`map_stream::MapBackstop`
+    // it shows through — blurry map, not grey squares (`crate::components::MapBackstop`
     // has the argument). The coarsest level is exempt: nothing is stacked under it,
     // so hiding it would open a hole to the sky at the horizon. This has to happen
     // here rather than in `map_stream`, because this system is the sole visibility

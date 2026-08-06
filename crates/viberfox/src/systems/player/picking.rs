@@ -10,7 +10,7 @@ use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
-use crate::systems::rendering::PrimMesh;
+use crate::components::PrimMesh;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -37,7 +37,7 @@ pub fn prim_picking(
     // For the context menu's geographic point: the camera's floating-origin cell
     // (the `cameras` query above has no `GridCell`) and the map anchor to measure
     // against.
-    geo_cameras: Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
+    geo_cameras: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
@@ -196,7 +196,7 @@ pub fn prim_picking(
 /// `(lat, lng)` where the cursor ray meets the ground plane, or `None` when there
 /// is no anchor, no camera, or the ray points at the sky.
 fn map_geo_at(
-    cameras: &Query<(&GridCell, &Transform), With<crate::systems::free_camera::FreeCamera>>,
+    cameras: &Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     stream: &crate::systems::map_stream::MapStream,
     ray_dir: Vec3,
 ) -> Option<(f64, f64)> {
@@ -373,7 +373,7 @@ pub fn highlight_selected_prim(
             Entity,
             &Prim,
             &MeshMaterial3d<StandardMaterial>,
-            Has<crate::systems::rendering::OwnedMaterial>,
+            Has<crate::components::OwnedMaterial>,
         ),
         (With<Selected>, Changed<Selected>),
     >,
@@ -404,7 +404,7 @@ pub fn unhighlight_deselected_prim(
     query: Query<(
         &Prim,
         &MeshMaterial3d<StandardMaterial>,
-        Has<crate::systems::rendering::OwnedMaterial>,
+        Has<crate::components::OwnedMaterial>,
     )>,
     mut deselected: RemovedComponents<Selected>,
 ) {

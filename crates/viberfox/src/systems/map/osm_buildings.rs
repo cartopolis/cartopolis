@@ -19,6 +19,8 @@
 //! (relative to the anchor region tile); heights use the interim quad-to-metre
 //! scale until the real-metre frame (ADR-019) lands.
 
+use crate::components::OsmBuildingMesh;
+use crate::components::FreeCamera;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,7 +36,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
-use crate::systems::free_camera::{FreeCamera, WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use viberfox_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the
@@ -504,9 +506,6 @@ const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
 /// `lod22`'s cap because these meshes are the simplified tier and far cheaper.
 const MAX_FAR_DESPAWNS_PER_FRAME: usize = 6;
 
-/// Marker for spawned building meshes.
-#[derive(Component)]
-pub struct OsmBuildingMesh;
 
 /// An emissive window mesh; the value is its brightness multiplier (0 = never lit),
 /// scaled by the night factor in `update_window_glow`.
@@ -990,7 +989,7 @@ pub fn update_buildings(
                                 bevy::light::NotShadowCaster,
                                 // From orbit the patch reads as a grey blob over
                                 // the anchor; hidden with the tiles (ADR-025).
-                                crate::systems::globe::HideInSpace,
+                                crate::components::HideInSpace,
                             ))
                             .id(),
                     ];
@@ -1027,7 +1026,7 @@ pub fn update_buildings(
                                     // Proud-of-facade quads; see the detail-patch
                                     // window spawn — never worth shadow-casting.
                                     bevy::light::NotShadowCaster,
-                                    crate::systems::globe::HideInSpace,
+                                    crate::components::HideInSpace,
                                 ))
                                 .id(),
                         );
@@ -1230,7 +1229,7 @@ fn spawn_detail_patch(
                 patch_cell,
                 ChildOf(root),
                 OsmBuildingMesh,
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             ))
             .id();
         osm.detail_entities.push(entity);
@@ -1262,7 +1261,7 @@ fn spawn_detail_patch(
                 // shadow — rendering their (huge) quad soup into up to 8 cascade
                 // maps buys nothing.
                 bevy::light::NotShadowCaster,
-                crate::systems::globe::HideInSpace,
+                crate::components::HideInSpace,
             ))
             .id();
         osm.detail_entities.push(entity);
