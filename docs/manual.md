@@ -12,6 +12,7 @@ developer tools. For build/run instructions and system requirements, see the
   - [Sharing a place](#sharing-a-place)
 - [Authoring objects](#authoring-objects)
 - [Panels and layers](#panels-and-layers)
+  - [Height](#height)
 - [Developer panel](#developer-panel)
 - [Taking screenshots](#taking-screenshots)
   - [The documentation set (`cargo shots`)](#the-documentation-set-cargo-shots)
@@ -205,6 +206,23 @@ rather than flip while looking at the map:
 
 Live transit boards and vehicles appear in the world when the relevant layers are
 active.
+
+### Height
+
+The **Height** toggle at the bottom of the Layers panel is the one layer that is off
+by default, and the panel says why under it: *AHN elevation — Netherlands only*. On
+it, the ground stops being a flat plane and becomes measured terrain, and bridges get
+their real deck clearance instead of fighting the road underneath for the same
+surface. Outside the Netherlands it has nothing to answer with, so it stays flat.
+
+Two things follow from where the data comes from. It is fetched on demand from
+[PDOK](https://www.pdok.nl/)'s public AHN service, so the relief arrives a second or
+two after you move — the world builds flat first and re-tears when the measurements
+land. And because that is a third party's service, a headless run has to opt in
+explicitly with `--height`; there is no Layers panel to tick.
+
+Over a Dutch city the relief is only a couple of metres and the picture barely
+changes. The Veluwe is where you see it.
 
 ## Developer panel
 
