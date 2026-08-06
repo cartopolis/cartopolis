@@ -83,8 +83,8 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use big_space::prelude::GridCell;
 use serde::Serialize;
 
-use crate::resources::{CameraState, ScreenshotState};
 use crate::components::FreeCamera;
+use crate::resources::{CameraState, MapAnchor, ScreenshotState};
 use crate::systems::geo_nav::{CameraPose, GeoNavState, Teleport};
 use crate::systems::globe::{GlobeState, GlobeSurfaceAlbedo};
 use crate::systems::map_stream::MapStream;
@@ -976,11 +976,11 @@ pub fn setup_offscreen_target(
 pub fn place_camera(
     harness: Res<ShotHarness>,
     mut progress: ResMut<ShotProgress>,
-    stream: Res<MapStream>,
     mut nav: ResMut<GeoNavState>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    map_anchor: Res<MapAnchor>,
 ) {
-    if progress.placed || stream.geo_anchor().is_none() {
+    if progress.placed || map_anchor.geo.is_none() {
         return;
     }
     let Some(shot) = harness.shots.get(progress.index) else {

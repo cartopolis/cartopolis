@@ -53,18 +53,15 @@ pub fn render_menu_bar(
     mut app_exit: MessageWriter<AppExit>,
     // For the "how far away is this hit" line in the suggestion rows: the same
     // camera fix the HUD reads out.
-    stream: Res<crate::systems::map_stream::MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<
-        (&big_space::prelude::GridCell, &Transform),
-        With<crate::components::FreeCamera>,
-    >,
+    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     // Follow mode needs an avatar to follow (logged-in viewer only).
     avatars: Query<(), With<crate::components::Avatar>>,
     // Whether the bar is unfolded, and the decoded logo. Both survive across
     // frames; the texture is uploaded once, on the first frame that draws.
     mut open: Local<bool>,
     mut logo: Local<Option<egui::TextureHandle>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     // Driving takes the whole screen (bare basemap, manoeuvre card in this very
     // corner) — the address bar is not part of that chrome, mark included.
@@ -113,10 +110,8 @@ pub fn render_menu_bar(
     let viewer = camera
         .single()
         .ok()
-        .zip(stream.geo_anchor())
-        .map(|((cell, tf), anchor)| {
-            crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf)
-        });
+        .zip(map_anchor.geo)
+        .map(|((cell, tf), anchor)| crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf));
 
     let mut toggle = false;
     // A floating `Area` (not a `Panel::top`) so the side panels keep their full
@@ -125,160 +120,166 @@ pub fn render_menu_bar(
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(8.0, 8.0))
         .show(ctx, |ui| {
-        // `Frame::popup` rather than `theme::overlay_frame`: the shared overlay
-        // frame is translucent, which is right for a HUD readout and wrong behind
-        // a text field the user is typing into over a moving map. Folded, the card
-        // keeps the *margins* and drops the paint — the logo carries its own teal
-        // card, so a second one around it only muddies the mark, and matching the
-        // margins is what keeps the logo from jumping when the bar unfolds.
-        let frame = if *open {
-            egui::Frame::popup(ui.style())
-        } else {
-            egui::Frame::NONE
-        };
-        frame
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .show(ui, |ui| {
-        // A plain row, **not** `egui::MenuBar`: `MenuBar::ui` ends with
-        // `set_min_size(available_width, …)`, which is right for a bar spanning a
-        // window and exactly wrong for a card that is supposed to size to its
-        // content — it stretched the card ~230 pt past the last button. Its other
-        // job, sharing a menu config so hovering slides between open menus, has
-        // nothing left to do here now that there is one menu.
-        //
-        // `interact_size.y` is the row height and `horizontal` centres against it,
-        // so bumping it gives the buttons and the taller search field a common,
-        // roomier height that lines up.
-        ui.style_mut().spacing.interact_size.y = 26.0;
-        ui.style_mut().spacing.item_spacing.x = 6.0;
-        ui.horizontal(|ui| {
-            // The mark, and the switch. Frameless: the asset is already a rounded
-            // teal card, so egui's button frame would draw a box around a box.
-            let mark = match logo.as_ref() {
-                // A `SizedTexture` straight off the handle, not an `Image` from a
-                // URI: this bypasses egui's image *loader* machinery entirely
-                // (`egui_extras` is not a dependency), because the texture is
-                // already uploaded.
-                Some(tex) => ui.add(
-                    egui::Button::image(egui::load::SizedTexture::new(
-                        tex.id(),
-                        egui::Vec2::splat(theme::LOGO_SIZE),
-                    ))
-                    .frame(false),
-                ),
-                // No logo means a checkout without Git LFS. Say so in the tooltip
-                // rather than leaving a dead corner.
-                None => ui.add(
-                    egui::Button::new(egui::RichText::new("V").heading())
-                        .frame(false)
-                        .min_size(egui::Vec2::splat(theme::LOGO_SIZE)),
-                ),
+            // `Frame::popup` rather than `theme::overlay_frame`: the shared overlay
+            // frame is translucent, which is right for a HUD readout and wrong behind
+            // a text field the user is typing into over a moving map. Folded, the card
+            // keeps the *margins* and drops the paint — the logo carries its own teal
+            // card, so a second one around it only muddies the mark, and matching the
+            // margins is what keeps the logo from jumping when the bar unfolds.
+            let frame = if *open {
+                egui::Frame::popup(ui.style())
+            } else {
+                egui::Frame::NONE
             };
-            if mark
-                .on_hover_text(if *open { "Hide the address bar" } else { "Search and navigate" })
-                .clicked()
-            {
-                toggle = true;
-            }
-            if !*open {
-                return;
-            }
-            // Browser-style Back / Forward through the location history. Every
-            // teleport (search, bookmark, Home, coords) is a history entry.
-            if ui
-                .add_enabled(nav.can_go_back(), egui::Button::new("◀"))
-                .on_hover_text("Back to the previous location")
-                .on_disabled_hover_text("No previous location")
-                .clicked()
-            {
-                nav.go_back();
-            }
-            if ui
-                .add_enabled(nav.can_go_forward(), egui::Button::new("▶"))
-                .on_hover_text("Forward to the next location")
-                .on_disabled_hover_text("No next location")
-                .clicked()
-            {
-                nav.go_forward();
-            }
-            // Home button, browser-style, beside the address/search bar: jump to
-            // the user's saved Home location (set via the status panel's 🏠
-            // button). Disabled until a Home has been saved.
-            let home = store.data.home.clone();
-            let resp = ui
-                .add_enabled(home.is_some(), egui::Button::new("🏠"))
-                .on_hover_text("Go to your Home location")
-                .on_disabled_hover_text("No Home set — use the 🏠 button in the status panel");
-            if resp.clicked() {
-                if let Some(h) = &home {
-                    nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
-                        lat: h.lat,
-                        lng: h.lng,
-                        altitude: Some(h.altitude),
-                        pose: Some(h.pose.clone()),
+            frame
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    // A plain row, **not** `egui::MenuBar`: `MenuBar::ui` ends with
+                    // `set_min_size(available_width, …)`, which is right for a bar spanning a
+                    // window and exactly wrong for a card that is supposed to size to its
+                    // content — it stretched the card ~230 pt past the last button. Its other
+                    // job, sharing a menu config so hovering slides between open menus, has
+                    // nothing left to do here now that there is one menu.
+                    //
+                    // `interact_size.y` is the row height and `horizontal` centres against it,
+                    // so bumping it gives the buttons and the taller search field a common,
+                    // roomier height that lines up.
+                    ui.style_mut().spacing.interact_size.y = 26.0;
+                    ui.style_mut().spacing.item_spacing.x = 6.0;
+                    ui.horizontal(|ui| {
+                        // The mark, and the switch. Frameless: the asset is already a rounded
+                        // teal card, so egui's button frame would draw a box around a box.
+                        let mark = match logo.as_ref() {
+                            // A `SizedTexture` straight off the handle, not an `Image` from a
+                            // URI: this bypasses egui's image *loader* machinery entirely
+                            // (`egui_extras` is not a dependency), because the texture is
+                            // already uploaded.
+                            Some(tex) => ui.add(
+                                egui::Button::image(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    egui::Vec2::splat(theme::LOGO_SIZE),
+                                ))
+                                .frame(false),
+                            ),
+                            // No logo means a checkout without Git LFS. Say so in the tooltip
+                            // rather than leaving a dead corner.
+                            None => ui.add(
+                                egui::Button::new(egui::RichText::new("V").heading())
+                                    .frame(false)
+                                    .min_size(egui::Vec2::splat(theme::LOGO_SIZE)),
+                            ),
+                        };
+                        if mark
+                            .on_hover_text(if *open {
+                                "Hide the address bar"
+                            } else {
+                                "Search and navigate"
+                            })
+                            .clicked()
+                        {
+                            toggle = true;
+                        }
+                        if !*open {
+                            return;
+                        }
+                        // Browser-style Back / Forward through the location history. Every
+                        // teleport (search, bookmark, Home, coords) is a history entry.
+                        if ui
+                            .add_enabled(nav.can_go_back(), egui::Button::new("◀"))
+                            .on_hover_text("Back to the previous location")
+                            .on_disabled_hover_text("No previous location")
+                            .clicked()
+                        {
+                            nav.go_back();
+                        }
+                        if ui
+                            .add_enabled(nav.can_go_forward(), egui::Button::new("▶"))
+                            .on_hover_text("Forward to the next location")
+                            .on_disabled_hover_text("No next location")
+                            .clicked()
+                        {
+                            nav.go_forward();
+                        }
+                        // Home button, browser-style, beside the address/search bar: jump to
+                        // the user's saved Home location (set via the status panel's 🏠
+                        // button). Disabled until a Home has been saved.
+                        let home = store.data.home.clone();
+                        let resp = ui
+                            .add_enabled(home.is_some(), egui::Button::new("🏠"))
+                            .on_hover_text("Go to your Home location")
+                            .on_disabled_hover_text(
+                                "No Home set — use the 🏠 button in the status panel",
+                            );
+                        if resp.clicked() {
+                            if let Some(h) = &home {
+                                nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
+                                    lat: h.lat,
+                                    lng: h.lng,
+                                    altitude: Some(h.altitude),
+                                    pose: Some(h.pose.clone()),
+                                });
+                            }
+                        }
+                        // Browser-style geo search: place names via Nominatim, or pasted
+                        // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
+                        // reached from the always-visible bottom bar (🧭 Route), alongside the
+                        // other right-hand panels, rather than this card.
+                        crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
+
+                        // Camera mode, beside the address it applies to — "where am I looking
+                        // from" is the same question as "where am I". It sat in the bottom bar
+                        // while this strip auto-hid and could not be relied on.
+                        camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
+
+                        // The app menu, at the far end where a browser puts it. Probed rather
+                        // than hard-coded: `☰` is one of the few symbols the loaded font
+                        // actually has, but that is a fact about the font stack, not a
+                        // guarantee (see `theme::first_drawable`).
+                        let hamburger = theme::first_drawable(ui.ctx(), &["☰", "≡", "⋮", "="]);
+                        ui.menu_button(hamburger, |ui| {
+                            // Panels you *visit* rather than flip: Appearance is a wardrobe and
+                            // the Assistant is a conversation, so neither earns a permanent
+                            // disc in the dock next to the four places you actually navigate
+                            // between.
+                            for panel in [
+                                crate::resources::RightPanel::Appearance,
+                                crate::resources::RightPanel::Assistant,
+                            ] {
+                                // Same glyph the panel's own header wears, so the menu entry
+                                // and the badge it opens are recognisably one thing.
+                                let icon = theme::first_drawable(ui.ctx(), panel.icons());
+                                if ui
+                                    .selectable_label(
+                                        right_panel.is(panel),
+                                        format!("{icon}  {}", panel.label()),
+                                    )
+                                    .clicked()
+                                {
+                                    right_panel.toggle(panel);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            let dev_label = if dev_state.open {
+                                "Hide developer tools"
+                            } else {
+                                "Developer tools"
+                            };
+                            if ui.button(dev_label).clicked() {
+                                dev_state.open = !dev_state.open;
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Exit").clicked() {
+                                app_exit.write(AppExit::Success);
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text("Menu");
                     });
-                }
-            }
-            // Browser-style geo search: place names via Nominatim, or pasted
-            // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
-            // reached from the always-visible bottom bar (🧭 Route), alongside the
-            // other right-hand panels, rather than this card.
-            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
-
-            // Camera mode, beside the address it applies to — "where am I looking
-            // from" is the same question as "where am I". It sat in the bottom bar
-            // while this strip auto-hid and could not be relied on.
-            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
-
-            // The app menu, at the far end where a browser puts it. Probed rather
-            // than hard-coded: `☰` is one of the few symbols the loaded font
-            // actually has, but that is a fact about the font stack, not a
-            // guarantee (see `theme::first_drawable`).
-            let hamburger = theme::first_drawable(ui.ctx(), &["☰", "≡", "⋮", "="]);
-            ui.menu_button(hamburger, |ui| {
-                // Panels you *visit* rather than flip: Appearance is a wardrobe and
-                // the Assistant is a conversation, so neither earns a permanent
-                // disc in the dock next to the four places you actually navigate
-                // between.
-                for panel in [
-                    crate::resources::RightPanel::Appearance,
-                    crate::resources::RightPanel::Assistant,
-                ] {
-                    // Same glyph the panel's own header wears, so the menu entry
-                    // and the badge it opens are recognisably one thing.
-                    let icon = theme::first_drawable(ui.ctx(), panel.icons());
-                    if ui
-                        .selectable_label(
-                            right_panel.is(panel),
-                            format!("{icon}  {}", panel.label()),
-                        )
-                        .clicked()
-                    {
-                        right_panel.toggle(panel);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                let dev_label = if dev_state.open {
-                    "Hide developer tools"
-                } else {
-                    "Developer tools"
-                };
-                if ui.button(dev_label).clicked() {
-                    dev_state.open = !dev_state.open;
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Exit").clicked() {
-                    app_exit.write(AppExit::Success);
-                    ui.close();
-                }
-            })
-            .response
-            .on_hover_text("Menu");
+                });
         });
-        });
-    });
     if toggle {
         *open = !*open;
         // Folding it away drops the dropdown with it, or the suggestions would
@@ -393,13 +394,10 @@ pub fn render_dev_panel(
     mut weather: ResMut<crate::systems::weather::WeatherState>,
     mut shot: ResMut<crate::resources::ScreenshotState>,
     // For "📋 Copy as preset": the same camera fix the HUD reads.
-    stream: Res<crate::systems::map_stream::MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<
-        (&big_space::prelude::GridCell, &Transform),
-        With<crate::components::FreeCamera>,
-    >,
+    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     if !dev.open {
         return;
@@ -532,14 +530,25 @@ pub fn render_dev_panel(
             // this copies the current camera out as a pasteable `[[shot]]` block.
             // That is the whole handoff from "looks good here" to reproducible.
             ui.horizontal(|ui| {
-                let fix = camera.single().ok().zip(stream.geo_anchor()).map(|((cell, tf), anchor)| {
-                    let (lat, lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
-                    // (yaw, pitch, roll) — the same decomposition free_camera
-                    // uses to seed its look angles from the live view, so a
-                    // pasted preset reproduces this exact framing.
-                    let euler = tf.rotation.to_euler(EulerRot::YXZ);
-                    (lat, lng, globe.altitude_m(cell, tf), euler.1.to_degrees(), euler.0.to_degrees())
-                });
+                let fix = camera
+                    .single()
+                    .ok()
+                    .zip(map_anchor.geo)
+                    .map(|((cell, tf), anchor)| {
+                        let (lat, lng) =
+                            crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
+                        // (yaw, pitch, roll) — the same decomposition free_camera
+                        // uses to seed its look angles from the live view, so a
+                        // pasted preset reproduces this exact framing.
+                        let euler = tf.rotation.to_euler(EulerRot::YXZ);
+                        (
+                            lat,
+                            lng,
+                            globe.altitude_m(cell, tf),
+                            euler.1.to_degrees(),
+                            euler.0.to_degrees(),
+                        )
+                    });
                 let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
                 if ui
                     .add_enabled(fix.is_some(), egui::Button::new("📋 Copy as preset"))
@@ -1802,7 +1811,6 @@ fn apply_warp(prim: &mut Prim, w: &crate::resources::PrimWarp) {
 pub fn send_prim_mutations(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
-    stream: Res<crate::systems::map_stream::MapStream>,
     mut prim_query: Query<(
         Entity,
         &mut Prim,
@@ -1814,6 +1822,7 @@ pub fn send_prim_mutations(
     mut materials: ResMut<Assets<StandardMaterial>>,
     texture_cache: Res<PrimTextureCache>,
     online: Option<Res<OnlineSession>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     if let Some(dialog_state) = game_state.pending_prim_save.take() {
         if dialog_state.is_new {
@@ -1829,7 +1838,7 @@ pub fn send_prim_mutations(
             // the server-assigned id.
             let (Some(sess), Some(geo)) = (
                 online.as_ref(),
-                crate::systems::prim_geo::geo_from_world(&stream, pos),
+                crate::systems::prim_geo::geo_from_world(pos, &map_anchor),
             ) else {
                 tracing::warn!("cannot create prim: offline or world not anchored yet");
                 return;
@@ -1869,7 +1878,7 @@ pub fn send_prim_mutations(
             );
             if let (Some(sess), Some(geo)) = (
                 online.as_ref(),
-                crate::systems::prim_geo::geo_from_world(&stream, pos),
+                crate::systems::prim_geo::geo_from_world(pos, &map_anchor),
             ) {
                 let _ = sess.intent_tx.unbounded_send(NetMessage::UpdatePrim {
                     request_id: 0,

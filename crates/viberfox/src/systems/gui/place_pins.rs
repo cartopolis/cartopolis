@@ -33,16 +33,16 @@
 //! the far side are dropped by the horizon test.
 
 use crate::components::FreeCamera;
-use bevy::prelude::*;
+use crate::resources::MapAnchor;
 use bevy::math::DVec3;
+use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::theme;
 use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{lat_lng_to_world, GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
-use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
 /// Radius of the pin's round head, in points. The body is drawn from it, so this
@@ -71,15 +71,15 @@ pub fn render_place_pins(
     mut egui: ResMut<EguiManager>,
     store: Res<UserStore>,
     mut nav: ResMut<GeoNavState>,
-    stream: Res<MapStream>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    map_anchor: Res<MapAnchor>,
 ) {
     if store.data.bookmarks.is_empty() {
         return;
     }
-    let Some(anchor) = stream.geo_anchor() else {
+    let Some(anchor) = map_anchor.geo else {
         return; // no map yet; nothing to pin to
     };
     let Ok((cam, cam_cell, cam_tf)) = camera.single() else {

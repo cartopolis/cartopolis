@@ -751,3 +751,29 @@ impl NetworkMailbox {
         self.rx.lock().expect("network mailbox mutex poisoned")
     }
 }
+
+/// Where the map is anchored: a (lat, lng) plus base zoom, and a counter that
+/// bumps on every re-anchor.
+///
+/// This is the one thing most of the client wants from the tile streamer. 17 of
+/// the 24 modules that took `Res<MapStream>` called nothing on it but
+/// `geo_anchor()` — pulling in a resource that also carries a `CellStream`, a
+/// `HashMap<TileKey, Entity>`, an `Arc<AtomicU32>` and two asset handles, to read
+/// three numbers.
+///
+/// Splitting it out is not only tidiness. It is what makes the *ordering*
+/// expressible: the anchor is written by exactly two systems
+/// (`map_stream::init_map_stream` and `map_stream::apply_reanchor`) and read
+/// everywhere, but a reader could only order itself against the whole streamer,
+/// so almost none did — measured 2026-08-06, 17 of 23 readers had no ordering
+/// relation to `apply_reanchor` at all and saw whichever value the frame happened
+/// to hold. See `docs/notes/module-graph.md`.
+///
+/// `MapStream` remains the owner and the only writer; this is its published view.
+#[derive(Resource, Default)]
+pub struct MapAnchor {
+    /// `(lat, lng, base zoom)`. `None` until the first anchor is placed.
+    pub geo: Option<(f64, f64, u32)>,
+    /// Bumped on every re-anchor. Streamers rebuild their cells when it changes.
+    pub generation: u32,
+}

@@ -15,17 +15,17 @@
 //! text off the top. So the content is pinned to [`HUD_WIDTH`] up front, which
 //! bounds every inner row and keeps the box a fixed size.
 
+use crate::resources::MapAnchor;
 use web_time::Instant;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
+use crate::components::FreeCamera;
 use crate::resources::CameraState;
 use crate::systems::bookmarks::{BookmarksState, PLACEHOLDER_NAME};
 use crate::systems::egui_manager::EguiManager;
-use crate::components::FreeCamera;
 use crate::systems::geo_nav::{camera_geo, CameraPose};
-use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
 use crate::systems::transit_live::WorldClock;
 use crate::systems::user_store::UserStore;
@@ -627,7 +627,6 @@ pub fn render_hud(
     mut clock: ResMut<WorldClock>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
-    stream: Res<MapStream>,
     camera_state: Res<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut store: ResMut<UserStore>,
@@ -641,6 +640,7 @@ pub fn render_hud(
     // (copy "✔", set-home "✔") flash timers, bundled into one `Local` to stay
     // within Bevy's 16-system-param limit.
     mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
+    map_anchor: Res<MapAnchor>,
 ) {
     let ((h, m, s), is_local) = clock.hms();
     let cam = camera.single().ok();
@@ -656,7 +656,11 @@ pub fn render_hud(
         // Show the forecast only in Auto (in Manual the sim isn't using it).
         weather_info: weather.live.then(|| weather.latest).flatten().map(|o| {
             (
-                format!("{:.0}% cloud · {:.0}°C", o.cloud_cover * 100.0, o.air_temp_c),
+                format!(
+                    "{:.0}% cloud · {:.0}°C",
+                    o.cloud_cover * 100.0,
+                    o.air_temp_c
+                ),
                 format!(
                     "{:.0}% cloud · {:.1} mm/h · {:.0}°C · {:.0} m/s wind",
                     o.cloud_cover * 100.0,
@@ -667,7 +671,7 @@ pub fn render_hud(
             )
         }),
         geo: cam
-            .zip(stream.geo_anchor())
+            .zip(map_anchor.geo)
             .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf)),
         altitude,
         // The heading is not here: it is the compass's, and the compass is

@@ -7,7 +7,6 @@
 use crate::components::{Prim, Selected};
 use crate::resources::{EditDialogState, OnlineSession};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::map_stream::MapStream;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use std::f32::consts::TAU;
@@ -236,7 +235,7 @@ pub fn handle_gizmo_interaction(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
     online_session: Option<Res<OnlineSession>>,
-    stream: Res<MapStream>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     if selected_query.is_empty() {
         return;
@@ -274,10 +273,12 @@ pub fn handle_gizmo_interaction(
     // ── On release: clear drag state, send final network update ──────────────
     if mouse_buttons.just_released(MouseButton::Left) {
         if gizmo_state.active_axis.is_some() {
-            let Ok((transform, prim, cell)) = selected_query.single() else { return; };
+            let Ok((transform, prim, cell)) = selected_query.single() else {
+                return;
+            };
             if let Some(ref session) = online_session {
                 // ADR-029: persist the new position as an absolute geo anchor.
-                if let Some(geo) = crate::systems::prim_geo::geo_for(&stream, cell, transform) {
+                if let Some(geo) = crate::systems::prim_geo::geo_for(cell, transform, &map_anchor) {
                     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
                     let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
                         request_id: generate_request_id(),
@@ -354,7 +355,7 @@ pub fn handle_gizmo_interaction(
         gizmo_state.last_update_time = 0.0;
         if let Some(ref session) = online_session {
             // ADR-029: reproject the dragged position back to an absolute geo anchor.
-            if let Some(geo) = crate::systems::prim_geo::geo_for(&stream, cell, &transform) {
+            if let Some(geo) = crate::systems::prim_geo::geo_for(cell, &transform, &map_anchor) {
                 let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
                     request_id: generate_request_id(),
                     prim_id: prim.id,

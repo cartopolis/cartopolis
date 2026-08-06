@@ -22,20 +22,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bevy::math::DVec3;
-use bevy::prelude::*;
-use bevy::tasks::IoTaskPool;
 use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::TextureFormat;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::math::DVec3;
 use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
+use bevy::prelude::*;
+use bevy::render::render_resource::TextureFormat;
+use bevy::tasks::IoTaskPool;
 use bevy_image::{Image, ImageSampler};
 use big_space::prelude::{BigSpace, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::map_stream::MapStream;
 use crate::systems::globe_ocean::{GlobeOcean, GlobeOceanGloss, GlobeSurfaceMaterial};
+use crate::systems::map_stream::MapStream;
 use crate::systems::tile_loader::fetch_globe_tile_payload;
 use viberfox_core::geo::TangentFrame;
 use viberfox_core::world::tile_to_meters;

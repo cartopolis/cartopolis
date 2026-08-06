@@ -38,7 +38,7 @@ pub fn prim_picking(
     // (the `cameras` query above has no `GridCell`) and the map anchor to measure
     // against.
     geo_cameras: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
-    stream: Res<crate::systems::map_stream::MapStream>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
     if egui_manager.ctx.egui_wants_pointer_input() {
@@ -189,7 +189,7 @@ pub fn prim_picking(
         // same point `cell` + `tf` name absolutely, so adding both would count the
         // in-cell offset twice (`navigation::handle_route_map_pick` does the same
         // reconstruction and documents it).
-        context_menu.lat_lng = map_geo_at(&geo_cameras, &stream, ray_dir);
+        context_menu.lat_lng = map_geo_at(&geo_cameras, ray_dir, &map_anchor);
     }
 }
 
@@ -197,10 +197,10 @@ pub fn prim_picking(
 /// is no anchor, no camera, or the ray points at the sky.
 fn map_geo_at(
     cameras: &Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
-    stream: &crate::systems::map_stream::MapStream,
     ray_dir: Vec3,
+    map_anchor: &crate::resources::MapAnchor,
 ) -> Option<(f64, f64)> {
-    let anchor = stream.geo_anchor()?;
+    let anchor = map_anchor.geo?;
     let (cell, tf) = cameras.single().ok()?;
     let dir = ray_dir.as_dvec3();
     if dir.y > -1e-4 {

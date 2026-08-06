@@ -221,6 +221,7 @@ impl MapStream {
 /// tiles around the camera next frame; the on-disk tile cache keeps it cheap.
 pub fn apply_reanchor(
     mut stream: ResMut<MapStream>,
+    mut published: ResMut<crate::resources::MapAnchor>,
     tiles: Query<Entity, With<StreamTile>>,
 ) {
     let Some((lat, lng)) = stream.pending_reanchor.take() else {
@@ -297,6 +298,7 @@ const DEFAULT_ANCHOR_ZOOM: u32 = 17;
 
 pub fn init_map_stream(
     mut stream: ResMut<MapStream>,
+    mut published: ResMut<crate::resources::MapAnchor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     _tile_url: Res<OsmTileUrlTemplate>,
 ) {
@@ -309,6 +311,7 @@ pub fn init_map_stream(
     // to read a location from.
     let (clat, clng, z) = (DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
     stream.anchor = Some((clat, clng, z));
+    published.geo = stream.anchor;
     stream.current_zoom = z;
     stream.anchor_generation = stream.anchor_generation.wrapping_add(1);
     stream

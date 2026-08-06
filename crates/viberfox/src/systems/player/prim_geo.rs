@@ -7,6 +7,7 @@
 //! whenever that anchor moves. This is the prim-side mirror of how
 //! `rendering::spawn_regions` rebases regions into the grid.
 
+use crate::resources::MapAnchor;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
@@ -14,7 +15,6 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use crate::components::{Prim, PrimGeo};
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng};
-use crate::systems::map_stream::MapStream;
 use viberfox_core::GeoAnchor;
 
 /// Reconstruct a prim's absolute world position from its `GridCell` + local
@@ -32,20 +32,30 @@ fn world_position(cell: Option<&GridCell>, local: &Transform) -> DVec3 {
 /// geo coordinate to persist. Used by the authoring send path so the server
 /// stores lat/lng rather than a frame-relative offset. `None` if the world has
 /// no anchor yet (nothing streamed).
-pub fn geo_for(stream: &MapStream, cell: Option<&GridCell>, local: &Transform) -> Option<GeoAnchor> {
-    let anchor = stream.geo_anchor()?;
+pub fn geo_for(
+    cell: Option<&GridCell>,
+    local: &Transform,
+    map_anchor: &MapAnchor,
+) -> Option<GeoAnchor> {
+    let anchor = map_anchor.geo?;
     let world = world_position(cell, local);
     let (latitude, longitude) = world_to_lat_lng(anchor, world.x, world.z);
-    Some(GeoAnchor { latitude, longitude })
+    Some(GeoAnchor {
+        latitude,
+        longitude,
+    })
 }
 
 /// Convert an absolute world XZ position (metres, anchored frame) to a geo
 /// coordinate. For authoring a brand-new prim whose entity/`GridCell` doesn't
 /// exist yet — the authored position is taken as world-space (near the origin).
-pub fn geo_from_world(stream: &MapStream, world: Vec3) -> Option<GeoAnchor> {
-    let anchor = stream.geo_anchor()?;
+pub fn geo_from_world(world: Vec3, map_anchor: &MapAnchor) -> Option<GeoAnchor> {
+    let anchor = map_anchor.geo?;
     let (latitude, longitude) = world_to_lat_lng(anchor, world.x as f64, world.z as f64);
-    Some(GeoAnchor { latitude, longitude })
+    Some(GeoAnchor {
+        latitude,
+        longitude,
+    })
 }
 
 /// Place / re-project every geo-anchored prim into the big_space grid.
@@ -56,12 +66,12 @@ pub fn geo_from_world(stream: &MapStream, world: Vec3) -> Option<GeoAnchor> {
 /// horizontal placement follows the anchor.
 pub fn place_geo_prims(
     mut commands: Commands,
-    stream: Res<MapStream>,
     bigspace: Query<Entity, With<BigSpace>>,
     mut prims: Query<(Entity, &PrimGeo, &mut Transform, Option<&GridCell>), With<Prim>>,
     mut last_anchor: Local<Option<(f64, f64, u32)>>,
+    map_anchor: Res<MapAnchor>,
 ) {
-    let Some(anchor) = stream.geo_anchor() else {
+    let Some(anchor) = map_anchor.geo else {
         return; // world not anchored yet
     };
     let Ok(root) = bigspace.single() else {

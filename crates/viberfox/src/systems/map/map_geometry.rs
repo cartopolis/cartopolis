@@ -35,24 +35,24 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
-use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
+use crate::systems::furniture;
 use crate::systems::globe::GlobeState;
-use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
-use crate::systems::tile_loader::load_tile_image;
-use viberfox_core::{TileSourceKind, tile_source_kind};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
+use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::road_texture::{road_texture, RoadClass};
+use crate::systems::scatter;
+use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
-use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
-use crate::systems::furniture;
-use crate::systems::street_furniture::FurnitureLod;
-use crate::systems::scatter;
-use crate::systems::vegetation::VegetationLod;
+use crate::systems::tile_loader::load_tile_image;
 use crate::systems::vector_tiles::ShoreField;
+use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
+use crate::systems::vegetation::VegetationLod;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
 use viberfox_core::world::tile_to_meters;
 use viberfox_core::TileKey;
+use viberfox_core::{tile_source_kind, TileSourceKind};
 
 /// Cells are streamed at the vector source's own zoom — no overzoom, because
 /// geometry needs no LOD pyramid: the same mesh is correct at any distance. This

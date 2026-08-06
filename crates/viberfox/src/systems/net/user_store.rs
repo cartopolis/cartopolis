@@ -8,16 +8,16 @@
 //! world anchor exists, the saved camera state is restored and the last
 //! location is fed through the normal teleport path.
 
+use crate::resources::MapAnchor;
 use std::path::PathBuf;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 use serde::{Deserialize, Serialize};
 
-use crate::resources::CameraState;
 use crate::components::FreeCamera;
+use crate::resources::CameraState;
 use crate::systems::geo_nav::{camera_geo, CameraPose, GeoNavState, Teleport};
-use crate::systems::map_stream::MapStream;
 
 /// Seconds between autosave snapshots of the current location.
 const AUTOSAVE_INTERVAL: f32 = 5.0;
@@ -458,13 +458,13 @@ impl UserStore {
 pub fn restore_start_location(
     mut done: Local<bool>,
     store: Res<UserStore>,
-    stream: Res<MapStream>,
     mut nav: ResMut<GeoNavState>,
+    map_anchor: Res<MapAnchor>,
 ) {
     if *done {
         return;
     }
-    if stream.geo_anchor().is_none() {
+    if map_anchor.geo.is_none() {
         return; // anchor not up yet; try again next frame
     }
     *done = true;
@@ -572,13 +572,13 @@ pub fn autosave_user_store(
     mut next_at: Local<f32>,
     mut exits: MessageReader<AppExit>,
     mut store: ResMut<UserStore>,
-    stream: Res<MapStream>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
     cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
     dl: Res<crate::systems::data_layers::DataLayers>,
     dev: Res<crate::resources::DevPanelState>,
     weather: Res<crate::systems::weather::WeatherState>,
+    map_anchor: Res<MapAnchor>,
 ) {
     let exiting = exits.read().next().is_some();
     let due = time.elapsed_secs() >= *next_at;
@@ -594,7 +594,7 @@ pub fn autosave_user_store(
     // clear sky to what the user actually set.
     store.data.sky = Some(dl.sky_prefs(&dev, &weather));
 
-    if let (Some(anchor), Ok((cell, tf))) = (stream.geo_anchor(), cameras.single()) {
+    if let (Some(anchor), Ok((cell, tf))) = (map_anchor.geo, cameras.single()) {
         // Both through the shared camera fix (`camera_geo` / `altitude_m`): the
         // flat-frame lat/lng and the local `y` are only meaningful below the
         // space tier, and storing them from orbit is what saved a mid-ocean

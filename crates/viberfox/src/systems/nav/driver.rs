@@ -55,24 +55,23 @@
 //! motion when the feed carries none.
 
 use crate::components::DriverArrow;
+use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use web_time::Instant;
 
 use crate::components::Avatar;
 use crate::platform::location::LocationWatch;
-use crate::resources::{AvatarState, CameraMode, CameraState};
+use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::theme;
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
-use crate::systems::map_stream::MapStream;
 use crate::systems::navigation::RouteState;
 use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
+use crate::systems::theme;
 use crate::systems::vector_tiles;
 
 // ─── Tuning ──────────────────────────────────────────────────────────────────
@@ -458,10 +457,10 @@ pub fn drive_driver_mode(
     mut driver: ResMut<DriverState>,
     mut route: ResMut<RouteState>,
     mut nav: ResMut<GeoNavState>,
-    stream: Res<MapStream>,
     time: Res<Time>,
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+    map_anchor: Res<MapAnchor>,
 ) {
     // `route` is mutable only so leaving the route can ask for a new one (see the
     // reroute at the end of this system); everything else here reads it.
@@ -490,7 +489,7 @@ pub fn drive_driver_mode(
     let Some(r) = route.route.as_ref() else {
         return;
     };
-    let Some(anchor) = stream.geo_anchor() else {
+    let Some(anchor) = map_anchor.geo else {
         return;
     };
     if driver.geom_generation != Some(route.generation) {

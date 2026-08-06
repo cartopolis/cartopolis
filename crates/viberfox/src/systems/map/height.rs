@@ -387,14 +387,14 @@ const GROUND_PROBE_GRID: u32 = 16;
 /// GeoTIFF decode) works *here*. It costs one patch per place you fly to.
 pub fn probe_anchor_ground(
     mut layer: ResMut<HeightLayer>,
-    stream: Res<crate::systems::map_stream::MapStream>,
     dl: Res<DataLayers>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     if !dl.height_enabled {
         layer.ground_m = None;
         return;
     }
-    let Some((lat, lng, _)) = stream.geo_anchor() else {
+    let Some((lat, lng, _)) = map_anchor.geo else {
         return;
     };
     if !HeightLayer::covers(lat, lng) {

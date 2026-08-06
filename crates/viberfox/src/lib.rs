@@ -492,136 +492,135 @@ pub fn run() {
     // pops up, nothing can occlude (and blacken) a capture, and it works over SSH
     // or in CI with no compositor at all.
     let default_plugins = match shot_size {
-        Some(_) => default_plugins
-            .disable::<bevy::winit::WinitPlugin>()
-            .add(bevy::app::ScheduleRunnerPlugin::run_loop(
-                std::time::Duration::ZERO,
-            )),
+        Some(_) => default_plugins.disable::<bevy::winit::WinitPlugin>().add(
+            bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO),
+        ),
         None => default_plugins,
     };
 
     app.add_plugins(default_plugins)
-    .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
-    // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
-    // creates GlobalClusterSettings) — see the plugin's doc comment.
-    .add_plugins(ForceCpuClusteringPlugin)
-    .add_plugins(EguiPlugin)
-    // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
-    // PbrPlugin); it's attached as a component to the camera in setup_camera.
-    .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
-    .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
-    .add_plugins(MaterialPlugin::<MoonMaterial>::default())
-    .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
-    .add_plugins(MaterialPlugin::<CloudMaterial>::default())
-    .add_plugins(MaterialPlugin::<GlobeCloudMaterial>::default())
-    .add_plugins(MaterialPlugin::<RainMaterial>::default())
-    .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
-    .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
-    .init_resource::<GameState>()
-    .init_resource::<AvatarState>()
-    .init_resource::<LocalAvatarSimId>()
-    .init_resource::<CameraState>()
-    .init_resource::<MouseState>()
-    .init_resource::<systems::tile_loader::TileCache>()
-    // A scripted run never sees the server handshake that normally supplies the
-    // tile template, and the built-in fallback is the raster OSM basemap — which
-    // the route planner cannot solve against. A preset manifest may therefore pin
-    // its own source; `VIBE_TILE_URL` still wins over it (see `shot_presets`).
-    .insert_resource(match harness.as_ref().and_then(|h| h.tile_url.clone()) {
-        Some(url) if resources::tile_url_override().is_none() => {
-            OsmTileUrlTemplate(std::sync::Arc::new(std::sync::Mutex::new(url)))
-        }
-        _ => OsmTileUrlTemplate::default(),
-    })
-    .init_resource::<ContextMenuState>()
-    .init_resource::<EditDialogState>()
-    .init_resource::<systems::gizmo::GizmoState>()
-    .init_resource::<MarqueeState>()
-    .init_resource::<TextureLibrary>()
-    .init_resource::<PrimTextureCache>()
-    .init_resource::<systems::rendering::MeshCache>()
-    .init_resource::<systems::rendering::MaterialCache>()
-    .insert_resource(AiConfig {
-        api_key: std::env::var("ANTHROPIC_KEY").ok(),
-        model: std::env::var("ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
-    })
-    .init_resource::<AiAssistantState>()
-    .init_resource::<AvatarChooserState>()
-    // Which of the sky knobs below came from a flag, so `restore_sky_prefs`
-    // leaves them alone (a flag is an instruction for this launch).
-    .insert_resource(systems::user_store::SkyCliOverrides {
-        time: cli.time.is_some(),
-        fog: cli.fog.is_some(),
-        clouds: cli.clouds.is_some(),
-        rain: cli.rain.is_some(),
-        weather_live: cli.weather_live,
-    })
-    .insert_resource(DevPanelState {
-        time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
-        // A `--shot` capture must be deterministic, and an explicit `--time`
-        // pins the clock, so both start in Manual; a normal launch tracks the
-        // real local time of wherever the map opens.
-        sun_mode: if scripted || cli.time.is_some() {
-            resources::SunMode::Manual
-        } else {
-            resources::SunMode::Auto
-        },
-        fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
-        cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),
-        precipitation: cli.rain.unwrap_or(0.0).clamp(0.0, 1.0),
-        ..default()
-    })
-    .init_resource::<StatsState>()
-    .init_resource::<resources::ScreenshotState>()
-    .init_resource::<systems::osm_buildings::OsmBuildings>()
-    .init_resource::<systems::lod22::Lod22Buildings>()
-    .init_resource::<systems::collision::BuildingColliders>()
-    .init_resource::<systems::height::HeightLayer>()
-    .init_resource::<systems::terrain::TerrainField>()
-    .insert_resource({
-        // `--height` is the only way into the layer in a scripted run; an
-        // interactive session ticks it in the Layers panel (or restores it from
-        // `data/user.json`, which `apply_prefs` does after this).
-        let mut layers = systems::data_layers::DataLayers::default();
-        layers.height_enabled = cli.height;
-        layers
-    })
-    .init_resource::<systems::transit_live::TransitLive>()
-    .init_resource::<systems::transit_live::WorldClock>()
-    // Default to Auto (live met.no) in interactive runs; keep scripted captures
-    // deterministic — no network wait — unless `--weather-live` asks for it.
-    .insert_resource(systems::weather::WeatherState::with_live(
-        !scripted || cli.weather_live,
-    ))
-    .init_resource::<systems::transit_vehicles::TransitVehicles>()
-    .init_resource::<systems::geo_nav::GeoNavState>()
-    .init_resource::<systems::navigation::RouteState>()
-    .init_resource::<systems::driver::DriverState>()
-    .init_resource::<systems::route_ahead::RouteAhead>()
-    .init_resource::<systems::bookmarks::BookmarksState>()
-    .insert_resource(systems::user_store::UserStore::load())
-    .init_resource::<systems::map_stream::MapStream>()
-    .init_resource::<systems::map_geometry::MapSurfaces>()
-    // Filled by the same streamer, cell for cell (`systems::street_labels`).
-    .init_resource::<systems::street_labels::StreetLabelStore>()
-    .init_resource::<systems::street_labels::StreetLabelSigns>()
-    // Must come after the `WaterMaterial` plugin above: it mints the shared
-    // handle out of `Assets<WaterMaterial>`.
-    .init_resource::<systems::water::WaterSeaState>()
-    .init_resource::<systems::vegetation::VegetationLod>()
-    .init_resource::<systems::street_furniture::FurnitureLod>()
-    .init_resource::<systems::globe::GlobeState>()
-    .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
-    .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
-    // Space background: the atmosphere skybox covers this everywhere in the local
-    // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
-    .insert_resource(ClearColor(Color::BLACK))
-    // 2048 rather than 4096: with sun + moon each casting 4 cascades, a night
-    // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
-    // memory versus 4096² for a barely-perceptible near-shadow softness at this
-    // scene's cascade distances.
-    .insert_resource(DirectionalLightShadowMap { size: 2048 });
+        .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
+        // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
+        // creates GlobalClusterSettings) — see the plugin's doc comment.
+        .add_plugins(ForceCpuClusteringPlugin)
+        .add_plugins(EguiPlugin)
+        // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
+        // PbrPlugin); it's attached as a component to the camera in setup_camera.
+        .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
+        .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
+        .add_plugins(MaterialPlugin::<MoonMaterial>::default())
+        .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
+        .add_plugins(MaterialPlugin::<CloudMaterial>::default())
+        .add_plugins(MaterialPlugin::<GlobeCloudMaterial>::default())
+        .add_plugins(MaterialPlugin::<RainMaterial>::default())
+        .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+        .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
+        .init_resource::<GameState>()
+        .init_resource::<AvatarState>()
+        .init_resource::<LocalAvatarSimId>()
+        .init_resource::<CameraState>()
+        .init_resource::<MouseState>()
+        .init_resource::<systems::tile_loader::TileCache>()
+        // A scripted run never sees the server handshake that normally supplies the
+        // tile template, and the built-in fallback is the raster OSM basemap — which
+        // the route planner cannot solve against. A preset manifest may therefore pin
+        // its own source; `VIBE_TILE_URL` still wins over it (see `shot_presets`).
+        .insert_resource(match harness.as_ref().and_then(|h| h.tile_url.clone()) {
+            Some(url) if resources::tile_url_override().is_none() => {
+                OsmTileUrlTemplate(std::sync::Arc::new(std::sync::Mutex::new(url)))
+            }
+            _ => OsmTileUrlTemplate::default(),
+        })
+        .init_resource::<ContextMenuState>()
+        .init_resource::<EditDialogState>()
+        .init_resource::<systems::gizmo::GizmoState>()
+        .init_resource::<MarqueeState>()
+        .init_resource::<TextureLibrary>()
+        .init_resource::<PrimTextureCache>()
+        .init_resource::<systems::rendering::MeshCache>()
+        .init_resource::<systems::rendering::MaterialCache>()
+        .insert_resource(AiConfig {
+            api_key: std::env::var("ANTHROPIC_KEY").ok(),
+            model: std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string()),
+        })
+        .init_resource::<AiAssistantState>()
+        .init_resource::<AvatarChooserState>()
+        // Which of the sky knobs below came from a flag, so `restore_sky_prefs`
+        // leaves them alone (a flag is an instruction for this launch).
+        .insert_resource(systems::user_store::SkyCliOverrides {
+            time: cli.time.is_some(),
+            fog: cli.fog.is_some(),
+            clouds: cli.clouds.is_some(),
+            rain: cli.rain.is_some(),
+            weather_live: cli.weather_live,
+        })
+        .insert_resource(DevPanelState {
+            time_of_day: cli.time.unwrap_or(12.0).rem_euclid(24.0),
+            // A `--shot` capture must be deterministic, and an explicit `--time`
+            // pins the clock, so both start in Manual; a normal launch tracks the
+            // real local time of wherever the map opens.
+            sun_mode: if scripted || cli.time.is_some() {
+                resources::SunMode::Manual
+            } else {
+                resources::SunMode::Auto
+            },
+            fog_density: cli.fog.unwrap_or(0.15).clamp(0.0, 1.0),
+            cloud_cover: cli.clouds.unwrap_or(0.0).clamp(0.0, 1.0),
+            precipitation: cli.rain.unwrap_or(0.0).clamp(0.0, 1.0),
+            ..default()
+        })
+        .init_resource::<StatsState>()
+        .init_resource::<resources::ScreenshotState>()
+        .init_resource::<systems::osm_buildings::OsmBuildings>()
+        .init_resource::<systems::lod22::Lod22Buildings>()
+        .init_resource::<systems::collision::BuildingColliders>()
+        .init_resource::<systems::height::HeightLayer>()
+        .init_resource::<systems::terrain::TerrainField>()
+        .insert_resource({
+            // `--height` is the only way into the layer in a scripted run; an
+            // interactive session ticks it in the Layers panel (or restores it from
+            // `data/user.json`, which `apply_prefs` does after this).
+            let mut layers = systems::data_layers::DataLayers::default();
+            layers.height_enabled = cli.height;
+            layers
+        })
+        .init_resource::<systems::transit_live::TransitLive>()
+        .init_resource::<systems::transit_live::WorldClock>()
+        // Default to Auto (live met.no) in interactive runs; keep scripted captures
+        // deterministic — no network wait — unless `--weather-live` asks for it.
+        .insert_resource(systems::weather::WeatherState::with_live(
+            !scripted || cli.weather_live,
+        ))
+        .init_resource::<systems::transit_vehicles::TransitVehicles>()
+        .init_resource::<systems::geo_nav::GeoNavState>()
+        .init_resource::<systems::navigation::RouteState>()
+        .init_resource::<systems::driver::DriverState>()
+        .init_resource::<systems::route_ahead::RouteAhead>()
+        .init_resource::<systems::bookmarks::BookmarksState>()
+        .insert_resource(systems::user_store::UserStore::load())
+        .init_resource::<systems::map_stream::MapStream>()
+        .init_resource::<resources::MapAnchor>()
+        .init_resource::<systems::map_geometry::MapSurfaces>()
+        // Filled by the same streamer, cell for cell (`systems::street_labels`).
+        .init_resource::<systems::street_labels::StreetLabelStore>()
+        .init_resource::<systems::street_labels::StreetLabelSigns>()
+        // Must come after the `WaterMaterial` plugin above: it mints the shared
+        // handle out of `Assets<WaterMaterial>`.
+        .init_resource::<systems::water::WaterSeaState>()
+        .init_resource::<systems::vegetation::VegetationLod>()
+        .init_resource::<systems::street_furniture::FurnitureLod>()
+        .init_resource::<systems::globe::GlobeState>()
+        .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
+        .init_resource::<systems::globe_ocean::GlobeOceanGloss>()
+        // Space background: the atmosphere skybox covers this everywhere in the local
+        // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
+        .insert_resource(ClearColor(Color::BLACK))
+        // 2048 rather than 4096: with sun + moon each casting 4 cascades, a night
+        // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
+        // memory versus 4096² for a barely-perceptible near-shadow softness at this
+        // scene's cascade distances.
+        .insert_resource(DirectionalLightShadowMap { size: 2048 });
 
     // Connection mode (ADR-016):
     //  - `--connect ADDR` (or `server` in the login file) → external sim.

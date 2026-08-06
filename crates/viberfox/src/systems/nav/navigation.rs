@@ -32,7 +32,7 @@ use bevy::tasks::IoTaskPool;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::http;
-use crate::resources::{OsmTileUrlTemplate, RightPanel};
+use crate::resources::{MapAnchor, OsmTileUrlTemplate, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::free_camera::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::systems::geo_nav::{
@@ -41,14 +41,14 @@ use crate::systems::geo_nav::{
 };
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
-use crate::systems::theme;
 use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
 };
+use crate::systems::theme;
 use crate::systems::tile_loader::load_tile_image;
-use viberfox_core::{TileSourceKind, tile_source_kind};
 use crate::systems::vector_tiles::{self, TileData};
 use viberfox_core::TileKey;
+use viberfox_core::{tile_source_kind, TileSourceKind};
 
 /// Typing pause before an endpoint field is geocoded — the search bar's value, so
 /// the two feel the same.
@@ -637,8 +637,8 @@ pub fn handle_route_map_pick(
     egui_manager: Res<EguiManager>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    stream: Res<MapStream>,
     cameras: Query<(&Camera, &GlobalTransform, &GridCell, &Transform), With<FreeCamera>>,
+    map_anchor: Res<MapAnchor>,
 ) {
     let Some(end) = route.picking else {
         return;
@@ -650,7 +650,7 @@ pub fn handle_route_map_pick(
     if egui_manager.ctx.egui_wants_pointer_input() {
         return;
     }
-    let (Ok(window), Ok(anchor)) = (windows.single(), stream.geo_anchor().ok_or(())) else {
+    let (Ok(window), Ok(anchor)) = (windows.single(), map_anchor.geo.ok_or(())) else {
         return;
     };
     let Some(cursor) = window.cursor_position() else {
@@ -962,10 +962,16 @@ fn disc(radius: f32) -> Mesh {
         let next = 1 + (i + 1) % SEGMENTS;
         indices.extend([0u32, next as u32, (i + 1) as u32]);
     }
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; positions.len()])
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-        .with_inserted_indices(Indices::U32(indices))
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        vec![[0.0, 1.0, 0.0]; positions.len()],
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 // ─── The planner panel ───────────────────────────────────────────────────────
@@ -978,9 +984,9 @@ pub fn render_route_panel(
     mut right_panel: ResMut<RightPanel>,
     mut nav: ResMut<GeoNavState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
-    stream: Res<MapStream>,
     globe: Res<GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    map_anchor: Res<MapAnchor>,
 ) {
     let open_before = right_panel.is(RightPanel::Route);
     if !open_before {
@@ -991,7 +997,7 @@ pub fn render_route_panel(
     let here = camera
         .single()
         .ok()
-        .zip(stream.geo_anchor())
+        .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
 
     // Fill the start in the moment the panel can see one, so the user only ever

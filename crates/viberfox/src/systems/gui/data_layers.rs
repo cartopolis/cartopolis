@@ -1180,7 +1180,6 @@ pub fn apply_feature_toggles(
             Without<crate::systems::osm_buildings::WindowGlow>,
         ),
     >,
-    stream: Res<crate::systems::map_stream::MapStream>,
     mut map: Query<
         (
             &mut Visibility,
@@ -1205,6 +1204,7 @@ pub fn apply_feature_toggles(
             Without<crate::systems::lod22::Lod22Mesh>,
         ),
     >,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     // Mirror the panel's 3DBAG toggle into `osm_buildings`' coverage gate — the
     // coverage predicates are free functions over statics, out of reach of this
@@ -1273,13 +1273,12 @@ pub fn apply_feature_toggles(
     // recognisable thing in an otherwise empty view, which reads as "streaming
     // is broken" rather than "you are somewhere else". Hide it once the map
     // anchor has left its tile; the streamed tiles cover that ground now.
-    let anchor_tile = stream.geo_anchor().map(|(clat, clng, z)| {
+    let anchor_tile = map_anchor.geo.map(|(clat, clng, z)| {
         let (ax, ay) = viberfox_core::world::lat_lng_to_tile(clat, clng, z);
         (ax, ay, z as i64)
     });
     for (region, mut vis) in region_quads.iter_mut() {
-        let stale = anchor_tile
-            .is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
+        let stale = anchor_tile.is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
         let want = if stale { Visibility::Hidden } else { want };
         if *vis != want {
             *vis = want;

@@ -35,6 +35,7 @@
 //! cursor, so [`drag_ghost`] does.
 
 use crate::components::FreeCamera;
+use crate::resources::MapAnchor;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
@@ -44,12 +45,11 @@ use big_space::prelude::GridCell;
 use crate::platform::http;
 use crate::resources::CameraState;
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::theme;
 use crate::systems::free_camera::WORLD_CELL_EDGE;
 use crate::systems::geo_nav::{
     nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };
-use crate::systems::map_stream::MapStream;
+use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
 /// What a rename or a drag is targeting — the two id spaces are separate, so it
@@ -348,24 +348,26 @@ pub fn render_bookmarks_panel(
     mut bookmarks: ResMut<BookmarksState>,
     mut store: ResMut<UserStore>,
     mut nav: ResMut<GeoNavState>,
-    stream: Res<MapStream>,
     camera_state: Res<CameraState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
+    map_anchor: Res<MapAnchor>,
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Places);
     let mut open = open_before;
 
     // Current location + view, for the per-place "update to here" action.
-    let current = camera.single().ok().zip(stream.geo_anchor()).map(
-        |((cell, tf), anchor)| {
+    let current = camera
+        .single()
+        .ok()
+        .zip(map_anchor.geo)
+        .map(|((cell, tf), anchor)| {
             let wx = cell.x as f64 * WORLD_CELL_EDGE as f64 + tf.translation.x as f64;
             let wz = cell.z as f64 * WORLD_CELL_EDGE as f64 + tf.translation.z as f64;
             let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
             let alt = cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64;
             (lat, lng, alt, CameraPose::capture(&camera_state))
-        },
-    );
+        });
 
     let mut rows = Vec::new();
     flatten(&store, None, 0, &mut rows);

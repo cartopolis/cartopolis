@@ -1,7 +1,8 @@
-use crate::systems::egui_manager::EguiManager;
 use crate::components::{Prim, Region};
-use crate::resources::{AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse};
-use crate::systems::map_stream::MapStream;
+use crate::resources::{
+    AiAssistantState, AiConfig, DisplayMessage, OnlineSession, PendingAiResponse,
+};
+use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -374,9 +375,9 @@ pub fn poll_ai_response(
     mut state: ResMut<AiAssistantState>,
     config: Res<AiConfig>,
     online: Option<Res<OnlineSession>>,
-    stream: Res<MapStream>,
     prim_query: Query<(Entity, &Prim, &Transform)>,
     region_query: Query<&Region>,
+    map_anchor: Res<crate::resources::MapAnchor>,
 ) {
     // Fire request when the user submitted a message
     if state.pending_send && state.pending.is_none() {
@@ -386,9 +387,10 @@ pub fn poll_ai_response(
             return;
         }
         state.input.clear();
-        state
-            .display_messages
-            .push(DisplayMessage { is_user: true, text: text.clone() });
+        state.display_messages.push(DisplayMessage {
+            is_user: true,
+            text: text.clone(),
+        });
         state
             .api_messages
             .push(serde_json::json!({"role": "user", "content": text}));
@@ -396,7 +398,11 @@ pub fn poll_ai_response(
         state.tool_round = 0;
 
         if let Some(key) = config.api_key.clone() {
-            state.pending = Some(fire_request(key, config.model.clone(), state.api_messages.clone()));
+            state.pending = Some(fire_request(
+                key,
+                config.model.clone(),
+                state.api_messages.clone(),
+            ));
         }
         return;
     }
@@ -486,9 +492,9 @@ pub fn poll_ai_response(
                     &tool_name,
                     input,
                     online.as_deref(),
-                    &stream,
                     &prim_query,
                     &region_query,
+                    &map_anchor,
                 );
 
                 state.display_messages.push(DisplayMessage {
@@ -525,9 +531,9 @@ fn run_tool(
     name: &str,
     input: &serde_json::Value,
     online: Option<&OnlineSession>,
-    stream: &MapStream,
     prim_query: &Query<(Entity, &Prim, &Transform)>,
     region_query: &Query<&Region>,
+    map_anchor: &crate::resources::MapAnchor,
 ) -> String {
     match name {
         "list_prims" => {
@@ -563,7 +569,7 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, pos) else {
+            let Some(geo) = crate::systems::prim_geo::geo_from_world(pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
             let _ = session.intent_tx.unbounded_send(NetMessage::CreatePrim {
@@ -637,7 +643,7 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            let Some(geo) = crate::systems::prim_geo::geo_from_world(stream, new_pos) else {
+            let Some(geo) = crate::systems::prim_geo::geo_from_world(new_pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
             let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
