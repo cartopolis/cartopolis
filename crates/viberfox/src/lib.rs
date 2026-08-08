@@ -2614,20 +2614,36 @@ fn update_star_sky(
 #[derive(Component)]
 struct Clouds;
 
-/// Height of the cloud layer above the camera, in metres — a mid-level deck.
+/// Height of the low cloud layer above the camera, in metres — a mid-level deck.
 const CLOUD_LAYER_HEIGHT: f32 = 2_500.0;
-/// Noise frequency (m⁻¹) — must match `FREQ` in `shaders/clouds.wgsl` so the
-/// CPU-side world-anchor offset lands in the same units as the shader's sample.
-const CLOUD_FREQ: f32 = 0.00034;
+/// Height of the high (cirrus) deck. The gap between the two is what produces
+/// parallax as the camera translates — see the shader's header.
+const CLOUD_HIGH_LAYER_HEIGHT: f32 = 7_000.0;
+/// Vertical extent of the low deck, in metres. The sun march traverses it, so it
+/// sets how far a shadow is thrown across the field at a given sun elevation.
+const CLOUD_DECK_THICKNESS: f32 = 900.0;
 /// Overall cloud opacity before the coverage/altitude/space fades.
 const CLOUD_OPACITY: f32 = 0.92;
+/// How prominent the high cirrus deck is relative to the low one.
+const CLOUD_HIGH_OPACITY: f32 = 0.55;
 /// Edge softness of the coverage cutoff (0 = hard, higher = wispier margins).
-const CLOUD_SOFTNESS: f32 = 0.18;
-/// Wind velocity in the shader's UV units per second (drifts the deck). The
-/// visible field spans ~1.7 UV units, so ~0.04/s crosses it in ~40 s — a clear
-/// drift without racing (the old 0.004 was imperceptible).
-/// (`systems::water` reuses the direction so the waves travel with the clouds.)
-pub const CLOUD_WIND: Vec2 = Vec2::new(0.04, 0.015);
+///
+/// Widened from 0.18 when the alpha curve became Beer's law: at an optical depth
+/// of 7 a column is 60 % opaque a quarter of the way up the coverage ramp, where
+/// the old `smoothstep().powf(0.75)` needed half of it, so the *visible* edge band
+/// halved. Roughly doubling the ramp restores it.
+const CLOUD_SOFTNESS: f32 = 0.30;
+/// Wind velocity in metres/second (drifts the deck). Faster than any real wind —
+/// it is tuned so the field visibly crosses the sky in well under a minute rather
+/// than to be meteorologically honest. (`systems::water` reuses the *direction*
+/// so the waves travel with the clouds; only that is load-bearing there.)
+pub const CLOUD_WIND: Vec2 = Vec2::new(118.0, 44.0);
+/// Gain on the sunlit scattering term. The scattering model is not
+/// energy-conserving, so this is the one knob that sets the deck's absolute
+/// brightness; the *shape* of the lighting comes from the shader.
+const CLOUD_SUN_GAIN: f32 = 1.0;
+/// Gain on the ambient sky term — how much the shadowed side is filled in.
+const CLOUD_AMBIENT_GAIN: f32 = 1.0;
 /// Clouds are at full strength up to this camera altitude, then fade out so a
 /// high flight or orbit view sees clear sky (the shell is a ceiling seen from
 /// below; flying *above* the deck to look down on the tops is a follow-up).
@@ -2636,29 +2652,35 @@ const CLOUD_FADE_LOW: f32 = 2_000.0;
 const CLOUD_FADE_HIGH: f32 = 9_000.0;
 
 /// Camera-centred procedural cloud ceiling, alpha-blended over the sky. Coverage
-/// is driven by the dev panel (`DevPanelState::cloud_cover`); lit/shadow colours
-/// track the day/night cycle so the deck matches the sun (see `update_clouds`).
+/// is driven by the dev panel (`DevPanelState::cloud_cover`); the sun and sky
+/// colours are the *same* day/night model the sunlight and the fog are built
+/// from, so the deck can't drift off the sky's palette (see `update_clouds`).
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct CloudMaterial {
-    /// x: coverage 0–1, y: softness, z: time (wind clock), w: layer height (m).
+    /// x: coverage 0–1, y: softness, z: time (wind clock), w: low deck height (m).
     #[uniform(0)]
     params0: Vec4,
-    /// xy: wind velocity, z: space fade (1 = hidden), w: altitude fade.
+    /// xy: wind velocity (m/s), z: space fade (1 = hidden), w: altitude fade.
     #[uniform(1)]
     params1: Vec4,
-    /// World direction to the sun (for the self-shadow tap).
+    /// xyz: world direction to the sun. w: deck thickness (m), for the sun march.
     #[uniform(2)]
     sun_dir: Vec4,
-    /// Sunlit cloud-top colour; alpha carries the overall opacity.
+    /// Sunlight reaching the deck's altitude; alpha carries the overall opacity.
     #[uniform(3)]
-    lit_color: LinearRgba,
-    /// Shadowed underside colour.
+    sun_color: LinearRgba,
+    /// Ambient sky light on the deck; alpha scales the high deck's opacity.
     #[uniform(4)]
-    shadow_color: LinearRgba,
-    /// xy: world-anchor offset in UV units (camera displacement from the anchor
-    /// × the shader's FREQ), so the deck stays fixed over the ground.
+    sky_color: LinearRgba,
+    /// xy: world-anchor offset in metres (camera displacement from the anchor), so
+    /// the deck stays fixed over the ground. z: the camera fog's per-metre density
+    /// (aerial perspective). w: high deck height (m).
     #[uniform(5)]
     params2: Vec4,
+    /// The colour the deck recedes into with distance — the camera's fog colour,
+    /// so cloud and sky reach the horizon together.
+    #[uniform(6)]
+    haze_color: LinearRgba,
 }
 
 impl Material for CloudMaterial {
@@ -2701,9 +2723,10 @@ fn setup_clouds(
         params0: Vec4::ZERO, // set each frame from the dev panel
         params1: Vec4::ZERO,
         sun_dir: Vec4::Y,
-        lit_color: LinearRgba::WHITE,
-        shadow_color: LinearRgba::BLACK,
+        sun_color: LinearRgba::WHITE,
+        sky_color: LinearRgba::BLACK,
         params2: Vec4::ZERO,
+        haze_color: LinearRgba::BLACK,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -2716,14 +2739,25 @@ fn setup_clouds(
 }
 
 /// Keeps the cloud shell centred on the camera, drives coverage from the dev
-/// panel and lit/shadow colours from the day/night cycle, and fades the deck out
-/// with altitude (high flight / orbit) and the space tier.
+/// panel and the lighting from the day/night cycle, and fades the deck out with
+/// altitude (high flight / orbit) and the space tier.
+///
+/// The two light colours are the load-bearing part: a cloud's colour has to be an
+/// *output of the sky model* rather than a palette of its own
+/// (`docs/notes/cloud-lighting.md`). So the sun colour is `utils::sun`'s
+/// transmittance — the very function the sun light and the fog colour are built
+/// from — and the haze colour is read straight off the camera's own
+/// `DistanceFog`, which is what the horizon shell paints. Hand-authored
+/// lit/shadow constants used to live here, and they drifted.
 #[allow(clippy::type_complexity)]
 fn update_clouds(
     dev: Res<DevPanelState>,
     time: Res<Time>,
     globe: Res<systems::globe::GlobeState>,
-    camera: Query<(&GridCell, &GlobalTransform, &Transform), (With<Camera3d>, Without<Clouds>)>,
+    camera: Query<
+        (&GridCell, &GlobalTransform, &Transform, &DistanceFog),
+        (With<Camera3d>, Without<Clouds>),
+    >,
     mut clouds: Query<
         (
             &mut Transform,
@@ -2734,7 +2768,7 @@ fn update_clouds(
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
 ) {
-    let Ok((cell, cam, cam_local)) = camera.single() else {
+    let Ok((cell, cam, cam_local, fog)) = camera.single() else {
         return;
     };
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
@@ -2758,18 +2792,34 @@ fn update_clouds(
         *vis = want;
     }
 
-    // Lit tops and shadowed undersides track the day/night cycle: sun-tinted and
-    // bright by day, deep blue-grey at night (the deck goes with the sky).
-    let day = utils::sun::daylight(dev.time_of_day, dev.sun_declination_rad);
-    let (sun_c, _) = sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
-    let sun_v = LinearRgba::from(sun_c).to_vec4();
-    let day_lit = Vec4::splat(1.0).lerp(sun_v, 0.5);
-    let night_lit = Vec4::new(0.06, 0.08, 0.13, 1.0);
-    let mut lit = night_lit.lerp(day_lit, day);
-    lit.w = CLOUD_OPACITY;
-    let day_shadow = Vec4::new(0.45, 0.50, 0.60, 1.0).lerp(sun_v, 0.2);
-    let night_shadow = Vec4::new(0.02, 0.03, 0.06, 1.0);
-    let shadow = night_shadow.lerp(day_shadow, day);
+    let hours = dev.time_of_day;
+    let decl = dev.sun_declination_rad;
+    let day = utils::sun::daylight(hours, decl);
+
+    // Sunlight *at deck altitude* — less air above the deck than above the city,
+    // so it is brighter and less reddened than the beam the ground gets. That
+    // difference is what makes a sunset deck read as lit from above rather than
+    // as a grey lid, and it is why the sun colour can't just be reused from
+    // `sun_light`. Faded out through sunrise/sunset by the disc's own occlusion,
+    // so the scattering term goes to nothing rather than snapping off.
+    let beam = utils::sun::sun_transmittance_at(hours, decl, CLOUD_LAYER_HEIGHT);
+    let sun_rgb = beam * utils::sun::sun_disc(hours, decl) * CLOUD_SUN_GAIN;
+
+    // Ambient sky light filling the shadowed side. Built from the same
+    // ingredients — and in the same shape — as `free_camera::distance_fog`'s
+    // colour, so the two agree at every hour instead of being two guesses at the
+    // same sky: a grey-blue day dome, near-black at night, warmed toward the sun's
+    // own tint while it sits near the horizon.
+    let tint = beam / beam.max_element().max(1e-4);
+    let warm = 0.35 * utils::sun::horizon_proximity(hours, decl);
+    let sky_day = Vec3::new(0.38, 0.44, 0.55);
+    // Deliberately brighter, and warmer, than the fog's night colour: a cloud base
+    // over a city catches its glow from below, so an overcast night sky reads as a
+    // dim lid rather than as a void. Matching the fog exactly here would make the
+    // deck darker than the sky behind it and turn it into black holes in the star
+    // field — the one place cloud and fog should *not* agree.
+    let sky_night = Vec3::new(0.045, 0.045, 0.055);
+    let sky_rgb = sky_night.lerp(sky_day, day) * Vec3::ONE.lerp(tint, warm) * CLOUD_AMBIENT_GAIN;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params0 = Vec4::new(
@@ -2779,16 +2829,40 @@ fn update_clouds(
             CLOUD_LAYER_HEIGHT,
         );
         mat.params1 = Vec4::new(CLOUD_WIND.x, CLOUD_WIND.y, space, alt_fade);
-        mat.sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad).extend(0.0);
-        mat.lit_color = LinearRgba::from_vec4(lit);
-        mat.shadow_color = LinearRgba::from_vec4(shadow);
+        mat.sun_dir = sun_direction(hours, decl).extend(CLOUD_DECK_THICKNESS);
+        mat.sun_color = LinearRgba::new(sun_rgb.x, sun_rgb.y, sun_rgb.z, CLOUD_OPACITY);
+        mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
+        mat.haze_color = fog.color.to_linear();
         // World-anchor: the camera's horizontal position in the local anchor
-        // frame (× FREQ, matching the shader) so the deck stays fixed over the
-        // ground as you fly under it, rather than sliding with the camera.
+        // frame, in metres, so the deck stays fixed over the ground as you fly
+        // under it rather than sliding with the camera. Metres, not the shader's
+        // UV units, because the two decks have different frequencies — and it
+        // retires the `CLOUD_FREQ` constant that existed only to mirror the
+        // shader's, one duplicated number less to keep in step.
         let edge = crate::grid::WORLD_CELL_EDGE as f32;
         let world_x = cell.x as f32 * edge + cam_local.translation.x;
         let world_z = cell.z as f32 * edge + cam_local.translation.z;
-        mat.params2 = Vec4::new(world_x * CLOUD_FREQ, world_z * CLOUD_FREQ, 0.0, 0.0);
+        mat.params2 = Vec4::new(
+            world_x,
+            world_z,
+            fog_density_coefficient(&fog.falloff),
+            CLOUD_HIGH_LAYER_HEIGHT,
+        );
+    }
+}
+
+/// Per-metre density of a [`FogFalloff`], for the cloud deck's aerial perspective
+/// — 0 whenever the fog is off.
+///
+/// `free_camera::distance_fog` only ever builds `ExponentialSquared` (fog on) or
+/// `Linear` at infinity (fog off), and the shader hard-codes the squared curve to
+/// match. `Exponential` is mapped anyway so a future falloff change degrades to
+/// "slightly wrong haze" rather than to no haze at all.
+fn fog_density_coefficient(falloff: &FogFalloff) -> f32 {
+    match falloff {
+        FogFalloff::ExponentialSquared { density } => *density,
+        FogFalloff::Exponential { density } => *density,
+        _ => 0.0,
     }
 }
 
