@@ -93,10 +93,33 @@ fn air_mass(sin_elevation: f32) -> f32 {
     1.0 / (s + 0.50572 * (h_deg + 6.079_95).powf(-1.636_4))
 }
 
+/// Scale height of the atmosphere (metres): the altitude over which air density
+/// falls by 1/e. Everything above an observer at height `h` is a column of
+/// `exp(-h/H)` of the sea-level one, which is why a cloud deck is lit by a
+/// warmer, brighter sun than the ground beneath it.
+const SCALE_HEIGHT_M: f32 = 8_500.0;
+
 /// Per-channel atmospheric transmittance of the direct sun beam for a time of day.
 /// Encodes both the sun's color (channel ratios) and its dimming (magnitude).
 pub fn sun_transmittance(hours: f32, decl_rad: f32) -> Vec3 {
-    let depth = RAYLEIGH + AEROSOL * haze(hours);
+    sun_transmittance_at(hours, decl_rad, 0.0)
+}
+
+/// [`sun_transmittance`] for an observer `alt_m` metres above sea level.
+///
+/// Only the air *above* the observer extincts the beam, so the optical depth is
+/// scaled by the barometric factor `exp(-alt/H)`. This is what makes a cloud deck
+/// catch pink and gold while the city under it has already gone blue and dim —
+/// the term real-time sky models usually approximate with a flat fudge factor
+/// (see `docs/notes/cloud-lighting.md`).
+///
+/// The factorisation is the standard plane-parallel approximation: for a slant
+/// path through a stratified atmosphere the density scaling and the air-mass
+/// factor don't strictly separate, but at cloud altitudes the error is far below
+/// anything visible.
+pub fn sun_transmittance_at(hours: f32, decl_rad: f32, alt_m: f32) -> Vec3 {
+    let column = (-alt_m.max(0.0) / SCALE_HEIGHT_M).exp();
+    let depth = (RAYLEIGH + AEROSOL * haze(hours)) * column;
     (-depth * air_mass(sun_direction(hours, decl_rad).y)).exp()
 }
 
@@ -207,6 +230,35 @@ pub fn ambient_sky_color(hours: f32, decl_rad: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::solar_time_of_day;
+
+    /// A cloud deck sees less air than the ground does, so it keeps more of the
+    /// beam — and keeps *disproportionately* more blue, because Rayleigh strips
+    /// blue first and there is less Rayleigh left to strip. That colour
+    /// difference, not the brightness one, is what makes a sunset deck read as
+    /// lit from above rather than as a grey lid.
+    #[test]
+    fn the_sun_is_brighter_and_bluer_above_the_haze() {
+        use super::{sun_transmittance, sun_transmittance_at};
+
+        // Low sun: the long slant path is where altitude buys the most.
+        let (hours, decl) = (17.5, 0.0);
+        let ground = sun_transmittance(hours, decl);
+        let deck = sun_transmittance_at(hours, decl, 2_500.0);
+
+        // Every channel survives better up there.
+        assert!(deck.x > ground.x && deck.y > ground.y && deck.z > ground.z);
+        // …and the blue end gains proportionally more, so the deck is less red.
+        let ground_ratio = ground.z / ground.x;
+        let deck_ratio = deck.z / deck.x;
+        assert!(
+            deck_ratio > ground_ratio,
+            "deck b/r {deck_ratio} should exceed ground b/r {ground_ratio}"
+        );
+
+        // Sea level must be exactly the old behaviour — this is the same function.
+        let sea = sun_transmittance_at(hours, decl, 0.0);
+        assert!((sea - ground).length() < 1e-6);
+    }
 
     /// The sun's elevation must carry the season: at the summer solstice the day
     /// is long (sun still well up at 19:00 solar time and past the horizon at
