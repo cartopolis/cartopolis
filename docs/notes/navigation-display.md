@@ -141,6 +141,42 @@ vertices pull the camera in for every bend and the view breathes its way down th
 road. Both effects fold into the same eased target the orientation writes, so
 neither can produce a cut.
 
+## Where the marker sits on screen is arithmetic, so it is a test
+
+**Measured 2026-08-08, by projecting the rig the way `free_camera`'s Follow arm
+places it** (`driver::marker_screen_y`, Bevy's default 45° vertical FOV, marker =
+the avatar's ground point, 0 = top of the viewport):
+
+| orientation | lookahead | marker |
+|---|---|---|
+| 3D (perspective) | 0.55 | **0.673** |
+| heading up / north up | 0.30 *(before)* | **0.833** |
+| heading up / north up | 0.18 *(now)* | **0.706** |
+
+The flat rigs were putting the marker in the bottom sixth of the screen — all but
+under the speed pill, with nothing visible beside or behind the vehicle. It went
+unnoticed for the obvious reason: the machine this is built on has no GPU, the
+number appears in no log, and "the camera looks a bit low" is not something a test
+was checking. A steep view magnifies a ground-plane aim offset far more than a low
+one does, which is why the two orientations cannot share a fraction and why
+transplanting the perspective value was wrong.
+
+The projection is now a unit test over all three orientations across the full
+range of `rig_scale`. **It mirrors `free_camera`'s placement and will go stale
+silently if that moves** — the test would keep passing against geometry the
+renderer no longer uses.
+
+## North-up must aim along the course, not along the camera
+
+`CameraState::drive_lookahead` was a scalar, applied along the camera's ground
+forward. In the heading-up views that *is* the course, so it was right by
+coincidence. In north-up the camera holds north whatever the vehicle is doing, so
+driving south aimed the look point north — the marker pinned to the bottom edge
+and the road ahead ran off the screen within a few tens of metres, i.e. the
+orientation was worst exactly where it was needed. It is a world-XZ vector now,
+written from the course, and zero outside driver mode so nothing branches on the
+mode to read it.
+
 ## Distance to the turn is a countdown, not a measurement
 
 `format_distance` rounds to 10 m at every scale, which is right for a fact being

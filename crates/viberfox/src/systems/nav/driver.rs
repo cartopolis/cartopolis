@@ -119,9 +119,17 @@ use crate::systems::vector_tiles;
 /// reads `CameraState::drive_lookahead`) — and it is fractional per orientation,
 /// because the same offset that tips the low chase view down the road would tip
 /// the flat map view off it and onto the horizon.
+///
+/// The fractions are **solved**, not guessed: [`marker_screen_y`] projects the
+/// marker through the rig the way `free_camera` places it, and the test pins each
+/// orientation into the lower third. The flat one was 0.30 and put the marker at
+/// 83% down the screen — the bottom sixth, all but touching the speed pill, with
+/// nothing visible beside or behind. A steep view magnifies a ground offset far
+/// more than a low one does, which is exactly why the two cannot share a number
+/// and why eyeballing one from the other went wrong.
 const FLAT_DISTANCE: f32 = 240.0;
 const FLAT_PITCH: f32 = 1.35; // ~77°
-const FLAT_LOOKAHEAD: f32 = 0.30;
+const FLAT_LOOKAHEAD: f32 = 0.18;
 const PERSPECTIVE_DISTANCE: f32 = 170.0;
 const PERSPECTIVE_PITCH: f32 = 0.38; // ~22°
 const PERSPECTIVE_LOOKAHEAD: f32 = 0.55;
@@ -896,7 +904,7 @@ pub fn steady_driver_camera(
         // Leaving: put back exactly what was taken, once.
         if let Some(save) = driver.camera_save.take() {
             camera_state.drive_locked = false;
-            camera_state.drive_lookahead = 0.0;
+            camera_state.drive_lookahead = Vec2::ZERO;
             camera_state.mode = save.mode;
             camera_state.distance = save.distance;
             camera_state.pitch = save.pitch;
@@ -939,10 +947,17 @@ pub fn steady_driver_camera(
     let pitch = (base_pitch + driver.peek.pitch).clamp(0.12, 1.50);
     camera_state.distance += (distance - camera_state.distance) * ease;
     camera_state.pitch += (pitch - camera_state.pitch) * ease;
-    // Eased through the *fraction*, so switching orientation slides the aim point
-    // along with the tilt instead of snapping the horizon.
-    let aim = camera_state.distance * lookahead;
-    camera_state.drive_lookahead += (aim - camera_state.drive_lookahead) * ease;
+    // Aim down the road the vehicle is on, in world XZ. Along the **course**, not
+    // along the camera's forward: the two agree in the heading-up views and do not
+    // in north-up, where the camera holds north and aiming along it pushed the
+    // look point north while you drove south — the road ahead then ran off the
+    // bottom of the screen. Eased through the offset itself, so switching
+    // orientation slides the aim point along with the tilt instead of snapping the
+    // horizon.
+    let aim =
+        Vec2::new(driver.course.sin(), driver.course.cos()) * camera_state.distance * lookahead;
+    let toward_aim = (aim - camera_state.drive_lookahead) * ease;
+    camera_state.drive_lookahead += toward_aim;
 
     // Screen-up direction. The camera sits at `(sin az, ., cos az) * d` from the
     // avatar and looks back at it, so its forward on the ground is
@@ -1070,6 +1085,38 @@ fn apply_gesture(peek: &mut Peek, g: Gesture, ease: f32) {
     if (peek.zoom - 1.0).abs() < 1e-3 && peek.azimuth.abs() < 1e-3 && peek.pitch.abs() < 1e-3 {
         *peek = Peek::default();
     }
+}
+
+/// Where the marker lands on screen for a rig, as a fraction from the top of the
+/// viewport (0.5 is dead centre, 1.0 the bottom edge).
+///
+/// This is the framing rule made checkable. "The marker sits in the lower third"
+/// is the one thing about a navigation camera that must be true and the one thing
+/// this project cannot screenshot on the machine it is built on — but it is
+/// arithmetic, not a matter of taste, so it is a test rather than a look.
+///
+/// **It mirrors `free_camera`'s Follow arm and has to keep mirroring it**: camera
+/// at `avatar + (sin az · d cos p, d sin p + EYE, cos az · d cos p)`, look target
+/// at `avatar + EYE·Y + aim`. Solved in the plane containing both, which is legal
+/// because the aim is horizontal and the camera offset has no component across it
+/// once the azimuth is the course. Change the placement over there and this goes
+/// stale silently — the test would keep passing against the old geometry.
+fn marker_screen_y(distance: f32, pitch: f32, aim_m: f32, fov_y: f32) -> f32 {
+    /// The 1.5 m both the camera offset and the look target are raised by.
+    const EYE: f32 = 1.5;
+    // Camera and target in the (forward, up) plane, with the avatar at the origin
+    // and "forward" the direction the aim points.
+    let cam = Vec2::new(-distance * pitch.cos(), distance * pitch.sin() + EYE);
+    let target = Vec2::new(aim_m, EYE);
+    let dir = (target - cam).normalize();
+    // Screen-up: perpendicular to the view direction, in the same plane.
+    let up = Vec2::new(-dir.y, dir.x);
+    let up = if up.y < 0.0 { -up } else { up };
+    let to_marker = -cam; // the avatar's ground point
+    let depth = to_marker.dot(dir);
+    let offset = to_marker.dot(up);
+    // Perspective divide, then NDC (−1 top, +1 bottom) to a fraction from the top.
+    0.5 - 0.5 * (offset / depth) / (fov_y * 0.5).tan()
 }
 
 /// What to multiply the orientation's chase distance by: further back at speed,
@@ -2353,6 +2400,63 @@ mod tests {
             );
             assert!(s >= prev - 1e-6, "not monotonic at {d} m");
             prev = s;
+        }
+    }
+
+    /// Every orientation must put the marker in the lower third — far enough down
+    /// that the screen is spent on the road ahead, not so far that it is under the
+    /// speed pill with nothing visible beside it. The flat rigs failed this at 83%
+    /// and nobody could see it, because the machine this is built on cannot take a
+    /// screenshot and the number is not in any log.
+    #[test]
+    fn every_orientation_puts_the_marker_in_the_lower_third() {
+        // Bevy's `PerspectiveProjection::default()`, which `setup_camera` keeps.
+        const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
+        // Comfortably inside the band, not merely on the right side of it: the
+        // rig scale moves the distance by ±55% and the framing must not drift out.
+        const BAND: std::ops::RangeInclusive<f32> = 0.64..=0.78;
+
+        for orientation in [
+            MapOrientation::Perspective,
+            MapOrientation::HeadingUp,
+            MapOrientation::NorthUp,
+        ] {
+            let (base, pitch, lookahead) = orientation.rig();
+            // Across everything `rig_scale` can do: standing still on a long leg,
+            // at the reference speed, and at the tightest a junction pulls it.
+            for scale in [RIG_JUNCTION_TIGHTEN, 1.0, 1.0 + RIG_SPEED_STRETCH] {
+                let d = base * scale;
+                let y = marker_screen_y(d, pitch, d * lookahead, FOV_Y);
+                assert!(
+                    BAND.contains(&y),
+                    "{orientation:?} at ×{scale}: marker at {y:.3} down the screen",
+                );
+            }
+        }
+    }
+
+    /// The projection itself, against two cases that can be reasoned about without
+    /// it — otherwise the framing test above is only checking its own arithmetic.
+    #[test]
+    fn the_marker_projection_agrees_with_its_degenerate_cases() {
+        const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
+        // Aiming at the vehicle all but centres it — "all but", because the look
+        // target is the 1.5 m eye point and the marker is the ground under it, so
+        // the marker sits a hair *below* centre and the hair shrinks with
+        // distance. Never above it, at any tilt.
+        let mut last = f32::INFINITY;
+        for (d, p) in [(60.0, 0.9), (170.0, 0.38), (240.0, 1.35)] {
+            let y = marker_screen_y(d, p, 0.0, FOV_Y);
+            assert!((0.5..0.52).contains(&y), "d={d} p={p}: {y}");
+            assert!(y < last, "the eye-height offset must shrink with distance");
+            last = y;
+        }
+        // Aiming further ahead always pushes it further down, never back up.
+        let mut prev = 0.0;
+        for i in 0..=50 {
+            let y = marker_screen_y(240.0, 1.35, 240.0 * 0.01 * i as f32, FOV_Y);
+            assert!(y >= prev, "aiming further ahead moved the marker up at {i}");
+            prev = y;
         }
     }
 
