@@ -1565,9 +1565,16 @@ mod tests {
     #[test]
     fn fine_tiles_keep_the_minimum_grid() {
         for z in 5..=QT_MAX_Z {
-            assert_eq!(qt_segs(z), QT_SEGS, "z{z} is paying for coarse-tile curvature");
+            assert_eq!(
+                qt_segs(z),
+                QT_SEGS,
+                "z{z} is paying for coarse-tile curvature"
+            );
         }
-        assert!(qt_segs(QT_MIN_Z) > QT_SEGS, "the coarse floor got no refinement");
+        assert!(
+            qt_segs(QT_MIN_Z) > QT_SEGS,
+            "the coarse floor got no refinement"
+        );
     }
 
     /// The ancestor chain that backs a set of leaves — the rule
@@ -1624,7 +1631,10 @@ mod tests {
         let next_door = TileKey::new(1051, 681, 11);
         let chain = backstops(&[here.clone(), next_door], &[here]);
         // They share everything from z10 up (1050>>1 == 1051>>1 == 525).
-        assert!(chain.contains(&TileKey::new(525, 340, 10)), "shared parent lost");
+        assert!(
+            chain.contains(&TileKey::new(525, 340, 10)),
+            "shared parent lost"
+        );
         assert_eq!(chain.len(), (11 - QT_MIN_Z) as usize);
     }
 
