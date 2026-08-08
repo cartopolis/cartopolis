@@ -68,6 +68,34 @@ Two secondary findings from the same run, both against theories that sound right
   warm street 5.6 s and 34.7 ms/frame, against 4.1 s and 29.8 ms at the balanced
   split. More rasterisation threads stop paying well before the cores run out.
 
+## HTTP/3 was considered for the tile fetch and rejected (2026-08-08)
+
+Asked directly: would QUIC speed up tile streaming? No, and the reasons are worth
+keeping so it is not re-proposed.
+
+* **On the web build it is already there and the client has no say.** The origin
+  answers `alt-svc: h3=":443"` (Caddy), so browsers upgrade after first contact.
+  `ehttp` → `fetch` chooses nothing.
+* **On native, `ureq` 2.9 is HTTP/1.1 only**, but the wins QUIC brings are already
+  bought another way: head-of-line blocking is sidestepped by the shared
+  `Agent`'s 16 idle connections per host, and the handshake is amortised by that
+  same pool (the ~90 ms measurement in `platform::http`'s doc comment).
+* **The remaining time is bytes, not round trips.** Measured against
+  `tiles.garage44.eu` from inside the VPS (so RTT ≈ 0 — a floor, not a client
+  figure): TLS handshake ~47 ms, server ~13 ms, body ~70 KB. A 245-tile fill is
+  ~17 MB. On a consumer link that is bandwidth, and no protocol makes a link
+  faster.
+* **The cost is a whole HTTP stack.** `ureq` has no h3; it would mean `reqwest` +
+  its unstable `http3` feature (behind `RUSTFLAGS --cfg reqwest_unstable`) or
+  hand-rolled `quinn` + `h3` (0.0.x), plus rustls, re-earning gzip and pooling,
+  under the wasm32 / pure-Rust constraint.
+
+If protocol work is ever wanted anyway, **HTTP/2 is the better trade than
+HTTP/3**: the same multiplexing win, stable in `reqwest`, and the origin already
+speaks it. What has *not* been measured is the split of the cold-minus-warm 5.7 s
+above into TTFB versus body time; that number decides the whole question and
+nothing in the tree records it.
+
 ## The open question, and what any answer must beat
 
 Whether to move rasterisation off the CPU. **Deferred** 2026-07-25 to finish the
