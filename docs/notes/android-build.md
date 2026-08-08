@@ -154,10 +154,29 @@ until there is a release story.
 ## Verification status, 2026-08-08
 
 Built and packaged in the headless container; **never run on a device or an
-emulator**. The container has no GPU, no KVM and no Android runtime, so what is
-proven is that the crate cross-compiles, links a `.so` with the right entrypoint,
-and packages into an APK that `apksigner verify` accepts. Whether Bevy acquires a
-Vulkan surface, whether the touch bridges land as they do in a browser, and
-whether 63 MB of glTF loads through the `AssetManager` in reasonable time are all
-open, and the first `adb install` will answer them. Treat a first run as
-diagnosis and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+emulator**. The container has no GPU, no KVM and no Android runtime.
+
+What is actually proven, and it is worth knowing exactly how far it goes:
+
+- `arm64-v8a`, `android-release`, 28 min from cold. APK 46 MB; the `.so` is
+  152 MB uncompressed, being unstripped.
+- `apksigner verify` passes (v3 scheme).
+- The archive holds `AndroidManifest.xml`, `resources.arsc`, `res/`,
+  `lib/arm64-v8a/libviberfox_android.so` and all 35 files of `assets/` — and
+  **no `classes.dex`**, which is the check that `hasCode="false"` is telling the
+  truth.
+- `android_main` is present in the `.so`'s dynamic symbol table as a `GLOBAL
+  FUNC`. This is the one worth re-running after any change to the crate graph:
+  the symbol is looked up by name from C, nothing in Rust references it, and if
+  the linker ever drops it the APK still builds and signs and simply fails to
+  start.
+- Its only `DT_NEEDED` entries are `libdl`, `liblog`, `libandroid`, `libm`,
+  `libc` — all on every device. Nothing needs `libc++_shared.so`, so the APK does
+  not ship one; if a future dependency pulls in C++, that changes and the missing
+  library is a load-time failure, not a build one.
+
+Everything past "does it load" is open, and the first `adb install` answers it:
+whether Bevy acquires a Vulkan surface and survives pause/resume, whether the
+touch bridges behave as they do in a browser, and whether 63 MB of glTF loads
+through the `AssetManager` in a tolerable time. Treat a first run as diagnosis
+and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.
