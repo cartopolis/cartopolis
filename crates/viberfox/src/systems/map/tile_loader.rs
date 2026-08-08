@@ -253,7 +253,14 @@ pub enum GlobeTilePayload {
 impl GlobeTilePayload {
     /// The CPU half: rasterise (or image-decode) and pack the ocean mask into
     /// alpha. Pure computation, so it runs on a worker.
-    pub fn decode(self) -> Result<(image::RgbaImage, bool), String> {
+    ///
+    /// `size` is the edge length to rasterise a vector body at — the globe passes
+    /// its own [`globe::GLOBE_TILE_PX`], which is deliberately smaller than the
+    /// flat map's [`vector_tiles::TILE_PX`] (see `render_mvt_sized`). A raster
+    /// source arrives at whatever size it was served at and is left alone.
+    ///
+    /// [`globe::GLOBE_TILE_PX`]: crate::systems::globe::GLOBE_TILE_PX
+    pub fn decode(self, size: u32) -> Result<(image::RgbaImage, bool), String> {
         use crate::systems::vector_tiles;
 
         match self {
@@ -268,14 +275,11 @@ impl GlobeTilePayload {
                 // One parse for both passes: the render and the mask read the same
                 // layers, and each used to open its own `Reader` over this body.
                 let tile = vector_tiles::TileData::parse(&bytes)?;
-                let pixels = vector_tiles::render_mvt(&tile, sub).map_err(|e| e.to_string())?;
-                let mut rgba = image::RgbaImage::from_raw(
-                    vector_tiles::TILE_PX,
-                    vector_tiles::TILE_PX,
-                    pixels,
-                )
-                .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
-                match vector_tiles::ocean_mask(&tile, sub) {
+                let pixels =
+                    vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
+                let mut rgba = image::RgbaImage::from_raw(size, size, pixels)
+                    .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
+                match vector_tiles::ocean_mask_sized(&tile, sub, size) {
                     Ok(mask) if mask.len() == (rgba.width() * rgba.height()) as usize => {
                         for (px, m) in rgba.pixels_mut().zip(mask) {
                             px.0[3] = m;
@@ -344,7 +348,7 @@ pub fn load_region_tiles(
                     tile.data,
                     tile.mip_count,
                     bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::default(),
+                    TILE_TEXTURE_USAGE,
                     ImageSampler::linear(),
                 );
                 let handle = images.add(bevy_image);
@@ -495,6 +499,20 @@ mod tests {
         assert!(vector.ends_with("5319.mvt"));
     }
 }
+
+/// A streamed tile texture's [`RenderAssetUsages`].
+///
+/// `RENDER_WORLD` **without** `MAIN_WORLD`, which is not the default: the default
+/// keeps the decoded pixels alive in `Assets<Image>` for the lifetime of the
+/// handle *as well as* on the GPU, so every tile is paid for twice. Nothing reads
+/// a tile's pixels back — they are decoded once on a worker, uploaded, and only
+/// ever sampled — so the main-world copy is pure overhead, and at the globe
+/// quadtree's several hundred live tiles it is hundreds of megabytes of it.
+///
+/// The cost of getting this wrong is not subtle but it is silent: a consumer that
+/// later wants CPU pixels (a readback, a resize) finds `Image::data` is `None`
+/// once the asset has been prepared.
+pub const TILE_TEXTURE_USAGE: RenderAssetUsages = RenderAssetUsages::RENDER_WORLD;
 
 /// Assemble an [`Image`] from a pre-packed mipmap chain (see [`build_mip_chain`]).
 /// Uses `new_uninit` to skip `Image::new`'s mip-0-only length assertion, then
