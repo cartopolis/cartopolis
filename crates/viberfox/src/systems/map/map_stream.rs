@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
@@ -87,9 +86,39 @@ const MAX_TILE_DESPAWNS_PER_FRAME: usize = 12;
 /// Altitude margin a zoom boundary must be crossed by before switching (anti-thrash).
 const ZOOM_HYSTERESIS_M: f32 = 60.0;
 
+/// Altitude above which the streamer stops entirely (see the freeze in
+/// [`update_map_stream`]).
+///
+/// Deliberately **above** `globe::GLOBE_SHOW_ALT`, which is where it used to sit,
+/// and the gap is the point. Descending from orbit to a fresh anchor, the flat
+/// pyramid began filling at the exact instant the globe handed off to it — so the
+/// handoff was onto an empty patch, and the ~10 s cold fill
+/// (`docs/notes/tile-raster-cost.md`) played out in full view. The band between
+/// the two altitudes buys that fill a head start while the tiles are still hidden
+/// by `data_layers::apply_feature_toggles`.
+///
+/// It costs one ring, not a pyramid: [`zoom_for_altitude`] clamps to [`MIN_ZOOM`]
+/// far below this, so anywhere in the prefetch band the desired set is a single
+/// 7×7 level — 49 tiles, not the 424 of a full clipmap. That is load-bearing
+/// enough to be a test (`prefetch_band_is_one_coarse_ring`), because a future edit
+/// to the zoom ladder could quietly turn this into a 424-tile fetch for every
+/// place the camera drifts over in orbit. The original freeze exists to stop
+/// exactly that.
+const MAP_PREFETCH_ALT: f32 = 250_000.0;
+
 /// Pick a map zoom from camera altitude: detailed near the ground, coarser high up
 /// so a wide area is visible cheaply. Capped at the region's base zoom.
 fn zoom_for_altitude(altitude_m: f32, base_zoom: u32) -> u32 {
+    // Above the globe threshold nothing here is on screen — the globe is
+    // (`data_layers::apply_feature_toggles` hides every `StreamTile` in space), and
+    // the streamer is only still running to warm the descent (`MAP_PREFETCH_ALT`).
+    // Warm one coarse ring and no more. The ladder below bottoms out at
+    // `base_zoom - 4`, which for a z17 anchor is z13 and a four-level, 228-tile
+    // pyramid — affordable to *hold* while you are standing in it, not to fetch
+    // speculatively for every patch of ground an orbiting camera drifts across.
+    if altitude_m > crate::systems::globe::GLOBE_SHOW_ALT {
+        return MIN_ZOOM;
+    }
     let z = if altitude_m < 200.0 {
         base_zoom
     } else if altitude_m < 700.0 {
@@ -636,15 +665,20 @@ pub fn update_map_stream(
     stream.tiles.drain_despawns(&mut commands);
     let now = time.elapsed_secs_f64();
 
-    // Freeze streaming from orbit (ADR-025): above the globe-show altitude the
-    // detailed tiles are hidden anyway (crate::components::HideInSpace), so keep the pyramid
-    // loaded instead of despawning it — returning to the surface is then instant,
-    // and the space camera doesn't spam tile requests for wherever it roams.
+    // Freeze streaming from orbit (ADR-025): high above, the detailed tiles are
+    // hidden anyway (crate::components::HideInSpace), so keep the pyramid loaded
+    // instead of despawning it — returning to the surface is then instant, and the
+    // space camera doesn't spam tile requests for wherever it roams.
     // Geocentric altitude, NOT local y: orbiting to the far side of the globe
     // drives local y negative, which would unfreeze streaming and fetch tiles
     // for nonsense coordinates (real bug: it hammered the tile server).
+    //
+    // The threshold is `MAP_PREFETCH_ALT`, not the globe's own show altitude:
+    // between the two the streamer runs while its tiles are still hidden, so a
+    // descent from orbit lands on a warm coarse ring instead of on nothing. See
+    // that constant for why the band cannot become expensive.
     let altitude = globe.altitude_m(cell, tf) as f32;
-    if altitude > crate::systems::globe::GLOBE_SHOW_ALT {
+    if altitude > MAP_PREFETCH_ALT {
         return;
     }
 
@@ -878,7 +912,7 @@ pub fn apply_stream_textures(
                     decoded.data,
                     decoded.mip_count,
                     TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::default(),
+                    crate::systems::tile_loader::TILE_TEXTURE_USAGE,
                     ImageSampler::linear(),
                 );
                 let handle = images.add(bevy_image);
@@ -992,6 +1026,40 @@ mod tests {
         // of fetches before the finer rings refine it.
         assert_eq!(order.first().unwrap().z, MIN_ZOOM);
         assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
+    }
+
+    /// The prefetch band must stay one coarse ring, whatever the zoom ladder does.
+    ///
+    /// `MAP_PREFETCH_ALT` unfreezes the streamer well above the globe threshold so
+    /// a descent lands on warm tiles. That is only affordable because
+    /// `zoom_for_altitude` has bottomed out at `MIN_ZOOM` long before, making the
+    /// desired set a single 7×7 level. Re-band the ladder so it hasn't, and the
+    /// same code silently fetches a whole 424-tile pyramid for every patch of
+    /// ground an orbiting camera drifts across — which is the load the freeze was
+    /// put there to prevent.
+    #[test]
+    fn prefetch_band_is_one_coarse_ring() {
+        for base_zoom in [MIN_ZOOM, 14, DEFAULT_ANCHOR_ZOOM] {
+            for altitude in [
+                crate::systems::globe::GLOBE_SHOW_ALT + 1.0,
+                MAP_PREFETCH_ALT * 0.5,
+                MAP_PREFETCH_ALT,
+            ] {
+                assert_eq!(
+                    zoom_for_altitude(altitude, base_zoom),
+                    MIN_ZOOM,
+                    "at {altitude} m with base zoom {base_zoom} the prefetch band \
+                     is no longer clamped to the coarsest level"
+                );
+            }
+        }
+
+        // …and that one level really is a single ring, not a pyramid. It is the
+        // finest level in this band as well as the coarsest, so it gets
+        // `LOAD_RADIUS`: 9×9 = 81 tiles against a full clipmap's 424.
+        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, MIN_ZOOM);
+        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM);
+        assert_eq!(order.len(), 81, "the prefetch ring changed size");
     }
 
     /// …and how few *bodies* those 424 requests actually are.

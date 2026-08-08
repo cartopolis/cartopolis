@@ -115,26 +115,119 @@ const QT_SELECT_INTERVAL: f32 = 0.25;
 const QT_MAX_TILES: usize = 320;
 /// Per-zoom outward lift (m): finer tiles sit slightly above coarser ones, so
 /// parents showing through while children load never z-fight.
+///
+/// This is the *geometric* half of the separation and it stops working somewhere
+/// around 700 km. The space tier's depth range is enormous (`free_camera`'s
+/// `near = altitude·0.01`, `far` past the limb), so with reverse-Z f32 the depth
+/// quantum at the surface is ~`d²/near·2⁻²⁴`: about 0.4 m at 60 km, but ~6 m at
+/// 1,000 km and ~120 m at 10,000 km — by which point the whole z2→z12 lift ladder
+/// fits inside a single quantum and every level of the stack z-fights every
+/// other. Raising the lift to cover that is not an option either: the metres it
+/// would take from orbit are a visible step against the flat tiles at the tier
+/// boundary. See [`QT_DEPTH_BIAS_PER_Z`] for the half that does scale.
 const QT_LIFT_PER_Z: f32 = 4.0;
-/// Mesh tessellation of one tile patch (segments per axis).
+/// Per-zoom depth bias, in the same units as every other bias in the scene
+/// (`vector_tiles::DEPTH_BIAS_STEP` — see `SurfaceGroup::depth_bias`).
+///
+/// `StandardMaterial::depth_bias` becomes wgpu's `DepthBiasState::constant`,
+/// which is denominated in *depth-buffer* units rather than metres. That is
+/// exactly what [`QT_LIFT_PER_Z`] cannot be: one rung per zoom level holds the
+/// stack apart at 60 km and at 35,000 km alike, with no world-space step at the
+/// tier boundary to pay for it.
+const QT_DEPTH_BIAS_PER_Z: f32 = crate::systems::vector_tiles::DEPTH_BIAS_STEP;
+
+/// Edge length a globe tile is rasterised and stored at.
+///
+/// Deliberately **not** `vector_tiles::TILE_PX` (512), which is sized for a flat
+/// tile stretched across a region on the ground. A globe tile is capped at
+/// `QT_SPLIT_PX` on screen — the split rule means a leaf is only ever 170–340 px
+/// — so 512 is 2–3× oversampled per axis and buys nothing anyone can see.
+///
+/// It is the quadtree's dominant cost in both directions. Scan conversion is
+/// per-covered-pixel, so this is ~4× off the ~121 ms `render_mvt`
+/// (`docs/notes/tile-raster-cost.md`) that every one of several hundred tiles pays
+/// on the worker pool; and the texture lives for as long as the view holds the
+/// tile, so it is also ~4× off a resident set that ran to ~650 MB at low orbit.
+///
+/// This was 256 once, by accident of the raster basemap the globe was written
+/// against — `DecodedTile`'s doc comment still said "a globe tile is 256²" long
+/// after the vector switch silently made it 512². Restoring it is a restoration,
+/// not a new trade-off.
+pub const GLOBE_TILE_PX: u32 = 256;
+/// Minimum mesh tessellation of one tile patch (segments per axis).
+///
+/// Enough for any tile whose own angular span is small — which, past about z5, is
+/// all of them. Coarse tiles get more; see [`qt_segs`].
 const QT_SEGS: usize = 12;
+
+/// Ceiling on the tessellation [`qt_segs`] will hand out, so a coarse tile cannot
+/// cost an unbounded mesh. 64 segments is 4,225 vertices, and there are only ever
+/// 16 tiles at z2 and 64 at z3.
+const QT_SEGS_MAX: usize = 64;
+
+/// How far inside the true sphere a tile patch's facets are allowed to sag.
+///
+/// This is the whole reason [`qt_segs`] exists. A flat quad chorded across an arc
+/// of `θ` radians sits `≈ R·θ²/8` below the sphere at its middle, and at a fixed
+/// 12 segments a z2 tile's facets span 7.5° — **14 km** of sag, over facets 830 km
+/// wide. From just above the tier boundary that is not a sphere at all: the
+/// visible globe is a handful of enormous flat panels meeting at angles, which
+/// reads exactly like a flat tile grid, and it is what you see on a fast zoom-out,
+/// when the coarse floor is all that has arrived. 500 m is below a pixel at any
+/// altitude the globe is drawn at.
+const QT_MAX_SAG_M: f64 = 500.0;
+
+/// Segments per axis for a tile patch at `z`, chosen so no facet sags more than
+/// [`QT_MAX_SAG_M`] inside the sphere.
+///
+/// Inverting `sag ≈ R·(span/segs)²/8` gives `segs ≥ span·√(R/(8·sag))`, rounded up
+/// to a power of two so the vertex grids of the refined levels halve cleanly into
+/// one another. Equatorial span is the widest a tile at this zoom can be, so this
+/// is the conservative answer everywhere.
+///
+/// The rounding happens **before** the [`QT_SEGS`] floor, not after: rounding
+/// afterwards turns the floor itself into 16 and quietly hands every fine tile a
+/// bigger grid than it needs — which, fine tiles being nearly the whole live set,
+/// is where the vertex budget would actually have gone.
+fn qt_segs(z: u32) -> usize {
+    let span = std::f64::consts::TAU / f64::from(1u32 << z);
+    let needed = span * (EARTH_RADIUS_M / (8.0 * QT_MAX_SAG_M)).sqrt();
+    (needed.ceil() as usize)
+        .next_power_of_two()
+        .clamp(QT_SEGS, QT_SEGS_MAX)
+}
+
+/// Mean Earth radius, for the tessellation arithmetic above. The globe's own
+/// `radius` is derived from the anchor frame and is not available where the mesh
+/// grid is sized.
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
 /// How far below the surface the ocean backstop sphere sits. Tile patches are
-/// flat-faceted, so a coarse tile's interior sags inside the true sphere by up
-/// to R·(1−cos(span/2/QT_SEGS)) — ~14 km for a z2 tile. A backstop at the
-/// surface poked through those interiors (tiles rendered as vertex-diamonds
-/// with ocean showing between); sunk below the worst-case sag it only shows
+/// flat-faceted, so a tile's interior sags inside the true sphere; a backstop at
+/// the surface poked through those interiors (tiles rendered as vertex-diamonds
+/// with ocean showing between), so it is sunk below the worst case and only shows
 /// where no tile exists at all (poles, not-yet-loaded areas).
+///
+/// The worst case used to be ~14 km, at z2's fixed 12 segments. [`qt_segs`] now
+/// holds it to [`QT_MAX_SAG_M`], so this has two orders of magnitude of margin it
+/// no longer needs — left alone deliberately, since the only thing the slack costs
+/// is that the backstop shows through slightly less often than it could.
 const BACKSTOP_DEPTH: f64 = 50_000.0;
 /// Quadtree selection/streaming only runs above this altitude (below it the
 /// globe is hidden and the flat tiles own the view); loaded tiles are kept.
 const QT_MIN_ALT: f64 = 35_000.0;
 
-/// Max globe tiles to build (PNG decode + mesh + texture upload) per frame. A
-/// zoom-out can land 100+ fetched tiles at once; building them all in one frame
-/// packs one giant command buffer that overran a weak GPU's timeout
+/// Max globe tiles to build (mesh + texture upload) per frame. A zoom-out can
+/// land 100+ fetched tiles at once; building them all in one frame packs one
+/// giant command buffer that overran a weak GPU's timeout
 /// (`VK_ERROR_DEVICE_LOST`). The rest are deferred to later frames — they stay in
 /// `pending` (so they aren't re-fetched) and are pushed back into `results`.
-const MAX_GLOBE_TILE_BUILDS_PER_FRAME: usize = 4;
+///
+/// The guard is really a *bytes per frame* budget; this is its per-tile proxy, so
+/// it moves when the tile size does. At the old 512² a tile was ~1.4 MB of packed
+/// mip chain and 4 of them ~5.6 MB; at [`GLOBE_TILE_PX`] it is ~350 KB, so 8 is
+/// half the upload burst the cap was set to survive while draining a backlog
+/// twice as fast — which is most of what a zoom through the tier feels like.
+const MAX_GLOBE_TILE_BUILDS_PER_FRAME: usize = 8;
 
 /// Max globe tiles to despawn per frame — the mass-*despawn* half of the
 /// device-loss guard (its upload half is `MAX_GLOBE_TILE_BUILDS_PER_FRAME`). A
@@ -264,6 +357,39 @@ impl GlobeState {
         self.tiles.busy()
     }
 
+    /// Live tile entities, and how many the last selection asked for.
+    ///
+    /// `ShotMetrics` reports both because they answer different questions than
+    /// `globe_entities` does. That counts `GlobeMesh` entities, which includes
+    /// the backstop sphere and anything still draining the despawn queue; these
+    /// two are the quadtree's own books, and the gap between them is how much of
+    /// the pyramid is still arriving.
+    pub fn tiles_loaded(&self) -> usize {
+        self.loaded.len()
+    }
+
+    /// See [`Self::tiles_loaded`].
+    pub fn tiles_desired(&self) -> usize {
+        self.desired.len()
+    }
+
+    /// Resident tile-texture bytes, estimated from the tile count.
+    ///
+    /// Estimated rather than measured: walking `Assets<Image>` for the real
+    /// figure means resolving every tile's material and handle, on the frame the
+    /// shutter fires. The arithmetic is exact anyway — every globe tile is
+    /// [`GLOBE_TILE_PX`]² RGBA8 with a full mip chain, which is the ⁴⁄₃ — and it
+    /// is the *count* that varies.
+    ///
+    /// This is the column that separates the two candidate causes of the black
+    /// artifacts: if they track this, it is memory pressure; if they track
+    /// `alt_m` while this stays flat, it is the depth range. Nothing in the
+    /// metrics could tell those apart before.
+    pub fn tile_texture_bytes(&self) -> usize {
+        let mip0 = (GLOBE_TILE_PX as usize).pow(2) * 4;
+        self.loaded.len() * (mip0 * 4 / 3)
+    }
+
     /// Whether the camera is high enough that the globe is shown and the local
     /// ground props are hidden — the shared test for every system that flips
     /// per-tier visibility (single source of truth; two systems disagreeing on
@@ -391,11 +517,12 @@ fn covers(a: &TileKey, b: &TileKey) -> bool {
 /// A globe tile decoded to RGBA8 with a full mipmap chain, built on the fetch
 /// worker (mirrors `map_stream::DecodedTile`).
 ///
-/// Both halves matter. **Mipmaps:** a globe tile is 256², but from orbit it covers
-/// 20–80 px — sampling mip 0 there means near-random access across the whole
-/// working set every frame *and* severe minification shimmer. **Off-thread:** the
-/// PNG decode used to run on the main thread, up to `MAX_GLOBE_TILE_BUILDS_PER_FRAME`
-/// times per frame, right in the render loop.
+/// Both halves matter. **Mipmaps:** a globe tile is [`GLOBE_TILE_PX`]² and an
+/// ancestor of it covers far less than that on screen — sampling mip 0 there means
+/// near-random access across the whole working set every frame *and* severe
+/// minification shimmer. **Off-thread:** the rasterise used to run on the main
+/// thread, up to `MAX_GLOBE_TILE_BUILDS_PER_FRAME` times per frame, right in the
+/// render loop.
 struct DecodedTile {
     /// Packed mip chain, all levels, smallest last.
     data: Vec<u8>,
@@ -911,16 +1038,29 @@ fn spawn_globe_tile(
             match fetch_globe_tile_payload(&key, &template).await {
                 Ok(payload) => {
                     crate::platform::workers::submit(Box::new(move || {
-                        let outcome = match payload.decode() {
+                        // Log the reason, the way the flat streamer's twin does
+                        // (`tile_loader::spawn_tile_task`). Discarding it left the
+                        // aggregate `globe tile fetches failed` warning below as the
+                        // only evidence — a count that reads as a rate limit whether
+                        // the tile 404'd, arrived truncated or failed to rasterise.
+                        let outcome = match payload.decode(GLOBE_TILE_PX) {
                             Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
-                            Err(_) => TileFetch::Failed,
+                            Err(e) => {
+                                tracing::error!(
+                                    tile = %key.to_path(),
+                                    error = %e,
+                                    "globe tile decode failed"
+                                );
+                                TileFetch::Failed
+                            }
                         };
                         if let Ok(mut g) = results.lock() {
                             g.push((key, outcome));
                         }
                     }));
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::error!(tile = %key.to_path(), error = %e, "globe tile fetch failed");
                     if let Ok(mut g) = results.lock() {
                         g.push((key, TileFetch::Failed));
                     }
@@ -1013,7 +1153,7 @@ pub fn update_globe_tiles(
             tile.data,
             tile.mip_count,
             TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::default(),
+            crate::systems::tile_loader::TILE_TEXTURE_USAGE,
             ImageSampler::linear(),
         );
         let texture = images.add(image);
@@ -1036,17 +1176,20 @@ pub fn update_globe_tiles(
         // texel row, which is ice/ocean at both poles. The row collapses to a
         // point at the pole, turning that band of quads into a triangle fan.
         let rows = 1i64 << key.z;
-        for iy in 0..=QT_SEGS {
-            let v = iy as f64 / QT_SEGS as f64;
+        // Tessellation follows the tile's own angular span (see `qt_segs`) — a
+        // constant grid leaves a z2 tile as a handful of 830 km flat panels.
+        let segs = qt_segs(key.z);
+        for iy in 0..=segs {
+            let v = iy as f64 / segs as f64;
             let lat = if key.y == 0 && iy == 0 {
                 90.0
-            } else if key.y == rows - 1 && iy == QT_SEGS {
+            } else if key.y == rows - 1 && iy == segs {
                 -90.0
             } else {
                 tile_frac_to_lat(key.y as f64 + v, key.z)
             };
-            for ix in 0..=QT_SEGS {
-                let u = ix as f64 / QT_SEGS as f64;
+            for ix in 0..=segs {
+                let u = ix as f64 / segs as f64;
                 let lng = tile_frac_to_lng(key.x as f64 + u, key.z);
                 let p = geodetic_to_local(&frame, lat, lng, lift);
                 let rel = p - origin;
@@ -1056,9 +1199,9 @@ pub fn update_globe_tiles(
                 uvs.push([u as f32, v as f32]);
             }
         }
-        let stride = (QT_SEGS + 1) as u32;
-        for iy in 0..QT_SEGS as u32 {
-            for ix in 0..QT_SEGS as u32 {
+        let stride = (segs + 1) as u32;
+        for iy in 0..segs as u32 {
+            for ix in 0..segs as u32 {
                 let a = iy * stride + ix;
                 let b = a + stride;
                 // Outward-front winding (x = east, rows march south).
@@ -1094,6 +1237,11 @@ pub fn update_globe_tiles(
                         base_color_texture: Some(texture),
                         perceptual_roughness: 1.0,
                         reflectance: 0.0,
+                        // One rung per zoom level, so a fine tile always wins the
+                        // depth test against the coarse one backstopping it — in
+                        // depth-buffer units, which is the only currency that holds
+                        // at every altitude in the tier (see QT_DEPTH_BIAS_PER_Z).
+                        depth_bias: (key.z - QT_MIN_Z) as f32 * QT_DEPTH_BIAS_PER_Z,
                         ..default()
                     },
                     // Same contract as the albedo above: come up at the ocean
@@ -1205,7 +1353,8 @@ pub fn update_globe_tiles(
         }
     }
 
-    // Expand each leaf with its FULL ancestor chain (leaf → parent → … → z2).
+    // Expand each *not-yet-loaded* leaf with its full ancestor chain (leaf →
+    // parent → … → z2).
     // Rendered stacked, coarsest first, so while an uncached fine tile loads the
     // view degrades one level at a time (z10 → z9 → … → z6) instead of jumping
     // straight to the coarse floor. The mid-zoom ancestors (z5–z8) are cheap and
@@ -1215,19 +1364,31 @@ pub fn update_globe_tiles(
     // This is the fix for the "fuzzy at 120–170 km" band: there the leaf zoom is
     // ~z9–z10 (partly uncached), and previously the only fallback was the very
     // blurry z3 floor.
-    let mut desired_set: HashSet<TileKey> = HashSet::new();
+    let mut desired_set: HashSet<TileKey> = desired.iter().cloned().collect();
+    // …but only while the leaf under them has yet to arrive. The chain is a
+    // *loading* fallback, and it used to be unconditional — so every ancestor
+    // stayed desired, and the stale-despawn filter below (which only retires what
+    // has left `desired`) never reclaimed one. The pyramid was permanent: at low
+    // orbit ~170 of ~460 live tiles were coarse levels completely hidden under
+    // their own descendants, each still holding a texture, a mesh, a material and
+    // a draw call, and each still one more rung of coplanar surface for the depth
+    // buffer to separate. Dropping a chain the moment its leaf lands costs
+    // nothing — a leaf that later goes missing puts its ancestors straight back in
+    // this set, and their bodies are on disk.
+    let mut backstops: HashSet<TileKey> = HashSet::new();
     for leaf in &desired {
+        if globe.loaded.contains_key(leaf) {
+            continue;
+        }
         let mut k = leaf.clone();
-        loop {
-            if !desired_set.insert(k.clone()) {
-                break; // this tile — and hence all its ancestors — already added
-            }
-            if k.z <= QT_MIN_Z {
-                break;
-            }
+        while k.z > QT_MIN_Z {
             k = TileKey::new(k.x >> 1, k.y >> 1, k.z - 1);
+            if !backstops.insert(k.clone()) {
+                break; // this ancestor — and hence all of its own — already added
+            }
         }
     }
+    desired_set.extend(backstops);
     // Permanent whole-planet floor (z2/z3), for regions outside the current view
     // (the limb) that have no leaf and thus no ancestor chain.
     for z in QT_MIN_Z..=QT_BASE_Z {
@@ -1371,6 +1532,100 @@ mod tests {
         let (normal, to_cam) = geometry(29.0, 106_000.0);
         let z12_span = tile_to_meters(12, 41.0);
         assert!(over_the_horizon(normal, to_cam, z12_span, R));
+    }
+
+    /// Every zoom's patch must approximate the sphere to within `QT_MAX_SAG_M`.
+    ///
+    /// This is the "the globe is flat" test. At a fixed 12 segments a z2 tile is
+    /// six 830 km panels with 14 km of sag, and a fast zoom-out — which shows the
+    /// coarse floor before anything finer arrives — renders the planet as a
+    /// faceted plate. Assert the geometry, not the segment count, so the formula
+    /// can change as long as the surface it produces still reads as a sphere.
+    #[test]
+    fn every_zooms_patch_approximates_the_sphere() {
+        for z in QT_MIN_Z..=QT_MAX_Z {
+            let segs = qt_segs(z);
+            let facet = (std::f64::consts::TAU / f64::from(1u32 << z)) / segs as f64;
+            let sag = EARTH_RADIUS_M * (1.0 - (facet / 2.0).cos());
+            assert!(
+                sag <= QT_MAX_SAG_M,
+                "z{z}: {segs} segments leaves {sag:.0} m of sag, over the \
+                 {QT_MAX_SAG_M:.0} m budget — the globe reads as flat panels"
+            );
+            assert!(
+                segs <= QT_SEGS_MAX,
+                "z{z}: {segs} segments is past the mesh ceiling"
+            );
+        }
+    }
+
+    /// The extra tessellation must stay where it is needed. Fine tiles are the
+    /// overwhelming majority of the live set, and giving them a z2-sized grid
+    /// would multiply the quadtree's vertex count by ~28× for no visible gain.
+    #[test]
+    fn fine_tiles_keep_the_minimum_grid() {
+        for z in 5..=QT_MAX_Z {
+            assert_eq!(qt_segs(z), QT_SEGS, "z{z} is paying for coarse-tile curvature");
+        }
+        assert!(qt_segs(QT_MIN_Z) > QT_SEGS, "the coarse floor got no refinement");
+    }
+
+    /// The ancestor chain that backs a set of leaves — the rule
+    /// `update_globe_tiles` applies, lifted out so it can be asserted without a
+    /// camera, a `World` or a network.
+    fn backstops(leaves: &[TileKey], loaded: &[TileKey]) -> HashSet<TileKey> {
+        let mut out: HashSet<TileKey> = HashSet::new();
+        for leaf in leaves {
+            if loaded.contains(leaf) {
+                continue;
+            }
+            let mut k = leaf.clone();
+            while k.z > QT_MIN_Z {
+                k = TileKey::new(k.x >> 1, k.y >> 1, k.z - 1);
+                if !out.insert(k.clone()) {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// A leaf that has not arrived is backed by its whole chain, coarsest first —
+    /// that is what makes an uncached level degrade one step at a time instead of
+    /// dropping to the z3 floor.
+    #[test]
+    fn a_missing_leaf_is_backed_by_its_whole_chain() {
+        let leaf = TileKey::new(1050, 681, 11);
+        let chain = backstops(&[leaf.clone()], &[]);
+        assert_eq!(chain.len(), (11 - QT_MIN_Z) as usize, "chain has a gap");
+        for z in QT_MIN_Z..11 {
+            let want = TileKey::new(1050 >> (11 - z), 681 >> (11 - z), z);
+            assert!(chain.contains(&want), "z{z} ancestor missing");
+        }
+    }
+
+    /// …and the moment it arrives, every one of them stops being wanted, which is
+    /// what lets the stale filter reclaim them. Before this the chain was
+    /// unconditional, so it never left `desired` and the pyramid was permanent:
+    /// several hundred fully-occluded coarse tiles holding a texture, a mesh and a
+    /// draw call each, for the whole time the view stayed put.
+    #[test]
+    fn an_arrived_leaf_needs_no_ancestors() {
+        let leaf = TileKey::new(1050, 681, 11);
+        assert!(backstops(&[leaf.clone()], &[leaf]).is_empty());
+    }
+
+    /// A chain is only dropped for the leaf that arrived. Its siblings keep theirs
+    /// — including the ancestors they share with it, or a half-loaded quad would
+    /// punch a hole through to the backstop sphere.
+    #[test]
+    fn a_sibling_still_holds_the_shared_chain() {
+        let here = TileKey::new(1050, 681, 11);
+        let next_door = TileKey::new(1051, 681, 11);
+        let chain = backstops(&[here.clone(), next_door], &[here]);
+        // They share everything from z10 up (1050>>1 == 1051>>1 == 525).
+        assert!(chain.contains(&TileKey::new(525, 340, 10)), "shared parent lost");
+        assert_eq!(chain.len(), (11 - QT_MIN_Z) as usize);
     }
 
     /// A tile straight under the camera is never culled, at any zoom.

@@ -400,8 +400,24 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
 /// `sub` selects the magnified sub-rectangle for overzoomed requests; pass
 /// [`SubTile::WHOLE`] to draw the source tile as-is.
 pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
-    let mut pixmap =
-        Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    render_mvt_sized(tile, sub, TILE_PX)
+}
+
+/// [`render_mvt`] at an arbitrary edge length, for a consumer whose tiles are
+/// never shown at [`TILE_PX`].
+///
+/// The globe quadtree is that consumer. Its tiles are capped at
+/// `globe::QT_SPLIT_PX` on screen — a leaf is 170–340 px — so a 512 px raster is
+/// 2–3× oversampled per axis and costs 4–9× the scan conversion for pixels
+/// nothing can resolve. Since the tile also *lives* as a texture for as long as
+/// the view holds it, the size is the quadtree's whole memory bill as well as its
+/// whole fill latency.
+///
+/// **Every stroke width is in pixels**, so they are scaled by `size / TILE_PX`:
+/// without that, halving the raster doubles the apparent width of every road and
+/// casing, since the texture is stretched over the same ground either way.
+pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<u8>, String> {
+    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
     pixmap.fill(tiny_skia::Color::from_rgba8(
         ((palette::PAPER >> 16) & 0xFF) as u8,
         ((palette::PAPER >> 8) & 0xFF) as u8,
@@ -412,7 +428,10 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     // Tile-extent units → pixels, including the overzoom magnification and the
     // shift that brings the requested sub-tile to the origin.
     let f = sub.factor as f32;
-    let px = TILE_PX as f32;
+    let px = size as f32;
+    // Width multiplier: the overzoom magnification, times the raster's own scale
+    // against the size the widths below are authored at.
+    let wf = f * px / TILE_PX as f32;
 
     let mut paint = Paint {
         anti_alias: true,
@@ -460,7 +479,7 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
                         &paint,
                         &feature.geometry,
                         &transform,
-                        width * f,
+                        width * wf,
                     );
                 }
                 Draw::Outline { color, width } => {
@@ -470,15 +489,15 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
                         &paint,
                         &feature.geometry,
                         &transform,
-                        width * f,
+                        width * wf,
                     );
                 }
                 Draw::Streets { casing } => {
                     let (w, fill, case) = street_style(kind.unwrap_or(""));
                     let (color, width) = if *casing {
-                        (case, (w + 1.2) * f)
+                        (case, (w + 1.2) * wf)
                     } else {
-                        (fill, w * f)
+                        (fill, w * wf)
                     };
                     paint.shader = shader(color);
                     stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width);
@@ -1987,8 +2006,15 @@ pub const WATER_LAYERS: [&str; 2] = ["ocean", "water_polygons"];
 /// Anti-aliased on purpose: the mask feeds a roughness blend, and a hard-edged
 /// coastline would put a stair-stepped gloss boundary along every shore.
 pub fn ocean_mask(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
-    let mut pixmap =
-        Pixmap::new(TILE_PX, TILE_PX).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    ocean_mask_sized(tile, sub, TILE_PX)
+}
+
+/// [`ocean_mask`] at an arbitrary edge length. It rides in the alpha channel of
+/// the imagery, so it must be rasterised at whatever size
+/// [`render_mvt_sized`] was given — a mask of a different length is dropped by
+/// the caller and the tile silently loses its ocean.
+pub fn ocean_mask_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<u8>, String> {
+    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
         anti_alias: true,
         shader: Shader::SolidColor(tiny_skia::Color::WHITE),
@@ -1996,7 +2022,7 @@ pub fn ocean_mask(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
     };
 
     let f = sub.factor as f32;
-    let px = TILE_PX as f32;
+    let px = size as f32;
     for meta in tile.layers() {
         if !WATER_LAYERS.contains(&meta.name.as_str()) {
             continue;
@@ -2372,6 +2398,62 @@ mod tests {
             rgba.chunks_exact(4).all(|p| p[3] == 255),
             "alpha must be opaque"
         );
+    }
+
+    /// Halving the raster must not double every road.
+    ///
+    /// Stroke widths are in **pixels**, while the texture is stretched over the
+    /// same ground whatever its size — so a smaller raster with unscaled widths
+    /// draws the same city with roads twice as wide, and the globe (which is the
+    /// only caller that asks for a different size) would come up looking like a
+    /// different map style from the flat tiles it hands off to.
+    ///
+    /// Ink coverage is the measure that catches it: the fraction of the tile that
+    /// is not background is a scale-free property of the *design*, so it must
+    /// survive a change of raster size. It would climb by roughly the size ratio
+    /// if `wf` went back to being `f`.
+    #[test]
+    fn stroke_widths_scale_with_the_raster_size() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let paper = (
+            ((palette::PAPER >> 16) & 0xFF) as u8,
+            ((palette::PAPER >> 8) & 0xFF) as u8,
+            (palette::PAPER & 0xFF) as u8,
+        );
+        let inked = |size: u32| {
+            let rgba = render_mvt_sized(&tile, SubTile::WHOLE, size).expect("render");
+            assert_eq!(rgba.len() as u32, size * size * 4, "wrong buffer size");
+            let n = rgba
+                .chunks_exact(4)
+                .filter(|p| (p[0], p[1], p[2]) != paper)
+                .count();
+            n as f64 / (size * size) as f64
+        };
+
+        let full = inked(TILE_PX);
+        let half = inked(TILE_PX / 2);
+        assert!(full > 0.2, "fixture rendered nearly blank at {TILE_PX} px");
+        // Not exact — anti-aliasing over half the samples genuinely shifts a few
+        // percent, and sub-pixel strokes land on more partial texels. A doubling
+        // of every width is an order of magnitude outside this.
+        assert!(
+            (half / full - 1.0).abs() < 0.25,
+            "ink coverage moved with the raster size ({full:.3} at {TILE_PX} px, \
+             {half:.3} at {} px) — stroke widths are not scaling",
+            TILE_PX / 2
+        );
+    }
+
+    /// The ocean mask rides in the imagery's alpha, so it has to come out at the
+    /// size the imagery did. A mismatch is not loud: `GlobeTilePayload::decode`
+    /// drops a wrong-length mask and the tile silently loses its ocean.
+    #[test]
+    fn the_ocean_mask_follows_the_raster_size() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        for size in [TILE_PX, TILE_PX / 2, 128] {
+            let mask = ocean_mask_sized(&tile, SubTile::WHOLE, size).expect("mask");
+            assert_eq!(mask.len() as u32, size * size, "mask size {size} is wrong");
+        }
     }
 
     #[test]
