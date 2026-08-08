@@ -119,6 +119,22 @@ without saying so — `spawn_globe_tile` discarded both its fetch and decode err
 leaving the aggregate `globe tile fetches failed` count as the only evidence, which
 reads as a rate limit whatever the real cause. Both now log.
 
+A third candidate is **the mip chain is built in the wrong colour space**, and it
+is the one that specifically worsens with altitude. `mip::build_mip_chain`
+averages `Rgba8UnormSrgb` bytes directly — sRGB-encoded values, with no
+linearise-average-re-encode. Because the encoding is concave, the mean of encoded
+values is always *below* the encoded mean of light: averaging a dark road
+(L ≈ 0.05) with pale paper (L ≈ 0.8) gives 0.58 where the correct answer is 0.68,
+about 14% dark. Deeper mips are what a minified tile samples, and the globe
+minifies hard — so the map darkens as it recedes, which is exactly the reported
+shape even though it is a dimming rather than literal black.
+
+Not fixed here, for two reasons. It would change **every mip in the game** —
+streamed tiles, globe tiles, prim textures — and none of it can be looked at from
+this container. And `mips_match_the_image_crate` deliberately pins the filter to
+`image::imageops::resize`, which does not linearise either, so the test's premise
+has to be revisited in the same change rather than quietly broken by it.
+
 The bisect, for whoever has a GPU:
 
 ```bash
@@ -128,6 +144,14 @@ cargo run -p viberfox -- --shot /tmp/s.png --at 53.2,6.5,60000 \
 VIBERFOX_NO_OCEAN=1 cargo run -p viberfox -- --shot /tmp/a.png \
     --at 53.2,6.5,1000000 --look=-90,0 --dump-state /tmp/a.json
 ```
+
+`ShotMetrics` now carries `globe_tiles_loaded`, `globe_tiles_desired`,
+`globe_texture_mb` and `globe_tile_px`, so that sweep separates the first two
+candidates without a rebuild: artifacts tracking `globe_texture_mb` are memory,
+artifacts tracking `alt_m` while it stays flat are depth. Before those columns
+existed the run could not tell them apart, which is why this section says
+"candidates" and not "cause". The colour-space one shows as a monotone darkening
+across the whole sweep rather than an onset at some altitude.
 
 If the artifacts appear between the 700 km and 1,500 km frames and nowhere below,
 the depth fix above was the cause and this section can be deleted.
