@@ -175,10 +175,36 @@ const FREE_DECEL_TAU: f32 = 0.5;
 /// for the rest of the session.
 const FREE_REST_FRACTION: f32 = 0.005;
 
+/// Deadzones for the touch flight gestures (`CameraMode::Free`), in log-pinch
+/// and in points of two-finger drag respectively. Fly mode reads only the
+/// *sign* of each, so without a deadzone the noise of two fingers resting on
+/// glass is a full-speed press of whichever key the noise happens to favour
+/// this frame. Both are set above that noise floor and well below a deliberate
+/// gesture.
+const TOUCH_FLY_DEADZONE: f32 = 0.004;
+const TOUCH_FLY_DEADZONE_PTS: f32 = 1.5;
+
 /// Fly speed (m/s) at `altitude_m` above the surface, for a base speed of
 /// `base` — [`FREE_SPEED_ALT_REF`] and [`FREE_SPEED_MAX_FACTOR`] applied.
 fn fly_speed(base: f32, altitude_m: f32) -> f32 {
     base * (altitude_m / FREE_SPEED_ALT_REF).clamp(1.0, FREE_SPEED_MAX_FACTOR)
+}
+
+/// One exponential zoom step applied to the Earth-mode zoom *target* (the
+/// camera glides toward it, so this never moves the view directly). Shared by
+/// the wheel and the pinch, which differ only in where the factor comes from.
+///
+/// In space the factor scales the **altitude**, not the distance from the
+/// Earth's centre: at the boundary a 10% step on the distance is 10% of
+/// ~6,400 km — a 640 km plunge — instead of 10% of the height above the ground.
+fn zoom_orbit_target(target: f64, factor: f64, space: bool, radius: f64, clamp: (f64, f64)) -> f64 {
+    let (min_d, max_d) = clamp;
+    if space {
+        let alt = (target - radius).max(500.0);
+        (radius + alt * factor).clamp(min_d, max_d)
+    } else {
+        (target * factor).clamp(min_d, max_d)
+    }
 }
 
 // ── Earth (orbit) mode tuning ───────────────────────────────────────────────
@@ -602,11 +628,26 @@ pub fn camera_mode_toggle(
     println!("Camera mode: {:?}", camera_state.mode);
 }
 
+/// Everything the user did this frame, in one parameter.
+///
+/// Bevy caps a system at 16 parameters and `camera_controls` was already at the
+/// limit, so the touch bridge could not simply be added as a 17th. Grouping by
+/// role rather than trimming: these five *are* the input, and the camera is the
+/// only system that reads all of them together.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct CameraInput<'w, 's> {
+    keyboard_input: Res<'w, ButtonInput<KeyCode>>,
+    mouse_input: Res<'w, ButtonInput<MouseButton>>,
+    cursor_moved_events: MessageReader<'w, 's, CursorMoved>,
+    mouse_wheel_events: MessageReader<'w, 's, bevy::input::mouse::MouseWheel>,
+    /// Pinch/twist/two-finger drag — the gestures with no mouse equivalent. The
+    /// one-finger drag and every tap arrive through `mouse_input` above, which
+    /// `systems::touch` drives from the primary finger.
+    touch: Res<'w, crate::systems::touch::TouchGestures>,
+}
+
 pub fn camera_controls(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    mut cursor_moved_events: MessageReader<CursorMoved>,
-    mut mouse_wheel_events: MessageReader<bevy::input::mouse::MouseWheel>,
+    input: CameraInput,
     mut camera_query: Query<(&mut GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
     mut camera_state: ResMut<CameraState>,
     avatar_state: Res<AvatarState>,
@@ -630,6 +671,16 @@ pub fn camera_controls(
     >,
     terrain: Res<crate::systems::terrain::TerrainField>,
 ) {
+    // Unpacked rather than used through `input.` so the body reads the same as
+    // it did when these were five separate parameters.
+    let CameraInput {
+        keyboard_input,
+        mouse_input,
+        mut cursor_moved_events,
+        mut mouse_wheel_events,
+        touch,
+    } = input;
+
     if camera_query.is_empty() {
         return;
     }
@@ -656,6 +707,15 @@ pub fn camera_controls(
     // them below (Avatar/Free never touch the projection otherwise).
     set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR);
 
+    // A finger holds the emulated left button down for the whole gesture
+    // (`systems::touch`) but sends no `CursorMoved` with it, so each mode's
+    // mouse-drag arm is entered and finds nothing to read. Drop the drag anchor
+    // here instead: left stale, it would turn the *next* real mouse drag into a
+    // single jump from wherever the last one ended.
+    if touch.active() {
+        camera_state.pan_offset = None;
+    }
+
     match camera_state.mode {
         CameraMode::Avatar => {
             // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
@@ -677,6 +737,11 @@ pub fn camera_controls(
                         let factor = if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
                         camera_state.distance *= factor;
                     }
+                }
+                // Pinch is the wheel's continuous twin: spreading the fingers
+                // pulls the avatar closer, exactly as scrolling in does.
+                if touch.pair() && !egui_manager.ctx.egui_wants_pointer_input() {
+                    camera_state.distance /= touch.pinch;
                 }
                 camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
             }
@@ -712,6 +777,27 @@ pub fn camera_controls(
                 }
             } else if mouse_input.just_released(MouseButton::Left) {
                 camera_state.pan_offset = None;
+            }
+
+            // Touch: one finger orbits (the left-drag above), two fingers twist
+            // the azimuth. Same gate as the mouse — a finger egui has claimed
+            // holds a pointer button down, so `egui_wants_pointer_input()`
+            // answers for it too.
+            if !locked
+                && gizmo_state.active_axis.is_none()
+                && !egui_manager.ctx.egui_wants_pointer_input()
+            {
+                if touch.drag != Vec2::ZERO {
+                    camera_state.follow_rotate = false;
+                    camera_state.azimuth -= touch.drag.x * 0.005;
+                    camera_state.pitch = (camera_state.pitch - touch.drag.y * 0.005)
+                        .max(-std::f32::consts::PI / 3.0)
+                        .min(std::f32::consts::PI / 2.5);
+                }
+                if touch.twist != 0.0 {
+                    camera_state.follow_rotate = false;
+                    camera_state.azimuth -= touch.twist;
+                }
             }
 
             // Follow-and-rotate (GPS button state 3): glue the camera behind the
@@ -844,6 +930,14 @@ pub fn camera_controls(
                 camera_state.pan_offset = None;
             }
 
+            // Touch look: one finger is the mouse-look drag. The two-finger
+            // gestures fly instead, and are handled with the keys below.
+            let touch_owns_pointer = gizmo_state.active_axis.is_none()
+                && !egui_manager.ctx.egui_wants_pointer_input();
+            if touch_owns_pointer {
+                rotation_delta += touch.drag;
+            }
+
             // Update rotation from mouse input
             if rotation_delta.length() > 0.0 {
                 camera_state.free_camera_rotation.y -= rotation_delta.x * MOUSE_SENSITIVITY;
@@ -923,6 +1017,30 @@ pub fn camera_controls(
             // field focused or a Ctrl chord like Ctrl+Shift+A).
             if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
                 move_direction = Vec3::ZERO;
+            }
+
+            // Touch flight: with no keyboard to hold, the two-finger gestures
+            // stand in for the movement keys. Pinch is W/S (spread flies
+            // forward, the same "get closer" the wheel means everywhere else)
+            // and the two-finger drag is A/D + E/Q. They join `move_direction`
+            // rather than nudging the translation, so the same accelerate/glide
+            // curve applies and a released gesture coasts to a stop instead of
+            // stopping dead. Their *magnitude* is discarded — the direction is
+            // all `move_direction` carries, and rate-scaling it would fight the
+            // velocity model — so a gesture is as fast as a held key, no more.
+            if touch_owns_pointer && touch.pair() {
+                let zoom = touch.pinch.ln();
+                if zoom.abs() > TOUCH_FLY_DEADZONE {
+                    move_direction += forward_horizontal * zoom.signum();
+                }
+                if touch.two_drag.x.abs() > TOUCH_FLY_DEADZONE_PTS {
+                    move_direction += right_horizontal * touch.two_drag.x.signum();
+                }
+                // Drag the fingers down and the world rises past you, i.e. the
+                // camera climbs — matching the pan gesture in every other mode.
+                if touch.two_drag.y.abs() > TOUCH_FLY_DEADZONE_PTS {
+                    move_direction += Vec3::Y * touch.two_drag.y.signum();
+                }
             }
 
             // The keys steer a velocity, not the translation: it chases the wish on
@@ -1129,6 +1247,35 @@ pub fn camera_controls(
                     camera_state.pan_offset = None;
                     cursor_moved_events.clear();
                 }
+
+                // Touch, mapped onto the same three deltas so everything below
+                // — sensitivity, the north lock, the auto-tilt floor — applies
+                // unchanged. The split follows the phone map convention rather
+                // than the mouse one: one finger is the *plain* drag (pan on the
+                // surface, spin the globe in space), and the turn/tilt gesture
+                // that the mouse puts on the middle button is the two-finger
+                // twist and the two-finger vertical drag.
+                //
+                // Only `two_drag.y` is used: a twist that isn't perfectly
+                // centred moves the centroid sideways, so a horizontal reading
+                // would double-count every rotation as a pan.
+                //
+                // The twist divides by `ORBIT_ROT_SENS` so the multiplication
+                // by it below cancels: a twist is measured in radians and lands
+                // as that many radians of view rotation, 1:1 with the fingers,
+                // while a drag stays in points and keeps the mouse's tuning.
+                if touch.pair() {
+                    if space {
+                        heading_delta += touch.twist / ORBIT_ROT_SENS;
+                    } else {
+                        rot_delta.x += touch.twist / ORBIT_ROT_SENS;
+                        rot_delta.y += touch.two_drag.y;
+                    }
+                } else if space {
+                    rot_delta += touch.drag;
+                } else {
+                    pan_delta += touch.drag;
+                }
             }
 
             // Wheel zoom: exponential toward/away from the pivot; clamps differ by
@@ -1142,18 +1289,29 @@ pub fn camera_controls(
             };
             // The wheel moves a *target*; the camera glides toward it below, so
             // zoom reads as a smooth fly instead of a per-notch height jump.
-            // In space the factor applies to the *altitude*, not the distance
-            // from the Earth's centre — otherwise one notch near the surface is
-            // 10% of ~6,400 km (a violent 640 km plunge) instead of 10% of the
-            // height above the ground.
             for event in mouse_wheel_events.read() {
                 let factor = (1.0 - event.y * ORBIT_ZOOM_SPEED).clamp(0.2, 5.0) as f64;
-                camera_state.orbit_distance_target = if space {
-                    let alt = (camera_state.orbit_distance_target - radius).max(500.0);
-                    (radius + alt * factor).clamp(min_d, max_d)
-                } else {
-                    (camera_state.orbit_distance_target * factor).clamp(min_d, max_d)
-                };
+                camera_state.orbit_distance_target = zoom_orbit_target(
+                    camera_state.orbit_distance_target,
+                    factor,
+                    space,
+                    radius,
+                    (min_d, max_d),
+                );
+            }
+            // Pinch is the wheel without notches: the ratio the fingers moved
+            // apart by *is* the factor, so spreading them by half brings the
+            // ground half as close. Sharing `zoom_orbit_target` with the wheel is
+            // what keeps the space tier's "a step is a fraction of the altitude,
+            // not of the Earth's radius" rule applying to the fingers too.
+            if touch.pair() && !egui_manager.ctx.egui_wants_pointer_input() {
+                camera_state.orbit_distance_target = zoom_orbit_target(
+                    camera_state.orbit_distance_target,
+                    1.0 / touch.pinch as f64,
+                    space,
+                    radius,
+                    (min_d, max_d),
+                );
             }
             let glide = 1.0 - (-ZOOM_GLIDE_RATE * delta_time as f64).exp();
             let old_d = camera_state.orbit_distance;
