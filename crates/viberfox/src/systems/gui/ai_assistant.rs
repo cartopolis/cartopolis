@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
 use viberfox_core::{NetMessage, PrimSurface};
 
+#[cfg(not(target_arch = "wasm32"))]
 const SYSTEM_PROMPT: &str = r#"You are the in-world building assistant for Viberfox, a 3D world editor. You construct
 scenes by composing primitives ("prims") with the create_prim, update_prim, delete_prim,
 and list_prims tools. Your goal is believable, well-proportioned architecture assembled
@@ -83,6 +84,7 @@ WORKFLOW
 Quality bar: a lone box, a floating piece, a uniform grid of identical cubes, or a
 clashing palette is a failure — revise before finishing."#;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn tools_schema() -> serde_json::Value {
     // Optional procedural shape modifiers, shared by create_prim and update_prim.
     // Every field defaults to a no-op, so a flat box/sphere/etc. is unaffected.

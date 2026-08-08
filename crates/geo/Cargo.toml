@@ -31,3 +31,6 @@ mvt-reader.workspace = true
 tiny-skia.workspace = true
 tracing.workspace = true
 viberfox_core = { path = "../core" }
+
+[lints]
+workspace = true

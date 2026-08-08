@@ -33,3 +33,6 @@ viberfox_core = { path = "../core" }
 
 [dev-dependencies]
 tempfile = "3.0"
+
+[lints]
+workspace = true

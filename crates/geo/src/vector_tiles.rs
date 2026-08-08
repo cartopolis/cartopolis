@@ -2713,7 +2713,7 @@ mod tests {
             if props.contains_key("kind") {
                 println!("\nsample feature from `streets`:");
                 let mut kv: Vec<_> = props.iter().collect();
-                kv.sort_by_key(|(k, _)| k.clone());
+                kv.sort_by(|(a, _), (b, _)| a.cmp(b));
                 for (k, v) in kv {
                     println!("    {k} = {v:?}");
                 }

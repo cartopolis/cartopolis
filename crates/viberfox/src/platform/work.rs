@@ -49,12 +49,11 @@ impl<J> Dispatcher<J> {
         self.pending.len()
     }
 
-    /// Is there work queued or running? What "the world has not finished
-    /// streaming" means for whoever owns this dispatcher — read by the `--shot`
-    /// harness's settle test, which otherwise captures a half-built city.
-    pub fn busy(&self) -> bool {
-        self.in_flight > 0 || !self.pending.is_empty()
-    }
+    // No `busy()` here on purpose. The `--shot` harness's settle test reads
+    // `CellStream::busy`, which is the same question asked one layer up and
+    // cannot delegate: the stream counts its own in-flight *keys* and its
+    // despawn queue, neither of which the dispatcher can see. A second answer
+    // here would be a subset of the real one, silently.
 
     /// Take every job that has not started yet, leaving the in-flight count alone.
     ///

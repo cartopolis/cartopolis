@@ -928,6 +928,7 @@ mod tests {
         };
         mask.push([0.0, 0.0], [100.0, 0.0], 1.0); // a path
         mask.push([0.0, 200.0], [100.0, 200.0], 11.0); // a motorway
+
         // Three metres off the centre line: clear of the path, well inside the
         // motorway.
         assert!(!mask.blocks(50.0, 3.0, 0.0));

@@ -38,3 +38,6 @@ bevy.workspace = true
 # so no in-process simulator and therefore no bundled SQLite to cross-compile.
 # See `docs/notes/android-build.md`.
 viberfox = { path = "../viberfox", default-features = false }
+
+[lints]
+workspace = true

@@ -1972,7 +1972,8 @@ mod tests {
             let mut open = true;
             let rect = std::cell::Cell::new(None);
             let dl_ref = &mut dl;
-            ctx.run_ui(raw, |ui| {
+            // The pass output is the paint job; this test only reads widget state.
+            let _ = ctx.run_ui(raw, |ui| {
                 // Force a second pass every frame, like an unstable Area does.
                 ui.ctx().request_discard("test");
                 crate::systems::egui_manager::responsive_right_panel(
@@ -2034,7 +2035,8 @@ mod tests {
             let mut open = true;
             let rect = std::cell::Cell::new(None);
             let dl_ref = &mut dl;
-            ctx.run_ui(raw, |ui| {
+            // The pass output is the paint job; this test only reads widget state.
+            let _ = ctx.run_ui(raw, |ui| {
                 crate::systems::egui_manager::responsive_right_panel(
                     "layers_panel",
                     false,

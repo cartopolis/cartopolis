@@ -14,6 +14,28 @@ default-members = ["crates/viberfox"]
 version = "0.2.0"
 edition = "2021"
 
+# Warnings are a signal only while there are none standing. The wasm lane carried
+# twelve dead-code warnings for weeks — native-only code missing its
+# `cfg(not(target_arch = "wasm32"))` — and the cost was not the code, it was that
+# nobody could see a *new* warning arrive in that list. `unused` is the group that
+# rotted (it contains `dead_code`, `unused_imports`, `unused_must_use` and the
+# rest), so it is the group that is denied.
+#
+# In the manifest rather than `RUSTFLAGS` in CI, for two reasons: it costs no
+# rebuild (the level is baked into the crate, so the fingerprint is the one cargo
+# already has), and it is opt-in per crate, which is how `crates/big_space` stays
+# out. That vendored fork is kept diff-comparable with upstream and carries
+# upstream's own `[lints]` — the same reason it is excluded from the fmt gate.
+#
+# Opted into by a `[lints] workspace = true` in each owned crate. It binds local
+# builds too, so an in-progress unused binding is an error, not a warning:
+# `cargo check` names the lint and `#[allow(unused)]` on the item is the escape
+# hatch while you iterate. Note this also binds the Android target, which no CI
+# lane compiles — if `build-apk.sh` ever fails on a lint, that is this rule, and
+# the fix is the gate, not the lint level.
+[workspace.lints.rust]
+unused = "deny"
+
 [workspace.dependencies]
 anyhow = "1.0"
 approx = "0.5"

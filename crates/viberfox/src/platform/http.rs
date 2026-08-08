@@ -18,8 +18,9 @@ use std::time::Duration;
 /// A browser silently drops this header (`User-Agent` is forbidden in `fetch`),
 /// so upstreams with a hard identification requirement are reached through the
 /// relay on the web build instead (ADR-034), not directly.
+#[cfg(not(target_arch = "wasm32"))]
 pub const USER_AGENT: &str =
-    "viberfox/0.2 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)";
+    "viberfox/0.2 (https://code.garage44.eu/jeroen/viberfox; jvanveen@protonmail.com)";
 
 /// Default per-request timeout when a caller does not set one.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -27,6 +28,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Hard cap on a response body, so a runaway or hostile upstream cannot exhaust
 /// memory. 64 MiB comfortably covers the largest thing we fetch (a dense 3DBAG
 /// LoD2.2 cell decompresses past 10 MB).
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_BODY: u64 = 64 * 1024 * 1024;
 
 /// Address a Public-tier upstream, direct natively and **same-origin** on the web.
