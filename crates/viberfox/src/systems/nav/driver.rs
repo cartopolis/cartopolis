@@ -1101,6 +1101,7 @@ fn apply_gesture(peek: &mut Peek, g: Gesture, ease: f32) {
 /// because the aim is horizontal and the camera offset has no component across it
 /// once the azimuth is the course. Change the placement over there and this goes
 /// stale silently — the test would keep passing against the old geometry.
+#[cfg(test)]
 fn marker_screen_y(distance: f32, pitch: f32, aim_m: f32, fov_y: f32) -> f32 {
     /// The 1.5 m both the camera offset and the look target are raised by.
     const EYE: f32 = 1.5;

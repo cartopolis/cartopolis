@@ -73,6 +73,39 @@ pub const MAX_ROUTE_TILES: usize = 96;
 /// message; the tile count is the real gate.
 pub const MAX_ROUTE_KM: f64 = 22.0;
 
+/// The zoom the long haul is planned on when the street-level corridor will not
+/// fit ([`plan_corridor`]).
+///
+/// **Measured 2026-08-08, Groningen → Amsterdam (180 km), live tiles.** z14 needs
+/// ~1,340 tiles (~648 MB) and is refused; z12 needs 229 and is refused; z10 needs
+/// **35 tiles / 2.7 MB** and returns 180 km in 1 h 55 at 94 km/h — within a few
+/// per cent of the real drive.
+///
+/// z12 is not a useful middle rung and the probe is why. At the same tile budget
+/// a coarse corridor is *wider in ground terms*, so z10 both costs less and has
+/// more room to find the motorway: Groningen → Assen came out 30 km at z10 and
+/// 34 km at z12. Two tiers, not four.
+pub const LONG_HAUL_ZOOM: u32 = 10;
+
+/// Radius, in [`ROUTING_ZOOM`] tiles, of the detailed patch kept around each
+/// endpoint of a staged route.
+///
+/// **The patches are not a refinement, they are what makes a long route usable.**
+/// The coarse network is generalised, so its nearest road to an address is a long
+/// way off — measured at **281 m** for the Groningen end of every staged probe.
+/// Driver mode calls anything past 60 m off-route, so a coarse-only long route
+/// puts the driver off-route on the first frame and straight into a reroute it can
+/// never satisfy. ~2 tiles is about 3 km, comfortably past that snap and past
+/// [`HANDOVER_M`].
+const FINE_PATCH_TILES: f64 = 1.6;
+
+/// How far from each endpoint a staged route hands over from the detailed graph
+/// to the coarse one.
+///
+/// Far enough out that the coarse network is a real road by then (past its own
+/// ~281 m snap), close enough in that the fine patch still covers it.
+const HANDOVER_M: f64 = 900.0;
+
 /// Half-width of the tile corridor, in tiles: a constant term plus a term that
 /// grows with the **square root** of the direct distance, clamped.
 ///
@@ -432,12 +465,38 @@ pub struct RoadGraph {
     m_per_unit: f64,
     /// Reference latitude, kept so lattice → lat/lng can be inverted.
     zoom_n: f64,
+    /// The tile zoom this graph's lattice belongs to. Every coordinate in it —
+    /// node keys, bucket ids, `m_per_unit` — is relative to this, so tiles of any
+    /// other zoom cannot be added to it. See [`Self::new_at`].
+    zoom: u32,
 }
 
 impl RoadGraph {
-    /// An empty graph scaled for routes around `center_lat`.
+    /// An empty street-level graph scaled for routes around `center_lat`.
     #[must_use]
     pub fn new(center_lat: f64) -> Self {
+        Self::new_at(ROUTING_ZOOM, center_lat)
+    }
+
+    /// An empty graph on the lattice of an arbitrary tile `zoom`.
+    ///
+    /// [`ROUTING_ZOOM`] is the only zoom with the complete network and is what
+    /// `new` gives you. The coarser zooms carry a *generalised* road hierarchy —
+    /// measured 2026-08-08 against the VersaTiles Shortbread build: z8 has
+    /// motorway/trunk/primary, z10 adds secondary, tertiary and residential, z12
+    /// adds unclassified and service, and only z13/z14 carry the walking and
+    /// cycling network. That is what makes long-haul routing affordable: the
+    /// corridor for a 200 km route is ~1,340 tiles at z14 and ~50 at z10.
+    ///
+    /// Two things do not survive generalisation and callers must know it.
+    /// **`oneway` is a z14-only property** (checked on Groningen city-centre
+    /// ancestor tiles, which certainly have one-ways), so a coarse graph is
+    /// effectively undirected — acceptable on the long haul, where a dual
+    /// carriageway is two separate ways anyway, and not acceptable in a city.
+    /// And the geometry is simplified, so distances off a coarse graph run a
+    /// little short and its turn list is crude.
+    #[must_use]
+    pub fn new_at(zoom: u32, center_lat: f64) -> Self {
         Self {
             index: HashMap::new(),
             coords: Vec::new(),
@@ -448,9 +507,16 @@ impl RoadGraph {
             names: Vec::new(),
             label_segs: Vec::new(),
             label_buckets: HashMap::new(),
-            m_per_unit: tile_to_meters(ROUTING_ZOOM, center_lat) / EXTENT,
-            zoom_n: 2.0_f64.powi(ROUTING_ZOOM as i32),
+            m_per_unit: tile_to_meters(zoom, center_lat) / EXTENT,
+            zoom_n: 2.0_f64.powi(zoom as i32),
+            zoom,
         }
+    }
+
+    /// The tile zoom this graph was built at.
+    #[must_use]
+    pub fn zoom(&self) -> u32 {
+        self.zoom
     }
 
     #[must_use]
@@ -732,8 +798,15 @@ impl RoadGraph {
     /// WGS84 → global lattice units at [`ROUTING_ZOOM`].
     #[must_use]
     pub fn lat_lng_to_lattice(lat: f64, lng: f64) -> (f64, f64) {
-        let (tx, ty) = lat_lng_to_tile_frac(lat, lng, ROUTING_ZOOM);
-        (tx * EXTENT, ty * EXTENT)
+        lattice_at(ROUTING_ZOOM, lat, lng)
+    }
+
+    /// WGS84 → this graph's own lattice. Everything that indexes into the graph
+    /// has to go through here rather than through the [`ROUTING_ZOOM`] helper
+    /// above, or a coarse graph silently looks up a point 16 tiles away.
+    #[must_use]
+    fn lattice(&self, lat: f64, lng: f64) -> (f64, f64) {
+        lattice_at(self.zoom, lat, lng)
     }
 
     /// Inverse of [`Self::lat_lng_to_lattice`].
@@ -775,7 +848,7 @@ impl RoadGraph {
         max_m: f64,
         accept: impl Fn(u32) -> bool,
     ) -> Option<u32> {
-        let p = Self::lat_lng_to_lattice(lat, lng);
+        let p = self.lattice(lat, lng);
         let max_units = max_m / self.m_per_unit;
         let reach = (max_units / BUCKET).ceil() as i32;
         let (bx, by) = (bucket(p.0), bucket(p.1));
@@ -1546,6 +1619,11 @@ pub enum RouteError {
     Fetch(String),
 }
 
+/// Roughly how far apart two points can be before even the coarse corridor
+/// ([`LONG_HAUL_ZOOM`]) exceeds [`MAX_ROUTE_TILES`]. Pinned by a test rather than
+/// derived, because the gate is a count of grid cells and not an area.
+pub const MAX_STAGED_KM: f64 = 360.0;
+
 impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1556,8 +1634,8 @@ impl std::fmt::Display for RouteError {
             Self::TooClose => write!(f, "Start and destination are the same place"),
             Self::TooFar { km } => write!(
                 f,
-                "Too far to route here — {km:.0} km is beyond the ~{MAX_ROUTE_KM:.0} km \
-                 reach of street-level routing"
+                "Too far to route here — {km:.0} km is beyond the ~{MAX_STAGED_KM:.0} km \
+                 reach of the map data one route may pull in"
             ),
             Self::Fetch(e) => write!(f, "Map data unavailable: {e}"),
         }
@@ -1581,8 +1659,23 @@ pub fn corridor_tiles(
     to: (f64, f64),
     limit: usize,
 ) -> Result<Vec<(i64, i64)>, RouteError> {
-    let a = lat_lng_to_tile_frac(from.0, from.1, ROUTING_ZOOM);
-    let b = lat_lng_to_tile_frac(to.0, to.1, ROUTING_ZOOM);
+    corridor_tiles_at(ROUTING_ZOOM, from, to, limit)
+}
+
+/// [`corridor_tiles`] on an arbitrary tile zoom.
+///
+/// The capsule shape is the same at every zoom; what changes is that a coarse
+/// tile covers 16× the span per axis, so the same ground needs vastly fewer of
+/// them. That is the whole mechanism behind long-haul routing — see
+/// [`RoadGraph::new_at`] for what the coarse tiles do and do not contain.
+pub fn corridor_tiles_at(
+    zoom: u32,
+    from: (f64, f64),
+    to: (f64, f64),
+    limit: usize,
+) -> Result<Vec<(i64, i64)>, RouteError> {
+    let a = lat_lng_to_tile_frac(from.0, from.1, zoom);
+    let b = lat_lng_to_tile_frac(to.0, to.1, zoom);
     let direct = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
     let half_width = (CORRIDOR_BASE + CORRIDOR_SPREAD * direct.sqrt()).min(CORRIDOR_MAX_HALF_WIDTH);
 
@@ -1606,7 +1699,7 @@ pub fn corridor_tiles(
         // Straight-line distance for the message: one tile's ground size at the
         // midpoint latitude, times the direct span in tiles.
         let mid_lat = (from.0 + to.0) / 2.0;
-        let km = direct * tile_to_meters(ROUTING_ZOOM, mid_lat) / 1000.0;
+        let km = direct * tile_to_meters(zoom, mid_lat) / 1000.0;
         return Err(RouteError::TooFar { km });
     }
     // Nearest-to-the-start first, so a partially-fetched corridor is still useful
@@ -1616,6 +1709,168 @@ pub fn corridor_tiles(
         d(p).partial_cmp(&d(q)).unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(tiles)
+}
+
+// ─── Two-tier planning ───────────────────────────────────────────────────────
+
+/// Which tiles, at which zooms, a route needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Corridor {
+    /// One graph at [`ROUTING_ZOOM`] covers the whole route — every route that
+    /// fits, which is every city route, and the only shape that existed before.
+    Direct(Vec<(i64, i64)>),
+    /// Too long for street level: a coarse corridor for the haul, and a detailed
+    /// patch at each end so the route still starts and finishes on the actual
+    /// street ([`FINE_PATCH_TILES`]).
+    ///
+    /// **The two patches are separate lists because they must become separate
+    /// graphs.** Put both in one graph and its routable core — the largest
+    /// strongly-connected component — is whichever patch has more streets in it;
+    /// the other end is then outside the core, cannot be snapped to, and every
+    /// staged route silently falls back to the coarse one. That is precisely what
+    /// the first cut did, and the only symptom was the endpoint snap staying at
+    /// its coarse 281 m.
+    Staged {
+        start: Vec<(i64, i64)>,
+        end: Vec<(i64, i64)>,
+        coarse: Vec<(i64, i64)>,
+    },
+}
+
+/// Decide how to route between two points, and which tiles that needs.
+///
+/// Street level if it fits, two tiers if it does not, and a refusal only when even
+/// the coarse corridor is out of budget (~380 km, from
+/// [`LONG_HAUL_ZOOM`] against [`MAX_ROUTE_TILES`]).
+pub fn plan_corridor(from: (f64, f64), to: (f64, f64)) -> Result<Corridor, RouteError> {
+    if let Ok(tiles) = corridor_tiles(from, to, MAX_ROUTE_TILES) {
+        return Ok(Corridor::Direct(tiles));
+    }
+    // The coarse corridor is the gate now, so its refusal is the one the user
+    // sees — and it speaks in the same "too far, here is how far" terms.
+    let coarse = corridor_tiles_at(LONG_HAUL_ZOOM, from, to, MAX_ROUTE_TILES)?;
+    Ok(Corridor::Staged {
+        start: endpoint_patch(from),
+        end: endpoint_patch(to),
+        coarse,
+    })
+}
+
+/// The disc of [`ROUTING_ZOOM`] tiles kept around one endpoint of a staged route.
+fn endpoint_patch(at: (f64, f64)) -> Vec<(i64, i64)> {
+    let c = lat_lng_to_tile_frac(at.0, at.1, ROUTING_ZOOM);
+    let r = FINE_PATCH_TILES.ceil() as i64;
+    let mut tiles = Vec::new();
+    for tx in (c.0.floor() as i64 - r)..=(c.0.floor() as i64 + r) {
+        for ty in (c.1.floor() as i64 - r)..=(c.1.floor() as i64 + r) {
+            let d = (tx as f64 + 0.5 - c.0).hypot(ty as f64 + 0.5 - c.1);
+            if d <= FINE_PATCH_TILES {
+                tiles.push((tx, ty));
+            }
+        }
+    }
+    tiles
+}
+
+/// Route across two tiers: the coarse graph for the haul, the detailed one for
+/// the first and last kilometre.
+///
+/// The two graphs are **not** merged. Their lattices belong to different zooms, so
+/// there is no shared node identity to weld on, and the generalised geometry sits
+/// tens of metres from the detailed geometry of the same road — far outside the
+/// sub-metre tolerance [`RoadGraph::finish`] nodes with. Welding would mean
+/// inventing transfer edges and letting the search hop between tiers wherever it
+/// liked. Instead each graph answers the question it is good at and the *routes*
+/// are spliced, which fails visibly (a seam) rather than subtly (a route that
+/// zig-zags between two representations of one road).
+///
+/// Falls back to the coarse route whole whenever an end cannot be refined — an
+/// approximate route is worth more than an error, and the caller cannot do
+/// anything with the distinction.
+pub fn route_staged(
+    start_patch: &RoadGraph,
+    end_patch: &RoadGraph,
+    coarse: &RoadGraph,
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: TravelMode,
+) -> Result<Route, RouteError> {
+    let long = coarse.route(from, to, mode)?;
+    // `points` is `[from pin, road…, to pin]`; the handovers are road vertices.
+    let n = long.points.len();
+    if n < 4 {
+        return Ok(long);
+    }
+    let Some(a) = (1..n - 1).find(|&i| ground_m(long.points[i], long.points[0]) > HANDOVER_M)
+    else {
+        return Ok(long);
+    };
+    let Some(b) = (1..n - 1)
+        .rev()
+        .find(|&i| ground_m(long.points[i], long.points[n - 1]) > HANDOVER_M)
+    else {
+        return Ok(long);
+    };
+    if a >= b {
+        return Ok(long);
+    }
+
+    let (Ok(head), Ok(tail)) = (
+        start_patch.route(from, (long.points[a][0], long.points[a][1]), mode),
+        end_patch.route((long.points[b][0], long.points[b][1]), to, mode),
+    ) else {
+        return Ok(long);
+    };
+
+    // Geometry: head ends at the handover, the coarse middle carries on from the
+    // vertex after it, and the tail begins at the far handover.
+    let mut points = head.points.clone();
+    points.extend_from_slice(&long.points[a + 1..b]);
+    points.extend_from_slice(&tail.points);
+
+    // The coarse middle's own length, measured off the polyline rather than taken
+    // from the planner's total — the two legs it replaces are gone. Its time is
+    // that share of the coarse route's time, which is the best available: the
+    // coarse steps are not indexed by polyline position.
+    let middle_m: f64 = long.points[a..=b]
+        .windows(2)
+        .map(|w| ground_m(w[0], w[1]))
+        .sum();
+    let middle_s = if long.distance_m > 1.0 {
+        long.duration_s * middle_m / long.distance_m
+    } else {
+        0.0
+    };
+
+    // Steps: the fine legs keep theirs (less the Arrive that is not an arrival and
+    // the Depart that is not a departure), and the coarse route contributes the
+    // ones that fall outside both handover radii. Selecting them by distance from
+    // the pins rather than by polyline index is crude and adequate — a route long
+    // enough to be staged does not come back within `HANDOVER_M` of its own ends.
+    let mut steps = head.steps;
+    steps.pop();
+    steps.extend(long.steps.into_iter().filter(|s| {
+        ground_m(s.at, long.points[0]) > HANDOVER_M
+            && ground_m(s.at, long.points[n - 1]) > HANDOVER_M
+    }));
+    steps.extend(tail.steps.into_iter().skip(1));
+    merge_short_steps(&mut steps);
+
+    Ok(Route {
+        mode,
+        points,
+        distance_m: head.distance_m + middle_m + tail.distance_m,
+        duration_s: head.duration_s + middle_s + tail.duration_s,
+        steps,
+    })
+}
+
+/// Ground metres between two `[lat, lng]`, on the local tangent plane.
+fn ground_m(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let mid = (a[0] + b[0]) * 0.5;
+    let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
+    let dy = (b[0] - a[0]) * 110_540.0;
+    dx.hypot(dy)
 }
 
 // ─── Formatting helpers (shared by the panel and the tests) ──────────────────
@@ -1644,6 +1899,12 @@ pub fn format_duration(s: f64) -> String {
 }
 
 // ─── Small geometry / property helpers ───────────────────────────────────────
+
+/// WGS84 → global lattice units at a tile `zoom`.
+fn lattice_at(zoom: u32, lat: f64, lng: f64) -> (f64, f64) {
+    let (tx, ty) = lat_lng_to_tile_frac(lat, lng, zoom);
+    (tx * EXTENT, ty * EXTENT)
+}
 
 fn str_prop<'a>(props: Option<&'a HashMap<String, Value>>, key: &str) -> Option<&'a str> {
     match props?.get(key)? {
@@ -1887,6 +2148,95 @@ mod tests {
                 "{kind:?}: a cyclist waits less than a driver"
             );
         }
+    }
+
+    /// Ground kilometres between two `[lat, lng]`, for the reach tests below.
+    fn km_between(a: (f64, f64), b: (f64, f64)) -> f64 {
+        ground_m([a.0, a.1], [b.0, b.1]) / 1000.0
+    }
+
+    /// A point `km` due east of another, near enough for a tangent-plane step.
+    fn east_of(from: (f64, f64), km: f64) -> (f64, f64) {
+        (
+            from.0,
+            from.1 + km * 1000.0 / (111_320.0 * from.0.to_radians().cos()),
+        )
+    }
+
+    /// Street level while it fits, two tiers once it does not, and a refusal only
+    /// past the coarse budget. The thresholds are the product, not the mechanism:
+    /// a change that quietly moved either would change which routes exist.
+    #[test]
+    fn the_planner_steps_down_a_tier_rather_than_refusing() {
+        let here = (53.2194, 6.5665);
+
+        // Well inside street-level reach.
+        assert!(
+            matches!(
+                plan_corridor(here, east_of(here, 8.0)),
+                Ok(Corridor::Direct(_))
+            ),
+            "a city route must stay on one street-level graph"
+        );
+
+        // Past it — the old hard stop, now a staged route.
+        let long = east_of(here, 60.0);
+        let Ok(Corridor::Staged { start, end, coarse }) = plan_corridor(here, long) else {
+            panic!("60 km should stage, not refuse");
+        };
+        assert!(!start.is_empty() && !end.is_empty() && !coarse.is_empty());
+        assert!(
+            coarse.len() <= MAX_ROUTE_TILES,
+            "the coarse corridor is the budget now: {} tiles",
+            coarse.len()
+        );
+        // The patches are separate lists *and* must not have been merged: at this
+        // range they cannot overlap, and sharing one graph is the bug that made
+        // every staged route fall back (see `Corridor::Staged`).
+        assert!(
+            start.iter().all(|t| !end.contains(t)),
+            "the endpoint patches ran into each other"
+        );
+
+        // The transition is where `MAX_ROUTE_KM` says it is, give or take the
+        // corridor being a count of grid cells rather than a smooth area.
+        let direct_reach = (1..)
+            .map(|i| f64::from(i) * 2.0)
+            .take_while(|&km| {
+                matches!(
+                    plan_corridor(here, east_of(here, km)),
+                    Ok(Corridor::Direct(_))
+                )
+            })
+            .last()
+            .expect("some distance routes directly");
+        assert!(
+            (direct_reach - MAX_ROUTE_KM).abs() < 2.0,
+            "street-level reach measured {direct_reach:.0} km against MAX_ROUTE_KM {MAX_ROUTE_KM:.0}"
+        );
+
+        // …and the staged reach is what `MAX_STAGED_KM` claims, which is the
+        // number the refusal message quotes at the user.
+        let staged_reach = (1..)
+            .map(|i| f64::from(i) * 10.0)
+            .take_while(|&km| plan_corridor(here, east_of(here, km)).is_ok())
+            .last()
+            .expect("some distance stages");
+        // Both sampled on their own step, so the true limits sit inside one step
+        // above these; the constants name the guaranteed reach, not the ceiling.
+        assert!(
+            (staged_reach - MAX_STAGED_KM).abs() < 10.0,
+            "staged reach measured {staged_reach:.0} km against MAX_STAGED_KM {MAX_STAGED_KM:.0}"
+        );
+
+        // Past everything, the refusal reports a distance the user can act on.
+        let Err(RouteError::TooFar { km }) = plan_corridor(here, east_of(here, 900.0)) else {
+            panic!("900 km must be refused");
+        };
+        assert!(
+            (km - km_between(here, east_of(here, 900.0))).abs() < 60.0,
+            "reported {km:.0} km"
+        );
     }
 
     /// A ferry carries walkers and cyclists and — deliberately — not cars. The

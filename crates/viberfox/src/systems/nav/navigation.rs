@@ -201,7 +201,7 @@ pub struct RouteState {
     progress: Arc<(AtomicUsize, AtomicUsize)>,
     /// The last graph built, keyed by the tile list it was built from. Switching
     /// travel mode reuses it; moving an endpoint usually does not.
-    cache: Arc<Mutex<Option<(Vec<(i64, i64)>, Arc<RoadGraph>)>>>,
+    cache: Arc<GraphCache>,
     /// Reverse-geocoded names for map-picked points: `(endpoint, label)`.
     reverse: Arc<Mutex<Vec<(Endpoint, String)>>>,
 }
@@ -506,50 +506,60 @@ fn publish_solve(sink: &Mutex<Option<SolveJob>>, seq: u64, result: Result<Route,
 /// this matches `platform::workers`' own ceiling.
 const ROUTE_FETCH_CONCURRENCY: usize = 8;
 
+/// The graph or graphs a solve runs on ([`routing::plan_corridor`]).
+///
+/// Staged carries *three*: one detailed patch per endpoint, and the coarse
+/// corridor between them. The two patches cannot share a graph — see
+/// `routing::Corridor::Staged`.
+#[derive(Clone)]
+enum RouteGraphs {
+    Direct(Arc<RoadGraph>),
+    Staged {
+        start: Arc<RoadGraph>,
+        end: Arc<RoadGraph>,
+        coarse: Arc<RoadGraph>,
+    },
+}
+
+/// The last solve's graphs, and the corridor they were built from. Keyed by the
+/// whole `Corridor` rather than by a tile list, so a staged solve and a direct one
+/// over the same ground cannot be mistaken for each other.
+type GraphCache = Mutex<Option<(routing::Corridor, RouteGraphs)>>;
+
 /// What the fetch half hands the CPU half.
 enum SolveInput {
-    /// Same corridor as the last solve — the graph is reusable as-is. This is what
-    /// makes switching travel mode cost one A* instead of a whole refetch.
-    Graph(Arc<RoadGraph>),
-    /// A fresh corridor: its tile list, and the bodies that answered.
+    /// Same corridor as the last solve — the graphs are reusable as-is. This is
+    /// what makes switching travel mode cost one A* instead of a whole refetch.
+    Graphs(RouteGraphs),
+    /// A fresh corridor: what it is, and the bodies that answered.
     ///
     /// Holding every body at once costs up to `MAX_ROUTE_TILES` × ~500 KB, which is
     /// the "tens of megabytes" that const's own comment is sized around; the
     /// alternative — interleaving parse with fetch — would put the parse back on
     /// the fetching thread, i.e. on the browser's frame loop.
     Bodies {
-        tiles: Vec<(i64, i64)>,
-        bodies: Vec<((i64, i64), Arc<Vec<u8>>)>,
+        corridor: routing::Corridor,
+        /// One entry per tier, in the order `plan_corridor` listed them: the
+        /// direct corridor alone, or start patch, end patch and coarse corridor.
+        tiers: Vec<(u32, Vec<((i64, i64), Arc<Vec<u8>>)>)>,
     },
 }
 
-/// Corridor → tiles → bytes. The I/O half of a solve.
-async fn fetch_corridor(
-    from: (f64, f64),
-    to: (f64, f64),
+/// Fetch one tier's tiles, reporting into the shared progress counter.
+///
+/// A free function rather than a closure because it borrows its tile slice into
+/// the future it returns, which a closure cannot express.
+async fn fetch_tier(
+    tiles: &[(i64, i64)],
+    zoom: u32,
     template: &str,
     progress: &(AtomicUsize, AtomicUsize),
-    cache: &Mutex<Option<(Vec<(i64, i64)>, Arc<RoadGraph>)>>,
-) -> Result<SolveInput, RouteError> {
-    let tiles = routing::corridor_tiles(from, to, routing::MAX_ROUTE_TILES)?;
-    progress.1.store(tiles.len(), Ordering::Relaxed);
-    progress.0.store(0, Ordering::Relaxed);
-
-    // Same corridor as last time → skip the fetch entirely and reuse the graph.
-    if let Some(graph) = cache.lock().ok().and_then(|g| {
-        g.as_ref()
-            .filter(|(t, _)| *t == tiles)
-            .map(|(_, g)| g.clone())
-    }) {
-        progress.0.store(tiles.len(), Ordering::Relaxed);
-        return Ok(SolveInput::Graph(graph));
-    }
-
+    done: &mut usize,
+) -> Vec<((i64, i64), Arc<Vec<u8>>)> {
     let mut bodies: Vec<((i64, i64), Arc<Vec<u8>>)> = Vec::with_capacity(tiles.len());
-    let mut done = 0usize;
     for chunk in tiles.chunks(ROUTE_FETCH_CONCURRENCY) {
         let fetched = futures_util::future::join_all(chunk.iter().map(|tile| async move {
-            let key = TileKey::new(tile.0, tile.1, routing::ROUTING_ZOOM);
+            let key = TileKey::new(tile.0, tile.1, zoom);
             (*tile, key, load_tile_image(&key, template).await)
         }))
         .await;
@@ -558,23 +568,64 @@ async fn fetch_corridor(
                 Ok(bytes) => bodies.push((tile, bytes)),
                 // One missing tile is a hole in the corridor, not a failure: the
                 // search may well route around it. All of them missing is a
-                // failure, and falls out of the empty-body check below.
+                // failure, and falls out of the empty-body check in the caller.
                 Err(e) => {
                     tracing::warn!(tile = %key.to_path(), error = %e, "route tile fetch failed");
                 }
             }
-            done += 1;
-            progress.0.store(done, Ordering::Relaxed);
+            *done += 1;
+            progress.0.store(*done, Ordering::Relaxed);
         }
     }
+    bodies
+}
 
-    if bodies.is_empty() {
+/// Corridor → tiles → bytes. The I/O half of a solve.
+async fn fetch_corridor(
+    from: (f64, f64),
+    to: (f64, f64),
+    template: &str,
+    progress: &(AtomicUsize, AtomicUsize),
+    cache: &GraphCache,
+) -> Result<SolveInput, RouteError> {
+    let corridor = routing::plan_corridor(from, to)?;
+    let plan: Vec<(u32, Vec<(i64, i64)>)> = match &corridor {
+        routing::Corridor::Direct(tiles) => vec![(routing::ROUTING_ZOOM, tiles.clone())],
+        routing::Corridor::Staged { start, end, coarse } => vec![
+            (routing::ROUTING_ZOOM, start.clone()),
+            (routing::ROUTING_ZOOM, end.clone()),
+            (routing::LONG_HAUL_ZOOM, coarse.clone()),
+        ],
+    };
+    let total: usize = plan.iter().map(|(_, t)| t.len()).sum();
+    progress.1.store(total, Ordering::Relaxed);
+    progress.0.store(0, Ordering::Relaxed);
+
+    // Same corridor as last time → skip the fetch entirely and reuse the graphs.
+    if let Some(graphs) = cache.lock().ok().and_then(|g| {
+        g.as_ref()
+            .filter(|(c, _)| *c == corridor)
+            .map(|(_, g)| g.clone())
+    }) {
+        progress.0.store(total, Ordering::Relaxed);
+        return Ok(SolveInput::Graphs(graphs));
+    }
+
+    let mut done = 0usize;
+    let mut tiers = Vec::with_capacity(plan.len());
+    for (zoom, tiles) in &plan {
+        tiers.push((
+            *zoom,
+            fetch_tier(tiles, *zoom, template, progress, &mut done).await,
+        ));
+    }
+
+    if tiers.iter().all(|(_, b)| b.is_empty()) {
         return Err(RouteError::Fetch(format!(
-            "none of the {} map tiles could be read",
-            tiles.len()
+            "none of the {total} map tiles could be read"
         )));
     }
-    Ok(SolveInput::Bodies { tiles, bodies })
+    Ok(SolveInput::Bodies { corridor, tiers })
 }
 
 /// Graph → A*. The CPU half of a solve; runs on `platform::workers`.
@@ -583,46 +634,78 @@ fn build_and_search(
     from: (f64, f64),
     to: (f64, f64),
     mode: TravelMode,
-    cache: &Mutex<Option<(Vec<(i64, i64)>, Arc<RoadGraph>)>>,
+    cache: &GraphCache,
 ) -> Result<Route, RouteError> {
-    let graph = match input {
-        SolveInput::Graph(g) => g,
-        SolveInput::Bodies { tiles, bodies } => {
-            let total = tiles.len();
-            let mut graph = RoadGraph::new((from.0 + to.0) / 2.0);
-            let mut failures = total - bodies.len();
-            for (tile, bytes) in bodies {
-                let key = TileKey::new(tile.0, tile.1, routing::ROUTING_ZOOM);
-                match TileData::parse(&bytes).and_then(|t| graph.add_tile(&t, tile)) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");
-                        failures += 1;
-                    }
+    // One tier's tiles → one graph on that tier's lattice. A graph carries its own
+    // zoom (`RoadGraph::new_at`), so nothing downstream has to remember which of
+    // the two it is holding.
+    let build = |zoom: u32, bodies: Vec<((i64, i64), Arc<Vec<u8>>)>| -> Option<Arc<RoadGraph>> {
+        if bodies.is_empty() {
+            return None;
+        }
+        let total = bodies.len();
+        let mut graph = RoadGraph::new_at(zoom, (from.0 + to.0) / 2.0);
+        let mut failures = 0usize;
+        for (tile, bytes) in bodies {
+            let key = TileKey::new(tile.0, tile.1, zoom);
+            match TileData::parse(&bytes).and_then(|t| graph.add_tile(&t, tile)) {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");
+                    failures += 1;
                 }
             }
-            if failures == total {
-                return Err(RouteError::Fetch(format!(
-                    "none of the {total} map tiles could be read"
-                )));
+        }
+        if failures == total {
+            return None;
+        }
+        graph.finish();
+        tracing::info!(
+            zoom,
+            tiles = total,
+            unreadable = failures,
+            nodes = graph.node_count(),
+            edges = graph.edge_count(),
+            "route graph built"
+        );
+        Some(Arc::new(graph))
+    };
+
+    let graphs = match input {
+        SolveInput::Graphs(g) => g,
+        SolveInput::Bodies { corridor, tiers } => {
+            let mut built = Vec::with_capacity(tiers.len());
+            for (zoom, bodies) in tiers {
+                let n = bodies.len();
+                let Some(g) = build(zoom, bodies) else {
+                    return Err(RouteError::Fetch(format!(
+                        "none of the {n} map tiles at z{zoom} could be read"
+                    )));
+                };
+                built.push(g);
             }
-            graph.finish();
-            tracing::info!(
-                tiles = total,
-                unreadable = failures,
-                nodes = graph.node_count(),
-                edges = graph.edge_count(),
-                "route graph built"
-            );
-            let graph = Arc::new(graph);
+            let graphs = match built.as_slice() {
+                [direct] => RouteGraphs::Direct(direct.clone()),
+                [start, end, coarse] => RouteGraphs::Staged {
+                    start: start.clone(),
+                    end: end.clone(),
+                    coarse: coarse.clone(),
+                },
+                _ => return Err(RouteError::NoData),
+            };
             if let Ok(mut g) = cache.lock() {
-                *g = Some((tiles, graph.clone()));
+                *g = Some((corridor, graphs.clone()));
             }
-            graph
+            graphs
         }
     };
 
-    graph.route(from, to, mode)
+    match &graphs {
+        RouteGraphs::Direct(g) => g.route(from, to, mode),
+        RouteGraphs::Staged { start, end, coarse } => {
+            routing::route_staged(start, end, coarse, from, to, mode)
+        }
+    }
 }
 
 // ─── Picking a point off the map ─────────────────────────────────────────────
@@ -1676,7 +1759,7 @@ mod tests {
         // Groningen: across the centre, centre→ring road, and a long haul out to
         // the motorway — a residential-grid case, a mixed case and a case that
         // should end up on the trunk network.
-        let pairs: [(&str, (f64, f64), (f64, f64)); 5] = [
+        let pairs: [(&str, (f64, f64), (f64, f64)); 7] = [
             ("centre → station", (53.2194, 6.5665), (53.2109, 6.5642)),
             ("centre → Paddepoel", (53.2194, 6.5665), (53.2405, 6.5455)),
             ("centre → Ring West", (53.2194, 6.5665), (53.2230, 6.5170)),
@@ -1688,6 +1771,20 @@ mod tests {
                 "Vlissingen → Breskens",
                 (51.4450, 3.5700),
                 (51.3990, 3.5570),
+            ),
+            // Past street-level reach: these take `plan_corridor`'s staged path —
+            // coarse haul, detailed ends. The snap column is the one to read,
+            // because driver mode calls anything past 60 m off-route, and a
+            // coarse-only long route snaps ~281 m out.
+            (
+                "Groningen → Assen (26 km)",
+                (53.2194, 6.5665),
+                (52.9950, 6.5620),
+            ),
+            (
+                "Groningen → Amsterdam (180 km)",
+                (53.2194, 6.5665),
+                (52.3730, 4.8920),
             ),
         ];
         for (name, from, to) in pairs {
@@ -1704,20 +1801,129 @@ mod tests {
                 let route = input.and_then(|i| build_and_search(i, from, to, mode, &cache));
                 let solve = t0.elapsed();
                 match route {
+                    Ok(r) => {
+                        // Distance from each pin to the road the route actually
+                        // starts and ends on — driver mode's off-route threshold
+                        // is 60 m, so this column is a pass/fail.
+                        let snap = |pin: [f64; 2], road: [f64; 2]| {
+                            let mid = (pin[0] + road[0]) * 0.5;
+                            let dx = (road[1] - pin[1]) * 111_320.0 * mid.to_radians().cos();
+                            let dy = (road[0] - pin[0]) * 110_540.0;
+                            dx.hypot(dy)
+                        };
+                        let last = r.points.len() - 1;
+                        println!(
+                            "{name:<32} {:<5} {:>8} {:>10}  {:>5.1} km/h  snap {:>4.0}/{:<4.0} m  \
+                             ({} steps, {} tiles, {} ms)",
+                            mode.label(),
+                            format_distance(r.distance_m),
+                            format_duration(r.duration_s),
+                            r.distance_m / r.duration_s * 3.6,
+                            snap(r.points[0], r.points[1]),
+                            snap(r.points[last], r.points[last - 1]),
+                            r.steps.len(),
+                            progress.1.load(Ordering::Relaxed),
+                            solve.as_millis(),
+                        );
+                    }
+                    Err(e) => println!("{name:<32} {:<5} FAILED: {e}", mode.label()),
+                }
+            }
+            println!();
+        }
+    }
+
+    /// What a *coarse* graph can actually do, at each zoom, on a route far beyond
+    /// street-level reach. The question this answers is whether a long haul needs
+    /// the fine network stitched onto its ends at all, or whether the generalised
+    /// hierarchy routes end to end on its own.
+    ///
+    /// ```text
+    /// cargo test -p viberfox coarse_zoom_probe -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn coarse_zoom_probe() {
+        let template = std::env::var("VIBE_TILE_URL")
+            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
+        let cases: [(&str, (f64, f64), (f64, f64)); 3] = [
+            (
+                "Groningen → Assen (26 km)",
+                (53.2194, 6.5665),
+                (52.9950, 6.5620),
+            ),
+            (
+                "Groningen → Zwolle (95 km)",
+                (53.2194, 6.5665),
+                (52.5168, 6.0830),
+            ),
+            (
+                "Groningen → Amsterdam (180 km)",
+                (53.2194, 6.5665),
+                (52.3730, 4.8920),
+            ),
+        ];
+        for (name, from, to) in cases {
+            println!("── {name}");
+            for zoom in [14u32, 12, 10] {
+                let tiles =
+                    match routing::corridor_tiles_at(zoom, from, to, routing::MAX_ROUTE_TILES) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            println!("   z{zoom:<2} corridor refused: {e}");
+                            continue;
+                        }
+                    };
+                let t0 = Instant::now();
+                let mut bytes = 0usize;
+                let mut graph = RoadGraph::new_at(zoom, (from.0 + to.0) / 2.0);
+                for tile in &tiles {
+                    let key = TileKey::new(tile.0, tile.1, zoom);
+                    let Ok(body) = futures_lite::future::block_on(load_tile_image(&key, &template))
+                    else {
+                        continue;
+                    };
+                    bytes += body.len();
+                    if let Ok(td) = vector_tiles::TileData::parse(&body) {
+                        let _ = graph.add_tile(&td, *tile);
+                    }
+                }
+                graph.finish();
+                let fetched = t0.elapsed();
+                let t1 = Instant::now();
+                let route = graph.route(from, to, TravelMode::Car);
+                // How far the pins are from the road the route actually starts
+                // and ends on. This is the number driver mode lives or dies by:
+                // its off-route threshold is 60 m, so a coarse snap further out
+                // than that puts a driver off-route on the first frame.
+                let snap = |pin: [f64; 2], road: [f64; 2]| {
+                    let mid = (pin[0] + road[0]) * 0.5;
+                    let dx = (road[1] - pin[1]) * 111_320.0 * mid.to_radians().cos();
+                    let dy = (road[0] - pin[0]) * 110_540.0;
+                    dx.hypot(dy)
+                };
+                match route {
                     Ok(r) => println!(
-                        "{name:<22} {:<5} {:>8} {:>9}  {:>5.1} km/h  ({} steps, {} tiles, {} ms)",
-                        mode.label(),
+                        "   z{zoom:<2} {:>3} tiles {:>6.1} MB  {:>8} {:>10}  {:>5.1} km/h  \
+                         {:>3} steps  snap {:>5.0}/{:<5.0} m  (fetch+build {:>5} ms, search {:>4} ms)",
+                        tiles.len(),
+                        bytes as f64 / 1024.0 / 1024.0,
                         format_distance(r.distance_m),
                         format_duration(r.duration_s),
                         r.distance_m / r.duration_s * 3.6,
                         r.steps.len(),
-                        progress.1.load(Ordering::Relaxed),
-                        solve.as_millis(),
+                        snap(r.points[0], r.points[1]),
+                        snap(r.points[r.points.len() - 1], r.points[r.points.len() - 2]),
+                        fetched.as_millis(),
+                        t1.elapsed().as_millis(),
                     ),
-                    Err(e) => println!("{name:<22} {:<5} FAILED: {e}", mode.label()),
+                    Err(e) => println!(
+                        "   z{zoom:<2} {:>3} tiles {:>6.1} MB  FAILED: {e}",
+                        tiles.len(),
+                        bytes as f64 / 1024.0 / 1024.0
+                    ),
                 }
             }
-            println!();
         }
     }
 
