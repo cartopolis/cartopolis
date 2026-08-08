@@ -992,7 +992,9 @@ mod tests {
         // Only finger 1's move+press.
         assert_eq!(pointer.len(), 2, "{pointer:?}");
         assert!(
-            !pointer.iter().any(|e| matches!(e, egui::Event::PointerGone)),
+            !pointer
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerGone)),
             "the second finger lifting must not take the pointer with it"
         );
     }

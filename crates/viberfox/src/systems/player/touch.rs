@@ -245,8 +245,8 @@ fn recognize(previous: &[(u64, Vec2)], fingers: &[(u64, Vec2)]) -> Read {
             if now.length() < MIN_PAIR_SEPARATION_PTS || was.length() < MIN_PAIR_SEPARATION_PTS {
                 return read;
             }
-            read.pinch = (now.length() / was.length())
-                .clamp(1.0 / MAX_PINCH_PER_FRAME, MAX_PINCH_PER_FRAME);
+            read.pinch =
+                (now.length() / was.length()).clamp(1.0 / MAX_PINCH_PER_FRAME, MAX_PINCH_PER_FRAME);
             // Shortest way round, so a twist across the atan2 seam is a small
             // step and not a full turn of the view.
             read.twist = wrap_pi(now.to_angle() - was.to_angle());
@@ -299,8 +299,7 @@ fn emulate_mouse(
     let paid_release = gestures.deferred_release;
     if paid_release {
         gestures.deferred_release = false;
-        out.buttons
-            .push((MouseButton::Left, ButtonState::Released));
+        out.buttons.push((MouseButton::Left, ButtonState::Released));
     }
 
     // Has the primary finger lifted (or been cancelled)?
@@ -336,7 +335,11 @@ fn emulate_mouse(
     let Some(primary_id) = gestures.primary else {
         return out;
     };
-    let Some(pos) = fingers.iter().find(|(id, _)| *id == primary_id).map(|(_, p)| *p) else {
+    let Some(pos) = fingers
+        .iter()
+        .find(|(id, _)| *id == primary_id)
+        .map(|(_, p)| *p)
+    else {
         return out;
     };
 
@@ -459,7 +462,11 @@ mod tests {
     #[test]
     fn a_huge_spread_in_one_frame_is_clamped() {
         let read = step(&pair(20.0), &pair(400.0));
-        assert!((read.pinch - MAX_PINCH_PER_FRAME).abs() < 1e-5, "pinch = {}", read.pinch);
+        assert!(
+            (read.pinch - MAX_PINCH_PER_FRAME).abs() < 1e-5,
+            "pinch = {}",
+            read.pinch
+        );
     }
 
     /// Rotating the pair clockwise on screen (y points down) is a positive
@@ -517,7 +524,13 @@ mod tests {
 
     #[test]
     fn a_finger_holds_the_left_button_for_the_length_of_the_gesture() {
-        let out = emulate(&[one(10.0, 10.0), one(30.0, 40.0), one(50.0, 60.0), vec![], vec![]]);
+        let out = emulate(&[
+            one(10.0, 10.0),
+            one(30.0, 40.0),
+            one(50.0, 60.0),
+            vec![],
+            vec![],
+        ]);
         assert_eq!(out[0], vec![(MouseButton::Left, ButtonState::Pressed)]);
         assert!(out[1].is_empty(), "held, not re-pressed: {:?}", out[1]);
         assert!(out[2].is_empty());
@@ -573,12 +586,10 @@ mod tests {
     fn a_held_pinch_never_fires_the_right_button() {
         let mut frames = vec![one(180.0, 200.0)];
         frames.extend((0..60).map(|_| pair(50.0)));
-        assert!(
-            !emulate(&frames)
-                .iter()
-                .flatten()
-                .any(|(b, _)| *b == MouseButton::Right)
-        );
+        assert!(!emulate(&frames)
+            .iter()
+            .flatten()
+            .any(|(b, _)| *b == MouseButton::Right));
     }
 
     /// Lifting one finger of a pinch must not press on top of the release it
@@ -622,7 +633,10 @@ mod tests {
             (1, Vec2::new(200.0, 200.0)),
             (2, Vec2::new(300.0, 200.0)),
         ];
-        let to: Vec<_> = from.iter().map(|(i, p)| (*i, *p + Vec2::splat(20.0))).collect();
+        let to: Vec<_> = from
+            .iter()
+            .map(|(i, p)| (*i, *p + Vec2::splat(20.0)))
+            .collect();
         assert_eq!(step(&from, &to), Read::default());
     }
 }
