@@ -125,11 +125,30 @@
            loader paints, and a black flash reads as a broken page. Matches
            `systems::theme::SURFACE`. */
         background: #0c2a33;
+        /* Pull-to-refresh and rubber-banding are chrome-level gestures: they are
+           decided before any pointer event is dispatched, so `preventDefault`
+           in the canvas handler cannot reach them. A downward drag on the map
+           would otherwise reload the page. */
+        overscroll-behavior: none;
       }
       canvas {
         display: block;
         width: 100%;
         height: 100%;
+        /* The touch bridge (`systems::touch`) needs every finger, and the
+           browser's default gesture layer claims most of them first: a
+           one-finger drag scrolls, two fingers pinch-zoom the *page*, and a
+           double tap zooms. `touch-action: none` hands the lot to us — without
+           it the map is inert under exactly the gestures it exists for, and no
+           `TouchInput` ever reaches Rust to explain why. Not redundant with
+           winit's own `preventDefault`: this is consulted by the compositor
+           before the event is dispatched at all. */
+        touch-action: none;
+        /* A long press is our context menu (`systems::touch`); left to itself
+           the browser answers it with a text-selection callout over the map. */
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
       }
       .unsupported {
         color: #ddd;

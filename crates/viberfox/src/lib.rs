@@ -521,6 +521,7 @@ pub fn run() {
         .init_resource::<LocalAvatarSimId>()
         .init_resource::<CameraState>()
         .init_resource::<MouseState>()
+        .init_resource::<systems::touch::TouchGestures>()
         .init_resource::<systems::tile_loader::TileCache>()
         // A scripted run never sees the server handshake that normally supplies the
         // tile template, and the built-in fallback is the raster OSM basemap — which
@@ -688,6 +689,16 @@ pub fn run() {
     // macOS, which use the desktop file / .app bundle respectively). See
     // `systems::window_icon`.
     app.add_systems(Update, systems::window_icon::set_window_icon);
+
+    // Touch → gestures + the emulated mouse (`systems::touch`). MUST run after
+    // `InputSystems`, which is what fills `Touches` from this frame's events;
+    // unordered it would read last frame's fingers and report every delta one
+    // frame late. Everything downstream is an ordinary `Update` reader, so no
+    // further ordering is needed.
+    app.add_systems(
+        PreUpdate,
+        systems::touch::recognize_touch_gestures.after(bevy::input::InputSystems),
+    );
 
     app.add_systems(
         Startup,

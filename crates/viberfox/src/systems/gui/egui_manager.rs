@@ -303,7 +303,30 @@ fn egui_surface(
     headless.map(|h| (h.size, h.scale))
 }
 
-/// Map one Bevy window event to its egui pointer event, threading the running
+/// State the pointer bridge threads through the window-event stream.
+#[derive(Default)]
+pub(crate) struct PointerBridge {
+    /// The running pointer position, so a button event carries the position it
+    /// had *at its point in the stream*.
+    last: Option<egui::Pos2>,
+    /// Which finger is currently standing in for egui's pointer. egui has
+    /// exactly one pointer, so the first finger down owns it until it lifts:
+    /// otherwise the second finger of a pinch would drag the UI out from under
+    /// the first, and lifting either would report the pointer gone.
+    touch: Option<u64>,
+}
+
+impl PointerBridge {
+    /// Seed the position for a button that arrives before any motion has been
+    /// seen (cursor already inside the window at startup).
+    pub(crate) fn seed(&mut self, pos: Option<egui::Pos2>) {
+        if self.last.is_none() {
+            self.last = pos;
+        }
+    }
+}
+
+/// Map one Bevy window event to its egui pointer events, threading the running
 /// cursor position so button events carry the position *at their point in the
 /// stream*. Pure, so the ordering contract is unit-testable.
 ///
@@ -316,45 +339,116 @@ fn egui_surface(
 /// ~6 pt click threshold). Panel checkboxes needed several tries because only a
 /// motionless click survived; anything floating on an `Area` (menu bar, HUD)
 /// felt fine since those get clicked deliberately.
-pub(crate) fn pointer_event(
+///
+/// **Touch is not a variant of the mouse here, it is the only input there is.**
+/// winit's web backend sends a touch pointer as `WindowEvent::Touch` *only* —
+/// never `CursorMoved`, never `MouseInput` — so without this arm every panel,
+/// button and text field in the client is dead on a phone. One `Event::Touch`
+/// goes out per finger (that is what egui's own multi-touch readers want), and
+/// the finger holding the pointer role additionally synthesises the pointer
+/// sequence egui needs for ordinary widgets: move-then-press on the way down,
+/// press-release *then `PointerGone`* on the way up. `PointerGone` is not
+/// optional — a finger leaves no cursor behind it, and without it egui goes on
+/// hovering whatever was last touched, which lights up buttons under a finger
+/// that left and keeps `egui_wants_pointer_input()` true over the map.
+///
+/// Appends rather than returning one event, because a single touch phase is
+/// worth up to three egui events. `systems::touch` is the matching bridge for
+/// the *world* (camera gestures and the emulated mouse) and does not go through
+/// here — it reads the settled `Touches` set instead.
+pub(crate) fn pointer_events(
     ev: &bevy::window::WindowEvent,
-    last_pointer: &mut Option<egui::Pos2>,
-) -> Option<egui::Event> {
+    state: &mut PointerBridge,
+    out: &mut Vec<egui::Event>,
+) {
     use bevy::window::WindowEvent as We;
     match ev {
         We::CursorMoved(e) => {
             let pos = egui::Pos2::new(e.position.x, e.position.y);
-            *last_pointer = Some(pos);
-            Some(egui::Event::PointerMoved(pos))
+            state.last = Some(pos);
+            out.push(egui::Event::PointerMoved(pos));
         }
         We::MouseWheel(e) => {
             let (unit, delta) = match e.unit {
                 MouseScrollUnit::Line => (egui::MouseWheelUnit::Line, egui::Vec2::new(e.x, e.y)),
                 MouseScrollUnit::Pixel => (egui::MouseWheelUnit::Point, egui::Vec2::new(e.x, e.y)),
             };
-            Some(egui::Event::MouseWheel {
+            out.push(egui::Event::MouseWheel {
                 unit,
                 delta,
                 // We don't distinguish trackpad scroll phases; "unknown" maps to Move.
                 phase: egui::TouchPhase::Move,
                 modifiers: egui::Modifiers::default(),
-            })
+            });
         }
         We::MouseButtonInput(e) => {
             let button = match e.button {
                 MouseButton::Left => egui::PointerButton::Primary,
                 MouseButton::Right => egui::PointerButton::Secondary,
                 MouseButton::Middle => egui::PointerButton::Middle,
-                _ => return None,
+                _ => return,
             };
-            Some(egui::Event::PointerButton {
-                pos: (*last_pointer)?,
+            let Some(pos) = state.last else { return };
+            out.push(egui::Event::PointerButton {
+                pos,
                 button,
                 pressed: e.state == ButtonState::Pressed,
                 modifiers: egui::Modifiers::default(),
-            })
+            });
         }
-        _ => None,
+        We::TouchInput(e) => {
+            use bevy::input::touch::TouchPhase as BevyPhase;
+            let pos = egui::Pos2::new(e.position.x, e.position.y);
+            out.push(egui::Event::Touch {
+                // One touchscreen; egui only uses this to keep devices apart.
+                device_id: egui::TouchDeviceId(0),
+                id: egui::TouchId(e.id),
+                phase: match e.phase {
+                    BevyPhase::Started => egui::TouchPhase::Start,
+                    BevyPhase::Moved => egui::TouchPhase::Move,
+                    BevyPhase::Ended => egui::TouchPhase::End,
+                    BevyPhase::Canceled => egui::TouchPhase::Cancel,
+                },
+                pos,
+                force: None,
+            });
+
+            // Only the pointer-holding finger drives the widget-level events.
+            if state.touch.is_some_and(|held| held != e.id) {
+                return;
+            }
+            match e.phase {
+                BevyPhase::Started => {
+                    state.touch = Some(e.id);
+                    state.last = Some(pos);
+                    // Move first: egui hit-tests the press at the pointer's
+                    // position, and a finger's press is the first time that
+                    // position exists.
+                    out.push(egui::Event::PointerMoved(pos));
+                    out.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                }
+                BevyPhase::Moved => {
+                    state.last = Some(pos);
+                    out.push(egui::Event::PointerMoved(pos));
+                }
+                BevyPhase::Ended | BevyPhase::Canceled => {
+                    state.touch = None;
+                    out.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                    out.push(egui::Event::PointerGone);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -386,7 +480,7 @@ pub fn begin_egui_frame(
     mut window_events: MessageReader<bevy::window::WindowEvent>,
     mut keyboard_input: MessageReader<KeyboardInput>,
     time: Res<Time>,
-    mut last_pointer: Local<Option<egui::Pos2>>,
+    mut pointer_bridge: Local<PointerBridge>,
     mut pointer_carry: Local<Vec<egui::Event>>,
 ) {
     // A frame with no surface at all still begins (and ends) an egui pass, laid
@@ -421,16 +515,16 @@ pub fn begin_egui_frame(
     // motion this frame keeps the position of the last motion ever; the fallback
     // covers a click before any `CursorMoved` has been seen (cursor already
     // inside the window at startup). Headless runs see no window events at all.
-    if last_pointer.is_none() {
-        *last_pointer = windows
+    pointer_bridge.seed(
+        windows
             .iter()
             .next()
             .and_then(|w| w.cursor_position())
-            .map(|p| egui::Pos2::new(p.x, p.y));
-    }
+            .map(|p| egui::Pos2::new(p.x, p.y)),
+    );
     let mut pending = std::mem::take(&mut *pointer_carry);
     for ev in window_events.read() {
-        pending.extend(pointer_event(ev, &mut last_pointer));
+        pointer_events(ev, &mut pointer_bridge, &mut pending);
     }
     events.extend(take_pass_events(&mut pending));
     *pointer_carry = pending;
@@ -776,6 +870,26 @@ mod tests {
         })
     }
 
+    fn touch(id: u64, phase: bevy::input::touch::TouchPhase, x: f32, y: f32) -> WindowEvent {
+        WindowEvent::TouchInput(bevy::input::touch::TouchInput {
+            phase,
+            position: Vec2::new(x, y),
+            window: Entity::PLACEHOLDER,
+            force: None,
+            id,
+        })
+    }
+
+    /// Run a window-event stream through the bridge, as `begin_egui_frame` does.
+    fn bridge(stream: &[WindowEvent]) -> Vec<egui::Event> {
+        let mut state = PointerBridge::default();
+        let mut out = Vec::new();
+        for ev in stream {
+            pointer_events(ev, &mut state, &mut out);
+        }
+        out
+    }
+
     /// The click-then-flick frame: `[move→target, press, release, move→far]`
     /// arrives as one batch, and the buttons must be stamped with the position
     /// *at their point in the stream* (the target), not the end-of-frame cursor
@@ -785,17 +899,13 @@ mod tests {
     #[test]
     fn buttons_carry_the_position_at_their_point_in_the_stream() {
         let target = egui::Pos2::new(100.0, 100.0);
-        let mut last = None;
         let stream = [
             moved(100.0, 100.0),
             button(true),
             button(false),
             moved(400.0, 300.0),
         ];
-        let events: Vec<egui::Event> = stream
-            .iter()
-            .filter_map(|ev| pointer_event(ev, &mut last))
-            .collect();
+        let events = bridge(&stream);
 
         assert_eq!(events.len(), 4);
         match (&events[1], &events[2]) {
@@ -822,6 +932,93 @@ mod tests {
         );
     }
 
+    /// A finger down-move-up must produce the full pointer sequence, ending in
+    /// `PointerGone` — a finger leaves no cursor behind it, and egui otherwise
+    /// keeps hovering (and claiming) whatever it last touched.
+    #[test]
+    fn a_finger_synthesises_a_whole_pointer_sequence() {
+        use bevy::input::touch::TouchPhase as P;
+        let events = bridge(&[
+            touch(7, P::Started, 100.0, 100.0),
+            touch(7, P::Moved, 120.0, 140.0),
+            touch(7, P::Ended, 120.0, 140.0),
+        ]);
+        // Every phase also goes out verbatim, for egui's own multi-touch readers.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, egui::Event::Touch { .. }))
+                .count(),
+            3
+        );
+        let pointer: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, egui::Event::Touch { .. }))
+            .collect();
+        let down = egui::Pos2::new(100.0, 100.0);
+        assert!(
+            matches!(pointer[0], egui::Event::PointerMoved(p) if *p == down),
+            "the press must be preceded by a move, or egui hit-tests it at the \
+             stale position: {pointer:?}"
+        );
+        assert!(matches!(
+            pointer[1],
+            egui::Event::PointerButton { pressed: true, .. }
+        ));
+        assert!(matches!(pointer[2], egui::Event::PointerMoved(_)));
+        assert!(matches!(
+            pointer[3],
+            egui::Event::PointerButton { pressed: false, .. }
+        ));
+        assert!(matches!(pointer[4], egui::Event::PointerGone));
+        assert_eq!(pointer.len(), 5);
+    }
+
+    /// egui has one pointer. The second finger of a pinch must not drag the UI
+    /// out from under the first, nor report the pointer gone when it lifts.
+    #[test]
+    fn only_the_first_finger_drives_the_egui_pointer() {
+        use bevy::input::touch::TouchPhase as P;
+        let events = bridge(&[
+            touch(1, P::Started, 100.0, 100.0),
+            touch(2, P::Started, 300.0, 100.0),
+            touch(2, P::Moved, 400.0, 100.0),
+            touch(2, P::Ended, 400.0, 100.0),
+        ]);
+        let pointer: Vec<_> = events
+            .iter()
+            .filter(|e| !matches!(e, egui::Event::Touch { .. }))
+            .collect();
+        // Only finger 1's move+press.
+        assert_eq!(pointer.len(), 2, "{pointer:?}");
+        assert!(
+            !pointer.iter().any(|e| matches!(e, egui::Event::PointerGone)),
+            "the second finger lifting must not take the pointer with it"
+        );
+    }
+
+    /// A cancelled touch (the browser taking the gesture, a call arriving) must
+    /// release the pointer exactly as a lift does — otherwise egui is left with
+    /// a button held down forever and every later tap reads as a drag.
+    #[test]
+    fn a_cancelled_touch_releases_the_pointer() {
+        use bevy::input::touch::TouchPhase as P;
+        let events = bridge(&[
+            touch(1, P::Started, 100.0, 100.0),
+            touch(1, P::Canceled, 100.0, 100.0),
+            // The pointer is free again, so a fresh finger takes it.
+            touch(2, P::Started, 200.0, 200.0),
+        ]);
+        let pressed: Vec<bool> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::PointerButton { pressed, .. } => Some(*pressed),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pressed, vec![true, false, true]);
+    }
+
     /// End-to-end: a click-then-flick arriving as ONE frame's batch must still
     /// toggle a checkbox, via the pass-splitting the live bridge applies
     /// ([`take_pass_events`]). Without the split this exact scenario fails:
@@ -841,16 +1038,12 @@ mod tests {
             raw.screen_rect = Some(screen);
             if let (1, Some(pos)) = (frame, target) {
                 // One frame's batch: arrive at the checkbox, click, flick away.
-                let mut last = None;
-                pending = [
+                pending = bridge(&[
                     moved(pos.x, pos.y),
                     button(true),
                     button(false),
                     moved(pos.x + 300.0, pos.y + 200.0),
-                ]
-                .iter()
-                .filter_map(|ev| pointer_event(ev, &mut last))
-                .collect();
+                ]);
             }
             raw.events = take_pass_events(&mut pending);
             let rect = std::cell::Cell::new(None);
@@ -903,16 +1096,12 @@ mod tests {
             let mut raw = egui::RawInput::default();
             raw.screen_rect = Some(screen);
             if let (None, Some(pos)) = (clicked_at, settled) {
-                let mut last = None;
-                pending = [
+                pending = bridge(&[
                     moved(pos.x, pos.y),
                     button(true),
                     moved(pos.x + drift, pos.y),
                     button(false),
-                ]
-                .iter()
-                .filter_map(|ev| pointer_event(ev, &mut last))
-                .collect();
+                ]);
                 clicked_at = Some(frame);
             }
             raw.events = take_pass_events(&mut pending);

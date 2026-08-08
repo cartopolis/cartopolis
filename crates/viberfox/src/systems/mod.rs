@@ -47,5 +47,5 @@ pub use map::{
 };
 pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
 pub use net::{network, user_store};
-pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo};
+pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo, touch};
 pub use viberfox_geo::{furniture, mip, road_texture, routing, scatter, vector_tiles};

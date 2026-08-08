@@ -6,3 +6,4 @@ pub mod free_camera;
 pub mod gizmo;
 pub mod picking;
 pub mod prim_geo;
+pub mod touch;
