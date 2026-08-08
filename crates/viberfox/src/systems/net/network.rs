@@ -29,6 +29,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 #[cfg(not(target_arch = "wasm32"))]
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use futures_channel::mpsc::UnboundedReceiver;
 #[cfg(not(target_arch = "wasm32"))]
 use futures_util::{SinkExt, StreamExt};
@@ -39,10 +40,14 @@ use tokio::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use viberfox_core::{
-    decode_app_frame, encode_app_frame, snap_yaw_continuation, wrap_angle_pi, AuthCredential,
-    AvatarStateDto, NetMessage, PrimDto, RegionDto, PROTOCOL_VERSION,
+    snap_yaw_continuation, wrap_angle_pi, AuthCredential, AvatarStateDto, NetMessage, PrimDto,
+    RegionDto,
 };
+// The wire codec itself: only the native build owns a socket to speak it on.
+#[cfg(not(target_arch = "wasm32"))]
+use viberfox_core::{decode_app_frame, encode_app_frame, PROTOCOL_VERSION};
 
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
 pub fn spawn_network_thread(
