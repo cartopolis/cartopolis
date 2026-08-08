@@ -101,6 +101,18 @@ const TURN_WINDOW_M: f64 = 25.0;
 /// [`merge_short_steps`].
 const MIN_STEP_M: f64 = 25.0;
 
+/// Seconds lost passing through a junction on a road that has to give way, for a
+/// car. Scaled down by the road's own priority and by the mode — see
+/// [`junction_delay`].
+///
+/// **Without this the cost model cannot tell a through-road from a grid.** Time
+/// was purely `length / class speed`, so a kilometre of residential street cost
+/// the same whether it crossed two side roads or twenty, and the only thing
+/// keeping a route off the back streets was the class speed itself. Every
+/// serious router charges for the junction, because that is where the time
+/// actually goes in a city.
+const JUNCTION_S: f64 = 6.0;
+
 /// A graph node: a vertex on the global z14 lattice (x east, y south). Integers,
 /// so equality *is* topological identity — see the module docs.
 type Node = (i32, i32);
@@ -274,6 +286,24 @@ impl RoadKind {
                 | Self::Primary => 4.8,
                 Self::Other => return None,
             }),
+        }
+    }
+
+    /// How much of a junction's delay this class actually pays, 0 = none.
+    ///
+    /// Priority is the whole model: a car on a primary road crosses a side street
+    /// without slowing, and the same car on that side street waits to get out.
+    /// Motorways and trunk roads are graded-separated — their "junctions" are
+    /// slip roads, which the geometry already charges for in distance — so they
+    /// pay nothing, which is also what keeps a long route on them.
+    fn junction_share(self) -> f64 {
+        match self {
+            Self::Motorway | Self::Trunk => 0.0,
+            Self::Primary => 0.25,
+            Self::Secondary => 0.4,
+            Self::Tertiary => 0.6,
+            Self::Unclassified | Self::Busway => 0.8,
+            _ => 1.0,
         }
     }
 
@@ -838,6 +868,48 @@ impl RoadGraph {
         comp.iter().map(|&c| c == best_root).collect()
     }
 
+    /// Which nodes are junctions for `mode`: three or more distinct neighbours it
+    /// may actually use.
+    ///
+    /// Mode-dependent and deliberately so. A residential street crossed by a
+    /// footpath is a junction for a walker and a straight run for a driver, and a
+    /// mode-agnostic degree would charge the car a give-way at every zebra in the
+    /// city — which is the sort of plausible-looking penalty that would quietly
+    /// re-route everything and be very hard to trace back.
+    ///
+    /// One pass over the adjacency; the same shape [`Self::routable_core`] already
+    /// costs, and both are computed once per solve rather than per expansion.
+    fn junction_mask(&self, mode: TravelMode) -> Vec<bool> {
+        (0..self.edges.len() as u32)
+            .map(|n| self.is_junction(n, mode))
+            .collect()
+    }
+
+    /// The fastest any edge *in this graph* can be travelled by `mode`, in m/s.
+    ///
+    /// The A* heuristic divides by this. [`TravelMode::max_speed_ms`] is the
+    /// mode's global ceiling — 130 km/h for a car — and a city corridor holds
+    /// nothing above 55, so the heuristic was roughly a factor of two short and
+    /// the search degenerated into Dijkstra over the whole corridor. Taking the
+    /// maximum over the graph keeps it admissible (no edge can beat an edge-wise
+    /// maximum) while making it as tight as the data allows, which is exactly
+    /// where the saving is largest: the long corridors.
+    fn top_speed_ms(&self, mode: TravelMode) -> f64 {
+        let fastest = self
+            .edges
+            .iter()
+            .flatten()
+            .filter_map(|e| e.kind.speed_kmh(mode))
+            .fold(0.0_f64, f64::max);
+        if fastest > 0.0 {
+            fastest / 3.6
+        } else {
+            // No usable edge at all; the search will fail anyway, and a zero here
+            // would be a division by zero rather than a `NoPath`.
+            mode.max_speed_ms()
+        }
+    }
+
     /// Traversal time in seconds, or `None` if the mode may not use this edge.
     fn edge_cost(&self, edge: &Edge, mode: TravelMode) -> Option<f64> {
         if edge.against_oneway && mode.respects_oneway() {
@@ -978,13 +1050,20 @@ impl RoadGraph {
     }
 
     /// A* over travel time. The heuristic is the straight-line distance divided by
-    /// the mode's top speed — admissible, since no edge can beat that.
+    /// the fastest speed present in the graph — admissible, since no edge can beat
+    /// an edge-wise maximum, and far tighter than the mode's global ceiling
+    /// ([`Self::top_speed_ms`]).
+    ///
+    /// The cost of an expansion is the edge plus the delay of the junction it
+    /// arrives at ([`junction_delay`]). Adding a non-negative term to every edge
+    /// leaves the heuristic admissible — the real cost only goes up.
     fn astar(&self, start: u32, goal: u32, mode: TravelMode) -> Option<Vec<u32>> {
         let goal_c = self.coords[goal as usize];
+        let top = self.top_speed_ms(mode);
+        let junction = self.junction_mask(mode);
         let h = |id: u32| -> f64 {
             let c = self.coords[id as usize];
-            ((c.0 - goal_c.0).powi(2) + (c.1 - goal_c.1).powi(2)).sqrt() * self.m_per_unit
-                / mode.max_speed_ms()
+            ((c.0 - goal_c.0).powi(2) + (c.1 - goal_c.1).powi(2)).sqrt() * self.m_per_unit / top
         };
 
         let mut g: HashMap<u32, f64> = HashMap::new();
@@ -1016,6 +1095,16 @@ impl RoadGraph {
                 let Some(cost) = self.edge_cost(edge, mode) else {
                     continue;
                 };
+                // Charged on *arrival*, and on the class of the road you arrive
+                // on — that is where the priority lives. The goal node collects
+                // one too; it is the same constant on every path into it, so it
+                // cannot change which path wins.
+                let cost = cost
+                    + if junction[edge.to as usize] {
+                        junction_delay(edge.kind, mode)
+                    } else {
+                        0.0
+                    };
                 let tentative = here + cost;
                 if tentative + 1e-9 < g.get(&edge.to).copied().unwrap_or(f64::INFINITY) {
                     g.insert(edge.to, tentative);
@@ -1083,7 +1172,16 @@ impl RoadGraph {
             hops.push(Hop {
                 at: w[0],
                 len_m: f64::from(edge.len_m),
-                duration_s: self.edge_cost(edge, mode).unwrap_or(0.0),
+                // The junction delay the search paid for this hop is part of the
+                // hop's time, not an accounting detail: leave it out and the ETA
+                // under-reports every city route, and — worse — reports a *time*
+                // for a route that was chosen to minimise a different number.
+                duration_s: self.edge_cost(edge, mode).unwrap_or(0.0)
+                    + if self.is_junction(w[1], mode) {
+                        junction_delay(edge.kind, mode)
+                    } else {
+                        0.0
+                    },
                 name: self
                     .name_at(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0))
                     .map(str::to_string)
@@ -1184,6 +1282,23 @@ impl RoadGraph {
         }
         false
     }
+}
+
+/// Seconds lost passing through a junction, arriving on a road of `kind`.
+///
+/// Two factors on [`JUNCTION_S`]. The road's own priority
+/// ([`RoadKind::junction_share`]) is what makes an arterial beat a parallel grid
+/// of side streets over the same ground. The mode is the other half: a driver
+/// waits for a gap, a cyclist slows, and a pedestrian at a side road barely
+/// breaks step — charging all three the same would push walking routes onto the
+/// big roads, which is precisely backwards.
+fn junction_delay(kind: RoadKind, mode: TravelMode) -> f64 {
+    let by_mode = match mode {
+        TravelMode::Car => 1.0,
+        TravelMode::Bike => 0.35,
+        TravelMode::Foot => 0.15,
+    };
+    JUNCTION_S * kind.junction_share() * by_mode
 }
 
 /// One traversed edge, with the facts the turn list is built from.
@@ -1600,6 +1715,155 @@ mod tests {
             .atan()
             .to_degrees();
         (lat, lng)
+    }
+
+    /// Add one segment straight to the raw list, bypassing the tile decode — the
+    /// way to build a graph whose shape is the thing under test.
+    fn seg(g: &mut RoadGraph, a: (f64, f64), b: (f64, f64), kind: RoadKind) {
+        let (ia, ib) = (g.node(a), g.node(b));
+        g.raw.push(RawSeg {
+            a: ia,
+            b: ib,
+            kind,
+            fwd_blocked: false,
+            rev_blocked: false,
+            bike_denied: false,
+            unpaved: false,
+        });
+    }
+
+    /// The junction cost has to change *route choice*, not just the clock.
+    ///
+    /// Two ways between the same pair, both residential so the class speed cannot
+    /// decide it: a straight run crossed by a side street every 50 m, and a detour
+    /// 19% longer with nothing on it. On length alone the straight one wins, which
+    /// is the rat-run the old cost model had no way to avoid. Charging for the
+    /// junctions flips it — and the test asserts *both* halves, because a penalty
+    /// that changes nothing and a penalty that changes everything look the same
+    /// from one route.
+    #[test]
+    fn a_junction_free_detour_beats_a_grid_of_side_streets() {
+        // Placed on the fixture tile's patch of lattice so the latitude the graph
+        // was scaled for is the latitude the geometry is at.
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+        const SPAN: f64 = 2800.0; // ~1 km at z14
+        const STEPS: usize = 20;
+
+        let mut g = RoadGraph::new(53.2194);
+        // The straight run, with a stub off every interior vertex.
+        for i in 0..STEPS {
+            let (x0, x1) = (
+                SPAN * i as f64 / STEPS as f64,
+                SPAN * (i + 1) as f64 / STEPS as f64,
+            );
+            seg(&mut g, at(x0, 0.0), at(x1, 0.0), RoadKind::Residential);
+            if i > 0 {
+                seg(&mut g, at(x0, 0.0), at(x0, 300.0), RoadKind::Residential);
+            }
+        }
+        // The clear detour: two long legs, one interior vertex, no side streets.
+        seg(
+            &mut g,
+            at(0.0, 0.0),
+            at(SPAN / 2.0, -900.0),
+            RoadKind::Residential,
+        );
+        seg(
+            &mut g,
+            at(SPAN / 2.0, -900.0),
+            at(SPAN, 0.0),
+            RoadKind::Residential,
+        );
+        g.finish();
+
+        let a = g.lattice_to_lat_lng(base.0, base.1);
+        let b = g.lattice_to_lat_lng(base.0 + SPAN, base.1);
+        let route = g.route(a, b, TravelMode::Car).expect("a car route");
+
+        // The detour is measurably longer, so taking it can only be the junctions.
+        let straight_m = SPAN * g.m_per_unit;
+        assert!(
+            route.distance_m > straight_m * 1.10,
+            "took the grid: {:.0} m against a {:.0} m straight run",
+            route.distance_m,
+            straight_m
+        );
+
+        // …and the same graph with the penalty removed takes the straight run.
+        // Asserted through `junction_delay` rather than by rebuilding the graph, so
+        // the two answers differ in exactly one thing.
+        assert!(
+            junction_delay(RoadKind::Residential, TravelMode::Car) > 0.0,
+            "the premise of this test is that a residential junction costs something"
+        );
+        let grid_junctions = (STEPS - 1) as f64;
+        let detour_extra_m = route.distance_m - straight_m;
+        let detour_extra_s =
+            detour_extra_m / (RoadKind::Residential.speed_kmh(TravelMode::Car).unwrap() / 3.6);
+        assert!(
+            grid_junctions * junction_delay(RoadKind::Residential, TravelMode::Car) > detour_extra_s,
+            "the junctions ({grid_junctions} of them) must outweigh the {detour_extra_s:.0} s detour \
+             or this test proves nothing"
+        );
+    }
+
+    /// The junction delay's whole job is the *ranking*: priority roads pay less
+    /// than the streets that give way to them, motorways pay nothing at all, and a
+    /// pedestrian is barely delayed by a side road. Get the order wrong and the
+    /// router pushes walkers onto arterials.
+    #[test]
+    fn junction_delay_follows_priority_and_mode() {
+        use RoadKind::{Motorway, Primary, Residential, Secondary, Tertiary, Trunk};
+        let car = |k| junction_delay(k, TravelMode::Car);
+        assert_eq!(
+            car(Motorway),
+            0.0,
+            "a motorway has no junctions to give way at"
+        );
+        assert_eq!(car(Trunk), 0.0);
+        assert!(car(Primary) < car(Secondary));
+        assert!(car(Secondary) < car(Tertiary));
+        assert!(car(Tertiary) < car(Residential));
+        for kind in [Primary, Tertiary, Residential] {
+            assert!(
+                junction_delay(kind, TravelMode::Foot) < junction_delay(kind, TravelMode::Bike),
+                "{kind:?}: a walker waits less than a cyclist"
+            );
+            assert!(
+                junction_delay(kind, TravelMode::Bike) < car(kind),
+                "{kind:?}: a cyclist waits less than a driver"
+            );
+        }
+    }
+
+    /// A* is only correct while the heuristic never over-estimates. Tightening it
+    /// to the graph's own fastest edge is the whole speed-up, and it is also
+    /// exactly where admissibility could be lost — so check it against every edge
+    /// in a real graph rather than by reading the code.
+    #[test]
+    fn the_heuristic_never_overestimates() {
+        let g = graph();
+        for mode in TravelMode::ALL {
+            let top = g.top_speed_ms(mode);
+            for edge in g.edges.iter().flatten() {
+                let Some(kmh) = edge.kind.speed_kmh(mode) else {
+                    continue;
+                };
+                assert!(
+                    kmh / 3.6 <= top + 1e-9,
+                    "{mode:?}: {:?} runs at {kmh} km/h, above the heuristic's {:.1} km/h ceiling",
+                    edge.kind,
+                    top * 3.6
+                );
+            }
+            // …and it must actually be tighter than the mode's global ceiling, or
+            // there was no point (the fixture is a city: no 130 km/h anything).
+            assert!(
+                top < mode.max_speed_ms(),
+                "{mode:?}: the graph ceiling is no tighter than the mode's"
+            );
+        }
     }
 
     #[test]

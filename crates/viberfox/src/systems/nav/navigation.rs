@@ -1657,6 +1657,62 @@ mod tests {
         }
     }
 
+    /// A bench for the *cost model*, against live tiles. Prints distance, time and
+    /// the implied average speed for a spread of real corridors, which is the only
+    /// way to tell whether a change to the speed table or the junction delay left
+    /// city driving plausible — a route that is merely *a* route tells you nothing.
+    ///
+    /// Not an assertion beyond a sanity band: the right answer is a judgement about
+    /// a city, so this exists to be read.
+    ///
+    /// ```text
+    /// cargo test -p viberfox cost_model_bench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn cost_model_bench() {
+        let template = std::env::var("VIBE_TILE_URL")
+            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
+        // Groningen: across the centre, centre→ring road, and a long haul out to
+        // the motorway — a residential-grid case, a mixed case and a case that
+        // should end up on the trunk network.
+        let pairs: [(&str, (f64, f64), (f64, f64)); 4] = [
+            ("centre → station", (53.2194, 6.5665), (53.2109, 6.5642)),
+            ("centre → Paddepoel", (53.2194, 6.5665), (53.2405, 6.5455)),
+            ("centre → Ring West", (53.2194, 6.5665), (53.2230, 6.5170)),
+            ("centre → Hoogkerk", (53.2194, 6.5665), (53.2100, 6.4700)),
+        ];
+        for (name, from, to) in pairs {
+            let progress = (AtomicUsize::new(0), AtomicUsize::new(0));
+            let cache = Mutex::new(None);
+            for mode in TravelMode::ALL {
+                let input = futures_lite::future::block_on(fetch_corridor(
+                    from, to, &template, &progress, &cache,
+                ));
+                // Timed from here, so the figure is the graph build plus the
+                // search rather than the network — the second and third mode of a
+                // pair reuse the cached graph and so time the search alone.
+                let t0 = Instant::now();
+                let route = input.and_then(|i| build_and_search(i, from, to, mode, &cache));
+                let solve = t0.elapsed();
+                match route {
+                    Ok(r) => println!(
+                        "{name:<22} {:<5} {:>8} {:>9}  {:>5.1} km/h  ({} steps, {} tiles, {} ms)",
+                        mode.label(),
+                        format_distance(r.distance_m),
+                        format_duration(r.duration_s),
+                        r.distance_m / r.duration_s * 3.6,
+                        r.steps.len(),
+                        progress.1.load(Ordering::Relaxed),
+                        solve.as_millis(),
+                    ),
+                    Err(e) => println!("{name:<22} {:<5} FAILED: {e}", mode.label()),
+                }
+            }
+            println!();
+        }
+    }
+
     #[test]
     fn dedupe_merges_sub_segment_points() {
         // Exact duplicates and points closer than MIN_SEGMENT_M collapse; points
