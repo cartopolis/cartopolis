@@ -617,12 +617,21 @@ pub struct CameraState {
     /// distance, tilt and azimuth from the map orientation instead. A navigation
     /// view that drifts because the pointer brushed the map is not one.
     pub drive_locked: bool,
-    /// Metres ahead of the avatar the Follow camera *aims* while
-    /// [`Self::drive_locked`] is set. Looking straight at the avatar centres it, and
-    /// then half the screen is road already driven; moving the look target forward
-    /// drops the marker into the lower third, which is where every navigation device
-    /// puts it. Ignored when not locked.
-    pub drive_lookahead: f32,
+    /// World-XZ offset from the avatar to the point the Follow camera *aims* at
+    /// while driving. Looking straight at the avatar centres it, and then half the
+    /// screen is road already driven; moving the look target forward drops the
+    /// marker into the lower third, which is where every navigation device puts it.
+    /// Zero outside driver mode, which is also the identity here — nothing has to
+    /// branch on the mode to consume it.
+    ///
+    /// **A vector, not a distance along the camera's forward.** The two are the
+    /// same thing in the heading-up views and are not in north-up, where the
+    /// camera faces north whatever the vehicle is doing: aiming along the camera
+    /// pushed the look point north while driving *south*, so the road ahead ran
+    /// off the bottom edge and the marker sat at the very foot of the screen in
+    /// every orientation of a north-up drive. Driver mode writes the course
+    /// direction here instead (`systems::driver::steady_driver_camera`).
+    pub drive_lookahead: Vec2,
 }
 
 #[derive(Resource, Default)]
@@ -675,7 +684,7 @@ impl Default for CameraState {
             orbit_north_lock: false,
             follow_rotate: false,
             drive_locked: false,
-            drive_lookahead: 0.0,
+            drive_lookahead: Vec2::ZERO,
         }
     }
 }

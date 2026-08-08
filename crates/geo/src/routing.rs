@@ -73,6 +73,39 @@ pub const MAX_ROUTE_TILES: usize = 96;
 /// message; the tile count is the real gate.
 pub const MAX_ROUTE_KM: f64 = 22.0;
 
+/// The zoom the long haul is planned on when the street-level corridor will not
+/// fit ([`plan_corridor`]).
+///
+/// **Measured 2026-08-08, Groningen → Amsterdam (180 km), live tiles.** z14 needs
+/// ~1,340 tiles (~648 MB) and is refused; z12 needs 229 and is refused; z10 needs
+/// **35 tiles / 2.7 MB** and returns 180 km in 1 h 55 at 94 km/h — within a few
+/// per cent of the real drive.
+///
+/// z12 is not a useful middle rung and the probe is why. At the same tile budget
+/// a coarse corridor is *wider in ground terms*, so z10 both costs less and has
+/// more room to find the motorway: Groningen → Assen came out 30 km at z10 and
+/// 34 km at z12. Two tiers, not four.
+pub const LONG_HAUL_ZOOM: u32 = 10;
+
+/// Radius, in [`ROUTING_ZOOM`] tiles, of the detailed patch kept around each
+/// endpoint of a staged route.
+///
+/// **The patches are not a refinement, they are what makes a long route usable.**
+/// The coarse network is generalised, so its nearest road to an address is a long
+/// way off — measured at **281 m** for the Groningen end of every staged probe.
+/// Driver mode calls anything past 60 m off-route, so a coarse-only long route
+/// puts the driver off-route on the first frame and straight into a reroute it can
+/// never satisfy. ~2 tiles is about 3 km, comfortably past that snap and past
+/// [`HANDOVER_M`].
+const FINE_PATCH_TILES: f64 = 1.6;
+
+/// How far from each endpoint a staged route hands over from the detailed graph
+/// to the coarse one.
+///
+/// Far enough out that the coarse network is a real road by then (past its own
+/// ~281 m snap), close enough in that the fine patch still covers it.
+const HANDOVER_M: f64 = 900.0;
+
 /// Half-width of the tile corridor, in tiles: a constant term plus a term that
 /// grows with the **square root** of the direct distance, clamped.
 ///
@@ -100,6 +133,18 @@ const TURN_WINDOW_M: f64 = 25.0;
 /// Steps shorter than this are folded into the one before them — see
 /// [`merge_short_steps`].
 const MIN_STEP_M: f64 = 25.0;
+
+/// Seconds lost passing through a junction on a road that has to give way, for a
+/// car. Scaled down by the road's own priority and by the mode — see
+/// [`junction_delay`].
+///
+/// **Without this the cost model cannot tell a through-road from a grid.** Time
+/// was purely `length / class speed`, so a kilometre of residential street cost
+/// the same whether it crossed two side roads or twenty, and the only thing
+/// keeping a route off the back streets was the class speed itself. Every
+/// serious router charges for the junction, because that is where the time
+/// actually goes in a city.
+const JUNCTION_S: f64 = 6.0;
 
 /// A graph node: a vertex on the global z14 lattice (x east, y south). Integers,
 /// so equality *is* topological identity — see the module docs.
@@ -182,6 +227,9 @@ pub enum RoadKind {
     Track,
     Busway,
     Rail,
+    /// A ferry crossing, from Shortbread's own `ferries` layer rather than from
+    /// `streets`. Foot and bike only — see [`Self::speed_kmh`].
+    Ferry,
     Other,
 }
 
@@ -232,7 +280,14 @@ impl RoadKind {
                 Self::LivingStreet => 12.0,
                 Self::Service => 12.0,
                 Self::Track => 15.0,
-                // No cars on foot/cycle ways, in bus lanes, or on rails.
+                // No cars on foot/cycle ways, in bus lanes, or on rails — and no
+                // cars on a ferry, which is the conservative half of a genuine
+                // ambiguity. Shortbread's `ferries` layer carries `kind = ferry`
+                // and a name, and nothing that separates a car ferry from a
+                // passenger pontje. Every car ferry takes foot passengers and no
+                // foot ferry takes cars, so foot and bike are safe on any of them
+                // and a car is safe on none: routing a driver to a crossing their
+                // vehicle cannot board is a failure they discover at the water.
                 Self::Pedestrian
                 | Self::Footway
                 | Self::Steps
@@ -240,11 +295,20 @@ impl RoadKind {
                 | Self::Cycleway
                 | Self::Busway
                 | Self::Rail
+                | Self::Ferry
                 | Self::Other => return None,
             }),
             TravelMode::Bike => Some(match self {
                 // Motorways and trunk roads are closed to bikes.
                 Self::Motorway | Self::Trunk | Self::Rail | Self::Busway => return None,
+                // An effective speed, not a sailing speed: what dominates a
+                // crossing is the wait, and there is no timetable in a vector
+                // tile. 8 km/h puts a 400 m pontje at 3 minutes and a 4 km
+                // estuary at half an hour, which is the right order for both.
+                // A fixed boarding penalty would be the better model and cannot
+                // be expressed here — a ferry line arrives as many segments, and
+                // the penalty would be charged once per segment.
+                Self::Ferry => 8.0,
                 Self::Cycleway => 18.0,
                 Self::Primary | Self::Secondary => 16.0,
                 Self::Tertiary | Self::Unclassified | Self::Residential => 15.0,
@@ -257,6 +321,7 @@ impl RoadKind {
             }),
             TravelMode::Foot => Some(match self {
                 Self::Motorway | Self::Trunk | Self::Rail | Self::Busway => return None,
+                Self::Ferry => 8.0,
                 Self::Steps => 1.8,
                 // Everything else is walked at the same pace; the class only
                 // decides *whether* you may, not how fast you go.
@@ -277,6 +342,26 @@ impl RoadKind {
         }
     }
 
+    /// How much of a junction's delay this class actually pays, 0 = none.
+    ///
+    /// Priority is the whole model: a car on a primary road crosses a side street
+    /// without slowing, and the same car on that side street waits to get out.
+    /// Motorways and trunk roads are graded-separated — their "junctions" are
+    /// slip roads, which the geometry already charges for in distance — so they
+    /// pay nothing, which is also what keeps a long route on them.
+    fn junction_share(self) -> f64 {
+        match self {
+            // A ferry's "junctions" are its two slipways, and the wait is already
+            // in its speed; charging a give-way on top would double-count it.
+            Self::Motorway | Self::Trunk | Self::Ferry => 0.0,
+            Self::Primary => 0.25,
+            Self::Secondary => 0.4,
+            Self::Tertiary => 0.6,
+            Self::Unclassified | Self::Busway => 0.8,
+            _ => 1.0,
+        }
+    }
+
     /// Display name for a step whose street has no name in the tile.
     #[must_use]
     pub fn generic_name(self) -> &'static str {
@@ -288,6 +373,7 @@ impl RoadKind {
             Self::Footway | Self::Path => "the path",
             Self::Steps => "the steps",
             Self::Pedestrian => "the pedestrian street",
+            Self::Ferry => "the ferry",
             Self::Service => "the service road",
             Self::Track => "the track",
             _ => "the road",
@@ -379,12 +465,38 @@ pub struct RoadGraph {
     m_per_unit: f64,
     /// Reference latitude, kept so lattice → lat/lng can be inverted.
     zoom_n: f64,
+    /// The tile zoom this graph's lattice belongs to. Every coordinate in it —
+    /// node keys, bucket ids, `m_per_unit` — is relative to this, so tiles of any
+    /// other zoom cannot be added to it. See [`Self::new_at`].
+    zoom: u32,
 }
 
 impl RoadGraph {
-    /// An empty graph scaled for routes around `center_lat`.
+    /// An empty street-level graph scaled for routes around `center_lat`.
     #[must_use]
     pub fn new(center_lat: f64) -> Self {
+        Self::new_at(ROUTING_ZOOM, center_lat)
+    }
+
+    /// An empty graph on the lattice of an arbitrary tile `zoom`.
+    ///
+    /// [`ROUTING_ZOOM`] is the only zoom with the complete network and is what
+    /// `new` gives you. The coarser zooms carry a *generalised* road hierarchy —
+    /// measured 2026-08-08 against the VersaTiles Shortbread build: z8 has
+    /// motorway/trunk/primary, z10 adds secondary, tertiary and residential, z12
+    /// adds unclassified and service, and only z13/z14 carry the walking and
+    /// cycling network. That is what makes long-haul routing affordable: the
+    /// corridor for a 200 km route is ~1,340 tiles at z14 and ~50 at z10.
+    ///
+    /// Two things do not survive generalisation and callers must know it.
+    /// **`oneway` is a z14-only property** (checked on Groningen city-centre
+    /// ancestor tiles, which certainly have one-ways), so a coarse graph is
+    /// effectively undirected — acceptable on the long haul, where a dual
+    /// carriageway is two separate ways anyway, and not acceptable in a city.
+    /// And the geometry is simplified, so distances off a coarse graph run a
+    /// little short and its turn list is crude.
+    #[must_use]
+    pub fn new_at(zoom: u32, center_lat: f64) -> Self {
         Self {
             index: HashMap::new(),
             coords: Vec::new(),
@@ -395,9 +507,16 @@ impl RoadGraph {
             names: Vec::new(),
             label_segs: Vec::new(),
             label_buckets: HashMap::new(),
-            m_per_unit: tile_to_meters(ROUTING_ZOOM, center_lat) / EXTENT,
-            zoom_n: 2.0_f64.powi(ROUTING_ZOOM as i32),
+            m_per_unit: tile_to_meters(zoom, center_lat) / EXTENT,
+            zoom_n: 2.0_f64.powi(zoom as i32),
+            zoom,
         }
+    }
+
+    /// The tile zoom this graph was built at.
+    #[must_use]
+    pub fn zoom(&self) -> u32 {
+        self.zoom
     }
 
     #[must_use]
@@ -421,9 +540,15 @@ impl RoadGraph {
     /// it would duplicate every edge — the caller tracks which tiles are in.
     pub fn add_tile(&mut self, tile_data: &TileData, tile: (i64, i64)) -> Result<(), String> {
         for meta in tile_data.layers() {
-            let routable = match meta.name.as_str() {
-                "streets" => true,
-                "street_labels" => false,
+            // `ferries` is its own Shortbread layer, present from z10 up wherever
+            // there is a crossing (verified 2026-08-08 on the Westerschelde
+            // tiles — its absence from the Groningen fixture is a fact about
+            // Groningen). It is both: routable geometry *and* the only place its
+            // own name lives, since `street_labels` does not cover it.
+            let (routable, labelled) = match meta.name.as_str() {
+                "streets" => (true, false),
+                "street_labels" => (false, true),
+                "ferries" => (true, true),
                 _ => continue,
             };
             let features = tile_data.features(meta);
@@ -437,10 +562,12 @@ impl RoadGraph {
                 (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale)
             };
 
+            let ferry = meta.name == "ferries";
             for feature in features {
                 if routable {
-                    self.add_street(feature, &to_global);
-                } else {
+                    self.add_street(feature, &to_global, ferry);
+                }
+                if labelled {
                     self.add_labels(feature, &to_global);
                 }
             }
@@ -539,9 +666,17 @@ impl RoadGraph {
         &mut self,
         feature: &Feature,
         to_global: &impl Fn(&geo_types::Coord<f32>) -> (f64, f64),
+        ferry: bool,
     ) {
         let props = feature.properties.as_ref();
-        let kind = RoadKind::parse(str_prop(props, "kind").unwrap_or(""));
+        // The `ferries` layer's own `kind` is `ferry`, which `RoadKind::parse`
+        // would read as `Other` and drop; the layer it came from is what says
+        // what it is.
+        let kind = if ferry {
+            RoadKind::Ferry
+        } else {
+            RoadKind::parse(str_prop(props, "kind").unwrap_or(""))
+        };
         // Rails share the layer with streets and are routable for nobody.
         if kind == RoadKind::Rail || bool_prop(props, "rail") {
             return;
@@ -663,8 +798,15 @@ impl RoadGraph {
     /// WGS84 → global lattice units at [`ROUTING_ZOOM`].
     #[must_use]
     pub fn lat_lng_to_lattice(lat: f64, lng: f64) -> (f64, f64) {
-        let (tx, ty) = lat_lng_to_tile_frac(lat, lng, ROUTING_ZOOM);
-        (tx * EXTENT, ty * EXTENT)
+        lattice_at(ROUTING_ZOOM, lat, lng)
+    }
+
+    /// WGS84 → this graph's own lattice. Everything that indexes into the graph
+    /// has to go through here rather than through the [`ROUTING_ZOOM`] helper
+    /// above, or a coarse graph silently looks up a point 16 tiles away.
+    #[must_use]
+    fn lattice(&self, lat: f64, lng: f64) -> (f64, f64) {
+        lattice_at(self.zoom, lat, lng)
     }
 
     /// Inverse of [`Self::lat_lng_to_lattice`].
@@ -706,7 +848,7 @@ impl RoadGraph {
         max_m: f64,
         accept: impl Fn(u32) -> bool,
     ) -> Option<u32> {
-        let p = Self::lat_lng_to_lattice(lat, lng);
+        let p = self.lattice(lat, lng);
         let max_units = max_m / self.m_per_unit;
         let reach = (max_units / BUCKET).ceil() as i32;
         let (bx, by) = (bucket(p.0), bucket(p.1));
@@ -838,6 +980,48 @@ impl RoadGraph {
         comp.iter().map(|&c| c == best_root).collect()
     }
 
+    /// Which nodes are junctions for `mode`: three or more distinct neighbours it
+    /// may actually use.
+    ///
+    /// Mode-dependent and deliberately so. A residential street crossed by a
+    /// footpath is a junction for a walker and a straight run for a driver, and a
+    /// mode-agnostic degree would charge the car a give-way at every zebra in the
+    /// city — which is the sort of plausible-looking penalty that would quietly
+    /// re-route everything and be very hard to trace back.
+    ///
+    /// One pass over the adjacency; the same shape [`Self::routable_core`] already
+    /// costs, and both are computed once per solve rather than per expansion.
+    fn junction_mask(&self, mode: TravelMode) -> Vec<bool> {
+        (0..self.edges.len() as u32)
+            .map(|n| self.is_junction(n, mode))
+            .collect()
+    }
+
+    /// The fastest any edge *in this graph* can be travelled by `mode`, in m/s.
+    ///
+    /// The A* heuristic divides by this. [`TravelMode::max_speed_ms`] is the
+    /// mode's global ceiling — 130 km/h for a car — and a city corridor holds
+    /// nothing above 55, so the heuristic was roughly a factor of two short and
+    /// the search degenerated into Dijkstra over the whole corridor. Taking the
+    /// maximum over the graph keeps it admissible (no edge can beat an edge-wise
+    /// maximum) while making it as tight as the data allows, which is exactly
+    /// where the saving is largest: the long corridors.
+    fn top_speed_ms(&self, mode: TravelMode) -> f64 {
+        let fastest = self
+            .edges
+            .iter()
+            .flatten()
+            .filter_map(|e| e.kind.speed_kmh(mode))
+            .fold(0.0_f64, f64::max);
+        if fastest > 0.0 {
+            fastest / 3.6
+        } else {
+            // No usable edge at all; the search will fail anyway, and a zero here
+            // would be a division by zero rather than a `NoPath`.
+            mode.max_speed_ms()
+        }
+    }
+
     /// Traversal time in seconds, or `None` if the mode may not use this edge.
     fn edge_cost(&self, edge: &Edge, mode: TravelMode) -> Option<f64> {
         if edge.against_oneway && mode.respects_oneway() {
@@ -963,12 +1147,25 @@ impl RoadGraph {
         // `NoPath` after this is a genuinely disconnected corridor, not a bad snap.
         let core = self.routable_core(mode);
         let in_core = |id: u32| core[id as usize];
-        let start = self
-            .nearest_node_where(from.0, from.1, SNAP_M, in_core)
-            .ok_or(RouteError::NoStart)?;
-        let goal = self
-            .nearest_node_where(to.0, to.1, SNAP_M, in_core)
-            .ok_or(RouteError::NoEnd)?;
+        // Failing to snap into the core is two different failures wearing one
+        // face. If there is no usable road near the point at all, "no road near
+        // the destination" is the truth. If there is one and it merely isn't in
+        // the same component — a town across an estuary that only a ferry
+        // reaches, and this mode may not use the ferry — then saying there is no
+        // road there is a plain lie about a place with streets in it, and the
+        // honest answer is that nothing connects the two for this mode.
+        let snap = |at: (f64, f64), absent: RouteError| {
+            self.nearest_node_where(at.0, at.1, SNAP_M, in_core)
+                .ok_or_else(|| {
+                    if self.nearest_node(at.0, at.1, mode, SNAP_M).is_some() {
+                        RouteError::NoPath
+                    } else {
+                        absent
+                    }
+                })
+        };
+        let start = snap(from, RouteError::NoStart)?;
+        let goal = snap(to, RouteError::NoEnd)?;
         if start == goal {
             return Err(RouteError::TooClose);
         }
@@ -978,13 +1175,20 @@ impl RoadGraph {
     }
 
     /// A* over travel time. The heuristic is the straight-line distance divided by
-    /// the mode's top speed — admissible, since no edge can beat that.
+    /// the fastest speed present in the graph — admissible, since no edge can beat
+    /// an edge-wise maximum, and far tighter than the mode's global ceiling
+    /// ([`Self::top_speed_ms`]).
+    ///
+    /// The cost of an expansion is the edge plus the delay of the junction it
+    /// arrives at ([`junction_delay`]). Adding a non-negative term to every edge
+    /// leaves the heuristic admissible — the real cost only goes up.
     fn astar(&self, start: u32, goal: u32, mode: TravelMode) -> Option<Vec<u32>> {
         let goal_c = self.coords[goal as usize];
+        let top = self.top_speed_ms(mode);
+        let junction = self.junction_mask(mode);
         let h = |id: u32| -> f64 {
             let c = self.coords[id as usize];
-            ((c.0 - goal_c.0).powi(2) + (c.1 - goal_c.1).powi(2)).sqrt() * self.m_per_unit
-                / mode.max_speed_ms()
+            ((c.0 - goal_c.0).powi(2) + (c.1 - goal_c.1).powi(2)).sqrt() * self.m_per_unit / top
         };
 
         let mut g: HashMap<u32, f64> = HashMap::new();
@@ -1016,6 +1220,16 @@ impl RoadGraph {
                 let Some(cost) = self.edge_cost(edge, mode) else {
                     continue;
                 };
+                // Charged on *arrival*, and on the class of the road you arrive
+                // on — that is where the priority lives. The goal node collects
+                // one too; it is the same constant on every path into it, so it
+                // cannot change which path wins.
+                let cost = cost
+                    + if junction[edge.to as usize] {
+                        junction_delay(edge.kind, mode)
+                    } else {
+                        0.0
+                    };
                 let tentative = here + cost;
                 if tentative + 1e-9 < g.get(&edge.to).copied().unwrap_or(f64::INFINITY) {
                     g.insert(edge.to, tentative);
@@ -1083,7 +1297,16 @@ impl RoadGraph {
             hops.push(Hop {
                 at: w[0],
                 len_m: f64::from(edge.len_m),
-                duration_s: self.edge_cost(edge, mode).unwrap_or(0.0),
+                // The junction delay the search paid for this hop is part of the
+                // hop's time, not an accounting detail: leave it out and the ETA
+                // under-reports every city route, and — worse — reports a *time*
+                // for a route that was chosen to minimise a different number.
+                duration_s: self.edge_cost(edge, mode).unwrap_or(0.0)
+                    + if self.is_junction(w[1], mode) {
+                        junction_delay(edge.kind, mode)
+                    } else {
+                        0.0
+                    },
                 name: self
                     .name_at(((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0))
                     .map(str::to_string)
@@ -1184,6 +1407,23 @@ impl RoadGraph {
         }
         false
     }
+}
+
+/// Seconds lost passing through a junction, arriving on a road of `kind`.
+///
+/// Two factors on [`JUNCTION_S`]. The road's own priority
+/// ([`RoadKind::junction_share`]) is what makes an arterial beat a parallel grid
+/// of side streets over the same ground. The mode is the other half: a driver
+/// waits for a gap, a cyclist slows, and a pedestrian at a side road barely
+/// breaks step — charging all three the same would push walking routes onto the
+/// big roads, which is precisely backwards.
+fn junction_delay(kind: RoadKind, mode: TravelMode) -> f64 {
+    let by_mode = match mode {
+        TravelMode::Car => 1.0,
+        TravelMode::Bike => 0.35,
+        TravelMode::Foot => 0.15,
+    };
+    JUNCTION_S * kind.junction_share() * by_mode
 }
 
 /// One traversed edge, with the facts the turn list is built from.
@@ -1379,6 +1619,11 @@ pub enum RouteError {
     Fetch(String),
 }
 
+/// Roughly how far apart two points can be before even the coarse corridor
+/// ([`LONG_HAUL_ZOOM`]) exceeds [`MAX_ROUTE_TILES`]. Pinned by a test rather than
+/// derived, because the gate is a count of grid cells and not an area.
+pub const MAX_STAGED_KM: f64 = 360.0;
+
 impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1389,8 +1634,8 @@ impl std::fmt::Display for RouteError {
             Self::TooClose => write!(f, "Start and destination are the same place"),
             Self::TooFar { km } => write!(
                 f,
-                "Too far to route here — {km:.0} km is beyond the ~{MAX_ROUTE_KM:.0} km \
-                 reach of street-level routing"
+                "Too far to route here — {km:.0} km is beyond the ~{MAX_STAGED_KM:.0} km \
+                 reach of the map data one route may pull in"
             ),
             Self::Fetch(e) => write!(f, "Map data unavailable: {e}"),
         }
@@ -1414,8 +1659,23 @@ pub fn corridor_tiles(
     to: (f64, f64),
     limit: usize,
 ) -> Result<Vec<(i64, i64)>, RouteError> {
-    let a = lat_lng_to_tile_frac(from.0, from.1, ROUTING_ZOOM);
-    let b = lat_lng_to_tile_frac(to.0, to.1, ROUTING_ZOOM);
+    corridor_tiles_at(ROUTING_ZOOM, from, to, limit)
+}
+
+/// [`corridor_tiles`] on an arbitrary tile zoom.
+///
+/// The capsule shape is the same at every zoom; what changes is that a coarse
+/// tile covers 16× the span per axis, so the same ground needs vastly fewer of
+/// them. That is the whole mechanism behind long-haul routing — see
+/// [`RoadGraph::new_at`] for what the coarse tiles do and do not contain.
+pub fn corridor_tiles_at(
+    zoom: u32,
+    from: (f64, f64),
+    to: (f64, f64),
+    limit: usize,
+) -> Result<Vec<(i64, i64)>, RouteError> {
+    let a = lat_lng_to_tile_frac(from.0, from.1, zoom);
+    let b = lat_lng_to_tile_frac(to.0, to.1, zoom);
     let direct = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
     let half_width = (CORRIDOR_BASE + CORRIDOR_SPREAD * direct.sqrt()).min(CORRIDOR_MAX_HALF_WIDTH);
 
@@ -1439,7 +1699,7 @@ pub fn corridor_tiles(
         // Straight-line distance for the message: one tile's ground size at the
         // midpoint latitude, times the direct span in tiles.
         let mid_lat = (from.0 + to.0) / 2.0;
-        let km = direct * tile_to_meters(ROUTING_ZOOM, mid_lat) / 1000.0;
+        let km = direct * tile_to_meters(zoom, mid_lat) / 1000.0;
         return Err(RouteError::TooFar { km });
     }
     // Nearest-to-the-start first, so a partially-fetched corridor is still useful
@@ -1449,6 +1709,168 @@ pub fn corridor_tiles(
         d(p).partial_cmp(&d(q)).unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(tiles)
+}
+
+// ─── Two-tier planning ───────────────────────────────────────────────────────
+
+/// Which tiles, at which zooms, a route needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Corridor {
+    /// One graph at [`ROUTING_ZOOM`] covers the whole route — every route that
+    /// fits, which is every city route, and the only shape that existed before.
+    Direct(Vec<(i64, i64)>),
+    /// Too long for street level: a coarse corridor for the haul, and a detailed
+    /// patch at each end so the route still starts and finishes on the actual
+    /// street ([`FINE_PATCH_TILES`]).
+    ///
+    /// **The two patches are separate lists because they must become separate
+    /// graphs.** Put both in one graph and its routable core — the largest
+    /// strongly-connected component — is whichever patch has more streets in it;
+    /// the other end is then outside the core, cannot be snapped to, and every
+    /// staged route silently falls back to the coarse one. That is precisely what
+    /// the first cut did, and the only symptom was the endpoint snap staying at
+    /// its coarse 281 m.
+    Staged {
+        start: Vec<(i64, i64)>,
+        end: Vec<(i64, i64)>,
+        coarse: Vec<(i64, i64)>,
+    },
+}
+
+/// Decide how to route between two points, and which tiles that needs.
+///
+/// Street level if it fits, two tiers if it does not, and a refusal only when even
+/// the coarse corridor is out of budget (~380 km, from
+/// [`LONG_HAUL_ZOOM`] against [`MAX_ROUTE_TILES`]).
+pub fn plan_corridor(from: (f64, f64), to: (f64, f64)) -> Result<Corridor, RouteError> {
+    if let Ok(tiles) = corridor_tiles(from, to, MAX_ROUTE_TILES) {
+        return Ok(Corridor::Direct(tiles));
+    }
+    // The coarse corridor is the gate now, so its refusal is the one the user
+    // sees — and it speaks in the same "too far, here is how far" terms.
+    let coarse = corridor_tiles_at(LONG_HAUL_ZOOM, from, to, MAX_ROUTE_TILES)?;
+    Ok(Corridor::Staged {
+        start: endpoint_patch(from),
+        end: endpoint_patch(to),
+        coarse,
+    })
+}
+
+/// The disc of [`ROUTING_ZOOM`] tiles kept around one endpoint of a staged route.
+fn endpoint_patch(at: (f64, f64)) -> Vec<(i64, i64)> {
+    let c = lat_lng_to_tile_frac(at.0, at.1, ROUTING_ZOOM);
+    let r = FINE_PATCH_TILES.ceil() as i64;
+    let mut tiles = Vec::new();
+    for tx in (c.0.floor() as i64 - r)..=(c.0.floor() as i64 + r) {
+        for ty in (c.1.floor() as i64 - r)..=(c.1.floor() as i64 + r) {
+            let d = (tx as f64 + 0.5 - c.0).hypot(ty as f64 + 0.5 - c.1);
+            if d <= FINE_PATCH_TILES {
+                tiles.push((tx, ty));
+            }
+        }
+    }
+    tiles
+}
+
+/// Route across two tiers: the coarse graph for the haul, the detailed one for
+/// the first and last kilometre.
+///
+/// The two graphs are **not** merged. Their lattices belong to different zooms, so
+/// there is no shared node identity to weld on, and the generalised geometry sits
+/// tens of metres from the detailed geometry of the same road — far outside the
+/// sub-metre tolerance [`RoadGraph::finish`] nodes with. Welding would mean
+/// inventing transfer edges and letting the search hop between tiers wherever it
+/// liked. Instead each graph answers the question it is good at and the *routes*
+/// are spliced, which fails visibly (a seam) rather than subtly (a route that
+/// zig-zags between two representations of one road).
+///
+/// Falls back to the coarse route whole whenever an end cannot be refined — an
+/// approximate route is worth more than an error, and the caller cannot do
+/// anything with the distinction.
+pub fn route_staged(
+    start_patch: &RoadGraph,
+    end_patch: &RoadGraph,
+    coarse: &RoadGraph,
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: TravelMode,
+) -> Result<Route, RouteError> {
+    let long = coarse.route(from, to, mode)?;
+    // `points` is `[from pin, road…, to pin]`; the handovers are road vertices.
+    let n = long.points.len();
+    if n < 4 {
+        return Ok(long);
+    }
+    let Some(a) = (1..n - 1).find(|&i| ground_m(long.points[i], long.points[0]) > HANDOVER_M)
+    else {
+        return Ok(long);
+    };
+    let Some(b) = (1..n - 1)
+        .rev()
+        .find(|&i| ground_m(long.points[i], long.points[n - 1]) > HANDOVER_M)
+    else {
+        return Ok(long);
+    };
+    if a >= b {
+        return Ok(long);
+    }
+
+    let (Ok(head), Ok(tail)) = (
+        start_patch.route(from, (long.points[a][0], long.points[a][1]), mode),
+        end_patch.route((long.points[b][0], long.points[b][1]), to, mode),
+    ) else {
+        return Ok(long);
+    };
+
+    // Geometry: head ends at the handover, the coarse middle carries on from the
+    // vertex after it, and the tail begins at the far handover.
+    let mut points = head.points.clone();
+    points.extend_from_slice(&long.points[a + 1..b]);
+    points.extend_from_slice(&tail.points);
+
+    // The coarse middle's own length, measured off the polyline rather than taken
+    // from the planner's total — the two legs it replaces are gone. Its time is
+    // that share of the coarse route's time, which is the best available: the
+    // coarse steps are not indexed by polyline position.
+    let middle_m: f64 = long.points[a..=b]
+        .windows(2)
+        .map(|w| ground_m(w[0], w[1]))
+        .sum();
+    let middle_s = if long.distance_m > 1.0 {
+        long.duration_s * middle_m / long.distance_m
+    } else {
+        0.0
+    };
+
+    // Steps: the fine legs keep theirs (less the Arrive that is not an arrival and
+    // the Depart that is not a departure), and the coarse route contributes the
+    // ones that fall outside both handover radii. Selecting them by distance from
+    // the pins rather than by polyline index is crude and adequate — a route long
+    // enough to be staged does not come back within `HANDOVER_M` of its own ends.
+    let mut steps = head.steps;
+    steps.pop();
+    steps.extend(long.steps.into_iter().filter(|s| {
+        ground_m(s.at, long.points[0]) > HANDOVER_M
+            && ground_m(s.at, long.points[n - 1]) > HANDOVER_M
+    }));
+    steps.extend(tail.steps.into_iter().skip(1));
+    merge_short_steps(&mut steps);
+
+    Ok(Route {
+        mode,
+        points,
+        distance_m: head.distance_m + middle_m + tail.distance_m,
+        duration_s: head.duration_s + middle_s + tail.duration_s,
+        steps,
+    })
+}
+
+/// Ground metres between two `[lat, lng]`, on the local tangent plane.
+fn ground_m(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let mid = (a[0] + b[0]) * 0.5;
+    let dx = (b[1] - a[1]) * 111_320.0 * mid.to_radians().cos();
+    let dy = (b[0] - a[0]) * 110_540.0;
+    dx.hypot(dy)
 }
 
 // ─── Formatting helpers (shared by the panel and the tests) ──────────────────
@@ -1477,6 +1899,12 @@ pub fn format_duration(s: f64) -> String {
 }
 
 // ─── Small geometry / property helpers ───────────────────────────────────────
+
+/// WGS84 → global lattice units at a tile `zoom`.
+fn lattice_at(zoom: u32, lat: f64, lng: f64) -> (f64, f64) {
+    let (tx, ty) = lat_lng_to_tile_frac(lat, lng, zoom);
+    (tx * EXTENT, ty * EXTENT)
+}
 
 fn str_prop<'a>(props: Option<&'a HashMap<String, Value>>, key: &str) -> Option<&'a str> {
     match props?.get(key)? {
@@ -1600,6 +2028,315 @@ mod tests {
             .atan()
             .to_degrees();
         (lat, lng)
+    }
+
+    /// Add one segment straight to the raw list, bypassing the tile decode — the
+    /// way to build a graph whose shape is the thing under test.
+    fn seg(g: &mut RoadGraph, a: (f64, f64), b: (f64, f64), kind: RoadKind) {
+        let (ia, ib) = (g.node(a), g.node(b));
+        g.raw.push(RawSeg {
+            a: ia,
+            b: ib,
+            kind,
+            fwd_blocked: false,
+            rev_blocked: false,
+            bike_denied: false,
+            unpaved: false,
+        });
+    }
+
+    /// The junction cost has to change *route choice*, not just the clock.
+    ///
+    /// Two ways between the same pair, both residential so the class speed cannot
+    /// decide it: a straight run crossed by a side street every 50 m, and a detour
+    /// 19% longer with nothing on it. On length alone the straight one wins, which
+    /// is the rat-run the old cost model had no way to avoid. Charging for the
+    /// junctions flips it — and the test asserts *both* halves, because a penalty
+    /// that changes nothing and a penalty that changes everything look the same
+    /// from one route.
+    #[test]
+    fn a_junction_free_detour_beats_a_grid_of_side_streets() {
+        // Placed on the fixture tile's patch of lattice so the latitude the graph
+        // was scaled for is the latitude the geometry is at.
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+        const SPAN: f64 = 2800.0; // ~1 km at z14
+        const STEPS: usize = 20;
+
+        let mut g = RoadGraph::new(53.2194);
+        // The straight run, with a stub off every interior vertex.
+        for i in 0..STEPS {
+            let (x0, x1) = (
+                SPAN * i as f64 / STEPS as f64,
+                SPAN * (i + 1) as f64 / STEPS as f64,
+            );
+            seg(&mut g, at(x0, 0.0), at(x1, 0.0), RoadKind::Residential);
+            if i > 0 {
+                seg(&mut g, at(x0, 0.0), at(x0, 300.0), RoadKind::Residential);
+            }
+        }
+        // The clear detour: two long legs, one interior vertex, no side streets.
+        seg(
+            &mut g,
+            at(0.0, 0.0),
+            at(SPAN / 2.0, -900.0),
+            RoadKind::Residential,
+        );
+        seg(
+            &mut g,
+            at(SPAN / 2.0, -900.0),
+            at(SPAN, 0.0),
+            RoadKind::Residential,
+        );
+        g.finish();
+
+        let a = g.lattice_to_lat_lng(base.0, base.1);
+        let b = g.lattice_to_lat_lng(base.0 + SPAN, base.1);
+        let route = g.route(a, b, TravelMode::Car).expect("a car route");
+
+        // The detour is measurably longer, so taking it can only be the junctions.
+        let straight_m = SPAN * g.m_per_unit;
+        assert!(
+            route.distance_m > straight_m * 1.10,
+            "took the grid: {:.0} m against a {:.0} m straight run",
+            route.distance_m,
+            straight_m
+        );
+
+        // …and the same graph with the penalty removed takes the straight run.
+        // Asserted through `junction_delay` rather than by rebuilding the graph, so
+        // the two answers differ in exactly one thing.
+        assert!(
+            junction_delay(RoadKind::Residential, TravelMode::Car) > 0.0,
+            "the premise of this test is that a residential junction costs something"
+        );
+        let grid_junctions = (STEPS - 1) as f64;
+        let detour_extra_m = route.distance_m - straight_m;
+        let detour_extra_s =
+            detour_extra_m / (RoadKind::Residential.speed_kmh(TravelMode::Car).unwrap() / 3.6);
+        assert!(
+            grid_junctions * junction_delay(RoadKind::Residential, TravelMode::Car) > detour_extra_s,
+            "the junctions ({grid_junctions} of them) must outweigh the {detour_extra_s:.0} s detour \
+             or this test proves nothing"
+        );
+    }
+
+    /// The junction delay's whole job is the *ranking*: priority roads pay less
+    /// than the streets that give way to them, motorways pay nothing at all, and a
+    /// pedestrian is barely delayed by a side road. Get the order wrong and the
+    /// router pushes walkers onto arterials.
+    #[test]
+    fn junction_delay_follows_priority_and_mode() {
+        use RoadKind::{Motorway, Primary, Residential, Secondary, Tertiary, Trunk};
+        let car = |k| junction_delay(k, TravelMode::Car);
+        assert_eq!(
+            car(Motorway),
+            0.0,
+            "a motorway has no junctions to give way at"
+        );
+        assert_eq!(car(Trunk), 0.0);
+        assert!(car(Primary) < car(Secondary));
+        assert!(car(Secondary) < car(Tertiary));
+        assert!(car(Tertiary) < car(Residential));
+        for kind in [Primary, Tertiary, Residential] {
+            assert!(
+                junction_delay(kind, TravelMode::Foot) < junction_delay(kind, TravelMode::Bike),
+                "{kind:?}: a walker waits less than a cyclist"
+            );
+            assert!(
+                junction_delay(kind, TravelMode::Bike) < car(kind),
+                "{kind:?}: a cyclist waits less than a driver"
+            );
+        }
+    }
+
+    /// Ground kilometres between two `[lat, lng]`, for the reach tests below.
+    fn km_between(a: (f64, f64), b: (f64, f64)) -> f64 {
+        ground_m([a.0, a.1], [b.0, b.1]) / 1000.0
+    }
+
+    /// A point `km` due east of another, near enough for a tangent-plane step.
+    fn east_of(from: (f64, f64), km: f64) -> (f64, f64) {
+        (
+            from.0,
+            from.1 + km * 1000.0 / (111_320.0 * from.0.to_radians().cos()),
+        )
+    }
+
+    /// Street level while it fits, two tiers once it does not, and a refusal only
+    /// past the coarse budget. The thresholds are the product, not the mechanism:
+    /// a change that quietly moved either would change which routes exist.
+    #[test]
+    fn the_planner_steps_down_a_tier_rather_than_refusing() {
+        let here = (53.2194, 6.5665);
+
+        // Well inside street-level reach.
+        assert!(
+            matches!(
+                plan_corridor(here, east_of(here, 8.0)),
+                Ok(Corridor::Direct(_))
+            ),
+            "a city route must stay on one street-level graph"
+        );
+
+        // Past it — the old hard stop, now a staged route.
+        let long = east_of(here, 60.0);
+        let Ok(Corridor::Staged { start, end, coarse }) = plan_corridor(here, long) else {
+            panic!("60 km should stage, not refuse");
+        };
+        assert!(!start.is_empty() && !end.is_empty() && !coarse.is_empty());
+        assert!(
+            coarse.len() <= MAX_ROUTE_TILES,
+            "the coarse corridor is the budget now: {} tiles",
+            coarse.len()
+        );
+        // The patches are separate lists *and* must not have been merged: at this
+        // range they cannot overlap, and sharing one graph is the bug that made
+        // every staged route fall back (see `Corridor::Staged`).
+        assert!(
+            start.iter().all(|t| !end.contains(t)),
+            "the endpoint patches ran into each other"
+        );
+
+        // The transition is where `MAX_ROUTE_KM` says it is, give or take the
+        // corridor being a count of grid cells rather than a smooth area.
+        let direct_reach = (1..)
+            .map(|i| f64::from(i) * 2.0)
+            .take_while(|&km| {
+                matches!(
+                    plan_corridor(here, east_of(here, km)),
+                    Ok(Corridor::Direct(_))
+                )
+            })
+            .last()
+            .expect("some distance routes directly");
+        assert!(
+            (direct_reach - MAX_ROUTE_KM).abs() < 2.0,
+            "street-level reach measured {direct_reach:.0} km against MAX_ROUTE_KM {MAX_ROUTE_KM:.0}"
+        );
+
+        // …and the staged reach is what `MAX_STAGED_KM` claims, which is the
+        // number the refusal message quotes at the user.
+        let staged_reach = (1..)
+            .map(|i| f64::from(i) * 10.0)
+            .take_while(|&km| plan_corridor(here, east_of(here, km)).is_ok())
+            .last()
+            .expect("some distance stages");
+        // Both sampled on their own step, so the true limits sit inside one step
+        // above these; the constants name the guaranteed reach, not the ceiling.
+        assert!(
+            (staged_reach - MAX_STAGED_KM).abs() < 10.0,
+            "staged reach measured {staged_reach:.0} km against MAX_STAGED_KM {MAX_STAGED_KM:.0}"
+        );
+
+        // Past everything, the refusal reports a distance the user can act on.
+        let Err(RouteError::TooFar { km }) = plan_corridor(here, east_of(here, 900.0)) else {
+            panic!("900 km must be refused");
+        };
+        assert!(
+            (km - km_between(here, east_of(here, 900.0))).abs() < 60.0,
+            "reported {km:.0} km"
+        );
+    }
+
+    /// A ferry carries walkers and cyclists and — deliberately — not cars. The
+    /// tile says only `kind = ferry`; every car ferry takes foot passengers and no
+    /// foot ferry takes cars, so this is the only assignment that cannot send
+    /// someone to a crossing they can't board.
+    #[test]
+    fn a_ferry_carries_everyone_but_the_car() {
+        assert_eq!(RoadKind::Ferry.speed_kmh(TravelMode::Car), None);
+        assert!(RoadKind::Ferry.speed_kmh(TravelMode::Foot).is_some());
+        assert!(RoadKind::Ferry.speed_kmh(TravelMode::Bike).is_some());
+        // Its wait is already inside its speed, so it pays no junction delay on
+        // top — the slipways would otherwise be charged as give-ways.
+        assert_eq!(junction_delay(RoadKind::Ferry, TravelMode::Foot), 0.0);
+        // Slower than walking, or the router would treat open water as a shortcut
+        // wherever a ferry happens to run parallel to a road.
+        let ferry = RoadKind::Ferry.speed_kmh(TravelMode::Foot).unwrap();
+        assert!(ferry > RoadKind::Footway.speed_kmh(TravelMode::Foot).unwrap());
+        assert!(ferry < RoadKind::Cycleway.speed_kmh(TravelMode::Bike).unwrap());
+    }
+
+    /// "No road near the destination" must mean there is no road there — not that
+    /// there is a whole town there which this mode cannot reach.
+    ///
+    /// The case is real and the ferry work is what surfaced it: a car asked to
+    /// cross an estuary snapped its destination fine, but the far shore is its own
+    /// component (only the ferry links them, and a car may not use one), so the
+    /// core snap failed and the planner announced there was no road in Breskens.
+    #[test]
+    fn an_unreachable_town_is_not_a_town_without_roads() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // Two street networks, far apart, with nothing between them — and
+        // deliberately *different sizes*. The routable core is the largest
+        // component, so two equal islands leave which one wins to the order
+        // Kosaraju happens to finish in, and the test would be asserting against
+        // a coin flip (it did: the first draft passed by reporting NoPath for the
+        // *start* being outside the core).
+        for x in 0..6 {
+            let x = f64::from(x) * 400.0;
+            seg(
+                &mut g,
+                at(x, 0.0),
+                at(x + 400.0, 0.0),
+                RoadKind::Residential,
+            );
+        }
+        seg(
+            &mut g,
+            at(20_000.0, 0.0),
+            at(20_400.0, 0.0),
+            RoadKind::Residential,
+        );
+        g.finish();
+
+        let here = g.lattice_to_lat_lng(base.0, base.1);
+        let across = g.lattice_to_lat_lng(base.0 + 20_000.0, base.1);
+        assert_eq!(
+            g.route(here, across, TravelMode::Car).err(),
+            Some(RouteError::NoPath),
+            "a road that exists but does not connect is NoPath, not NoEnd"
+        );
+
+        // …and somewhere with genuinely no road still reports the absence.
+        let empty = g.lattice_to_lat_lng(base.0 + 3000.0, base.1 + 40_000.0);
+        assert_eq!(
+            g.route(here, empty, TravelMode::Car).err(),
+            Some(RouteError::NoEnd)
+        );
+    }
+
+    /// A* is only correct while the heuristic never over-estimates. Tightening it
+    /// to the graph's own fastest edge is the whole speed-up, and it is also
+    /// exactly where admissibility could be lost — so check it against every edge
+    /// in a real graph rather than by reading the code.
+    #[test]
+    fn the_heuristic_never_overestimates() {
+        let g = graph();
+        for mode in TravelMode::ALL {
+            let top = g.top_speed_ms(mode);
+            for edge in g.edges.iter().flatten() {
+                let Some(kmh) = edge.kind.speed_kmh(mode) else {
+                    continue;
+                };
+                assert!(
+                    kmh / 3.6 <= top + 1e-9,
+                    "{mode:?}: {:?} runs at {kmh} km/h, above the heuristic's {:.1} km/h ceiling",
+                    edge.kind,
+                    top * 3.6
+                );
+            }
+            // …and it must actually be tighter than the mode's global ceiling, or
+            // there was no point (the fixture is a city: no 130 km/h anything).
+            assert!(
+                top < mode.max_speed_ms(),
+                "{mode:?}: the graph ceiling is no tighter than the mode's"
+            );
+        }
     }
 
     #[test]

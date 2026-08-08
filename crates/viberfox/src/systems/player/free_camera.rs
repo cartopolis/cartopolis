@@ -878,13 +878,13 @@ pub fn camera_controls(
             // Driver mode aims down the road rather than at the vehicle, which is
             // what puts the arrow in the lower third of the frame instead of dead
             // centre (`CameraState::drive_lookahead`). The camera itself stays where
-            // the rig put it — only the look target moves.
-            let ahead = if camera_state.drive_locked {
-                crate::systems::avatar::camera_plane_forward(camera_state.azimuth)
-                    * camera_state.drive_lookahead
-            } else {
-                Vec3::ZERO
-            };
+            // the rig put it — only the look target moves. Taken as a world-XZ
+            // vector rather than a distance along this camera's forward: in a
+            // north-up drive those two point in different directions, and the
+            // forward one aims north while you drive south. Zero outside driver
+            // mode, so no branch on the mode is needed.
+            let aim = camera_state.drive_lookahead;
+            let ahead = Vec3::new(aim.x, 0.0, aim.y);
             let look_world = avatar_origin + (avatar_pos + Vec3::Y * 1.5 + ahead).as_dvec3();
             camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
         }

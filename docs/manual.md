@@ -116,30 +116,60 @@ panel. **Clear** removes it.
 Routing needs a *vector* tile source; against a raster basemap the planner says so
 instead of returning a route.
 
+**Long routes** are planned in two passes. Up to about 22 km the whole thing runs
+on the detailed street network. Past that, the middle of the route is planned on a
+generalised road network — motorways, trunk and main roads down to residential —
+while the first and last kilometre stay on the detailed one, so the route still
+starts and ends on your actual street. That reaches about 360 km, past which the
+planner says how far it is instead of trying. Two things to expect from the
+generalised middle: the drawn line is coarser there than in town, and a walking or
+cycling route over that distance is planned on roads, because the coarse network
+has no footpaths or cycleways in it.
+
+Ferries are routed for walking and cycling but never for driving. The map data
+says a crossing is a ferry and not whether it takes cars, and being sent to a
+crossing your car cannot board is worse than the detour.
+
 ### Driver mode
 
 With a route solved, **▶ Driver mode** follows it. The map is stripped back to the
 basemap and the route (buildings, trees, overlays and weather go, and come back
 exactly as they were when you stop), your avatar is replaced by a heading arrow,
-and the camera locks into a chase view behind it — no zooming or dragging while it
-holds.
+and the camera takes up a chase view behind it.
 
 The chrome is a satnav's:
 
-- **Top left** — the next manoeuvre and how far to it, with the street name.
+- **Top left** — the next manoeuvre and how far to it, with the street name. The
+  distance counts down in the steps you would act on rather than in exact metres,
+  says **Now** at the junction itself, and the card's bottom edge fills over the
+  last few hundred metres so you can see the turn coming without reading it.
 - **Under it, the compass** — click it to cycle the map orientation: **3D**
   (tilted, turns with you), **heading up** (flat, turns with you) and **north up**
   (flat, held to north; the arrow turns instead).
-- **Right edge** — the arrival clock, the distance left and the time left, plus
-  **✕ Stop** to leave.
-- **Bottom centre** — your current speed.
+- **Right edge** — the arrival clock, the distance left and the time left, the
+  route rail (what you will pass, in proportion), and **Stop** to leave.
+- **Bottom centre** — your current speed, with the posted limit beside it where
+  the map knows one.
+
+The camera drives itself: it sits further back the faster you are going and closes
+in on a junction as you approach it. You can still **scroll, drag or pinch** to
+look around — a **Re-centre** button appears at the bottom right, and if you do
+nothing the view eases back behind the arrow on its own after a few seconds.
+
+**Escape** leaves driver mode from anywhere, which is the way out when a docked
+panel is covering the Stop button.
+
+**Straying off the route asks for a new one.** Beyond about 60 m the card says
+*Rerouting…* and the route is re-solved from where you actually are; the
+destination never changes. **Arriving ends the trip**: the card turns green, names
+where you were going, and offers **Done**. The route line stays on the map until
+you clear it in the planner.
 
 Where the position comes from depends on the build. In the browser, driver mode
 asks for your device location and the arrow follows your real GPS fix. On the
 desktop there is no location source yet, so the arrow is your avatar: driver mode
 starts you at the route's beginning and narrates your own movement (W/A/S/D) —
-speed, remaining distance and ETA all come off that. If you stray more than about
-60 m from the route the card says so.
+speed, remaining distance and ETA all come off that.
 
 ### Sharing a place
 
