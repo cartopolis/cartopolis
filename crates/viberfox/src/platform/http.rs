@@ -20,7 +20,7 @@ use std::time::Duration;
 /// relay on the web build instead (ADR-034), not directly.
 #[cfg(not(target_arch = "wasm32"))]
 pub const USER_AGENT: &str =
-    "viberfox/0.2 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)";
+    "viberfox/0.2 (https://code.garage44.eu/jeroen/viberfox; jvanveen@protonmail.com)";
 
 /// Default per-request timeout when a caller does not set one.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);

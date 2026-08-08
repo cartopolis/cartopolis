@@ -637,7 +637,7 @@ the globe's cloud cover needs:
 handle_path /up/ahn/* {
 	reverse_proxy https://service.pdok.nl {
 		header_up Host service.pdok.nl
-		header_up User-Agent "viberfox/0.2 (https://code.garage44.eu/garage44/viberfox; jvanveen@protonmail.com)"
+		header_up User-Agent "viberfox/0.2 (https://code.garage44.eu/jeroen/viberfox; jvanveen@protonmail.com)"
 	}
 }
 ```
