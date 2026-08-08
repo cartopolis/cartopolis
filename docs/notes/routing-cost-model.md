@@ -78,6 +78,43 @@ the real cost.
 would under-report every city ETA and, worse, report a *time* for a route that was
 chosen to minimise a different number.
 
+## Ferries carry everyone but the car, on purpose
+
+Shortbread ships a separate `ferries` layer, present wherever there is a crossing
+(**verified 2026-08-08** on the Westerschelde z14 tiles — its absence from the
+Groningen fixture is a fact about Groningen, not about the schema). It carries
+`kind = ferry` and a `name`, and **nothing that separates a car ferry from a
+passenger pontje**.
+
+Every car ferry takes foot passengers and no foot ferry takes cars, so foot and
+bike are safe on any crossing and a car is safe on none. That asymmetry is the
+whole rule: routing a driver to a crossing their vehicle cannot board is a failure
+they discover at the water, and it is worse than the detour they would otherwise
+be given. Same reasoning as refusing the implicit `maxspeed` zone codes.
+
+The speed (8 km/h) is an *effective* one, not a sailing speed: what dominates a
+crossing is the wait, and there is no timetable in a vector tile. It puts a 400 m
+pontje at 3 minutes and a 4 km estuary at half an hour. A fixed boarding penalty
+would model it better and cannot be expressed — a ferry line arrives as many
+segments and the penalty would be charged once per segment.
+
+Measured, live tiles: Vlissingen → Breskens (5.3 km straight, all water) routes
+for bike at 10 km / 1 h 05 and on foot at 9.8 km / 1 h 32; the car is refused.
+
+## "No road near the destination" must mean there is no road there
+
+Snapping into the routable core can fail two ways and they used to look the same.
+The ferry work surfaced it: a car asked to cross an estuary snapped fine
+geometrically, but the far shore is its own component — only the ferry links them
+and a car may not use one — so the core snap failed and the planner announced
+there was no road in a town full of streets.
+
+`route` now distinguishes them: no usable node nearby at all is still
+`NoStart`/`NoEnd`, and a usable node that merely isn't in the same component is
+`NoPath`. Note when testing this that **the core is the largest component**, so a
+fixture with two equal-sized islands leaves which one wins to Kosaraju's finish
+order — the first draft of the test passed by reporting `NoPath` for the *start*.
+
 ## Deliberately not modelled
 
 - **Turn angle.** A left across oncoming traffic costs more than a right. Modelling

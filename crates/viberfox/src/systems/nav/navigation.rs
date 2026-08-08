@@ -1676,11 +1676,19 @@ mod tests {
         // Groningen: across the centre, centre→ring road, and a long haul out to
         // the motorway — a residential-grid case, a mixed case and a case that
         // should end up on the trunk network.
-        let pairs: [(&str, (f64, f64), (f64, f64)); 4] = [
+        let pairs: [(&str, (f64, f64), (f64, f64)); 5] = [
             ("centre → station", (53.2194, 6.5665), (53.2109, 6.5642)),
             ("centre → Paddepoel", (53.2194, 6.5665), (53.2405, 6.5455)),
             ("centre → Ring West", (53.2194, 6.5665), (53.2230, 6.5170)),
             ("centre → Hoogkerk", (53.2194, 6.5665), (53.2100, 6.4700)),
+            // Across the Westerschelde: only the ferry connects these, so a walk
+            // or a bike route existing at all is the ferry layer working, and the
+            // car having none is the deliberate refusal (`RoadKind::Ferry`).
+            (
+                "Vlissingen → Breskens",
+                (51.4450, 3.5700),
+                (51.3990, 3.5570),
+            ),
         ];
         for (name, from, to) in pairs {
             let progress = (AtomicUsize::new(0), AtomicUsize::new(0));

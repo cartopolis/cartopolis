@@ -194,6 +194,9 @@ pub enum RoadKind {
     Track,
     Busway,
     Rail,
+    /// A ferry crossing, from Shortbread's own `ferries` layer rather than from
+    /// `streets`. Foot and bike only — see [`Self::speed_kmh`].
+    Ferry,
     Other,
 }
 
@@ -244,7 +247,14 @@ impl RoadKind {
                 Self::LivingStreet => 12.0,
                 Self::Service => 12.0,
                 Self::Track => 15.0,
-                // No cars on foot/cycle ways, in bus lanes, or on rails.
+                // No cars on foot/cycle ways, in bus lanes, or on rails — and no
+                // cars on a ferry, which is the conservative half of a genuine
+                // ambiguity. Shortbread's `ferries` layer carries `kind = ferry`
+                // and a name, and nothing that separates a car ferry from a
+                // passenger pontje. Every car ferry takes foot passengers and no
+                // foot ferry takes cars, so foot and bike are safe on any of them
+                // and a car is safe on none: routing a driver to a crossing their
+                // vehicle cannot board is a failure they discover at the water.
                 Self::Pedestrian
                 | Self::Footway
                 | Self::Steps
@@ -252,11 +262,20 @@ impl RoadKind {
                 | Self::Cycleway
                 | Self::Busway
                 | Self::Rail
+                | Self::Ferry
                 | Self::Other => return None,
             }),
             TravelMode::Bike => Some(match self {
                 // Motorways and trunk roads are closed to bikes.
                 Self::Motorway | Self::Trunk | Self::Rail | Self::Busway => return None,
+                // An effective speed, not a sailing speed: what dominates a
+                // crossing is the wait, and there is no timetable in a vector
+                // tile. 8 km/h puts a 400 m pontje at 3 minutes and a 4 km
+                // estuary at half an hour, which is the right order for both.
+                // A fixed boarding penalty would be the better model and cannot
+                // be expressed here — a ferry line arrives as many segments, and
+                // the penalty would be charged once per segment.
+                Self::Ferry => 8.0,
                 Self::Cycleway => 18.0,
                 Self::Primary | Self::Secondary => 16.0,
                 Self::Tertiary | Self::Unclassified | Self::Residential => 15.0,
@@ -269,6 +288,7 @@ impl RoadKind {
             }),
             TravelMode::Foot => Some(match self {
                 Self::Motorway | Self::Trunk | Self::Rail | Self::Busway => return None,
+                Self::Ferry => 8.0,
                 Self::Steps => 1.8,
                 // Everything else is walked at the same pace; the class only
                 // decides *whether* you may, not how fast you go.
@@ -298,7 +318,9 @@ impl RoadKind {
     /// pay nothing, which is also what keeps a long route on them.
     fn junction_share(self) -> f64 {
         match self {
-            Self::Motorway | Self::Trunk => 0.0,
+            // A ferry's "junctions" are its two slipways, and the wait is already
+            // in its speed; charging a give-way on top would double-count it.
+            Self::Motorway | Self::Trunk | Self::Ferry => 0.0,
             Self::Primary => 0.25,
             Self::Secondary => 0.4,
             Self::Tertiary => 0.6,
@@ -318,6 +340,7 @@ impl RoadKind {
             Self::Footway | Self::Path => "the path",
             Self::Steps => "the steps",
             Self::Pedestrian => "the pedestrian street",
+            Self::Ferry => "the ferry",
             Self::Service => "the service road",
             Self::Track => "the track",
             _ => "the road",
@@ -451,9 +474,15 @@ impl RoadGraph {
     /// it would duplicate every edge — the caller tracks which tiles are in.
     pub fn add_tile(&mut self, tile_data: &TileData, tile: (i64, i64)) -> Result<(), String> {
         for meta in tile_data.layers() {
-            let routable = match meta.name.as_str() {
-                "streets" => true,
-                "street_labels" => false,
+            // `ferries` is its own Shortbread layer, present from z10 up wherever
+            // there is a crossing (verified 2026-08-08 on the Westerschelde
+            // tiles — its absence from the Groningen fixture is a fact about
+            // Groningen). It is both: routable geometry *and* the only place its
+            // own name lives, since `street_labels` does not cover it.
+            let (routable, labelled) = match meta.name.as_str() {
+                "streets" => (true, false),
+                "street_labels" => (false, true),
+                "ferries" => (true, true),
                 _ => continue,
             };
             let features = tile_data.features(meta);
@@ -467,10 +496,12 @@ impl RoadGraph {
                 (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale)
             };
 
+            let ferry = meta.name == "ferries";
             for feature in features {
                 if routable {
-                    self.add_street(feature, &to_global);
-                } else {
+                    self.add_street(feature, &to_global, ferry);
+                }
+                if labelled {
                     self.add_labels(feature, &to_global);
                 }
             }
@@ -569,9 +600,17 @@ impl RoadGraph {
         &mut self,
         feature: &Feature,
         to_global: &impl Fn(&geo_types::Coord<f32>) -> (f64, f64),
+        ferry: bool,
     ) {
         let props = feature.properties.as_ref();
-        let kind = RoadKind::parse(str_prop(props, "kind").unwrap_or(""));
+        // The `ferries` layer's own `kind` is `ferry`, which `RoadKind::parse`
+        // would read as `Other` and drop; the layer it came from is what says
+        // what it is.
+        let kind = if ferry {
+            RoadKind::Ferry
+        } else {
+            RoadKind::parse(str_prop(props, "kind").unwrap_or(""))
+        };
         // Rails share the layer with streets and are routable for nobody.
         if kind == RoadKind::Rail || bool_prop(props, "rail") {
             return;
@@ -1035,12 +1074,25 @@ impl RoadGraph {
         // `NoPath` after this is a genuinely disconnected corridor, not a bad snap.
         let core = self.routable_core(mode);
         let in_core = |id: u32| core[id as usize];
-        let start = self
-            .nearest_node_where(from.0, from.1, SNAP_M, in_core)
-            .ok_or(RouteError::NoStart)?;
-        let goal = self
-            .nearest_node_where(to.0, to.1, SNAP_M, in_core)
-            .ok_or(RouteError::NoEnd)?;
+        // Failing to snap into the core is two different failures wearing one
+        // face. If there is no usable road near the point at all, "no road near
+        // the destination" is the truth. If there is one and it merely isn't in
+        // the same component — a town across an estuary that only a ferry
+        // reaches, and this mode may not use the ferry — then saying there is no
+        // road there is a plain lie about a place with streets in it, and the
+        // honest answer is that nothing connects the two for this mode.
+        let snap = |at: (f64, f64), absent: RouteError| {
+            self.nearest_node_where(at.0, at.1, SNAP_M, in_core)
+                .ok_or_else(|| {
+                    if self.nearest_node(at.0, at.1, mode, SNAP_M).is_some() {
+                        RouteError::NoPath
+                    } else {
+                        absent
+                    }
+                })
+        };
+        let start = snap(from, RouteError::NoStart)?;
+        let goal = snap(to, RouteError::NoEnd)?;
         if start == goal {
             return Err(RouteError::TooClose);
         }
@@ -1835,6 +1887,77 @@ mod tests {
                 "{kind:?}: a cyclist waits less than a driver"
             );
         }
+    }
+
+    /// A ferry carries walkers and cyclists and — deliberately — not cars. The
+    /// tile says only `kind = ferry`; every car ferry takes foot passengers and no
+    /// foot ferry takes cars, so this is the only assignment that cannot send
+    /// someone to a crossing they can't board.
+    #[test]
+    fn a_ferry_carries_everyone_but_the_car() {
+        assert_eq!(RoadKind::Ferry.speed_kmh(TravelMode::Car), None);
+        assert!(RoadKind::Ferry.speed_kmh(TravelMode::Foot).is_some());
+        assert!(RoadKind::Ferry.speed_kmh(TravelMode::Bike).is_some());
+        // Its wait is already inside its speed, so it pays no junction delay on
+        // top — the slipways would otherwise be charged as give-ways.
+        assert_eq!(junction_delay(RoadKind::Ferry, TravelMode::Foot), 0.0);
+        // Slower than walking, or the router would treat open water as a shortcut
+        // wherever a ferry happens to run parallel to a road.
+        let ferry = RoadKind::Ferry.speed_kmh(TravelMode::Foot).unwrap();
+        assert!(ferry > RoadKind::Footway.speed_kmh(TravelMode::Foot).unwrap());
+        assert!(ferry < RoadKind::Cycleway.speed_kmh(TravelMode::Bike).unwrap());
+    }
+
+    /// "No road near the destination" must mean there is no road there — not that
+    /// there is a whole town there which this mode cannot reach.
+    ///
+    /// The case is real and the ferry work is what surfaced it: a car asked to
+    /// cross an estuary snapped its destination fine, but the far shore is its own
+    /// component (only the ferry links them, and a car may not use one), so the
+    /// core snap failed and the planner announced there was no road in Breskens.
+    #[test]
+    fn an_unreachable_town_is_not_a_town_without_roads() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // Two street networks, far apart, with nothing between them — and
+        // deliberately *different sizes*. The routable core is the largest
+        // component, so two equal islands leave which one wins to the order
+        // Kosaraju happens to finish in, and the test would be asserting against
+        // a coin flip (it did: the first draft passed by reporting NoPath for the
+        // *start* being outside the core).
+        for x in 0..6 {
+            let x = f64::from(x) * 400.0;
+            seg(
+                &mut g,
+                at(x, 0.0),
+                at(x + 400.0, 0.0),
+                RoadKind::Residential,
+            );
+        }
+        seg(
+            &mut g,
+            at(20_000.0, 0.0),
+            at(20_400.0, 0.0),
+            RoadKind::Residential,
+        );
+        g.finish();
+
+        let here = g.lattice_to_lat_lng(base.0, base.1);
+        let across = g.lattice_to_lat_lng(base.0 + 20_000.0, base.1);
+        assert_eq!(
+            g.route(here, across, TravelMode::Car).err(),
+            Some(RouteError::NoPath),
+            "a road that exists but does not connect is NoPath, not NoEnd"
+        );
+
+        // …and somewhere with genuinely no road still reports the absence.
+        let empty = g.lattice_to_lat_lng(base.0 + 3000.0, base.1 + 40_000.0);
+        assert_eq!(
+            g.route(here, empty, TravelMode::Car).err(),
+            Some(RouteError::NoEnd)
+        );
     }
 
     /// A* is only correct while the heuristic never over-estimates. Tightening it
