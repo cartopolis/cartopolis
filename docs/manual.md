@@ -116,6 +116,20 @@ panel. **Clear** removes it.
 Routing needs a *vector* tile source; against a raster basemap the planner says so
 instead of returning a route.
 
+**Long routes** are planned in two passes. Up to about 22 km the whole thing runs
+on the detailed street network. Past that, the middle of the route is planned on a
+generalised road network — motorways, trunk and main roads down to residential —
+while the first and last kilometre stay on the detailed one, so the route still
+starts and ends on your actual street. That reaches about 360 km, past which the
+planner says how far it is instead of trying. Two things to expect from the
+generalised middle: the drawn line is coarser there than in town, and a walking or
+cycling route over that distance is planned on roads, because the coarse network
+has no footpaths or cycleways in it.
+
+Ferries are routed for walking and cycling but never for driving. The map data
+says a crossing is a ferry and not whether it takes cars, and being sent to a
+crossing your car cannot board is worse than the detour.
+
 ### Driver mode
 
 With a route solved, **▶ Driver mode** follows it. The map is stripped back to the

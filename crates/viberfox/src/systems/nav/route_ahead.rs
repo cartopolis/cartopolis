@@ -96,6 +96,19 @@ const SAVED_NEAR_M: f64 = 400.0;
 /// kilobytes rather than tens.
 const CORRIDOR_STEP_M: f64 = 300.0;
 
+/// Ceiling on how many vertices go into the `around` filter, whatever the route's
+/// length. The step widens to meet it.
+///
+/// Since routing learned to stage a long haul over a coarser zoom
+/// (`routing::plan_corridor`), a route can be 360 km rather than 22, and at a
+/// fixed 300 m step that is 1,200 vertices — a query an order of magnitude past
+/// what the constant above was sized for, over a corridor an order of magnitude
+/// longer, which is how a single innocuous request becomes the one that gets the
+/// client rate-limited. 400 points leaves a 120 km route untouched at its natural
+/// step and widens only past that, where the route is motorway and nearly
+/// straight, so the corner-cutting the step trades away costs almost nothing.
+const MAX_CORRIDOR_POINTS: usize = 400;
+
 /// Ceiling on rail markers kept from one corridor. The rail is 240 px tall and
 /// can show perhaps a dozen; the rest are counted, not drawn.
 const MAX_ITEMS: usize = 24;
@@ -380,11 +393,15 @@ fn sort_items(items: &mut [AheadItem]) {
 
 /// The polyline handed to Overpass' `around`, thinned to [`CORRIDOR_STEP_M`].
 fn corridor_points(geom: &RouteGeom) -> Vec<[f64; 2]> {
+    // Widen the step rather than truncate the route: a corridor that stops
+    // two-thirds of the way along would leave the rail confidently empty for the
+    // rest of the drive, which reads as "nothing ahead" rather than "not asked".
+    let step = CORRIDOR_STEP_M.max(geom.total_m / MAX_CORRIDOR_POINTS as f64);
     let mut out = Vec::new();
     let mut last_at = f64::NEG_INFINITY;
     for (i, p) in geom.points.iter().enumerate() {
         let at = geom.cum[i];
-        if out.is_empty() || at - last_at >= CORRIDOR_STEP_M {
+        if out.is_empty() || at - last_at >= step {
             out.push(*p);
             last_at = at;
         }
@@ -786,6 +803,46 @@ mod tests {
         );
         assert_eq!(c.first(), points.first());
         assert_eq!(c.last(), points.last(), "the destination end must survive");
+    }
+
+    /// A staged route can be 360 km, and at the natural 300 m step that is 1,200
+    /// vertices in one `around` filter — the shape of request that gets a client
+    /// rate-limited. The step must widen instead, and it must not do so on the
+    /// routes it was tuned for.
+    #[test]
+    fn a_cross_country_corridor_stays_a_bounded_query() {
+        // A straight north–south run, sampled every 100 m, at whatever length.
+        let synthetic = |km: f64| {
+            let n = (km * 10.0) as usize;
+            let points: Vec<[f64; 2]> = (0..=n)
+                .map(|i| [53.0 + i as f64 * 100.0 / 110_540.0, 6.0])
+                .collect();
+            let cum: Vec<f64> = (0..=n).map(|i| i as f64 * 100.0).collect();
+            RouteGeom {
+                points,
+                total_m: cum[n],
+                cum,
+                step_along: vec![],
+            }
+        };
+
+        for km in [40.0, 120.0, 360.0] {
+            let c = corridor_points(&synthetic(km));
+            assert!(
+                c.len() <= MAX_CORRIDOR_POINTS + 1,
+                "{km} km route asks for {} corridor points",
+                c.len()
+            );
+        }
+        // …and a route inside the old reach keeps its natural step, so this guard
+        // cannot silently coarsen the corridors it was not written for.
+        let short = corridor_points(&synthetic(20.0));
+        assert!(
+            (short.len() as f64 - 20_000.0 / CORRIDOR_STEP_M).abs() < 3.0,
+            "a 20 km route thinned to {} points, not ~{:.0}",
+            short.len(),
+            20_000.0 / CORRIDOR_STEP_M
+        );
     }
 
     #[test]
