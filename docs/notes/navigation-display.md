@@ -1,7 +1,7 @@
 ---
 topic: navigation
-triggers: [driver.rs, route_ahead.rs, navigation.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu"]
-updated: 2026-07-30
+triggers: [driver.rs, route_ahead.rs, navigation.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown]
+updated: 2026-08-08
 ---
 
 # The navigation display
@@ -83,6 +83,75 @@ the current position. Three things this depends on:
   the search — and the card would then announce "Rerouting… from your current
   position" for something the user had just asked for deliberately.
 
+## Arriving is a latched state, and it switches the reroute machinery off
+
+The first cut had no end. The remaining distance ran down to zero, the card sat on
+"Arrive · 0 m" for as long as you left it, and the only exit was a button on a
+strip a docked panel could hide. Three things about the fix are load-bearing and
+would otherwise be re-litigated:
+
+- **Latched, not recomputed.** Driving the last few metres *past* the pin would
+  take the arrival card away again, and the last thing a navigation display should
+  do at the end of a trip is change its mind about having finished. Cleared only
+  when the route generation changes — a reroute or a new destination is a new trip.
+- **It disables the reroute.** Parking at the destination puts you tens of metres
+  off the line by design (the route ends at the nearest routable road, the pin is
+  where the user pointed), which is exactly the condition that asks for a fresh
+  route. Left armed, the display answers arriving by planning a route to where you
+  already are.
+- **`ARRIVE_M` is generous (30 m) on purpose.** Pin-to-road is a building's depth
+  often enough that a tight radius leaves a driver parked outside the address being
+  told to keep going.
+
+Ending the trip does **not** clear the route line. Clearing is the planner's act
+(`driver.rs`'s module note says the same thing about driver mode versus planning),
+and a driver who has just parked may well want to look at what they drove.
+
+## The locked camera is not frozen, and the gestures cannot be handed back
+
+A driver looks ahead — at the junction after this one, at where the car park
+actually is. A rig that cannot be moved at all makes that impossible, so the
+wheel, the drag and the pinch accumulate as offsets on the rig (`driver::Peek`)
+and expire after `PEEK_TIMEOUT`.
+
+**Handing them to `free_camera` by clearing `drive_locked` is the obvious
+implementation and it does not work.** That system's Avatar arm clamps the
+third-person zoom to `AVATAR_CAM_MAX` — 25 m, a tenth of a navigation chase
+distance — so the first frame of a peek slams the camera onto the roof of the car
+and every later frame drags it back there. Driver mode owns the rig, so it owns
+the rig's input.
+
+Two consequences worth keeping: the offsets sit *on top of* the rig rather than
+replacing it, so the orientation cycle, the speed stretch and the junction tighten
+all keep working underneath a peek; and the expiry is what makes reaching for the
+camera safe while driving, because the driver never has to remember to undo it.
+The Re-centre button is an offer, not the mechanism.
+
+## The chase rig rides the speedometer, and closes on manoeuvres only
+
+One pose cannot serve both ends of the speed range: tuned for a 30 km/h street it
+shows about four seconds of road at 120, and tuned for the motorway it is a map of
+the neighbourhood while you are hunting a house number. So the distance stretches
+with speed up to a reference (`RIG_SPEED_STRETCH` / `RIG_SPEED_REF_KMH`) and
+tightens onto the junction over the last `RIG_JUNCTION_M`.
+
+The tighten is gated on the manoeuvre being one you *do* (`Progress::turn_ahead` —
+not a `Continue` or a `Depart`). Without that gate the noded graph's mid-leg
+vertices pull the camera in for every bend and the view breathes its way down the
+road. Both effects fold into the same eased target the orientation writes, so
+neither can produce a cut.
+
+## Distance to the turn is a countdown, not a measurement
+
+`format_distance` rounds to 10 m at every scale, which is right for a fact being
+reported and wrong for a number being watched: on a kilometre of motorway the one
+element of the card that should change only when something *has* changed repaints
+every few metres. `driver::countdown` coarsens with distance — tens in the last
+hundred metres, fifties through the rest of a kilometre — and stops naming a
+distance at all inside `NOW_M`, where "10 m" describes a turn already being taken.
+It rounds before choosing the unit, because rounding 980 m to the nearest 50 gives
+"1000 m".
+
 ## "Route to" is the act; "route from" is the exception
 
 The planner presented two identical endpoint fields, so every route was a
@@ -112,6 +181,10 @@ a panel to lose (the same constraint the place-pin culling in `place_pins.rs`
 works around). So it stands down while a right panel is open rather than drawing
 over the route's own turn list. The manoeuvre card, compass and speed pill are
 clear of that edge and stay put.
+
+That takes the **Stop** button with it, which is why Escape leaves driver mode
+too: opening the Places list mid-drive otherwise removed the only way out. It is
+gated on `EguiManager::ui_owns_keyboard`, so typing an address does not end a trip.
 
 ## Not implemented: lane guidance
 
