@@ -1050,7 +1050,8 @@ mod tests {
             raw.events = take_pass_events(&mut pending);
             let rect = std::cell::Cell::new(None);
             let checked_ref = &mut checked;
-            ctx.run_ui(raw, |ui| {
+            // The pass output is the paint job; this test only reads widget state.
+            let _ = ctx.run_ui(raw, |ui| {
                 egui::Panel::right("panel")
                     .default_size(260.0)
                     .show(ui, |ui| {
@@ -1130,7 +1131,8 @@ mod tests {
             );
             overlay(&ctx, root.available_rect_before_wrap());
             drop(root);
-            ctx.end_pass();
+            // The pass output is the paint job; this test only reads widget state.
+            let _ = ctx.end_pass();
 
             if settled.is_none() {
                 if let Some(r) = rect.get() {
