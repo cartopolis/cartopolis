@@ -1504,7 +1504,7 @@ fn polyline_len(points: &[[f32; 2]]) -> f32 {
 /// is a park or a canal with a carriageway ruled through it. `road_class` already
 /// refuses `subway` for the same reason; the `tunnel` flag is that rule applied to
 /// the kinds that can be either.
-fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
+pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
     if flag_of(feature, "tunnel") {
         return None;
     }

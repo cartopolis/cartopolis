@@ -156,6 +156,9 @@ pub fn scatter_vegetation(
     // nothing for the water inside it, and the first render planted a wood down
     // the middle of the Noorderhaven. Water is a separate mask.
     let water = WaterMask::build(tile, scale, extent, tile_m);
+    // Streets are interior to the landuse for exactly the same reason, and the
+    // consequence is the same: a wood is not cut out where a road runs through it.
+    let roads = RoadMask::build(tile, tile_m);
 
     let mut out: Vec<TreeInstance> = Vec::new();
     let mut truncated = false;
@@ -234,8 +237,12 @@ pub fn scatter_vegetation(
                     let radius = lerp(profile.radius.0, profile.radius.1, rand01(h, 2));
                     let (wx, wz) = to_world(lx, lz);
                     // Keep the canopy off whatever the polygon borders — a forest
-                    // edge against a canal must not hang trees over the water.
-                    if edges.within(wx, wz, radius * 0.8) || water.blocks(wx, wz, radius * 0.8) {
+                    // edge against a canal must not hang trees over the water —
+                    // and off the carriageways that run through it.
+                    if edges.within(wx, wz, radius * 0.8)
+                        || water.blocks(wx, wz, radius * 0.8)
+                        || roads.blocks(wx, wz, radius * 0.8)
+                    {
                         continue;
                     }
                     planted.insert((i, j));
@@ -353,6 +360,107 @@ impl WaterMask {
             }
         }
         self.edges.within(x, z, r)
+    }
+}
+
+/// Everywhere a tree must not stand because a street is drawn there.
+///
+/// The sibling of [`WaterMask`], and it exists for the identical reason: `land`
+/// and `streets` are independent layers, so a wood is **not** cut out where a road
+/// runs through it — Shortbread draws the ribbon on top. Insetting from the
+/// polygon's own boundary cannot see a lane that is interior to it, so the scatter
+/// planted trees down the middle of every road through a forest and every path
+/// across a park.
+///
+/// The keep-out is the **carriageway**, not the centre line: each segment carries
+/// the same half-width [`tessellate_roads`](crate::vector_tiles::tessellate_roads)
+/// builds its ribbon from, so a motorway clears eleven metres and a footpath
+/// clears one, from one table. Tunnels are absent by construction —
+/// `drawn_street` refuses them, and there is nothing wrong with a tree over a
+/// tunnel.
+pub struct RoadMask {
+    /// Segment endpoints in tile-local metres, with the half-width of the street
+    /// they belong to.
+    segs: Vec<([f32; 2], [f32; 2], f32)>,
+    buckets: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl RoadMask {
+    /// Bucket size in metres. Wider than [`EdgeGrid`]'s because a segment is
+    /// registered over its half-width as well as its length, and a motorway's
+    /// eleven metres would otherwise smear every segment over a 3×3 neighbourhood.
+    const CELL: f32 = 32.0;
+
+    fn build(tile: &TileData, tile_m: f32) -> Self {
+        use crate::vector_tiles::drawn_street;
+        use geo_types::Geometry;
+
+        let mut mask = Self {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+        };
+        let Some(meta) = tile.layer("streets") else {
+            return mask;
+        };
+        let scale = tile_m / TileData::extent(meta);
+
+        for feature in tile.features(meta) {
+            let Some((_, half)) = drawn_street(feature) else {
+                continue;
+            };
+            let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
+                Geometry::LineString(ls) => vec![ls],
+                Geometry::MultiLineString(mls) => mls.iter().collect(),
+                _ => continue,
+            };
+            for ls in lines {
+                let pts: Vec<[f32; 2]> =
+                    ls.0.iter()
+                        .filter(|c| c.x.is_finite() && c.y.is_finite())
+                        .map(|c| [c.x * scale, c.y * scale])
+                        .collect();
+                for w in pts.windows(2) {
+                    mask.push(w[0], w[1], half);
+                }
+            }
+        }
+        mask
+    }
+
+    /// Register one segment over every cell its carriageway touches — the bbox
+    /// grown by the half-width, so [`Self::blocks`] only ever has to widen the
+    /// *query* by the canopy radius.
+    fn push(&mut self, a: [f32; 2], b: [f32; 2], half: f32) {
+        let idx = self.segs.len() as u32;
+        self.segs.push((a, b, half));
+        let (minx, maxx) = (a[0].min(b[0]) - half, a[0].max(b[0]) + half);
+        let (minz, maxz) = (a[1].min(b[1]) - half, a[1].max(b[1]) + half);
+        for i in (minx / Self::CELL).floor() as i32..=(maxx / Self::CELL).floor() as i32 {
+            for j in (minz / Self::CELL).floor() as i32..=(maxz / Self::CELL).floor() as i32 {
+                self.buckets.entry((i, j)).or_default().push(idx);
+            }
+        }
+    }
+
+    /// True if a tree of canopy radius `r` here would stand on, or lean over, a
+    /// carriageway.
+    #[must_use]
+    pub fn blocks(&self, x: f32, z: f32, r: f32) -> bool {
+        for i in ((x - r) / Self::CELL).floor() as i32..=((x + r) / Self::CELL).floor() as i32 {
+            for j in ((z - r) / Self::CELL).floor() as i32..=((z + r) / Self::CELL).floor() as i32 {
+                let Some(ids) = self.buckets.get(&(i, j)) else {
+                    continue;
+                };
+                for &id in ids {
+                    let (a, b, half) = self.segs[id as usize];
+                    let reach = half + r;
+                    if point_seg_dist2(x, z, a, b) < reach * reach {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }
 
@@ -783,6 +891,53 @@ mod tests {
                 t.z
             );
         }
+    }
+
+    /// No tree may stand on a street. `land` and `streets` are separate layers, so
+    /// a wood is not cut out where a road crosses it — the scatter grew trees down
+    /// the middle of the lanes through the Sterrebos and across every park path.
+    #[test]
+    fn no_tree_stands_on_a_street() {
+        let tile_m = 1472.0;
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let mask = RoadMask::build(&tile, tile_m);
+        assert!(
+            !mask.segs.is_empty(),
+            "fixture has no streets to test against"
+        );
+
+        let trees = scatter_vegetation(&tile, tile_m, 42).expect("scatter");
+        for t in &trees {
+            assert!(
+                !mask.blocks(t.x, t.z, 0.0),
+                "tree planted on a carriageway at ({}, {})",
+                t.x,
+                t.z
+            );
+        }
+    }
+
+    /// The keep-out is the carriageway, so it has to scale with the street: a
+    /// motorway clears metres where a footpath clears about one. A mask built off
+    /// the centre line alone would be the same distance for both.
+    #[test]
+    fn the_road_keep_out_is_as_wide_as_the_road() {
+        let mut mask = RoadMask {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+        };
+        mask.push([0.0, 0.0], [100.0, 0.0], 1.0); // a path
+        mask.push([0.0, 200.0], [100.0, 200.0], 11.0); // a motorway
+        // Three metres off the centre line: clear of the path, well inside the
+        // motorway.
+        assert!(!mask.blocks(50.0, 3.0, 0.0));
+        assert!(mask.blocks(50.0, 203.0, 0.0));
+        // …and a canopy that would lean over either one is refused.
+        assert!(mask.blocks(50.0, 3.0, 2.5));
+        // Past the end of a segment is not "on the road" — a keep-out that
+        // extended a motorway's width beyond its last vertex would clear a bald
+        // disc at every tile seam.
+        assert!(!mask.blocks(-20.0, 200.0, 2.0));
     }
 
     /// Same seed → same forest. A cell that streams out and back must regrow
