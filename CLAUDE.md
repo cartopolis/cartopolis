@@ -225,7 +225,7 @@ This is a **Cargo workspace** with six crates:
 - `world.rs` — `TileKey`, lat/lng ↔ tile math, `REGION_SIZE_METERS`
 - `yaw.rs` — angle helpers for avatar direction continuity
 
-**Wire format (ADR-008–009):** TCP length-delimited frames, little-endian `u32` length; frame body = `protocol_version` (u8) + `message_kind` (u8) + `request_id` (u64) + postcard payload.
+**Wire format (ADR-008–009):** TCP length-delimited frames, little-endian `u32` length; frame body = an 8-byte header (`APP_HEADER_LEN`) of `protocol_version` (u16 LE) + `message_kind` (u16 LE) + `request_id` (u32 LE), then the postcard payload.
 
 ## Documentation (notes + commit bodies)
 
