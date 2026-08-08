@@ -1,0 +1,34 @@
+[package]
+name = "viberfox_android"
+version.workspace = true
+edition.workspace = true
+
+# The APK's `lib/arm64-v8a/libviberfox_android.so`. A cdylib and nothing else:
+# Android loads a shared object and calls into it, there is no `main`.
+#
+# This is a separate crate rather than a second `crate-type` on `viberfox`'s own
+# `[lib]`, because `crate-type` cannot be target-gated — adding `cdylib` there
+# would make every desktop `cargo build` link a ~200 MB shared object that nobody
+# on a desktop ever loads, on a project whose link time is already the thing being
+# managed (`docs/notes/client-build-cost.md`). The entrypoint also *has* to live in
+# the cdylib: `#[no_mangle]` symbols in an upstream rlib are not guaranteed to
+# survive into the final object when nothing references them, and nothing does —
+# `android_main` is looked up by name from C.
+[lib]
+name = "viberfox_android"
+crate-type = ["cdylib"]
+# No `#[test]`s here and nothing to doc-test; the crate is fifteen lines of glue.
+doctest = false
+test = false
+
+# Both dependencies are target-gated, which is what keeps this crate free to sit in
+# the workspace `members` list. Off Android it has no dependencies and an empty
+# body, so `cargo build --workspace` / `cargo test --workspace` link an empty
+# cdylib in well under a second instead of dragging Bevy through a second full
+# static link. On Android it is the whole app.
+[target.'cfg(target_os = "android")'.dependencies]
+bevy.workspace = true
+# `default-features = false` drops `solo`: Phase-1 Android is the offline viewer,
+# so no in-process simulator and therefore no bundled SQLite to cross-compile.
+# See `docs/notes/android-build.md`.
+viberfox = { path = "../viberfox", default-features = false }

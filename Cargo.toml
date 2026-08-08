@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/geo", "crates/simulator", "crates/viberfox", "crates/big_space"]
+members = [
+    "crates/core",
+    "crates/geo",
+    "crates/simulator",
+    "crates/viberfox",
+    "crates/viberfox_android",
+    "crates/big_space",
+]
 default-members = ["crates/viberfox"]
 
 [workspace.package]
@@ -180,3 +187,23 @@ lto = "thin"
 codegen-units = 16
 debug = false
 strip = "symbols"
+
+# The APK's profile, and it exists for a hard reason rather than a preference:
+# **`release` cannot link this target here.** Fat LTO over one codegen unit means
+# one rustc process holding the bitcode for the whole Bevy stack at once, and on a
+# 22 GB build box that process was killed by the OOM killer (signal 9, during the
+# `viberfox_android` cdylib) after an hour of compiling everything below it. Thin
+# LTO over 16 units is the same trade `web-release` above already documents —
+# near-identical frame times for a fraction of the link — and it fits in memory.
+#
+# NOT stripped, unlike `web-release`. There the symbol table was 38% of what a
+# browser downloads and parses on every load; in an APK it is inert weight next to
+# 63 MB of glTF, and it is the difference between a native crash address and a
+# function name. The Android build has never run on hardware
+# (`docs/notes/android-build.md`), so the first traces are worth more than the
+# megabytes. Revisit when the phone is boring, with `CARGO_PROFILE_ANDROID_RELEASE_STRIP=symbols`
+# to try it for one build without invalidating anyone's cache.
+[profile.android-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

@@ -106,13 +106,36 @@ bevy = { workspace = true, features = ["wayland"] }
 # Native-only deps whose crates don't build for wasm (or are meaningless there).
 # Their call sites are cfg-gated to the matching target (ADR-030/033).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-arboard.workspace = true
 # The sim transport (network.rs) + solo sim are tokio/TCP — native only. The web
 # build is Phase-1 Viewer with no sim (ADR-031/033); `OnlineSession`'s channel is
 # futures-channel, so nothing wasm-side needs tokio.
 tokio.workspace = true
 tokio-util.workspace = true
 ureq.workspace = true
+
+# The desktop clipboard. Deliberately *not* under `cfg(not(wasm32))` with the rest:
+# Android is a native target too, and arboard is X11/Wayland/AppKit/Win32 only — it
+# has no android backend and does not build for one. Android's clipboard is a JNI
+# call through `ClipboardManager`, which is its own seam and not wired yet
+# (`utils::clipboard` has a no-op arm for it).
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+arboard.workspace = true
+
+# Android (`docs/notes/android-build.md`). `android-native-activity` picks the
+# `android-activity` backend, and without one of the two that crate is a bare
+# `compile_error!` — it owns the `android_main` entrypoint, so exactly one backend
+# must be linked, and nothing in Bevy's default set picks one for us (this
+# workspace builds bevy with `default-features = false`).
+#
+# NativeActivity rather than GameActivity because it needs **no Java at all**:
+# `android.app.NativeActivity` is in the framework, so the APK is a manifest plus
+# a `.so` plus assets, with no AAR to resolve, no `classes.dex` to build and no
+# Gradle. GameActivity is the direction Google points, but its Java class ships in
+# an AAR with transitive androidx dependencies, and resolving those without Gradle
+# is most of what a Gradle project is for. The price is the soft keyboard — see
+# the note.
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { workspace = true, features = ["android-native-activity"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ehttp = "0.5"

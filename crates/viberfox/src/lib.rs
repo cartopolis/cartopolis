@@ -2,6 +2,8 @@ use bevy::asset::AssetPlugin;
 use bevy::camera::Exposure;
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+// Used on every target except wasm, but for opposite reasons: desktop disables it
+// in favour of `tracing_subscriber`, Android reconfigures it. See `run`.
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::log::LogPlugin;
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
@@ -277,6 +279,39 @@ impl Plugin for ForceCpuClusteringPlugin {
     }
 }
 
+/// The command line, on platforms that have one.
+///
+/// Android does not. An app process is forked from the zygote, so the `argv` that
+/// std's init-array constructor captured is `app_process`'s, with argv[0]
+/// overwritten by the package name and whatever else the runtime left in the
+/// array — not a command line anyone wrote, and not one this `Cli` has heard of.
+/// Exactly what survives there is a runtime detail that varies by Android version,
+/// which is the point: `Cli::parse()` does not fall back to defaults on input it
+/// dislikes, it prints usage and calls `exit(2)`, so the app would die on launch
+/// with a blank screen and one clap line in `logcat` — on some devices, in some
+/// releases. A fixed configuration is the only version of this with a predictable
+/// outcome.
+///
+/// `--offline` is that configuration, and it is a deliberate choice rather than a
+/// stub: Phase-1 Android is the same shape as Phase-1 web (`docs/notes/android-build.md`)
+/// — the streamed OSM/3DBAG map plus a local avatar, no sim, no auth, no world
+/// persistence. It also happens to be what the build produces anyway, since the
+/// APK is built `--no-default-features` and so carries no `solo` sim to connect to;
+/// saying it explicitly keeps `login::resolve` from going looking for a credentials
+/// file that cannot exist on the device.
+#[cfg(not(target_os = "android"))]
+fn parse_cli() -> Cli {
+    Cli::parse()
+}
+
+#[cfg(target_os = "android")]
+fn parse_cli() -> Cli {
+    // `parse_from` rather than a hand-built struct literal: every field keeps its
+    // clap-declared default, so a new flag added to `Cli` cannot leave this arm
+    // silently uninitialised.
+    Cli::parse_from(["viberfox", "--offline"])
+}
+
 /// Bring up the in-process solo sim, returning its loopback address. `None` when
 /// the `solo` feature is disabled or startup failed (the caller then runs offline).
 #[cfg(feature = "solo")]
@@ -312,13 +347,21 @@ pub fn run() {
             .max(1),
     );
 
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
-    // Native: our own `tracing_subscriber` (env-filtered fmt to stderr). On wasm we
+    // Desktop: our own `tracing_subscriber` (env-filtered fmt to stderr). On wasm we
     // don't init it — its default timer calls `SystemTime::now`, which panics on
     // wasm, and its writer targets stdout; Bevy's `LogPlugin` (kept enabled on wasm
     // below) routes logs/panics to the browser console instead. ADR-033.
-    #[cfg(not(target_arch = "wasm32"))]
+    //
+    // Android is on the wasm side of this, and for a closely related reason: it is
+    // a native target, but **stderr on Android goes nowhere**. Nothing forwards a
+    // process's standard streams to logcat unless the app arranges it, so this
+    // subscriber would swallow every line the app ever logs, on the one platform
+    // where the first run is entirely diagnosis. Bevy's `LogPlugin` has an
+    // `android_log-sys` layer that writes to logcat properly, so it stays enabled
+    // there and this does not run. See `docs/notes/android-build.md`.
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -365,23 +408,47 @@ pub fn run() {
     if !scripted {
         systems::desktop_integration::ensure_desktop_integration();
     }
-    // Native: assets live at a repo-relative path resolved from the manifest dir.
+    // Desktop: assets live at a repo-relative path resolved from the manifest dir.
     // Wasm: `CARGO_MANIFEST_DIR` is a build-machine absolute path meaningless in a
     // browser — Bevy fetches assets over HTTP relative to the served page, so use a
     // plain `assets` URL (trunk copies `assets/` alongside the wasm). ADR-033.
-    #[cfg(not(target_arch = "wasm32"))]
+    // Android: `AssetSource::get_default_reader` returns `AndroidAssetReader`, which
+    // ignores this string entirely and reads every path straight out of the APK's
+    // `assets/` via the framework `AssetManager`. So the value is unused — but a
+    // build-machine absolute path left here would still be *read* by anyone
+    // debugging where an asset came from, and point them at a directory that does
+    // not exist on the device. `assets` says the true thing.
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets")
         .display()
         .to_string();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     let asset_dir = "assets".to_string();
     let plugins = DefaultPlugins.build();
-    // Native uses the custom `tracing_subscriber` above, so drop Bevy's LogPlugin
+    // Desktop uses the custom `tracing_subscriber` above, so drop Bevy's LogPlugin
     // there. On wasm keep it: it wires logs + panics to the browser console and does
     // not call `SystemTime::now` (which panics on wasm). ADR-033.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     let plugins = plugins.disable::<LogPlugin>();
+    // Android keeps LogPlugin too (stderr is discarded there — see above), but not
+    // its defaults: it filters only `wgpu=error,naga=warn` and lets everything else
+    // through at INFO, which buries the app's own lines under Bevy's startup and
+    // asset chatter on a device where the log is the only instrument there is.
+    //
+    // The per-target directives are the desktop set, and for the same reasons — in
+    // particular `bevy_render=error`, without which a run that dies for a render
+    // reason dies silently. `level` is the *global* default that bevy prepends, and
+    // it is WARN rather than the desktop's `off` deliberately: this build has never
+    // run on hardware, so a warning from a crate nobody thought to name is exactly
+    // the thing worth reading. Tighten it to `off` once the phone is boring.
+    #[cfg(target_os = "android")]
+    let plugins = plugins.set(LogPlugin {
+        filter: "viberfox=info,bevy_render=error,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn"
+            .into(),
+        level: bevy::log::Level::WARN,
+        ..default()
+    });
     let default_plugins = plugins
         // Bevy's defaults cap **both** the io and async-compute pools at 4 threads
         // (`bevy_app::TaskPoolOptions`), and the whole map streamer lives in those

@@ -17,7 +17,7 @@
 //! then, the web build's paste path returns `None`, and the way to open a place
 //! there is the `?place=` URL (see `systems::geo_nav::launch_place`).
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod imp {
     use std::sync::{Mutex, OnceLock};
 
@@ -47,6 +47,30 @@ mod imp {
             }
         }
     }
+}
+
+#[cfg(target_os = "android")]
+mod imp {
+    //! Android is a native target, but `arboard` is X11/Wayland/AppKit/Win32 — it
+    //! has no android backend, which is why it is excluded from this crate's
+    //! `cfg(not(wasm32))` dependency block rather than sharing the desktop arm.
+    //!
+    //! The real implementation is a JNI round trip to `ClipboardManager`
+    //! (`getSystemService(CLIPBOARD_SERVICE)`, then `setPrimaryClip` /
+    //! `getPrimaryClip`), which has to happen on a thread attached to the JVM and
+    //! therefore wants the same async shape the web arm has.
+    //!
+    //! Left as an honest no-op rather than half-wired, because neither half is
+    //! reachable in a useful way on the Phase-1 build: paste feeds the address bar,
+    //! which cannot be typed into without a soft keyboard
+    //! (`docs/notes/android-build.md`), and copy is the dev panel's "copy as
+    //! preset" — a button that hands you a `[[shot]]` block for `docs/shots.toml`,
+    //! i.e. for a workstation. Both go in with the JNI, together.
+    pub fn get_text() -> Option<String> {
+        None
+    }
+
+    pub fn set_text(_text: &str) {}
 }
 
 #[cfg(target_arch = "wasm32")]
