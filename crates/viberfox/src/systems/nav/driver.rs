@@ -53,6 +53,36 @@
 //! smoothed direction of travel instead, falling back to the facing only when
 //! standing still, exactly as ADR-026's live vehicles derive a bearing from
 //! motion when the feed carries none.
+//!
+//! **The drive ends.** Reaching the destination is a state
+//! ([`DriverState::arrived`]), not the distance quietly running out: without it
+//! the card counted "Arrive · 0 m" for as long as you left it, kept re-solving
+//! whenever the last few metres put you [`OFF_ROUTE_M`] from the line, and the
+//! only way out was a button on a strip that a docked panel could hide. Arriving
+//! now paints its own card, stops the reroute machinery, and offers the way out.
+//!
+//! **Distance to the turn is a countdown, not a measurement** ([`countdown`]).
+//! Metres are what the projection produces; what a driver acts on is a ladder
+//! that coarsens with distance and ends at *now*, so the number changes when
+//! something has changed rather than every ten metres of a kilometre-long
+//! straight. The card's bottom edge fills over the last [`APPROACH_M`] as well —
+//! the same fact in the shape you can read without reading it.
+//!
+//! **The chase rig is not a fixed pose.** It stretches with speed, because at
+//! 120 km/h the useful part of the picture is further away than it is at 30, and
+//! it tightens onto a junction as the manoeuvre closes, because that is the one
+//! moment the detail matters more than the distance ([`RIG_SPEED_STRETCH`],
+//! [`RIG_JUNCTION_M`]). Both fold into the same eased target the orientation
+//! writes, so they are camera moves and never cuts.
+//!
+//! **Locked is not frozen** ([`Peek`]). A driver looks ahead — at the junction
+//! after this one, at where the car park actually is — and a rig that cannot be
+//! moved at all makes that impossible. The wheel, the drag and the pinch are
+//! handled *here* rather than by unlocking `free_camera`, because that system's
+//! Avatar arm clamps the third-person zoom to 25 m and would drag a 240 m chase
+//! view in every frame. They accumulate as offsets on the rig, a Re-centre
+//! button appears, and after [`PEEK_TIMEOUT`] of no input they ease back to the
+//! driving pose on their own.
 
 use crate::components::DriverArrow;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
@@ -101,6 +131,39 @@ const PERSPECTIVE_LOOKAHEAD: f32 = 0.55;
 /// a cut.
 const RIG_EASE_RATE: f32 = 5.0;
 
+/// How much further back the rig sits at [`RIG_SPEED_REF_KMH`] than at a
+/// standstill, as a fraction of the orientation's own distance.
+///
+/// A pose tuned for a 30 km/h street shows about four seconds of road at 120,
+/// which is not enough to act on; one tuned for the motorway is a map of the
+/// neighbourhood while you are looking for a house number. The rig rides the
+/// speedometer between them instead of being tuned for one of the two.
+const RIG_SPEED_STRETCH: f32 = 0.55;
+const RIG_SPEED_REF_KMH: f32 = 120.0;
+
+/// Approaching a manoeuvre, the rig closes to [`RIG_JUNCTION_TIGHTEN`] of its
+/// speed-adjusted distance over the last [`RIG_JUNCTION_M`].
+///
+/// The junction is the one place the picture has to answer *which* of these
+/// turnings, and it is also the one place the road ahead stops mattering. Not
+/// applied to a `Continue` or a `Depart`: those are not moments, and zooming in
+/// on one would make the view breathe for nothing.
+const RIG_JUNCTION_M: f32 = 150.0;
+const RIG_JUNCTION_TIGHTEN: f32 = 0.62;
+
+/// How long a peeked camera holds before it eases back to the driving pose.
+///
+/// Long enough to look at a junction and think about it, short enough that a
+/// nudge does not strand the view — the driver never has to remember to undo it,
+/// which is what makes reaching for the rig safe in the first place.
+const PEEK_TIMEOUT: f32 = 8.0;
+/// Bounds on the peeked zoom, as a multiple of the rig's own distance.
+const PEEK_ZOOM_MIN: f32 = 0.35;
+const PEEK_ZOOM_MAX: f32 = 4.0;
+/// Screen pixels to radians for a peek drag — `free_camera`'s orbit rate, so the
+/// map turns under the finger at the same speed it does everywhere else.
+const PEEK_DRAG_RATE: f32 = 0.005;
+
 /// Below this ground speed (m/s) the course over ground is meaningless — a
 /// stationary receiver has no direction — so the heading holds its last value.
 const COURSE_MIN_SPEED: f32 = 0.4;
@@ -128,6 +191,21 @@ const STEP_PASSED_M: f64 = 8.0;
 /// Off-route distance beyond which the readout says so instead of quietly showing
 /// a projection from hundreds of metres away.
 const OFF_ROUTE_M: f64 = 60.0;
+
+/// Within this of the end of the route, the drive is over — see
+/// [`DriverState::arrived`]. Generous on purpose: the destination pin is where
+/// the user pointed, the route ends at the nearest routable road to it, and the
+/// two are a building's depth apart often enough that a tight radius would leave
+/// a driver parked outside the address being told to keep going.
+const ARRIVE_M: f64 = 30.0;
+
+/// Inside this the countdown stops naming a distance and says the manoeuvre is
+/// now. "10 m" is a measurement of something already happening.
+const NOW_M: f64 = 15.0;
+
+/// Over this there is nothing to prepare for, so the card's approach bar is
+/// empty; it fills to the manoeuvre.
+const APPROACH_M: f64 = 400.0;
 
 /// Minimum seconds between two reroute requests. See
 /// [`DriverState::reroute_ready`] — this is the loop breaker, not a politeness.
@@ -203,6 +281,46 @@ struct CameraSave {
     follow_rotate: bool,
 }
 
+/// The rig offsets a user's own camera input has accumulated, and when it last
+/// arrived. Identity is "the driving pose", which is what a default must be.
+///
+/// Kept as *offsets* rather than as an absolute pose so everything the rig does
+/// on its own — the orientation cycle, the speed stretch, the junction tighten —
+/// keeps working underneath a peek instead of being suspended by it.
+#[derive(Clone, Copy)]
+struct Peek {
+    /// Multiplier on the rig's distance.
+    zoom: f32,
+    /// Added to the orientation's azimuth, in radians.
+    azimuth: f32,
+    /// Added to the orientation's pitch, in radians.
+    pitch: f32,
+    /// When the last input arrived; [`PEEK_TIMEOUT`] is measured from it.
+    since: Option<Instant>,
+    /// Where the mouse was on the previous frame of a drag.
+    drag: Option<Vec2>,
+}
+
+impl Default for Peek {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            azimuth: 0.0,
+            pitch: 0.0,
+            since: None,
+            drag: None,
+        }
+    }
+}
+
+impl Peek {
+    /// Whether the user is still holding the view away from the driving pose.
+    fn held(self) -> bool {
+        self.since
+            .is_some_and(|t| t.elapsed().as_secs_f32() < PEEK_TIMEOUT)
+    }
+}
+
 /// Where along the route the driver is. Recomputed each frame from one position;
 /// see [`project_onto_route`], which is where all of it actually happens.
 #[derive(Clone, Copy, Debug, Default)]
@@ -222,6 +340,12 @@ pub struct Progress {
     pub step: usize,
     /// Metres to that manoeuvre.
     pub step_distance_m: f64,
+    /// Whether that manoeuvre is something you *do* — a turn or the arrival — as
+    /// against carrying on down the same road. The rig tightens onto the first
+    /// kind and leaves the second alone (see [`RIG_JUNCTION_M`]), which is the
+    /// difference between a view that closes in when it matters and one that
+    /// breathes in and out for every vertex of a curve.
+    pub turn_ahead: bool,
 }
 
 /// The route measured out along its own polyline: cumulative metres per vertex,
@@ -268,6 +392,18 @@ pub struct DriverState {
     /// A reroute is in flight — the card says so instead of naming a manoeuvre off
     /// a route the vehicle has already left.
     pub rerouting: bool,
+    /// The destination has been reached ([`ARRIVE_M`]). Latched rather than
+    /// recomputed: driving the last few metres *past* the pin would otherwise
+    /// take the arrival card away again, and the last thing a navigation display
+    /// should do at the end of a trip is change its mind about having finished.
+    ///
+    /// It also switches the reroute machinery off. Parking at the destination
+    /// puts you tens of metres from the line by design, and a display that
+    /// answered that by planning a fresh route to where you already are would be
+    /// hard to read as anything but broken.
+    pub arrived: bool,
+    /// The user's own camera offsets on top of the rig — see [`Peek`].
+    peek: Peek,
     /// Since when the position has been further than [`OFF_ROUTE_M`] from the
     /// route; the banner waits [`OFF_ROUTE_GRACE`] on this. `None` while on route.
     off_route_since: Option<Instant>,
@@ -311,6 +447,8 @@ impl DriverState {
         self.reroute_at = None;
         self.reroute_gen = None;
         self.rerouting = false;
+        self.arrived = false;
+        self.peek = Peek::default();
         self.progress = None;
         self.speed_ms = 0.0;
         self.last_sample = None;
@@ -336,6 +474,8 @@ impl DriverState {
         self.watch = None;
         self.progress = None;
         self.gps_fix = false;
+        self.arrived = false;
+        self.peek = Peek::default();
         tracing::info!("driver mode off");
     }
 }
@@ -450,6 +590,10 @@ fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress
         .step_along
         .get(step)
         .map_or(0.0, |&s| (s - along).max(0.0));
+    let turn_ahead = route
+        .steps
+        .get(step)
+        .is_some_and(|s| !matches!(s.maneuver, Maneuver::Continue | Maneuver::Depart));
     Progress {
         along_m: along,
         off_route_m: off,
@@ -457,6 +601,7 @@ fn project_onto_route(geom: &RouteGeom, route: &Route, at: [f64; 2]) -> Progress
         remaining_s: route.duration_s * fraction,
         step,
         step_distance_m,
+        turn_ahead,
     }
 }
 
@@ -507,6 +652,11 @@ pub fn drive_driver_mode(
     if driver.geom_generation != Some(route.generation) {
         driver.geom = RouteGeom::build(r);
         driver.geom_generation = Some(route.generation);
+        // A different route is a different trip. Arriving is latched against the
+        // route it was measured on, so a reroute — or a destination changed
+        // mid-drive — has to clear it, or the display would open the new one with
+        // the previous one's arrival card still up.
+        driver.arrived = false;
     }
 
     // A device fix wins over the avatar: that is what navigating is. Only the web
@@ -591,10 +741,26 @@ pub fn drive_driver_mode(
         .geom
         .as_ref()
         .map(|g| project_onto_route(g, r, [lat, lng]));
+    // ── The end of the trip ──
+    //
+    // Latched (see `DriverState::arrived`): once, on the frame the destination
+    // comes within reach, and not unlatched by driving past it. Being off the
+    // line does not count — the last few metres of a route commonly are, and a
+    // vehicle 200 m away on a parallel street has not arrived at anything.
+    if let Some(p) = progress {
+        if p.remaining_m <= ARRIVE_M && p.off_route_m <= OFF_ROUTE_M {
+            if !driver.arrived {
+                tracing::info!("arrived");
+            }
+            driver.arrived = true;
+        }
+    }
+
     // Debounce the off-route judgement (see `OFF_ROUTE_GRACE`). A queued teleport
     // is not "off route" either: the position it will land at has not been applied
-    // yet, and the anchor it is measured against is about to move.
-    let off = progress.is_some_and(|p| p.off_route_m > OFF_ROUTE_M);
+    // yet, and the anchor it is measured against is about to move. Nor is having
+    // parked at the destination, which is what `arrived` is doing in this test.
+    let off = progress.is_some_and(|p| p.off_route_m > OFF_ROUTE_M) && !driver.arrived;
     if !off || nav.pending_teleport.is_some() {
         driver.off_route_since = None;
     } else if driver.off_route_since.is_none() {
@@ -686,22 +852,51 @@ fn place_avatar(
     avatar_state.display_position = local;
 }
 
+/// The camera input driver mode handles itself. Same readers
+/// `free_camera::CameraInput` carries, for the same gestures — see
+/// [`steady_driver_camera`] for why they cannot simply be left to that system.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DriveInput<'w, 's> {
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    cursor: MessageReader<'w, 's, bevy::window::CursorMoved>,
+    wheel: MessageReader<'w, 's, bevy::input::mouse::MouseWheel>,
+    touch: Res<'w, crate::systems::touch::TouchGestures>,
+}
+
 /// Hold the chase rig while driving, and hand the camera back on the way out.
 ///
 /// The rig is *held*, not merely set on entry: `free_camera::camera_controls`
 /// reads `CameraState` fresh every frame, and driver mode's contract is that the
 /// view does not wander. `drive_locked` is what tells that system to ignore the
-/// wheel and the drag; everything else here is the pose it should hold.
+/// wheel and the drag; everything else here is the pose it should hold — the
+/// orientation's own distance and tilt, stretched by speed and closed onto the
+/// junction ahead.
+///
+/// **The user's own camera input is handled here rather than by clearing
+/// `drive_locked`.** Handing the gestures back to `free_camera` looks like the
+/// smaller change and is not one: its Avatar arm clamps the third-person zoom to
+/// `AVATAR_CAM_MAX`, a tenth of a navigation chase distance, so the first frame
+/// of a peek would slam the camera onto the roof of the car. Driver mode owns the
+/// rig, so it owns the rig's input; what arrives here is accumulated as offsets
+/// ([`Peek`]) that expire.
 pub fn steady_driver_camera(
+    mut input: DriveInput,
     mut driver: ResMut<DriverState>,
     mut camera_state: ResMut<CameraState>,
+    egui: Res<EguiManager>,
     time: Res<Time>,
     avatars: Query<(), With<Avatar>>,
 ) {
     if !driver.active {
+        // Nothing here consumes them while the mode is off, and Bevy's messages
+        // live two frames — an unread wheel notch would otherwise be delivered as
+        // the first gesture of the *next* drive and peek the camera on entry.
+        input.wheel.clear();
+        input.cursor.clear();
         // Leaving: put back exactly what was taken, once.
         if let Some(save) = driver.camera_save.take() {
             camera_state.drive_locked = false;
+            camera_state.drive_lookahead = 0.0;
             camera_state.mode = save.mode;
             camera_state.distance = save.distance;
             camera_state.pitch = save.pitch;
@@ -735,8 +930,13 @@ pub fn steady_driver_camera(
     // handed (see the module note).
     camera_state.follow_rotate = false;
 
-    let (distance, pitch, lookahead) = driver.orientation.rig();
     let ease = 1.0 - (-RIG_EASE_RATE * time.delta().as_secs_f32()).exp();
+    let gesture = read_gesture(&mut input, &egui, &mut driver.peek.drag);
+    apply_gesture(&mut driver.peek, gesture, ease);
+
+    let (base, base_pitch, lookahead) = driver.orientation.rig();
+    let distance = base * rig_scale(driver.speed_ms, driver.progress) * driver.peek.zoom;
+    let pitch = (base_pitch + driver.peek.pitch).clamp(0.12, 1.50);
     camera_state.distance += (distance - camera_state.distance) * ease;
     camera_state.pitch += (pitch - camera_state.pitch) * ease;
     // Eased through the *fraction*, so switching orientation slides the aim point
@@ -748,13 +948,14 @@ pub fn steady_driver_camera(
     // avatar and looks back at it, so its forward on the ground is
     // `-(sin az, cos az)`: for the course to point up the screen that must equal
     // the course direction, and for north-up it must be −Z.
-    let target = match driver.orientation {
-        MapOrientation::NorthUp => 0.0,
-        _ => {
-            let dir = Vec2::new(driver.course.sin(), driver.course.cos());
-            f32::atan2(-dir.x, -dir.y)
-        }
-    };
+    let target = driver.peek.azimuth
+        + match driver.orientation {
+            MapOrientation::NorthUp => 0.0,
+            _ => {
+                let dir = Vec2::new(driver.course.sin(), driver.course.cos());
+                f32::atan2(-dir.x, -dir.y)
+            }
+        };
     let mut delta = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
     if delta > std::f32::consts::PI {
         delta -= std::f32::consts::TAU;
@@ -764,6 +965,143 @@ pub fn steady_driver_camera(
     // all — a rig that creeps forever pins the floating-origin propagation.
     let a = 1.0 - (-8.0_f32 * time.delta().as_secs_f32()).exp();
     camera_state.azimuth += if delta.abs() < 1e-3 { delta } else { delta * a };
+}
+
+/// One frame of camera input, reduced to the three things a rig can be moved by.
+///
+/// Separated from the readers so the peek arithmetic below is a pure function
+/// over it — the interesting behaviour (accumulating, clamping, expiring, easing
+/// home) is then testable without a window, a mouse or a route.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Gesture {
+    /// Multiplier on the peeked zoom.
+    zoom: f32,
+    /// Radians to turn the view by.
+    turn: f32,
+    /// Radians to tilt it by.
+    tilt: f32,
+}
+
+impl Default for Gesture {
+    /// Nothing happened — and for the zoom that is `1.0`, not `0.0`.
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            turn: 0.0,
+            tilt: 0.0,
+        }
+    }
+}
+
+impl Gesture {
+    fn idle(self) -> bool {
+        (self.zoom - 1.0).abs() < 1e-4 && self.turn == 0.0 && self.tilt == 0.0
+    }
+}
+
+/// Collect this frame's camera input, and keep the drag anchor.
+///
+/// The drag is gated on egui having the pointer and the wheel is not, which is
+/// `free_camera`'s own split and is not an oversight: `egui_wants_pointer_input()`
+/// is only meaningful while a pointer button is *down* (see the client's known
+/// issues), so it answers correctly for a drag and would answer `true` over the
+/// bare map for a wheel notch, swallowing every zoom.
+fn read_gesture(input: &mut DriveInput, egui: &EguiManager, drag: &mut Option<Vec2>) -> Gesture {
+    let mut g = Gesture::default();
+    for event in input.wheel.read() {
+        if event.y != 0.0 {
+            // By notch *sign*, not by magnitude: raw wheel deltas are ±1 on some
+            // backends and ±120 on others.
+            g.zoom *= if event.y > 0.0 { 1.0 / 1.15 } else { 1.15 };
+        }
+    }
+
+    let ui_has_pointer = egui.ctx.egui_wants_pointer_input();
+    if input.touch.pair() {
+        // A pinch is the wheel's continuous twin — spreading the fingers pulls
+        // the view in, which is `1/pinch` on a distance.
+        g.zoom /= input.touch.pinch;
+        g.turn -= input.touch.twist;
+        g.tilt -= input.touch.two_drag.y * PEEK_DRAG_RATE;
+    } else if input.touch.drag != Vec2::ZERO && !ui_has_pointer {
+        g.turn -= input.touch.drag.x * PEEK_DRAG_RATE;
+        g.tilt -= input.touch.drag.y * PEEK_DRAG_RATE;
+    }
+
+    if input.mouse.pressed(MouseButton::Left) && !ui_has_pointer {
+        for event in input.cursor.read() {
+            if let Some(last) = *drag {
+                let d = event.position - last;
+                g.turn -= d.x * PEEK_DRAG_RATE;
+                g.tilt -= d.y * PEEK_DRAG_RATE;
+            }
+            *drag = Some(event.position);
+        }
+    } else {
+        *drag = None;
+        input.cursor.clear();
+    }
+    g
+}
+
+/// Fold a gesture into the peek offsets, or ease them home when none arrives.
+///
+/// Easing back rather than snapping, and easing the *offsets* rather than the
+/// camera, is what makes a peek recoverable without the driver doing anything: the
+/// rig underneath keeps tracking the course the whole time, so when the offsets
+/// reach identity the view is already where driving wants it.
+fn apply_gesture(peek: &mut Peek, g: Gesture, ease: f32) {
+    if !g.idle() {
+        peek.since = Some(Instant::now());
+        peek.zoom = (peek.zoom * g.zoom).clamp(PEEK_ZOOM_MIN, PEEK_ZOOM_MAX);
+        peek.azimuth += g.turn;
+        peek.pitch += g.tilt;
+        return;
+    }
+    if peek.held() {
+        return;
+    }
+    peek.zoom += (1.0 - peek.zoom) * ease;
+    peek.azimuth += (0.0 - peek.azimuth) * ease;
+    peek.pitch += (0.0 - peek.pitch) * ease;
+    // Snap the last sliver, so `since` can be dropped and the camera actually
+    // settles instead of creeping toward the pose forever — the floating-origin
+    // propagation is pinned by a rig that never stops moving.
+    if (peek.zoom - 1.0).abs() < 1e-3 && peek.azimuth.abs() < 1e-3 && peek.pitch.abs() < 1e-3 {
+        *peek = Peek::default();
+    }
+}
+
+/// What to multiply the orientation's chase distance by: further back at speed,
+/// closer in on the approach to a manoeuvre.
+///
+/// Pure over the two facts it reads so the curve can be checked at the speeds and
+/// distances driving happens at, rather than by flying a route and squinting.
+fn rig_scale(speed_ms: f32, progress: Option<Progress>) -> f32 {
+    let kmh = speed_ms * 3.6;
+    let stretch = 1.0 + RIG_SPEED_STRETCH * (kmh / RIG_SPEED_REF_KMH).clamp(0.0, 1.0);
+    let tighten = match progress {
+        Some(p) if p.turn_ahead => {
+            let t = (p.step_distance_m as f32 / RIG_JUNCTION_M).clamp(0.0, 1.0);
+            RIG_JUNCTION_TIGHTEN + (1.0 - RIG_JUNCTION_TIGHTEN) * t
+        }
+        _ => 1.0,
+    };
+    stretch * tighten
+}
+
+impl DriverState {
+    /// The user is holding the camera away from the driving pose, so the chrome
+    /// should offer to put it back.
+    #[must_use]
+    pub fn peeking(&self) -> bool {
+        self.peek.held()
+    }
+
+    /// Give the rig back — the button, and what the timeout does on its own.
+    pub fn recentre(&mut self) {
+        self.peek.since = None;
+    }
 }
 
 // ─── The arrow ───────────────────────────────────────────────────────────────
@@ -942,7 +1280,7 @@ fn arrow_mesh() -> Mesh {
 /// than sized to content so the compass beneath it has a place to be — the same
 /// reason the status HUD pins its width (`hud::HUD_WIDTH`).
 pub const CARD_WIDTH: f32 = 190.0;
-pub const CARD_HEIGHT: f32 = 108.0;
+pub const CARD_HEIGHT: f32 = 118.0;
 /// Where the card sits, and therefore where everything under it stacks from.
 pub const CARD_MARGIN: f32 = 12.0;
 
@@ -1023,6 +1361,7 @@ pub fn render_driver_hud(
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
     ai: Res<crate::resources::AiAssistantState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     if !driver.active {
         return;
@@ -1031,9 +1370,17 @@ pub fn render_driver_hud(
         return;
     };
     let progress = driver.progress.unwrap_or_default();
+    let arrived = driver.arrived;
     let off_route = driver.off_route();
     let rerouting = driver.rerouting;
     let step = r.steps.get(progress.step);
+    // Escape leaves, and it is not a convenience: the Stop button lives on the
+    // trip strip, and the strip stands down whenever a right-hand panel is open
+    // (it cannot be drawn behind one). Opening the Places list mid-drive
+    // therefore took away the only way out. Gated the same way every other key
+    // binding in the client is, so typing an address does not end the trip.
+    let mut exit =
+        keyboard.just_pressed(KeyCode::Escape) && !egui.ui_owns_keyboard(false, &keyboard);
     let ctx = egui.ctx_mut().clone();
     let panel = |fill: egui::Color32| {
         egui::Frame::NONE
@@ -1043,13 +1390,17 @@ pub fn render_driver_hud(
     };
 
     // ── The manoeuvre card ──
+    let mut done = false;
     egui::Area::new(egui::Id::new("driver_maneuver"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
         .show(&ctx, |ui| {
             // Amber, not red, while the route is being replaced: leaving the line
             // is the normal case (you missed a turn), and the display is already
-            // fixing it. Red is reserved for the state it cannot fix.
-            panel(if rerouting {
+            // fixing it. Red is reserved for the state it cannot fix. Green is the
+            // trip being over — the one card that is not an instruction.
+            panel(if arrived {
+                ARRIVE_GREEN
+            } else if rerouting {
                 theme::AMBER
             } else if off_route {
                 theme::ERROR
@@ -1060,6 +1411,31 @@ pub fn render_driver_hud(
                 ui.set_width(CARD_WIDTH - 20.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
+                    if arrived {
+                        // The card the whole drive was for. It names the place
+                        // the user asked for rather than the road the route
+                        // ended on — "Arrived" over a street name reads as one
+                        // more instruction, and this is the opposite of one.
+                        ui.label(big("Arrived", 21.0, theme::CREAM));
+                        let where_to = route.to.label.trim();
+                        if !where_to.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(where_to).size(12.5).color(theme::CREAM),
+                                )
+                                .truncate(),
+                            );
+                        }
+                        ui.add_space(3.0);
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("Done").size(12.5)))
+                            .on_hover_text("End the trip and put the map back")
+                            .clicked()
+                        {
+                            done = true;
+                        }
+                        return;
+                    }
                     if rerouting {
                         ui.label(big("Rerouting…", 19.0, theme::INK));
                         ui.label(small("from your current position", theme::INK));
@@ -1084,7 +1460,7 @@ pub fn render_driver_hud(
                         let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
                         ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
                         ui.label(big(
-                            &format_distance(progress.step_distance_m),
+                            &countdown(progress.step_distance_m),
                             24.0,
                             theme::CREAM,
                         ));
@@ -1118,6 +1494,7 @@ pub fn render_driver_hud(
                             );
                         });
                     });
+                    approach_bar(ui, progress.step_distance_m);
                 });
             });
         });
@@ -1147,7 +1524,6 @@ pub fn render_driver_hud(
         || ai.open
         || !right_panel.is(crate::resources::RightPanel::None);
 
-    let mut exit = false;
     let (hh, mm, _) = clock.hms().0;
     let arrival = arrival_clock(hh, mm, progress.remaining_s);
     // Not an early `return`: the speed pill and its limit sign are drawn below and
@@ -1166,17 +1542,26 @@ pub fn render_driver_hud(
                         // Arrival first: on a drive of any length it is the number
                         // being planned around, which is why a satnav puts it top.
                         ui.label(big(&arrival, 24.0, theme::CREAM));
-                        ui.label(small("arrival", theme::TEXT_DIM));
-                        ui.add_space(6.0);
-                        ui.label(big(
-                            &format_distance(progress.remaining_m),
-                            21.0,
-                            theme::TEXT,
-                        ));
-                        ui.label(small(
-                            &format_duration(progress.remaining_s),
-                            theme::TEXT_DIM,
-                        ));
+                        if arrived {
+                            // The same clock, now a fact rather than a forecast.
+                            // What is left is nothing, and `format_duration`
+                            // floors at "1 min" — a trip that is over must not
+                            // still claim a minute of it.
+                            ui.label(small("arrived", theme::TEXT_DIM));
+                            ui.add_space(6.0);
+                        } else {
+                            ui.label(small("arrival", theme::TEXT_DIM));
+                            ui.add_space(6.0);
+                            ui.label(big(
+                                &format_distance(progress.remaining_m),
+                                21.0,
+                                theme::TEXT,
+                            ));
+                            ui.label(small(
+                                &format_duration(progress.remaining_s),
+                                theme::TEXT_DIM,
+                            ));
+                        }
                         ui.add_space(8.0);
                         route_rail(ui, &ctx, &ahead, progress);
                         ui.add_space(6.0);
@@ -1227,7 +1612,47 @@ pub fn render_driver_hud(
                 });
         });
 
-    if exit {
+    // ── Re-centre, bottom right, only while the view is being held off the rig ──
+    //
+    // It is an offer, not a requirement — the peek expires on its own
+    // ([`PEEK_TIMEOUT`]) — but a locked camera that has visibly stopped tracking
+    // needs to say, in the frame it stops, that this is recoverable and how.
+    // Bottom *right*: the left is the manoeuvre card's column and the centre is
+    // the speed pill, and this must not move either of them while it comes and
+    // goes.
+    let mut recentre = false;
+    if driver.peeking() {
+        egui::Area::new(egui::Id::new("driver_recentre"))
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(-CARD_MARGIN, -PILL_BOTTOM),
+            )
+            .show(&ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(theme::OVERLAY)
+                    .corner_radius(16.0)
+                    .inner_margin(egui::Margin::symmetric(12, 6))
+                    .show(ui, |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Re-centre").size(12.5).strong(),
+                            ))
+                            .on_hover_text("Put the camera back behind the arrow")
+                            .clicked()
+                        {
+                            recentre = true;
+                        }
+                    });
+            });
+    }
+    if recentre {
+        driver.recentre();
+    }
+
+    // Arriving and stopping are the same act as far as the mode is concerned —
+    // the route line stays drawn either way, because clearing it is the planner's
+    // business and a driver who has just parked may well want to see it.
+    if exit || done {
         driver.exit();
     }
 }
@@ -1243,6 +1668,64 @@ const DRIVE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x14, 0x6E, 0xD2);
 /// function it performs.
 const SIGN_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF7, 0xF7, 0xF4);
 const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
+
+/// The card's colour once the trip is over. Same argument as [`DRIVE_BLUE`]: the
+/// card is read as signage, and "you are there" is green everywhere signage
+/// exists. Dark enough to carry `theme::CREAM` at the contrast the theme tests
+/// hold the rest of the UI to.
+const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
+
+/// The distance to the next manoeuvre, as a countdown rather than a measurement.
+///
+/// `format_distance` rounds to 10 m at every scale, which is right for a fact
+/// being reported and wrong for a number being watched: on a kilometre of
+/// motorway it repaints every few metres, so the one part of the card that should
+/// only change when something has changed is the part that never stops. The ladder
+/// coarsens with distance — the last hundred metres in tens, the rest of a
+/// kilometre in fifties — and stops naming a distance at all inside [`NOW_M`],
+/// where "10 m" describes a turn you are already taking.
+fn countdown(m: f64) -> String {
+    if m <= NOW_M {
+        return "Now".to_string();
+    }
+    // Rounded first, *then* formatted: rounding 980 m up to the nearest 50 gives
+    // 1000, and "1000 m" is not a thing anyone writes.
+    let m = if m < 100.0 {
+        (m / 10.0).round() * 10.0
+    } else if m < 1000.0 {
+        (m / 50.0).round() * 50.0
+    } else {
+        m
+    };
+    if m < 1000.0 {
+        format!("{m:.0} m")
+    } else if m < 10_000.0 {
+        format!("{:.1} km", m / 1000.0)
+    } else {
+        format!("{:.0} km", m / 1000.0)
+    }
+}
+
+/// The card's bottom edge, filling over the last [`APPROACH_M`] to the manoeuvre.
+///
+/// The countdown above it is exact and has to be read; this is the same fact in a
+/// form that can be taken in without looking away from the road, which is the
+/// whole reason a navigation display is not a table of numbers. Drawn as the edge
+/// of the card rather than as a widget inside it so it costs no layout and cannot
+/// push the compass below out of place.
+fn approach_bar(ui: &mut egui::Ui, step_distance_m: f64) {
+    let filled = 1.0 - (step_distance_m / APPROACH_M).clamp(0.0, 1.0) as f32;
+    ui.add_space(4.0);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, theme::INK.gamma_multiply(0.35));
+    if filled > 0.0 {
+        let mut fill = rect;
+        fill.set_width(rect.width() * filled);
+        painter.rect_filled(fill, 2.0, theme::CREAM);
+    }
+}
 
 /// Metres between the manoeuvre being driven toward and the one after it.
 ///
@@ -1732,6 +2215,231 @@ mod tests {
         assert!(driver.reroute_at.is_none() && driver.reroute_gen.is_none());
         assert!(!driver.rerouting);
         assert!(driver.reroute_ready(Instant::now()));
+    }
+
+    /// The end of the route has to land inside [`ARRIVE_M`], or the arrival state
+    /// is unreachable and the card counts "Arrive · 0 m" forever — which is what
+    /// it did.
+    #[test]
+    fn the_end_of_the_route_is_within_reach_of_arriving() {
+        let route = fixture();
+        let geom = RouteGeom::build(&route).unwrap();
+        let at_end = project_onto_route(&geom, &route, [53.01, 6.0]);
+        assert!(
+            at_end.remaining_m <= ARRIVE_M,
+            "remaining {} at the last road vertex",
+            at_end.remaining_m
+        );
+        // …and a few hundred metres short of it is emphatically not arriving.
+        let short = project_onto_route(&geom, &route, [53.007, 6.0]);
+        assert!(
+            short.remaining_m > ARRIVE_M,
+            "remaining {}",
+            short.remaining_m
+        );
+    }
+
+    /// The rig only closes in on things you actually *do*. A `Continue` reached
+    /// mid-leg would otherwise pull the camera in for a vertex of a curve, and
+    /// the view would breathe its way along every bend.
+    #[test]
+    fn only_a_real_manoeuvre_counts_as_a_turn_ahead() {
+        let mut route = fixture();
+        let geom = RouteGeom::build(&route).unwrap();
+        assert!(
+            project_onto_route(&geom, &route, [53.001, 6.0]).turn_ahead,
+            "a Left is a turn"
+        );
+        route.steps[1].maneuver = Maneuver::Continue;
+        assert!(!project_onto_route(&geom, &route, [53.001, 6.0]).turn_ahead);
+        // Arriving is one: the destination is exactly where the detail matters.
+        assert!(project_onto_route(&geom, &route, [53.008, 6.0]).turn_ahead);
+    }
+
+    /// The countdown ladder: coarse far out, fine near, and "Now" at the junction
+    /// — and never the "1000 m" that rounding to the nearest 50 produces if the
+    /// unit is chosen before the rounding.
+    #[test]
+    fn the_countdown_coarsens_with_distance() {
+        assert_eq!(countdown(0.0), "Now");
+        assert_eq!(countdown(NOW_M), "Now");
+        assert_eq!(countdown(24.0), "20 m");
+        assert_eq!(countdown(96.0), "100 m");
+        assert_eq!(countdown(230.0), "250 m");
+        assert_eq!(countdown(980.0), "1.0 km");
+        assert_eq!(countdown(4_240.0), "4.2 km");
+        assert_eq!(countdown(23_400.0), "23 km");
+        // Monotonic, so the number never counts *up* as the junction approaches.
+        let mut prev = f64::NEG_INFINITY;
+        for i in (0..20_000).step_by(7) {
+            let m = f64::from(i);
+            let shown = parse_countdown(&countdown(m));
+            assert!(
+                shown >= prev - 1.0,
+                "counted up at {m} m: {shown} after {prev}"
+            );
+            prev = shown;
+        }
+    }
+
+    /// Metres back out of a rendered countdown, for the monotonicity check above.
+    fn parse_countdown(s: &str) -> f64 {
+        if s == "Now" {
+            return 0.0;
+        }
+        let (n, unit) = s.split_once(' ').unwrap();
+        let n: f64 = n.parse().unwrap();
+        if unit == "km" {
+            n * 1000.0
+        } else {
+            n
+        }
+    }
+
+    /// The rig rides the speedometer and closes onto a junction, and — the part
+    /// worth pinning — it is exactly the orientation's own pose in neither case,
+    /// so a standstill on a long leg is still the tuned view.
+    #[test]
+    fn the_rig_stretches_with_speed_and_tightens_onto_a_junction() {
+        let far = Some(Progress {
+            step_distance_m: 4_000.0,
+            turn_ahead: true,
+            ..default()
+        });
+        assert!(
+            (rig_scale(0.0, far) - 1.0).abs() < 1e-6,
+            "a standstill is the tuned pose"
+        );
+        assert!((rig_scale(0.0, None) - 1.0).abs() < 1e-6);
+
+        // Speed only stretches, and it stops stretching past the reference.
+        let at_ref = rig_scale(RIG_SPEED_REF_KMH / 3.6, far);
+        assert!(
+            (at_ref - (1.0 + RIG_SPEED_STRETCH)).abs() < 1e-5,
+            "{at_ref}"
+        );
+        assert!(
+            (rig_scale(300.0 / 3.6, far) - at_ref).abs() < 1e-5,
+            "clamped past the reference"
+        );
+        assert!(rig_scale(50.0 / 3.6, far) > 1.0);
+
+        // At the junction itself, the tightest the rig gets.
+        let at_turn = Some(Progress {
+            step_distance_m: 0.0,
+            turn_ahead: true,
+            ..default()
+        });
+        assert!((rig_scale(0.0, at_turn) - RIG_JUNCTION_TIGHTEN).abs() < 1e-6);
+        // …but not for something that is not a manoeuvre.
+        let straight_on = Some(Progress {
+            step_distance_m: 0.0,
+            turn_ahead: false,
+            ..default()
+        });
+        assert!((rig_scale(0.0, straight_on) - 1.0).abs() < 1e-6);
+
+        // Monotonic in the approach, so the zoom is a glide and never a bounce.
+        let mut prev = 0.0;
+        for i in 0..=200 {
+            let d = RIG_JUNCTION_M * 2.0 * i as f32 / 200.0;
+            let s = rig_scale(
+                0.0,
+                Some(Progress {
+                    step_distance_m: f64::from(d),
+                    turn_ahead: true,
+                    ..default()
+                }),
+            );
+            assert!(s >= prev - 1e-6, "not monotonic at {d} m");
+            prev = s;
+        }
+    }
+
+    /// A peek accumulates, clamps, and — the part that makes it safe to use while
+    /// driving — puts itself back without being asked.
+    #[test]
+    fn a_peek_expires_and_eases_home() {
+        let mut peek = Peek::default();
+        assert!(!peek.held(), "the driving pose is not a peek");
+
+        apply_gesture(
+            &mut peek,
+            Gesture {
+                zoom: 1.5,
+                turn: 0.4,
+                tilt: 0.1,
+            },
+            0.5,
+        );
+        assert!(peek.held());
+        assert!((peek.zoom - 1.5).abs() < 1e-6);
+        assert!((peek.azimuth - 0.4).abs() < 1e-6);
+
+        // Zoom is bounded whatever the wheel does — a chase view is not a globe.
+        for _ in 0..100 {
+            apply_gesture(
+                &mut peek,
+                Gesture {
+                    zoom: 1.15,
+                    ..default()
+                },
+                0.5,
+            );
+        }
+        assert!((peek.zoom - PEEK_ZOOM_MAX).abs() < 1e-4, "{}", peek.zoom);
+        for _ in 0..200 {
+            apply_gesture(
+                &mut peek,
+                Gesture {
+                    zoom: 1.0 / 1.15,
+                    ..default()
+                },
+                0.5,
+            );
+        }
+        assert!((peek.zoom - PEEK_ZOOM_MIN).abs() < 1e-4, "{}", peek.zoom);
+
+        // An idle frame while it is still held changes nothing.
+        let before = (peek.zoom, peek.azimuth, peek.pitch);
+        apply_gesture(&mut peek, Gesture::default(), 0.5);
+        assert_eq!((peek.zoom, peek.azimuth, peek.pitch), before);
+
+        // Released (the button, or the timeout), idle frames ease it home and it
+        // snaps to exactly the driving pose rather than creeping at it forever.
+        peek.since = None;
+        for _ in 0..200 {
+            apply_gesture(&mut peek, Gesture::default(), 0.5);
+        }
+        assert_eq!(peek.zoom, 1.0);
+        assert_eq!(peek.azimuth, 0.0);
+        assert_eq!(peek.pitch, 0.0);
+        assert!(peek.since.is_none());
+    }
+
+    /// Leaving must hand back a camera with no driver-mode state left on it. The
+    /// lookahead is the one that bites: it is only consulted while driving, so a
+    /// stale value sits there invisibly until the *next* drive starts with the aim
+    /// point of the last one.
+    #[test]
+    fn leaving_clears_the_peek() {
+        let mut driver = DriverState::default();
+        driver.enter();
+        apply_gesture(
+            &mut driver.peek,
+            Gesture {
+                zoom: 2.0,
+                turn: 1.0,
+                tilt: 0.2,
+            },
+            0.5,
+        );
+        assert!(driver.peeking());
+        driver.recentre();
+        assert!(!driver.peeking(), "re-centring gives the rig back at once");
+        driver.exit();
+        assert_eq!(driver.peek.zoom, 1.0);
+        assert_eq!(driver.peek.azimuth, 0.0);
     }
 
     /// The "then" preview keys off the gap to the manoeuvre *after* the next one,
