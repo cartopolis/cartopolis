@@ -450,6 +450,22 @@ pub struct ShotMetrics {
     pub globe_entities: usize,
     pub globe_visible: usize,
     pub globe_rendered: usize,
+    /// The quadtree's own books: tiles it holds, and tiles the last selection
+    /// wanted. `globe_entities` above counts `GlobeMesh` entities, which also
+    /// includes the backstop sphere and anything still draining the despawn
+    /// queue — so the two disagree, and the gap between *these* two is how much
+    /// of the pyramid is still arriving.
+    pub globe_tiles_loaded: usize,
+    pub globe_tiles_desired: usize,
+    /// Resident tile-texture megabytes, and the edge length they are rasterised
+    /// at (`globe::GLOBE_TILE_PX`), so a CSV says which build produced it.
+    ///
+    /// This is the column that separates the two candidate causes of the black
+    /// artifacts at altitude (`docs/notes/globe-tile-cost.md`): if they track
+    /// this, it is memory pressure; if they track `alt_m` while this stays flat,
+    /// it is the depth range. A `--frames` sweep now answers that in one run.
+    pub globe_texture_mb: f32,
+    pub globe_tile_px: u32,
     /// Drawn-route entities (ADR-037) and how many the view actually rendered.
     /// The same "black image vs black scene" question the globe counts answer: a
     /// route that is built but not rendered is a visibility or culling problem,
@@ -481,7 +497,8 @@ pub struct ShotMetrics {
 /// `busy` is `|`-joined rather than comma-joined for the obvious reason.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
-globe_visible,globe_rendered,route_meshes,route_rendered,ground_m,height_patches,\
+globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
+route_meshes,route_rendered,ground_m,height_patches,\
 terrain_ready,terrain_relief_m,software_renderer";
 
 impl ShotMetrics {
@@ -500,7 +517,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{:.2},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{:.2},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -523,6 +540,10 @@ impl ShotMetrics {
             self.globe_entities,
             self.globe_visible,
             self.globe_rendered,
+            self.globe_tiles_loaded,
+            self.globe_tiles_desired,
+            self.globe_texture_mb,
+            self.globe_tile_px,
             self.route_meshes,
             self.route_rendered,
             self.ground_m,
@@ -1397,6 +1418,10 @@ pub fn drive_capture(
                 .filter(|(_, v)| **v == Visibility::Visible)
                 .count(),
             globe_rendered: globe_meshes.iter().filter(|(vv, _)| vv.get()).count(),
+            globe_tiles_loaded: globe.tiles_loaded(),
+            globe_tiles_desired: globe.tiles_desired(),
+            globe_texture_mb: globe.tile_texture_bytes() as f32 / (1024.0 * 1024.0),
+            globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
             ground_m: readouts.2.ground_m.unwrap_or(f32::NAN),
             height_patches: readouts.2.fetched,
             terrain_ready: readouts.3.is_ready(),
@@ -1697,6 +1722,10 @@ mod tests {
             globe_entities: 0,
             globe_visible: 0,
             globe_rendered: 0,
+            globe_tiles_loaded: 0,
+            globe_tiles_desired: 0,
+            globe_texture_mb: 0.0,
+            globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
             route_meshes: 0,
             route_rendered: 0,
             ground_m: f32::NAN,

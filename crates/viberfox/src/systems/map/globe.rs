@@ -357,6 +357,39 @@ impl GlobeState {
         self.tiles.busy()
     }
 
+    /// Live tile entities, and how many the last selection asked for.
+    ///
+    /// `ShotMetrics` reports both because they answer different questions than
+    /// `globe_entities` does. That counts `GlobeMesh` entities, which includes
+    /// the backstop sphere and anything still draining the despawn queue; these
+    /// two are the quadtree's own books, and the gap between them is how much of
+    /// the pyramid is still arriving.
+    pub fn tiles_loaded(&self) -> usize {
+        self.loaded.len()
+    }
+
+    /// See [`Self::tiles_loaded`].
+    pub fn tiles_desired(&self) -> usize {
+        self.desired.len()
+    }
+
+    /// Resident tile-texture bytes, estimated from the tile count.
+    ///
+    /// Estimated rather than measured: walking `Assets<Image>` for the real
+    /// figure means resolving every tile's material and handle, on the frame the
+    /// shutter fires. The arithmetic is exact anyway — every globe tile is
+    /// [`GLOBE_TILE_PX`]² RGBA8 with a full mip chain, which is the ⁴⁄₃ — and it
+    /// is the *count* that varies.
+    ///
+    /// This is the column that separates the two candidate causes of the black
+    /// artifacts: if they track this, it is memory pressure; if they track
+    /// `alt_m` while this stays flat, it is the depth range. Nothing in the
+    /// metrics could tell those apart before.
+    pub fn tile_texture_bytes(&self) -> usize {
+        let mip0 = (GLOBE_TILE_PX as usize).pow(2) * 4;
+        self.loaded.len() * (mip0 * 4 / 3)
+    }
+
     /// Whether the camera is high enough that the globe is shown and the local
     /// ground props are hidden — the shared test for every system that flips
     /// per-tier visibility (single source of truth; two systems disagreeing on
