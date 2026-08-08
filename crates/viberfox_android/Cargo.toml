@@ -8,11 +8,12 @@ edition.workspace = true
 #
 # This is a separate crate rather than a second `crate-type` on `viberfox`'s own
 # `[lib]`, because `crate-type` cannot be target-gated — adding `cdylib` there
-# would make every desktop `cargo build` link a ~200 MB shared object that nobody
-# on a desktop ever loads, on a project whose link time is already the thing being
-# managed (`docs/notes/client-build-cost.md`). The entrypoint also *has* to live in
-# the cdylib: `#[no_mangle]` symbols in an upstream rlib are not guaranteed to
-# survive into the final object when nothing references them, and nothing does —
+# would make every desktop `cargo build` statically link the whole Bevy graph a
+# second time, into a shared object nobody on a desktop ever loads, on a project
+# whose link time is already the thing being managed
+# (`docs/notes/client-build-cost.md`). The entrypoint also *has* to live in the
+# cdylib: `#[no_mangle]` symbols in an upstream rlib are not guaranteed to survive
+# into the final object when nothing references them, and nothing does —
 # `android_main` is looked up by name from C.
 [lib]
 name = "viberfox_android"
@@ -23,9 +24,14 @@ test = false
 
 # Both dependencies are target-gated, which is what keeps this crate free to sit in
 # the workspace `members` list. Off Android it has no dependencies and an empty
-# body, so `cargo build --workspace` / `cargo test --workspace` link an empty
-# cdylib in well under a second instead of dragging Bevy through a second full
-# static link. On Android it is the whole app.
+# body, so `cargo build --workspace` pays 8.4 s and a 4.3 MB artifact (measured
+# 2026-08-08, warm) instead of dragging Bevy through a second full static link.
+#
+# Note that is *not* free, and cannot be: a cdylib statically links std whether or
+# not the crate uses it, so "empty" still means std. It is the price of the crate
+# existing in `members` at all — worth it for the shared lockfile and for
+# `cargo check --workspace` catching a syntax error in the entrypoint, but do not
+# expect it to disappear. On Android it is the whole app.
 [target.'cfg(target_os = "android")'.dependencies]
 bevy.workspace = true
 # `default-features = false` drops `solo`: Phase-1 Android is the offline viewer,
