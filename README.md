@@ -19,14 +19,15 @@ A networked 3D virtual world built with Rust and Bevy, anchored in the real plan
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
 
-## Two builds
+## Three builds
 
-The same client ships two ways, from one codebase:
+The same client ships three ways, from one codebase:
 
 - **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`.
 - **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target.
+- **Android** — builds from source to an installable APK (`crates/viberfox_android/build-apk.sh`); nothing is published yet. Early: it is the offline map viewer, it has no soft keyboard, and it has not been run on a device. [What that means](docs/notes/android-build.md).
 
-Native is the faster and more capable of the two — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
+Native is the faster and more capable of the three — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
 
 ## Running from source
 

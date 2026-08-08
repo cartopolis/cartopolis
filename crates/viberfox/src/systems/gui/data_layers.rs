@@ -1082,6 +1082,27 @@ fn open_url(url: &str) {
         tracing::info!(%url, "in-world link open not yet wired on the web build");
         Ok(())
     };
+    // Everything else — Android today, a BSD tomorrow. This arm exists because the
+    // chain above is exhaustive by coincidence rather than by construction: with
+    // only the three desktop arms and wasm, a target that is none of them leaves
+    // `result` undefined and the *whole crate* fails to compile on a line that has
+    // nothing to do with the port being attempted (which is exactly how Android
+    // found it). A catch-all makes an unhandled platform a dead button instead of
+    // a build break.
+    //
+    // Android's real implementation is an `Intent.ACTION_VIEW` through JNI, which
+    // needs the activity handle and a JVM-attached thread — the same shape as the
+    // clipboard seam, and deferred with it (`docs/notes/android-build.md`).
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_arch = "wasm32"
+    )))]
+    let result: std::io::Result<()> = {
+        tracing::info!(%url, "opening links is not wired on this platform");
+        Ok(())
+    };
     if let Err(e) = result {
         tracing::warn!(error = %e, "could not open browser");
     }

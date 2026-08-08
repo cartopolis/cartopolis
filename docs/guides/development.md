@@ -125,7 +125,7 @@ Client env vars (also read from `.env`):
 
 The server takes `vibe.toml` → `VIBE_*` env → CLI flags, in that order.
 
-## Shipping: two builds from one codebase
+## Shipping: three builds from one codebase
 
 **Desktop (native).** `cargo build -p viberfox --release` → `target/release/viberfox`
 (fat LTO: slow to compile, fastest at runtime). `release.yml` builds the Linux
@@ -144,8 +144,21 @@ fallbacks the `dev` profile's opt-level-3 dependencies exist to make bearable) a
 proxies genuinely third-party upstreams under its own origin (`Trunk.toml`).
 Performance background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
 
+**Android.** `crates/viberfox_android/build-apk.sh` → a signed debug APK. There is
+no Gradle project and no Java source: the app is `AndroidManifest.xml`, a `cdylib`
+holding `android_main`, and `assets/`, assembled with `cargo ndk` → `aapt2` →
+`zipalign` → `apksigner`. It needs an NDK, an SDK (build-tools + one platform) and
+a JDK; the script's header lists the environment variables. Nothing is published
+and nothing has run on a device yet — read
+[`docs/notes/android-build.md`](../notes/android-build.md) before touching it,
+particularly the part about NativeActivity costing the soft keyboard.
+
 Platform differences live behind one API in `platform/` — native and wasm
 implementations of `http`, `storage`, `location`, `stream`, `work`, `workers`.
+**Android answers "native" to every one of those `cfg`s**, which is where a port
+finds its bugs: `arboard` has no Android backend, stderr on a phone goes nowhere,
+and a NativeActivity process has neither a usable `argv` nor a writable working
+directory. The note has the list.
 
 ### Running the web build locally
 
@@ -208,9 +221,14 @@ rustc --print sysroot                     # must NOT say /usr
 [`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on every push, as
 two jobs in parallel (runner capacity is 2):
 
-- **`check`** — `cargo fmt --check` over the four owned crates, then
+- **`check`** — `cargo fmt --check` over the owned crates, then
   `cargo check --workspace --all-targets`; the fast lane, failing within ~1 min on a
-  formatting slip or an obvious compile error.
+  formatting slip or an obvious compile error. It then cross-checks the two targets
+  the workspace build cannot see: **wasm32**, and **aarch64-linux-android** (whose
+  crate is *empty* off Android, its dependencies being target-gated, so the
+  workspace check says nothing about it at all). The Android lane downloads and
+  caches an NDK, because a build script's `cc` runs at check time — see the
+  comments in the workflow.
 - **`build-test`** — the suites in cost order (`viberfox_geo` first: no Bevy in its
   graph, so a geodata regression fails in seconds rather than after the client's full
   codegen), then `viberfox`, then `big_space --lib`. It ends with a **headless scene

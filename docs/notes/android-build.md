@@ -1,0 +1,182 @@
+---
+topic: android-build
+triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, "android", "apk", "phone", "ndk"]
+updated: 2026-08-08
+---
+
+# The Android app is a manifest, a `.so` and the assets directory
+
+There is no Gradle project in this repo and no Java or Kotlin source, and that is
+a decision rather than an omission. The whole app is:
+
+- `crates/viberfox_android` — a `cdylib` that owns the `android_main` symbol and
+  calls `viberfox::run()`. Fifteen lines.
+- `crates/viberfox_android/AndroidManifest.xml` — the app definition.
+- `crates/viberfox_android/build-apk.sh` — `cargo ndk` → `aapt2` → `zipalign` →
+  `apksigner`, in that order, about eighty lines.
+- `assets/`, copied into the APK unchanged.
+
+## Why NativeActivity, and what it costs
+
+`android.app.NativeActivity` ships in the framework, so an APK that uses it needs
+**no Java at all** — hence `android:hasCode="false"` in the manifest and no
+`classes.dex` in the archive. That is the single fact the whole packaging story
+rests on: without it there is a `classes.dex` to build, which means `d8`, which
+means resolving the activity class's dependencies, which is what a Gradle project
+is for.
+
+GameActivity is where Google points, and where `winit`'s default feature points
+(`android-game-activity`; we select `android-native-activity` explicitly in
+`crates/viberfox/Cargo.toml`). Its C++ half is vendored *into* the `.so` by the
+`android-activity` crate and costs nothing extra — but its Java half ships as
+`androidx.games:games-activity`, an AAR with transitive androidx dependencies.
+Resolving those by hand is a Maven client; resolving them with Gradle is a Gradle
+project. Rejected for Phase 1, worth revisiting only alongside the item below.
+
+**The price is the soft keyboard.** NativeActivity has no built-in IME
+integration: `android-activity` exposes `show_soft_input()`, but the characters
+the keyboard produces do not arrive as text events the way they do under
+GameActivity. So every egui text field on the phone — the address bar, bookmark
+rename, chat, the AI panel — can be focused and cannot be typed into. Everything
+that is a tap, a drag or a pinch works, because the touch bridges
+(`docs/notes/touch-input.md`) were already there. If typing on the phone becomes
+the thing that matters, that is the trigger to take on GameActivity and Gradle,
+not a bug to fix in place.
+
+## What the phone runs
+
+Phase 1 is the **offline viewer**, the same shape as Phase 1 on the web: the
+streamed OSM / 3DBAG / AHN map and a local avatar, with no simulator, no auth and
+no world persistence. Two consequences that look like bugs if you don't know:
+
+The APK is built `--no-default-features`, so the `solo` feature — and with it the
+in-process `viberfox_simulator` and its bundled SQLite — is not compiled at all.
+Nothing cross-compiles `rusqlite` for Android today, and nobody has tried.
+
+What that leaves on the phone is a *map viewer*, and it is worth being concrete
+about the edges, because two of them are not Android's doing. The camera works
+fully — pan, pinch, twist, tilt are all `TouchGestures`, and taps reach picking,
+the gizmo and the pins through the emulated mouse (`docs/notes/touch-input.md`).
+**The avatar cannot walk**: movement is WASD and there is no touch equivalent
+anywhere in the tree, so this is the same gap the web build has on a phone rather
+than something the port introduced. **Nothing that needs typing works**, which
+here means the address bar and geo search, bookmark rename, chat and the AI panel
+— that one *is* Android's doing, and it is the NativeActivity trade below.
+
+`lib.rs`'s `parse_cli()` hands Android a fixed `--offline`. It cannot call
+`Cli::parse()`: a NativeActivity process is started by the zygote, so the `argv`
+Rust captured belongs to `app_process` and is full of flags clap has never heard
+of — and clap's response to an unknown flag is `exit(2)`, i.e. the app dying on
+launch with nothing on screen and one line in `logcat`. There is no equivalent of
+the web build's `?query=string` switch surface yet; anything the phone needs to be
+told has to become UI or an env default.
+
+## Things that are not obvious and cost time
+
+**`arboard` is not a native-platform dependency, it is a desktop one.** It has X11,
+Wayland, AppKit and Win32 backends and no Android one, so it does not build for
+`aarch64-linux-android`. It lived under `cfg(not(target_arch = "wasm32"))` in
+`crates/viberfox/Cargo.toml`, which is a gate Android passes. This is the general
+shape of the trap: this tree's platform seams were built as *native vs wasm*
+(ADR-030/033), and Android is a third thing that answers "native" to every one of
+them. Expect the next such dependency to be found the same way — by the build
+failing, since nothing else distinguishes them.
+
+**`AssetPlugin { file_path }` is ignored on Android.**
+`AssetSource::get_default_reader` returns `AndroidAssetReader` for the target, and
+that reader passes paths straight to the framework `AssetManager`, rooted at the
+APK's `assets/`. So the repo's `assets/` layout is the device's, unchanged, and
+the `file_path` string is dead — kept honest (`"assets"`, not a build-machine
+absolute path) only so nobody debugging an asset load is sent to a directory that
+does not exist on the phone. There is also no `AssetWriter`: assets are read-only
+on the device, which is fine, since nothing writes them.
+
+**The cache root has to be asked for.** A NativeActivity process starts with its
+working directory at `/`, and there is no checkout to walk up to, so both of
+`utils::cache`'s fallbacks resolve to an unwritable `cache/`. Every write through
+`platform::storage` is best-effort, so the failure is *silent*: the app works
+perfectly and re-fetches every tile it has ever fetched, forever.
+`ANDROID_APP.internal_data_path()` is the only writable answer, and it is also the
+one the system clears when the user clears the app's cache — which is the correct
+semantics for this tree.
+
+**Stderr on Android goes nowhere, so the logging seam flips.** Nothing forwards a
+process's standard streams to logcat unless the app arranges it. This tree
+disables Bevy's `LogPlugin` on native and installs its own `tracing_subscriber`
+writing to stderr — which on a phone means the app logs nothing at all, on the one
+platform where the first run is entirely diagnosis and the log is the only
+instrument there is. So Android is on the *wasm* side of that split: `LogPlugin`
+stays (its `android_log-sys` layer writes to logcat properly) and the subscriber
+does not run. Its default filter is replaced with the desktop one, because
+`LogPlugin`'s own default lets everything through at INFO and buries the app's
+lines under Bevy's startup and asset chatter. Read it with
+`adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+
+**`--platform` must equal `minSdkVersion`.** The NDK bakes the API level into the
+`.so`'s symbol requirements. Build against 34 while the manifest claims 28 and the
+APK installs happily on an API 28 device and then fails in the dynamic linker at
+launch, complaining about a symbol rather than about a version.
+
+**Sign after aligning, never before.** APK Signature Scheme v2 covers the whole
+archive, so `zipalign` on a signed APK invalidates the signature it just moved.
+
+**The shipped `release` profile cannot link this target on a normal box**, which is
+why `android-release` exists. Fat LTO over one codegen unit puts the bitcode for
+the entire Bevy stack in a single rustc process; on the 22 GB build container that
+process was killed by the OOM killer (signal 9) during the `viberfox_android`
+cdylib, *after* an hour spent compiling everything below it — so the failure
+arrives at the very end and looks like a mystery rather than a resource limit.
+`android-release` is `release` with thin LTO over 16 codegen units, the same trade
+`web-release` already makes for the same reason. Measured only as "it links"; the
+frame-time claim is inherited from the web profile's note, not re-measured here.
+
+## The CI gate is a check, and why the NDK is in it
+
+`ci.yml`'s `check` job compiles `viberfox_android` for `aarch64-linux-android`.
+This matters more than the equivalent line for wasm does: `viberfox_android`'s
+dependencies are target-gated, so in the plain `cargo check --workspace` the crate
+is *empty* — an ordinary workspace build proves nothing at all about it.
+
+That lane needs the NDK, and the wasm lane's `rustup target add` trick is not
+enough, because `blake3` (under `bevy_asset`) compiles `blake3_neon.c` for every
+little-endian aarch64 target and a build script's `cc` runs at check time. blake3's
+`no_neon` feature would remove the requirement — and would also turn off SIMD in
+the shipped app, which is the exact trade `crates/viberfox/src/simd_baseline.rs`
+exists to refuse. So the lane downloads and caches an NDK instead. Baking it into
+`viberfox-ci:latest` would be strictly better and is only not done because that
+image lives in another repo.
+
+There is deliberately **no APK job**. The signing key would have to be a real
+secret to be worth anything, and an unsigned or debug-signed artifact published on
+every push is a thing people install by mistake. `build-apk.sh` is run by hand
+until there is a release story.
+
+## Verification status, 2026-08-08
+
+Built and packaged in the headless container; **never run on a device or an
+emulator**. The container has no GPU, no KVM and no Android runtime.
+
+What is actually proven, and it is worth knowing exactly how far it goes:
+
+- `arm64-v8a`, `android-release`, 28 min from cold. APK 46 MB; the `.so` is
+  152 MB uncompressed, being unstripped.
+- `apksigner verify` passes (v3 scheme).
+- The archive holds `AndroidManifest.xml`, `resources.arsc`, `res/`,
+  `lib/arm64-v8a/libviberfox_android.so` and all 35 files of `assets/` — and
+  **no `classes.dex`**, which is the check that `hasCode="false"` is telling the
+  truth.
+- `android_main` is present in the `.so`'s dynamic symbol table as a `GLOBAL
+  FUNC`. This is the one worth re-running after any change to the crate graph:
+  the symbol is looked up by name from C, nothing in Rust references it, and if
+  the linker ever drops it the APK still builds and signs and simply fails to
+  start.
+- Its only `DT_NEEDED` entries are `libdl`, `liblog`, `libandroid`, `libm`,
+  `libc` — all on every device. Nothing needs `libc++_shared.so`, so the APK does
+  not ship one; if a future dependency pulls in C++, that changes and the missing
+  library is a load-time failure, not a build one.
+
+Everything past "does it load" is open, and the first `adb install` answers it:
+whether Bevy acquires a Vulkan surface and survives pause/resume, whether the
+touch bridges behave as they do in a browser, and whether 63 MB of glTF loads
+through the `AssetManager` in a tolerable time. Treat a first run as diagnosis
+and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.

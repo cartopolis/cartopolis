@@ -932,8 +932,8 @@ pub fn camera_controls(
 
             // Touch look: one finger is the mouse-look drag. The two-finger
             // gestures fly instead, and are handled with the keys below.
-            let touch_owns_pointer = gizmo_state.active_axis.is_none()
-                && !egui_manager.ctx.egui_wants_pointer_input();
+            let touch_owns_pointer =
+                gizmo_state.active_axis.is_none() && !egui_manager.ctx.egui_wants_pointer_input();
             if touch_owns_pointer {
                 rotation_delta += touch.drag;
             }

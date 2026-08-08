@@ -29,6 +29,19 @@ fn resolve_cache_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("VIBE_CACHE_DIR") {
         return PathBuf::from(dir);
     }
+    // Android has no cwd worth resolving against — a NativeActivity process starts
+    // in `/`, which is read-only, and there is no checkout to walk up to. Both
+    // fallbacks below would therefore hand back an unwritable `cache/`, and because
+    // every write here is best-effort the failure is *silent*: the app runs, and
+    // re-fetches every tile it has already fetched, forever. The app-private dir
+    // the framework hands us is the only writable place, and it is also the one
+    // the system clears when the user clears the app's cache.
+    #[cfg(target_os = "android")]
+    if let Some(app) = bevy::android::ANDROID_APP.get() {
+        if let Some(path) = app.internal_data_path() {
+            return path.join("cache");
+        }
+    }
     if let Some(root) = workspace_root() {
         return root.join("cache");
     }

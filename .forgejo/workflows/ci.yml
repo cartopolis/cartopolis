@@ -38,7 +38,7 @@ jobs:
       # back into per-change churn. Cheap and first: no compilation involved.
       # `crates/big_space` is excluded on purpose — it is a vendored fork kept
       # diff-comparable with upstream, so it is listed nowhere here.
-      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator --check
+      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator -p viberfox_android --check
       # `--all-targets` now that the vendored big_space fork's test target
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.
@@ -68,6 +68,72 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check -p viberfox --no-default-features --target wasm32-unknown-unknown
+
+      # The same rot-gate as the wasm lane above, for the same reason: the Android
+      # build adds `cfg(target_os = "android")` arms to `utils::clipboard`,
+      # `utils::cache` and `lib.rs`'s CLI, plus a whole crate
+      # (`crates/viberfox_android`) whose dependencies are target-gated and
+      # therefore *empty* in the `cargo check --workspace` above. Every line of it
+      # is invisible to every other lane in this file.
+      #
+      # A check, not the APK: no link, no aapt2, no signing. That is the cheap half
+      # and it catches what rots — a renamed item behind an android cfg, a
+      # dependency that grows a backend Android does not have (`arboard` was
+      # exactly that), a Bevy bump that moves `bevy::android::ANDROID_APP`.
+      # `crates/viberfox_android/build-apk.sh` is the other half, and it is run by
+      # hand — see docs/notes/android-build.md for why there is no APK job here.
+      #
+      # Unlike wasm, this one cannot be a bare `rustup target add`: `blake3` (under
+      # `bevy_asset`) compiles `blake3_neon.c` for every little-endian aarch64
+      # target, and a build script's `cc` invocation runs at *check* time. So the
+      # lane needs a cross C compiler, and on Android that means the NDK — the
+      # blake3 `no_neon` feature would avoid it, but turning off SIMD in the
+      # shipped app to make CI cheaper is the trade `src/simd_baseline.rs` exists
+      # to prevent.
+      #
+      # Downloaded and cached here rather than baked into `viberfox-ci:latest`
+      # because the image is a separate repo and this gate should not wait on it.
+      # Moving it into the image is the better end state: it would turn a ~660 MB
+      # cache restore into nothing at all, and this lane would become one `cargo
+      # check` pointed at `$ANDROID_NDK_HOME`.
+      #
+      # Per the "a step may only use a tool the image already has" rule in
+      # docs/guides/development.md: the two this relies on are `curl` and `unzip`,
+      # both present. It deliberately does *not* need a JDK, which the image has no
+      # reason to carry — that is a second reason there is no APK job here, since
+      # `apksigner` and `keytool` are Java programs.
+      - name: Cache the Android NDK
+        id: ndk-cache
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: /opt/android-ndk
+          key: android-ndk-r27c
+      - name: Fetch the Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q /tmp/ndk.zip -d /tmp/ndk
+          mv /tmp/ndk/android-ndk-r27c /opt/android-ndk
+          rm -rf /tmp/ndk.zip /tmp/ndk
+      # Setting CC/AR by hand rather than installing cargo-ndk: a `cargo check` does
+      # not link, so the linker cargo-ndk would configure is never invoked, and
+      # these two variables are the entire difference. Saves compiling a cargo
+      # subcommand on every cold cache.
+      #
+      # `28` in the compiler name is the API level, and it must match the
+      # `minSdkVersion` in `crates/viberfox_android/AndroidManifest.xml` — the NDK
+      # encodes the level into the `.so`'s symbol requirements, so a mismatch is a
+      # dynamic-linker failure at launch on the oldest device the manifest claims
+      # to support.
+      - name: Check the Android target compiles
+        env:
+          NDK_BIN: /opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin
+        run: |
+          rustup target add aarch64-linux-android
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          cargo check -p viberfox_android --target aarch64-linux-android
 
   build-test:
     name: build & test viberfox
