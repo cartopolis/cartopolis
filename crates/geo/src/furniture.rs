@@ -43,8 +43,9 @@
 
 use std::collections::HashMap;
 
-use mvt_reader::feature::{Feature, Value};
+use mvt_reader::feature::Feature;
 
+use crate::pois::{single_point, tag_str};
 use crate::scatter::{hash3, rand01, srgb_to_linear_rgb};
 use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
 
@@ -174,13 +175,6 @@ pub fn furniture_kind(feature: &Feature) -> Option<FurnitureKind> {
         .map(|(_, _, kind)| *kind)
 }
 
-fn tag_str<'a>(feature: &'a Feature, key: &str) -> Option<&'a str> {
-    match feature.properties.as_ref()?.get(key)? {
-        Value::String(s) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
 // ─── Extraction ──────────────────────────────────────────────────────────────
 
 /// Read a tile's `pois` layer as placed, oriented furniture.
@@ -253,18 +247,6 @@ pub fn extract_furniture(
         );
     }
     Ok(out)
-}
-
-/// The one coordinate of a `pois` feature. Shortbread emits them as single-point
-/// `MultiPoint`s, so both spellings are accepted and anything with more than one
-/// point is not a POI we know how to place.
-fn single_point(geometry: &geo_types::Geometry<f32>) -> Option<(f32, f32)> {
-    use geo_types::Geometry;
-    match geometry {
-        Geometry::Point(p) => Some((p.x(), p.y())),
-        Geometry::MultiPoint(mp) if mp.0.len() == 1 => Some((mp.0[0].x(), mp.0[0].y())),
-        _ => None,
-    }
 }
 
 // ─── Which way does the street run? ──────────────────────────────────────────
