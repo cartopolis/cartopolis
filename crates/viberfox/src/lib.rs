@@ -697,6 +697,8 @@ pub fn run() {
         .init_resource::<resources::MapAnchor>()
         .init_resource::<systems::map_geometry::MapSurfaces>()
         // Filled by the same streamer, cell for cell (`systems::street_labels`).
+        .init_resource::<systems::world_places::WorldPlaces>()
+        .init_resource::<systems::interact::InteractState>()
         .init_resource::<systems::street_labels::StreetLabelStore>()
         .init_resource::<systems::street_labels::StreetLabelSigns>()
         // Must come after the `WaterMaterial` plugin above: it mints the shared
@@ -1054,7 +1056,12 @@ pub fn run() {
             systems::globe::update_atmosphere_origin.after(systems::free_camera::camera_controls),
             avatar::respawn_avatar_on_appearance_change.before(avatar::spawn_avatar),
             avatar::spawn_avatar,
-            avatar::update_avatar_animation.after(avatar::handle_avatar_movement),
+            // After `send_network_intent`: the pending emote is a one-shot that
+            // this system *takes*, and the wire needs it first or a wave would be
+            // seen by everyone except the people watching it happen.
+            avatar::update_avatar_animation
+                .after(avatar::handle_avatar_movement)
+                .after(network::send_network_intent),
             // The airborne pose the clip set doesn't have: lean the model into
             // flight. After `spawn_avatar` so a holder that appeared this frame
             // (first spawn, appearance change) is leant on the frame it exists.
@@ -1062,10 +1069,43 @@ pub fn run() {
                 .after(avatar::handle_avatar_movement)
                 .after(avatar::spawn_avatar),
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),
+            avatar::clear_remote_emote_edges.after(avatar::update_remote_avatar_animation),
             avatar::sync_avatar_animations.after(avatar::update_avatar_animation),
             systems::debug::debug_region_entities.after(rendering::spawn_regions),
         ),
     )
+    // Phase 3b: the world the avatar can touch. Its own `add_systems` because the
+    // tuple above is at Bevy's 20-element ceiling, not because these belong apart.
+    .add_systems(
+        Update,
+        (
+            // The props the city draws are the props the avatar cannot walk
+            // through. Before movement, so a bench that streamed in this frame is
+            // solid on the frame it appears.
+            systems::collision::sync_prop_colliders.before(avatar::handle_avatar_movement),
+            // What the avatar is standing next to, and the nearest house number.
+            systems::interact::track_interaction_target.after(avatar::handle_avatar_movement),
+            // Before `send_network_intent`, which is what puts a triggered emote on
+            // the wire this frame rather than the next.
+            systems::interact::handle_interaction_input.before(network::send_network_intent),
+        ),
+    );
+    // Phase 3c: the soundscape. Its own registration because the whole module is
+    // behind the `audio` feature (ALSA headers on Linux — see Cargo.toml), and a
+    // `#[cfg]` inside a system tuple would have to be repeated per entry.
+    #[cfg(feature = "audio")]
+    let app = app
+        .add_systems(Startup, systems::soundscape::setup_soundscape)
+        .add_systems(
+            Update,
+            (
+                // Footsteps, landings and wind: each is a function of what
+                // movement just did, so all three run after it.
+                systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
+                systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
+            ),
+        );
+    app
     // Phase 4: Prim selection, raycasting, marquee, keyboard shortcuts
     .add_systems(
         Update,
@@ -1192,6 +1232,10 @@ pub fn run() {
             systems::navigation::render_route_panel,
             systems::chat::render_chat_panel,
             systems::ui::render_avatar_chooser,
+            // Before the pins and after every panel, for the same reason both of
+            // those hold: it culls against the root `Ui`'s leftover space, which is
+            // only the map once the side panels have taken their width.
+            systems::interact::render_interaction_prompt,
             // Also after the camera has moved, so pins project onto this frame's view.
             systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
         )
