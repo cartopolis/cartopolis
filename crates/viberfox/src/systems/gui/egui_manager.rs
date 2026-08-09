@@ -81,20 +81,39 @@ pub struct EguiManager {
 /// instead of docking beside the map at a fixed 320 pt.
 pub const COMPACT_WIDTH_PTS: f32 = 640.0;
 
-/// UI magnification applied when the pointer is a finger rather than a mouse.
+/// Default UI magnification on the phone tier — **and why the web's is 1.0.**
 ///
-/// The number is a physical-size argument, not a taste one. egui lays out in
-/// points and the display scale factor is what turns those into pixels, so on a
-/// phone the UI is already *sharp* — it is simply built for a mouse. A point on
-/// the web is a CSS pixel (1/96 in), so `theme::style`'s `interact_size` of
-/// 40×24 pt is a 6.3 mm-tall touch target where the platform guidelines ask for
-/// ~10 mm and a fingertip is about that wide. 1.5× brings it to 9.5 mm.
+/// The question is physical size, not taste. egui lays out in points, the
+/// display scale factor turns those into pixels, and a phone's UI is therefore
+/// already *sharp*; it is simply built for a mouse. `theme::style`'s
+/// `interact_size` of 40×24 pt is the target to size, against a ~7.6 mm platform
+/// guideline (Material's 48 dp) and a fingertip about that wide.
 ///
-/// Not higher, because this divides the viewport as it multiplies the widgets: a
-/// 393 pt phone is 262 pt at 1.5×, which the compact layout still has room for
-/// (`responsive_right_panel` floors a panel at 240 pt). 2× would leave a panel
-/// wider than the screen it docks in.
-const TOUCH_UI_SCALE: f32 = 1.5;
+/// **On the web that has already been fixed, by something else.** The render
+/// budget's stage transform (`index.html`, `docs/notes/wasm-performance.md`)
+/// sizes the canvas to viewport ÷ k and scales it back up by k, where k is
+/// `dpr / 1.5` on the phone tier. winit measures the *untransformed* box, so
+/// Bevy's logical viewport shrinks by k and every egui point is then painted
+/// across k CSS pixels. On the reported Fairphone 4 (dpr 2.75) k ≈ 1.83, which
+/// takes a 24 pt row from 6.3 mm to **11.6 mm** on its own. Magnifying again on
+/// top of that overshoots the guideline by half and — worse — takes the viewport
+/// to 143 pt, well under the 240 pt floor `responsive_right_panel` gives a
+/// compact panel, i.e. a panel wider than the screen it docks in.
+///
+/// Native Android has no such transform: nothing there has magnified anything,
+/// and a point is a dp (1/160 in), so the same row is **3.8 mm**. That is the
+/// platform this constant is still for.
+///
+/// So the default is per-platform and the *override* is the general answer —
+/// see [`resolve_ui_scale`]. Both numbers are arguments from arithmetic, not
+/// measurements; neither has been checked on glass.
+const fn phone_ui_scale() -> f32 {
+    if cfg!(target_arch = "wasm32") {
+        1.0
+    } else {
+        1.5
+    }
+}
 
 /// Clamp for an explicitly requested scale. A typo in a URL should make the UI
 /// awkward, not unrecoverable — at 20× there is no longer a button to press to
@@ -106,10 +125,11 @@ const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 /// Resolved once, at startup, from two sources in order:
 ///
 /// 1. An explicit `?ui_scale=1.3` (web) / `VIBERFOX_UI_SCALE=1.3` (desktop).
-///    This is the knob to reach for on a real device — the physical size of a
-///    point varies by an octave across the phones in circulation, and the value
-///    below is one guess for all of them.
-/// 2. Otherwise [`TOUCH_UI_SCALE`] on the phone tier, and 1.0 off it.
+///    **This is the primary interface, not an escape hatch.** The physical size
+///    of a point varies across devices with the display scale, the platform's
+///    unit and — on the web — the render budget's stage transform, and this
+///    function cannot see any of the three well enough to be right by default.
+/// 2. Otherwise [`phone_ui_scale`] on the phone tier, and 1.0 off it.
 ///
 /// **The tier comes from [`crate::quality`], which is deliberately the only
 /// thing in the client that decides what kind of machine this is.** An earlier
@@ -139,7 +159,7 @@ fn resolve_ui_scale() -> f32 {
         }
     }
     if crate::quality::is_phone() {
-        TOUCH_UI_SCALE
+        phone_ui_scale()
     } else {
         1.0
     }
@@ -1415,13 +1435,36 @@ mod tests {
     fn ui_scale_shrinks_the_viewport_it_magnifies() {
         let mut mgr = EguiManager::default();
         mgr.ui_scale = 1.5;
-        // A 1080 px phone at a 2.75 device pixel ratio: 393 pt of CSS width.
+        // Android, where a phone's whole 1080 px width reaches Bevy: 393 pt of
+        // viewport at a 2.75 scale factor, 262 pt of it after the magnification.
         mgr.set_surface(UVec2::new(1080, 2280), 2.75);
         assert!((mgr.viewport_pts().x - 261.8).abs() < 0.1);
         assert!(mgr.compact());
-        // Still wide enough for the compact panel floor, which is the reason
-        // `TOUCH_UI_SCALE` is not larger.
-        assert!(mgr.viewport_pts().x >= 240.0);
+    }
+
+    /// Why [`phone_ui_scale`] is 1.0 on the web: the render budget's stage
+    /// transform has already shrunk the surface Bevy sees, so magnifying again
+    /// takes the viewport under the 240 pt floor `responsive_right_panel` gives
+    /// a compact panel — i.e. docks a panel wider than the screen.
+    ///
+    /// Same handset as above, but through the phone tier's k ≈ 1.83: winit
+    /// measures the *untransformed* box, so Bevy's surface is 1080/1.83 px.
+    #[test]
+    fn the_web_phone_tier_has_no_room_to_magnify() {
+        let surface = UVec2::new(590, 1245); // 1080×2280 ÷ 1.83
+        let mut unscaled = EguiManager::default();
+        unscaled.ui_scale = 1.0;
+        unscaled.set_surface(surface, 2.75);
+        assert!(unscaled.viewport_pts().x > 200.0, "usable at 1.0");
+
+        let mut scaled = EguiManager::default();
+        scaled.ui_scale = 1.5;
+        scaled.set_surface(surface, 2.75);
+        assert!(
+            scaled.viewport_pts().x < 240.0,
+            "1.5× would dock a 240 pt panel in a {} pt viewport",
+            scaled.viewport_pts().x
+        );
     }
 
     /// Positions enter in the window's logical points and must leave in egui's,
