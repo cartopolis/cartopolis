@@ -2,16 +2,11 @@ use glam::Vec3;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use viberfox_core::{
-    snap_yaw_continuation, AvatarStateDto, GeoAnchor, NetMessage, PrimDto, PrimGeometry,
-    PrimSurface, RegionDto,
+    snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
+    PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
 };
 
-/// Climb/descent rate while flying (m/s), and the rate an avatar that isn't
-/// flying drops at. Constant speeds rather than an acceleration: the client
-/// predicts the same numbers between snapshots, and a matching closed form is
-/// cheaper to keep honest than a matching integrator.
-const FLY_VERTICAL_SPEED: f32 = 12.0;
-const FALL_SPEED: f32 = 12.0;
+use viberfox_core::motion;
 
 struct AvatarSim {
     position: Vec3,
@@ -22,6 +17,25 @@ struct AvatarSim {
     /// falls — see [`SimWorld::step`].
     flying: bool,
     fly_vertical: f32,
+    /// Vertical velocity (m/s, up positive) for the jump/fall arc. Flight ignores
+    /// it and holds altitude; everything else integrates it under
+    /// [`motion::GRAVITY`]. It replaced a constant descent rate, which meant a
+    /// fall ran at full speed from its first frame and a jump was impossible to
+    /// express at all.
+    vertical_velocity: f32,
+    /// Set for one tick by a `ClientIntent` whose `jump` bit is set. Consumed by
+    /// [`SimWorld::step`], which only honours it when the avatar is on the ground —
+    /// the authority decides whether a jump happens, so a client cannot fly by
+    /// spamming the bit.
+    jump_requested: bool,
+    /// The emote this avatar is currently broadcasting, and how long it has been
+    /// doing so. Held for [`EMOTE_REPLICATE_SECS`] rather than forwarded once, so
+    /// a client whose first snapshot of this avatar lands mid-wave still sees it.
+    emote: Option<EmoteState>,
+    emote_age: f32,
+    /// Monotonic per-avatar counter. The same emote twice running is two events,
+    /// and a receiver that diffed on the emote alone would play only the first.
+    emote_sequence: u32,
 }
 
 pub struct SimWorld {
@@ -99,6 +113,11 @@ impl SimWorld {
                 velocity: Vec3::ZERO,
                 flying: false,
                 fly_vertical: 0.0,
+                vertical_velocity: 0.0,
+                jump_requested: false,
+                emote: None,
+                emote_age: 0.0,
+                emote_sequence: 0,
             },
         );
         id
@@ -129,6 +148,7 @@ impl SimWorld {
         &self.prims
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_intent(
         &mut self,
         avatar_id: u64,
@@ -138,20 +158,21 @@ impl SimWorld {
         flying: bool,
         fly_up: bool,
         fly_down: bool,
+        jump: bool,
+        emote: Option<Emote>,
     ) {
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
-        // Horizontal speed is the intent *magnitude* scaled by the walk speed,
-        // capped. A grounded client sends a unit wish-dir (→ WALK_SPEED); a flying
-        // client sends a larger magnitude (→ up to MAX_SPEED) so flying traverses
-        // faster without a separate protocol field.
-        const WALK_SPEED: f32 = 8.0;
-        const MAX_SPEED: f32 = 32.0;
+        // Horizontal speed is the intent *magnitude* scaled, capped
+        // (`motion::sim_speed_for_wish` — the client predicts with the same
+        // function). The magnitude is the throttle: a walk, a jog, a sprint and
+        // flight are four magnitudes, which is why none of them needed a
+        // protocol field of its own.
         let mut v = Vec3::new(move_x, 0.0, move_z);
         let mag = v.length();
         if mag > 1e-4 {
-            v = v / mag * (mag * WALK_SPEED).min(MAX_SPEED);
+            v = v / mag * motion::sim_speed_for_wish(mag);
         } else {
             v = Vec3::ZERO;
         }
@@ -165,28 +186,71 @@ impl SimWorld {
         av.fly_vertical = if !flying {
             0.0
         } else if fly_up {
-            FLY_VERTICAL_SPEED
+            motion::FLY_VERTICAL_SPEED
         } else if fly_down {
-            -FLY_VERTICAL_SPEED
+            -motion::FLY_VERTICAL_SPEED
         } else {
             0.0
         };
+        // Latch rather than assign: intents arrive faster than ticks and are rate
+        // limited on top (`net::MIN_INTENT_INTERVAL`), so a jump that shared a tick
+        // with a later "not jumping" intent would be silently dropped. `step`
+        // clears it.
+        av.jump_requested |= jump;
+        // Taking off cancels a pending jump — otherwise it fires on landing, long
+        // after the key that asked for it.
+        if flying {
+            av.jump_requested = false;
+        }
+        // An emote is a one-shot: stamp it with a fresh sequence so receivers can
+        // tell "waved again" from "still waving".
+        if let Some(e) = emote {
+            av.emote_sequence = av.emote_sequence.wrapping_add(1);
+            av.emote = Some(EmoteState {
+                emote: e,
+                sequence: av.emote_sequence,
+            });
+            av.emote_age = 0.0;
+        }
     }
 
     pub fn step(&mut self, dt: f32) {
         for av in self.avatars.values_mut() {
             av.position.x += av.velocity.x * dt;
             av.position.z += av.velocity.z * dt;
-            // Flight holds altitude; everything else falls. The client mirrors both
-            // rates for prediction (`network::SIM_FLY_VERTICAL` / `SIM_FALL_SPEED`)
-            // and offline movement, so keep the three in step.
-            av.position.y += if av.flying {
-                av.fly_vertical * dt
+            // Flight holds altitude; everything else is on the vertical arc, which
+            // is `motion::step_fall` — the same function the client predicts with
+            // and the `--offline` path integrates, so the three cannot disagree.
+            if av.flying {
+                av.position.y += av.fly_vertical * dt;
+                av.vertical_velocity = 0.0;
+                av.jump_requested = false;
+                if av.position.y < motion::GROUND_Y {
+                    av.position.y = motion::GROUND_Y;
+                }
             } else {
-                -FALL_SPEED * dt
-            };
-            if av.position.y < 0.0 {
-                av.position.y = 0.0;
+                // A jump is only granted from the ground: the authority decides,
+                // so holding the key cannot climb.
+                if av.jump_requested && av.position.y <= motion::GROUND_Y + 1e-3 {
+                    av.vertical_velocity = motion::JUMP_SPEED;
+                }
+                av.jump_requested = false;
+                let s = motion::step_fall(
+                    av.position.y,
+                    av.vertical_velocity,
+                    motion::GROUND_Y,
+                    dt,
+                );
+                av.position.y = s.y;
+                av.vertical_velocity = s.vertical_velocity;
+            }
+            // Age out the replicated emote so it stops being re-broadcast (and
+            // re-played by anyone who arrives) long after it finished.
+            if av.emote.is_some() {
+                av.emote_age += dt;
+                if av.emote_age > EMOTE_REPLICATE_SECS {
+                    av.emote = None;
+                }
             }
             // Horizontal yaw comes from [`SimWorld::apply_intent`] (`display_yaw`); do not derive from
             // `atan2(velocity)` (branch cuts + integration drift caused client flip-flops).
@@ -223,6 +287,7 @@ impl SimWorld {
                 id,
                 position: a.position,
                 yaw: a.yaw,
+                emote: a.emote,
             })
             .collect();
 
