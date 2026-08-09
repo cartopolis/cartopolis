@@ -112,6 +112,12 @@ const QT_BASE_Z: u32 = 3;
 const QT_SELECT_INTERVAL: f32 = 0.25;
 /// Upper bound on desired *leaf* tiles (backstop against runaway splits); the
 /// ancestor chains add on top, so total entities run ~40% higher.
+///
+/// Halved by the phone tier (`quality::Budget::per_frame`), which is not what that
+/// helper is named for but is the same arithmetic and the same reason: 320 leaves
+/// plus ancestors is ~450 draws of planet, issued from the single thread the web
+/// build has. The globe is the coarsest thing on screen, so it is also the
+/// cheapest place to give detail back.
 const QT_MAX_TILES: usize = 320;
 /// Per-zoom outward lift (m): finer tiles sit slightly above coarser ones, so
 /// parents showing through while children load never z-fight.
@@ -291,7 +297,8 @@ impl Default for GlobeState {
                 backoff_secs: 0.0,
                 backoff_doublings: 0,
                 cooldown_secs: QT_RETRY_AFTER_SECS,
-                despawns_per_frame: MAX_GLOBE_TILE_DESPAWNS_PER_FRAME,
+                despawns_per_frame: crate::quality::budget()
+                    .per_frame(MAX_GLOBE_TILE_DESPAWNS_PER_FRAME),
             }),
             gen_shared: Arc::new(AtomicU32::new(0)),
             wanted_shared: Arc::new(Mutex::new(HashSet::new())),
@@ -1140,7 +1147,7 @@ pub fn update_globe_tiles(
         // Cap decode + upload per frame; defer the rest (still counted in flight, so
         // they aren't re-fetched *and* the budget keeps bounding how many decoded
         // tiles are held) to keep the burst from overrunning the GPU timeout.
-        if built >= MAX_GLOBE_TILE_BUILDS_PER_FRAME {
+        if built >= crate::quality::budget().per_frame(MAX_GLOBE_TILE_BUILDS_PER_FRAME) {
             deferred.push((key, TileFetch::Ok(tile)));
             continue;
         }
@@ -1343,7 +1350,7 @@ pub fn update_globe_tiles(
         if px > QT_SPLIT_PX
             && key.z < QT_MAX_Z
             && in_view
-            && desired.len() + stack.len() < QT_MAX_TILES
+            && desired.len() + stack.len() < crate::quality::budget().per_frame(QT_MAX_TILES)
         {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 stack.push(TileKey::new(key.x * 2 + dx, key.y * 2 + dy, key.z + 1));

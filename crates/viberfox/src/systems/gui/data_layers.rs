@@ -505,6 +505,14 @@ impl Default for DataLayers {
         // it.
         let (overpass_concurrency, spacing) = crate::systems::osm_buildings::overpass_pace();
         let overpass_spacing = spacing.as_secs_f64();
+        // The five layers below the buildings are the ones the phone tier starts
+        // without (`quality::Budget::detail_layers`). They are grouped here rather
+        // than tested one at a time because they share a cost shape: each is
+        // per-cell geometry the *main thread* meshes and then draws, on the one
+        // platform where the ECS schedule has no second thread to mesh it on. All
+        // five stay in the Data Layers panel, so this is where they start, not
+        // what they are allowed to be.
+        let detail = crate::quality::budget().detail_layers;
         Self {
             panel_open: false,
             buildings_enabled: true,
@@ -512,11 +520,11 @@ impl Default for DataLayers {
             osm_buildings_enabled: true,
             map_enabled: true,
             vehicles_enabled: false,
-            trees_enabled: true,
-            furniture_enabled: true,
-            roads_textured: true,
-            water_shading: true,
-            street_labels: true,
+            trees_enabled: detail,
+            furniture_enabled: detail,
+            roads_textured: detail,
+            water_shading: detail,
+            street_labels: detail,
             // Off by default: it reaches a third party's service and only
             // answers over the Netherlands, so opting in is the honest default.
             height_enabled: false,

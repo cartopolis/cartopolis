@@ -395,6 +395,25 @@ pub const GROUND_BLOOM_INTENSITY: f32 = 0.12;
 /// switches between the two at the tier boundary.
 pub const SPACE_BLOOM_INTENSITY: f32 = 0.35;
 
+/// Bloom strength at a given `space_factor` — 0 at the ground, 1 in deep space —
+/// with the render budget applied.
+///
+/// The phone tier answers **exactly** `0.0`, and the exactness is the mechanism
+/// rather than an approximation of "off": `bevy_post_process`'s bloom node
+/// early-returns on `intensity == 0.0`, so a zero here skips all thirteen
+/// downsample/upsample passes over the HDR target without removing the
+/// component. That matters — `apply_day_night_cycle` and `shot_harness` both
+/// query `&Bloom` as part of a tuple, so a camera without the component would
+/// silently drop out of the day/night cycle and out of `ShotMetrics` rather than
+/// merely rendering without glare.
+#[must_use]
+pub fn bloom_intensity(space_factor: f32) -> f32 {
+    if !crate::quality::budget().bloom {
+        return 0.0;
+    }
+    GROUND_BLOOM_INTENSITY.lerp(SPACE_BLOOM_INTENSITY, space_factor)
+}
+
 /// Earth inner radius used by `Atmosphere::earth` (metres). The planet-centre
 /// entity sits this far below the local ground so the atmosphere's surface aligns
 /// with y = 0. Must match bevy_pbr's `Atmosphere::earth` constant.
@@ -442,6 +461,13 @@ pub fn setup_camera(
     // buffer. That ruled it out under WebGL2, which has neither — but the web build
     // targets WebGPU now (ADR-033), where both exist, so this is no longer
     // platform-gated at all.
+    //
+    // The atmosphere itself stays on in every tier — it *is* the sky, and the
+    // phone budget has nothing to gain by replacing it with a void (it also
+    // A/B'd within noise of baseline, see `docs/notes/wasm-performance.md`). The
+    // env map is the half that does not survive: it re-bakes a cubemap and its
+    // mip chain every frame, and `dev.envmap_enabled` is already seeded from the
+    // budget, so this needs no tier test of its own.
     let want_atmosphere = dev.atmosphere_enabled && !crate::env_flag("VIBERFOX_NO_ATMOSPHERE");
     let want_envmap =
         want_atmosphere && dev.envmap_enabled && !crate::env_flag("VIBERFOX_NO_ENVMAP");
@@ -502,7 +528,7 @@ pub fn setup_camera(
             // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
             // scenes) so the daytime basemap doesn't smear.
             Bloom {
-                intensity: GROUND_BLOOM_INTENSITY,
+                intensity: bloom_intensity(0.0),
                 ..Bloom::NATURAL
             },
             AmbientLight::default(),

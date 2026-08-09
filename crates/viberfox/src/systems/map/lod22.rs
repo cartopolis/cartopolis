@@ -60,7 +60,18 @@ const MAX_DESPAWNS_PER_FRAME: usize = 2;
 /// 5×5 ≈ ±3.5 km). Covered cells *beyond* this fall back to the simplified,
 /// inset, non-shadow far-cell extrusion in `osm_buildings` (a distance LOD): the
 /// simplified volume nests inside the real one, so the transition never z-fights.
-pub const LOD22_RADIUS: i64 = 2;
+const LOD22_RADIUS: i64 = 2;
+
+/// [`LOD22_RADIUS`] with the render budget applied — 1 (3×3) on the phone tier.
+///
+/// A function rather than a constant because `osm_buildings` derives its own
+/// handover boundary from it (`lod22_radius() + 1` is the ring where the far-cell
+/// extrusion takes over). The two must be reading the same number or a re-anchor
+/// leaves a ring of cells that neither streamer owns; a shared call cannot drift
+/// the way two tier-adjusted constants could.
+pub fn lod22_radius() -> i64 {
+    crate::quality::budget().radius(LOD22_RADIUS)
+}
 /// Cap on cell meshes uploaded per frame (iGPU device-loss guard — see module doc).
 const MAX_BUILDS_PER_FRAME: usize = 1;
 /// A roof triangle whose |normal.y| exceeds this reads as flat → grey; steeper
@@ -253,8 +264,9 @@ pub fn update_lod22(
     // Queue missing covered cells, nearest first. `CellStream::request` is also the
     // retry pump — it refuses a cell that has spent its attempts.
     let mut to_request: Vec<(i64, i64)> = Vec::new();
-    for dy in -LOD22_RADIUS..=LOD22_RADIUS {
-        for dx in -LOD22_RADIUS..=LOD22_RADIUS {
+    let radius = lod22_radius();
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
             let c = (ccx + dx, ccy + dy);
             if lod22_covers(c.0, c.1) {
                 to_request.push(c);
@@ -370,7 +382,7 @@ pub fn update_lod22(
     let stale: Vec<(i64, i64)> = lod
         .cells
         .keys()
-        .filter(|(x, y)| (x - ccx).abs().max((y - ccy).abs()) > LOD22_RADIUS + 1)
+        .filter(|(x, y)| (x - ccx).abs().max((y - ccy).abs()) > lod22_radius() + 1)
         .copied()
         .collect();
     for c in stale {

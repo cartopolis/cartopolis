@@ -22,6 +22,7 @@ mod components;
 mod grid;
 mod login;
 mod platform;
+mod quality;
 mod resources;
 mod simd_baseline;
 #[cfg(feature = "solo")]
@@ -336,16 +337,28 @@ fn start_solo_sim() -> Option<String> {
 pub fn run() {
     dotenvy::dotenv().ok();
 
+    // Resolve the render budget first: it decides how wide the worker pool below
+    // is allowed to be, and every later reader (`setup_camera`, the streamers)
+    // expects it settled before the first frame. See `quality`.
+    quality::init();
+
     // Start the CPU worker pool before anything streams (ADR-033). A no-op
     // natively — `AsyncComputeTaskPool` is already a thread pool — and on the web
     // it spawns the Web Workers that keep tile decoding off the render thread.
     // One core is left for the main thread, which still renders and fetches.
-    platform::workers::start(
-        std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(1))
-            .unwrap_or(4)
-            .max(1),
-    );
+    //
+    // …and on a phone, rather more than one. `available_parallelism` counts the
+    // Fairphone 4's 8 cores without saying that 6 of them are efficiency cores
+    // sharing a thermal envelope with the render thread and the compositor, so
+    // the honest ceiling is well under the count (`Budget::worker_cap`).
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1))
+        .unwrap_or(4)
+        .max(1);
+    platform::workers::start(match quality::budget().worker_cap {
+        Some(cap) => workers.min(cap),
+        None => workers,
+    });
 
     let cli = parse_cli();
 
@@ -689,7 +702,16 @@ pub fn run() {
         // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
         // memory versus 4096² for a barely-perceptible near-shadow softness at this
         // scene's cascade distances.
-        .insert_resource(DirectionalLightShadowMap { size: 2048 });
+        //
+        // Halved again on the phone tier, which is not the same trade. There
+        // shadows are off by default (`quality::Budget::shadows`), so this is what
+        // a user who switches them back on pays: 1024² is a soft shadow on a
+        // 540-px-wide render target, and 4 MB of depth rather than 16 MB on a
+        // device where GPU memory is the same memory the 71 MB module is living
+        // in.
+        .insert_resource(DirectionalLightShadowMap {
+            size: if quality::is_phone() { 1024 } else { 2048 },
+        });
 
     // Connection mode (ADR-016):
     //  - `--connect ADDR` (or `server` in the login file) → external sim.
@@ -2245,8 +2267,7 @@ fn apply_day_night_cycle(
         // the limb is a few pixels of arc, and glare is most of what makes it
         // read as an atmosphere rather than a drawn outline. Near the ground
         // that much bloom just smears the map.
-        bloom.intensity = systems::free_camera::GROUND_BLOOM_INTENSITY
-            .lerp(systems::free_camera::SPACE_BLOOM_INTENSITY, space);
+        bloom.intensity = systems::free_camera::bloom_intensity(space);
     }
 
     // Above the atmosphere the sun is unfiltered: no air mass to redden or dim
