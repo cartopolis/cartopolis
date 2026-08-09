@@ -10,6 +10,7 @@
 
 pub mod furniture;
 pub mod mip;
+pub mod places;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
