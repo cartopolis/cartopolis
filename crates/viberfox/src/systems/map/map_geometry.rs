@@ -468,7 +468,11 @@ pub fn update_map_surfaces(
     // the sink (still holding their concurrency slots, so the bound keeps bounding
     // memory as well as work).
     let mut ready = surfaces.stream.take_results();
-    let deferred = ready.split_off(ready.len().min(MAX_BUILDS_PER_FRAME));
+    let deferred = ready.split_off(
+        ready
+            .len()
+            .min(crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME)),
+    );
     surfaces.stream.defer(deferred);
     for (c, (outcome, shore, decks, street_names)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.

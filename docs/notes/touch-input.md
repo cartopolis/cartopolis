@@ -141,9 +141,9 @@ The layout is simply built for a mouse: a point on the web is a CSS pixel
 target where the platform guidelines ask for ~10 mm.
 
 The fix is `EguiManager::ui_scale`, a magnification *on top of* the display
-scale, defaulting to `TOUCH_UI_SCALE` (1.5×) where the browser answers
-`(pointer: coarse)` and overridable per-device with `?ui_scale=1.3` /
-`VIBERFOX_UI_SCALE`. Four things about it are worth keeping:
+scale, defaulting to `TOUCH_UI_SCALE` (1.5×) on `quality::Tier::Phone` and
+overridable per-device with `?ui_scale=1.3` / `VIBERFOX_UI_SCALE`. Four things
+about it are worth keeping:
 
 **Scaling points-per-pixel, not the style.** The alternative — multiplying the
 theme's font sizes and spacing — was rejected because it only reaches what the
@@ -168,11 +168,22 @@ the top-left corner: at 1.5× a pin near the origin looks fine and one at the fa
 edge is a third of a screen out, so it reads as a projection bug. `boot_splash`
 was a fifth, sizing its backdrop from `Window::width()`.
 
-**Asked of the browser, not inferred from the first touch.** `(pointer: coarse)`
-is answerable before the first frame is laid out; waiting for a `TouchInput`
-would relay the entire UI out from under whatever finger triggered it. Android
-is a native target and answers `true` unconditionally — one more of the
-`cfg(not(wasm32))` seams `android-build.md` warns about.
+**One detector, borrowed rather than rebuilt.** The tier comes from
+`crate::quality`, which `index.html` decides before the module is even fetched
+(`wasm-performance.md` explains why the browser has to be the one to decide: the
+canvas backing store is set from CSS, so the render scale is a page-layout fact
+Rust cannot reach). An earlier draft of this asked `(pointer: coarse)` from Rust
+instead, which was a second detector answering nearly the same question — and
+two detectors is exactly how the UI ends up finger-sized on a machine rendering
+at desktop resolution.
+
+The borrowed answer is not free: `quality` asks for a coarse pointer **and** a
+viewport under 900 px, so a **large tablet is `Desktop` and gets mouse-sized
+targets** despite being driven by a finger. Wrong for that device, right for a
+touchscreen laptop, and `VIBERFOX_UI_SCALE` is the cover until someone has a
+tablet to test on. If tablets start mattering, the fix is to publish pointer
+coarseness from `index.html` as its own attribute beside `data-quality` — not to
+re-add a media query here.
 
 ## Not covered
 

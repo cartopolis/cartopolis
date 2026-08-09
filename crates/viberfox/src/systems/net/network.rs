@@ -6,8 +6,7 @@ use crate::components::{
 };
 use crate::resources::{
     AuthIdentity, AvatarState, ConnectAddr, ConnectAuth, GameState, LocalAvatarSimId,
-    NetworkMailbox, NetworkSyncState, OnlineSession, OsmTileUrlTemplate, PrimTextureCache,
-    TextureLibrary,
+    NetworkMailbox, NetworkSyncState, OnlineSession, PrimTextureCache, TextureLibrary,
 };
 use crate::systems::user_store::UserStore;
 use bevy::ecs::system::SystemParam;
@@ -50,85 +49,163 @@ use viberfox_core::{decode_app_frame, encode_app_frame, PROTOCOL_VERSION};
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
-pub fn spawn_network_thread(
-    mut commands: Commands,
-    addr: Res<ConnectAddr>,
-    auth: Option<Res<ConnectAuth>>,
-    user_store: Res<UserStore>,
-) {
-    // A local `VIBE_TILE_URL` wins over whatever the server advertises — it exists
-    // precisely to point a dev client at a different basemap than the sim's default.
-    let tile_template = Arc::new(Mutex::new(
-        crate::resources::tile_url_override().unwrap_or_default(),
-    ));
-    let tile_for_thread = tile_template.clone();
-    commands.insert_resource(OsmTileUrlTemplate(tile_template));
+/// How far a connection attempt has got. Written by the network thread, read once
+/// a frame by `session::drive_session` — which is what lets the sign-in screen
+/// show a spinner and then the *reason* a login failed, rather than the old
+/// behaviour of printing to a terminal nobody has open.
+///
+/// All but `Failed` are dead on the web build, which has no transport to a sim
+/// and therefore never gets past `start_link`'s wasm arm — see
+/// `session::can_simulate`. Allowed rather than `cfg`-gated per variant: the
+/// alternative is a second shape of this state machine that no lane runs.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkState {
+    /// Opening the socket.
+    Connecting,
+    /// Socket up, credential sent, waiting for `ServerHelloAck`.
+    Authenticating,
+    Online,
+    /// The attempt ended. Carries a message fit to put in front of a user.
+    Failed(String),
+    /// An established session ended cleanly (server shut down, or we asked).
+    Closed,
+}
 
+/// Shared handle on a link's [`LinkState`].
+#[derive(Clone)]
+pub struct LinkStatus(Arc<Mutex<LinkState>>);
+
+impl LinkStatus {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(LinkState::Connecting)))
+    }
+
+    pub fn get(&self) -> LinkState {
+        self.0
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(LinkState::Failed("link status poisoned".into()))
+    }
+
+    fn set(&self, state: LinkState) {
+        if let Ok(mut s) = self.0.lock() {
+            *s = state;
+        }
+    }
+}
+
+/// Everything one connection attempt produces. The caller inserts these as
+/// resources — this function deliberately takes no `Commands`, because it runs
+/// both at startup and from the sign-in screen, and only the caller knows which
+/// of the surrounding resources it is also replacing.
+pub struct Link {
+    pub mailbox: NetworkMailbox,
+    pub session: OnlineSession,
+    pub status: LinkStatus,
+}
+
+/// Open a session to `addr`, presenting `auth` (and a persisted `token` first,
+/// when there is one for this server).
+///
+/// The tile template is *borrowed*, not replaced: the resource is inserted once at
+/// startup and its `Arc` is what every streamer reads, so handing the thread the
+/// live one means a mid-session sign-in updates the basemap in place instead of
+/// swapping a resource half the map already captured. A local `VIBE_TILE_URL`
+/// still wins over whatever the server advertises — it exists precisely to point a
+/// dev client at a different basemap than the sim's default (see `client_loop`).
+pub fn start_link(
+    addr: &str,
+    auth: &ConnectAuth,
+    token: Option<String>,
+    tile_template: Arc<Mutex<String>>,
+) -> Link {
     let (out_tx, out_rx) = mpsc::channel::<NetMessage>();
     let (intent_tx, intent_rx) = futures_channel::mpsc::unbounded();
-    let connect_to = addr.0.clone();
+    let connect_to = addr.to_string();
+    let status = LinkStatus::new();
 
-    // Credential resolved by `login::resolve` in main; default to the solo `dev`
-    // account if the resource is somehow absent.
-    let auth = auth.map(|a| (*a).clone()).unwrap_or(ConnectAuth {
-        credential: AuthCredential::Password {
-            username: "dev".to_string(),
-            password: "dev".to_string(),
-        },
-        persist_token: false,
-    });
     // Prefer a persisted session token for this server (silent reconnect), with
     // the resolved credential as fallback in case the token is stale (ADR-016).
-    let (primary, fallback) = match auth
-        .persist_token
-        .then(|| user_store.session_token(&connect_to))
-        .flatten()
-    {
-        Some(token) => (AuthCredential::Token(token), Some(auth.credential)),
-        None => (auth.credential, None),
+    let (primary, fallback) = match token {
+        Some(token) => (AuthCredential::Token(token), Some(auth.credential.clone())),
+        None => (auth.credential.clone(), None),
     };
 
     // The sim transport is tokio/TCP — native only. The web build is Phase-1
-    // Viewer (no sim; ADR-031/033), so on wasm this never runs (there is no
-    // `ConnectAddr`); the moved values are consumed below so setup still compiles.
+    // Viewer (no sim; ADR-031/033), so on wasm this never runs (the sign-in screen
+    // offers no sim there); the moved values are consumed below so setup still
+    // compiles.
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                eprintln!("tokio runtime: {e}");
-                return;
+    {
+        let status_for_thread = status.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    status_for_thread.set(LinkState::Failed(format!("tokio runtime: {e}")));
+                    return;
+                }
+            };
+            match rt.block_on(client_loop(
+                connect_to,
+                primary,
+                fallback,
+                out_tx,
+                intent_rx,
+                tile_template,
+                status_for_thread.clone(),
+            )) {
+                // The loop only returns `Ok` when the stream ended — either the
+                // server hung up or our `OnlineSession` was dropped (a sign-out).
+                Ok(()) => status_for_thread.set(LinkState::Closed),
+                Err(e) => {
+                    tracing::warn!("network client ended: {e:#}");
+                    status_for_thread.set(LinkState::Failed(friendly_error(&e)));
+                }
             }
-        };
-        if let Err(e) = rt.block_on(client_loop(
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (
             connect_to,
             primary,
             fallback,
             out_tx,
             intent_rx,
-            tile_for_thread,
-        )) {
-            eprintln!("network client ended: {e:#}");
-        }
-    });
-    #[cfg(target_arch = "wasm32")]
-    let _ = (
-        connect_to,
-        primary,
-        fallback,
-        out_tx,
-        intent_rx,
-        tile_for_thread,
-    );
+            tile_template,
+        );
+        status.set(LinkState::Failed(
+            "the web build is a viewer — simulator mode needs the desktop app".into(),
+        ));
+    }
 
-    commands.insert_resource(NetworkMailbox {
-        rx: Mutex::new(out_rx),
-    });
-    commands.insert_resource(OnlineSession { intent_tx });
-    commands.insert_resource(NetworkSyncState::default());
+    Link {
+        mailbox: NetworkMailbox {
+            rx: Mutex::new(out_rx),
+        },
+        session: OnlineSession { intent_tx },
+        status,
+    }
+}
+
+/// A connection error as a person should read it. `anyhow`'s chain is the right
+/// thing in a log and the wrong thing in a modal: "Connection refused (os error
+/// 111)" is the whole message, and the sign-in screen has no room for the rest.
+#[cfg(not(target_arch = "wasm32"))]
+fn friendly_error(e: &anyhow::Error) -> String {
+    if let Some(io) = e.downcast_ref::<std::io::Error>() {
+        return match io.kind() {
+            std::io::ErrorKind::ConnectionRefused => "No simulator is listening there".to_string(),
+            std::io::ErrorKind::TimedOut => "The server did not answer".to_string(),
+            _ => io.to_string(),
+        };
+    }
+    e.to_string()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,13 +216,18 @@ async fn client_loop(
     out_tx: mpsc::Sender<NetMessage>,
     mut intent_rx: UnboundedReceiver<NetMessage>,
     tile_template: Arc<Mutex<String>>,
+    status: LinkStatus,
 ) -> anyhow::Result<()> {
     // Try the primary credential, then the fallback (a stale persisted token
     // gets a fresh password login rather than locking the user out). Each attempt
     // needs its own connection — the server closes on auth failure.
     let attempts: Vec<AuthCredential> = std::iter::once(primary).chain(fallback).collect();
     let mut authed: Option<(Framed<TcpStream, LengthDelimitedCodec>, NetMessage)> = None;
+    // The last rejection, so "wrong password" reaches the sign-in screen instead
+    // of the generic "authentication failed" the retry loop ends on.
+    let mut rejection: Option<String> = None;
     for (i, credential) in attempts.into_iter().enumerate() {
+        status.set(LinkState::Connecting);
         let stream = TcpStream::connect(&addr).await?;
         let mut framed = Framed::new(
             stream,
@@ -159,6 +241,7 @@ async fn client_loop(
             auth: credential,
         })?;
         framed.send(Bytes::from(hello)).await?;
+        status.set(LinkState::Authenticating);
 
         let ack_bytes = framed
             .next()
@@ -184,12 +267,17 @@ async fn client_loop(
             }
             NetMessage::ServerError { message, .. } => {
                 tracing::warn!("auth attempt {i} rejected: {message}");
+                rejection = Some(message.clone());
                 continue;
             }
             other => anyhow::bail!("unexpected first server message: {other:?}"),
         }
     }
-    let (mut framed, ack_msg) = authed.ok_or_else(|| anyhow::anyhow!("authentication failed"))?;
+    let (mut framed, ack_msg) = match authed {
+        Some(authed) => authed,
+        None => anyhow::bail!(rejection.unwrap_or_else(|| "authentication failed".to_string())),
+    };
+    status.set(LinkState::Online);
     if out_tx.send(ack_msg).is_err() {
         return Ok(());
     }

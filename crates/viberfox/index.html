@@ -107,6 +107,90 @@
         });
       })();
     </script>
+    <!-- RENDER SCALE, and the tier the whole client reads.
+         ===============================================================
+         Must run before the loader below: `crates/viberfox/src/quality.rs`
+         reads the `data-quality` attribute this sets during startup, and the
+         canvas has to exist and be sized before winit adopts it.
+
+         Two things are decided here, and both have to be, because neither can
+         be decided from Rust.
+
+         **The tier.** A phone is not a small desktop — see `quality.rs` for what
+         the client does with the answer. The signals that identify one
+         (`matchMedia`, `devicePixelRatio`, viewport size) are all page-side, and
+         re-deriving them in Rust would mean two detectors that can disagree with
+         each other about a machine they are both looking at.
+
+         **The render scale**, which is the larger of the two wins and is *only*
+         expressible here. On the web the render resolution is not a renderer
+         setting: wgpu's surface `configure` writes `canvas.width/height` from
+         the window's physical size, and that comes from winit's `ResizeObserver`
+         measuring this element's device-pixel content box — CSS size ×
+         `devicePixelRatio`. A Fairphone 4 reports a DPR near 2.75, so a canvas
+         laid out across its 393 CSS-px viewport renders 1080×2340 real pixels,
+         with HDR, an atmosphere and a tonemapper over every one of them. Bevy's
+         `scale_factor_override` cannot help: winit's web `request_inner_size`
+         sets the CSS size, so asking for fewer physical pixels shrinks the
+         visible canvas instead of the buffer behind it.
+
+         What does work is ordinary layout. `#stage` is sized to viewport ÷ k in
+         CSS pixels — so its backing store is (viewport × DPR) ÷ k device pixels —
+         and then scaled back up by k with a transform, which is not a layout
+         property and so does not feed back into the observed size. The canvas
+         covers the screen; the renderer pays for 1/k² of it. At the phone cap
+         that is a little over a quarter of the pixels.
+
+         `transform` and not `zoom`: zoom *is* a layout property in the browsers
+         that support it, so it would change the measured box and the scale would
+         cancel itself out.
+
+         Pointer coordinates survive this. winit takes them from `offsetX/offsetY`,
+         which the browser reports in the element's own untransformed coordinate
+         system — the same space the backing store is in. -->
+    <script>
+      (function () {
+        // An explicit `?quality=` wins, and is spelled the same way
+        // `VIBERFOX_QUALITY` is on the desktop (`quality.rs` parses the same
+        // words, so the two halves cannot drift on vocabulary).
+        //
+        // The `viberfox_` prefix is optional here because it is optional in
+        // `env_value`, which accepts both spellings in either case. Matching only
+        // the bare one would let `?VIBERFOX_QUALITY=phone` put the renderer in
+        // the phone tier while the page went on rendering at full resolution —
+        // a half-applied budget, with nothing to say so.
+        // `decodeURIComponent` throws on a malformed escape (`?quality=%`), and
+        // throwing here would leave `data-quality` unset and the stage unsized
+        // over a typo. An unreadable value is simply not a forced tier.
+        var forced = (/[?&](?:viberfox_)?quality=([^&]*)/i.exec(location.search) || [])[1];
+        try {
+          forced = forced ? decodeURIComponent(forced).trim().toLowerCase() : "";
+        } catch (e) {
+          forced = "";
+        }
+
+        var phone;
+        if (forced === "phone" || forced === "low" || forced === "mobile") {
+          phone = true;
+        } else if (forced === "desktop" || forced === "high") {
+          phone = false;
+        } else {
+          // Coarse pointer *and* a small viewport. Either alone is wrong: a
+          // touchscreen laptop has the first, a narrow desktop window the
+          // second, and neither is a device that needs the phone budget.
+          var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+          var short = Math.min(window.innerWidth, window.innerHeight) < 900;
+          phone = !!(coarse && short);
+        }
+        // `documentElement` exists as soon as `<html>` is open, so this is
+        // readable from Rust however late the module instantiates. The stage
+        // itself cannot be laid out yet — it is in `<body>`, which this script
+        // precedes — so the second half of the job runs down there, off this
+        // decision.
+        document.documentElement.dataset.quality = phone ? "phone" : "desktop";
+        window.__phone = phone;
+      })();
+    </script>
     <!-- Build this crate's `viberfox` bin for wasm, Phase-1 Viewer (no sim,
          so no default `solo` feature). ADR-031/033. -->
     <link data-trunk rel="rust" data-bin="viberfox" data-cargo-no-default-features
@@ -130,6 +214,20 @@
            in the canvas handler cannot reach them. A downward drag on the map
            would otherwise reload the page. */
         overscroll-behavior: none;
+      }
+      /* The render-scale carrier. Sized in px and scaled by the script in
+         <body>; `transform-origin: 0 0` so scaling grows it toward the bottom
+         right and it still starts at the top-left of the viewport.
+
+         `position: fixed` rather than in flow: a transformed element keeps its
+         *untransformed* box for layout, so an in-flow stage would reserve a
+         viewport-sized hole and leave the scaled-up canvas overlapping whatever
+         followed it. */
+      #stage {
+        position: fixed;
+        top: 0;
+        left: 0;
+        transform-origin: 0 0;
       }
       canvas {
         display: block;
@@ -256,6 +354,57 @@
     </style>
   </head>
   <body>
+    <!-- The canvas is placed here rather than left to winit (`Window::canvas`
+         adopts it by this id) so it can sit inside `#stage`, which is what the
+         render scale acts on. See the RENDER SCALE comment in <head>.
+
+         `width="1"` is deliberate: the loader hands over on the first canvas
+         wider than 1 px, and an unsized canvas defaults to 300×150 — which would
+         satisfy that test before Bevy had drawn a single frame. -->
+    <div id="stage"><canvas id="viberfox-canvas" width="1" height="1"></canvas></div>
+    <script>
+      (function () {
+        var phone = window.__phone;
+        // Device pixels per CSS pixel we are willing to render. 1.5 keeps text
+        // and the map's line work from going visibly soft while cutting a 2.75×
+        // screen to ~30% of its pixels; 1 would be cheaper and looks it. The
+        // desktop tier is uncapped — a workstation GPU is not what runs out here.
+        var MAX_DPR = phone ? 1.5 : Infinity;
+        // …and an absolute ceiling, for the large high-DPI screen that satisfies
+        // the DPR cap and is still far too many pixels for a mobile GPU.
+        var MAX_PIXELS = phone ? 1300000 : Infinity;
+
+        var stage = document.getElementById("stage");
+
+        function layout() {
+          var vw = window.innerWidth;
+          var vh = window.innerHeight;
+          var dpr = window.devicePixelRatio || 1;
+          // Both caps expressed as a divisor, then the stricter one wins. k > 1
+          // shrinks the buffer; k == 1 leaves the page exactly as it was before
+          // any of this existed, transform included.
+          var k = Math.max(1, dpr / MAX_DPR, Math.sqrt((vw * vh * dpr * dpr) / MAX_PIXELS));
+          stage.style.width = vw / k + "px";
+          stage.style.height = vh / k + "px";
+          stage.style.transform = k === 1 ? "none" : "scale(" + k + ")";
+          window.__renderScale = {
+            k: k,
+            dpr: dpr,
+            width: Math.round((vw * dpr) / k),
+            height: Math.round((vh * dpr) / k),
+          };
+        }
+
+        layout();
+        // `resize` covers rotation and the mobile browser's collapsing chrome.
+        // DPR can also change without one — a window dragged between monitors of
+        // different densities — which is what the media query catches.
+        window.addEventListener("resize", layout);
+        var dpr = window.devicePixelRatio || 1;
+        var watch = window.matchMedia("(resolution: " + dpr + "dppx)");
+        if (watch.addEventListener) watch.addEventListener("change", layout);
+      })();
+    </script>
     <div id="loader" data-state="loading">
       <div id="track"><div id="bar"></div></div>
       <div id="status">Downloading engine…</div>
@@ -329,6 +478,23 @@
                 return { ok: "warn", note: "single-threaded — no cross-origin isolation (COOP/COEP)" };
               }
               return { ok: "yes", note: (navigator.hardwareConcurrency || "?") + " cores" };
+            },
+          },
+          {
+            label: "Render budget",
+            // Not a check — a report. On a phone with no console this is the
+            // only place the two decisions made before any Rust ran are
+            // visible, and both are worth seeing when a device turns out slow:
+            // whether it was recognised as a phone at all, and how many pixels
+            // it ended up committing to. `?quality=high` forces the full budget
+            // if this got it wrong.
+            run: async function () {
+              var tier = document.documentElement.dataset.quality || "?";
+              var s = window.__renderScale;
+              if (!s) return { ok: "warn", note: tier + ", render scale not applied" };
+              var note = tier + " · " + s.width + "×" + s.height;
+              if (s.k > 1) note += " (1/" + s.k.toFixed(2) + " of " + s.dpr + "× DPR)";
+              return { ok: "yes", note: note };
             },
           },
           {

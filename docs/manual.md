@@ -41,6 +41,17 @@ uses):
 cargo run -p viberfox -- --offline
 ```
 
+None of that is fixed for the run: **☰ ▸ Sign in…** opens the sign-in screen over
+the live map at any moment, and the three choices there are the same three modes.
+Explore offline costs nothing (you are already in it), *Solo simulator* starts the
+local sim and logs you in, and *Connect to a server* takes a `host:port` — a bare
+host gets the standard port `4747` — with a username and password. "Remember me"
+keeps the session token that server issues, so it stops asking; "Enter this way
+next time" skips the screen on the next launch, which is why a fresh install goes
+straight into solo mode without ever showing it. Signing out returns you to the
+offline map with the world still under you. A launch flag overrides all of it for
+that run only.
+
 The world opens at street level, standing on a patch of OpenStreetMap-backed
 ground with imported 3D buildings around you — or where you left off, since the
 last location and camera are restored on startup. To open somewhere specific

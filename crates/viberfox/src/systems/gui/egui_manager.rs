@@ -68,6 +68,12 @@ pub struct EguiManager {
     /// logical points, which is why it is also the conversion factor every
     /// window→egui position has to go through ([`Self::window_to_ui`]).
     ui_scale: f32,
+    /// A modal (currently only `systems::login_screen`) owns the screen this
+    /// frame. Pointer input takes care of itself — the modal's backdrop is a real
+    /// widget, so egui claims the pointer — but the keyboard does not: the gate
+    /// below only yields on *text* focus, which would leave WASD flying the avatar
+    /// behind a card that has the user's attention.
+    modal: bool,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -103,16 +109,22 @@ const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 ///    This is the knob to reach for on a real device — the physical size of a
 ///    point varies by an octave across the phones in circulation, and the value
 ///    below is one guess for all of them.
-/// 2. Otherwise [`TOUCH_UI_SCALE`] where the primary pointer is coarse, and 1.0
-///    where it is a mouse.
+/// 2. Otherwise [`TOUCH_UI_SCALE`] on the phone tier, and 1.0 off it.
 ///
-/// The coarse-pointer question is asked of the browser (`pointer: coarse`,
-/// which is exactly "the primary input is imprecise"), not inferred from the
-/// first touch event: the answer has to be in hand before the first frame is
-/// laid out, and a scale that changes mid-session relays out the whole UI under
-/// whatever finger prompted it. Android is a native target and gets the touch
-/// default without asking anyone — it is a phone by construction, and it is one
-/// of the `cfg(not(wasm32))` seams `docs/notes/android-build.md` warns about.
+/// **The tier comes from [`crate::quality`], which is deliberately the only
+/// thing in the client that decides what kind of machine this is.** An earlier
+/// version of this asked the browser `(pointer: coarse)` directly, which was a
+/// second detector answering a nearly-identical question — and `quality`'s
+/// module note is explicit that the browser decides once, in `index.html`,
+/// because the canvas resolution is a page-layout fact Rust cannot reach. Two
+/// detectors is how the UI ends up finger-sized on a machine rendering at
+/// desktop resolution, or the reverse.
+///
+/// The cost of borrowing that answer is that `quality` asks for a coarse pointer
+/// **and** a viewport under 900 px, so a large tablet is `Desktop` and gets
+/// mouse-sized targets despite being driven by a finger. That is the wrong
+/// answer for such a device and the right one for a touchscreen laptop, and it
+/// is what `VIBERFOX_UI_SCALE` is for until someone has a tablet to test on.
 fn resolve_ui_scale() -> f32 {
     if let Some(raw) = crate::env_value("VIBERFOX_UI_SCALE") {
         match raw.trim().parse::<f32>() {
@@ -126,32 +138,11 @@ fn resolve_ui_scale() -> f32 {
             _ => tracing::warn!("ignoring unparseable ui scale {raw:?}"),
         }
     }
-    if coarse_pointer() {
+    if crate::quality::is_phone() {
         TOUCH_UI_SCALE
     } else {
         1.0
     }
-}
-
-/// Whether the primary pointing device is imprecise (a finger).
-#[cfg(target_arch = "wasm32")]
-fn coarse_pointer() -> bool {
-    web_sys::window()
-        .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
-        .is_some_and(|m| m.matches())
-}
-
-#[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
-fn coarse_pointer() -> bool {
-    true
-}
-
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn coarse_pointer() -> bool {
-    // A desktop touchscreen exists, but it is a second pointer beside the mouse
-    // the UI is already sized for. `VIBERFOX_UI_SCALE` covers the tablet case
-    // without making every laptop with a touch panel guess.
-    false
 }
 
 /// Build a right-docked [`egui::Panel`] that adapts to the viewport: on a wide
@@ -228,6 +219,7 @@ impl Default for EguiManager {
             // ever used for the frames before the first `begin_egui_frame`.
             surface: (UVec2::new(1280, 720), ui_scale),
             ui_scale,
+            modal: false,
         }
     }
 }
@@ -282,6 +274,13 @@ impl EguiManager {
         egui::pos2(p.x / self.ui_scale, p.y / self.ui_scale)
     }
 
+    /// Declare (each frame) whether a modal owns the screen — see the `modal`
+    /// field. Written by `login_screen::render_login_screen`, read by
+    /// [`Self::ui_owns_keyboard`].
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
     /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
     /// systems branch on this for a responsive layout.
     pub fn compact(&self) -> bool {
@@ -318,6 +317,7 @@ impl EguiManager {
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
         self.ctx.text_edit_focused()
+            || self.modal
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)

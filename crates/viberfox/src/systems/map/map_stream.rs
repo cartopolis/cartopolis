@@ -55,6 +55,7 @@ const LOAD_RADIUS: i64 = 4;
 /// Ring radius for each coarser clipmap level beneath the finest (radius 3 → 7×7,
 /// covering twice the previous level's extent per step).
 const COARSE_RADIUS: i64 = 3;
+
 /// Lowest (coarsest) zoom of the clipmap pyramid; its ring is what fills the view
 /// out to the horizon (7×7 tiles at zoom 10 ≈ 165 km).
 const MIN_ZOOM: u32 = 10;
@@ -309,7 +310,7 @@ impl Default for MapStream {
                 // No cooldown: once the attempts are spent the grey placeholder is
                 // final, until the tile leaves the pyramid and comes back.
                 cooldown_secs: 0.0,
-                despawns_per_frame: MAX_TILE_DESPAWNS_PER_FRAME,
+                despawns_per_frame: crate::quality::budget().per_frame(MAX_TILE_DESPAWNS_PER_FRAME),
             }),
             gen_shared: Arc::new(AtomicU32::new(0)),
             quads: HashMap::new(),
@@ -554,7 +555,9 @@ pub fn apply_terrain_to_tiles(
             }
             continue;
         }
-        if relief.is_some_and(|r| r.revision == revision) || built >= MAX_RELIEF_BUILDS_PER_FRAME {
+        if relief.is_some_and(|r| r.revision == revision)
+            || built >= crate::quality::budget().per_frame(MAX_RELIEF_BUILDS_PER_FRAME)
+        {
             continue;
         }
         // Where this tile's centre sits in the anchored world frame — the same
@@ -600,19 +603,24 @@ pub fn apply_terrain_to_tiles(
 /// Split out of [`update_map_stream`] because this is the arithmetic that decides
 /// the fan-out — 424 tiles for a z10–z17 pyramid — and the number is worth being
 /// able to assert (see the tests).
+///
+/// `budget` is a parameter rather than a `quality::budget()` read for exactly that
+/// reason: the fan-out is now a function of the tier, and a test that could only
+/// see the tier of whichever machine ran it could not state either number.
 fn clipmap(
     centres: &[(u32, i64, i64)],
     base_zoom: u32,
     finest_zoom: u32,
+    budget: &crate::quality::Budget,
 ) -> (HashMap<TileKey, f32>, Vec<TileKey>) {
     let mut wanted: HashMap<TileKey, f32> = HashMap::new();
     let mut spawn_order: Vec<TileKey> = Vec::new();
     for &(zoom, ctx, cty) in centres {
-        let radius = if zoom == finest_zoom {
+        let radius = budget.radius(if zoom == finest_zoom {
             LOAD_RADIUS
         } else {
             COARSE_RADIUS
-        };
+        });
         let y = level_y(base_zoom, zoom);
         // Within a level, nearest-first. The fetches are queued in this order and
         // the pools drain it roughly FIFO, so the ground under the camera is the
@@ -728,7 +736,12 @@ pub fn update_map_stream(
     // centre rather than just the finest.
     let key = (centres, stream.anchor_generation);
     if stream.desired.key.as_ref() != Some(&key) {
-        let (wanted, spawn_order) = clipmap(&key.0, base_zoom, stream.current_zoom);
+        let (wanted, spawn_order) = clipmap(
+            &key.0,
+            base_zoom,
+            stream.current_zoom,
+            crate::quality::budget(),
+        );
         stream.desired = DesiredTiles {
             key: Some(key),
             wanted,
@@ -883,9 +896,17 @@ pub fn apply_stream_textures(
     // tiles at once, and uploading them all in one frame hitches. The rest go back
     // into the sink — still holding their concurrency slots, so the bound also
     // bounds how much decoded mip chain is live — and upload next frame.
+    //
+    // `docs/notes/tile-raster-cost.md` measured this bound as never binding on a
+    // workstation and said to leave it alone. That measurement is about *fill
+    // latency*, and the phone tier is trading exactly that for smoothness: each
+    // finalization is a texture upload issued from the only thread the web build
+    // runs anything on, so halving the burst is halving the worst-case hitch when
+    // a pan lands a batch.
     const MAX_UPLOADS_PER_FRAME: usize = 8;
+    let uploads = crate::quality::budget().per_frame(MAX_UPLOADS_PER_FRAME);
     let mut ready = stream.tiles.take_results();
-    let deferred = ready.split_off(ready.len().min(MAX_UPLOADS_PER_FRAME));
+    let deferred = ready.split_off(ready.len().min(uploads));
     stream.tiles.defer(deferred);
     for (key, outcome) in ready {
         // Retired before its fetch landed: the entity is gone, so nobody will ever
@@ -935,6 +956,12 @@ pub fn apply_stream_textures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fan-out tests state the *desktop* pyramid, so they say so rather than
+    /// reading whatever tier the machine running them resolved to.
+    fn desktop() -> crate::quality::Budget {
+        crate::quality::Budget::desktop()
+    }
 
     /// The relief grid must follow the tile, not a constant. A fixed 48 was sized
     /// for a ~1.5 km tile and then applied to the 184 m ones the clipmap actually
@@ -1014,7 +1041,12 @@ mod tests {
     #[test]
     fn a_fresh_anchor_wants_424_tiles() {
         let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
-        let (wanted, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, DEFAULT_ANCHOR_ZOOM);
+        let (wanted, order) = clipmap(
+            &centres,
+            DEFAULT_ANCHOR_ZOOM,
+            DEFAULT_ANCHOR_ZOOM,
+            &desktop(),
+        );
         assert_eq!(order.len(), 424, "the clipmap fan-out changed");
         assert_eq!(
             wanted.len(),
@@ -1024,6 +1056,33 @@ mod tests {
 
         // Coarsest first: a fresh anchor gets full, blurry coverage from a handful
         // of fetches before the finer rings refine it.
+        assert_eq!(order.first().unwrap().z, MIN_ZOOM);
+        assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
+    }
+
+    /// …and what the phone tier asks for instead.
+    ///
+    /// One step off each radius: the finest ring is 7×7 = 49 and the seven coarser
+    /// ones are 5×5 = 25 each, so **224**. Stated because it is the single largest
+    /// item in the phone budget — a bit over half the ground draw list, and the
+    /// same fraction off the tile fetches, MVT decodes and rasterisations behind
+    /// it. If this number ever creeps back up, the frame budget on the device goes
+    /// with it.
+    #[test]
+    fn the_phone_tier_wants_224() {
+        let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
+        let (wanted, order) = clipmap(
+            &centres,
+            DEFAULT_ANCHOR_ZOOM,
+            DEFAULT_ANCHOR_ZOOM,
+            &crate::quality::Budget::phone(),
+        );
+        assert_eq!(order.len(), 224, "the phone-tier clipmap fan-out changed");
+        assert_eq!(wanted.len(), order.len());
+
+        // The ordering guarantee is a property of the clipmap, not of the tier:
+        // coarse-first still has to hold, or a phone gets the slowest possible
+        // fill on top of the smallest one.
         assert_eq!(order.first().unwrap().z, MIN_ZOOM);
         assert_eq!(order.last().unwrap().z, DEFAULT_ANCHOR_ZOOM);
     }
@@ -1058,7 +1117,7 @@ mod tests {
         // finest level in this band as well as the coarsest, so it gets
         // `LOAD_RADIUS`: 9×9 = 81 tiles against a full clipmap's 424.
         let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, MIN_ZOOM);
-        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM);
+        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, MIN_ZOOM, &desktop());
         assert_eq!(order.len(), 81, "the prefetch ring changed size");
     }
 
@@ -1074,7 +1133,12 @@ mod tests {
     #[test]
     fn the_overzoomed_requests_collapse_onto_a_few_dozen_source_tiles() {
         let centres = centres(DEFAULT_ANCHOR_LAT, DEFAULT_ANCHOR_LNG, DEFAULT_ANCHOR_ZOOM);
-        let (_, order) = clipmap(&centres, DEFAULT_ANCHOR_ZOOM, DEFAULT_ANCHOR_ZOOM);
+        let (_, order) = clipmap(
+            &centres,
+            DEFAULT_ANCHOR_ZOOM,
+            DEFAULT_ANCHOR_ZOOM,
+            &desktop(),
+        );
 
         let sources: std::collections::HashSet<(u32, i64, i64)> = order
             .iter()

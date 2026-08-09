@@ -239,9 +239,16 @@ impl Default for DevPanelState {
             // default is the equinox (0°), only ever seen before the first update.
             sun_declination_rad: 0.0,
             show_stats: false,
-            shadows_enabled: true,
+            // Seeded from the render budget rather than hard-coded, so the phone
+            // tier arrives with the two expensive lighting features already off
+            // *and* with the dev panel's checkboxes telling the truth about it.
+            // Gating at the spawn sites instead would leave a checkbox that reads
+            // "on" and does nothing. Both remain user-settable from here: shadows
+            // take effect immediately (`manage_lights` respawns the lights), the
+            // env map on the next launch (see the field docs above).
+            shadows_enabled: crate::quality::budget().shadows,
             atmosphere_enabled: true,
-            envmap_enabled: true,
+            envmap_enabled: crate::quality::budget().sky_ibl,
         }
     }
 }
