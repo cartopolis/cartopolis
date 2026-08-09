@@ -8,6 +8,7 @@ use bevy::pbr::AtmosphereSettings;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use big_space::prelude::{BigSpaceCommands, FloatingOrigin, Grid, GridCell};
+use viberfox_core::motion;
 
 use crate::components::RegionMesh;
 use crate::resources::{AvatarState, CameraMode, CameraState};
@@ -214,6 +215,49 @@ const ORBIT_MIN_DISTANCE: f64 = 15.0;
 /// you get close; max keeps the avatar readable rather than a distant speck.
 const AVATAR_CAM_MIN: f32 = 1.5;
 const AVATAR_CAM_MAX: f32 = 25.0;
+
+/// Where the follow camera's eye sits above the avatar's feet, and where it aims:
+/// roughly the chest of a 1.8 m model. One constant for both, because they are the
+/// same point — the boom pivots about it and the look target is it.
+const FOLLOW_EYE_HEIGHT: f32 = 1.5;
+
+// ── Boom collision ───────────────────────────────────────────────────────────
+/// Camera height (m) above which the boom stops being tested against building
+/// footprints. The footprints are 2D — they carry no height at all — so above a
+/// plausible eaves line a 2D hit means "there is a building over there", not "the
+/// view is blocked", and acting on it would reel the camera in every time the
+/// avatar walked past a block.
+const CAMERA_COLLIDE_MAX_Y: f32 = 15.0;
+/// Fraction of the boom kept clear of the wall it hit, so the near plane doesn't
+/// end up inside the facade.
+const CAMERA_COLLIDE_MARGIN: f32 = 0.12;
+/// Shortest the boom may be pulled to, as a fraction. Zero would put the camera
+/// inside the avatar's head; this leaves a close-in over-the-shoulder view.
+const CAMERA_COLLIDE_MIN: f32 = 0.18;
+/// The boom comes in fast (the wall is already in shot) and goes back out slowly
+/// (or every doorway makes the camera lunge).
+const CAMERA_COLLIDE_IN_RATE: f32 = 22.0;
+const CAMERA_COLLIDE_OUT_RATE: f32 = 3.5;
+
+// ── Landing dip ──────────────────────────────────────────────────────────────
+/// How far (m) the camera drops on the hardest possible landing, and how fast it
+/// recovers. Small: this is a suggestion of weight, and anything a player can
+/// consciously see here reads as the camera being broken rather than the landing
+/// being heavy.
+const CAMERA_DIP_MAX: f32 = 0.35;
+const CAMERA_DIP_RECOVERY: f32 = 7.0;
+
+// ── Speed-coupled field of view ──────────────────────────────────────────────
+/// Bevy's default perspective FOV (radians) — the resting value for the follow
+/// camera, which widens from here with speed.
+const FOLLOW_FOV_BASE: f32 = std::f32::consts::FRAC_PI_4;
+/// How much wider the view gets at a full sprint (radians, ~7°). The oldest trick
+/// there is for making speed felt rather than merely measured; kept small because
+/// the map is a map, and a wide-angle city bends.
+const FOLLOW_FOV_SPRINT_GAIN: f32 = 0.12;
+/// The FOV lags the speed deliberately — arriving with the acceleration would make
+/// it read as a lens fault rather than as effort.
+const FOLLOW_FOV_RATE: f32 = 4.0;
 /// Default follow distance — a comfortable third-person framing of the avatar.
 pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
@@ -378,6 +422,17 @@ fn set_projection(projection: &mut Projection, near: f32, far: f32) {
         if p.near != near || p.far != far {
             p.near = near;
             p.far = far;
+        }
+    }
+}
+
+/// Set the camera's vertical field of view, only when it actually changes — same
+/// reason [`set_projection`] guards its write: the projection is change-detected,
+/// and the follow camera would otherwise mark it dirty on every frame it moves.
+fn set_fov(projection: &mut Projection, fov: f32) {
+    if let Projection::Perspective(p) = projection {
+        if (p.fov - fov).abs() > 1e-5 {
+            p.fov = fov;
         }
     }
 }
@@ -672,8 +727,41 @@ pub struct CameraInput<'w, 's> {
     touch: Res<'w, crate::systems::touch::TouchGestures>,
 }
 
+/// The follow rig's own smoothed state. One `Local` rather than three because
+/// `camera_controls` is at Bevy's 16-parameter ceiling (the same reason
+/// [`CameraInput`] exists), and because these three are meaningless apart: they
+/// are all "where the follow camera has eased to".
+struct RigSmoothing {
+    /// Fraction of the boom currently extended (1.0 = no wall in the way).
+    boom: f32,
+    /// Metres the eye is currently dropped by a landing.
+    dip: f32,
+    /// Current vertical field of view (radians).
+    fov: f32,
+}
+
+impl Default for RigSmoothing {
+    fn default() -> Self {
+        Self {
+            boom: 1.0,
+            dip: 0.0,
+            fov: FOLLOW_FOV_BASE,
+        }
+    }
+}
+
+/// What the follow rig needs beyond the shared camera state: the world it can
+/// collide against, and where it has eased to.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct FollowRig<'w, 's> {
+    colliders: Res<'w, crate::systems::collision::BuildingColliders>,
+    layers: Res<'w, crate::systems::data_layers::DataLayers>,
+    smoothing: Local<'s, RigSmoothing>,
+}
+
 pub fn camera_controls(
     input: CameraInput,
+    mut rig: FollowRig,
     mut camera_query: Query<(&mut GridCell, &mut Transform, &mut Projection), With<FreeCamera>>,
     mut camera_state: ResMut<CameraState>,
     avatar_state: Res<AvatarState>,
@@ -732,6 +820,13 @@ pub fn camera_controls(
     // Keep the near/far at their ground defaults unless the space tier overrides
     // them below (Avatar/Free never touch the projection otherwise).
     set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR);
+    // The speed-coupled FOV belongs to Follow alone; leaving it applied would carry
+    // a sprint's wide lens into Fly and Earth. Reset the eased value too, so
+    // returning to Follow starts from rest instead of unwinding a stale one.
+    if camera_state.mode != CameraMode::Avatar {
+        rig.smoothing.fov = FOLLOW_FOV_BASE;
+        set_fov(&mut projection, FOLLOW_FOV_BASE);
+    }
 
     // A finger holds the emulated left button down for the whole gesture
     // (`systems::touch`) but sends no `CursorMoved` with it, so each mode's
@@ -849,15 +944,75 @@ pub fn camera_controls(
                 }
             }
 
-            // Calculate camera position
+            // Calculate camera position. The eye height is held out of the boom:
+            // the boom is what shortens when a wall gets between the camera and
+            // the avatar, and scaling the eye offset with it would sink the view
+            // into the pavement as it came in.
             let horizontal_distance = camera_state.distance * camera_state.pitch.cos();
             let vertical_offset = camera_state.distance * camera_state.pitch.sin();
-
-            let camera_offset = Vec3::new(
+            let eye = Vec3::Y * FOLLOW_EYE_HEIGHT;
+            let boom = Vec3::new(
                 camera_state.azimuth.sin() * horizontal_distance,
-                vertical_offset + 1.5,
+                vertical_offset,
                 camera_state.azimuth.cos() * horizontal_distance,
             );
+
+            // Pull the boom in when a facade would come between the camera and the
+            // avatar. The footprints carry no height (`systems::collision`), so
+            // this only applies while the camera is low enough for a 2D answer to
+            // be the right one — a high, steep view is looking over the roofs, and
+            // testing it against footprints would yank the camera in every time the
+            // avatar walked past a block.
+            let mut boom_scale = 1.0_f32;
+            if !locked
+                && rig.layers.buildings_enabled
+                && !rig.colliders.is_empty()
+                && (eye + boom).y < CAMERA_COLLIDE_MAX_Y
+            {
+                if let Ok((cell, _)) = avatar_cells.single() {
+                    let base = Vec2::new(
+                        cell.x as f32 * WORLD_CELL_EDGE,
+                        cell.z as f32 * WORLD_CELL_EDGE,
+                    );
+                    let from = base + Vec2::new(avatar_pos.x, avatar_pos.z);
+                    let to = from + Vec2::new(boom.x, boom.z);
+                    if let Some(t) = rig.colliders.segment_fraction(from, to) {
+                        boom_scale = (t - CAMERA_COLLIDE_MARGIN).clamp(CAMERA_COLLIDE_MIN, 1.0);
+                    }
+                }
+            }
+            // Ease the boom rather than snapping it. Coming *in* is urgent — the
+            // wall is already in shot — so it is much the faster of the two; going
+            // back out is eased hard, or every doorway the avatar passes makes the
+            // camera lunge.
+            let ease = if boom_scale < rig.smoothing.boom {
+                1.0 - (-CAMERA_COLLIDE_IN_RATE * delta_time).exp()
+            } else {
+                1.0 - (-CAMERA_COLLIDE_OUT_RATE * delta_time).exp()
+            };
+            rig.smoothing.boom += (boom_scale - rig.smoothing.boom) * ease;
+            if (boom_scale - rig.smoothing.boom).abs() < 1e-3 {
+                rig.smoothing.boom = boom_scale;
+            }
+
+            // A landing shortens the eye height for a moment: the camera keeps
+            // travelling down for an instant after the avatar has stopped, which is
+            // what makes an arrival read as having weight. Scaled by the impact
+            // speed, so stepping off a kerb is not the same event as falling off a
+            // roof.
+            if avatar_state.landing_impact > 0.0 {
+                rig.smoothing.dip = (avatar_state.landing_impact
+                    / motion::TERMINAL_FALL_SPEED
+                    * CAMERA_DIP_MAX)
+                    .min(CAMERA_DIP_MAX)
+                    .max(rig.smoothing.dip);
+            }
+            rig.smoothing.dip *= (-CAMERA_DIP_RECOVERY * delta_time).exp();
+            if rig.smoothing.dip < 1e-3 {
+                rig.smoothing.dip = 0.0;
+            }
+
+            let camera_offset = eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip;
 
             let mut target_position = avatar_pos + camera_offset;
 
@@ -911,8 +1066,26 @@ pub fn camera_controls(
             // mode, so no branch on the mode is needed.
             let aim = camera_state.drive_lookahead;
             let ahead = Vec3::new(aim.x, 0.0, aim.y);
-            let look_world = avatar_origin + (avatar_pos + Vec3::Y * 1.5 + ahead).as_dvec3();
+            let look_world =
+                avatar_origin + (avatar_pos + Vec3::Y * FOLLOW_EYE_HEIGHT + ahead).as_dvec3();
             camera_transform.look_at((look_world - cell_origin(&new_cell)).as_vec3(), Vec3::Y);
+
+            // Widen the lens with speed. Driver mode is exempt: its rig is written
+            // from the map orientation every frame and a breathing FOV under a
+            // north-up navigation view reads as a glitch, not as pace.
+            let want_fov = if locked {
+                FOLLOW_FOV_BASE
+            } else {
+                let t = (avatar_state.ground_speed / crate::systems::locomotion::SPRINT_SPEED)
+                    .clamp(0.0, 1.0);
+                FOLLOW_FOV_BASE + FOLLOW_FOV_SPRINT_GAIN * t
+            };
+            rig.smoothing.fov +=
+                (want_fov - rig.smoothing.fov) * (1.0 - (-FOLLOW_FOV_RATE * delta_time).exp());
+            if (want_fov - rig.smoothing.fov).abs() < 1e-4 {
+                rig.smoothing.fov = want_fov;
+            }
+            set_fov(&mut projection, rig.smoothing.fov);
         }
         CameraMode::Free => {
             // Free camera mode - simple FPS style
