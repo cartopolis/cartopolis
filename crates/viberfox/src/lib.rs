@@ -533,14 +533,37 @@ pub fn run() {
                 //
                 // The field's documented hazard is a parent sized *by its
                 // children*, which feeds back into the canvas growing every
-                // resize. Ours is `<body>`, given an explicit `height: 100%` in
-                // index.html, so its size comes from the viewport and never from
-                // the canvas inside it.
+                // resize. Ours is `#stage`, given an explicit pixel size by
+                // index.html's render-scale code, so its size comes from the
+                // viewport and never from the canvas inside it.
                 //
                 // `resolution` still applies natively, and is the initial size on
                 // the web until the first fit.
                 #[cfg(target_arch = "wasm32")]
                 fit_canvas_to_parent: true,
+                // Adopt the canvas index.html already put on the page rather than
+                // letting winit append one to `<body>`.
+                //
+                // This is what makes the render scale possible, and the mechanism
+                // is worth stating because none of it is visible from Rust. On the
+                // web the render resolution is *not* something this process picks:
+                // wgpu's surface `configure` writes `canvas.width/height` from the
+                // window's physical size, and that physical size is whatever
+                // winit's `ResizeObserver` measured the element's device-pixel
+                // content box to be — i.e. CSS size × `devicePixelRatio`. Bevy's
+                // `scale_factor_override` does not help, because winit's web
+                // `request_inner_size` sets the *CSS* size and returns `None`;
+                // asking for fewer physical pixels there just shrinks the visible
+                // canvas.
+                //
+                // So the only place the decision can be made is in page layout,
+                // and index.html makes it: `#stage` is sized to a fraction of the
+                // viewport and scaled back up with a CSS transform, which leaves
+                // the canvas covering the screen while its backing store — every
+                // pixel this renderer pays for — is smaller. See the
+                // `RENDER SCALE` block there.
+                #[cfg(target_arch = "wasm32")]
+                canvas: Some("#viberfox-canvas".into()),
                 ..default()
             }),
             // With no window there is nothing to close, and the harness writes its
