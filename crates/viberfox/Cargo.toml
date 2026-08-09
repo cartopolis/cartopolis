@@ -181,6 +181,9 @@ web-sys = { version = "0.3", features = [
     "UrlSearchParams",
     "Navigator",
     "Clipboard",
+    # `matchMedia`, for the `(pointer: coarse)` question the UI scale is chosen
+    # from (`egui_manager::coarse_pointer`).
+    "MediaQueryList",
     "Geolocation",
     "GeolocationPosition",
     "GeolocationCoordinates",

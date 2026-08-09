@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture"]
-updated: 2026-08-06
+updated: 2026-08-09
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -129,6 +129,50 @@ and `CursorMoved` both report logical points.
 **Only the vertical component of the two-finger drag is read.** A twist that
 isn't perfectly centred moves the centroid sideways, so taking the horizontal
 component too would double-count every rotation as a pan.
+
+## The UI is sharp on a phone and still too small to hit
+
+Reported from a Fairphone 4 on Chromium, 2026-08-09: "the ui widgets are very
+small/hard to read". This is **not** a DPI bug, and looking for one wastes the
+afternoon. `egui_surface` already feeds egui the display's scale factor (on the
+web that is `devicePixelRatio`), so text is rendered at full device resolution.
+The layout is simply built for a mouse: a point on the web is a CSS pixel
+(1/96 in), so `theme::style`'s `interact_size` of 40×24 pt is a **6.3 mm** touch
+target where the platform guidelines ask for ~10 mm.
+
+The fix is `EguiManager::ui_scale`, a magnification *on top of* the display
+scale, defaulting to `TOUCH_UI_SCALE` (1.5×) where the browser answers
+`(pointer: coarse)` and overridable per-device with `?ui_scale=1.3` /
+`VIBERFOX_UI_SCALE`. Four things about it are worth keeping:
+
+**Scaling points-per-pixel, not the style.** The alternative — multiplying the
+theme's font sizes and spacing — was rejected because it only reaches what the
+theme owns. The dock discs, `theme::close_button`, the place pins, the HUD boxes
+and the driver rail all carry their own point sizes, so a style-only scale grows
+the text and leaves every hand-drawn control the size it was. Scaling ppp is
+uniform by construction.
+
+**1.5 is bounded from above by the panels, not by the finger.** The scale
+multiplies the widgets by dividing the viewport: a 393 pt phone becomes 262 pt,
+and `responsive_right_panel` floors a compact panel at 240 pt. 2× would dock a
+panel wider than the screen it sits in.
+
+**It forks egui points from window points, and that is the whole hazard.** They
+were the same number everywhere before this existed, so any code holding a
+position from `Window::cursor_position`, `TouchInput::position` or
+`Camera::world_to_viewport` and handing it to egui was silently correct. Four
+such places existed — the context menu, the place pins, the POI popup and the
+marquee rect — and all four are now routed through `EguiManager::window_to_ui`.
+The failure mode is nasty precisely because it is proportional to distance from
+the top-left corner: at 1.5× a pin near the origin looks fine and one at the far
+edge is a third of a screen out, so it reads as a projection bug. `boot_splash`
+was a fifth, sizing its backdrop from `Window::width()`.
+
+**Asked of the browser, not inferred from the first touch.** `(pointer: coarse)`
+is answerable before the first frame is laid out; waiting for a `TouchInput`
+would relay the entire UI out from under whatever finger triggered it. Android
+is a native target and answers `true` unconditionally — one more of the
+`cfg(not(wasm32))` seams `android-build.md` warns about.
 
 ## Not covered
 

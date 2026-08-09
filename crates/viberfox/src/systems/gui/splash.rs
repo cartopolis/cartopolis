@@ -85,6 +85,12 @@ pub fn boot_splash(
         }
     };
 
+    // The area to fill, in the points egui lays out in — which are the window's
+    // own only while `EguiManager::ui_scale` is 1.0. Reading `Window::width()`
+    // here instead (as this did until the touch UI scale existed) oversizes the
+    // rect by that factor on a phone, and since everything below is placed
+    // relative to its centre, the wordmark walks off the bottom-right corner.
+    let viewport = egui.viewport_pts();
     let ctx = egui.ctx_mut();
     if splash.texture.is_none() {
         if let Ok(img) = image::load_from_memory(LOGO_PNG) {
@@ -102,12 +108,13 @@ pub fn boot_splash(
         egui::Order::Foreground,
         egui::Id::new("boot_splash"),
     ));
-    // egui 0.35 exposes no `screen_rect` accessor — the app feeds it in through
-    // `RawInput` — so take the size from the window itself, in the same logical
-    // points egui works in.
-    let Ok(win) = window.single() else { return };
-    let rect =
-        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(win.width(), win.height()));
+    // The window is still queried, but only as a *gate*: a headless `--shot` run
+    // has no primary window, and that is what keeps the splash out of every
+    // captured image. The size comes from `viewport_pts` above.
+    if window.single().is_err() {
+        return;
+    }
+    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), viewport);
     let a = |v: f32| (v * alpha * 255.0) as u8;
     // Every colour here is a brand constant faded by the dismissal alpha, so the
     // splash and the UI it uncovers are painted from the same palette.

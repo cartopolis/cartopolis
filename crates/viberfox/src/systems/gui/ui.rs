@@ -1003,11 +1003,13 @@ pub fn render_context_menu(
         return;
     }
 
+    // Position the context menu where the click landed. `screen_pos` came from
+    // `Window::cursor_position` (picking), so it is in window points and needs
+    // converting before egui can be asked to put anything there.
+    let menu_pos = egui.window_to_ui(context_menu.screen_pos);
+
     let ctx = egui.ctx_mut();
     let mut menu_open = true;
-
-    // Position the context menu at the mouse click location
-    let menu_pos = egui::pos2(context_menu.screen_pos.x, context_menu.screen_pos.y);
 
     Window::new("Context Menu")
         .open(&mut menu_open)

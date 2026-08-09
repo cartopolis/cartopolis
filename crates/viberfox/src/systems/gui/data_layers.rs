@@ -999,11 +999,13 @@ pub fn render_poi_popup(
     let Ok(screen) = cam.world_to_viewport(cam_gt, world) else {
         return; // behind the camera; keep the popup for when we turn back
     };
+    // Window points out of the projection, egui points into the `Area`.
+    let anchor = egui.window_to_ui(screen);
 
     let mut close = false;
     let mut open: Option<String> = None;
     egui::Area::new(egui::Id::new("poi_popup"))
-        .fixed_pos(egui::pos2(screen.x, screen.y))
+        .fixed_pos(anchor)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(egui.ctx_mut(), |ui| {
             egui::Frame::NONE
