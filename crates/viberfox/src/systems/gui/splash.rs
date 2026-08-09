@@ -49,6 +49,15 @@ pub struct BootSplash {
     finished: bool,
 }
 
+impl BootSplash {
+    /// Still painting over the world. Anything else that wants the screen — the
+    /// sign-in card is the one such thing — waits for this, or it draws a second
+    /// logo and wordmark on top of the first.
+    pub fn covering(&self) -> bool {
+        !self.finished
+    }
+}
+
 /// Draw the splash until the first map tiles are up, then fade it out.
 pub fn boot_splash(
     mut splash: ResMut<BootSplash>,

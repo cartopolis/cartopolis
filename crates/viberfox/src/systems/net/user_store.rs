@@ -40,6 +40,12 @@ pub struct UserData {
     /// asks for a password once. Not stored for solo mode (ephemeral port).
     #[serde(default)]
     pub session_tokens: std::collections::HashMap<String, String>,
+    /// How this client entered the world last time (`systems::session`), so the
+    /// sign-in screen comes back prefilled and — with `auto_enter` — need not be
+    /// shown at all. Never holds a password; the token map above is what makes a
+    /// remembered server silent.
+    #[serde(default)]
+    pub session: crate::systems::session::SessionPrefs,
     /// The local player's chosen avatar body + clothing. `#[serde(default)]`
     /// keeps pre-appearance files loadable (they get Man/Casual).
     #[serde(default)]
@@ -326,6 +332,22 @@ impl UserStore {
             self.data
                 .session_tokens
                 .insert(server.to_string(), token.to_string());
+            self.dirty = true;
+        }
+    }
+
+    /// Remember how the world was entered, for the next launch's sign-in screen.
+    pub fn set_session_prefs(&mut self, prefs: crate::systems::session::SessionPrefs) {
+        if self.data.session != prefs {
+            self.data.session = prefs;
+            self.dirty = true;
+        }
+    }
+
+    /// Forget a server's session token — what "sign out" means for a machine that
+    /// someone else also uses. The next sign-in there asks for the password again.
+    pub fn clear_session_token(&mut self, server: &str) {
+        if self.data.session_tokens.remove(server).is_some() {
             self.dirty = true;
         }
     }

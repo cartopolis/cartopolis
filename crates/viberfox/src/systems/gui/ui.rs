@@ -21,6 +21,16 @@ use web_time::Instant;
 /// because the compass and the locate button under it have to agree.
 pub const MAP_CONTROLS_TOP: f32 = 52.0;
 
+/// The app menu's account entry (`systems::session`), bundled into one parameter
+/// because [`render_menu_bar`] was already at Bevy's 16-parameter ceiling — the
+/// same reason `network::AuthWriteback` exists.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SignInMenu<'w> {
+    screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+    session: Res<'w, crate::systems::session::SessionState>,
+    identity: Res<'w, crate::resources::AuthIdentity>,
+}
+
 /// The address bar: the app mark, Back / Forward / Home, the geo search field,
 /// and a hamburger holding what used to be the `File` menu.
 ///
@@ -62,6 +72,7 @@ pub fn render_menu_bar(
     mut open: Local<bool>,
     mut logo: Local<Option<egui::TextureHandle>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    mut sign_in: SignInMenu,
 ) {
     // Driving takes the whole screen (bare basemap, manoeuvre card in this very
     // corner) — the address bar is not part of that chrome, mark included.
@@ -257,6 +268,26 @@ pub fn render_menu_bar(
                                     right_panel.toggle(panel);
                                     ui.close();
                                 }
+                            }
+                            ui.separator();
+                            // Which world you are in, next to the tools that
+                            // inspect it. It reads as a *place* rather than a
+                            // verb when there is a session, because "sign in"
+                            // when you already are is the wrong question.
+                            let key = theme::first_drawable(ui.ctx(), &["🔑", "◎", "@"]);
+                            let account = if sign_in.session.is_online() {
+                                match sign_in.identity.username.as_deref() {
+                                    Some(user) => {
+                                        format!("{key}  {user} · {}", sign_in.session.mode.where_())
+                                    }
+                                    None => format!("{key}  Session"),
+                                }
+                            } else {
+                                format!("{key}  Sign in…")
+                            };
+                            if ui.button(account).clicked() {
+                                sign_in.screen.open = true;
+                                ui.close();
                             }
                             ui.separator();
                             let dev_label = if dev_state.open {

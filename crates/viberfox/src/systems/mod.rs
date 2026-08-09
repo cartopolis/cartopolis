@@ -37,8 +37,8 @@ pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_ico
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.
 pub use gui::{
-    ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, place_pins, splash, theme,
-    ui,
+    ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, login_screen, place_pins,
+    splash, theme, ui,
 };
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
@@ -46,6 +46,6 @@ pub use map::{
     water, weather,
 };
 pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
-pub use net::{network, user_store};
+pub use net::{network, session, user_store};
 pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo, touch};
 pub use viberfox_geo::{furniture, mip, road_texture, routing, scatter, vector_tiles};
