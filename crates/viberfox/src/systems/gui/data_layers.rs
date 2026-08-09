@@ -1,25 +1,40 @@
 //! Data layers (View ▸ Data Layers, ADR-023): togglable point-of-interest
-//! overlays streamed from the OSM Overpass API — the same open data source the
-//! tiles and 3D buildings already come from (© OpenStreetMap contributors, ODbL).
+//! overlays over OSM data — the same open source the tiles and 3D buildings
+//! already come from (© OpenStreetMap contributors, ODbL).
 //!
 //! Layers are declared in [`LAYER_DEFS`]; adding a future layer (businesses,
 //! charging stations, …) is one new entry — the streaming, caching, panel and
 //! rendering are shared. Each layer streams per fixed LAYER_ZOOM cell around
-//! the camera (like the far building cells): fetched once through a disk cache
-//! (`cache/layers/{key}/…`), meshed on a worker thread into one merged
-//! pin-marker mesh per cell, and despawned again when out of range. Toggling a
-//! layer off just hides its entities, so re-enabling is instant.
+//! the camera (like the far building cells), meshed on a worker thread into one
+//! merged pin-marker mesh per cell, and despawned again when out of range.
+//! Toggling a layer off just hides its entities, so re-enabling is instant.
+//!
+//! ## Two sources, and which one decides what
+//!
+//! **The vector tile places the markers.** A LAYER_ZOOM cell *is* a tile of the
+//! vector source, and Shortbread already carries these features
+//! (`public_transport`, and the `shop`-tagged share of `pois`) in the very body
+//! `map_geometry` fetched for the ground underneath them. So a marker costs no
+//! request, appears the frame its tile lands, and cannot be delayed or lost by a
+//! query service being slow. `geo`'s `pois` module is the reader.
+//!
+//! **Overpass supplies only what the tile omits** — the OSM id, `website`,
+//! `addr:*` and the `ref:IFOPT` that `transit_live` keys departure boards by.
+//! That pass runs at [`DETAIL_CELL_RADIUS`] rather than [`LAYER_CELL_RADIUS`]
+//! (9 cells per layer, not 49) and its answers are *patched onto* the standing
+//! markers by [`merge_details`]; it spawns nothing and can arrive in either
+//! order. When the tile source is raster there is no tile layer to read, and
+//! Overpass goes back to being the whole marker source — see [`CellSource`].
 //!
 //! Each cell also yields its POIs as [`PoiInstance`]s, retained alongside the
 //! mesh so other systems can attach behaviour to individual points — that is how
 //! `transit_live` hangs live departure boards off the transit stops (ADR-024).
-//!
-//! First layer: public transport stops (rail stations, tram stops, bus stops).
 
 use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -34,10 +49,14 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
+use crate::resources::OsmTileUrlTemplate;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
+use crate::systems::pois::{extract_pois, tag_str, Feature};
 use crate::systems::theme;
+use crate::systems::vector_tiles::TileData;
 use viberfox_core::world::{tile_to_lat_lng, tile_to_meters};
+use viberfox_core::{tile_source_kind, TileKey, TileSourceKind};
 
 /// Material for the floating shop-pin heads: a plain `StandardMaterial` (unlit,
 /// per-vertex hue) whose depth test is forced to always pass, so the gem heads
@@ -68,8 +87,12 @@ impl MaterialExtension for DepthAlways {
 }
 
 /// Fixed grid zoom at which layer data is fetched + cached (same scheme as the
-/// building cells: coarse cells, one Overpass query each, cache never
-/// invalidated by radius changes).
+/// building cells: coarse cells, cache never invalidated by radius changes).
+///
+/// It is also the vector tileset's own deepest zoom, which is what lets a layer
+/// cell *be* a tile: `TileKey::new(cx, cy, LAYER_ZOOM)` is the body
+/// `map_geometry` has already fetched for the ground under these markers, so the
+/// tile path costs a `tile_source` cache hit rather than a request.
 const LAYER_ZOOM: u32 = 14;
 
 /// Streaming ceiling for these *surface* layers (POI pins, transit stops):
@@ -78,8 +101,30 @@ const LAYER_ZOOM: u32 = 14;
 const SURFACE_LAYER_MAX_ALT: f64 = 20_000.0;
 /// LAYER_ZOOM cells out from the camera kept loaded per enabled layer.
 const LAYER_CELL_RADIUS: i64 = 3;
+/// LAYER_ZOOM cells out from the camera the Overpass **detail** pass covers.
+///
+/// One, against the markers' three: 7×7 = 49 cells per layer became 3×3 = 9, an
+/// 82% cut in queries against a rate-limited service — and the remaining ones are
+/// off the critical path, because the markers they enrich are already standing.
+///
+/// One is not arbitrary. The details are read at two ranges and both fit inside
+/// it: a popup needs the POI the user clicked (`handle_poi_click`'s
+/// `MAX_RANGE_M`, 500 m) and a departure board needs its stop's `ref:IFOPT`
+/// (`transit_live::FETCH_RANGE`, 800 m). A z14 cell is ~1.4 km at these
+/// latitudes, so a 3×3 ring reaches at least 1.4 km in every direction from the
+/// camera's own cell — comfortably past both, with a cell of slack for the
+/// camera sitting near an edge.
+const DETAIL_CELL_RADIUS: i64 = 1;
 /// Give up on a cell after this many failed fetch rounds.
 const MAX_CELL_ATTEMPTS: u32 = 5;
+/// How near an Overpass POI must be to a placed marker to be taken as the same
+/// thing, in metres.
+///
+/// The two sources are the same OSM nodes, so the gap is quantisation, not
+/// disagreement: an MVT coordinate at z14 with a 4096 extent is ~0.36 m. Ten
+/// metres is far beyond that and still well inside the spacing of two distinct
+/// shops, and the match additionally has to agree on the category.
+const DETAIL_MATCH_M: f32 = 10.0;
 /// Marker entities freed per frame.
 ///
 /// Counted in *entities*, not cells, because one cell is a merged marker mesh plus
@@ -128,14 +173,31 @@ pub struct MarkerStyle {
     pub board_width: f32,
 }
 
-/// A declarative data layer: what to fetch from Overpass and how to draw it.
+/// A declarative data layer: where its POIs come from and how to draw it.
+///
+/// **Two sources, not one.** The markers are placed from the vector tile the map
+/// is already made of ([`tile_layer`](Self::tile_layer)) — no request, and they
+/// appear the frame the tile lands. Overpass supplies only what the tile does not
+/// carry ([`query`](Self::query)): the OSM id, `website`, `addr:*` and the
+/// `ref:IFOPT` the live departure boards are keyed by. See `geo`'s
+/// `pois` module for the measurement behind the split, and
+/// [`DETAIL_CELL_RADIUS`] for why the second source covers far fewer cells.
 pub struct LayerDef {
     /// Stable key, used as the disk-cache directory name.
     pub key: &'static str,
     /// Label shown in the Data Layers panel.
     pub name: &'static str,
+    /// MVT layer the markers are placed from, classified by
+    /// [`classify_tile`](Self::classify_tile).
+    pub tile_layer: &'static str,
+    /// Map an MVT feature of [`tile_layer`](Self::tile_layer) to a category index
+    /// (None = skip). Must agree with [`classify`](Self::classify), which reads
+    /// the same vocabulary out of raw OSM tags — the shared `*_category`
+    /// helpers below are what keeps the two from drifting.
+    pub classify_tile: fn(&Feature) -> Option<usize>,
     /// Overpass QL statement; every `{bbox}` is replaced with
-    /// `south,west,north,east`.
+    /// `south,west,north,east`. Supplies the detail fields, and is the whole
+    /// marker source when the tile source is raster (see [`CellSource`]).
     pub query: &'static str,
     /// Categories (panel legend + marker styles); indices match `classify`.
     pub categories: &'static [(&'static str, MarkerStyle)],
@@ -155,6 +217,8 @@ pub const LAYER_DEFS: &[LayerDef] = &[
     LayerDef {
         key: "transit",
         name: "Public transport stops",
+        tile_layer: "public_transport",
+        classify_tile: classify_transit_tile,
         query: "[out:json][timeout:25];(node[\"railway\"~\"^(station|halt|tram_stop)$\"]({bbox});node[\"highway\"=\"bus_stop\"]({bbox}););out;",
         categories: &[
             (
@@ -178,6 +242,8 @@ pub const LAYER_DEFS: &[LayerDef] = &[
     LayerDef {
         key: "shops",
         name: "Shops",
+        tile_layer: "pois",
+        classify_tile: classify_shops_tile,
         query: "[out:json][timeout:25];node[\"shop\"]({bbox});out;",
         categories: &[
             (
@@ -210,10 +276,37 @@ fn classify_transit(tags: Option<&serde_json::Value>) -> Option<usize> {
     (tag("highway") == Some("bus_stop")).then_some(2)
 }
 
+/// The tile's spelling of the same thing. Shortbread's `public_transport` layer
+/// is an ordinary `kind`-discriminated one, so this is a straight table — but it
+/// has to answer for the kinds the Overpass query does *not* ask for
+/// (`bus_station`, which is a bus stop by another name) or the two sources would
+/// disagree about what is on the map.
+fn classify_transit_tile(feature: &Feature) -> Option<usize> {
+    match tag_str(feature, "kind")? {
+        "station" | "halt" => Some(0),
+        "tram_stop" => Some(1),
+        "bus_stop" | "bus_station" => Some(2),
+        // ferry_terminal, aerialway_station, subway_entrance: real kinds in the
+        // schema with no category, no marker style and no live feed here.
+        _ => None,
+    }
+}
+
 /// Bucket a shop node by its `shop=*` value: food, fashion, or other.
 fn classify_shops(tags: Option<&serde_json::Value>) -> Option<usize> {
-    let shop = tags?.get("shop")?.as_str()?;
-    Some(match shop {
+    Some(shop_category(tags?.get("shop")?.as_str()?))
+}
+
+/// `pois` carries the raw OSM tags rather than a `kind`, so the tile path reads
+/// the very same `shop=*` value and hands it to the very same table.
+fn classify_shops_tile(feature: &Feature) -> Option<usize> {
+    Some(shop_category(tag_str(feature, "shop")?))
+}
+
+/// The one `shop=*` vocabulary, shared by both sources. A second copy is how the
+/// same bakery would end up green from the tile and purple from Overpass.
+fn shop_category(shop: &str) -> usize {
+    match shop {
         "supermarket" | "convenience" | "bakery" | "butcher" | "greengrocer" | "deli"
         | "cheese" | "confectionery" | "chocolate" | "seafood" | "alcohol" | "beverages"
         | "health_food" | "frozen_food" | "pastry" | "coffee" | "tea" => 0,
@@ -228,7 +321,7 @@ fn classify_shops(tags: Option<&serde_json::Value>) -> Option<usize> {
         | "leather"
         | "fabric" => 1,
         _ => 2,
-    })
+    }
 }
 
 /// OVapi keys Dutch stops by timing-point code, which is the numeric suffix of
@@ -289,6 +382,13 @@ pub struct LayerRuntime {
     cells: HashMap<(i64, i64), Vec<Entity>>,
     /// POIs of each loaded cell, in the same lifetime as its mesh entity.
     pub pois: HashMap<(i64, i64), Vec<PoiInstance>>,
+    /// Cells whose Overpass detail has already been merged into `pois`.
+    ///
+    /// The two sources land in either order — the tile is usually cached and the
+    /// query usually is not, but a revisit inverts that — so neither arrival can
+    /// be the trigger. Both just record what they have, and `merge_details` joins
+    /// whatever is complete and not yet joined.
+    enriched: HashSet<(i64, i64)>,
 }
 
 /// A cell built on the worker: its anchor cell, merged marker mesh, and POIs.
@@ -302,11 +402,29 @@ pub struct CellBuild {
 }
 
 /// What identifies one streamed cell: which layer, and where. One key space for
-/// every layer, because they share one Overpass budget.
+/// every layer, because they share one fetch budget.
 type LayerCell = (usize, i64, i64);
 
 /// A completed cell build (`None` for cells without matching POIs).
 type CellResult = Result<Option<CellBuild>, String>;
+
+/// One cell's POIs, as delivered by whichever source produced them.
+///
+/// The variant is chosen per frame from the tile template
+/// ([`tile_source_kind`]) rather than per layer: a raster basemap has no
+/// `public_transport` or `pois` layer to read, so on one the markers have to come
+/// from Overpass exactly as they always did. That keeps the fallback a live path
+/// rather than dead code — `--shot` runs without a manifest `tile_url` land on it.
+enum CellSource {
+    /// The cell's own MVT body, from `tile_source` (usually already cached).
+    Tile(Arc<Vec<u8>>),
+    /// An Overpass JSON response for the cell's bbox.
+    Overpass(String),
+}
+
+/// One cell's Overpass detail: the fields the tile does not carry, to be matched
+/// onto markers that are already standing.
+type DetailResult = Result<Vec<Poi>, String>;
 
 /// Data-layer streaming + panel state.
 #[derive(Resource)]
@@ -358,9 +476,20 @@ pub struct DataLayers {
     /// (`MapStream`), so pins follow re-anchors like the buildings (ADR-025).
     anchor: Option<(i64, i64, u32, f64)>,
     /// Cell streaming for every layer at once (`platform::stream`): the
-    /// requested/failed sets with their exponential backoff, the results sink, the
-    /// serial Overpass-throttled admission and the bounded despawn queue.
+    /// requested/failed sets with their exponential backoff, the results sink,
+    /// the admission bound and the bounded despawn queue. This is the *marker*
+    /// stream — the tile path in the ordinary case.
     cells: CellStream<LayerCell, CellResult>,
+    /// The Overpass detail pass ([`DETAIL_CELL_RADIUS`]). Its own stream because
+    /// it covers a different ring at a different pace: a rate-limited service
+    /// owed a slow ladder, against a byte cache that usually answers at once.
+    /// Unused while the markers themselves come from Overpass — there would be
+    /// nothing left to add.
+    details: CellStream<LayerCell, DetailResult>,
+    /// Detail that has arrived, whether or not its markers have. Held rather
+    /// than applied-and-dropped so a cell that streams out and back is enriched
+    /// again without a second query.
+    detail_pois: HashMap<LayerCell, Vec<Poi>>,
     /// One unlit material shared by all depth-tested marker geometry (hue is
     /// per-vertex): poles, pin stems, pin ground discs.
     material: Option<Handle<StandardMaterial>>,
@@ -532,13 +661,19 @@ impl Default for DataLayers {
             popup: None,
             anchor: None,
             cells: CellStream::new(Policy {
-                // Paced by the endpoint (`overpass_pace`): concurrent and unspaced
-                // against our own Overpass, serial and throttled against a public
-                // one, which is owed one query at a time. The budget is shared
-                // across the layers too, which is why this is one stream keyed by
-                // (layer, cell) rather than one per layer.
-                max_in_flight: overpass_concurrency,
-                min_interval_secs: overpass_spacing,
+                // Sized for the tile path, which is the ordinary one: these are
+                // `tile_source` reads that mostly hit the byte cache the ground
+                // under the markers just filled, so the bound is against the
+                // meshing behind them rather than against a remote service. It
+                // still has to be a bound — a fresh anchor wants 49 cells per
+                // layer at once, and each undrained result holds a merged mesh.
+                //
+                // The Overpass *fallback* rides this same policy on a raster
+                // source. It is looser than that endpoint would like; the
+                // condition is rare (no vector template at all) and the
+                // alternative is two policies for one stream.
+                max_in_flight: 6,
+                min_interval_secs: 0.0,
                 max_attempts: MAX_CELL_ATTEMPTS,
                 // 15 s, 30 s, 1 m, 2 m, 4 m — long enough to outlast an Overpass
                 // wobble without burning the attempt budget while it is overloaded.
@@ -547,6 +682,23 @@ impl Default for DataLayers {
                 cooldown_secs: 0.0,
                 despawns_per_frame: MAX_MARKER_DESPAWNS_PER_FRAME,
             }),
+            details: CellStream::new(Policy {
+                // Paced by the endpoint (`overpass_pace`): concurrent and unspaced
+                // against our own Overpass, serial and throttled against a public
+                // one, which is owed one query at a time. The budget is shared
+                // across the layers too, which is why this is one stream keyed by
+                // (layer, cell) rather than one per layer.
+                max_in_flight: overpass_concurrency,
+                min_interval_secs: overpass_spacing,
+                max_attempts: MAX_CELL_ATTEMPTS,
+                backoff_secs: 15.0,
+                backoff_doublings: 4,
+                cooldown_secs: 0.0,
+                // Owns no entities: detail is patched onto markers the marker
+                // stream spawned and retires with them.
+                despawns_per_frame: 0,
+            }),
+            detail_pois: HashMap::new(),
             material: None,
             head_material: None,
             ring_mesh: None,
@@ -594,10 +746,16 @@ pub fn update_data_layers(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    tile_url: Res<OsmTileUrlTemplate>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
     };
+    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
+    // Which source places the markers this frame. A raster template (or none at
+    // all, before a handshake) has no point layers to read, so Overpass is the
+    // whole source there, exactly as it was for every layer before.
+    let from_tile = tile_source_kind(&template) == TileSourceKind::Vector;
 
     // Re-anchor (ADR-025): when the map origin moves, drop every loaded cell and
     // re-establish at the new location, exactly like the buildings. Dropping
@@ -624,6 +782,7 @@ pub fn update_data_layers(
             .iter_mut()
             .flat_map(|layer| {
                 layer.pois.clear();
+                layer.enriched.clear();
                 layer
                     .cells
                     .drain()
@@ -634,6 +793,12 @@ pub fn update_data_layers(
         dl.cells.retire_all(retired);
         dl.popup = None;
         dl.cells.reset();
+        // The detail is keyed by cell and cells are anchor-independent, but the
+        // *match* is against marker positions in the old origin's frame, so it
+        // has to be re-run. Only `enriched` is cleared above — the parsed POIs
+        // themselves stay, which is what stops a re-anchor re-querying Overpass
+        // for ground it already has.
+        dl.details.reset();
         dl.anchor = None;
     }
 
@@ -674,40 +839,65 @@ pub fn update_data_layers(
     // that failed waits its 15 s / 30 s / 1 m / … out, because Overpass 504s come
     // in bursts and retrying straight away only burns the attempt budget.
     let now_secs = time.elapsed_secs_f64();
+    let ring = |radius: i64| {
+        let mut cells: Vec<(i64, i64)> = Vec::new();
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                cells.push((ccx + dx, ccy + dy));
+            }
+        }
+        cells.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
+        cells
+    };
     let mut enqueue: Vec<LayerCell> = Vec::new();
+    let mut enqueue_details: Vec<LayerCell> = Vec::new();
     for li in 0..dl.layers.len() {
         if !dl.layers[li].enabled {
             continue;
         }
-        let mut to_request: Vec<(i64, i64)> = Vec::new();
-        for dy in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
-            for dx in -LAYER_CELL_RADIUS..=LAYER_CELL_RADIUS {
-                to_request.push((ccx + dx, ccy + dy));
-            }
+        enqueue.extend(ring(LAYER_CELL_RADIUS).into_iter().map(|c| (li, c.0, c.1)));
+        // Nothing to enrich when Overpass is already placing the markers.
+        if from_tile {
+            enqueue_details.extend(ring(DETAIL_CELL_RADIUS).into_iter().map(|c| (li, c.0, c.1)));
         }
-        to_request.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
-        enqueue.extend(to_request.into_iter().map(|c| (li, c.0, c.1)));
     }
     for job in enqueue {
         dl.cells.request(job, now_secs);
     }
+    for job in enqueue_details {
+        // A cell answered before a re-anchor is still answered: the detail is
+        // anchor-independent, only the position match is not.
+        if !dl.detail_pois.contains_key(&job) {
+            dl.details.request(job, now_secs);
+        }
+    }
 
-    // Dispatch queued cells (serial, Overpass-throttled) as detached fetch+build
-    // tasks (ADR-033 seam) — no worker thread.
+    // Dispatch queued cells as detached fetch+build tasks (ADR-033 seam).
     let results = dl.cells.sink();
     while let Some((li, cx, cy)) = dl.cells.next_job(now_secs) {
         let results = results.clone();
         let ground = terrain.snapshot();
+        let template = template.clone();
         // Fetch on the task pool, parse + mesh on the worker pool (ADR-033). The
-        // `serde_json` decode of an Overpass response and the merged marker mesh
-        // are both pure arithmetic; on wasm `IoTaskPool` is the main thread, so
-        // running them here was running them on the frame loop.
+        // MVT decode, the `serde_json` decode of an Overpass response and the
+        // merged marker mesh are all pure arithmetic; on wasm `IoTaskPool` is the
+        // main thread, so running them here was running them on the frame loop.
         IoTaskPool::get()
             .spawn(async move {
-                match fetch_cell_text(&LAYER_DEFS[li], cx, cy).await {
-                    Ok(text) => {
+                let source = if from_tile {
+                    fetch_cell_tile(cx, cy, &template)
+                        .await
+                        .map(CellSource::Tile)
+                } else {
+                    fetch_cell_text(&LAYER_DEFS[li], cx, cy)
+                        .await
+                        .map(CellSource::Overpass)
+                };
+                match source {
+                    Ok(source) => {
                         crate::platform::workers::submit(Box::new(move || {
-                            let built = build_layer_cell(li, &text, cx, cy, ax, ay, z, lat, ground);
+                            let built =
+                                build_layer_cell(li, &source, cx, cy, ax, ay, z, lat, ground);
                             if let Ok(mut g) = results.lock() {
                                 g.push(((li, cx, cy), built));
                             }
@@ -721,6 +911,51 @@ pub fn update_data_layers(
                 }
             })
             .detach();
+    }
+
+    // …and the detail pass, on its own throttled budget.
+    let detail_sink = dl.details.sink();
+    while let Some((li, cx, cy)) = dl.details.next_job(now_secs) {
+        let detail_sink = detail_sink.clone();
+        IoTaskPool::get()
+            .spawn(async move {
+                let parsed = match fetch_cell_text(&LAYER_DEFS[li], cx, cy).await {
+                    Ok(text) => {
+                        // Same reason as the marker path: the parse is CPU work
+                        // and the awaiting thread is the frame loop on wasm.
+                        crate::platform::workers::submit(Box::new(move || {
+                            let parsed = parse_pois(&LAYER_DEFS[li], &text);
+                            if let Ok(mut g) = detail_sink.lock() {
+                                g.push(((li, cx, cy), parsed));
+                            }
+                        }));
+                        return;
+                    }
+                    Err(e) => Err(e),
+                };
+                if let Ok(mut g) = detail_sink.lock() {
+                    g.push(((li, cx, cy), parsed));
+                }
+            })
+            .detach();
+    }
+
+    for (key, parsed) in dl.details.take_results() {
+        match parsed {
+            Ok(pois) => {
+                dl.details.succeeded(&key);
+                dl.detail_pois.insert(key, pois);
+            }
+            Err(e) => {
+                let attempts = dl.details.failed(&key, now_secs);
+                if attempts >= MAX_CELL_ATTEMPTS {
+                    // Not an error the user can act on: the markers are standing
+                    // and only their popups and boards are the poorer for it.
+                    tracing::debug!(layer = LAYER_DEFS[key.0].key, cell = ?(key.1, key.2), %e,
+                        "POI detail gave up; markers keep the tile's fields");
+                }
+            }
+        }
     }
 
     // Apply completed cells.
@@ -854,6 +1089,10 @@ pub fn update_data_layers(
         }
     }
 
+    // Join whatever is now complete: the two sources arrive in either order, so
+    // this runs after both have been drained rather than off either arrival.
+    merge_details(&mut dl, ax, ay, z, lat);
+
     for li in 0..dl.layers.len() {
         // Retire cells out of range (one cell of hysteresis); re-entry re-requests
         // them, served from the disk cache. Through the shared queue, under the
@@ -868,6 +1107,10 @@ pub fn update_data_layers(
             let entities = dl.layers[li].cells.remove(&c).unwrap_or_default();
             dl.cells.retire_all(entities);
             dl.layers[li].pois.remove(&c);
+            // The markers are going, so their enrichment goes with them; the
+            // parsed detail in `detail_pois` stays, and re-entry re-joins it
+            // without a query.
+            dl.layers[li].enriched.remove(&c);
             dl.cells.forget(&(li, c.0, c.1));
         }
 
@@ -1529,7 +1772,7 @@ pub fn render_data_layers_panel(
             if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
                 ui.small(credit);
             }
-            ui.small("Data © OpenStreetMap contributors (ODbL), via Overpass API");
+            ui.small("Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API");
             ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
         });
     });
@@ -1540,7 +1783,86 @@ pub fn render_data_layers_panel(
 
 // --- Worker-thread fetch + mesh build ---
 
-/// A point of interest parsed from Overpass.
+/// Patch Overpass detail onto markers the tile placed.
+///
+/// Matched by **position and category**, because that is all the two sources
+/// share: the tile carries no OSM id, so there is no key to join on. They are the
+/// same OSM nodes, so the gap is MVT quantisation (~0.36 m at z14) rather than
+/// disagreement — see [`DETAIL_MATCH_M`]. Nearest wins, and each detail POI is
+/// consumed once, so two shops a few metres apart cannot both take the same
+/// website.
+///
+/// Everything here is a write to plain data. No entity is spawned, despawned or
+/// re-meshed: the mesh depends only on position and category, both of which came
+/// from the tile and neither of which this can change. That is what makes the
+/// detail pass safe to be late, to fail, or never to run at all.
+fn merge_details(dl: &mut DataLayers, ax: i64, ay: i64, z: u32, lat: f64) {
+    let tile_m = tile_to_meters(z, lat) as f32;
+    let pending: Vec<LayerCell> = dl
+        .detail_pois
+        .keys()
+        .filter(|(li, cx, cy)| {
+            dl.layers.get(*li).is_some_and(|l| {
+                l.pois.contains_key(&(*cx, *cy)) && !l.enriched.contains(&(*cx, *cy))
+            })
+        })
+        .copied()
+        .collect();
+
+    for key @ (li, cx, cy) in pending {
+        let Some(details) = dl.detail_pois.get(&key) else {
+            continue;
+        };
+        // Absolute world XZ of each detail POI, the frame the instances' own
+        // (grid cell + anchor) resolves to.
+        let mut targets: Vec<(Vec2, &Poi, bool)> = details
+            .iter()
+            .map(|p| (lat_lng_to_local(p.lat, p.lng, ax, ay, z, tile_m), p, false))
+            .collect();
+
+        let mut matched = 0usize;
+        for inst in dl.layers[li].pois.get_mut(&(cx, cy)).into_iter().flatten() {
+            let here = Vec2::new(
+                inst.cell.x as f32 * WORLD_CELL_EDGE + inst.anchor.x,
+                inst.cell.z as f32 * WORLD_CELL_EDGE + inst.anchor.z,
+            );
+            let best = targets
+                .iter_mut()
+                .filter(|(_, p, taken)| !*taken && p.category == inst.category)
+                .map(|t| {
+                    let d2 = t.0.distance_squared(here);
+                    (d2, t)
+                })
+                .filter(|(d2, _)| *d2 <= DETAIL_MATCH_M * DETAIL_MATCH_M)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let Some((_, (_, poi, taken))) = best else {
+                continue;
+            };
+            *taken = true;
+            matched += 1;
+            inst.osm_id = poi.osm_id;
+            inst.live_id = poi.live_id.clone();
+            inst.website = poi.website.clone();
+            inst.addr = poi.addr.clone();
+            // The tile's `name` is the same OSM tag, but a tile may generalise a
+            // feature that carries one out of a layer it kept the point of.
+            if inst.name.is_none() {
+                inst.name = poi.name.clone();
+            }
+        }
+
+        dl.layers[li].enriched.insert((cx, cy));
+        tracing::debug!(
+            layer = LAYER_DEFS[li].key, cell = ?(cx, cy), matched,
+            markers = dl.layers[li].pois.get(&(cx, cy)).map_or(0, Vec::len),
+            details = dl.detail_pois.get(&key).map_or(0, Vec::len),
+            "POI detail merged"
+        );
+    }
+}
+
+/// A point of interest, from either source. The tile fills the first four fields
+/// and leaves the rest empty; [`merge_details`] is what supplies them later.
 struct Poi {
     lat: f64,
     lng: f64,
@@ -1552,15 +1874,15 @@ struct Poi {
     addr: Option<String>,
 }
 
-/// Parse one layer cell's Overpass body and build its merged marker mesh, anchored
-/// to the cell centre's BigSpace grid cell for f32 precision. Returns `None` for
-/// cells without matching POIs.
+/// Parse one layer cell from whichever source produced it and build its merged
+/// marker mesh, anchored to the cell centre's BigSpace grid cell for f32
+/// precision. Returns `None` for cells without matching POIs.
 ///
 /// Pure CPU — no I/O — which is what lets it run on [`crate::platform::workers`];
-/// [`fetch_cell_text`] is the awaited half.
+/// [`fetch_cell_tile`] / [`fetch_cell_text`] are the awaited halves.
 fn build_layer_cell(
     li: usize,
-    text: &str,
+    source: &CellSource,
     cx: i64,
     cy: i64,
     ax: i64,
@@ -1570,13 +1892,60 @@ fn build_layer_cell(
     ground: crate::systems::terrain::TerrainSnapshot,
 ) -> Result<Option<CellBuild>, String> {
     let def = &LAYER_DEFS[li];
-    let pois = parse_pois(def, text)?;
-    if pois.is_empty() {
-        return Ok(None);
-    }
     let (north, west) = tile_to_lat_lng(cx, cy, LAYER_ZOOM);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LAYER_ZOOM);
     let tile_m = tile_to_meters(z, lat) as f32;
+
+    // Both sources end as a world XZ in the anchor's Mercator frame — the frame
+    // `lat_lng_to_local` defines and every other streamer places into.
+    let placed: Vec<(Vec2, Poi)> = match source {
+        CellSource::Overpass(text) => parse_pois(def, text)?
+            .into_iter()
+            .map(|p| (lat_lng_to_local(p.lat, p.lng, ax, ay, z, tile_m), p))
+            .collect(),
+        CellSource::Tile(bytes) => {
+            let tile = TileData::parse(bytes)?;
+            extract_pois(&tile, def.tile_layer, def.classify_tile)
+                .into_iter()
+                .map(|p| {
+                    // Fraction of the cell → fractional tile coordinate at the
+                    // anchor's zoom → the same `(frac − anchor − ½) · tile_m`
+                    // `lat_lng_to_local` applies. Staying in tile space rather
+                    // than converting back to lat/lng keeps this exact: it is one
+                    // linear Mercator frame, and a metres-per-degree would only
+                    // be right at the latitude it was taken at.
+                    let scale = 2.0_f64.powi(z as i32 - LAYER_ZOOM as i32);
+                    let fx = (cx as f64 + f64::from(p.u)) * scale;
+                    let fy = (cy as f64 + f64::from(p.v)) * scale;
+                    let world = Vec2::new(
+                        ((fx - ax as f64) as f32 - 0.5) * tile_m,
+                        ((fy - ay as f64) as f32 - 0.5) * tile_m,
+                    );
+                    (
+                        world,
+                        Poi {
+                            // Only used by the Overpass path's own placement; the
+                            // detail match works off `world`, not off these.
+                            lat: 0.0,
+                            lng: 0.0,
+                            category: p.category,
+                            name: p.name,
+                            // Everything below is what the tile does not carry.
+                            // `merge_details` fills it in if and when Overpass
+                            // answers for this cell.
+                            live_id: None,
+                            osm_id: 0,
+                            website: None,
+                            addr: None,
+                        },
+                    )
+                })
+                .collect()
+        }
+    };
+    if placed.is_empty() {
+        return Ok(None);
+    }
 
     let c_world = lat_lng_to_local(
         (north + south) / 2.0,
@@ -1597,11 +1966,10 @@ fn build_layer_cell(
     // cell doesn't emit hundreds of always-on-top transparent pin heads at once
     // (the overdraw that hangs a weak GPU). Instances are capped in lockstep, so
     // only rendered markers stay clickable.
-    let step = pois.len().div_ceil(MAX_MARKERS_PER_CELL).max(1);
-    let mut instances = Vec::with_capacity(pois.len() / step + 1);
-    for poi in pois.iter().step_by(step) {
-        let w = lat_lng_to_local(poi.lat, poi.lng, ax, ay, z, tile_m);
-        let local = Vec2::new(w.x - ox, w.y - oz);
+    let step = placed.len().div_ceil(MAX_MARKERS_PER_CELL).max(1);
+    let mut instances = Vec::with_capacity(placed.len() / step + 1);
+    for (w, poi) in placed.iter().step_by(step) {
+        let (w, local) = (*w, Vec2::new(w.x - ox, w.y - oz));
         let style = &def.categories[poi.category].1;
         // A pole is street furniture: it stands on the ground, and the ground is
         // measured now (`systems::terrain`). One height for the whole marker.
@@ -1637,6 +2005,19 @@ fn build_layer_cell(
 /// Cache key for one layer cell.
 fn cell_cache_key(key: &str, cx: i64, cy: i64) -> String {
     format!("layers/{}/{}/{}/{}.json", key, LAYER_ZOOM, cx, cy)
+}
+
+/// One cell's MVT body — the tile the markers stand on.
+///
+/// Through `tile_source`, which is the point: `map_geometry` streams the same
+/// z14 bodies for the ground, so a marker cell is usually an in-memory cache hit
+/// with no request at all, and a simultaneous first ask is coalesced by that
+/// module's single-flight rather than duplicated. The layers get the on-disk
+/// cache and the byte budget along with it, and this is why the data layers no
+/// longer keep a cache of their own for placement.
+async fn fetch_cell_tile(cx: i64, cy: i64, template: &str) -> Result<Arc<Vec<u8>>, String> {
+    let key = TileKey::new(cx, cy, LAYER_ZOOM);
+    crate::systems::tile_source::tile_bytes(&key, template).await
 }
 
 /// One cell's Overpass response **as text**, from the storage cache or a single
@@ -1865,6 +2246,142 @@ fn push_pin(base: &mut MeshData, heads: &mut MeshData, p: Vec2, style: &MarkerSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two sources must agree about what a stop *is*, or a bus stop placed
+    /// from the tile and the same stop described by Overpass end up in different
+    /// categories — different colour, different pole height, and a live board
+    /// mounted on a marker that was drawn as something else.
+    ///
+    /// `bus_station` is the one that is not a mirror: the Overpass query does not
+    /// ask for it (there is no `highway=bus_station`), so it exists only on the
+    /// tile side and has to land in the bus category rather than nowhere.
+    #[test]
+    fn the_two_transit_classifiers_agree() {
+        let json = |k: &str, v: &str| classify_transit(Some(&serde_json::json!({ k: v })));
+        let tile = |kind: &str| {
+            classify_transit_tile(&crate::systems::pois::point_feature(&[("kind", kind)]))
+        };
+
+        assert_eq!(json("railway", "station"), tile("station"));
+        assert_eq!(json("railway", "halt"), tile("halt"));
+        assert_eq!(json("railway", "tram_stop"), tile("tram_stop"));
+        assert_eq!(json("highway", "bus_stop"), tile("bus_stop"));
+        assert_eq!(tile("bus_station"), Some(2), "a bus station is a bus stop");
+        assert_eq!(tile("ferry_terminal"), None, "no category, no marker");
+        assert_eq!(json("railway", "rail"), None);
+    }
+
+    /// Both shop classifiers must route a value through the one table. Checked on
+    /// a value from each bucket plus an unlisted one, since "other" is a bucket
+    /// too and a classifier that returned `None` there would silently drop most
+    /// of the layer.
+    #[test]
+    fn the_two_shop_classifiers_agree() {
+        for (value, expected) in [
+            ("bakery", 0),
+            ("clothes", 1),
+            ("hairdresser", 2),
+            ("this_is_not_a_shop_value", 2),
+        ] {
+            assert_eq!(
+                classify_shops(Some(&serde_json::json!({ "shop": value }))),
+                Some(expected),
+                "overpass: {value}"
+            );
+            assert_eq!(
+                classify_shops_tile(&crate::systems::pois::point_feature(&[("shop", value)])),
+                Some(expected),
+                "tile: {value}"
+            );
+        }
+        assert_eq!(
+            classify_shops(Some(&serde_json::json!({ "amenity": "cafe" }))),
+            None,
+            "a POI with no shop tag is not a shop"
+        );
+        assert_eq!(
+            classify_shops_tile(&crate::systems::pois::point_feature(&[("amenity", "cafe")])),
+            None,
+            "…on either side"
+        );
+    }
+
+    /// Overpass detail lands on the marker it belongs to, by position and
+    /// category, and each detail POI is spent once — two shops a few metres apart
+    /// must not both claim the same website.
+    #[test]
+    fn detail_merges_onto_the_nearest_marker_of_its_category() {
+        let mut dl = DataLayers::default();
+        let li = 1; // shops
+        let cell = (10_i64, 20_i64);
+
+        // Two markers 30 m apart, and a third of a different category right on
+        // top of the first.
+        let marker = |x: f32, category: usize| PoiInstance {
+            cell: GridCell::default(),
+            anchor: Vec3::new(x, 8.0, 0.0),
+            name: None,
+            live_id: None,
+            category,
+            osm_id: 0,
+            website: None,
+            addr: None,
+        };
+        dl.layers[li]
+            .pois
+            .insert(cell, vec![marker(0.0, 0), marker(30.0, 0), marker(0.5, 1)]);
+
+        // Detail for the second marker only, offset by well under the tolerance.
+        let detail = |x: f64, category: usize, site: &str| Poi {
+            // `merge_details` maps these through `lat_lng_to_local` with the
+            // anchor below, which is the identity frame for tile (0,0) at z0 —
+            // so a degree of longitude is what moves it, not a metre. Placement
+            // is exercised by the real path; what is under test here is the
+            // match, so both sides are put in the same frame by construction.
+            lat: 0.0,
+            lng: x,
+            category,
+            name: Some("Shop".to_string()),
+            live_id: None,
+            osm_id: 42,
+            website: Some(site.to_string()),
+            addr: None,
+        };
+        let (ax, ay, z, lat) = (0_i64, 0_i64, 0_u32, 0.0_f64);
+        let tile_m = tile_to_meters(z, lat) as f32;
+        // Choose a longitude that lands ~30 m east in this frame, i.e. on the
+        // second marker.
+        let target = 30.0_f32;
+        let lng = f64::from(target / tile_m + 0.5) * 360.0 - 180.0;
+        dl.detail_pois
+            .insert((li, cell.0, cell.1), vec![detail(lng, 0, "https://b")]);
+
+        merge_details(&mut dl, ax, ay, z, lat);
+
+        let pois = &dl.layers[li].pois[&cell];
+        assert_eq!(pois[0].website, None, "the far marker took the detail");
+        assert_eq!(
+            pois[1].website.as_deref(),
+            Some("https://b"),
+            "the nearest marker of the right category was not enriched"
+        );
+        assert_eq!(pois[1].osm_id, 42);
+        assert_eq!(
+            pois[2].website, None,
+            "a marker of another category must not match"
+        );
+        assert!(
+            dl.layers[li].enriched.contains(&cell),
+            "the cell was not marked merged"
+        );
+
+        // Idempotent: a second pass must not re-consume or double-apply.
+        merge_details(&mut dl, ax, ay, z, lat);
+        assert_eq!(
+            dl.layers[li].pois[&cell][1].website.as_deref(),
+            Some("https://b")
+        );
+    }
 
     /// Panel toggles must survive a save/load cycle, including through JSON —
     /// and overlay layers must round-trip by key, not index.

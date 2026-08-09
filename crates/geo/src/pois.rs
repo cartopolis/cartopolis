@@ -30,25 +30,50 @@
 //! * **A tile buffers features past its own edge**, so the same shop is in two
 //!   neighbouring tiles. Owning exactly `[0, extent)` is the dedup — every point
 //!   lands in exactly one cell, with no tolerance to tune.
+//!
+//! **`Feature::id` is not the OSM id, and looks exactly like one.** Every feature
+//! in both layers carries one, in the right numeric range (`290288112`). It is
+//! not: intersecting the 55 shop ids in the fixture against the 65 node ids
+//! Overpass answers for the same bbox gives **zero** matches, so the tileset
+//! renumbers. So it cannot be a join key for the detail pass and it cannot build
+//! an `openstreetmap.org/node/…` link — both of which it would silently get
+//! wrong rather than fail at. [`TilePoi`] deliberately does not carry it.
 
-use mvt_reader::feature::{Feature, Value};
+use mvt_reader::feature::Value;
 
 use crate::vector_tiles::TileData;
 
-/// One POI as the tile places it: tile-local metres (origin at the cell's
-/// north-west corner, +x east, +z south) plus the little the tile knows about it.
+/// One decoded MVT feature. Re-exported because a classifier is written *by the
+/// client* (`systems::data_layers::LAYER_DEFS`) and takes one — and `viberfox`
+/// itself does not depend on `mvt_reader`. Keeping it that way is the point of
+/// this crate: the tile decoder is a detail of the geodata layer, not something
+/// every consumer links against.
+pub use mvt_reader::feature::Feature;
+
+/// One POI as the tile places it, plus the little the tile knows about it.
 ///
-/// Deliberately not the client's `PoiInstance` — that carries a BigSpace cell, a
-/// world anchor and the Overpass-only detail fields, none of which exist here.
+/// Position is **normalised across the tile** — `u`/`v` in `[0, 1)` from the
+/// north-west corner, east and south — rather than tile-local metres like
+/// [`FurnitureInstance`](crate::furniture::FurnitureInstance). Furniture is
+/// meshed into the cell it came from, where metres are the working unit; a POI
+/// marker is placed into a Mercator frame anchored somewhere else entirely, and a
+/// fraction is the form that survives that without picking up a
+/// metres-per-degree of its own. The consumer adds the cell's own origin.
+///
+/// Deliberately not the client's `PoiInstance` either — that carries a BigSpace
+/// cell, a world anchor and the Overpass-only detail fields, none of which exist
+/// here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TilePoi {
-    pub x: f32,
-    pub z: f32,
+    /// Fraction across the tile, west → east.
+    pub u: f32,
+    /// Fraction down the tile, north → south.
+    pub v: f32,
     /// Index into the layer's category table, from the classifier.
     pub category: usize,
     /// `name`, when the tile carries one. Shortbread also emits `name_nl` (and
-    /// occasionally `name_en`); `name` is the localised-neutral one and the only
-    /// one read here.
+    /// occasionally `name_en`); `name` is the localisation-neutral one and the
+    /// only one read here.
     pub name: Option<String>,
 }
 
@@ -66,14 +91,12 @@ pub struct TilePoi {
 pub fn extract_pois(
     tile: &TileData,
     layer: &str,
-    tile_m: f32,
     classify: fn(&Feature) -> Option<usize>,
 ) -> Vec<TilePoi> {
     let Some(meta) = tile.layer(layer) else {
         return Vec::new();
     };
     let extent = TileData::extent(meta);
-    let scale = tile_m / extent;
 
     let mut out = Vec::new();
     for feature in tile.features(meta) {
@@ -87,8 +110,8 @@ pub fn extract_pois(
             continue;
         }
         out.push(TilePoi {
-            x: tx * scale,
-            z: ty * scale,
+            u: tx / extent,
+            v: ty / extent,
             category,
             name: tag_str(feature, "name").map(str::to_string),
         });
@@ -120,6 +143,27 @@ pub fn tag_str<'a>(feature: &'a Feature, key: &str) -> Option<&'a str> {
     }
 }
 
+/// A point feature with the given string properties, at the origin.
+///
+/// A test fixture that has to live in production code: the classifiers are
+/// written in `viberfox` (`systems::data_layers::LAYER_DEFS`), which depends on
+/// neither `mvt_reader` nor `geo_types` and should not start doing so to build
+/// one of these by hand. Exporting a constructor is cheaper than exporting
+/// `Value` and `Geometry` and cheaper than leaving those classifiers untested.
+#[must_use]
+pub fn point_feature(properties: &[(&str, &str)]) -> Feature {
+    Feature {
+        geometry: geo_types::Geometry::Point(geo_types::Point::new(0.0, 0.0)),
+        id: None,
+        properties: Some(
+            properties
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+                .collect(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,9 +172,6 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/groningen_z14.mvt"
     ));
-
-    /// z14/8490/5319 — the tile the fixture is, at 53.23° N.
-    const TILE_M: f32 = 1_463.0;
 
     fn tile() -> TileData {
         TileData::parse(GRONINGEN_Z14).expect("parse")
@@ -142,7 +183,7 @@ mod tests {
 
     #[test]
     fn the_transit_layer_yields_placed_stops() {
-        let stops = extract_pois(&tile(), "public_transport", TILE_M, |f| {
+        let stops = extract_pois(&tile(), "public_transport", |f| {
             tag_str(f, "kind").map(|_| 0)
         });
         assert!(
@@ -156,7 +197,7 @@ mod tests {
         );
         for s in &stops {
             assert!(
-                (0.0..=TILE_M).contains(&s.x) && (0.0..=TILE_M).contains(&s.z),
+                (0.0..1.0).contains(&s.u) && (0.0..1.0).contains(&s.v),
                 "{s:?} placed outside its own cell"
             );
         }
@@ -164,7 +205,7 @@ mod tests {
 
     #[test]
     fn shops_come_out_of_the_pois_layer() {
-        let shops = extract_pois(&tile(), "pois", TILE_M, shop);
+        let shops = extract_pois(&tile(), "pois", shop);
         assert!(
             (45..=55).contains(&shops.len()),
             "55 of the 467 `pois` features carry a shop tag; got {}",
@@ -193,7 +234,7 @@ mod tests {
             "the fixture has no buffered features, so this rule is untested here"
         );
 
-        let all = extract_pois(&t, "addresses", TILE_M, |_| Some(0));
+        let all = extract_pois(&t, "addresses", |_| Some(0));
         assert_eq!(
             all.len(),
             t.features(meta).len() - outside,
@@ -205,6 +246,6 @@ mod tests {
     /// or a tile with nothing in it are all ordinary.
     #[test]
     fn a_missing_layer_is_empty() {
-        assert!(extract_pois(&tile(), "no_such_layer", TILE_M, |_| Some(0)).is_empty());
+        assert!(extract_pois(&tile(), "no_such_layer", |_| Some(0)).is_empty());
     }
 }
