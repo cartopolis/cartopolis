@@ -1,7 +1,7 @@
 ---
 topic: vector-tile-unused-layers
 triggers: [vector_tiles.rs, street_furniture.rs, PAINT_ORDER, pois, addresses, "shortbread", "what else is in the tile", "osm data", "more realism"]
-updated: 2026-07-31
+updated: 2026-08-09
 ---
 
 # What else is already in the vector tile
@@ -15,8 +15,8 @@ request** — the only question is whether we build something out of it.
 | Layer | Features | Used for |
 |---|---|---|
 | `buildings` | 8552 | flat fill (heights come from 3DBAG/Overpass, not here — see below) |
-| `addresses` | 6211 | **nothing** (`housenumber`, `unit`) |
-| `pois` | 467 | street furniture (`street_furniture.rs`) — partially |
+| `addresses` | 6211 | the "where am I" readout (`systems::places`) — `housenumber`, `street`; `unit` still unused |
+| `pois` | 467 | street furniture (`street_furniture.rs`), and every *named* feature as a proximity prompt (`systems::places`) |
 | `street_labels` | 244 | street names, routing turn names |
 | `streets` | 95 | roads, routing graph |
 | `sites` | 84 | flat fill only — `parking`×56, `bicycle_parking`×15, `school`×7, `hospital`, `university` |
@@ -67,3 +67,15 @@ positions and species — `vegetation.rs` scatters because the schema has canopy
 hedge`, `power=tower`, `man_made=mast|chimney|water_tower`, `highway=crossing`,
 and the `lanes` / `width` tags that would give a street its real width instead of
 one derived from its class.
+
+## Two of these are read now (2026-08-09)
+
+`pois` and `addresses` were both listed above as used for nothing. `systems::places`
+reads them out of the same `TileData` parse `map_geometry` already does, so they
+still cost no request and no extra decode; `world_places::WorldPlaces` holds the
+result per cell and drops it with the cell. See `docs/notes/avatar-game-feel.md`
+for what they feed, plus two traps found in the data: a tile's buffer puts some
+features slightly outside their own cell, and `housenumber` is frequently a
+numeric MVT value rather than a string.
+
+`public_transport`, `place_labels` and `street_labels_points` are still unread.

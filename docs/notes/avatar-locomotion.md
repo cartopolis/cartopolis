@@ -1,7 +1,7 @@
 ---
 topic: avatar-locomotion
-triggers: [avatar animation, fly animation, flying, clip index, Quaternius, UAL, rig, facing, strafe, turn, WASD]
-updated: 2026-07-30
+triggers: [avatar animation, fly animation, flying, jump, clip index, Quaternius, UAL, rig, facing, strafe, turn, WASD, gait, walk clip]
+updated: 2026-08-09
 ---
 
 # The avatar clip set has no flight, and no library can lend it one
@@ -34,8 +34,22 @@ model holders forward about chest height while the avatar is flying *and* moving
 and stands them up again to hover or land. It plays `Idle` throughout. This is
 also why hovering and gliding look different at all — the clip is the same one.
 
-Anything that adds a gait (a crouch, a swim, a real jump) is picking from the 24
-above, or bringing its own asset.
+**The jump added in 2026-08 is posed for the same reason**, at a much smaller
+angle (`JUMP_TUCK`, ~11°) and driven by the *signed* vertical velocity, so the
+rise and the fall do not look identical — which is the give-away that an
+"airborne" pose is really one frozen frame.
+
+Anything that adds a gait (a crouch, a swim) is picking from the 24 above, or
+bringing its own asset.
+
+## The clips are played at the speed the avatar is actually moving
+
+Since 2026-08-09 the locomotion clip is chosen by ground speed and its playback
+rate is `ground_speed / clip_reference_speed` (`systems::locomotion`). `Walk`
+(clip 22) is loaded now; it never was before, so `Run` was played at every speed
+and at a fixed 1.0×. The reference speeds are derived from the cycle durations —
+`Walk` 1.333 s ≈ 1.35 m/s, `Run` 0.8 s ≈ 4.0 m/s — and
+`docs/notes/avatar-game-feel.md` has the full table and the reasoning.
 
 ## Facing follows travel, and that is deliberate
 
