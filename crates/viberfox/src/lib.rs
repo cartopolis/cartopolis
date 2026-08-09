@@ -33,9 +33,8 @@ use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
     AiAssistantState, AiConfig, AuthIdentity, AvatarChooserState, AvatarState, CameraState,
-    ConnectAddr, ConnectAuth, ContextMenuState, DevPanelState, EditDialogState, GameState,
-    LocalAvatarSimId, MarqueeState, MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState,
-    TextureLibrary,
+    ContextMenuState, DevPanelState, EditDialogState, GameState, LocalAvatarSimId, MarqueeState,
+    MouseState, OsmTileUrlTemplate, PrimTextureCache, StatsState, TextureLibrary,
 };
 use systems::egui_manager::EguiPlugin;
 use systems::*;
@@ -45,12 +44,14 @@ use utils::sun::sun_direction;
 #[command(name = "viberfox")]
 struct Cli {
     /// Connect to an external `simulator` instance (TCP, postcard messages).
-    /// Omit for solo mode (an in-process sim); see `--offline`.
+    /// Omit to enter whatever the sign-in screen last remembered — solo mode on a
+    /// fresh install (`systems::session`).
     #[arg(long)]
     connect: Option<String>,
 
-    /// Run without any sim: local SQLite, single user, no auth. This is the old
-    /// default and what `--shot` uses. Otherwise the default is solo mode.
+    /// Run without any sim: single user, no auth, no persistence. What `--shot`
+    /// uses. The sign-in screen can still switch modes from inside the run; this
+    /// only decides where the launch starts.
     #[arg(long)]
     offline: bool,
 
@@ -312,24 +313,6 @@ fn parse_cli() -> Cli {
     Cli::parse_from(["viberfox", "--offline"])
 }
 
-/// Bring up the in-process solo sim, returning its loopback address. `None` when
-/// the `solo` feature is disabled or startup failed (the caller then runs offline).
-#[cfg(feature = "solo")]
-fn start_solo_sim() -> Option<String> {
-    match solo::start() {
-        Ok(addr) => Some(addr),
-        Err(e) => {
-            tracing::error!("solo sim failed to start: {e:#}");
-            None
-        }
-    }
-}
-
-#[cfg(not(feature = "solo"))]
-fn start_solo_sim() -> Option<String> {
-    None
-}
-
 /// Build and run the client. The `viberfox` binary is a one-line shim over this
 /// (`src/main.rs`); everything lives in the lib target so `cargo test` links the
 /// rlib instead of compiling all ~52k lines a second time under `cfg(test)`.
@@ -553,6 +536,12 @@ pub fn run() {
         // must be disabled or big_space errors at startup.
         .disable::<bevy::transform::TransformPlugin>();
 
+    // Loaded before the app is built, not inside the chain below, because the
+    // remembered session in it decides which world this launch enters (and seeds
+    // the sign-in screen) — see the connection-mode block further down.
+    let user_store = systems::user_store::UserStore::load();
+    let session_prefs = user_store.data.session.clone();
+
     // Headless (`--shot`): no window, and therefore no winit event loop to pump
     // the app — `ScheduleRunnerPlugin` drives the frames instead, as fast as the
     // GPU allows, until the harness writes its `AppExit`. wgpu needs no surface
@@ -667,7 +656,7 @@ pub fn run() {
         .init_resource::<systems::driver::DriverState>()
         .init_resource::<systems::route_ahead::RouteAhead>()
         .init_resource::<systems::bookmarks::BookmarksState>()
-        .insert_resource(systems::user_store::UserStore::load())
+        .insert_resource(user_store)
         .init_resource::<systems::map_stream::MapStream>()
         .init_resource::<resources::MapAnchor>()
         .init_resource::<systems::map_geometry::MapSurfaces>()
@@ -691,34 +680,73 @@ pub fn run() {
         // scene's cascade distances.
         .insert_resource(DirectionalLightShadowMap { size: 2048 });
 
-    // Connection mode (ADR-016):
+    // Connection mode (ADR-016, and `systems::session` for the runtime half):
     //  - `--connect ADDR` (or `server` in the login file) → external sim.
-    //  - `--offline` or `--shot` → no sim, local SQLite, no auth.
-    //  - otherwise (default) → solo mode: bring up an in-process sim on loopback
-    //    and connect to it via the same authenticated path an external sim uses.
+    //  - `--offline` or `--shot` → no sim, no auth, no sign-in screen.
+    //  - otherwise → whatever `user.json` remembers, which on a fresh install is
+    //    solo mode entered automatically — i.e. unchanged behaviour.
+    //
+    // None of it happens *here* any more: the mode is expressed as the session
+    // driver's first request and applied on frame one, which is the same path the
+    // sign-in screen uses at any later moment. A flag is an instruction for this
+    // launch, so it wins over the remembered session and is not written back.
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
     app.init_resource::<resources::RightPanel>();
-    let offline = cli.offline || scripted;
-    if !offline {
+    app.init_resource::<systems::session::SessionState>();
+    let mut screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
+    // `can_simulate` is the web build (ADR-031/033): it is the Phase-1 viewer and
+    // has no transport to a sim at all, so its session is Offline and there is
+    // nothing to ask about. Without this a remembered solo session — which is the
+    // *default* — would try to start a sim that cannot exist there and greet every
+    // first-time web visitor with a failure card.
+    if !(cli.offline || scripted || !systems::session::can_simulate()) {
+        use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
-        let external = cli.connect.or(login.server);
-        app.insert_resource(ConnectAuth {
-            credential: login.credential,
-            persist_token: external.is_some(),
-        });
-        if let Some(addr) = external {
-            app.insert_resource(ConnectAddr(addr));
-        } else {
-            match start_solo_sim() {
-                Some(addr) => {
-                    tracing::info!(%addr, "solo mode: in-process sim");
-                    app.insert_resource(ConnectAddr(addr));
-                }
-                None => tracing::info!("solo mode unavailable; running offline"),
-            }
+        // `Ok` = enter this; `Err(true)` = ask; `Err(false)` = stay offline
+        // because that is what was chosen last time.
+        let request = match cli.connect.clone().or(login.server.clone()) {
+            Some(server) => Ok(SessionRequest::Remote {
+                server,
+                credential: login.credential,
+                persist_token: true,
+            }),
+            // A `--login` with no server names the account solo logs in as.
+            None if cli.login.is_some() => Ok(SessionRequest::Solo {
+                credential: Some(login.credential),
+            }),
+            None if !session_prefs.auto_enter => Err(true),
+            None => match session_prefs.kind {
+                SessionKind::Offline => Err(false),
+                SessionKind::Solo => Ok(SessionRequest::Solo { credential: None }),
+                // A remembered server with no address is not a session; ask.
+                SessionKind::Remote if session_prefs.server.is_empty() => Err(true),
+                SessionKind::Remote => Ok(SessionRequest::Remote {
+                    server: session_prefs.server.clone(),
+                    // Remembered sessions ride the persisted token. The fallback
+                    // credential is this username with no password, which the
+                    // server rejects — and a rejection opens the sign-in screen
+                    // with the reason on it, which is the honest outcome for a
+                    // token that has expired.
+                    credential: viberfox_core::AuthCredential::Password {
+                        username: session_prefs.username.clone(),
+                        password: String::new(),
+                    },
+                    persist_token: true,
+                }),
+            },
+        };
+        match request {
+            Ok(request) => app
+                .world_mut()
+                .resource_mut::<systems::session::SessionState>()
+                .request(request),
+            // Offer the choice rather than dropping the user into a world they
+            // did not pick.
+            Err(ask) => screen.open = ask,
         }
     }
+    app.insert_resource(screen);
 
     // Scripted capture mode (`--shot` / `--shots`): the harness owns the camera
     // and ends the run, and the user store stays out of it (no restore, no
@@ -770,7 +798,6 @@ pub fn run() {
     app.add_systems(
         Startup,
         (
-            network::spawn_network_thread.run_if(has_connect_addr),
             systems::free_camera::setup_camera,
             spawn_avatar_entity,
             setup_sky,
@@ -1125,6 +1152,24 @@ pub fn run() {
         )
             .chain(),
     )
+    // Phase 7c: the session — which world this client is in, and the screen that
+    // changes it (`systems::session`, `systems::login_screen`).
+    //
+    // The screen draws into its own floating `Area` (a modal must sit above the
+    // address-bar card, which is itself a `Foreground` area), so it is deliberately
+    // *not* in the panel chain above — it never touches the shared root `Ui`. It
+    // still runs after the menu bar, which is where it is opened from.
+    //
+    // The driver runs last of the two so a mode picked this frame is applied this
+    // frame: a sign-in that visibly waits a frame for its own spinner reads as a
+    // stutter on the one screen whose whole job is to say what is happening.
+    .add_systems(
+        Update,
+        (
+            systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
+            systems::session::drive_session.after(systems::login_screen::render_login_screen),
+        ),
+    )
     // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
     // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
     .add_systems(
@@ -1223,10 +1268,6 @@ pub fn run() {
         #[cfg(target_arch = "wasm32")]
         let _ = code;
     }
-}
-
-fn has_connect_addr(addr: Option<Res<ConnectAddr>>) -> bool {
-    addr.is_some()
 }
 
 fn spawn_avatar_entity(mut commands: Commands) {

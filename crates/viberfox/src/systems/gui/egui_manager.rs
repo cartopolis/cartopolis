@@ -55,6 +55,12 @@ pub struct EguiManager {
     /// also the fallback for a frame that has **no** surface at all — see
     /// [`begin_egui_frame`].
     surface: (UVec2, f32),
+    /// A modal (currently only `systems::login_screen`) owns the screen this
+    /// frame. Pointer input takes care of itself — the modal's backdrop is a real
+    /// widget, so egui claims the pointer — but the keyboard does not: the gate
+    /// below only yields on *text* focus, which would leave WASD flying the avatar
+    /// behind a card that has the user's attention.
+    modal: bool,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -131,6 +137,7 @@ impl Default for EguiManager {
             // Matches the primary window's default resolution in `main.rs`; only
             // ever used for the frames before the first `begin_egui_frame`.
             surface: (UVec2::new(1280, 720), 1.0),
+            modal: false,
         }
     }
 }
@@ -161,6 +168,13 @@ impl EguiManager {
             1.0
         };
         self.surface = (physical, scale);
+    }
+
+    /// Declare (each frame) whether a modal owns the screen — see the `modal`
+    /// field. Written by `login_screen::render_login_screen`, read by
+    /// [`Self::ui_owns_keyboard`].
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
     }
 
     /// True on a narrow (phone-ish) viewport — see [`COMPACT_WIDTH_PTS`]. UI
@@ -199,6 +213,7 @@ impl EguiManager {
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
         self.ctx.text_edit_focused()
+            || self.modal
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)
