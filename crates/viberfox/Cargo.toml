@@ -174,9 +174,13 @@ getrandom = { version = "0.2", features = ["js"] }
 # `Navigator`/`Geolocation*`/`PositionOptions` are the device-location seam
 # (`platform::location`), which driver mode uses on the web; `Clipboard` is the
 # copy half of `utils::clipboard` (the paste half can't use it — see that
-# module); the rest read the page's query string.
+# module); `Document`/`Element` read the render tier index.html resolved onto
+# `<html data-quality>` before the module was fetched (`crate::quality`); the
+# rest read the page's query string.
 web-sys = { version = "0.3", features = [
     "Window",
+    "Document",
+    "Element",
     "Location",
     "UrlSearchParams",
     "Navigator",

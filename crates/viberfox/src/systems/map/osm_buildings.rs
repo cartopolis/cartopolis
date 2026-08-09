@@ -896,7 +896,7 @@ pub fn update_buildings(
                 // buildings all along the boundary as cells drifted through.
                 let lod22_near = lod22_covers(cell.0, cell.1)
                     && (cell.0 - ccx).abs().max((cell.1 - ccy).abs())
-                        <= crate::systems::lod22::LOD22_RADIUS + 1;
+                        <= crate::systems::lod22::lod22_radius() + 1;
                 if !lod22_near {
                     to_request.push(cell);
                 }
@@ -1063,7 +1063,7 @@ pub fn update_buildings(
             .filter(|(cx2, cy2)| {
                 let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
                 d > FAR_CELL_RADIUS + 1
-                    || (d <= crate::systems::lod22::LOD22_RADIUS + 1 && lod22_covers(*cx2, *cy2))
+                    || (d <= crate::systems::lod22::lod22_radius() + 1 && lod22_covers(*cx2, *cy2))
             })
             .copied()
             .collect();
