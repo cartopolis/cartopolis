@@ -1682,6 +1682,25 @@ pub fn corridor_tiles_at(
     let (x0, x1) = minmax(a.0, b.0);
     let (y0, y1) = minmax(a.1, b.1);
     let pad = (half_width.max(ENDPOINT_RING) + 1.0).ceil() as i64;
+
+    // Refuse *before* the loop, which the doc comment above has always promised
+    // and the code did not do: the loop walked the full bounding box of the two
+    // endpoints and only counted the survivors afterwards. A cross-planet query
+    // (Amsterdam→Sydney at `ROUTING_ZOOM` is ~6,600 × ~5,000 tiles) therefore ran
+    // ~3·10⁷ iterations of `hypot` + `point_seg_distance` on the calling thread —
+    // a multi-second stall — to produce a `TooFar` derivable from the endpoints.
+    //
+    // The test is a genuine *lower* bound on what the loop would collect, so it
+    // can never refuse a route the loop would have accepted: the capsule contains
+    // the segment, and a segment spanning `span` tiles along its longer axis
+    // enters at least that many distinct tiles.
+    let span = (b.0 - a.0).abs().max((b.1 - a.1).abs());
+    if span > limit as f64 {
+        let mid_lat = (from.0 + to.0) / 2.0;
+        let km = direct * tile_to_meters(zoom, mid_lat) / 1000.0;
+        return Err(RouteError::TooFar { km });
+    }
+
     let mut tiles = Vec::new();
     for tx in (x0.floor() as i64 - pad)..=(x1.floor() as i64 + pad) {
         for ty in (y0.floor() as i64 - pad)..=(y1.floor() as i64 + pad) {
@@ -1878,8 +1897,11 @@ fn ground_m(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// "450 m" / "4.3 km" — Organic Maps' distance style.
 #[must_use]
 pub fn format_distance(m: f64) -> String {
-    if m < 1000.0 {
-        format!("{:.0} m", (m / 10.0).round() * 10.0)
+    // Round first, *then* pick the unit. Branching on the raw metres and rounding
+    // afterwards printed "1000 m" for anything in [995, 1000).
+    let rounded = (m / 10.0).round() * 10.0;
+    if rounded < 1000.0 {
+        format!("{rounded:.0} m")
     } else if m < 10_000.0 {
         format!("{:.1} km", m / 1000.0)
     } else {
@@ -2161,6 +2183,54 @@ mod tests {
             from.0,
             from.1 + km * 1000.0 / (111_320.0 * from.0.to_radians().cos()),
         )
+    }
+
+    /// The unit is picked from the *rounded* number, so nothing prints "1000 m".
+    #[test]
+    fn a_distance_never_rounds_past_its_own_unit() {
+        assert_eq!(format_distance(450.0), "450 m");
+        assert_eq!(format_distance(994.0), "990 m");
+        // The regression: these round to 1000, which is not a metres value.
+        assert_eq!(format_distance(995.0), "1.0 km");
+        assert_eq!(format_distance(999.0), "1.0 km");
+        assert_eq!(format_distance(1_000.0), "1.0 km");
+        assert_eq!(format_distance(4_300.0), "4.3 km");
+        assert_eq!(format_distance(42_000.0), "42 km");
+    }
+
+    /// A hopeless corridor is refused from the endpoints alone. The old code
+    /// walked the endpoints' whole bounding box first — ~3·10⁷ iterations for an
+    /// intercontinental pair — to reach the same answer.
+    ///
+    /// The time budget is an order-of-magnitude guard, not a benchmark: the
+    /// rejection is now a handful of arithmetic ops, while the loop it replaces
+    /// measured in hundreds of milliseconds.
+    #[test]
+    fn an_impossible_corridor_is_refused_without_walking_the_bounding_box() {
+        let amsterdam = (52.3676, 4.9041);
+        let sydney = (-33.8688, 151.2093);
+
+        let started = std::time::Instant::now();
+        let refused = corridor_tiles_at(ROUTING_ZOOM, amsterdam, sydney, MAX_ROUTE_TILES);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(refused, Err(RouteError::TooFar { .. })),
+            "an intercontinental corridor must be refused, got {refused:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "the refusal walked the bounding box: took {elapsed:?}"
+        );
+
+        // …and the early test must not refuse anything the loop would have taken:
+        // a corridor that fits is still built. (`the_planner_steps_down_a_tier…`
+        // sweeps this boundary properly; this is the cheap direct check.)
+        let here = (53.2194, 6.5665);
+        assert!(
+            corridor_tiles_at(ROUTING_ZOOM, here, east_of(here, 8.0), MAX_ROUTE_TILES).is_ok(),
+            "a city-scale corridor was refused by the early bound"
+        );
     }
 
     /// Street level while it fits, two tiers once it does not, and a refusal only
