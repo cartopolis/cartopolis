@@ -1,11 +1,13 @@
 use glam::Vec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use viberfox_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
     PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
 };
 
+use crate::db::RegionCaps;
+use crate::scripting::{PrimView, ScriptCommand};
 use viberfox_core::motion;
 
 struct AvatarSim {
@@ -49,6 +51,31 @@ pub struct SimWorld {
     aoi_radius_sq: f32,
     /// Database connection for prim mutations (Phase 3).
     conn: Arc<Mutex<rusqlite::Connection>>,
+    /// Per-region resource budget (schema V7). A region absent from this map has
+    /// no recorded budget and is treated as unlimited — that only happens for a
+    /// row inserted outside the migration path.
+    caps: HashMap<i64, RegionCaps>,
+    /// Prims carrying a script, so the script budget can be counted without
+    /// touching the database on every create.
+    scripted: HashSet<i64>,
+    /// Prims mutated by a script since the last flush.
+    ///
+    /// Script writes land in memory and replicate through the ordinary
+    /// `WorldSnapshot` — prims are already in it — and are written back to SQLite
+    /// on a timer instead. A moving prim would otherwise be an UPDATE at the tick
+    /// rate, which is 20 disk writes a second per script for state that is
+    /// re-derivable and changes again immediately.
+    dirty: HashSet<i64>,
+}
+
+/// A region's budget and what is currently drawn against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacityUsage {
+    pub region_id: i64,
+    pub prims_used: u32,
+    pub prims_max: u32,
+    pub scripts_used: u32,
+    pub scripts_max: u32,
 }
 
 impl SimWorld {
@@ -57,6 +84,8 @@ impl SimWorld {
         prims: Vec<PrimDto>,
         aoi_radius: f32,
         conn: Arc<Mutex<rusqlite::Connection>>,
+        caps: HashMap<i64, RegionCaps>,
+        scripted: HashSet<i64>,
     ) -> Self {
         let mut region_sim_origin = HashMap::new();
         let n = regions.len().max(1);
@@ -89,6 +118,9 @@ impl SimWorld {
             observer: Vec3::ZERO,
             aoi_radius_sq: aoi_radius * aoi_radius,
             conn,
+            caps,
+            scripted,
+            dirty: HashSet::new(),
         }
     }
 
@@ -306,6 +338,17 @@ impl SimWorld {
         shape: &str,
         geo: GeoAnchor,
     ) -> Result<PrimDto, String> {
+        // Capacity is checked *before* the insert, so the refusal costs no write
+        // and the id sequence does not advance on a rejected create.
+        if let Some(caps) = self.caps.get(&region_id) {
+            let used = self.region_prim_count(region_id);
+            if used >= caps.max_prims {
+                return Err(format!(
+                    "region is full: {used} of {} prims. Delete something or ask the operator to raise the budget.",
+                    caps.max_prims
+                ));
+            }
+        }
         // Call db::insert_prim with a minimal lock
         let prim = {
             let conn_guard = self
@@ -385,7 +428,233 @@ impl SimWorld {
             if let Some(pos) = self.prims.iter().position(|p| p.id == prim_id) {
                 self.prims.remove(pos);
             }
+            // `db::delete_prim` removed the script row too, so release its budget.
+            self.scripted.remove(&prim_id);
+            self.dirty.remove(&prim_id);
         }
         Ok(deleted)
+    }
+
+    fn region_prim_count(&self, region_id: i64) -> u32 {
+        self.prims
+            .iter()
+            .filter(|p| p.region_id == region_id)
+            .count() as u32
+    }
+
+    /// A prim by id, for the lookups a script command needs (its name and where
+    /// it is standing when it speaks).
+    pub fn prim(&self, prim_id: i64) -> Option<&PrimDto> {
+        self.prims.iter().find(|p| p.id == prim_id)
+    }
+
+    /// Whether a prim carries a script. Cheap enough to ask per touch — the set is
+    /// in memory precisely so this doesn't become a query.
+    pub fn is_scripted(&self, prim_id: i64) -> bool {
+        self.scripted.contains(&prim_id)
+    }
+
+    /// The region a prim belongs to, if it exists.
+    pub fn prim_region(&self, prim_id: i64) -> Option<i64> {
+        self.prims
+            .iter()
+            .find(|p| p.id == prim_id)
+            .map(|p| p.region_id)
+    }
+
+    /// Budget and usage for a region, for [`NetMessage::RegionCapacity`].
+    pub fn capacity(&self, region_id: i64) -> Option<CapacityUsage> {
+        let caps = self.caps.get(&region_id)?;
+        let scripts_used = self
+            .prims
+            .iter()
+            .filter(|p| p.region_id == region_id && self.scripted.contains(&p.id))
+            .count() as u32;
+        Some(CapacityUsage {
+            region_id,
+            prims_used: self.region_prim_count(region_id),
+            prims_max: caps.max_prims,
+            scripts_used,
+            scripts_max: caps.max_scripts,
+        })
+    }
+
+    /// Capacity for every region, for the connect-time push.
+    pub fn all_capacity(&self) -> Vec<CapacityUsage> {
+        self.regions
+            .iter()
+            .filter_map(|r| self.capacity(r.id))
+            .collect()
+    }
+
+    /// Record that a prim gained or lost a script, after the script budget has
+    /// been checked with [`SimWorld::can_add_script`].
+    pub fn set_scripted(&mut self, prim_id: i64, scripted: bool) {
+        if scripted {
+            self.scripted.insert(prim_id);
+        } else {
+            self.scripted.remove(&prim_id);
+        }
+    }
+
+    /// Whether `prim_id` may take a script. Replacing an existing one is always
+    /// allowed — it consumes no additional budget.
+    pub fn can_add_script(&self, prim_id: i64) -> Result<(), String> {
+        if self.scripted.contains(&prim_id) {
+            return Ok(());
+        }
+        let Some(region_id) = self.prim_region(prim_id) else {
+            return Err(format!("prim {prim_id} not found"));
+        };
+        let Some(usage) = self.capacity(region_id) else {
+            return Ok(());
+        };
+        if usage.scripts_used >= usage.scripts_max {
+            return Err(format!(
+                "region is at its script limit: {} of {}",
+                usage.scripts_used, usage.scripts_max
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read-only views of every scripted prim, handed to the host each tick.
+    pub fn script_views(&self) -> Vec<(i64, PrimView)> {
+        self.prims
+            .iter()
+            .filter(|p| self.scripted.contains(&p.id))
+            .map(|p| {
+                (
+                    p.id,
+                    PrimView {
+                        pos: p.position,
+                        rot: p.rotation,
+                        color: p.color,
+                        scale: p.scale,
+                        alpha: p.surface.alpha,
+                        glow: p.surface.glow,
+                        full_bright: p.surface.full_bright,
+                        name: p.name.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Apply a script's transform/appearance write in memory.
+    ///
+    /// Returns the mutated prim so the caller can broadcast a `PrimUpsert`.
+    /// Nothing is persisted here — see [`SimWorld::flush_dirty`] and the note on
+    /// the `dirty` field.
+    pub fn apply_script_command(&mut self, cmd: &ScriptCommand) -> Option<PrimDto> {
+        let (prim_id, mutate): (i64, Box<dyn FnOnce(&mut PrimDto)>) = match cmd {
+            ScriptCommand::SetPos { prim_id, pos } => {
+                let pos = *pos;
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.position = pos))
+            }
+            ScriptCommand::SetColor { prim_id, color } => {
+                let color = *color;
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.color = color))
+            }
+            ScriptCommand::SetScale { prim_id, scale } => {
+                let scale = *scale;
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.scale = scale))
+            }
+            ScriptCommand::SetRot { prim_id, rot } => {
+                let rot = *rot;
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.rotation = rot))
+            }
+            ScriptCommand::SetAlpha { prim_id, alpha } => {
+                let alpha = *alpha;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.alpha = alpha),
+                )
+            }
+            ScriptCommand::SetGlow { prim_id, glow } => {
+                let glow = *glow;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.glow = glow),
+                )
+            }
+            ScriptCommand::SetFullBright { prim_id, on } => {
+                let on = *on;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.full_bright = on),
+                )
+            }
+            ScriptCommand::SetName { prim_id, name } => {
+                let name = name.clone();
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.name = name.clone()),
+                )
+            }
+            // Not a field write: the caller routes these to chat, to the editor,
+            // and to `remove_prim` respectively.
+            ScriptCommand::Say { .. }
+            | ScriptCommand::Output { .. }
+            | ScriptCommand::Die { .. } => return None,
+        };
+        let prim = self.prims.iter_mut().find(|p| p.id == prim_id)?;
+        mutate(prim);
+        let out = prim.clone();
+        self.dirty.insert(prim_id);
+        Some(out)
+    }
+
+    /// Persist prims that scripts have moved since the last call.
+    ///
+    /// Best-effort: a failed write leaves the prim dirty for the next flush, and
+    /// the in-memory value — which is what clients see — is unaffected.
+    pub fn flush_dirty(&mut self) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        let ids: Vec<i64> = self.dirty.drain().collect();
+        let Ok(conn) = self.conn.lock() else {
+            tracing::warn!("db lock poisoned; script writes not persisted");
+            return;
+        };
+        for id in ids {
+            let Some(p) = self.prims.iter().find(|p| p.id == id) else {
+                continue;
+            };
+            if let Err(e) = crate::db::update_prim(
+                &conn,
+                p.id,
+                p.position,
+                p.rotation,
+                p.scale,
+                p.color,
+                p.texture_id.clone(),
+                &p.name,
+                p.surface,
+                prim_geometry(p),
+                p.geo,
+            ) {
+                tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
+            }
+        }
+    }
+}
+
+/// Re-assemble the flattened geometry fields of a [`PrimDto`] into the grouped
+/// [`PrimGeometry`] that the write path takes.
+fn prim_geometry(p: &PrimDto) -> PrimGeometry {
+    PrimGeometry {
+        path_cut_begin: p.path_cut_begin,
+        path_cut_end: p.path_cut_end,
+        hollow: p.hollow,
+        twist_begin: p.twist_begin,
+        twist_end: p.twist_end,
+        taper_x: p.taper_x,
+        taper_y: p.taper_y,
+        top_shear_x: p.top_shear_x,
+        top_shear_y: p.top_shear_y,
+        slice_begin: p.slice_begin,
+        slice_end: p.slice_end,
     }
 }

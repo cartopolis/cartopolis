@@ -57,6 +57,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "jump + emotes — ClientIntent.jump, AvatarStateDto.emote; the sim integrates a real gravity arc",
     },
+    ProtocolRevision {
+        version: 14,
+        adr: "",
+        summary: "prim scripts + region capacity — Get/Set/PrimScript, ScriptOutput, TouchPrim, RegionCapacity",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -88,6 +93,12 @@ pub enum MessageKind {
     ChatSend = 17,
     ChatMessage = 18,
     ChatSubscribe = 19,
+    GetPrimScript = 20,
+    SetPrimScript = 21,
+    PrimScript = 22,
+    ScriptOutput = 23,
+    TouchPrim = 24,
+    RegionCapacity = 25,
 }
 
 impl MessageKind {
@@ -113,6 +124,12 @@ impl MessageKind {
             17 => Some(Self::ChatSend),
             18 => Some(Self::ChatMessage),
             19 => Some(Self::ChatSubscribe),
+            20 => Some(Self::GetPrimScript),
+            21 => Some(Self::SetPrimScript),
+            22 => Some(Self::PrimScript),
+            23 => Some(Self::ScriptOutput),
+            24 => Some(Self::TouchPrim),
+            25 => Some(Self::RegionCapacity),
             _ => None,
         }
     }
@@ -503,6 +520,67 @@ pub enum NetMessage {
         room: String,
         join: bool,
     },
+    /// Fetch a prim's script source for the editor. Scripts are *not* carried in
+    /// `WorldSnapshot`: source is authoring data, an order of magnitude larger
+    /// than the rest of a `PrimDto`, and it would be re-sent to every observer
+    /// 20 times a second for the benefit of the one person editing it.
+    GetPrimScript {
+        request_id: u32,
+        prim_id: i64,
+    },
+    /// Store (or, with an empty `source`, remove) a prim's script. The server
+    /// compiles it and replies with a [`NetMessage::ScriptOutput`] carrying either
+    /// the compile error or a ready line.
+    SetPrimScript {
+        request_id: u32,
+        prim_id: i64,
+        source: String,
+    },
+    /// Server's answer to [`NetMessage::GetPrimScript`], and the broadcast after a
+    /// successful `SetPrimScript` so a second editor on the same prim updates.
+    PrimScript {
+        prim_id: i64,
+        source: String,
+        /// Whether the host currently holds a live, compiled instance.
+        running: bool,
+    },
+    /// A line from a script: `vf.log`, a compile error, or a runtime fault. This
+    /// is the script editor's console, and the only channel a broken script has.
+    ScriptOutput {
+        prim_id: i64,
+        level: ScriptLevel,
+        text: String,
+        at_ms: u64,
+    },
+    /// Client touched a prim; the server turns it into the script's `on_touch`.
+    TouchPrim {
+        request_id: u32,
+        prim_id: i64,
+    },
+    /// Region resource budget and current usage. Sent on connect and whenever a
+    /// prim or script is added or removed, so the editor can show the headroom
+    /// *before* an author hits the wall rather than as a refusal afterwards.
+    RegionCapacity {
+        region_id: i64,
+        prims_used: u32,
+        prims_max: u32,
+        scripts_used: u32,
+        scripts_max: u32,
+        /// Per-script memory ceiling in bytes, enforced by the Lua allocator.
+        script_memory_bytes: u32,
+    },
+}
+
+/// Severity of a [`NetMessage::ScriptOutput`] line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScriptLevel {
+    /// `vf.log` from a running script.
+    Info,
+    /// The host has something to say about the script's lifecycle (compiled,
+    /// stopped, out of fuel).
+    Notice,
+    /// A compile error or a runtime fault. The script is not running.
+    Error,
 }
 
 #[must_use]
@@ -527,6 +605,12 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ChatSend { .. } => MessageKind::ChatSend,
         NetMessage::ChatMessage { .. } => MessageKind::ChatMessage,
         NetMessage::ChatSubscribe { .. } => MessageKind::ChatSubscribe,
+        NetMessage::GetPrimScript { .. } => MessageKind::GetPrimScript,
+        NetMessage::SetPrimScript { .. } => MessageKind::SetPrimScript,
+        NetMessage::PrimScript { .. } => MessageKind::PrimScript,
+        NetMessage::ScriptOutput { .. } => MessageKind::ScriptOutput,
+        NetMessage::TouchPrim { .. } => MessageKind::TouchPrim,
+        NetMessage::RegionCapacity { .. } => MessageKind::RegionCapacity,
     }
 }
 
@@ -542,6 +626,9 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::TextureData { request_id, .. } => *request_id,
         NetMessage::TextureNotFound { request_id, .. } => *request_id,
         NetMessage::ChatSend { request_id, .. } => *request_id,
+        NetMessage::GetPrimScript { request_id, .. } => *request_id,
+        NetMessage::SetPrimScript { request_id, .. } => *request_id,
+        NetMessage::TouchPrim { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -799,7 +886,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 19] = [
+        const ALL: [MessageKind; 25] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -819,6 +906,12 @@ mod tests {
             ChatSend,
             ChatMessage,
             ChatSubscribe,
+            GetPrimScript,
+            SetPrimScript,
+            PrimScript,
+            ScriptOutput,
+            TouchPrim,
+            RegionCapacity,
         ];
         for k in ALL {
             assert_eq!(
@@ -828,7 +921,9 @@ mod tests {
                 k as u16
             );
         }
-        // Contiguous 1..=19, nothing on either side.
+        // Contiguous from 1, nothing on either side. `ALL` is the list to extend
+        // when a kind is added — that is the point of the test, and the reason it
+        // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
         assert_eq!(MessageKind::from_wire(ALL.len() as u16 + 1), None);
     }

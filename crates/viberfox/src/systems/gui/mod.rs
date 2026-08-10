@@ -9,6 +9,7 @@ pub mod egui_manager;
 pub mod hud;
 pub mod login_screen;
 pub mod place_pins;
+pub mod script_editor;
 pub mod splash;
 pub mod theme;
 pub mod ui;

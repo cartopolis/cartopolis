@@ -1,6 +1,7 @@
 use anyhow::Context;
 use glam::Vec3;
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashMap;
 use viberfox_core::world::{lat_lng_to_tile, REGION_ZOOM_LEVEL};
 use viberfox_core::{GeoAnchor, PrimDto, PrimGeometry, PrimSurface, RegionDto};
 
@@ -289,6 +290,16 @@ pub fn update_prim(
 /// Returns true if a prim was deleted, false if the prim did not exist.
 /// (ADR-017 Phase 2)
 pub fn delete_prim(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
+    // The script row goes first, and explicitly: `prim_scripts` declares
+    // `ON DELETE CASCADE`, but SQLite only honours a foreign key when
+    // `PRAGMA foreign_keys = ON`, which is off by default and not set on this
+    // connection. Relying on the declaration would leave an orphaned script row
+    // keeping a deleted prim's source alive — and, worse, counting against the
+    // region's script budget forever.
+    conn.execute(
+        "DELETE FROM prim_scripts WHERE prim_id = ?1",
+        rusqlite::params![prim_id],
+    )?;
     let rows_affected = conn.execute(
         "DELETE FROM prims WHERE id = ?1",
         rusqlite::params![prim_id],
@@ -299,6 +310,65 @@ pub fn delete_prim(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
         tracing::debug!(prim_id, "prim deleted");
     }
     Ok(deleted)
+}
+
+/// Per-region resource budget (schema V7). Loaded once at startup with the world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionCaps {
+    pub max_prims: u32,
+    pub max_scripts: u32,
+}
+
+/// Every region's capacity budget, keyed by region id.
+pub fn load_region_caps(conn: &Connection) -> anyhow::Result<HashMap<i64, RegionCaps>> {
+    let mut stmt = conn.prepare("SELECT id, max_prims, max_scripts FROM regions")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            RegionCaps {
+                max_prims: row.get::<_, i64>(1)?.max(0) as u32,
+                max_scripts: row.get::<_, i64>(2)?.max(0) as u32,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+}
+
+/// Every stored script, as `(prim_id, source)`. Read once at startup so the host
+/// can compile the world's scripts before the first tick.
+pub fn load_prim_scripts(conn: &Connection) -> anyhow::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT prim_id, source FROM prim_scripts ORDER BY prim_id")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// A single prim's script source, or `None` if it has none.
+pub fn get_prim_script(conn: &Connection, prim_id: i64) -> anyhow::Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT source FROM prim_scripts WHERE prim_id = ?1")?;
+    let mut rows = stmt.query(rusqlite::params![prim_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
+/// Store a prim's script source, replacing any existing one.
+pub fn set_prim_script(conn: &Connection, prim_id: i64, source: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO prim_scripts (prim_id, source, updated_at) VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(prim_id) DO UPDATE SET source = excluded.source, updated_at = excluded.updated_at",
+        rusqlite::params![prim_id, source],
+    )?;
+    Ok(())
+}
+
+/// Remove a prim's script. Returns true if there was one.
+pub fn delete_prim_script(conn: &Connection, prim_id: i64) -> anyhow::Result<bool> {
+    let n = conn.execute(
+        "DELETE FROM prim_scripts WHERE prim_id = ?1",
+        rusqlite::params![prim_id],
+    )?;
+    Ok(n > 0)
 }
 
 /// One stored chat message (ADR-028 scrollback).

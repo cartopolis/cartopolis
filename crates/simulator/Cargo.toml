@@ -21,6 +21,7 @@ clap.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
 figment = { workspace = true, features = ["toml", "env"] }
 glam.workspace = true
+mlua.workspace = true
 refinery = { workspace = true }
 rusqlite.workspace = true
 serde.workspace = true
