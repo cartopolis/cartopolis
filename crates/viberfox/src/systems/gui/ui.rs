@@ -1026,6 +1026,8 @@ pub fn render_context_menu(
     selected_query: Query<Entity, With<Selected>>,
     mut route: ResMut<crate::systems::navigation::RouteState>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
+    mut script_editor: ResMut<crate::systems::script_editor::ScriptEditorState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
 ) {
     use crate::resources::RightPanel;
     use crate::systems::navigation::Endpoint;
@@ -1102,6 +1104,33 @@ pub fn render_context_menu(
                     tracing::info!(prim_id, "deleting prim");
                     game_state.prims_to_delete.push(prim_id);
                     context_menu.visible = false;
+                }
+
+                // Scripts are server state, so both entries are online-only —
+                // `--offline` has no one to store a script or fire a touch.
+                if let Some(session) = online.as_ref() {
+                    if ui
+                        .button("📝 Edit script…")
+                        .on_hover_text("Write a Luau script that runs on this prim")
+                        .clicked()
+                    {
+                        script_editor.open(prim_id);
+                        *right_panel = RightPanel::Script;
+                        context_menu.visible = false;
+                    }
+                    if ui
+                        .button("Touch")
+                        .on_hover_text("Fire the prim's on_touch handler")
+                        .clicked()
+                    {
+                        let _ = session.intent_tx.unbounded_send(
+                            viberfox_core::NetMessage::TouchPrim {
+                                request_id: 0,
+                                prim_id,
+                            },
+                        );
+                        context_menu.visible = false;
+                    }
                 }
             } else if context_menu.hit_region_id.is_some() {
                 // Clicked on empty space with a region to put a prim in. The menu

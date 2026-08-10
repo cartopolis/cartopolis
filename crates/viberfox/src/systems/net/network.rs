@@ -12,8 +12,12 @@ use crate::systems::user_store::UserStore;
 use bevy::ecs::system::SystemParam;
 
 /// Cross-cutting writeback for `apply_network_snapshot` (auth identity, token
-/// persistence, chat), grouped so the system stays under Bevy's system-parameter
-/// count limit (ADR-016 / ADR-028).
+/// persistence, chat, the script editor), grouped so the system stays under
+/// Bevy's system-parameter count limit (ADR-016 / ADR-028).
+///
+/// The grouping is a budget, not a theme: everything here is a resource this one
+/// system writes on behalf of some other part of the client, and each addition
+/// buys back a parameter slot the system does not have.
 #[derive(SystemParam)]
 pub struct AuthWriteback<'w> {
     identity: ResMut<'w, AuthIdentity>,
@@ -21,6 +25,7 @@ pub struct AuthWriteback<'w> {
     connect_addr: Option<Res<'w, ConnectAddr>>,
     user_store: ResMut<'w, UserStore>,
     chat: ResMut<'w, crate::systems::chat::ChatState>,
+    script: ResMut<'w, crate::systems::script_editor::ScriptEditorState>,
 }
 use crate::systems::avatar::{wish_dir_camera_relative, AIRBORNE_EPS};
 use bevy::asset::RenderAssetUsages;
@@ -513,6 +518,43 @@ pub fn apply_network_snapshot(
                 ..
             } => {
                 auth.chat.receive(&channel, sender_name, body, distance_m);
+            }
+            NetMessage::PrimScript {
+                prim_id,
+                source,
+                running,
+            } => {
+                auth.script.receive_source(prim_id, source, running);
+            }
+            NetMessage::ScriptOutput {
+                prim_id,
+                level,
+                text,
+                ..
+            } => {
+                // Kept for every prim, not just the open one: output is broadcast,
+                // and the panel filters. A script that faults while you are looking
+                // at a different one still has its error waiting when you get there.
+                auth.script.push(prim_id, level, text);
+            }
+            NetMessage::RegionCapacity {
+                region_id,
+                prims_used,
+                prims_max,
+                scripts_used,
+                scripts_max,
+                script_memory_bytes,
+            } => {
+                auth.script.budgets.insert(
+                    region_id,
+                    crate::systems::script_editor::RegionBudget {
+                        prims_used,
+                        prims_max,
+                        scripts_used,
+                        scripts_max,
+                        script_memory_bytes,
+                    },
+                );
             }
             _ => {}
         }

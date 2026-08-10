@@ -737,6 +737,7 @@ pub fn run() {
     // launch, so it wins over the remembered session and is not written back.
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
+    app.init_resource::<systems::script_editor::ScriptEditorState>();
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
     let mut screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
@@ -1191,6 +1192,7 @@ pub fn run() {
             systems::bookmarks::render_bookmarks_panel,
             systems::navigation::render_route_panel,
             systems::chat::render_chat_panel,
+            systems::script_editor::render_script_panel,
             systems::ui::render_avatar_chooser,
             // Also after the camera has moved, so pins project onto this frame's view.
             systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),

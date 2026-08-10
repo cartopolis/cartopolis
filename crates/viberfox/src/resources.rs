@@ -89,6 +89,7 @@ pub enum RightPanel {
     Assistant,
     Chat,
     Appearance,
+    Script,
 }
 
 impl RightPanel {
@@ -118,6 +119,7 @@ impl RightPanel {
             Self::Assistant => "AI Assistant",
             Self::Chat => "Nearby Chat",
             Self::Appearance => "Appearance",
+            Self::Script => "Script",
         }
     }
 
@@ -145,6 +147,10 @@ impl RightPanel {
             Self::Assistant => &["🤖", "✨", "◎", "AI"],
             Self::Chat => &["💬", "🗨", "◎", "C"],
             Self::Appearance => &["🧍", "🙂", "☺", "A"],
+            // A page of text, not a scroll: `📜` draws as a box in the bundled
+            // subset, like every other glyph that was guessed at rather than
+            // checked (see the note above).
+            Self::Script => &["📝", "✎", "▤", "S"],
         }
     }
 }
