@@ -23,6 +23,18 @@ const MIN_LOCAL_INTERVAL: Duration = Duration::from_millis(500);
 const MIN_GLOBAL_INTERVAL: Duration = Duration::from_secs(5);
 const MIN_ROOM_INTERVAL: Duration = Duration::from_millis(2000);
 
+/// Voice channel key, and limits sized for media rather than typing.
+///
+/// The text intervals above are seconds apart; continuous speech is a 20 ms
+/// frame cadence, so the same limiter shape needs a different order of
+/// magnitude — 15 ms admits the expected ~50/s with slack for jitter, and still
+/// bounds a client that decides to flood. `MAX_VOICE_BYTES` is generous for an
+/// Opus frame (~160 bytes at 64 kbit/s) while staying inside one datagram, so a
+/// frame never has to be fragmented when this moves off TCP.
+const VOICE_CHANNEL: &str = "voice:local";
+const MAX_VOICE_BYTES: usize = 1500;
+const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
+
 /// Milliseconds since the Unix epoch, for chat timestamps.
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -224,6 +236,9 @@ pub async fn handle_connection(
         .unwrap_or_else(Instant::now);
     let mut last_room = Instant::now()
         .checked_sub(MIN_ROOM_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut last_voice = Instant::now()
+        .checked_sub(MIN_VOICE_INTERVAL)
         .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
@@ -475,16 +490,13 @@ pub async fn handle_connection(
                                         };
                                         // Local is ephemeral — delivered by distance, never stored.
                                         if let Some(sp) = sender_pos {
-                                            for (id, p) in positions {
-                                                let d = (p - sp).length();
-                                                if d <= radius {
-                                                    let frame = encode_app_frame(&NetMessage::ChatMessage {
-                                                        channel: LOCAL_CHANNEL.into(), sender_id: avatar_id,
-                                                        sender_name: display_name.clone(), sent_at_ms: now_ms,
-                                                        body: body.clone(), distance_m: Some(d),
-                                                    })?;
-                                                    chat.deliver_to(id, frame);
-                                                }
+                                            for (id, d) in crate::chat::within_radius(sp, &positions, radius) {
+                                                let frame = encode_app_frame(&NetMessage::ChatMessage {
+                                                    channel: LOCAL_CHANNEL.into(), sender_id: avatar_id,
+                                                    sender_name: display_name.clone(), sent_at_ms: now_ms,
+                                                    body: body.clone(), distance_m: Some(d),
+                                                })?;
+                                                chat.deliver_to(id, frame);
                                             }
                                         }
                                     }
@@ -596,7 +608,7 @@ pub async fn handle_connection(
                             }
                             NetMessage::TouchPrim { request_id, prim_id } => {
                                 if last_touch.elapsed() < MIN_TOUCH_INTERVAL {
-                                    continue;
+                                    return Ok(());
                                 }
                                 last_touch = Instant::now();
                                 // Only a prim that has a script gets an event; a
@@ -610,6 +622,56 @@ pub async fn handle_connection(
                                     tracing::debug!(request_id, prim_id, avatar_id, "prim touched");
                                 }
                             }
+                            NetMessage::VoiceFrame { scope, seq, payload } => {
+                                if payload.is_empty() || payload.len() > MAX_VOICE_BYTES {
+                                    return Ok(());
+                                }
+                                if last_voice.elapsed() < MIN_VOICE_INTERVAL {
+                                    return Ok(());
+                                }
+                                last_voice = Instant::now();
+                                // Voice is never stored: it is ephemeral in every
+                                // scope, not just Local, so no `insert_chat` here.
+                                match scope {
+                                    ChatScope::Local { shout } => {
+                                        let radius = if shout { crate::chat::SHOUT_RADIUS_M } else { crate::chat::SAY_RADIUS_M };
+                                        let (sender_pos, positions) = {
+                                            let w = world.read().await;
+                                            let sp = w.avatar_position(avatar_id);
+                                            let ps: Vec<(u64, _)> = chat.connected_ids().into_iter()
+                                                .filter(|id| *id != avatar_id)
+                                                .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
+                                                .collect();
+                                            (sp, ps)
+                                        };
+                                        if let Some(sp) = sender_pos {
+                                            for (id, d) in crate::chat::within_radius(sp, &positions, radius) {
+                                                let frame = encode_app_frame(&NetMessage::VoiceData {
+                                                    channel: VOICE_CHANNEL.into(), sender_id: avatar_id,
+                                                    seq, payload: payload.clone(), distance_m: Some(d),
+                                                })?;
+                                                chat.deliver_to(id, frame);
+                                            }
+                                        }
+                                    }
+                                    ChatScope::Room(room) => {
+                                        let channel = format!("room:{room}");
+                                        let frame = encode_app_frame(&NetMessage::VoiceData {
+                                            channel: channel.clone(), sender_id: avatar_id,
+                                            seq, payload, distance_m: None,
+                                        })?;
+                                        chat.deliver_room_except(&channel, avatar_id, &frame);
+                                    }
+                                    // Global voice is deliberately not carried: it is
+                                    // an unbounded fan-out and the loudest abuse
+                                    // surface chat has, and ADR-028 already suggests
+                                    // launching without the widest text tiers. Enable
+                                    // it here if that call is revisited.
+                                    ChatScope::Global => {
+                                        tracing::debug!("dropped global voice frame");
+                                    }
+                                }
+                            }
                             NetMessage::PrimRemoved { .. }
                             | NetMessage::WorldSnapshot { .. }
                             | NetMessage::ServerHelloAck { .. }
@@ -621,7 +683,8 @@ pub async fn handle_connection(
                             | NetMessage::ChatMessage { .. }
                             | NetMessage::PrimScript { .. }
                             | NetMessage::ScriptOutput { .. }
-                            | NetMessage::RegionCapacity { .. } => {
+                            | NetMessage::RegionCapacity { .. }
+                            | NetMessage::VoiceData { .. } => {
                                 tracing::debug!("ignored message from client");
                             }
                             }

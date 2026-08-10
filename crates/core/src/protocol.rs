@@ -62,6 +62,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "prim scripts + region capacity — Get/Set/PrimScript, ScriptOutput, TouchPrim, RegionCapacity",
     },
+    ProtocolRevision {
+        version: 15,
+        adr: "",
+        summary: "proximity voice — VoiceFrame / VoiceData; opaque codec payload fanned out by ChatHub",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -99,6 +104,8 @@ pub enum MessageKind {
     ScriptOutput = 23,
     TouchPrim = 24,
     RegionCapacity = 25,
+    VoiceFrame = 26,
+    VoiceData = 27,
 }
 
 impl MessageKind {
@@ -130,6 +137,8 @@ impl MessageKind {
             23 => Some(Self::ScriptOutput),
             24 => Some(Self::TouchPrim),
             25 => Some(Self::RegionCapacity),
+            26 => Some(Self::VoiceFrame),
+            27 => Some(Self::VoiceData),
             _ => None,
         }
     }
@@ -569,6 +578,33 @@ pub enum NetMessage {
         /// Per-script memory ceiling in bytes, enforced by the Lua allocator.
         script_memory_bytes: u32,
     },
+    /// Client sends one encoded audio frame into a scope. Voice reuses the chat
+    /// scopes and the chat fan-out; the sim never inspects `payload` (Opus today,
+    /// but the codec is entirely a client concern).
+    ///
+    /// Fire-and-forget: no `request_id`, because there is no reply and a late
+    /// frame is worth less than a dropped one. `seq` is the sender's own frame
+    /// counter, carried so the receiver can order and drop — the eventual
+    /// transport is unreliable, unordered datagrams, where arrival order is not
+    /// send order, so sequencing has to live in the message rather than be
+    /// inferred from the stream.
+    VoiceFrame {
+        scope: ChatScope,
+        seq: u32,
+        payload: Vec<u8>,
+    },
+    /// Server forwards an audio frame to one recipient. `distance_m` is `Some`
+    /// only for `Local` (proximity), and is what the client attenuates by.
+    ///
+    /// Carries no sender name: at ~50 frames/second that string would dominate
+    /// the packet, and the client already has names from avatar replication.
+    VoiceData {
+        channel: String,
+        sender_id: u64,
+        seq: u32,
+        payload: Vec<u8>,
+        distance_m: Option<f32>,
+    },
 }
 
 /// Severity of a [`NetMessage::ScriptOutput`] line.
@@ -611,6 +647,8 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ScriptOutput { .. } => MessageKind::ScriptOutput,
         NetMessage::TouchPrim { .. } => MessageKind::TouchPrim,
         NetMessage::RegionCapacity { .. } => MessageKind::RegionCapacity,
+        NetMessage::VoiceFrame { .. } => MessageKind::VoiceFrame,
+        NetMessage::VoiceData { .. } => MessageKind::VoiceData,
     }
 }
 
@@ -832,6 +870,39 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_voice_app_frames() {
+        for m in [
+            NetMessage::VoiceFrame {
+                scope: ChatScope::Local { shout: false },
+                seq: 42,
+                payload: vec![0x00, 0xff, 0x7f],
+            },
+            NetMessage::VoiceFrame {
+                scope: ChatScope::Room("standup".into()),
+                seq: u32::MAX,
+                payload: vec![1; 1500],
+            },
+            NetMessage::VoiceData {
+                channel: "voice:local".into(),
+                sender_id: 9,
+                seq: 43,
+                payload: vec![0xde, 0xad],
+                distance_m: Some(31.25),
+            },
+            NetMessage::VoiceData {
+                channel: "room:standup".into(),
+                sender_id: 9,
+                seq: 44,
+                payload: vec![],
+                distance_m: None,
+            },
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+    }
+
+    #[test]
     fn roundtrip_delete_prim_app_frame() {
         let m = NetMessage::DeletePrim {
             request_id: 125,
@@ -886,7 +957,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 25] = [
+        const ALL: [MessageKind; 27] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -912,6 +983,8 @@ mod tests {
             ScriptOutput,
             TouchPrim,
             RegionCapacity,
+            VoiceFrame,
+            VoiceData,
         ];
         for k in ALL {
             assert_eq!(
