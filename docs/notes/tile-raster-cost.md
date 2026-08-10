@@ -69,6 +69,37 @@ just outside the window, which reads as a seam along a tile border. **Still not
 measured: whether this moves `ShotMetrics::settled_s`,** for the same reason as
 the section below — it needs a GPU.
 
+## The raster edge is a budget, not a constant (2026-08-10)
+
+Every row in the table above rasterises at 512², which is what the flat clipmap
+did on every tier for the life of this note. It now takes its edge from
+`quality::Budget::tile_px` — **512 on a desktop, 256 on a phone** — and
+`TilePayload::decode` takes the size as an argument rather than reading a
+constant, so the caller owns the trade.
+
+This is the globe's own conclusion, arriving on the flat path a release late.
+[globe-tile-cost.md](globe-tile-cost.md) measured the globe's leaves at 170–340
+screen px against a 512² raster — 2–3× oversampled per axis, for 4–9× the scan
+conversion — and answered with `GLOBE_TILE_PX = 256` plus `render_mvt_sized`.
+The flat path is the *larger* of the two consumers and never got it.
+
+The arithmetic that decides it: a clipmap is **224 tiles**, and 512² RGBA with
+mips is ~1.4 MB each — **~310 MB of texture against ~78 MB at 256²**. And since
+scan conversion dominates parsing by ~20× (top of this note) and scales with
+area, the same halving is also most of the time-to-first-map.
+
+**The honest cost, and why it is only payable here.** At street level the finest
+ring drops from ~2.8 to ~1.4 texel/m, which is a visibly softer basemap if you
+look for it. That is acceptable *at ground level specifically* because the
+imagery is not what you are looking at there — the vector `surfaces` geometry is
+drawn over it and the imagery is the backdrop between the polygons. It would not
+be acceptable on a tier where the imagery *is* the map, so this is not a knob to
+turn down further "for performance" without saying which tier.
+
+A **raster** source is left at whatever size it was served at. There is nothing
+to re-rasterise, only pixels to resample, and a CPU resample costs more than the
+memory it saves.
+
 ## How wide the pipeline actually runs (measured 2026-07-31)
 
 Bevy's `TaskPoolOptions` defaults cap **both** the io and async-compute pools at

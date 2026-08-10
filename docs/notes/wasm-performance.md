@@ -39,8 +39,10 @@ triangles — `?no_shadows` exists to check that one.
 Parsing is **half fixed** (restated 2026-08-10). `lod22.rs` is typed now — its
 `parse_cell` uses a derived `Deserialize` — so the 3DBAG path no longer boxes
 every coordinate of a ~4 MB cell. What is still an untyped `serde_json::Value`
-walk is the OSM building path: `osm_buildings.rs:203` (`fetch_coverage`) and
-`:2222` (`parse_buildings`), the latter over a multi-megabyte Overpass response.
+walk is the OSM building path: `osm_buildings.rs`'s `fetch_coverage` and
+`parse_buildings`, the latter over a multi-megabyte Overpass response. (Named,
+not line-numbered: the line numbers written here on 2026-08-06 had drifted by
+fourteen within four days — the `check:` grep below is the durable pointer.)
 Dropping that tree still costs more than building it, and that cost moved off the
 main thread rather than going away. Typing `parse_buildings` is the remaining win.
 
@@ -73,10 +75,14 @@ reads:
 * **Thermals.** 8 cores in `available_parallelism`, of which 6 are efficiency
   cores sharing an envelope with the render thread and the compositor.
 
-`?quality=phone` / `VIBERFOX_QUALITY=phone` forces the tier anywhere, which is
-how it gets profiled on a machine that can profile it; `?quality=high` forces it
-off. Auto-detection is coarse-pointer **and** a viewport under 900 px — either
-alone catches a touchscreen laptop or a narrow desktop window.
+`?quality=phone` / `VIBERFOX_QUALITY=phone` forces the tier on any platform that
+*has* a query string or an environment — which is how it gets profiled on a
+machine that can profile it, and which excludes Android (see below);
+`?quality=high` forces it off. Auto-detection has two arms, not one: on the web
+it is coarse-pointer **and** a viewport under 900 px (either alone catches a
+touchscreen laptop or a narrow desktop window), decided in `index.html`; on
+Android `quality::auto()` simply *is* the phone budget, because there is nothing
+to detect.
 
 ### Render scale is a page-layout problem, not a renderer setting
 
@@ -125,9 +131,22 @@ does will be wrong by exactly k.
 | Globe leaf tiles | 320 → 160 | ~450 draws of planet, from one thread |
 | Per-frame build/upload/despawn budgets | halved | these bound the worst-case hitch, not the throughput |
 | CPU workers | ≤3 | see thermals above |
+| MSAA | **off** | correctness, not cost: only 1× and 4× are guaranteed in Vulkan's `framebufferColorSampleCounts`, and a sample count the device rejects fails `main_texture_sampled` and renders *nothing* |
+| Atmosphere LUTs | every axis halved | ~4 M ray-march steps per frame at Bevy's defaults, rebuilt every frame; sizes, not sample counts, because starving the integration bands instead |
+| Space-tier raymarching | off | |
+| Tile raster edge | 512² → **256²** | ~310 MB of clipmap texture against ~78 MB — [tile-raster-cost.md](tile-raster-cost.md) |
 
 The atmosphere deliberately **stays on**: it is the sky, it A/B'd within noise
 above, and the alternative is a void.
+
+**The table is the tier**, so a knob that has no `Budget` field is a knob the
+phone does not get. That is the rule the four rows added on 2026-08-10 exist to
+enforce, and it is not a style preference: **every env-var and query-string
+escape hatch is unreachable on Android.** `VIBERFOX_FPS_CAP`,
+`VIBERFOX_NO_SPACE_RAYMARCH` and `VIBERFOX_QUALITY` all go through
+`std::env::var` off wasm, and a zygote-launched NativeActivity process has no
+settable environment and no `?query=` — so on the one platform the phone tier was
+written for, "force it with an env var" is not an answer to anything.
 
 ### Not measured
 

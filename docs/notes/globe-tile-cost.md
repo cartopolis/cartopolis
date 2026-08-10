@@ -1,7 +1,7 @@
 ---
 topic: globe-tile-cost
-triggers: [globe.rs, update_globe_tiles, qt_segs, GLOBE_TILE_PX, QT_LIFT_PER_Z, QT_MAX_TILES, "globe is slow", "globe artifacts", "flat globe", "tile grid", "zoom out"]
-updated: 2026-08-08
+triggers: [globe.rs, update_globe_tiles, qt_segs, GLOBE_TILE_PX, QT_LIFT_PER_Z, QT_MAX_TILES, tile_px, "globe is slow", "globe artifacts", "flat globe", "tile grid", "zoom out"]
+updated: 2026-08-10
 ---
 
 # What the globe quadtree actually costs, and the three ways it showed
@@ -39,6 +39,16 @@ is `MAIN_WORLD | RENDER_WORLD` — so each tile was resident *twice*, once on th
 GPU and once in `Assets<Image>`. Nothing reads a tile's pixels back.
 `tile_loader::TILE_TEXTURE_USAGE` is now `RENDER_WORLD` alone.
 
+**The default bites meshes exactly the same way, and that took a second pass to
+find** (2026-08-10). Fixing it for tile *textures* left every generated mesh at
+`RenderAssetUsages::default()` — the globe's own tile patches and backstop sphere
+(`GLOBE_MESH_USAGE`, `qt_segs(z)²` vertices plus indices apiece) and the OSM
+building meshes among them, none of which is ever read back either. So the rule
+is the asset kind, not the asset: **anything this client generates and only
+draws wants `RENDER_WORLD` alone**, and `default()` is the wrong default for all
+of it. Consequently the ~1.3 GB "across both worlds" figure below is a
+pre-2026-08-10 number and now overstates the build.
+
 **Fill latency.** Every one of those tiles goes through `render_mvt` — the ~121 ms
 of tiny-skia scan conversion in [tile-raster-cost.md](tile-raster-cost.md) — plus
 `ocean_mask` and a mip chain, on the `platform::workers` pool it shares with the
@@ -51,6 +61,15 @@ basemap the globe was written against, and silently falsified when the vector
 switch routed globe tiles through `vector_tiles::TILE_PX`. `GLOBE_TILE_PX = 256`
 restores it; `render_mvt_sized` carries the size, and scales the pixel-denominated
 stroke widths with it (`stroke_widths_scale_with_the_raster_size`).
+
+**This conclusion took a release to reach the flat clipmap, which is the larger
+consumer** (2026-08-10). The clipmap's 224 tiles are ~310 MB of texture at 512²
+against ~78 MB at 256², and it now takes its edge from `quality::Budget::tile_px`
+— 512 on a desktop, 256 on the phone tier — through the same `render_mvt_sized`
+this section introduced. So `GLOBE_TILE_PX` is no longer the only place the
+question is answered; see [tile-raster-cost.md](tile-raster-cost.md) for the flat
+side's arithmetic and for why 256² is payable at street level and would not be on
+a tier where the imagery *is* the map.
 
 ## The ancestor pyramid was permanent, not a loading fallback
 

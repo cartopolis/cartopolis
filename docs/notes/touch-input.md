@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture"]
-updated: 2026-08-09
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "text_edit_focused"]
+updated: 2026-08-10
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -212,6 +212,45 @@ k ≈ 1.83 on a Fairphone 4), so the floor now docks a panel **26 pt wider than
 the screen it sits in**, which is the exact failure it was written to prevent.
 A `min(viewport_w)` alongside the `max` is the shape of the fix; it belongs with
 whoever owns the render budget, not here.
+
+## The client draws its own keyboard, and focus is most of the work
+
+A finger has no keys. On Android there is no IME to fall back on at all
+(`android-build.md` — NativeActivity produces no text events), and a phone
+browser's IME is unreliable over a canvas, so `systems::onscreen_keyboard` draws
+a QWERTY slab in a floating `Area` whenever `ctx.text_edit_focused()` says a
+field genuinely holds focus. Not `egui_wants_keyboard_input()`, which is
+`memory.focused().is_some()` and true for any focused button — the same wrong
+predicate that once swallowed the avatar's movement keys.
+
+Two things about it are not obvious and neither is discoverable from the
+symptom:
+
+**Tapping a key destroys the condition that shows the keyboard.** egui's default
+is `SurrenderFocusOn::Clicks`, so any click that is not on the field drops the
+field's focus — and every key is such a click. So `restore_focus` is the bulk of
+the system, and it must **re-lock the `EventFilter` as well as calling
+`request_focus`**: `request_focus` installs a default all-false filter, which
+`Focus::begin_pass` reads before any widget runs, so without the re-lock the
+first arrow key moves focus to the next widget instead of moving the caret.
+
+**That forces the system to run after every system that can draw a text field.**
+Registered earlier, the surrender happens *after* the restore and undoes it: the
+keyboard types one character into nothing and then hides itself. This is the same
+class of ordering constraint as `place_pins` below — and for the same reason,
+`place_pins` subtracts the keyboard slab from its cull rect, since a pin left
+under the keys is still an interactive `Area` that eats taps meant for them.
+
+Two consequences of the finger, recorded so they are not "simplified" away:
+dismissal keys off the pointer rather than `clicked()`, because a finger that
+drifts a few points produces a drag and a `clicked()` test would close the
+keyboard mid-word; and **key height meets the 48 dp guideline while key width
+cannot** — ten columns at 48 dp needs 480 dp against a 393 dp handset. Height is
+a hard floor computed from the real scale (`ui_scale`, which on Android *is*
+density). That trade is the one every shipping phone keyboard makes, because a
+fingertip contact patch is taller than it is wide.
+
+Unverified on glass, like everything else here.
 
 ## Not covered
 

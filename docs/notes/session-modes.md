@@ -1,7 +1,7 @@
 ---
 topic: session
 triggers: [session.rs, login_screen.rs, solo.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # Run modes are a runtime state, not a launch-time fork
@@ -35,6 +35,19 @@ question it cannot answer. `SessionPrefs::default()` is Solo + `auto_enter`, so 
 fresh install boots straight into solo mode exactly as it did before any of this
 existed, and a CLI flag still wins over the file — a flag is an instruction for
 this launch and is never written back.
+
+**Except where solo does not exist.** Solo is a cargo feature, and the APK is
+built `--no-default-features` because nothing cross-compiles `rusqlite` for
+Android — so `can_solo()` is `cfg!(feature = "solo") && !cfg!(target_arch =
+"wasm32")`, `lib.rs` forces `--offline` on Android, and there the remembered
+session never enters anything and no flag can win over it. A fresh install on the
+phone boots **offline**, permanently, and that is not a preference the user can
+change from the sign-in screen. Two consequences worth keeping: `SessionMode` and
+`SessionStatus` gate their dead-code allows on `not(feature = "solo")` rather than
+on a target — the platform-vs-feature confusion this tree keeps making, and the
+one that hid a broken Android build for two months
+(`docs/notes/android-build.md`) — and the sign-in screen's offline arm is the
+*only* arm the phone ever reaches, so it is the arm to check when touching it.
 
 ## Teardown is the inverse of connect, and both halves are load-bearing
 

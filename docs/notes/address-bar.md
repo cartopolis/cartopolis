@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [ui.rs, geo_nav.rs, dock.rs, chat.rs, "top bar", "menu bar", "address bar", "search bar", "hamburger", "bottom bar", dock, logo, "suggestion", "map controls", compass]
-updated: 2026-07-31
+updated: 2026-08-10
 ---
 
 # The address bar
@@ -77,6 +77,14 @@ touch it while looking at the map*:
   this strip auto-hid and could not be relied on; that reason is gone.
 - **The `☰` menu** — things you visit rather than flip: Appearance, the
   Assistant, developer tools, Exit.
+
+**The dock is not unconditionally at the bottom** (2026-08-10). On a phone the
+address bar is typed into with `systems::onscreen_keyboard`
+(`docs/notes/touch-input.md`), which docks a slab to the same edge — so the dock
+stands down entirely while the keyboard is up, the same `Area`-over-`Area`
+reasoning driver mode already uses. Anything else that claims the bottom edge has
+to make the same arrangement, and "it is only an overlay" is not an exemption: an
+`Area` left underneath is still interactive and eats the taps meant for the keys.
 
 The bottom bar this replaced held all three kinds at once, plus the nearby-chat
 composer, in one wide strip of labelled text buttons. The composer now lives in
