@@ -875,6 +875,7 @@ pub fn autosave_user_store(
     time: Res<Time>,
     mut next_at: Local<f32>,
     mut exits: MessageReader<AppExit>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut store: ResMut<UserStore>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
@@ -884,7 +885,17 @@ pub fn autosave_user_store(
     weather: Res<crate::systems::weather::WeatherState>,
     map_anchor: Res<MapAnchor>,
 ) {
-    let exiting = exits.read().next().is_some();
+    // Two flush triggers, not one. `AppExit` is the desktop's way of leaving, and
+    // Android never sends it: the system suspends the process and later kills it
+    // outright, so on a phone the only warning you get is `WillSuspend` — and the
+    // docs are explicit that you have exactly one frame to react. Without this,
+    // every app switch loses up to `AUTOSAVE_INTERVAL` of work, which on the
+    // platform where switching away is the normal way to stop using an app means
+    // "it forgot my bookmark again" with nothing in the log to say why.
+    let suspending = lifecycle
+        .read()
+        .any(|l| matches!(l, bevy::window::AppLifecycle::WillSuspend));
+    let exiting = exits.read().next().is_some() || suspending;
     let due = time.elapsed_secs() >= *next_at;
     if !exiting && !due && !store.dirty {
         return;

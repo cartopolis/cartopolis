@@ -1321,6 +1321,11 @@ pub fn run() {
                 systems::session::drive_session.after(systems::login_screen::render_login_screen),
             ),
         )
+        // The two systems that make the app a well-behaved Android citizen: stop
+        // working while backgrounded, and answer the back gesture. Their own
+        // `add_systems` call because the Update tuple above is at Bevy's
+        // 20-system-per-tuple limit.
+        .add_systems(Update, (quiesce_while_backgrounded, handle_back_gesture))
         // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
         // browser have (`systems::onscreen_keyboard`). NativeActivity brings up no
         // IME at all, so every text field in the client can be focused and cannot
@@ -2325,6 +2330,63 @@ fn frame_time_watchdog(
 /// once per shadow cascade (sun + moon, 4 each), so `ktris_shadow` weighs far
 /// heavier than its raw value and is usually what pins this iGPU; `draws` is the
 /// visible mesh count. Watch these against `frame_ms` to see what "too much" is.
+/// Stop doing map work while the app is in the background.
+///
+/// Nothing else notices being backgrounded: the tile streamers keep fetching and
+/// the worker pool keeps rasterising, on a device whose battery the user is not
+/// looking at. `workers::set_paused` already exists for the shot harness and
+/// *parks* jobs rather than dropping them, which is the property that matters —
+/// the streamers de-duplicate on "a fetch is in flight", so a discarded decode is
+/// never re-queued and the tile is simply missing forever afterwards.
+///
+/// This is a no-op on desktop, where `AppLifecycle` never leaves `Running`.
+fn quiesce_while_backgrounded(mut lifecycle: MessageReader<bevy::window::AppLifecycle>) {
+    for event in lifecycle.read() {
+        match event {
+            bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
+                platform::workers::set_paused(true);
+            }
+            bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
+                platform::workers::set_paused(false);
+            }
+            bevy::window::AppLifecycle::Idle => {}
+        }
+    }
+}
+
+/// Android's back gesture, which until now did nothing at all.
+///
+/// Under NativeActivity the key is delivered to the app and consumed there, so a
+/// user who swipes back — the first thing every Android user reaches for to
+/// dismiss something — got no response, and the only way out of a full-screen
+/// panel was to find its close button. Back now unwinds the same stack Escape
+/// does on the desktop, innermost first: leave driver mode, then close the open
+/// panel, and only quit when there is nothing left to dismiss.
+///
+/// Quitting last is the part worth stating. Android's convention is that back
+/// from the root screen leaves the app, and an app that refuses to is a worse
+/// citizen than one that exits when you meant to close a panel — but a map client
+/// that quits on the first back press while a panel is open would be unusable.
+fn handle_back_gesture(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut right_panel: ResMut<resources::RightPanel>,
+    mut driver: ResMut<systems::driver::DriverState>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    // `BrowserBack` is what winit maps Android's back key to. Desktop keyboards
+    // can carry the same key, and doing the same thing there is right anyway.
+    if !keys.just_pressed(KeyCode::BrowserBack) {
+        return;
+    }
+    if driver.active {
+        driver.exit();
+    } else if *right_panel != resources::RightPanel::None {
+        *right_panel = resources::RightPanel::None;
+    } else {
+        exit.write(AppExit::Success);
+    }
+}
+
 fn log_render_cost(
     time: Res<Time<Real>>,
     mut next: Local<f32>,
