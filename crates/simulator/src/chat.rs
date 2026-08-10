@@ -9,6 +9,18 @@
 //! to it. Proximity voice is the text path with an audio frame in place of the
 //! string — including the per-recipient encode, which distance attenuation needs
 //! for exactly the reason `distance_m` already needed it.
+//!
+//! # Why every outbox is bounded, and why there are two of them
+//!
+//! A connection's outbox is written by *other* connections' tasks and drained by
+//! its own. When the two rates differ, something has to give, and an unbounded
+//! queue answers "the server's memory" — one client whose TCP window has closed
+//! stalls its `select!` on a `framed.send`, while nearby speakers keep pushing
+//! ~100 KB/s of voice into a queue nobody is reading, and `send` on an unbounded
+//! channel cannot fail, so nothing anywhere reports it. The snapshot path had the
+//! answer already: a bounded `broadcast::channel(256)` whose `Lagged` is handled
+//! and shrugged off. These are the same shape, with [`Lane`] deciding what
+//! "handled" means for a frame that does not fit.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -38,9 +50,67 @@ pub fn within_radius(origin: Vec3, candidates: &[(u64, Vec3)], radius: f32) -> V
         .collect()
 }
 
+/// Which of a connection's two outboxes a frame belongs in.
+///
+/// The split exists because the two have opposite failure policies, not because
+/// they carry different bytes — the hub still deals in opaque encoded frames. A
+/// dropped voice frame is 20 ms of audio nobody will miss; a dropped chat line is
+/// something a person typed and believes was delivered. One queue could only have
+/// one policy, and whichever it was would be wrong for the other half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Text,
+    Voice,
+}
+
+/// Chat frames a connection may be behind before lines are dropped.
+///
+/// Text is rate limited *per sender* (`net::MIN_LOCAL_INTERVAL` and friends), so
+/// filling 256 slots takes a crowd, not a flood — a client this far behind is not
+/// reading its socket at all.
+const TEXT_BACKLOG: usize = 256;
+
+/// Voice frames a connection may be behind. Deliberately about a second of audio
+/// at the 20 ms frame cadence: an unbounded queue was the bug, but a *large*
+/// bounded one is barely better, because everything in it is stale by the time it
+/// is sent. Keeping the queue shorter than human patience is what makes dropping
+/// the newest frame equivalent, in effect, to the client's own drop-the-oldest
+/// backlog policy (`platform::audio::MAX_BACKLOG`).
+const VOICE_BACKLOG: usize = 64;
+
 struct Client {
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    text: mpsc::Sender<Vec<u8>>,
+    voice: mpsc::Sender<Vec<u8>>,
     rooms: HashSet<String>,
+}
+
+impl Client {
+    /// Hand a frame to one of this connection's outboxes, never blocking.
+    ///
+    /// `try_send` rather than `send().await` is the whole point: this is called
+    /// from *other* clients' tasks, while the hub's mutex is held. An `.await`
+    /// here would park a speaker's connection task on a listener's socket.
+    fn enqueue(&self, avatar_id: u64, lane: Lane, frame: Vec<u8>) {
+        let tx = match lane {
+            Lane::Text => &self.text,
+            Lane::Voice => &self.voice,
+        };
+        match tx.try_send(frame) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => match lane {
+                // Worth a line: someone's words went missing, and the operator is
+                // the only one who can see that it happened.
+                Lane::Text => tracing::warn!(
+                    avatar_id,
+                    "chat backlog full; dropped a message for this client"
+                ),
+                Lane::Voice => tracing::trace!(avatar_id, "voice backlog full; dropped a frame"),
+            },
+            // The connection is on its way out and has not called `unregister`
+            // yet. Nothing to say and nothing to do.
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -53,15 +123,23 @@ impl ChatHub {
         Self::default()
     }
 
-    /// Register a connection's personal chat outbox.
-    pub fn register(&self, avatar_id: u64, tx: mpsc::UnboundedSender<Vec<u8>>) {
+    /// Register a connection's personal chat outboxes and return the receiving
+    /// ends, which the connection task drains.
+    ///
+    /// The hub creates them rather than taking them, so the capacities — and the
+    /// fact that there are two — live next to the policy that enforces them.
+    pub fn register(&self, avatar_id: u64) -> (mpsc::Receiver<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
+        let (text, text_rx) = mpsc::channel(TEXT_BACKLOG);
+        let (voice, voice_rx) = mpsc::channel(VOICE_BACKLOG);
         self.clients.lock().unwrap().insert(
             avatar_id,
             Client {
-                tx,
+                text,
+                voice,
                 rooms: HashSet::new(),
             },
         );
+        (text_rx, voice_rx)
     }
 
     pub fn unregister(&self, avatar_id: u64) {
@@ -79,18 +157,36 @@ impl ChatHub {
         }
     }
 
+    /// Whether a connection has joined a room.
+    ///
+    /// Membership used to be consulted for *recipients* only, so a client could
+    /// address any room it could name without ever joining it — a broadcast into
+    /// a conversation it is not part of, and (for text) a row in that room's
+    /// history. A sender is a member first.
+    #[must_use]
+    pub fn in_room(&self, avatar_id: u64, room: &str) -> bool {
+        self.clients
+            .lock()
+            .unwrap()
+            .get(&avatar_id)
+            .is_some_and(|c| c.rooms.contains(room))
+    }
+
     /// Deliver one encoded frame to every connected client (Global).
+    ///
+    /// Text only: global voice is deliberately not carried (see `net`'s
+    /// `VoiceFrame` arm), so there is no lane to choose.
     pub fn deliver_all(&self, frame: &[u8]) {
-        for c in self.clients.lock().unwrap().values() {
-            let _ = c.tx.send(frame.to_vec());
+        for (id, c) in self.clients.lock().unwrap().iter() {
+            c.enqueue(*id, Lane::Text, frame.to_vec());
         }
     }
 
     /// Deliver one encoded frame to members of a room.
-    pub fn deliver_room(&self, room: &str, frame: &[u8]) {
-        for c in self.clients.lock().unwrap().values() {
+    pub fn deliver_room(&self, room: &str, lane: Lane, frame: &[u8]) {
+        for (id, c) in self.clients.lock().unwrap().iter() {
             if c.rooms.contains(room) {
-                let _ = c.tx.send(frame.to_vec());
+                c.enqueue(*id, lane, frame.to_vec());
             }
         }
     }
@@ -99,18 +195,18 @@ impl ChatHub {
     ///
     /// Voice needs this and text does not: seeing your own message appear is
     /// confirmation it was sent, but hearing your own voice come back is an echo.
-    pub fn deliver_room_except(&self, room: &str, except: u64, frame: &[u8]) {
+    pub fn deliver_room_except(&self, room: &str, except: u64, lane: Lane, frame: &[u8]) {
         for (id, c) in self.clients.lock().unwrap().iter() {
             if *id != except && c.rooms.contains(room) {
-                let _ = c.tx.send(frame.to_vec());
+                c.enqueue(*id, lane, frame.to_vec());
             }
         }
     }
 
     /// Deliver a per-recipient frame to a specific avatar (proximity).
-    pub fn deliver_to(&self, avatar_id: u64, frame: Vec<u8>) {
+    pub fn deliver_to(&self, avatar_id: u64, lane: Lane, frame: Vec<u8>) {
         if let Some(c) = self.clients.lock().unwrap().get(&avatar_id) {
-            let _ = c.tx.send(frame);
+            c.enqueue(avatar_id, lane, frame);
         }
     }
 
@@ -144,17 +240,84 @@ mod tests {
     fn shout_reaches_what_say_cannot() {
         let candidates = [(1, at(200.0))];
         assert!(within_radius(Vec3::ZERO, &candidates, SAY_RADIUS_M).is_empty());
-        assert_eq!(within_radius(Vec3::ZERO, &candidates, SHOUT_RADIUS_M).len(), 1);
+        assert_eq!(
+            within_radius(Vec3::ZERO, &candidates, SHOUT_RADIUS_M).len(),
+            1
+        );
+    }
+
+    /// A client that never reads costs a bounded amount of memory, and says so.
+    ///
+    /// The unbounded version of this test could not exist: there was no number to
+    /// assert against, which is exactly why the problem was invisible.
+    #[test]
+    fn a_client_that_never_reads_bounds_the_queue_instead_of_the_heap() {
+        let hub = ChatHub::new();
+        let (_text_rx, mut voice_rx) = hub.register(1);
+
+        // Ten times the backlog, from a "speaker" that is not this connection.
+        for _ in 0..VOICE_BACKLOG * 10 {
+            hub.deliver_to(1, Lane::Voice, vec![0u8; 1500]);
+        }
+        let mut queued = 0;
+        while voice_rx.try_recv().is_ok() {
+            queued += 1;
+        }
+        assert_eq!(queued, VOICE_BACKLOG, "the voice queue grew past its bound");
+    }
+
+    /// The lanes are independent: a client drowning in voice still gets its chat.
+    ///
+    /// This is the reason for two channels rather than one bounded channel. With a
+    /// shared queue, a burst of proximity voice is what decides whether a typed
+    /// line survives, and the person who typed it is told nothing.
+    #[test]
+    fn a_voice_flood_does_not_drop_text() {
+        let hub = ChatHub::new();
+        let (mut text_rx, _voice_rx) = hub.register(1);
+
+        for _ in 0..VOICE_BACKLOG * 4 {
+            hub.deliver_to(1, Lane::Voice, vec![0u8; 1500]);
+        }
+        hub.deliver_to(1, Lane::Text, b"hello".to_vec());
+
+        assert_eq!(
+            text_rx.try_recv().ok(),
+            Some(b"hello".to_vec()),
+            "the text lane was consumed by voice"
+        );
+    }
+
+    /// A sender must be in a room to address it — the check the hub only ever
+    /// applied to recipients.
+    #[test]
+    fn room_membership_is_visible_to_the_sender_side() {
+        let hub = ChatHub::new();
+        let (_t, _v) = hub.register(1);
+        assert!(!hub.in_room(1, "room:secret"), "not joined");
+        hub.set_room(1, "room:secret", true);
+        assert!(hub.in_room(1, "room:secret"));
+        hub.set_room(1, "room:secret", false);
+        assert!(!hub.in_room(1, "room:secret"), "left");
+        // An unknown avatar is in no room, rather than a lookup failure.
+        assert!(!hub.in_room(99, "room:secret"));
     }
 
     #[test]
     fn radius_is_a_sphere_not_an_axis() {
         // A listener directly above is as far as one to the side.
-        let candidates = [(1, Vec3::new(0.0, 60.0, 0.0)), (2, Vec3::new(30.0, 0.0, 30.0))];
+        let candidates = [
+            (1, Vec3::new(0.0, 60.0, 0.0)),
+            (2, Vec3::new(30.0, 0.0, 30.0)),
+        ];
         let ids: Vec<u64> = within_radius(Vec3::ZERO, &candidates, SAY_RADIUS_M)
             .iter()
             .map(|(id, _)| *id)
             .collect();
-        assert_eq!(ids, vec![2], "60 m up is out of say range; 42 m diagonal is in");
+        assert_eq!(
+            ids,
+            vec![2],
+            "60 m up is out of say range; 42 m diagonal is in"
+        );
     }
 }

@@ -17,7 +17,8 @@ pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, ChatScope, Emote, EmoteState, GeoAnchor,
     MessageKind, NetMessage, PrimDto, PrimGeometry, PrimSurface, ProtocolRevision, RegionDto,
-    ScriptLevel, TextureEntry, EMOTE_REPLICATE_SECS, PROTOCOL_HISTORY, PROTOCOL_VERSION,
+    ScriptLevel, TextureEntry, EMOTE_REPLICATE_SECS, MAX_ROOM_LEN, PROTOCOL_HISTORY,
+    PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use world::{

@@ -43,7 +43,7 @@
 
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
-use mlua::{Lua, Thread, VmState};
+use mlua::{Lua, LuaOptions, StdLib, Thread, VmState};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -85,15 +85,51 @@ pub const SCRIPT_FUEL_SLICE: i64 = 20_000;
 /// One-off budget for the top level of a chunk at load time. Larger than a tick
 /// slice because setup legitimately does more work than an event handler, but
 /// still bounded: `while true do end` at the top level must not hang the host.
+///
+/// The bound is only real because the chunk runs as a **coroutine** — see
+/// [`Slot::compile`]. Running it with `Chunk::exec` instead (a `lua_pcall` on the
+/// main state) made this constant decorative: the interrupt fired on cadence and
+/// asked to yield, mlua discarded the request because a `pcall` body is not a
+/// yieldable point in Luau, and the loop ran forever on the host thread.
 const LOAD_FUEL: i64 = 200_000;
+
+/// The standard libraries a script gets, spelled out rather than taken from
+/// `StdLib::ALL_SAFE`.
+///
+/// Under the `luau` feature `ALL_SAFE` is `u32::MAX` — it includes `DEBUG`, which
+/// [`Lua::new`] therefore opens. Today that is harmless (Luau's `debug` is only
+/// `{info, traceback}`, and `sandbox(true)` freezes it), but "the sandbox has no
+/// debug library" was the stated model and it was not true, and a future Luau that
+/// grows `debug.setupvalue` — as standard Lua has — would hand every script a way
+/// into the host closures' upvalues with nothing here to stop it. Listing the set
+/// makes an addition upstream arrive switched *off*, which is the same rule
+/// `Slot::compile` applies to `require`.
+///
+/// Everything else Luau ships stays: the note in `docs/notes/prim-scripting.md`
+/// says there is no `vfFrand` and no `vfGetUnixTime` *because* `math.random` and
+/// `os.time` are there, so trimming the list further would quietly take the
+/// documented answer away. A function rather than a `const` because `StdLib`'s
+/// `BitOr` is a plain trait impl, not a `const fn`.
+fn script_stdlib() -> StdLib {
+    StdLib::COROUTINE
+        | StdLib::TABLE
+        | StdLib::OS
+        | StdLib::STRING
+        | StdLib::UTF8
+        | StdLib::BIT
+        | StdLib::BUFFER
+        | StdLib::VECTOR
+        | StdLib::INTEGER
+        | StdLib::MATH
+}
 
 /// Longest script source accepted. Not a security boundary (the memory limit is);
 /// it stops a paste accident from becoming a database row nobody wants.
 pub const MAX_SOURCE_BYTES: usize = 64 * 1024;
 
-/// Events queued per script before the oldest are dropped. A script that cannot
-/// keep up with its own event rate is misbehaving; unbounded queueing would turn
-/// that into host memory growth.
+/// Events queued per script before the oldest is dropped ([`Slot::queue`] decides
+/// *which* oldest). A script that cannot keep up with its own event rate is
+/// misbehaving; unbounded queueing would turn that into host memory growth.
 const MAX_PENDING_EVENTS: usize = 32;
 
 /// Commands one script may emit per tick. Caps `vfLog` in a loop, which is the
@@ -426,7 +462,8 @@ struct Slot {
 impl Slot {
     /// Compile `source` into a fresh sandboxed VM.
     fn compile(prim_id: i64, source: &str) -> Result<Self, String> {
-        let lua = Lua::new();
+        let lua = Lua::new_with(script_stdlib(), LuaOptions::default())
+            .map_err(|e| format!("could not create the interpreter: {e}"))?;
 
         // Two globals mlua adds that `sandbox(true)` does *not* take away, removed
         // here — before the sandbox freezes the global table and puts them out of
@@ -506,12 +543,46 @@ impl Slot {
         lua.set_memory_limit(baseline + SCRIPT_MEMORY_BYTES)
             .map_err(|e| format!("could not set memory limit: {e}"))?;
 
-        let chunk_name = format!("=prim{prim_id}");
-        lua.load(source)
-            .set_name(chunk_name)
+        // The author's chunk runs as a **coroutine**, exactly as a handler does,
+        // and for the same reason: it is the only shape in which the fuel bank can
+        // stop it.
+        //
+        // `Chunk::exec` is a `lua_pcall` on the main state, and a `pcall` body is
+        // not a yieldable point in Luau (`lua_isyieldable` is `nCcalls <=
+        // baseCcalls`, and only `lua_resume` raises the base). mlua's interrupt
+        // proc checks exactly that and *silently ignores* a `VmState::Yield` it
+        // cannot honour — so `LOAD_FUEL` was counted, exhausted, and then had
+        // nothing to do about it. A one-line `while true do end` at the top level
+        // therefore never returned: the host thread stopped draining `HostMsg`,
+        // every other prim's script stopped compiling and running, and the tick
+        // loop kept pushing an unbounded `Tick { views }` at it 20 times a second
+        // until the process ran out of memory. Storing the source succeeds before
+        // any of this, so a restart replayed it and hung again.
+        //
+        // Resuming once is deliberate rather than a scheduling decision: unlike a
+        // handler, an unfinished chunk has not defined its handlers yet, so there
+        // is nothing coherent to keep in `slots` while it catches up. Overrunning
+        // the load budget is an author error with a message, not a slow prim.
+        let chunk = lua
+            .load(source)
+            .set_name(format!("=prim{prim_id}"))
             .set_environment(env.clone())
-            .exec()
+            .into_function()
             .map_err(|e| clean_error(&e))?;
+        let top_level = lua
+            .create_thread(chunk)
+            .map_err(|e| format!("could not start the script: {e}"))?;
+        fuel.store(LOAD_FUEL, Ordering::Relaxed);
+        top_level
+            .resume::<mlua::MultiValue>(())
+            .map_err(|e| clean_error(&e))?;
+        if top_level.status() == ThreadStatus::Resumable {
+            return Err(format!(
+                "the top level of the script did not finish within its load budget \
+                 ({LOAD_FUEL} instructions). Long-running work belongs in a handler, \
+                 where it is descheduled and resumed instead of refused."
+            ));
+        }
 
         Ok(Self {
             lua,
@@ -527,13 +598,53 @@ impl Slot {
     }
 
     /// The handler for an event, if the script defined one.
+    ///
+    /// **Raw**, and that is load-bearing. `Table::get` respects `__index`, and the
+    /// environment's metatable is the one thing in here a script can replace —
+    /// `setmetatable(getfenv(), {__index = function() while true do end end})` is
+    /// a legal top-level statement, and every lookup of `on_start` afterwards
+    /// would run that metamethod on the host thread from Rust, i.e. at a
+    /// non-yieldable point where the fuel bank cannot suspend it (see
+    /// [`Slot::compile`]). A handler is a plain field of the chunk's own
+    /// environment; there is nothing for `__index` to legitimately answer here.
     fn handler(&self, name: &str) -> Option<mlua::Function> {
-        self.env.get::<mlua::Function>(name).ok()
+        self.env.raw_get::<mlua::Function>(name).ok()
     }
 
+    /// Queue an event, keeping the queue bounded without losing the one event a
+    /// script cannot do without.
+    ///
+    /// Two rules, both learned from what the plain ring buffer did. **Timers
+    /// coalesce**: `on_timer` means "the interval elapsed", so a second pending
+    /// one only asks for the same handler twice in a row later — a script whose
+    /// handler is slower than its own `vfSetTimerEvent` would otherwise fill the
+    /// queue in a couple of seconds and stay full forever. And **`Start` is never
+    /// evicted**: it is queued once, and a script that loses it runs with none of
+    /// its own setup — no timer, no state — which looks like a script that ran but
+    /// did nothing rather than a script that was dropped.
     fn queue(&mut self, event: ScriptEvent) {
+        if matches!(event, ScriptEvent::Timer)
+            && self.pending.iter().any(|e| matches!(e, ScriptEvent::Timer))
+        {
+            return;
+        }
         if self.pending.len() >= MAX_PENDING_EVENTS {
-            self.pending.pop_front();
+            match self
+                .pending
+                .iter()
+                .position(|e| !matches!(e, ScriptEvent::Start))
+            {
+                Some(i) => {
+                    self.pending.remove(i);
+                }
+                // Only `Start`s left, which cannot happen (one is ever queued) —
+                // drop the arrival rather than the initialisation.
+                None => return,
+            }
+            tracing::debug!(
+                prim_id = self.shared.prim_id,
+                "script event queue full; an event was dropped"
+            );
         }
         self.pending.push_back(event);
     }
@@ -755,7 +866,15 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     env.set(
         "vfSetColor",
         lua.create_function(move |_, (r, g, b): (f32, f32, f32)| {
-            let color = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)];
+            // Check *then* clamp. `f32::clamp` returns NaN for NaN — it is a
+            // range limit, not a validator — so `vfSetColor(0/0, 0, 0)` used to
+            // put a NaN straight into the prim's colour, from there into SQLite
+            // and into every client's material.
+            let color = [
+                finite(r)?.clamp(0.0, 1.0),
+                finite(g)?.clamp(0.0, 1.0),
+                finite(b)?.clamp(0.0, 1.0),
+            ];
             s.push(ScriptCommand::SetColor {
                 prim_id: s.prim_id,
                 color,
@@ -775,7 +894,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     env.set(
         "vfSetAlpha",
         lua.create_function(move |_, a: f32| {
-            let alpha = a.clamp(0.0, 1.0);
+            let alpha = finite(a)?.clamp(0.0, 1.0);
             s.push(ScriptCommand::SetAlpha {
                 prim_id: s.prim_id,
                 alpha,
@@ -795,7 +914,7 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
     env.set(
         "vfSetGlow",
         lua.create_function(move |_, g: f32| {
-            let glow = g.clamp(0.0, 1.0);
+            let glow = finite(g)?.clamp(0.0, 1.0);
             s.push(ScriptCommand::SetGlow {
                 prim_id: s.prim_id,
                 glow,
@@ -924,12 +1043,22 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
 /// letting it reach a `Transform` puts a prim at an undefined position that no
 /// later write can recover.
 fn finite_vec3(x: f32, y: f32, z: f32) -> mlua::Result<Vec3> {
-    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+    Ok(Vec3::new(finite(x)?, finite(y)?, finite(z)?))
+}
+
+/// The scalar half of [`finite_vec3`], for the setters that take one number.
+///
+/// Every `f32` a script hands the host goes through one of these two. The rule is
+/// the boundary's, not the field's: a clamp downstream cannot stand in for it,
+/// because `f32::clamp` propagates NaN rather than rejecting it, and a NaN that
+/// gets past here is persisted and replicated to every observer.
+fn finite(v: f32) -> mlua::Result<f32> {
+    if !v.is_finite() {
         return Err(mlua::Error::RuntimeError(
             "expected finite numbers".to_string(),
         ));
     }
-    Ok(Vec3::new(x, y, z))
+    Ok(v)
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

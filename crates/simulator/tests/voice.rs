@@ -78,7 +78,10 @@ fn say(seq: u32, payload: &[u8]) -> Bytes {
 async fn recv_voice(c: &mut Client, ms: u64) -> Option<(u64, u32, Vec<u8>, Option<f32>)> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
     loop {
-        let frame = tokio::time::timeout_at(deadline, c.next()).await.ok()??.ok()?;
+        let frame = tokio::time::timeout_at(deadline, c.next())
+            .await
+            .ok()??
+            .ok()?;
         if let NetMessage::VoiceData {
             sender_id,
             seq,
@@ -103,7 +106,10 @@ async fn proximity_voice_reaches_a_listener_with_a_distance() {
     let (sender_id, seq, payload, distance_m) =
         recv_voice(&mut b, 3000).await.expect("no voice arrived");
     assert_eq!(seq, 7, "the sender's frame counter survives the hop");
-    assert_eq!(payload, b"opus-ish", "the sim forwards the payload verbatim");
+    assert_eq!(
+        payload, b"opus-ish",
+        "the sim forwards the payload verbatim"
+    );
     assert!(sender_id != 0);
     // Proximity always carries a distance; it is what the client attenuates by.
     assert!(distance_m.is_some(), "Local voice must carry distance_m");

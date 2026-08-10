@@ -193,6 +193,28 @@ impl SimWorld {
         jump: bool,
         emote: Option<Emote>,
     ) {
+        // Every float in an intent must be a real number, or the whole intent is
+        // discarded.
+        //
+        // postcard decodes an `f32` from four raw little-endian bytes, so a client
+        // can put any bit pattern it likes on the wire, including infinity — and
+        // infinity is the one that gets through. The magnitude test below rejects
+        // NaN by accident (`NaN > 1e-4` is false) but *accepts* `inf`, and
+        // `v / inf` is NaN, which lands in `velocity`, then in `position`, then in
+        // every `WorldSnapshot` to every client, permanently: no later intent can
+        // recover a position that is already NaN, because NaN + anything is NaN.
+        //
+        // Discarding the whole intent rather than sanitising the bad component is
+        // deliberate. A frame like this is not a client having a rounding problem,
+        // it is a client sending something no encoder here produces; there is no
+        // part of it worth honouring, and picking one would mean deciding what a
+        // malformed jump bit means. `display_yaw` is guarded downstream by
+        // `snap_yaw_continuation`, but it is checked here too so the rule is one
+        // rule rather than a note about which fields happen to be safe.
+        if !move_x.is_finite() || !move_z.is_finite() || !display_yaw.is_finite() {
+            tracing::debug!(avatar_id, "discarded an intent with a non-finite field");
+            return;
+        }
         let Some(av) = self.avatars.get_mut(&avatar_id) else {
             return;
         };
@@ -638,6 +660,76 @@ impl SimWorld {
                 tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A world on a throwaway database — `SimWorld` writes prim mutations through
+    /// its connection, so an in-memory stub would not exercise the same code.
+    fn test_world() -> (SimWorld, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("test.db");
+        let conn = crate::db::open_and_migrate(path.to_str().unwrap()).expect("open db");
+        let (regions, prims) = crate::db::load_world(&conn).expect("load world");
+        let caps = crate::db::load_region_caps(&conn).expect("load caps");
+        let world = SimWorld::new(
+            regions,
+            prims,
+            50.0,
+            Arc::new(Mutex::new(conn)),
+            caps,
+            HashSet::new(),
+        );
+        (world, dir)
+    }
+
+    /// A hostile client must not be able to write a non-number into the
+    /// authoritative avatar state.
+    ///
+    /// Infinity is the case that got through: the wire is raw `f32` bytes, the
+    /// magnitude test only rejects NaN, and `v / inf` is NaN. Once the position is
+    /// NaN it stays NaN — every subsequent intent adds to it — and it is
+    /// replicated to every client for the life of the process.
+    #[test]
+    fn a_non_finite_intent_cannot_poison_the_avatar() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        let start = world.avatar_position(id).expect("spawned");
+
+        for (x, z, yaw) in [
+            (f32::INFINITY, 0.0, 0.0),
+            (f32::NEG_INFINITY, 0.0, 0.0),
+            (0.0, f32::INFINITY, 0.0),
+            (f32::NAN, f32::NAN, 0.0),
+            (1.0, 0.0, f32::NAN),
+        ] {
+            world.apply_intent(id, x, z, yaw, false, false, false, false, None);
+            world.step(0.05);
+            let p = world.avatar_position(id).expect("still there");
+            assert!(
+                p.is_finite(),
+                "intent ({x}, {z}, yaw {yaw}) put {p:?} into the authoritative position"
+            );
+        }
+        assert_eq!(
+            world.avatar_position(id),
+            Some(start),
+            "a rejected intent should move nothing at all"
+        );
+
+        // And an ordinary intent still moves, so the guard is not simply refusing
+        // everything.
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None);
+        world.step(0.05);
+        let p = world.avatar_position(id).expect("still there");
+        assert!(p.is_finite());
+        assert!(
+            (p.z - start.z).abs() > 1e-4,
+            "a valid intent should have moved the avatar"
+        );
     }
 }
 

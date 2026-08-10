@@ -35,6 +35,22 @@ const VOICE_CHANNEL: &str = "voice:local";
 const MAX_VOICE_BYTES: usize = 1500;
 const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
 
+/// Turn a client-supplied room name into a channel key, or refuse it.
+///
+/// `ChatScope::Room` is a `String` straight off the wire and was bounded only by
+/// `MAX_FRAME` — 32 MiB. Every use of it allocates again: `format!("room:{room}")`,
+/// a clone into the message, and a re-encode per delivery, on a path a client may
+/// drive at tens of frames a second. Refusing rather than truncating, because a
+/// truncated room name is a *different room* and would silently put someone in a
+/// conversation they did not ask for.
+fn room_channel(room: &str) -> Option<String> {
+    let room = room.trim();
+    if room.is_empty() || room.chars().count() > viberfox_core::MAX_ROOM_LEN {
+        return None;
+    }
+    Some(format!("room:{room}"))
+}
+
 /// Milliseconds since the Unix epoch, for chat timestamps.
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -52,7 +68,16 @@ fn chat_history(conn: &Arc<Mutex<rusqlite::Connection>>, channel: &str) -> Vec<c
 }
 
 /// Resolve a hello credential to `(principal, username)` (ADR-016). `None` = reject.
-fn authenticate(
+///
+/// The database is touched for exactly as long as it takes to read one row. The
+/// previous version passed the live `MutexGuard` into `verify_credentials`, so the
+/// argon2 verify — tens of milliseconds, by design — ran with the SQLite mutex
+/// held. That mutex is also taken by `flush_dirty` in the tick loop *while the
+/// tick loop holds the world write lock*, so a handful of sockets sending nothing
+/// but `ClientHello` could stall the simulation for everyone already playing,
+/// before authenticating as anybody. Hashing now happens after the guard is gone,
+/// on a blocking thread, behind a concurrency cap (`auth::verify_password_bounded`).
+async fn authenticate(
     conn: &Arc<Mutex<rusqlite::Connection>>,
     sessions: &crate::auth::Sessions,
     auth: &AuthCredential,
@@ -60,13 +85,14 @@ fn authenticate(
     match auth {
         AuthCredential::Token(token) => sessions.resolve(token),
         AuthCredential::Password { username, password } => {
-            // argon2 verify is CPU-bound (~tens of ms) but happens once per
-            // connection at a low rate; acceptable inline for v0.
-            let guard = conn.lock().ok()?;
-            let principal = crate::auth::verify_credentials(&guard, username, password)
-                .ok()
-                .flatten()?;
-            Some((principal, username.clone()))
+            let stored = {
+                let guard = conn.lock().ok()?;
+                crate::auth::lookup_account(&guard, username).ok()?
+            };
+            let (principal, phc) = stored?;
+            crate::auth::verify_password_bounded(password.clone(), phc)
+                .await
+                .then(|| (principal, username.clone()))
         }
     }
 }
@@ -83,6 +109,22 @@ const MIN_OBSERVER_INTERVAL: Duration = Duration::from_millis(100);
 /// A touch is a deliberate act, so this only has to stop an auto-clicker from
 /// making one client's clicks the whole region's script budget.
 const MIN_TOUCH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Sustained rate of script saves from one connection, one per this interval.
+///
+/// Each save is a SQLite write, a VM teardown and rebuild on the script host, and
+/// a `MAX_SOURCE_BYTES` (64 KiB) frame. A refused save is *reported*, never
+/// silently dropped like a surplus intent, because an author who is told nothing
+/// believes their work was stored.
+const MIN_SCRIPT_STORE_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Saves that may happen back-to-back before the rate above applies.
+///
+/// A flat "one per second" would be wrong for the thing being limited: saving is
+/// a person pressing a button, and people press it twice — the Stop button *is* a
+/// second save (an empty source) right after the first. The bucket lets a burst
+/// through and only bites on a loop.
+const SCRIPT_STORE_BURST: u32 = 5;
 
 /// Tell every client what a region's budget and usage now are.
 ///
@@ -160,7 +202,7 @@ pub async fn handle_connection(
 
     // ADR-016: authenticate before any world traffic. No snapshot or mutating
     // message is served until this succeeds.
-    let (principal, username) = match authenticate(&conn, &sessions, &auth) {
+    let (principal, username) = match authenticate(&conn, &sessions, &auth).await {
         Some(p) => p,
         None => {
             let err = encode_app_frame(&NetMessage::ServerError {
@@ -198,8 +240,13 @@ pub async fn handle_connection(
 
     // Chat (ADR-028): register a personal delivery inbox, then replay recent
     // Global scrollback so the tab isn't empty on connect.
-    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    chat.register(avatar_id, chat_tx);
+    //
+    // Two inboxes, both bounded, both drained by this loop — see `chat`'s module
+    // note. The bound is the load-bearing part: these are written by *other*
+    // connections' tasks, and the only drain is a `select!` arm that shares the
+    // loop with `framed.send`, so a client whose window has closed stops draining
+    // while its neighbours keep speaking.
+    let (mut chat_rx, mut voice_rx) = chat.register(avatar_id);
     for r in chat_history(&conn, GLOBAL_CHANNEL) {
         let frame = encode_app_frame(&NetMessage::ChatMessage {
             channel: GLOBAL_CHANNEL.into(),
@@ -240,11 +287,23 @@ pub async fn handle_connection(
     let mut last_voice = Instant::now()
         .checked_sub(MIN_VOICE_INTERVAL)
         .unwrap_or_else(Instant::now);
+    // The script-save bucket, carried as "the instant the next save may happen".
+    // Adding an interval per save and clamping it to at most `BURST` intervals in
+    // the past is a token bucket with no arithmetic to get wrong: the clamp is the
+    // refill, the addition is the spend.
+    let mut script_store_gate = Instant::now()
+        .checked_sub(MIN_SCRIPT_STORE_INTERVAL * SCRIPT_STORE_BURST)
+        .unwrap_or_else(Instant::now);
 
     let mut outcome: anyhow::Result<()> = Ok(());
     loop {
+        // No `biased;`. It polled `framed.next()` first, and the rate limiters in
+        // that arm `return Ok(())` without awaiting anything — so a client sending
+        // continuously kept the first arm permanently ready and its own snapshot
+        // and chat arms were never polled at all. `biased` earns its keep when one
+        // arm is a shutdown signal that must win; none of these three is, so the
+        // random polling order is the one that keeps a busy client receiving.
         tokio::select! {
-            biased;
             incoming = framed.next() => {
                 match incoming {
                     None => break,
@@ -458,11 +517,22 @@ pub async fn handle_connection(
                                         chat.deliver_all(&frame);
                                     }
                                     ChatScope::Room(room) => {
+                                        // A member first, and a valid name first of
+                                        // all. Membership was only ever consulted
+                                        // for *recipients*, so any client could
+                                        // address — and write history into — a room
+                                        // it had never joined, just by naming it.
+                                        let Some(channel) = room_channel(&room) else {
+                                            return Ok(());
+                                        };
+                                        if !chat.in_room(avatar_id, &channel) {
+                                            tracing::debug!(avatar_id, "room message from a non-member");
+                                            return Ok(());
+                                        }
                                         if last_room.elapsed() < MIN_ROOM_INTERVAL {
                                             return Ok(());
                                         }
                                         last_room = Instant::now();
-                                        let channel = format!("room:{room}");
                                         if let Ok(c) = conn.lock() {
                                             let _ = crate::db::insert_chat(&c, &channel, avatar_id as i64, &display_name, now_ms as i64, &body);
                                         }
@@ -471,7 +541,7 @@ pub async fn handle_connection(
                                             sender_name: display_name.clone(), sent_at_ms: now_ms,
                                             body, distance_m: None,
                                         })?;
-                                        chat.deliver_room(&channel, &frame);
+                                        chat.deliver_room(&channel, crate::chat::Lane::Text, &frame);
                                     }
                                     ChatScope::Local { shout } => {
                                         if last_local.elapsed() < MIN_LOCAL_INTERVAL {
@@ -496,14 +566,16 @@ pub async fn handle_connection(
                                                     sender_name: display_name.clone(), sent_at_ms: now_ms,
                                                     body: body.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, frame);
+                                                chat.deliver_to(id, crate::chat::Lane::Text, frame);
                                             }
                                         }
                                     }
                                 }
                             }
                             NetMessage::ChatSubscribe { room, join } => {
-                                let channel = format!("room:{room}");
+                                let Some(channel) = room_channel(&room) else {
+                                    return Ok(());
+                                };
                                 chat.set_room(avatar_id, &channel, join);
                                 if join {
                                     for r in chat_history(&conn, &channel) {
@@ -531,7 +603,23 @@ pub async fn handle_connection(
                                 // script that does nothing", and the two differ in
                                 // whether they draw against the region's budget.
                                 let source = source.trim().to_string();
-                                let outcome = if source.len() > crate::scripting::MAX_SOURCE_BYTES {
+                                let within_rate = {
+                                    let now = Instant::now();
+                                    let floor = now
+                                        .checked_sub(MIN_SCRIPT_STORE_INTERVAL * SCRIPT_STORE_BURST)
+                                        .unwrap_or(now);
+                                    if script_store_gate < floor {
+                                        script_store_gate = floor;
+                                    }
+                                    let ok = script_store_gate <= now;
+                                    if ok {
+                                        script_store_gate += MIN_SCRIPT_STORE_INTERVAL;
+                                    }
+                                    ok
+                                };
+                                let outcome = if !within_rate {
+                                    Err("saving too fast — try again in a moment".to_string())
+                                } else if source.len() > crate::scripting::MAX_SOURCE_BYTES {
                                     Err(format!(
                                         "script is {} bytes; the limit is {}",
                                         source.len(),
@@ -580,12 +668,25 @@ pub async fn handle_connection(
                                 };
                                 match outcome {
                                     Ok(()) => {
-                                        // Broadcast, so a second editor open on the
-                                        // same prim follows the change instead of
-                                        // silently holding a stale buffer.
+                                        // Acknowledged to the author, not broadcast.
+                                        //
+                                        // This used to go to `tx_snap` — the
+                                        // whole-world channel — so saving a script
+                                        // sent its **source** to every connected
+                                        // client. That is a disclosure (a script is
+                                        // the one part of a prim its author may not
+                                        // want read) and a 64 KiB frame per save
+                                        // against a 256-slot broadcast, which a loop
+                                        // of saves turns into everybody else's
+                                        // snapshots being dropped as `Lagged`.
+                                        //
+                                        // What it bought was a second editor open on
+                                        // the same prim following along. That editor
+                                        // can ask: `GetPrimScript` is one message and
+                                        // it is the same message it opened with.
                                         let running = !source.is_empty();
                                         let frame = encode_app_frame(&NetMessage::PrimScript { prim_id, source, running })?;
-                                        let _ = tx_snap.send(frame);
+                                        framed.send(Bytes::from(frame)).await?;
                                         if let Some(region_id) = { world.read().await.prim_region(prim_id) } {
                                             broadcast_capacity(&world, &tx_snap, region_id).await;
                                         }
@@ -650,17 +751,31 @@ pub async fn handle_connection(
                                                     channel: VOICE_CHANNEL.into(), sender_id: avatar_id,
                                                     seq, payload: payload.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, frame);
+                                                chat.deliver_to(id, crate::chat::Lane::Voice, frame);
                                             }
                                         }
                                     }
                                     ChatScope::Room(room) => {
-                                        let channel = format!("room:{room}");
+                                        // The same membership rule as room text, and
+                                        // it matters more here: this is the one path
+                                        // that runs at ~66 frames a second, so an
+                                        // unchecked room name was a way to shout into
+                                        // any conversation on the server at the cost
+                                        // of naming it — and to make the server
+                                        // allocate three copies of a 32 MB string per
+                                        // frame while doing it.
+                                        let Some(channel) = room_channel(&room) else {
+                                            return Ok(());
+                                        };
+                                        if !chat.in_room(avatar_id, &channel) {
+                                            tracing::debug!(avatar_id, "room voice from a non-member");
+                                            return Ok(());
+                                        }
                                         let frame = encode_app_frame(&NetMessage::VoiceData {
                                             channel: channel.clone(), sender_id: avatar_id,
                                             seq, payload, distance_m: None,
                                         })?;
-                                        chat.deliver_room_except(&channel, avatar_id, &frame);
+                                        chat.deliver_room_except(&channel, avatar_id, crate::chat::Lane::Voice, &frame);
                                     }
                                     // Global voice is deliberately not carried: it is
                                     // an unbounded fan-out and the loudest abuse
@@ -712,6 +827,20 @@ pub async fn handle_connection(
             }
             chat_frame = chat_rx.recv() => {
                 match chat_frame {
+                    Some(frame) => {
+                        if let Err(e) = framed.send(Bytes::from(frame)).await {
+                            outcome = Err(e.into());
+                            break;
+                        }
+                    }
+                    // The hub holds the only sender and drops it in `unregister`,
+                    // which this loop calls on its way out — so a closed inbox
+                    // means the connection is already finished.
+                    None => break,
+                }
+            }
+            voice_frame = voice_rx.recv() => {
+                match voice_frame {
                     Some(frame) => {
                         if let Err(e) = framed.send(Bytes::from(frame)).await {
                             outcome = Err(e.into());
@@ -892,7 +1021,7 @@ pub async fn tick_loop(
                     body: text.clone(),
                     distance_m: Some(d),
                 }) {
-                    Ok(frame) => chat.deliver_to(*id, frame),
+                    Ok(frame) => chat.deliver_to(*id, crate::chat::Lane::Text, frame),
                     Err(e) => tracing::error!("script say encode: {e}"),
                 }
             }
@@ -937,6 +1066,30 @@ pub async fn tick_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room name off the wire is client input, and the only bound it had was the
+    /// 32 MiB frame limit.
+    #[test]
+    fn a_room_name_is_bounded_before_it_becomes_a_channel() {
+        assert_eq!(room_channel("lobby"), Some("room:lobby".to_string()));
+        // Trimmed, so the key matches the one the client's own tab derives from
+        // its trimmed input.
+        assert_eq!(room_channel("  lobby \n"), Some("room:lobby".to_string()));
+        assert_eq!(room_channel(""), None, "an empty room is not a room");
+        assert_eq!(room_channel("   "), None);
+
+        let long = "x".repeat(viberfox_core::MAX_ROOM_LEN + 1);
+        assert_eq!(room_channel(&long), None, "an over-long name is refused");
+        let at_limit = "x".repeat(viberfox_core::MAX_ROOM_LEN);
+        assert!(
+            room_channel(&at_limit).is_some(),
+            "the limit itself is allowed"
+        );
+        // Counted in characters, not bytes, so a name in a non-Latin script gets
+        // the same length as one in ASCII.
+        let multibyte = "ま".repeat(viberfox_core::MAX_ROOM_LEN);
+        assert!(room_channel(&multibyte).is_some());
+    }
 
     fn setup_test_world() -> (
         Arc<RwLock<SimWorld>>,
