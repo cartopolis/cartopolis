@@ -27,11 +27,16 @@
 //!
 //! # Verification status
 //!
-//! The desktop arm compiles and its pure parts are unit-tested here; it has
-//! never opened a real microphone in this container, which has no audio device
-//! (`docs/notes/container-audio.md`). The **web arm has never been compiled** —
-//! there is no `wasm32-unknown-unknown` target in the dev image — so treat it as
-//! written-but-unverified, the same status as the `ehttp` seam.
+//! Neither arm has ever opened a real microphone: the agent container has no
+//! audio device at all (`docs/notes/container-audio.md`). Both arms *compile*,
+//! and the shared DSP is unit-tested.
+//!
+//! The web arm carries a second caveat that is easy to miss. The shipped web
+//! build runs `--no-default-features` (`crates/viberfox/index.html`), and `audio`
+//! is a *default* feature — so the browser client is currently built **without**
+//! this module's web arm, and [`AudioInput::available`] is `false` there. Voice
+//! in the browser needs that feature turned on for wasm first; until then this
+//! code is compiled only when someone asks for it explicitly.
 
 // Without the `audio` feature there is no capture backend, so nothing calls the
 // level maths, the downmix or the ring buffer — but they still compile and are
@@ -407,7 +412,10 @@ mod native {
 
 /// Average `channels` interleaved samples into one, as i16.
 ///
-/// Free function so both sample formats and the tests share it.
+/// Free function so both sample formats and the tests share it. Desktop-only:
+/// the web arm requests a single channel from WebAudio and never interleaves,
+/// so there is nothing to fold down there.
+#[cfg(not(target_arch = "wasm32"))]
 fn downmix(len: usize, channels: usize, at: impl Fn(usize) -> f32) -> Vec<i16> {
     let channels = channels.max(1);
     let frames = len / channels;
@@ -429,67 +437,110 @@ fn downmix(len: usize, channels: usize, at: impl Fn(usize) -> f32) -> Vec<i16> {
 
 /// `getUserMedia` + WebAudio capture.
 ///
-/// **Never compiled** — the dev image has no `wasm32-unknown-unknown` target
-/// (`rustup target add` fails on a broken cache dir there). Written to the same
-/// shape as the desktop arm so the seam is real, but it has not been through a
-/// compiler, let alone a browser.
-///
 /// `echoCancellation` / `noiseSuppression` / `autoGainControl` are requested
 /// because they are the entire reason to prefer the browser's capture path: AEC
-/// is the hardest part of DIY voice and here it is a constraint flag.
+/// is the hardest part of DIY voice, and here it is a constraint flag.
+///
+/// # Why the live graph is a thread-local rather than a field
+///
+/// `getUserMedia` resolves a promise, so the nodes only exist some time *after*
+/// [`start`] returns and cannot be handed back to the caller. They are also
+/// `!Send`, so they cannot live in the `Arc<Shared>` that crosses into the ECS.
+/// The graph therefore lives in a thread-local (wasm is single-threaded) and
+/// [`AudioInput`] holds a zero-sized [`WebCapture`] guard whose `Drop` tears it
+/// down. Leaking it instead would leave the browser's recording indicator lit
+/// after the user pressed Stop, which is precisely the thing not to do.
 #[cfg(all(feature = "audio", target_arch = "wasm32"))]
 mod web {
     use super::{Shared, VOICE_SAMPLE_RATE};
+    use std::cell::RefCell;
     use std::sync::Arc;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
 
-    /// Kept alive for the session; dropping it releases the closures and nodes.
-    pub struct WebCapture {
-        _ctx: web_sys::AudioContext,
+    /// Buffer size for the capture callback: 2048 frames ≈ 43 ms at 48 kHz.
+    /// Smaller means lower latency and more main-thread wakeups; an AudioWorklet
+    /// is the upgrade when that trade stops being acceptable.
+    const BUFFER_FRAMES: u32 = 2048;
+
+    /// The live WebAudio graph. Dropping it disconnects and closes the context,
+    /// which is what actually releases the microphone.
+    struct Graph {
+        ctx: web_sys::AudioContext,
+        source: web_sys::MediaStreamAudioSourceNode,
+        processor: web_sys::ScriptProcessorNode,
+        stream: web_sys::MediaStream,
         _on_audio: Closure<dyn FnMut(web_sys::AudioProcessingEvent)>,
-        _processor: web_sys::ScriptProcessorNode,
     }
 
-    /// Buffer size for the capture callback: 2048 frames ≈ 43 ms at 48 kHz.
-    /// Smaller means lower latency and more main-thread wakeups; this is the
-    /// usual compromise, and an AudioWorklet is the upgrade when latency matters.
-    const BUFFER_FRAMES: u32 = 2048;
+    impl Drop for Graph {
+        fn drop(&mut self) {
+            self.processor.set_onaudioprocess(None);
+            let _ = self.processor.disconnect();
+            let _ = self.source.disconnect();
+            // Stopping every track is what clears the browser's recording
+            // indicator; closing the context alone does not.
+            let tracks = self.stream.get_tracks();
+            for i in 0..tracks.length() {
+                if let Ok(track) = tracks.get(i).dyn_into::<web_sys::MediaStreamTrack>() {
+                    track.stop();
+                }
+            }
+            let _ = self.ctx.close();
+        }
+    }
+
+    thread_local! {
+        static LIVE: RefCell<Option<Graph>> = const { RefCell::new(None) };
+    }
+
+    /// Guard held by `AudioInput`; tears the graph down when the test stops.
+    pub struct WebCapture;
+
+    impl Drop for WebCapture {
+        fn drop(&mut self) {
+            LIVE.with(|l| l.borrow_mut().take());
+        }
+    }
 
     pub fn start(shared: Arc<Shared>) -> Option<WebCapture> {
         let window = web_sys::window()?;
         let media = window.navigator().media_devices().ok()?;
 
-        let mut constraints = web_sys::MediaStreamConstraints::new();
+        let constraints = web_sys::MediaStreamConstraints::new();
         let audio = js_sys::Object::new();
         for (k, v) in [
             ("echoCancellation", true),
             ("noiseSuppression", true),
             ("autoGainControl", true),
         ] {
-            let _ = js_sys::Reflect::set(&audio, &k.into(), &JsValue::from_bool(v));
+            let _ = js_sys::Reflect::set(&audio, &(*k).into(), &JsValue::from_bool(v));
         }
-        constraints.audio(&audio.into());
+        constraints.set_audio(&audio.into());
 
-        let promise = media.get_user_media_with_constraints(&constraints).ok()?;
+        let promise = match media.get_user_media_with_constraints(&constraints) {
+            Ok(p) => p,
+            Err(e) => {
+                shared.fail(describe_gum_error(&e));
+                return Some(WebCapture);
+            }
+        };
 
-        // The permission prompt is async and may be denied; everything below runs
-        // in the resolution handler, and a rejection becomes `Shared::error` so
-        // the settings tab can say "permission denied" rather than showing a
-        // meter that never moves.
-        let ok_shared = Arc::clone(&shared);
-        let err_shared = Arc::clone(&shared);
+        // The permission prompt is async and may be denied. Everything below runs
+        // in the resolution handler, and a rejection becomes `Shared::error`, so
+        // the settings tab can say "permission denied" rather than show a meter
+        // that never moves.
         wasm_bindgen_futures::spawn_local(async move {
             match wasm_bindgen_futures::JsFuture::from(promise).await {
                 Ok(stream) => {
-                    if let Err(e) = attach(&ok_shared, stream.unchecked_into()) {
-                        ok_shared.fail(format!("Could not start capture: {e:?}"));
+                    if let Err(e) = attach(&shared, stream.unchecked_into()) {
+                        shared.fail(format!("Could not start capture: {e:?}"));
                     }
                 }
-                Err(e) => err_shared.fail(describe_gum_error(&e)),
+                Err(e) => shared.fail(describe_gum_error(&e)),
             }
         });
-        None
+        Some(WebCapture)
     }
 
     /// Turn a `getUserMedia` rejection into something a user can act on.
@@ -509,21 +560,22 @@ mod web {
     }
 
     fn attach(shared: &Arc<Shared>, stream: web_sys::MediaStream) -> Result<(), JsValue> {
-        let mut opts = web_sys::AudioContextOptions::new();
-        opts.sample_rate(VOICE_SAMPLE_RATE as f32);
+        let opts = web_sys::AudioContextOptions::new();
+        opts.set_sample_rate(VOICE_SAMPLE_RATE as f32);
         let ctx = web_sys::AudioContext::new_with_context_options(&opts)?;
         let source = ctx.create_media_stream_source(&stream)?;
 
         // ScriptProcessorNode is deprecated in favour of AudioWorklet, which needs
-        // a separate JS module served alongside the wasm. Kept deliberately: it is
-        // one file fewer in the deploy, and the upgrade is local to this function.
-        let processor = ctx.create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
-            BUFFER_FRAMES, 1, 1,
-        )?;
+        // a separate JS module served beside the wasm. Kept deliberately: one
+        // fewer file in the deploy, and the upgrade is local to this function.
+        let processor = ctx
+            .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
+                BUFFER_FRAMES, 1, 1,
+            )?;
 
         let cb_shared = Arc::clone(shared);
-        let on_audio =
-            Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(move |e: web_sys::AudioProcessingEvent| {
+        let on_audio = Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(
+            move |e: web_sys::AudioProcessingEvent| {
                 let Ok(buf) = e.input_buffer() else { return };
                 let Ok(data) = buf.get_channel_data(0) else {
                     return;
@@ -533,19 +585,24 @@ mod web {
                     .map(|v| (v.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
                     .collect();
                 cb_shared.push_buffer(&pcm);
-            });
+            },
+        );
         processor.set_onaudioprocess(Some(on_audio.as_ref().unchecked_ref()));
 
         source.connect_with_audio_node(&processor)?;
         // A ScriptProcessor only fires while connected to a destination, even
-        // though we discard its output — hence this otherwise pointless hop.
+        // though its output is discarded — hence this otherwise pointless hop.
         processor.connect_with_audio_node(&ctx.destination())?;
 
         *shared.device.lock().unwrap() = Some("Browser microphone".into());
-        std::mem::forget(WebCapture {
-            _ctx: ctx,
-            _on_audio: on_audio,
-            _processor: processor,
+        LIVE.with(|l| {
+            *l.borrow_mut() = Some(Graph {
+                ctx,
+                source,
+                processor,
+                stream,
+                _on_audio: on_audio,
+            });
         });
         Ok(())
     }

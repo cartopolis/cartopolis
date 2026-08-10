@@ -7112,6 +7112,7 @@ dependencies = [
  "gribberish",
  "image",
  "jiff",
+ "js-sys",
  "postcard",
  "serde",
  "serde_json",
