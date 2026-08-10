@@ -3102,13 +3102,20 @@ fn update_rain(
     time: Res<Time>,
     globe: Res<systems::globe::GlobeState>,
     camera: Query<(&GridCell, &GlobalTransform, &Transform), (With<Camera3d>, Without<Rain>)>,
-    mut rain: Query<(&mut Transform, &MeshMaterial3d<RainMaterial>), With<Rain>>,
+    mut rain: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<RainMaterial>,
+        ),
+        With<Rain>,
+    >,
     mut materials: ResMut<Assets<RainMaterial>>,
 ) {
     let Ok((cell, cam, cam_local)) = camera.single() else {
         return;
     };
-    let Ok((mut tf, mat_handle)) = rain.single_mut() else {
+    let Ok((mut tf, mut vis, mat_handle)) = rain.single_mut() else {
         return;
     };
 
@@ -3116,6 +3123,27 @@ fn update_rain(
     let alt_fade =
         (1.0 - ((altitude - RAIN_FADE_LOW) / (RAIN_FADE_HIGH - RAIN_FADE_LOW))).clamp(0.0, 1.0);
     let intensity = dev.precipitation * alt_fade;
+
+    // Drop the shell out of the frame when it carries no rain, the same way
+    // `update_clouds` does with its own — dry weather is the common case (and
+    // every scripted `--shot` run), and the shader is not cheap to run for a
+    // guaranteed-zero result: it is an alpha-blended box drawn from the inside,
+    // so it covers the viewport, and each fragment runs three `rain_layer`
+    // octaves of hashes and smoothsteps before being multiplied by an intensity
+    // of 0 at the very end.
+    let want = if intensity <= 0.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
+    if intensity <= 0.0 {
+        // Also skips the material write below, which was re-uploading a uniform
+        // every frame to say the same thing.
+        return;
+    }
 
     tf.translation = cam.translation();
 
@@ -3268,6 +3296,10 @@ fn update_globe_clouds(
     >,
     mut materials: ResMut<Assets<GlobeCloudMaterial>>,
     cloud_data: Option<Res<systems::globe_weather::GlobeCloudData>>,
+    // Resolved once, not every frame: `std::env::var` takes a process-global lock
+    // and allocates, and this is a debug seed that cannot change while running.
+    // Same shape `frame_stats` uses for its own flag.
+    mut cloud_time_override: Local<Option<Option<f32>>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
         return;
@@ -3328,10 +3360,12 @@ fn update_globe_clouds(
         // — `VIBERFOX_CLOUD_TIME=<seconds>` seeds the phase to inspect the field
         // at any age (e.g. verify it doesn't smear after 10 min), like `--time`
         // does for the day-night lighting.
-        let cloud_t = std::env::var("VIBERFOX_CLOUD_TIME")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or_else(|| time.elapsed_secs());
+        let seeded = *cloud_time_override.get_or_insert_with(|| {
+            std::env::var("VIBERFOX_CLOUD_TIME")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+        });
+        let cloud_t = seeded.unwrap_or_else(|| time.elapsed_secs());
         mat.params = Vec4::new(GLOBE_CLOUD_COVER, space, cloud_t, GLOBE_CLOUD_FREQ);
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::rgb(0.06, 0.09, 0.16);
