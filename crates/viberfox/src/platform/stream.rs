@@ -155,9 +155,19 @@ where
     /// The next cell allowed to start at `now`, or `None` at the concurrency cap /
     /// inside the throttle. Loop on it to fill the budget each frame.
     pub fn next_job(&mut self, now: f64) -> Option<K> {
-        let key = self.dispatch.next(now)?;
-        self.in_flight.insert(key.clone());
-        Some(key)
+        loop {
+            let key = self.dispatch.next(now)?;
+            if self.in_flight.insert(key.clone()) {
+                return Some(key);
+            }
+            // Already running: this is a second queue entry for one cell, so the
+            // slot `Dispatcher::next` just took has no result coming to release
+            // it. Hand it straight back. `forget` prunes the queue so this should
+            // not arise, but the pairing between a dispatch and its `completed`
+            // is what bounds concurrency at all — a leak here is permanent and
+            // silent, and the guard costs a set lookup.
+            self.dispatch.completed();
+        }
     }
 
     /// Everything the tasks have finished since the last call, freeing a
@@ -224,6 +234,14 @@ where
     pub fn forget(&mut self, key: &K) {
         self.requested.remove(key);
         self.failed.remove(key);
+        // Drop the queue entry too, not just the `requested` marker. A cell that
+        // was queued but had not started is the common case here — `osm_buildings`
+        // evicts far cells that were requested before the coverage manifest
+        // loaded — and leaving it queued means the next `request` for it (a
+        // layer toggled back on, the camera returning) enqueues a *second* copy.
+        // Both get dispatched, only one result comes back, and the dispatcher's
+        // concurrency slot is gone for the rest of the run.
+        self.dispatch.remove(key);
         self.release(key);
     }
 
@@ -501,6 +519,39 @@ mod tests {
         s.sink().lock().unwrap().push((1, "late"));
         s.take_results();
         assert_eq!(s.in_flight(), 1);
+    }
+
+    #[test]
+    fn forgetting_a_queued_cell_does_not_leak_a_concurrency_slot() {
+        // `forget` used to drop a cell from `requested` while leaving it in the
+        // dispatch queue, so re-requesting it enqueued a second copy. Both were
+        // dispatched, one result released one slot, and the dispatcher's count
+        // never returned to zero — the cap shrank by one for the rest of the run
+        // and the far-building lane (cap 1) stopped loading entirely.
+        let mut s = stream();
+        s.request(1, 0.0);
+        s.forget(&1);
+        assert!(s.request(1, 0.0), "a forgotten cell must be requestable");
+
+        assert_eq!(s.next_job(0.0), Some(1));
+        assert_eq!(
+            s.next_job(0.0),
+            None,
+            "one cell was dispatched twice from two queue entries"
+        );
+
+        s.sink().lock().unwrap().push((1, "done"));
+        assert_eq!(s.take_results().len(), 1);
+        assert_eq!(s.in_flight(), 0);
+
+        // The whole budget must be available again, not one slot short of it.
+        s.request(2, 0.0);
+        s.request(3, 0.0);
+        assert_eq!(
+            std::iter::from_fn(|| s.next_job(0.0)).count(),
+            2,
+            "the concurrency cap leaked a slot"
+        );
     }
 
     #[test]

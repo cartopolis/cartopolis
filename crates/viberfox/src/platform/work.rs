@@ -55,6 +55,23 @@ impl<J> Dispatcher<J> {
     // despawn queue, neither of which the dispatcher can see. A second answer
     // here would be a subset of the real one, silently.
 
+    /// Drop every queued copy of one job that has not started yet, leaving the
+    /// in-flight count alone. Reports whether anything was removed.
+    ///
+    /// The counterpart to [`CellStream::forget`](super::stream::CellStream::forget):
+    /// a cell that leaves the live set is dropped from `requested`, and without
+    /// this its queue entry would survive to be dispatched a second time after a
+    /// later `request` re-queued it — spending a slot the pairing with
+    /// [`completed`](Self::completed) can never give back.
+    pub fn remove(&mut self, job: &J) -> bool
+    where
+        J: PartialEq,
+    {
+        let before = self.pending.len();
+        self.pending.retain(|j| j != job);
+        self.pending.len() != before
+    }
+
     /// Take every job that has not started yet, leaving the in-flight count alone.
     ///
     /// For a caller that re-decides its whole work list each pass rather than
