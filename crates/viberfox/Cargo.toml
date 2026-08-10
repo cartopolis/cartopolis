@@ -46,7 +46,13 @@ solo = ["dep:viberfox_simulator"]
 #
 # The clips themselves are synthesised at startup, so this adds no assets and no
 # Git LFS exposure; the only cost is the decoder and the platform backend.
-audio = ["bevy/bevy_audio", "bevy/wav"]
+#
+# `dep:cpal` is the *capture* half. `bevy_audio` wraps rodio, which is output-only,
+# so the microphone needs cpal directly — but cpal is already in the graph *under*
+# rodio, so this adds a direct edge rather than a new crate. It rides the same
+# feature because it links the same ALSA on Linux: a headless build that opts out
+# of `bevy_audio` must not be given an alsa-sys dependency by the back door.
+audio = ["bevy/bevy_audio", "bevy/wav", "dep:cpal"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
@@ -134,6 +140,10 @@ ureq.workspace = true
 # (`utils::clipboard` has a no-op arm for it).
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 arboard.workspace = true
+# Microphone capture for `platform::audio` (see the `audio` feature above).
+# Version-matched to the cpal rodio already resolves, so Cargo unifies to one
+# copy rather than compiling two ALSA backends.
+cpal = { version = "0.17", optional = true }
 
 # Android (`docs/notes/android-build.md`). `android-native-activity` picks the
 # `android-activity` backend, and without one of the two that crate is a bare

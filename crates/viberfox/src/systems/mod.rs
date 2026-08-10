@@ -38,7 +38,7 @@ pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_ico
 // group folders use, and the reason the move cost no call-site edits.
 pub use gui::{
     ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, login_screen, place_pins,
-    script_editor, splash, theme, ui,
+    script_editor, settings, splash, theme, ui,
 };
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,

@@ -625,6 +625,7 @@ pub fn run() {
             }
             _ => OsmTileUrlTemplate::default(),
         })
+        .init_resource::<systems::settings::SettingsState>()
         .init_resource::<ContextMenuState>()
         .init_resource::<EditDialogState>()
         .init_resource::<systems::gizmo::GizmoState>()
@@ -1235,6 +1236,7 @@ pub fn run() {
                 systems::chat::render_chat_panel,
                 systems::script_editor::render_script_panel,
                 systems::ui::render_avatar_chooser,
+                systems::settings::render_settings_panel,
                 // Before the pins and after every panel, for the same reason both of
                 // those hold: it culls against the root `Ui`'s leftover space, which is
                 // only the map once the side panels have taken their width.
