@@ -12,6 +12,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod net;
+pub mod scripting;
 pub mod state;
 pub mod textures;
 
@@ -54,6 +55,8 @@ impl Drop for SimHandle {
 pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     let conn = db::open_and_migrate(&config.database_path)?;
     let (regions, prims) = db::load_world(&conn)?;
+    let caps = db::load_region_caps(&conn)?;
+    let scripts = db::load_prim_scripts(&conn)?;
     let conn = Arc::new(std::sync::Mutex::new(conn));
 
     let world = Arc::new(RwLock::new(state::SimWorld::new(
@@ -61,24 +64,45 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         prims,
         config.aoi_radius,
         conn.clone(),
+        caps,
+        scripts.iter().map(|(id, _)| *id).collect(),
     )));
 
+    // Compile the world's stored scripts before the first tick, so a prim that was
+    // moving when the server stopped is moving again when it comes back rather
+    // than waiting for someone to open the editor.
+    let scripts_host = scripting::ScriptHost::spawn();
+    for (prim_id, source) in scripts {
+        scripts_host.load(prim_id, source);
+    }
+    tracing::info!(count = scripts_host.requested(), "scripts loaded");
+
+    let sessions = Arc::new(auth::Sessions::new());
+    let chat = Arc::new(chat::ChatHub::new());
+
     let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);
+    let script_handle = scripts_host.handle();
     let tick_task = tokio::spawn(net::tick_loop(
         world.clone(),
         config.clone(),
         tx_snap.clone(),
+        scripts_host,
+        chat.clone(),
     ));
-
-    let sessions = Arc::new(auth::Sessions::new());
-    let chat = Arc::new(chat::ChatHub::new());
 
     let listener = TcpListener::bind(&config.listen).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!(%local_addr, "listening");
 
     let accept_task = tokio::spawn(accept_loop(
-        listener, world, config, tx_snap, conn, sessions, chat,
+        listener,
+        world,
+        config,
+        tx_snap,
+        conn,
+        sessions,
+        chat,
+        script_handle,
     ));
 
     Ok(SimHandle {
@@ -98,6 +122,7 @@ async fn accept_loop(
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     sessions: Arc<auth::Sessions>,
     chat: Arc<chat::ChatHub>,
+    scripts: scripting::ScriptHandle,
 ) {
     loop {
         let (stream, addr) = match listener.accept().await {
@@ -115,10 +140,12 @@ async fn accept_loop(
         let conn_c = conn.clone();
         let sessions_c = sessions.clone();
         let chat_c = chat.clone();
+        let scripts_c = scripts.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                net::handle_connection(stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c, chat_c)
-                    .await
+            if let Err(e) = net::handle_connection(
+                stream, world_c, cfg_c, rx, tx_c, conn_c, sessions_c, chat_c, scripts_c,
+            )
+            .await
             {
                 tracing::warn!(%addr, "client ended: {e:#}");
             }

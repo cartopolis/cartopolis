@@ -103,6 +103,17 @@ tiff = "0.10"
 # Both are pure Rust with no C deps, so they survive the wasm32 target (ADR-033).
 mvt-reader = "2.4"
 tiny-skia = "0.12"
+# In-world scripting (`viberfox_simulator::scripting`). **Luau**, not standard Lua:
+# only Luau gives `Lua::sandbox()`, and only Luau's `set_interrupt` can return
+# `VmState::Yield` — standard Lua's `set_hook` can raise an error but cannot
+# suspend, which would leave "abort the script" as the sole answer to an
+# over-budget slice. Yield/resume is what makes the region fuel bank a scheduler
+# rather than a killer.
+#
+# `luau` alone, deliberately **not** `vendored`: that feature is the union of
+# `lua-src` + `luajit-src` + `luau0-src`, so it builds two C/C++ interpreters this
+# tree will never load. `luau` implies `mlua-sys/luau0-src` on its own.
+mlua = { version = "0.12", default-features = false, features = ["luau"] }
 # The geometry types `mvt-reader` hands back; kept in lockstep with its own dep.
 geo-types = "0.7"
 postcard = { version = "1.1", features = ["alloc"] }

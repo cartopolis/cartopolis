@@ -3,6 +3,7 @@ use crate::state::SimWorld;
 use crate::textures;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use glam::Vec3;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
@@ -67,6 +68,41 @@ const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// caps a flooding client at 100 `world.write()` locks a second.
 const MIN_INTENT_INTERVAL: Duration = Duration::from_millis(10);
 const MIN_OBSERVER_INTERVAL: Duration = Duration::from_millis(100);
+/// A touch is a deliberate act, so this only has to stop an auto-clicker from
+/// making one client's clicks the whole region's script budget.
+const MIN_TOUCH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Tell every client what a region's budget and usage now are.
+///
+/// Broadcast rather than answered to the actor alone: the budget is shared, so a
+/// prim someone else created is headroom this client no longer has, and finding
+/// that out from a refusal is finding out too late.
+async fn broadcast_capacity(
+    world: &Arc<RwLock<SimWorld>>,
+    tx: &broadcast::Sender<Vec<u8>>,
+    region_id: i64,
+) {
+    let Some(usage) = world.read().await.capacity(region_id) else {
+        return;
+    };
+    match encode_app_frame(&capacity_message(&usage)) {
+        Ok(bytes) => {
+            let _ = tx.send(bytes);
+        }
+        Err(e) => tracing::error!("capacity encode: {e}"),
+    }
+}
+
+fn capacity_message(usage: &crate::state::CapacityUsage) -> NetMessage {
+    NetMessage::RegionCapacity {
+        region_id: usage.region_id,
+        prims_used: usage.prims_used,
+        prims_max: usage.prims_max,
+        scripts_used: usage.scripts_used,
+        scripts_max: usage.scripts_max,
+        script_memory_bytes: crate::scripting::SCRIPT_MEMORY_BYTES as u32,
+    }
+}
 
 pub async fn handle_connection(
     stream: TcpStream,
@@ -77,6 +113,7 @@ pub async fn handle_connection(
     conn: Arc<Mutex<rusqlite::Connection>>,
     sessions: Arc<crate::auth::Sessions>,
     chat: Arc<crate::chat::ChatHub>,
+    scripts: crate::scripting::ScriptHandle,
 ) -> anyhow::Result<()> {
     let mut framed = Framed::new(
         stream,
@@ -163,8 +200,18 @@ pub async fn handle_connection(
         framed.send(Bytes::from(frame)).await?;
     }
 
+    // Region budgets, before any authoring is possible: the editor shows headroom
+    // rather than discovering it at the moment a create is refused.
+    for usage in world.read().await.all_capacity() {
+        let frame = encode_app_frame(&capacity_message(&usage))?;
+        framed.send(Bytes::from(frame)).await?;
+    }
+
     let mut last_intent = Instant::now()
         .checked_sub(MIN_INTENT_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut last_touch = Instant::now()
+        .checked_sub(MIN_TOUCH_INTERVAL)
         .unwrap_or_else(Instant::now);
     let mut last_observer = Instant::now()
         .checked_sub(MIN_OBSERVER_INTERVAL)
@@ -240,6 +287,8 @@ pub async fn handle_connection(
                                         // Broadcast PrimUpsert to all clients
                                         let broadcast_msg = encode_app_frame(&NetMessage::PrimUpsert { prim })?;
                                         let _ = tx_snap.send(broadcast_msg);
+                                        drop(w);
+                                        broadcast_capacity(&world, &tx_snap, region_id).await;
                                         tracing::debug!(request_id, region_id, "prim created and broadcast");
                                     }
                                     Err(e) => {
@@ -279,12 +328,23 @@ pub async fn handle_connection(
                             }
                             NetMessage::DeletePrim { request_id, prim_id } => {
                                 let mut w = world.write().await;
+                                // Read the region *before* the delete: afterwards the
+                                // prim is gone and there is nothing to ask.
+                                let region_id = w.prim_region(prim_id);
                                 match w.remove_prim(prim_id) {
                                     Ok(deleted) => {
                                         if deleted {
+                                            // The prim's script goes with it — the row
+                                            // is deleted by `remove_prim`, but the live
+                                            // VM is the host's and has to be told.
+                                            scripts.unload(prim_id);
                                             // Broadcast PrimRemoved to all clients
                                             let broadcast_msg = encode_app_frame(&NetMessage::PrimRemoved { id: prim_id })?;
                                             let _ = tx_snap.send(broadcast_msg);
+                                            drop(w);
+                                            if let Some(region_id) = region_id {
+                                                broadcast_capacity(&world, &tx_snap, region_id).await;
+                                            }
                                             tracing::debug!(request_id, prim_id, "prim deleted and broadcast");
                                         } else {
                                             // Send ServerError back to client (not found)
@@ -412,6 +472,112 @@ pub async fn handle_connection(
                                     }
                                 }
                             }
+                            NetMessage::GetPrimScript { request_id, prim_id } => {
+                                let source = conn.lock().ok()
+                                    .and_then(|c| crate::db::get_prim_script(&c, prim_id).ok().flatten())
+                                    .unwrap_or_default();
+                                let running = { world.read().await.is_scripted(prim_id) };
+                                let msg = encode_app_frame(&NetMessage::PrimScript { prim_id, source, running })?;
+                                framed.send(Bytes::from(msg)).await?;
+                                tracing::debug!(request_id, prim_id, "script sent to editor");
+                            }
+                            NetMessage::SetPrimScript { request_id, prim_id, source } => {
+                                // Trim first: an editor that saves an untouched
+                                // buffer of whitespace means "no script", not "a
+                                // script that does nothing", and the two differ in
+                                // whether they draw against the region's budget.
+                                let source = source.trim().to_string();
+                                let outcome = if source.len() > crate::scripting::MAX_SOURCE_BYTES {
+                                    Err(format!(
+                                        "script is {} bytes; the limit is {}",
+                                        source.len(),
+                                        crate::scripting::MAX_SOURCE_BYTES
+                                    ))
+                                } else {
+                                    let mut w = world.write().await;
+                                    if w.prim_region(prim_id).is_none() {
+                                        Err(format!("prim {prim_id} not found"))
+                                    } else if source.is_empty() {
+                                        // Removing a script: unload the VM, drop the
+                                        // row, release the budget.
+                                        let stored = conn.lock().ok()
+                                            .map(|c| crate::db::delete_prim_script(&c, prim_id).unwrap_or(false));
+                                        match stored {
+                                            Some(_) => {
+                                                w.set_scripted(prim_id, false);
+                                                scripts.unload(prim_id);
+                                                Ok(())
+                                            }
+                                            None => Err("database is unavailable".to_string()),
+                                        }
+                                    } else {
+                                        match w.can_add_script(prim_id) {
+                                            Err(e) => Err(e),
+                                            Ok(()) => {
+                                                let stored = conn.lock().ok().map(|c| {
+                                                    crate::db::set_prim_script(&c, prim_id, &source)
+                                                });
+                                                match stored {
+                                                    Some(Ok(())) => {
+                                                        w.set_scripted(prim_id, true);
+                                                        // Compile errors come back
+                                                        // asynchronously as
+                                                        // `ScriptOutput`; the store
+                                                        // itself has already succeeded.
+                                                        scripts.load(prim_id, source.clone());
+                                                        Ok(())
+                                                    }
+                                                    Some(Err(e)) => Err(format!("could not store script: {e}")),
+                                                    None => Err("database is unavailable".to_string()),
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                                match outcome {
+                                    Ok(()) => {
+                                        // Broadcast, so a second editor open on the
+                                        // same prim follows the change instead of
+                                        // silently holding a stale buffer.
+                                        let running = !source.is_empty();
+                                        let frame = encode_app_frame(&NetMessage::PrimScript { prim_id, source, running })?;
+                                        let _ = tx_snap.send(frame);
+                                        if let Some(region_id) = { world.read().await.prim_region(prim_id) } {
+                                            broadcast_capacity(&world, &tx_snap, region_id).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // A refusal is console text, not a modal:
+                                        // the editor is where the author is looking,
+                                        // and it is the only place with room to say
+                                        // which limit was hit.
+                                        let frame = encode_app_frame(&NetMessage::ScriptOutput {
+                                            prim_id,
+                                            level: viberfox_core::ScriptLevel::Error,
+                                            text: e.clone(),
+                                            at_ms: now_millis(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                        tracing::warn!(request_id, prim_id, error = %e, "script store refused");
+                                    }
+                                }
+                            }
+                            NetMessage::TouchPrim { request_id, prim_id } => {
+                                if last_touch.elapsed() < MIN_TOUCH_INTERVAL {
+                                    continue;
+                                }
+                                last_touch = Instant::now();
+                                // Only a prim that has a script gets an event; a
+                                // touch on plain geometry is not an error, it is
+                                // simply nothing happening.
+                                if world.read().await.is_scripted(prim_id) {
+                                    scripts.event(prim_id, crate::scripting::ScriptEvent::Touch {
+                                        avatar_id,
+                                        avatar_name: display_name.clone(),
+                                    });
+                                    tracing::debug!(request_id, prim_id, avatar_id, "prim touched");
+                                }
+                            }
                             NetMessage::PrimRemoved { .. }
                             | NetMessage::WorldSnapshot { .. }
                             | NetMessage::ServerHelloAck { .. }
@@ -420,7 +586,10 @@ pub async fn handle_connection(
                             | NetMessage::TextureCatalog { .. }
                             | NetMessage::TextureData { .. }
                             | NetMessage::TextureNotFound { .. }
-                            | NetMessage::ChatMessage { .. } => {
+                            | NetMessage::ChatMessage { .. }
+                            | NetMessage::PrimScript { .. }
+                            | NetMessage::ScriptOutput { .. }
+                            | NetMessage::RegionCapacity { .. } => {
                                 tracing::debug!("ignored message from client");
                             }
                         }
@@ -463,11 +632,23 @@ pub async fn handle_connection(
     outcome
 }
 
+/// How often script writes are pushed to SQLite, in ticks. A script that moves a
+/// prim does so every tick; persisting each one would be 20 writes a second per
+/// script for state that is about to change again. The in-memory value is what
+/// clients see, so the only thing this cadence costs is how much motion a crash
+/// rewinds.
+const SCRIPT_FLUSH_TICKS: u64 = 40;
+
 /// Periodically steps simulation and broadcasts postcard-encoded [`NetMessage::WorldSnapshot`] in app frames.
 pub async fn tick_loop(
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
     tx: broadcast::Sender<Vec<u8>>,
+    // Owned, not shared: the host's command receiver is `!Sync`, so an `Arc` of it
+    // could not cross a `tokio::spawn`. This is the one place that drains it, which
+    // is the same reason [`ScriptHost`] and [`ScriptHandle`] are separate types.
+    scripts: crate::scripting::ScriptHost,
+    chat: Arc<crate::chat::ChatHub>,
 ) {
     let period = std::time::Duration::from_secs_f32((1.0 / config.tick_hz).max(0.001));
     let mut interval = tokio::time::interval(period);
@@ -496,21 +677,113 @@ pub async fn tick_loop(
         last_step = now;
         let mut w = world.write().await;
         w.step(dt);
+
+        // Scripts are applied at the tick barrier: everything the host produced
+        // since the last tick lands in one batch, before the snapshot that
+        // carries it, so a client never sees half a script's frame of work.
+        let commands = scripts.drain();
+        let mut script_frames: Vec<Vec<u8>> = Vec::new();
+        for cmd in &commands {
+            if let Some(prim) = w.apply_script_command(cmd) {
+                match encode_app_frame(&NetMessage::PrimUpsert { prim }) {
+                    Ok(bytes) => script_frames.push(bytes),
+                    Err(e) => tracing::error!("script prim upsert encode: {e}"),
+                }
+            }
+        }
+        if tick % SCRIPT_FLUSH_TICKS == 0 {
+            w.flush_dirty();
+        }
         let snap = w.snapshot(tick);
+        let views = w.script_views();
+        // Chat and console output need the world only for lookups; take what they
+        // need here and release the write lock before any encoding or delivery.
+        let speech: Vec<(String, Vec3, String)> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                crate::scripting::ScriptCommand::Say { prim_id, text } => w
+                    .prim(*prim_id)
+                    .map(|p| (p.name.clone(), p.position, text.clone())),
+                _ => None,
+            })
+            .collect();
+        let listeners: Vec<(u64, Vec3)> = if speech.is_empty() {
+            Vec::new()
+        } else {
+            chat.connected_ids()
+                .into_iter()
+                .filter_map(|id| w.avatar_position(id).map(|p| (id, p)))
+                .collect()
+        };
         drop(w);
+
+        for bytes in script_frames {
+            let _ = tx.send(bytes);
+        }
+        // A prim's speech is local chat like anyone else's: same channel, same
+        // radius, same "no history" rule. `sender_id` is 0 — a prim has no avatar
+        // id, and the client tags own-lines by that id, so a real one would make
+        // whoever shares the number appear to be talking.
+        let now_ms = now_millis();
+        for (name, pos, text) in speech {
+            for (id, listener) in &listeners {
+                let d = (*listener - pos).length();
+                if d > crate::chat::SAY_RADIUS_M {
+                    continue;
+                }
+                match encode_app_frame(&NetMessage::ChatMessage {
+                    channel: LOCAL_CHANNEL.into(),
+                    sender_id: 0,
+                    sender_name: name.clone(),
+                    sent_at_ms: now_ms,
+                    body: text.clone(),
+                    distance_m: Some(d),
+                }) {
+                    Ok(frame) => chat.deliver_to(*id, frame),
+                    Err(e) => tracing::error!("script say encode: {e}"),
+                }
+            }
+        }
+        // Console lines go to every connection rather than to a registry of open
+        // editors: they are rate-capped at the host (`MAX_COMMANDS_PER_TICK`), a
+        // client with no editor open drops them on the floor, and a per-editor
+        // subscription would be a second thing to keep in step with disconnects.
+        for cmd in &commands {
+            if let crate::scripting::ScriptCommand::Output {
+                prim_id,
+                level,
+                text,
+            } = cmd
+            {
+                match encode_app_frame(&NetMessage::ScriptOutput {
+                    prim_id: *prim_id,
+                    level: *level,
+                    text: text.clone(),
+                    at_ms: now_ms,
+                }) {
+                    Ok(frame) => {
+                        let _ = tx.send(frame);
+                    }
+                    Err(e) => tracing::error!("script output encode: {e}"),
+                }
+            }
+        }
+
         match encode_app_frame(&snap) {
             Ok(bytes) => {
                 let _ = tx.send(bytes);
             }
             Err(e) => tracing::error!("snapshot encode: {e}"),
         }
+        // Publish this tick's authoritative prim state for the next slice, so a
+        // handler reads the world as it stands after everything applied above.
+        scripts.tick(dt, views);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
 
     fn setup_test_world() -> (
         Arc<RwLock<SimWorld>>,
@@ -523,6 +796,7 @@ mod tests {
         let conn = crate::db::open_and_migrate(db_path.to_str().unwrap())
             .expect("failed to open and migrate db");
         let (regions, prims) = crate::db::load_world(&conn).expect("failed to load world");
+        let caps = crate::db::load_region_caps(&conn).expect("failed to load region caps");
         let conn = Arc::new(Mutex::new(conn));
 
         let world = Arc::new(RwLock::new(SimWorld::new(
@@ -530,6 +804,8 @@ mod tests {
             prims,
             50.0,
             conn.clone(),
+            caps,
+            Default::default(),
         )));
 
         (world, conn, tempdir)
