@@ -151,6 +151,14 @@ echo "==> sign"
 # machine and therefore incompatible with everyone else's.
 if [ -n "${ANDROID_KEY:-}" ]; then
     [ -n "${ANDROID_CERT:-}" ] || { echo "error: \$ANDROID_KEY set without \$ANDROID_CERT" >&2; exit 2; }
+    # Checked here rather than left to apksigner, because in CI the usual cause is
+    # a bind mount that never happened: the Forgejo runner *silently drops* a
+    # volume missing from its `valid_volumes` (a warning in the runner's own log,
+    # nothing in the job's), so the directory is simply absent and the only other
+    # symptom would be a Java stack trace about a file.
+    for f in "$ANDROID_KEY" "$ANDROID_CERT"; do
+        [ -f "$f" ] || { echo "error: signing material $f does not exist (mount not applied?)" >&2; exit 2; }
+    done
     # --key/--cert rather than --ks: openssl can produce this pair and keytool
     # cannot be asked for one, which keeps the key's home (the deploy host) free
     # of a JDK it has no other use for.
