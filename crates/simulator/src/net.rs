@@ -247,15 +247,32 @@ pub async fn handle_connection(
                                 flying,
                                 fly_up,
                                 fly_down,
+                                jump,
+                                emote,
                                 ..
                             } => {
-                                if last_intent.elapsed() < MIN_INTENT_INTERVAL {
+                                // The rate limit drops surplus intents, but a jump
+                                // and an emote are *edges* — dropping one loses the
+                                // action outright rather than delaying it by a
+                                // frame, so they are never rate limited away.
+                                if last_intent.elapsed() < MIN_INTENT_INTERVAL
+                                    && !jump
+                                    && emote.is_none()
+                                {
                                     continue;
                                 }
                                 last_intent = Instant::now();
                                 let mut w = world.write().await;
                                 w.apply_intent(
-                                    avatar_id, move_x, move_z, display_yaw, flying, fly_up, fly_down,
+                                    avatar_id,
+                                    move_x,
+                                    move_z,
+                                    display_yaw,
+                                    flying,
+                                    fly_up,
+                                    fly_down,
+                                    jump,
+                                    emote,
                                 );
                             }
                             NetMessage::ObserverUpdate { position } => {

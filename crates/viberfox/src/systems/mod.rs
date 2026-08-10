@@ -43,9 +43,19 @@ pub use gui::{
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
     rendering, street_furniture, street_labels, terrain, tile_loader, tile_source, vegetation,
-    water, weather,
+    water, weather, world_places,
 };
 pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
 pub use net::{network, session, user_store};
-pub use player::{avatar, collision, free_camera, gizmo, picking, prim_geo, touch};
-pub use viberfox_geo::{furniture, mip, road_texture, routing, scatter, vector_tiles};
+pub use player::{
+    avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, touch,
+};
+// Re-exported only where something reaches it by name: with `audio` off the
+// module is still compiled (its synthesis and rate maths are pure and tested),
+// but nothing outside it calls in, and an unconditional re-export would be an
+// unused import rather than a convenience.
+#[cfg(feature = "audio")]
+pub use player::soundscape;
+pub use viberfox_geo::{
+    furniture, mip, places, pois, road_texture, routing, scatter, vector_tiles,
+};

@@ -17,3 +17,4 @@ pub mod tile_source;
 pub mod vegetation;
 pub mod water;
 pub mod weather;
+pub mod world_places;

@@ -117,6 +117,15 @@ pub struct BuildingColliders {
     /// leaves both sources active.
     detail_off: bool,
     lod22_off: bool,
+    /// Street furniture as `(centre, radius)` circles — benches, bins, shelters.
+    ///
+    /// Circles rather than rings because that is genuinely the right shape here:
+    /// these are small, roughly symmetric objects, and the only question ever
+    /// asked of them is "can the avatar be here". Mirrored from
+    /// `world_places::WorldPlaces` each time it changes rather than published by
+    /// the streamer directly, because the same extraction feeds the interaction
+    /// prompt and the two must not disagree about where a bench is.
+    props: Vec<(Vec2, f32)>,
 }
 
 impl BuildingColliders {
@@ -149,8 +158,24 @@ impl BuildingColliders {
         self.lod22_off = !lod22_on;
     }
 
+    /// Replace the street-furniture circles.
+    pub fn set_props(&mut self, props: Vec<(Vec2, f32)>) {
+        self.props = props;
+    }
+
     pub fn is_empty(&self) -> bool {
-        (self.detail_off || self.detail.is_empty()) && (self.lod22_off || self.lod22.is_empty())
+        (self.detail_off || self.detail.is_empty())
+            && (self.lod22_off || self.lod22.is_empty())
+            && self.props.is_empty()
+    }
+
+    /// True if `p` is inside a prop's circle. Separate from [`Self::blocked`]'s
+    /// polygon test because the shapes are different, not because the rule is —
+    /// every caller treats the two the same.
+    fn in_prop(&self, p: Vec2) -> bool {
+        self.props
+            .iter()
+            .any(|(c, r)| c.distance_squared(p) < r * r)
     }
 
     fn iter(&self) -> impl Iterator<Item = &Footprint> {
@@ -165,14 +190,62 @@ impl BuildingColliders {
             .chain(self.lod22.values().filter(move |_| lod22_on).flatten())
     }
 
-    /// True if `p` (world XZ) lies inside any footprint.
+    /// True if `p` (world XZ) lies inside any footprint or prop.
     fn blocked(&self, p: Vec2) -> bool {
-        self.iter().any(|f| f.contains(p))
+        self.iter().any(|f| f.contains(p)) || self.in_prop(p)
     }
 
     /// The footprint containing `p`, if any.
     fn hit(&self, p: Vec2) -> Option<&Footprint> {
         self.iter().find(|f| f.contains(p))
+    }
+
+    /// How far along the segment `from → to` (world XZ) the first wall is, as a
+    /// fraction in `0..1`, or `None` if the segment is clear.
+    ///
+    /// This is the follow camera's query, not the avatar's: the boom runs from the
+    /// avatar out to the camera, and anything it crosses is a facade about to be
+    /// between you and your own avatar. It is a real segment/edge intersection
+    /// rather than a sampled march because the failure mode of sampling is missing
+    /// a thin wall entirely — and a camera that pops through a wall on some frames
+    /// and not others is worse than one that never collides.
+    ///
+    /// `from` inside a footprint answers `None`: the avatar is already indoors (or
+    /// a building streamed in on top of it), and pulling the camera to zero there
+    /// would jam it inside the avatar's head until it walked out.
+    pub fn segment_fraction(&self, from: Vec2, to: Vec2) -> Option<f32> {
+        if self.blocked(from) {
+            return None;
+        }
+        let d = to - from;
+        if d.length_squared() < 1e-9 {
+            return None;
+        }
+        let (lo, hi) = (from.min(to), from.max(to));
+        let mut best: Option<f32> = None;
+        for f in self.iter() {
+            // Broad phase: the segment's AABB against the footprint's.
+            if f.max.x < lo.x || f.min.x > hi.x || f.max.y < lo.y || f.min.y > hi.y {
+                continue;
+            }
+            let n = f.ring.len();
+            for i in 0..n {
+                let a = f.ring[i];
+                let b = f.ring[(i + 1) % n];
+                let e = b - a;
+                let denom = d.x * e.y - d.y * e.x;
+                if denom.abs() < 1e-9 {
+                    continue; // parallel; a grazing hit is not worth a special case
+                }
+                let ap = a - from;
+                let t = (ap.x * e.y - ap.y * e.x) / denom;
+                let u = (ap.x * d.y - ap.y * d.x) / denom;
+                if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                    best = Some(best.map_or(t, |b: f32| b.min(t)));
+                }
+            }
+        }
+        best
     }
 
     /// Resolve a desired walk from `from` to `to` (world XZ), sliding along walls
@@ -220,9 +293,22 @@ impl BuildingColliders {
     /// inside a building (teleported in — no interiors yet) is walked straight
     /// back out along this vector.
     pub fn eject_dir(&self, p: Vec2) -> Option<Vec2> {
-        let fp = self.hit(p)?;
-        let out = (fp.nearest_boundary(p) - p).normalize_or_zero();
-        (out != Vec2::ZERO).then_some(out)
+        if let Some(fp) = self.hit(p) {
+            let out = (fp.nearest_boundary(p) - p).normalize_or_zero();
+            if out != Vec2::ZERO {
+                return Some(out);
+            }
+        }
+        // A prop pushes straight out from its centre — the nearest boundary point
+        // of a circle is on that ray, so there is nothing to search. Without this
+        // an avatar that a bench streamed in on top of would stand inside it: the
+        // footprint path answers `None` for a prop, and `slide` then lets the
+        // avatar move but never pushes it clear.
+        self.props
+            .iter()
+            .find(|(c, r)| c.distance_squared(p) < r * r)
+            .map(|(c, _)| (p - *c).normalize_or_zero())
+            .filter(|v| *v != Vec2::ZERO)
     }
 
     /// Steer a desired walk velocity (`wish`, world XZ) from the avatar's current
@@ -248,6 +334,33 @@ impl BuildingColliders {
             allowed.normalize() * speed
         }
     }
+}
+
+/// Mirror the streamed street furniture into the collider index, so the props the
+/// city draws are the props the avatar cannot walk through.
+///
+/// Keyed off `WorldPlaces::revision` rather than run every frame: the ring only
+/// changes when a cell streams in or out, and rebuilding a few thousand circles
+/// on every frame of a walk would be pure waste. Gated on the furniture layer's
+/// own checkbox for the reason `set_sources` exists — collision must match what is
+/// drawn, or a hidden bench is an invisible wall.
+pub fn sync_prop_colliders(
+    places: Res<crate::systems::world_places::WorldPlaces>,
+    layers: Res<crate::systems::data_layers::DataLayers>,
+    mut colliders: ResMut<BuildingColliders>,
+    mut last: Local<Option<(u32, bool)>>,
+) {
+    let enabled = layers.furniture_enabled;
+    let key = (places.revision, enabled);
+    if *last == Some(key) {
+        return;
+    }
+    *last = Some(key);
+    colliders.set_props(if enabled {
+        places.props().copied().collect()
+    } else {
+        Vec::new()
+    });
 }
 
 /// Convex hull (counter-clockwise) of XZ points via Andrew's monotone chain.

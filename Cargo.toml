@@ -43,7 +43,7 @@ approx = "0.5"
 # password-hash/getrandom (salt + session-token generation).
 argon2 = { version = "0.5", features = ["std"] }
 arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
-# Slimmer than `default`: drops UI, 2D sprite stack, audio, gamepads, gizmos, picking — less LLVM work per build.
+# Slimmer than `default`: drops UI, the 2D sprite stack, gamepads and picking — less LLVM work per build.
 bevy = { version = "0.19", default-features = false, features = [
     # Auto-registers all `#[derive(Reflect)]` types (inventory-based). Required so
     # bevy_world_serialization can reflect-spawn glTF scenes (the avatar fox) —

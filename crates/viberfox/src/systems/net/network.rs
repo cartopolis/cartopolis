@@ -27,7 +27,8 @@ pub struct AuthWriteback<'w> {
     chat: ResMut<'w, crate::systems::chat::ChatState>,
     script: ResMut<'w, crate::systems::script_editor::ScriptEditorState>,
 }
-use crate::systems::avatar::{wish_dir_camera_relative, AIRBORNE_EPS};
+use crate::systems::avatar::AIRBORNE_EPS;
+use crate::systems::locomotion;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
@@ -44,8 +45,8 @@ use tokio::net::TcpStream;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use viberfox_core::{
-    snap_yaw_continuation, wrap_angle_pi, AuthCredential, AvatarStateDto, NetMessage, PrimDto,
-    RegionDto,
+    motion, snap_yaw_continuation, wrap_angle_pi, AuthCredential, AvatarStateDto, NetMessage,
+    PrimDto, RegionDto,
 };
 // The wire codec itself: only the native build owns a socket to speak it on.
 #[cfg(not(target_arch = "wasm32"))]
@@ -639,6 +640,15 @@ fn sync_remote_avatar_entities(
             if r.sim_id == a.id {
                 r.net_position = a.position;
                 r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
+                // Fire only on a sequence we haven't seen: the sim re-sends a live
+                // emote in every snapshot for a couple of seconds, so diffing on
+                // the emote itself would restart the clip 20 times a second.
+                if let Some(e) = a.emote {
+                    if r.last_emote_sequence != Some(e.sequence) {
+                        r.last_emote_sequence = Some(e.sequence);
+                        r.pending_emote = Some(e.emote);
+                    }
+                }
                 found = true;
                 break;
             }
@@ -650,6 +660,10 @@ fn sync_remote_avatar_entities(
                     sim_id: a.id,
                     net_position: a.position,
                     net_yaw: y,
+                    // An avatar that comes into view mid-emote plays it: that is
+                    // the whole reason the sim holds it on the wire.
+                    pending_emote: a.emote.map(|e| e.emote),
+                    last_emote_sequence: a.emote.map(|e| e.sequence),
                 },
                 RemoteAvatarMotionHint::default(),
                 Transform::from_translation(a.position)
@@ -779,18 +793,10 @@ pub fn create_egui_texture_handles(
     }
 }
 
-/// Wish-dir magnitude sent while flying: the sim reads magnitude as a speed
-/// scalar (capped), so flying traverses this many times faster than walking.
-const FLY_MOVE_MULT: f32 = 4.0;
-
-// Sim intent → world velocity scaling, mirrored from `viberfox_simulator::state::apply_intent`
-// so the client can predict the local avatar's motion between snapshots. Keep in
-// sync with the sim (a mismatch just makes reconciliation fight prediction —
-// visible rubber-banding — it won't desync authority).
-const SIM_WALK_SPEED: f32 = 8.0;
-const SIM_MAX_SPEED: f32 = 32.0;
-const SIM_FLY_VERTICAL: f32 = 12.0;
-const SIM_FALL_SPEED: f32 = 12.0;
+// The sim's intent → velocity scaling used to be mirrored here as four private
+// constants, with a comment asking whoever changed one to change the sim too. It
+// is `viberfox_core::motion` now, shared with the sim and the offline path, so a
+// mismatch is no longer something to remember — see that module's header.
 
 /// Resend interval for an unchanged intent. The intent is absolute state, so it
 /// only has to be *re*sent to cover a dropped/stale reading; changes go out the
@@ -812,6 +818,13 @@ pub struct SentIntent {
     flying: bool,
     fly_up: bool,
     fly_down: bool,
+}
+
+/// Whether an intent carries an *edge* — something that happens once and is lost
+/// rather than delayed if the frame is skipped. Edges bypass both the
+/// send-on-change test and the keepalive throttle.
+fn intent_has_edge(jump: bool, emote: Option<viberfox_core::Emote>) -> bool {
+    jump || emote.is_some()
 }
 
 pub fn send_network_intent(
@@ -841,22 +854,44 @@ pub fn send_network_intent(
     // When the UI owns the keyboard (text field, edit dialog, Ctrl chord), send a zero
     // intent rather than skipping: the sim persists the last velocity, so we must
     // actively tell it to stop instead of leaving the avatar drifting.
+    // WASD is not read here any more: `handle_avatar_movement` owns the horizontal
+    // model (direction and ramped speed alike) in every run mode, and this system
+    // consumes its output. Two systems reading the same keys and deriving the same
+    // velocity independently is exactly how the offline and online paths came to
+    // behave differently.
     let blocked = egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard_input);
-    let move_forward = !blocked
-        && (keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp));
-    let move_backward = !blocked
-        && (keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown));
-    let move_left = !blocked
-        && (keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft));
-    let move_right = !blocked
-        && (keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight));
-    // E up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
-    // which must stay in step: it drives the same avatar in `--offline`).
-    let fly_up = !blocked && keyboard_input.pressed(KeyCode::KeyE);
+    // R up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
+    // which must stay in step: it drives the same avatar in `--offline`). E moved
+    // to "interact" when the world gained things to interact with.
+    let fly_up = !blocked && keyboard_input.pressed(KeyCode::KeyR);
     let fly_down = !blocked && keyboard_input.pressed(KeyCode::KeyQ);
 
-    let az = camera_state.azimuth;
-    let mut v = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    // The edges. Both are set by other systems (`handle_avatar_movement` for the
+    // jump, the interaction/emote UI for the emote) and consumed here, so they
+    // reach the sim exactly once. The jump is granted only from the ground —
+    // mirroring `SimWorld::step`, which makes the same check authoritatively.
+    let jump = !blocked && avatar_state.wants_jump && avatar_state.grounded;
+    avatar_state.wants_jump = false;
+    let emote = if blocked {
+        avatar_state.pending_emote = None;
+        None
+    } else {
+        avatar_state.pending_emote
+        // Left in place for `update_avatar_animation` to take — the local avatar
+        // plays its own emote immediately rather than waiting for it to come
+        // back off the wire.
+    };
+
+    // The ramped speed and the held travel direction both come from
+    // `avatar::handle_avatar_movement`, which runs first and owns the speed model
+    // in every run mode. Recomputing them here is what would let prediction and
+    // the offline path drift: there is one ramp, and this is its consumer.
+    //
+    // Note the direction is `move_dir`, not the live wish: on the frame a key
+    // comes up the wish is already zero, and the avatar still has speed to shed
+    // along the heading it had.
+    let speed = avatar_state.ground_speed;
+    let mut v = avatar_state.move_dir * locomotion::wish_for_speed(speed);
     // Building collision (the sim is authoritative but has no building geometry —
     // that streams only on the client): steer the walk velocity so the avatar
     // slides along walls and can't enter a building, and auto-walk it out if it
@@ -870,41 +905,50 @@ pub fn send_network_intent(
         v.x = steered.x;
         v.z = steered.y;
     }
-    // Flying sends a larger magnitude so the sim moves the avatar faster (see
-    // `FLY_MOVE_MULT` / `apply_intent`). Grounded stays a unit wish-dir.
-    if avatar_state.is_flying {
-        v *= FLY_MOVE_MULT;
-    }
     // The facing is turned toward the travel direction by
     // `avatar::handle_avatar_movement` (which runs first); replicate that, so other
     // clients see the avatar turn exactly as its owner does.
     let display_yaw = avatar_state.facing_yaw;
 
-    // Predict the world velocity the sim will derive from this intent (same
-    // scaling as `apply_intent`): magnitude → capped speed, plus the fixed
-    // vertical fly rate. Client-side prediction integrates this for smooth motion
-    // between the 20 Hz snapshots (`smooth_online_avatar_display`).
+    // Predict the world velocity the sim will derive from this intent, through the
+    // sim's own function rather than a copy of its arithmetic
+    // (`motion::sim_speed_for_wish`). Client-side prediction integrates this for
+    // smooth motion between the 20 Hz snapshots (`smooth_online_avatar_display`).
     let mag = Vec2::new(v.x, v.z).length();
     let horizontal = if mag > 1e-4 {
-        Vec2::new(v.x, v.z) / mag * (mag * SIM_WALK_SPEED).min(SIM_MAX_SPEED)
+        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag)
     } else {
         Vec2::ZERO
     };
-    // Vertical mirrors `SimWorld::step`: thrust while flying, otherwise a fall
-    // until the ground. Predicting the fall as well keeps a descent smooth instead
-    // of leaving reconciliation to drag the display down a snapshot behind.
+    // Vertical mirrors `SimWorld::step`: thrust while flying, otherwise the
+    // gravity arc. Predicting the arc as well is what keeps a jump smooth — with a
+    // flat fall prediction the whole airborne phase was reconciliation dragging
+    // the display back a snapshot at a time.
     let vy = if avatar_state.is_flying {
+        avatar_state.vertical_velocity = 0.0;
+        avatar_state.grounded = false;
         if fly_up {
-            SIM_FLY_VERTICAL
+            motion::FLY_VERTICAL_SPEED
         } else if fly_down {
-            -SIM_FLY_VERTICAL
+            -motion::FLY_VERTICAL_SPEED
         } else {
             0.0
         }
-    } else if airborne {
-        -SIM_FALL_SPEED
     } else {
-        0.0
+        // Mirror the sim's grant rule: only a grounded avatar jumps.
+        if jump {
+            avatar_state.vertical_velocity = motion::JUMP_SPEED;
+        }
+        let step = motion::step_fall(
+            avatar_state.display_position.y - avatar_state.terrain_lift,
+            avatar_state.vertical_velocity,
+            motion::GROUND_Y,
+            time.delta_secs().max(1e-4),
+        );
+        avatar_state.vertical_velocity = step.vertical_velocity;
+        avatar_state.grounded = step.grounded;
+        avatar_state.landing_impact = step.landing_speed.unwrap_or(0.0);
+        step.vertical_velocity
     };
     avatar_state.predicted_velocity = Vec3::new(horizontal.x, vy, horizontal.y);
 
@@ -927,7 +971,9 @@ pub fn send_network_intent(
             || p.fly_up != intent.fly_up
             || p.fly_down != intent.fly_down
     });
-    if !changed && *since_send < INTENT_KEEPALIVE {
+    // An edge is never throttled: a skipped jump is a jump that did not happen,
+    // where a skipped movement frame is one the next intent corrects anyway.
+    if !changed && *since_send < INTENT_KEEPALIVE && !intent_has_edge(jump, emote) {
         return;
     }
     *since_send = 0.0;
@@ -941,6 +987,8 @@ pub fn send_network_intent(
         flying: avatar_state.is_flying,
         fly_up,
         fly_down,
+        jump,
+        emote,
     });
 }
 

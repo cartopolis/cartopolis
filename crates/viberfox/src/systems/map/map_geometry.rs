@@ -40,6 +40,7 @@ use crate::systems::furniture;
 use crate::systems::globe::GlobeState;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::places;
 use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::scatter;
 use crate::systems::street_furniture::FurnitureLod;
@@ -50,6 +51,7 @@ use crate::systems::vector_tiles::ShoreField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
 use crate::systems::vegetation::VegetationLod;
 use crate::systems::water::{self, WaterMaterial, WaterSeaState};
+use crate::systems::world_places::{CellPlaces, WorldPlaces};
 use viberfox_core::world::tile_to_meters;
 use viberfox_core::TileKey;
 use viberfox_core::{tile_source_kind, TileSourceKind};
@@ -103,7 +105,27 @@ type Tessellated = (
     Option<ShoreField>,
     Vec<BridgeDeck>,
     Vec<StreetLabelLine>,
+    // What the cell holds that a player can walk up to: the furniture standing in
+    // its streets (which is also what makes those props solid) and its named
+    // places and house numbers. All read out of the same parse as everything
+    // above — see `systems::places`.
+    CellPlaces,
 );
+
+/// The two per-cell stores that live and die with a surface cell: the street
+/// names written into the roads, and everything in the cell a player can walk up
+/// to.
+///
+/// One parameter rather than two because `update_map_surfaces` is at Bevy's
+/// 16-parameter ceiling — the same reason `free_camera::CameraInput` exists — and
+/// because these genuinely are one concern: both are keyed by cell, both are
+/// inserted at the cell's origin, and both must be dropped on exactly the same
+/// events, or the map ends up naming a street it no longer draws.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct CellStores<'w> {
+    labels: ResMut<'w, StreetLabelStore>,
+    places: ResMut<'w, WorldPlaces>,
+}
 
 /// Deck slab thickness in metres: the fascia band extruded down from the surface,
 /// so a bridge reads as a structure with an edge and a shadow rather than as a
@@ -219,6 +241,7 @@ fn spawn_geometry_task(
                 let mut shore = None;
                 let mut decks = Vec::new();
                 let mut labels = Vec::new();
+                let mut cell_places = CellPlaces::default();
                 // **One** parse for all seven consumers. Each of them used to open
                 // its own `Reader` over this same body — seven full copies plus
                 // seven prost decodes of the tile per streamed cell.
@@ -272,9 +295,28 @@ fn spawn_geometry_task(
                             ) {
                                 Ok(items) => {
                                     meshes.extend(furniture::build_furniture_meshes(&items));
+                                    // Keep the instances, not just their meshes:
+                                    // they are where the props stand, which is
+                                    // what makes them solid and what the
+                                    // interaction prompt aims at.
+                                    cell_places.furniture = items;
                                 }
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");
+                                }
+                            }
+                            // …and so do the two layers this tile was decoding
+                            // and dropping outright (`docs/notes/vector-tile-unused-layers.md`).
+                            match places::extract_pois(&tile, tile_m) {
+                                Ok(p) => cell_places.pois = p,
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "poi extraction failed");
+                                }
+                            }
+                            match places::extract_addresses(&tile, tile_m) {
+                                Ok(a) => cell_places.addresses = a,
+                                Err(e) => {
+                                    tracing::warn!(cell = ?cell, error = %e, "address extraction failed");
                                 }
                             }
                             // Street names ride the same fetch too: they are read
@@ -312,7 +354,7 @@ fn spawn_geometry_task(
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, (outcome, shore, decks, labels)));
+                    g.push((cell, (outcome, shore, decks, labels, cell_places)));
                 }
             }));
         })
@@ -368,7 +410,7 @@ pub fn update_map_surfaces(
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     veg_lod: Res<VegetationLod>,
     furniture_lod: Res<FurnitureLod>,
-    mut labels: ResMut<StreetLabelStore>,
+    mut stores: CellStores,
     terrain: Res<TerrainField>,
 ) {
     // Always drain the despawn queue, even on the early returns below — a source
@@ -385,7 +427,8 @@ pub fn update_map_surfaces(
         // Raster source (OSM PNG, or satellite imagery): nothing to tessellate.
         if !surfaces.loaded.is_empty() {
             surfaces.clear();
-            labels.clear();
+            stores.labels.clear();
+            stores.places.clear();
         }
         return;
     }
@@ -403,7 +446,8 @@ pub fn update_map_surfaces(
     // A re-anchor invalidates every cell's placement — drop them and refetch.
     if surfaces.stream.sync(stream.anchor_generation) {
         surfaces.clear();
-        labels.clear();
+        stores.places.clear();
+        stores.labels.clear();
     }
     // So does the ground moving under them. The measured field lands a second or
     // two after the anchor it belongs to, by which time these cells have already
@@ -414,7 +458,8 @@ pub fn update_map_surfaces(
     if surfaces.terrain_revision != terrain.revision {
         surfaces.terrain_revision = terrain.revision;
         surfaces.clear();
-        labels.clear();
+        stores.places.clear();
+        stores.labels.clear();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -446,7 +491,8 @@ pub fn update_map_surfaces(
             surfaces.stream.retire_all(entities);
         }
         surfaces.stream.forget(&c);
-        labels.remove_cell(&c);
+        stores.labels.remove_cell(&c);
+        stores.places.remove_cell(&c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -474,7 +520,7 @@ pub fn update_map_surfaces(
             .min(crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME)),
     );
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, street_names)) in ready {
+    for (c, (outcome, shore, decks, street_names, cell_places)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.stream.forget(&c);
@@ -496,7 +542,11 @@ pub fn update_map_surfaces(
         // The street names go in at the same origin as the meshes, and come back
         // out with them below — a label whose cell has been retired points at a
         // road that is no longer drawn.
-        labels.insert_cell(c, wx, wz, street_names);
+        stores.labels.insert_cell(c, wx, wz, street_names);
+        // The props and places go in on the same terms and at the same origin:
+        // they are retired with the cell below, for the same reason the labels
+        // are.
+        stores.places.insert_cell(c, wx, wz, cell_places);
 
         // One water material per cell — it carries that cell's shore field, so it
         // cannot be shared the way the flat-colour group materials are. Built once
