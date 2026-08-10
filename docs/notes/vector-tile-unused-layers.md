@@ -1,7 +1,7 @@
 ---
 topic: vector-tile-unused-layers
-triggers: [vector_tiles.rs, street_furniture.rs, PAINT_ORDER, pois, addresses, "shortbread", "what else is in the tile", "osm data", "more realism"]
-updated: 2026-07-31
+triggers: [vector_tiles.rs, street_furniture.rs, data_layers.rs, pois.rs, PAINT_ORDER, pois, addresses, "shortbread", "what else is in the tile", "osm data", "more realism", "overpass"]
+updated: 2026-08-10
 ---
 
 # What else is already in the vector tile
@@ -16,11 +16,11 @@ request** — the only question is whether we build something out of it.
 |---|---|---|
 | `buildings` | 8552 | flat fill (heights come from 3DBAG/Overpass, not here — see below) |
 | `addresses` | 6211 | **nothing** (`housenumber`, `unit`) |
-| `pois` | 467 | street furniture (`street_furniture.rs`) — partially |
+| `pois` | 467 | street furniture (`street_furniture.rs`) and the shop markers (`data_layers.rs`) — partially; 55 features carry a `shop` |
 | `street_labels` | 244 | street names, routing turn names |
 | `streets` | 95 | roads, routing graph |
 | `sites` | 84 | flat fill only — `parking`×56, `bicycle_parking`×15, `school`×7, `hospital`, `university` |
-| `public_transport` | 25 | **nothing** — transit stops come from Overpass instead |
+| `public_transport` | 25 | the transit markers (`data_layers.rs`) — Overpass now only enriches them, see below |
 | `water_polygons` | 23 | water surfaces |
 | `place_labels` | 21 | **nothing** (`kind`, `name`, `population`) |
 | `land` | 15 | landuse fills, tree scatter |
@@ -42,7 +42,30 @@ The outdoor, free-standing share is roughly 280 of the 467: `bench`×129,
 `vending_machine`×9, `picnic_site`×6, `post_box`×6, `information`×10,
 `fountain`×2. The rest is shops, restaurants and doctors — points *inside*
 buildings we already draw, which is why `street_furniture.rs` skips everything its
-table does not name.
+table does not name. The shop markers are the second reader of the same layer, so
+both go through `geo::pois::extract_pois` rather than each matching tags its own
+way.
+
+## What the point layers do *not* carry: identity and contact detail
+
+Measured 2026-08-10 on the same fixture tile (z14/8490/5319), against Overpass for
+the same bbox. This is the reason the markers come from the tile but Overpass is
+demoted rather than deleted (`data_layers.rs`).
+
+The tile has no OSM id, no `website`, no `addr:street`, and no `ref:IFOPT` — the
+key `transit_live` fetches departure boards by. Overpass answers **65 shops to the
+tile's 55**, and 32 of those carry a website the tile has no field for.
+
+`Feature::id` looks like an OSM id and is not one: **zero** of the tile's 55 shop
+features intersect the node ids Overpass returns for the same bbox. So it is
+neither a join key nor a link, and the two sources are matched on position and
+category instead (`DETAIL_MATCH_M`, 10 m — an MVT coordinate at z14 with a 4096
+extent quantises to ~0.36 m, so the gap being matched is quantisation, not
+disagreement).
+
+A **raster** tile source has no point layers at all, so there Overpass stays the
+whole marker source. That path is live, not vestigial: a `--shot` run with no
+manifest `tile_url` lands on it.
 
 ## The `buildings` layer carries a `height`, and it is 95% a placeholder
 
