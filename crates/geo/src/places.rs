@@ -195,9 +195,7 @@ pub fn category_of(feature: &Feature) -> Option<PoiCategory> {
 fn point_of(feature: &Feature, scale: f32) -> Option<(f32, f32)> {
     match &feature.geometry {
         geo_types::Geometry::Point(p) => Some((p.x() * scale, p.y() * scale)),
-        geo_types::Geometry::MultiPoint(mp) => {
-            mp.0.first().map(|p| (p.x() * scale, p.y() * scale))
-        }
+        geo_types::Geometry::MultiPoint(mp) => mp.0.first().map(|p| (p.x() * scale, p.y() * scale)),
         _ => None,
     }
 }

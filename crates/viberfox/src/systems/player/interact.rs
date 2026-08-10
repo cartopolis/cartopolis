@@ -135,7 +135,9 @@ pub fn track_interaction_target(
         state.target = target;
     }
 
-    let address = places.nearest_address(pos, ADDRESS_RADIUS).map(str::to_owned);
+    let address = places
+        .nearest_address(pos, ADDRESS_RADIUS)
+        .map(str::to_owned);
     if state.address != address {
         state.address = address;
     }
@@ -247,7 +249,10 @@ mod tests {
     fn a_prop_prompt_does_not_stutter() {
         let bench = target("Bench", InteractKind::Prop(FurnitureKind::Bench));
         assert_eq!(bench.line(), "Sit at Bench");
-        let board = target("Information board", InteractKind::Prop(FurnitureKind::Board));
+        let board = target(
+            "Information board",
+            InteractKind::Prop(FurnitureKind::Board),
+        );
         assert_eq!(board.line(), "Read Information board");
     }
 

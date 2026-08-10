@@ -1106,242 +1106,245 @@ pub fn run() {
             ),
         );
     app
-    // Phase 4: Prim selection, raycasting, marquee, keyboard shortcuts
-    .add_systems(
-        Update,
-        (
-            // After the gizmo so a handle-drag (sets active_axis) is seen this frame and
-            // the click isn't treated as a world selection.
-            systems::picking::prim_picking.after(systems::gizmo::handle_gizmo_interaction),
-            systems::picking::update_marquee.after(systems::picking::prim_picking),
-            systems::picking::render_marquee.after(systems::picking::update_marquee),
-            systems::picking::handle_delete_key,
-            systems::picking::highlight_selected_prim,
-            systems::picking::unhighlight_deselected_prim,
-        ),
-    )
-    // Phase 5: Context menu and edit dialog
-    .add_systems(
-        Update,
-        (
-            systems::ui::render_context_menu,
-            // Follow selection changes from picking before the dialog draws / live edits apply.
-            systems::ui::sync_dialog_to_selection
-                .after(systems::picking::prim_picking)
-                .before(systems::ui::render_edit_dialog),
-            systems::ui::render_edit_dialog,
-            systems::ui::apply_live_prim_edits.after(systems::ui::render_edit_dialog),
-            systems::ui::send_prim_mutations.after(systems::ui::render_edit_dialog),
-        ),
-    )
-    // Phase 7: AI assistant panel + top menu bar
-    .add_systems(
-        Update,
-        (
-            // The bottom dock — a floating `Area` of round panel toggles, so it
-            // reserves no root-`Ui` space and stays out of the panel chain (Phase
-            // 7b). After the address bar only so input order is deterministic
-            // within a frame.
-            systems::dock::render_dock.after(systems::ui::render_menu_bar),
-            systems::ui::toggle_ai_panel_shortcut,
-            systems::ui::toggle_dev_panel_shortcut,
-            // Nested to stay under the per-tuple system limit: the driver runs after
-            // the panel so a button click is seen the same frame it's captured.
+        // Phase 4: Prim selection, raycasting, marquee, keyboard shortcuts
+        .add_systems(
+            Update,
             (
-                systems::ui::render_dev_panel,
-                systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
+                // After the gizmo so a handle-drag (sets active_axis) is seen this frame and
+                // the click isn't treated as a world selection.
+                systems::picking::prim_picking.after(systems::gizmo::handle_gizmo_interaction),
+                systems::picking::update_marquee.after(systems::picking::prim_picking),
+                systems::picking::render_marquee.after(systems::picking::update_marquee),
+                systems::picking::handle_delete_key,
+                systems::picking::highlight_selected_prim,
+                systems::picking::unhighlight_deselected_prim,
             ),
-            systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
-            // The right-hand panel chain lives in Phase 7b, declared once with
-            // `.chain()`. A panel added here rather than there is NOT in it.
-            (
-                systems::hud::render_hud.after(systems::ui::render_menu_bar),
-                // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
-                // belongs in the chain below — last, after the route panel.
-            ),
-            systems::data_layers::render_poi_popup
-                .after(systems::ui::render_menu_bar)
-                .after(systems::free_camera::camera_controls),
-            // Transit in-world rendering, nested to stay under the per-tuple
-            // system limit. Both run after the camera has moved this frame:
-            // boards billboard toward it, vehicles interpolate relative to it.
-            (
-                systems::transit_live::update_transit_boards
-                    .after(systems::transit_live::poll_transit_live)
-                    .after(systems::free_camera::camera_controls),
-                systems::transit_vehicles::update_transit_vehicles
-                    .after(systems::transit_vehicles::poll_transit_vehicles)
-                    .after(systems::free_camera::camera_controls),
-            ),
-            (
-                apply_sun_mode
-                    .before(advance_day_cycle)
-                    .after(systems::transit_live::update_world_clock),
-                advance_day_cycle.before(apply_day_night_cycle),
-            ),
-            apply_day_night_cycle.after(systems::ui::render_dev_panel),
-            manage_lights.after(systems::ui::render_dev_panel),
-            apply_distance_fog.after(systems::ui::render_dev_panel),
-            update_window_glow,
-            // Track the camera after it has been positioned this frame.
-            update_star_sky.after(systems::free_camera::camera_controls),
-            update_moon.after(systems::free_camera::camera_controls),
-            (
-                update_horizon_haze.after(systems::free_camera::camera_controls),
-                update_clouds.after(systems::free_camera::camera_controls),
-                update_globe_clouds.after(systems::free_camera::camera_controls),
-                update_rain.after(systems::free_camera::camera_controls),
-            ),
-            systems::ai_assistant::poll_ai_response.after(systems::ai_assistant::render_ai_panel),
-        ),
-    )
-    // Phase 7b: the right-hand panel chain — ONE ordered declaration.
-    //
-    // Every system here draws into the *same* shared root `Ui`, so their call
-    // order fixes their right-to-left placement, and every one of them takes
-    // `ResMut<EguiManager>`, so Bevy already runs them one at a time regardless.
-    // The only thing ordering decides is *which* order — and where two are
-    // unconstrained, Bevy is free to pick differently from frame to frame.
-    //
-    // That is not a visual swap. The panels share the single `Background` layer,
-    // so a panel that lands over another on some frames wins egui's hit test on
-    // those frames, while `layer_id_at` still answers `Background` because the
-    // contest is *within* a layer. The symptom is a checkbox that ignores about
-    // half the clicks aimed at it, invisible to every layer-level diagnostic and
-    // impossible to reproduce in a single-panel test. `chat` and `appearance`
-    // were the two left unlinked once (fixed 2026-07-31).
-    //
-    // This used to be ~12 `.after()` links scattered over seven places in two
-    // `add_systems` calls, with the intended chain recorded only in a comment and
-    // the note "adding a panel here means adding a link; there is no run-time
-    // guard". `.chain()` makes the order structural: a panel added to this tuple
-    // is ordered by construction, and one added anywhere else is visibly not in
-    // the chain. Since these systems cannot run concurrently anyway, the total
-    // order costs no parallelism.
-    //
-    // `render_place_pins` must stay last: it culls against the root `Ui`'s
-    // leftover space, which is only the map area once every side panel has taken
-    // its width.
-    .add_systems(
-        Update,
-        (
-            systems::ui::render_menu_bar,
-            systems::ai_assistant::render_ai_panel,
-            systems::data_layers::render_data_layers_panel,
-            systems::bookmarks::render_bookmarks_panel,
-            systems::navigation::render_route_panel,
-            systems::chat::render_chat_panel,
-            systems::ui::render_avatar_chooser,
-            // Before the pins and after every panel, for the same reason both of
-            // those hold: it culls against the root `Ui`'s leftover space, which is
-            // only the map once the side panels have taken their width.
-            systems::interact::render_interaction_prompt,
-            // Also after the camera has moved, so pins project onto this frame's view.
-            systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
         )
-            .chain(),
-    )
-    // Phase 7c: the session — which world this client is in, and the screen that
-    // changes it (`systems::session`, `systems::login_screen`).
-    //
-    // The screen draws into its own floating `Area` (a modal must sit above the
-    // address-bar card, which is itself a `Foreground` area), so it is deliberately
-    // *not* in the panel chain above — it never touches the shared root `Ui`. It
-    // still runs after the menu bar, which is where it is opened from.
-    //
-    // The driver runs last of the two so a mode picked this frame is applied this
-    // frame: a sign-in that visibly waits a frame for its own spinner reads as a
-    // stutter on the one screen whose whole job is to say what is happening.
-    .add_systems(
-        Update,
-        (
-            systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
-            systems::session::drive_session.after(systems::login_screen::render_login_screen),
-        ),
-    )
-    // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
-    // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
-    .add_systems(
-        Update,
-        (
-            // Draws into the same root `Ui` as the other right-hand panels, so its
-            // call order fixes its placement — keep it last in that chain.
-            systems::navigation::drive_route_geocoding,
-            systems::navigation::drive_route_solver.after(systems::navigation::render_route_panel),
-            // After the camera has moved, so the cursor ray matches the frame the
-            // user actually clicked on.
-            systems::navigation::handle_route_map_pick.after(systems::free_camera::camera_controls),
-            systems::navigation::update_route_visuals
-                .after(systems::navigation::drive_route_solver),
-            // Saved-place pins over the map. Last of the UI systems on purpose:
-            // it culls against the root `Ui`'s leftover space, which is only the
-            // map area once every side panel has taken its width — otherwise a
-            // pin would paint on top of the panel covering it. And after the
-            // camera has moved, so pins project onto this frame's view.
-            // Street names, laid on the streets themselves. World geometry, not
-            // an overlay — after the camera so a turn that flips the letters is
-            // acted on in the frame it happened.
-            systems::street_labels::update_street_labels
-                .after(systems::free_camera::camera_controls),
-        ),
-    )
-    // Phase 8b: Driver mode — following a solved route (`systems::driver`).
-    .add_systems(
-        Update,
-        (
-            // Measures the drive (position, speed, course, progress) before anything
-            // reads it. After the panel, so the button press that starts driving is
-            // acted on in the same frame it was captured.
-            // …and before the solver, so a reroute it asks for on leaving the
-            // route is picked up in the same frame rather than a frame late.
-            systems::driver::drive_driver_mode
-                .after(systems::navigation::render_route_panel)
-                .after(avatar::handle_avatar_movement)
-                .before(systems::navigation::drive_route_solver),
-            // Writes the chase rig into `CameraState`, so it must land before the
-            // camera consumes it — this is the whole mechanism by which driver mode
-            // holds the view still.
-            systems::driver::steady_driver_camera
-                .after(systems::driver::drive_driver_mode)
-                .before(systems::free_camera::camera_controls),
-            // After the avatar has been moved (and after the camera, so the arrow
-            // is placed against the same frame the view was built from).
-            systems::driver::update_driver_arrow
-                .after(systems::driver::drive_driver_mode)
-                .after(systems::free_camera::camera_controls),
-            // What lies ahead on the route (the rail's markers, the speed limit).
-            // After the drive tick, which is what turns driver mode on, and before
-            // the chrome that reads it.
-            systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
-            systems::driver::render_driver_hud
-                .after(systems::ui::render_menu_bar)
-                .after(systems::route_ahead::drive_route_ahead),
-            // The compass/locate column, which driver mode repurposes.
-            systems::hud::render_map_controls
-                .after(systems::ui::render_menu_bar)
-                .after(systems::driver::drive_driver_mode),
-        ),
-    )
-    // Phase 6: Transform gizmos
-    .add_systems(
-        Update,
-        (
-            systems::gizmo::handle_gizmo_mode_input,
-            systems::gizmo::render_gizmo_visuals,
-            systems::gizmo::handle_gizmo_interaction,
-        ),
-    )
-    .add_systems(Update, (frame_time_watchdog, log_render_cost, frame_stats))
-    // Drawn over everything until the first tiles are up. Mirrors the
-    // splash in index.html, which covers the wasm load this cannot.
-    .init_resource::<systems::splash::BootSplash>()
-    .add_systems(Update, systems::splash::boot_splash)
-    // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
-    .add_systems(
-        PostUpdate,
-        systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
-    )
-    .add_systems(Last, frame_limiter);
+        // Phase 5: Context menu and edit dialog
+        .add_systems(
+            Update,
+            (
+                systems::ui::render_context_menu,
+                // Follow selection changes from picking before the dialog draws / live edits apply.
+                systems::ui::sync_dialog_to_selection
+                    .after(systems::picking::prim_picking)
+                    .before(systems::ui::render_edit_dialog),
+                systems::ui::render_edit_dialog,
+                systems::ui::apply_live_prim_edits.after(systems::ui::render_edit_dialog),
+                systems::ui::send_prim_mutations.after(systems::ui::render_edit_dialog),
+            ),
+        )
+        // Phase 7: AI assistant panel + top menu bar
+        .add_systems(
+            Update,
+            (
+                // The bottom dock — a floating `Area` of round panel toggles, so it
+                // reserves no root-`Ui` space and stays out of the panel chain (Phase
+                // 7b). After the address bar only so input order is deterministic
+                // within a frame.
+                systems::dock::render_dock.after(systems::ui::render_menu_bar),
+                systems::ui::toggle_ai_panel_shortcut,
+                systems::ui::toggle_dev_panel_shortcut,
+                // Nested to stay under the per-tuple system limit: the driver runs after
+                // the panel so a button click is seen the same frame it's captured.
+                (
+                    systems::ui::render_dev_panel,
+                    systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
+                ),
+                systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
+                // The right-hand panel chain lives in Phase 7b, declared once with
+                // `.chain()`. A panel added here rather than there is NOT in it.
+                (
+                    systems::hud::render_hud.after(systems::ui::render_menu_bar),
+                    // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
+                    // belongs in the chain below — last, after the route panel.
+                ),
+                systems::data_layers::render_poi_popup
+                    .after(systems::ui::render_menu_bar)
+                    .after(systems::free_camera::camera_controls),
+                // Transit in-world rendering, nested to stay under the per-tuple
+                // system limit. Both run after the camera has moved this frame:
+                // boards billboard toward it, vehicles interpolate relative to it.
+                (
+                    systems::transit_live::update_transit_boards
+                        .after(systems::transit_live::poll_transit_live)
+                        .after(systems::free_camera::camera_controls),
+                    systems::transit_vehicles::update_transit_vehicles
+                        .after(systems::transit_vehicles::poll_transit_vehicles)
+                        .after(systems::free_camera::camera_controls),
+                ),
+                (
+                    apply_sun_mode
+                        .before(advance_day_cycle)
+                        .after(systems::transit_live::update_world_clock),
+                    advance_day_cycle.before(apply_day_night_cycle),
+                ),
+                apply_day_night_cycle.after(systems::ui::render_dev_panel),
+                manage_lights.after(systems::ui::render_dev_panel),
+                apply_distance_fog.after(systems::ui::render_dev_panel),
+                update_window_glow,
+                // Track the camera after it has been positioned this frame.
+                update_star_sky.after(systems::free_camera::camera_controls),
+                update_moon.after(systems::free_camera::camera_controls),
+                (
+                    update_horizon_haze.after(systems::free_camera::camera_controls),
+                    update_clouds.after(systems::free_camera::camera_controls),
+                    update_globe_clouds.after(systems::free_camera::camera_controls),
+                    update_rain.after(systems::free_camera::camera_controls),
+                ),
+                systems::ai_assistant::poll_ai_response
+                    .after(systems::ai_assistant::render_ai_panel),
+            ),
+        )
+        // Phase 7b: the right-hand panel chain — ONE ordered declaration.
+        //
+        // Every system here draws into the *same* shared root `Ui`, so their call
+        // order fixes their right-to-left placement, and every one of them takes
+        // `ResMut<EguiManager>`, so Bevy already runs them one at a time regardless.
+        // The only thing ordering decides is *which* order — and where two are
+        // unconstrained, Bevy is free to pick differently from frame to frame.
+        //
+        // That is not a visual swap. The panels share the single `Background` layer,
+        // so a panel that lands over another on some frames wins egui's hit test on
+        // those frames, while `layer_id_at` still answers `Background` because the
+        // contest is *within* a layer. The symptom is a checkbox that ignores about
+        // half the clicks aimed at it, invisible to every layer-level diagnostic and
+        // impossible to reproduce in a single-panel test. `chat` and `appearance`
+        // were the two left unlinked once (fixed 2026-07-31).
+        //
+        // This used to be ~12 `.after()` links scattered over seven places in two
+        // `add_systems` calls, with the intended chain recorded only in a comment and
+        // the note "adding a panel here means adding a link; there is no run-time
+        // guard". `.chain()` makes the order structural: a panel added to this tuple
+        // is ordered by construction, and one added anywhere else is visibly not in
+        // the chain. Since these systems cannot run concurrently anyway, the total
+        // order costs no parallelism.
+        //
+        // `render_place_pins` must stay last: it culls against the root `Ui`'s
+        // leftover space, which is only the map area once every side panel has taken
+        // its width.
+        .add_systems(
+            Update,
+            (
+                systems::ui::render_menu_bar,
+                systems::ai_assistant::render_ai_panel,
+                systems::data_layers::render_data_layers_panel,
+                systems::bookmarks::render_bookmarks_panel,
+                systems::navigation::render_route_panel,
+                systems::chat::render_chat_panel,
+                systems::ui::render_avatar_chooser,
+                // Before the pins and after every panel, for the same reason both of
+                // those hold: it culls against the root `Ui`'s leftover space, which is
+                // only the map once the side panels have taken their width.
+                systems::interact::render_interaction_prompt,
+                // Also after the camera has moved, so pins project onto this frame's view.
+                systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
+            )
+                .chain(),
+        )
+        // Phase 7c: the session — which world this client is in, and the screen that
+        // changes it (`systems::session`, `systems::login_screen`).
+        //
+        // The screen draws into its own floating `Area` (a modal must sit above the
+        // address-bar card, which is itself a `Foreground` area), so it is deliberately
+        // *not* in the panel chain above — it never touches the shared root `Ui`. It
+        // still runs after the menu bar, which is where it is opened from.
+        //
+        // The driver runs last of the two so a mode picked this frame is applied this
+        // frame: a sign-in that visibly waits a frame for its own spinner reads as a
+        // stutter on the one screen whose whole job is to say what is happening.
+        .add_systems(
+            Update,
+            (
+                systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
+                systems::session::drive_session.after(systems::login_screen::render_login_screen),
+            ),
+        )
+        // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
+        // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
+        .add_systems(
+            Update,
+            (
+                // Draws into the same root `Ui` as the other right-hand panels, so its
+                // call order fixes its placement — keep it last in that chain.
+                systems::navigation::drive_route_geocoding,
+                systems::navigation::drive_route_solver
+                    .after(systems::navigation::render_route_panel),
+                // After the camera has moved, so the cursor ray matches the frame the
+                // user actually clicked on.
+                systems::navigation::handle_route_map_pick
+                    .after(systems::free_camera::camera_controls),
+                systems::navigation::update_route_visuals
+                    .after(systems::navigation::drive_route_solver),
+                // Saved-place pins over the map. Last of the UI systems on purpose:
+                // it culls against the root `Ui`'s leftover space, which is only the
+                // map area once every side panel has taken its width — otherwise a
+                // pin would paint on top of the panel covering it. And after the
+                // camera has moved, so pins project onto this frame's view.
+                // Street names, laid on the streets themselves. World geometry, not
+                // an overlay — after the camera so a turn that flips the letters is
+                // acted on in the frame it happened.
+                systems::street_labels::update_street_labels
+                    .after(systems::free_camera::camera_controls),
+            ),
+        )
+        // Phase 8b: Driver mode — following a solved route (`systems::driver`).
+        .add_systems(
+            Update,
+            (
+                // Measures the drive (position, speed, course, progress) before anything
+                // reads it. After the panel, so the button press that starts driving is
+                // acted on in the same frame it was captured.
+                // …and before the solver, so a reroute it asks for on leaving the
+                // route is picked up in the same frame rather than a frame late.
+                systems::driver::drive_driver_mode
+                    .after(systems::navigation::render_route_panel)
+                    .after(avatar::handle_avatar_movement)
+                    .before(systems::navigation::drive_route_solver),
+                // Writes the chase rig into `CameraState`, so it must land before the
+                // camera consumes it — this is the whole mechanism by which driver mode
+                // holds the view still.
+                systems::driver::steady_driver_camera
+                    .after(systems::driver::drive_driver_mode)
+                    .before(systems::free_camera::camera_controls),
+                // After the avatar has been moved (and after the camera, so the arrow
+                // is placed against the same frame the view was built from).
+                systems::driver::update_driver_arrow
+                    .after(systems::driver::drive_driver_mode)
+                    .after(systems::free_camera::camera_controls),
+                // What lies ahead on the route (the rail's markers, the speed limit).
+                // After the drive tick, which is what turns driver mode on, and before
+                // the chrome that reads it.
+                systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
+                systems::driver::render_driver_hud
+                    .after(systems::ui::render_menu_bar)
+                    .after(systems::route_ahead::drive_route_ahead),
+                // The compass/locate column, which driver mode repurposes.
+                systems::hud::render_map_controls
+                    .after(systems::ui::render_menu_bar)
+                    .after(systems::driver::drive_driver_mode),
+            ),
+        )
+        // Phase 6: Transform gizmos
+        .add_systems(
+            Update,
+            (
+                systems::gizmo::handle_gizmo_mode_input,
+                systems::gizmo::render_gizmo_visuals,
+                systems::gizmo::handle_gizmo_interaction,
+            ),
+        )
+        .add_systems(Update, (frame_time_watchdog, log_render_cost, frame_stats))
+        // Drawn over everything until the first tiles are up. Mirrors the
+        // splash in index.html, which covers the wasm load this cannot.
+        .init_resource::<systems::splash::BootSplash>()
+        .add_systems(Update, systems::splash::boot_splash)
+        // Drop egui geometry for the screenshot frame, after end_egui_frame has written it.
+        .add_systems(
+            PostUpdate,
+            systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
+        )
+        .add_systems(Last, frame_limiter);
 
     // The run's verdict has to become the process's. `app.run()` returns an
     // `AppExit` and dropping it made every failure look like a success: a `--shot`

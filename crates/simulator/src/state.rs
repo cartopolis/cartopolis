@@ -235,12 +235,8 @@ impl SimWorld {
                     av.vertical_velocity = motion::JUMP_SPEED;
                 }
                 av.jump_requested = false;
-                let s = motion::step_fall(
-                    av.position.y,
-                    av.vertical_velocity,
-                    motion::GROUND_Y,
-                    dt,
-                );
+                let s =
+                    motion::step_fall(av.position.y, av.vertical_velocity, motion::GROUND_Y, dt);
                 av.position.y = s.y;
                 av.vertical_velocity = s.vertical_velocity;
             }

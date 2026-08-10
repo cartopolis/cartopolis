@@ -318,7 +318,10 @@ mod tests {
             },
         );
         assert_eq!(places.nearest(Vec2::ZERO, 20.0).unwrap().name, "near");
-        assert_eq!(places.nearest(Vec2::new(10.0, 0.0), 5.0).unwrap().name, "far");
+        assert_eq!(
+            places.nearest(Vec2::new(10.0, 0.0), 5.0).unwrap().name,
+            "far"
+        );
         assert!(
             places.nearest(Vec2::new(100.0, 0.0), 5.0).is_none(),
             "nothing within the radius means no prompt at all"
@@ -341,7 +344,10 @@ mod tests {
                 addresses: Vec::new(),
             },
         );
-        assert!(places.nearest(Vec2::ZERO, 1.0).is_some(), "still promptable");
+        assert!(
+            places.nearest(Vec2::ZERO, 1.0).is_some(),
+            "still promptable"
+        );
         assert_eq!(places.props().count(), 0, "but never a wall");
     }
 

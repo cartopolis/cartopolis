@@ -475,11 +475,9 @@ pub fn spawn_avatar(
                 asset_server.load(GltfAssetLabel::Animation(CHAR_WALK).from_asset(h.anims)),
                 asset_server.load(GltfAssetLabel::Animation(CHAR_RUN).from_asset(h.anims)),
             ];
-            clips.extend(
-                EMOTE_CLIPS
-                    .iter()
-                    .map(|(_, ix)| asset_server.load(GltfAssetLabel::Animation(*ix).from_asset(h.anims))),
-            );
+            clips.extend(EMOTE_CLIPS.iter().map(|(_, ix)| {
+                asset_server.load(GltfAssetLabel::Animation(*ix).from_asset(h.anims))
+            }));
             let (graph, indices) = AnimationGraph::from_clips(clips);
             let anims = AvatarAnimations {
                 graph_handle: graphs.add(graph),
@@ -622,10 +620,9 @@ pub fn play_avatar_animation_when_ready(
                 .play(&mut player, anim.idle_index, Duration::ZERO)
                 .repeat()
                 .set_speed(anim.speed);
-            commands.entity(player_entity).insert((
-                AnimationGraphHandle(anim.graph_handle.clone()),
-                transitions,
-            ));
+            commands
+                .entity(player_entity)
+                .insert((AnimationGraphHandle(anim.graph_handle.clone()), transitions));
         }
         return;
     }
@@ -1293,7 +1290,11 @@ pub fn handle_avatar_movement(
     }
     let (target_speed, accel, decel) = if avatar_state.is_flying {
         (
-            if has_input { locomotion::FLY_SPEED } else { 0.0 },
+            if has_input {
+                locomotion::FLY_SPEED
+            } else {
+                0.0
+            },
             locomotion::FLY_ACCEL,
             locomotion::FLY_DECEL,
         )

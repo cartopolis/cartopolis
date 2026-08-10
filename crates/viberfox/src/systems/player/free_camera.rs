@@ -1001,8 +1001,7 @@ pub fn camera_controls(
             // speed, so stepping off a kerb is not the same event as falling off a
             // roof.
             if avatar_state.landing_impact > 0.0 {
-                rig.smoothing.dip = (avatar_state.landing_impact
-                    / motion::TERMINAL_FALL_SPEED
+                rig.smoothing.dip = (avatar_state.landing_impact / motion::TERMINAL_FALL_SPEED
                     * CAMERA_DIP_MAX)
                     .min(CAMERA_DIP_MAX)
                     .max(rig.smoothing.dip);
