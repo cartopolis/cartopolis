@@ -26,6 +26,17 @@
 //! [`install`] is called once, from `EguiManager::default`, before the first
 //! pass — early enough that the brand font family is bound on frame one, which
 //! is what lets the splash paint its wordmark immediately.
+//!
+//! **Four scales, and nothing outside them.** Colour was the only axis this file
+//! originally owned, and the drift went where there was no vocabulary to drift
+//! from: the app shipped 17 text sizes and 8 corner radii against one exported
+//! radius, because a panel that needed "a bit smaller than body" had nothing to
+//! name. So the type scale ([`SIZE_SUB`] and friends), the corner radii
+//! ([`RADIUS`], [`RADIUS_SM`], [`RADIUS_LG`], [`RADIUS_PILL`]) and the touch
+//! sizes ([`MIN_TOUCH_TARGET_DP`], [`row_height`]) are exported beside the
+//! palette. Pick by **meaning**, never by the number — a call site that reads
+//! `SIZE_SUB` tells the next person what the text *is*, and `12.5` tells them
+//! only what someone once liked.
 
 use egui::{
     style::{Selection, WidgetVisuals, Widgets},
@@ -136,11 +147,164 @@ fn fonts() -> egui::FontDefinitions {
     fonts
 }
 
-// ─── Style ────────────────────────────────────────────────────────────────────
+// ─── Type scale ───────────────────────────────────────────────────────────────
 
-/// Corner radius shared by buttons, menus and windows. One value, because a UI
-/// that rounds three ways reads as three UIs.
-const RADIUS: u8 = 6;
+/// Captions and badges, in points: the word under a control, the initial in a
+/// profile dot, a unit. The floor — nothing in the app should be smaller, and
+/// three sizes below body (9.5, 10, 10.5) all meant this one.
+pub const SIZE_TINY: f32 = 10.0;
+/// Chips and switchers: `Auto`/`Day`/`Night`, a coordinate readout in an overlay
+/// box, anything that is a *setting* or a value rather than a sentence. Also what
+/// [`egui::TextStyle::Small`] resolves to, so `RichText::small()` agrees with it.
+pub const SIZE_CHIP: f32 = 11.0;
+/// The secondary line under a row's title: an address under a place name, a hint
+/// under a field, a status under a heading. **This is the one that drifted** —
+/// it was 13.0 in Layers, 12.5 in Route, 12.0 in the sign-in card and 11.0 in the
+/// HUD, four answers to one question.
+pub const SIZE_SUB: f32 = 12.5;
+/// Body text — the same as [`egui::TextStyle::Body`] and `Button`, i.e. what a
+/// plain `ui.label` already gets. Spell it out only inside a `RichText` chain
+/// that has to state a size; otherwise leave the size off entirely.
+pub const SIZE_BODY: f32 = 14.0;
+/// The one number a box is *about*: the HUD's clock, a primary button's label
+/// ([`primary_button`]). One per box — a second is just body text.
+pub const SIZE_VALUE: f32 = 15.0;
+/// A panel header's title, in the brand face ([`panel_header`]).
+pub const SIZE_TITLE: f32 = 17.0;
+/// [`egui::TextStyle::Heading`], in the brand face.
+pub const SIZE_HEADING: f32 = 19.0;
+/// [`egui::TextStyle::Monospace`] — the code-ish body size. Monospace runs
+/// visually larger than proportional at the same point size, which is why this is
+/// a point under [`SIZE_BODY`] rather than equal to it.
+pub const SIZE_MONO: f32 = 13.0;
+
+/// The splash wordmark. Not a scale entry: it exists exactly twice, here and in
+/// `index.html`, which has to mirror it (see `systems::splash`'s module note).
+pub const SPLASH_WORDMARK: f32 = 40.0;
+/// The motto under the wordmark. Mirrored in `index.html` for the same reason.
+pub const SPLASH_MOTTO: f32 = 16.0;
+
+// ─── Corner radius ────────────────────────────────────────────────────────────
+
+/// The corner radius: buttons, menus, chips, the panel header band. **Reach for
+/// this one unless there is a reason not to** — a UI that rounds eight ways (the
+/// number this file's single private constant was competing with) reads as eight
+/// UIs.
+///
+/// Public because the alternative is what actually happened: a caller that needed
+/// the app's radius read it back off `visuals.widgets.inactive.corner_radius`.
+pub const RADIUS: u8 = 6;
+/// Small: the checkbox square, the close button, a label chip painted over the
+/// map. For anything under ~24 pt, where [`RADIUS`] is half the height and the
+/// box stops reading as a box (an unchecked checkbox becomes a radio button).
+pub const RADIUS_SM: u8 = 3;
+/// Large: windows, cards, and the boxes that float over the map
+/// ([`overlay_frame`]). A bigger surface needs a bigger radius to look equally
+/// rounded — the same value at two sizes does not.
+pub const RADIUS_LG: u8 = 10;
+/// A pill: fully rounded whatever the height. epaint clamps a corner radius to
+/// half the shortest side, so this is "as round as it can be" rather than a
+/// pixel count — which is what makes it safe on a box of any size.
+#[allow(dead_code)] // vocabulary, no caller yet — see the note by `CHIP_PADDING`
+pub const RADIUS_PILL: u8 = u8::MAX;
+
+// ─── Touch targets ────────────────────────────────────────────────────────────
+
+/// Material's minimum touch target, in dp (density-independent pixels, 1/160 in
+/// — about 7.6 mm, roughly a fingertip). Every platform's guideline is within a
+/// millimetre of this one.
+///
+/// The app was under it everywhere a finger drives: [`style`]'s `interact_size`
+/// is 24 pt tall and 24 pt is ~36 dp on the phone tier, and the close button was
+/// 22 pt (~33 dp). Raising the *UI scale* is not the fix — past ~1.7× the
+/// viewport drops below `responsive_right_panel`'s 240 pt floor and a docked
+/// panel is wider than the screen it docks in — so the interactive sizes are
+/// raised on the touch tier instead, and this is the number they are raised to.
+#[allow(dead_code)] // read by `min_touch_target_pts` and the tests until the widgets convert
+pub const MIN_TOUCH_TARGET_DP: f32 = 48.0;
+
+/// `index.html`'s `MAX_DPR` on the phone tier — device pixels per CSS pixel the
+/// render budget will draw (`docs/notes/wasm-performance.md`). It matters here
+/// because it is *also* the magnification the stage transform applies to every
+/// egui point on the web, i.e. the thing that decides how big a point physically
+/// is. Duplicated rather than plumbed, because the page decides it before any
+/// Rust exists; if it changes there, [`dp_per_point`] changes with it.
+#[allow(dead_code)] // ditto — `onscreen_keyboard.rs` still carries its own copy
+pub const WEB_PHONE_MAX_DPR: f32 = 1.5;
+
+/// How many dp one egui point covers — the only way to size anything in a
+/// physical unit from inside this process.
+///
+///   - **Native (and Android):** winit's scale factor *is* the display density,
+///     so one window point is one dp and an egui point is `ui_scale` of those.
+///     → `ui_scale`.
+///   - **Web:** a CSS pixel is a dp on a phone, but the render budget sizes the
+///     canvas to viewport ÷ k and scales it back up by k, so one window point
+///     covers k CSS px. → `ui_scale · k`.
+///
+/// `k` is `max(1, dpr / MAX_DPR, √(pixel budget))` in `index.html` and only the
+/// middle term is reconstructible from here, so this **under**-estimates k —
+/// which over-estimates how many points 48 dp is, making targets slightly larger
+/// than the guideline rather than smaller. That is the safe direction for a
+/// floor, and the reason this is not plumbed through from JS for a number that is
+/// only accurate to a rounding anyway.
+///
+/// Lives here rather than beside any one widget because the dock discs, the close
+/// button, the driver rail and the on-screen keyboard all ask the same question,
+/// and `onscreen_keyboard.rs` having had to compute its own is how a second
+/// answer gets into the tree.
+#[must_use]
+#[allow(dead_code)] // the copy in `onscreen_keyboard.rs` converts to this
+pub fn dp_per_point(ui_scale: f32, display_scale: f32, web_phone: bool) -> f32 {
+    let stage_k = if web_phone {
+        (display_scale / WEB_PHONE_MAX_DPR).max(1.0)
+    } else {
+        1.0
+    };
+    (ui_scale * stage_k).max(0.1)
+}
+
+/// [`MIN_TOUCH_TARGET_DP`] converted to points, given a [`dp_per_point`].
+#[must_use]
+#[allow(dead_code)] // no caller until the driver rail and the keyboard convert
+pub fn min_touch_target_pts(dp_per_point: f32) -> f32 {
+    MIN_TOUCH_TARGET_DP / dp_per_point.max(0.1)
+}
+
+/// Does this run lay out for a finger?
+///
+/// [`crate::quality`] is deliberately the *one* detector in this client (see its
+/// module note): the browser decides once, in `index.html`, because the canvas
+/// resolution is a page-layout fact Rust cannot reach, and a second media query
+/// here is how the UI ends up finger-sized on a machine rendering at desktop
+/// resolution.
+#[must_use]
+pub fn touch_layout() -> bool {
+    crate::quality::is_phone()
+}
+
+/// Guaranteed height of one interactive row (`interact_size.y`), pointer tier.
+const ROW_PTS: f32 = 24.0;
+/// The same on the touch tier: [`MIN_TOUCH_TARGET_DP`] at the tier's own
+/// [`dp_per_point`], which is ≥1.5 on both platforms that reach it (native
+/// Android's `phone_ui_scale`, and the web's stage transform). 32 pt is 48 dp at
+/// exactly 1.5 and more than that above it — an argument from arithmetic, not a
+/// measurement on glass.
+pub const TOUCH_ROW_PTS: f32 = 32.0;
+
+/// The height of one interactive row in this run, in points. Match it whenever
+/// you hand-place a hit area (`allocate_exact_size`) instead of adding a widget —
+/// that is the path egui's `interact_size` cannot reach for you.
+#[must_use]
+pub fn row_height() -> f32 {
+    if touch_layout() {
+        TOUCH_ROW_PTS
+    } else {
+        ROW_PTS
+    }
+}
+
+// ─── Style ────────────────────────────────────────────────────────────────────
 
 fn widgets() -> Widgets {
     let visuals = |bg: Color32, line: Color32, fg: Color32| WidgetVisuals {
@@ -205,8 +369,8 @@ pub fn visuals() -> egui::Visuals {
     v.panel_fill = SURFACE;
     v.window_fill = SURFACE;
     v.window_stroke = Stroke::new(1.0, LINE);
-    v.window_corner_radius = CornerRadius::same(RADIUS + 4);
-    v.menu_corner_radius = CornerRadius::same(RADIUS + 2);
+    v.window_corner_radius = CornerRadius::same(RADIUS_LG);
+    v.menu_corner_radius = CornerRadius::same(RADIUS);
     // Softer and further than egui's default: these float over a moving map, and
     // a tight hard shadow reads as a sticker rather than a raised surface.
     v.window_shadow = Shadow {
@@ -228,8 +392,15 @@ pub fn visuals() -> egui::Visuals {
     v
 }
 
-/// The full brand [`egui::Style`] — [`visuals`] plus the spacing and type scale.
+/// The full brand [`egui::Style`] — [`visuals`] plus the spacing and type scale,
+/// sized for this run's pointer ([`touch_layout`]).
 pub fn style() -> egui::Style {
+    style_for(touch_layout())
+}
+
+/// [`style`] with the pointer stated rather than detected, so the touch tier's
+/// sizing is testable on a workstation.
+pub fn style_for(touch: bool) -> egui::Style {
     let mut style = egui::Style {
         visuals: visuals(),
         ..Default::default()
@@ -240,9 +411,18 @@ pub fn style() -> egui::Style {
     // vec2(4, 1) of button padding; those are inspector values, and a panel of
     // place rows built on them has no rhythm at all.
     s.item_spacing = egui::vec2(8.0, 6.0);
-    s.button_padding = egui::vec2(9.0, 4.0);
-    // 24 pt of guaranteed height per clickable row (egui ships 18).
-    s.interact_size = egui::vec2(40.0, 24.0);
+    // The touch tier is not "the same UI, bigger" — the *type* stays where it is
+    // (it is already sharp on a phone; see `egui_manager::phone_ui_scale`) and
+    // only the parts a finger has to hit grow, to [`MIN_TOUCH_TARGET_DP`]. That
+    // is the whole difference between the two tiers.
+    s.button_padding = if touch {
+        egui::vec2(11.0, 8.0)
+    } else {
+        egui::vec2(9.0, 4.0)
+    };
+    // 24 pt of guaranteed height per clickable row on a pointer (egui ships 18),
+    // 32 pt — 48 dp — under a finger.
+    s.interact_size = egui::vec2(40.0, if touch { TOUCH_ROW_PTS } else { ROW_PTS });
     s.window_margin = Margin::same(10);
     s.menu_margin = Margin::same(8);
     s.menu_spacing = 4.0;
@@ -250,23 +430,32 @@ pub fn style() -> egui::Style {
     s.icon_spacing = 6.0;
     s.slider_width = 120.0;
     s.combo_width = 120.0;
-    s.scroll.bar_width = 10.0;
+    // A 10 pt scrollbar is a 15 dp drag handle; a finger needs the same 48 dp
+    // everything else does, and a bar it cannot grab is a panel that only scrolls
+    // by fling.
+    s.scroll.bar_width = if touch { 16.0 } else { 10.0 };
 
     style.text_styles = [
         (
             TextStyle::Small,
-            FontId::new(11.0, FontFamily::Proportional),
+            FontId::new(SIZE_CHIP, FontFamily::Proportional),
         ),
-        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+        (
+            TextStyle::Body,
+            FontId::new(SIZE_BODY, FontFamily::Proportional),
+        ),
         (
             TextStyle::Button,
-            FontId::new(14.0, FontFamily::Proportional),
+            FontId::new(SIZE_BODY, FontFamily::Proportional),
         ),
         // The one place the brand face appears in the app chrome.
-        (TextStyle::Heading, FontId::new(19.0, brand_family())),
+        (
+            TextStyle::Heading,
+            FontId::new(SIZE_HEADING, brand_family()),
+        ),
         (
             TextStyle::Monospace,
-            FontId::new(13.0, FontFamily::Monospace),
+            FontId::new(SIZE_MONO, FontFamily::Monospace),
         ),
     ]
     .into();
@@ -334,12 +523,25 @@ pub fn logo_image() -> Option<egui::ColorImage> {
 
 /// The first of `candidates` the loaded font can actually draw.
 ///
-/// egui bundles Ubuntu-Light plus a small emoji subset, and a character outside
-/// both renders as an empty box. That subset is *much* thinner than it looks:
-/// probing the loaded font shows it has none of `⇅ ⬤ ⬆ ⬅ ➡ ← → ↑ ↰ ↱ ✕ 📍 🖈`, and
-/// of the plausible symbols only `⌖ ◎ ○ • ⚑ ↻ ⟲ ⏵ ⏴ ⏶ ⏷ ☰`. So no icon in the app
-/// is hard-coded to a guess: each is picked from a preference list whose last
-/// entry is Latin-1 and therefore cannot fail.
+/// egui bundles Ubuntu-Light, NotoEmoji-Regular and emoji-icon-font, and a
+/// character in none of the three renders as an empty box. The union is thinner
+/// than it looks *and* wider than the guesses people make about it, which is why
+/// this is a probe rather than a list anyone maintains by eye.
+///
+/// The inventory below was re-derived from the four cmaps in the `Proportional`
+/// stack on 2026-08-10, and it corrected the previous one in both directions:
+///
+///   - **Missing** (draws as tofu): `⇅ ⬤ ← → ↑ ↓ ↰ ↱ ✕ ✓ 🖈 ● ▲ ▼ ≡ ⌫ ⏎ ⇧ 🧭 🤖 🧍 ⧉ 🪑`.
+///   - **Present**, contrary to the note that used to stand here: `📍 📋 ⎘ ⬆ ⬅ ➡ ⊞
+///     ✔ ☆ ★ 🏠 ☀ 🌙 ☰ ⏵ ⏴ ⏶ ⏷ ⌖ ◎ ○ • ⚑ ↻ ⟲ ▶ ◀ ⚙ 🔍 💬 🗺 📌 …`. An
+///     over-conservative inventory is not free: it sends the next person down a
+///     fallback ladder for a glyph the font has, and `📍` — the obvious mark for
+///     a place pin — spent that whole time declared unavailable.
+///
+/// So no icon in the app is hard-coded to a guess: each is picked from a
+/// preference list whose last entry is Latin-1 and therefore cannot fail. The
+/// test `no_painted_glyph_is_tofu` walks the source and holds every call site to
+/// that rule.
 ///
 /// Lives here rather than beside any one panel because the answer depends on
 /// [`fonts`] — change the font stack and every icon list has to be re-probed
@@ -368,12 +570,96 @@ pub fn overlay_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(OVERLAY)
         .stroke(Stroke::new(1.0, OVERLAY_LINE))
-        .corner_radius(CornerRadius::same(RADIUS + 2))
+        .corner_radius(CornerRadius::same(RADIUS_LG))
         .inner_margin(Margin::symmetric(11, 8))
 }
 
+// ── On the `#[allow(dead_code)]`s in this file ────────────────────────────────
+// Some of what this module exports is *vocabulary*: it exists so the call sites
+// that hand-roll these today have something to convert to, and those conversions
+// live in other files. The workspace denies the `unused` group, which makes an
+// as-yet-uncalled item in this (private) module tree a hard error rather than a
+// warning — so each carries an allow until its first caller arrives. **Delete
+// the attribute with the first conversion**, or the next genuinely dead thing
+// added here goes unnoticed.
+
+/// Padding inside a label chip. Exported beside [`chip_frame`] because half the
+/// chips in this app are painted rather than laid out — a pin label is a galley
+/// and a `rect_filled` under it, which no `Frame` can reach — and those sites
+/// need the same two numbers.
+#[allow(dead_code)]
+pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
+
+/// The frame around a small text chip painted over the map: a place-pin label,
+/// the bookmark drag ghost, a feature's hover card.
+///
+/// Sibling of [`overlay_frame`], and here for the same reason: three files
+/// hand-rolled the box around [`LABEL_CHIP`] with three paddings and three
+/// radii, and two of them appear on the map *at once* (a pin label and the ghost
+/// being dragged over it), where "the chips look inconsistent" is not a subtle
+/// difference — it is two designs in one glance.
+///
+/// A chip is not an [`overlay_frame`]: it carries a few words over an arbitrary
+/// tile rather than a box of controls, so it is darker, tighter, and rounded with
+/// [`RADIUS_SM`] because at ~20 pt tall [`RADIUS`] would make it a lozenge. Add a
+/// `.stroke(...)` for the ones that carry a folder's colour.
+#[allow(dead_code)]
+pub fn chip_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(LABEL_CHIP)
+        .corner_radius(CornerRadius::same(RADIUS_SM))
+        .inner_margin(Margin::symmetric(
+            CHIP_PADDING.x as i8,
+            CHIP_PADDING.y as i8,
+        ))
+}
+
+/// Smallest width of a primary button, in points — wide enough that a two-letter
+/// label ("Go") is still a button rather than a square.
+#[allow(dead_code)]
+pub const PRIMARY_BUTTON_MIN_WIDTH: f32 = 120.0;
+/// Height of a primary button on a pointer. Under a finger it grows to
+/// [`row_height`], which is larger.
+#[allow(dead_code)]
+const PRIMARY_BUTTON_HEIGHT: f32 = 34.0;
+
+/// **The** call to action on a screen: filled with the fox, labelled in [`INK`]
+/// at [`SIZE_VALUE`], and taller than an ordinary button.
+///
+/// There should be at most one per screen, and it should be the thing you came to
+/// do — Sign in, Start driving. Everything else is `ui.button`.
+///
+/// Exists because the app already had two primary buttons that did not look
+/// alike: the sign-in CTA was a hand-built filled `Button` and the Route panel's
+/// equally-primary "▶ Driver mode" was a plain `ui.button`, so the same rank read
+/// as two different ones. `INK` on `FOX` and not white is the palette's rule for
+/// text on the accent (6.0:1 against 3.1:1) and is unit-tested below.
+#[allow(dead_code)]
+pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    primary_button_sized(ui, label, PRIMARY_BUTTON_MIN_WIDTH)
+}
+
+/// [`primary_button`] with the minimum width stated — for a CTA that has to fill
+/// the card it sits in.
+#[allow(dead_code)]
+pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> egui::Response {
+    let height = PRIMARY_BUTTON_HEIGHT.max(row_height());
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(SIZE_VALUE)
+                .strong()
+                .color(INK),
+        )
+        .fill(FOX)
+        .corner_radius(CornerRadius::same(RADIUS))
+        .min_size(egui::vec2(min_width, height)),
+    )
+}
+
 /// Diameter of a round icon button, in points. Matches the compass disc in the
-/// opposite corner — the map's floating controls are one family.
+/// opposite corner — the map's floating controls are one family. Already 60 dp on
+/// the touch tier, so it needs no finger-sized variant.
 pub const ROUND_BUTTON_SIZE: f32 = 40.0;
 
 /// A round icon button that floats over the map: the dock along the bottom, and
@@ -438,13 +724,33 @@ fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
 
 // ─── Panel header ─────────────────────────────────────────────────────────────
 
-/// Height of the band [`panel_header`] paints, in points.
-const HEADER_HEIGHT: f32 = 38.0;
 /// Diameter of the header's icon medallion. Small enough to sit on one text
-/// line, large enough that the dock's glyph survives the shrink.
+/// line, large enough that the dock's glyph survives the shrink. It is not a
+/// target — nothing clicks it — so it does not grow on the touch tier.
 const HEADER_MEDALLION: f32 = 24.0;
-/// Side of the header's close button.
-const CLOSE_BUTTON_SIZE: f32 = 22.0;
+
+/// Padding between the header band's edge and its contents.
+const HEADER_INSET: f32 = 7.0;
+
+/// Side of the header's close button, in points.
+///
+/// 22 pt is ~33 dp, which is the smallest target in the app and attached to the
+/// most irreversible-looking action in a panel; under a finger it takes
+/// [`row_height`] instead.
+#[must_use]
+pub fn close_button_size() -> f32 {
+    if touch_layout() {
+        row_height()
+    } else {
+        22.0
+    }
+}
+
+/// Height of the band [`panel_header`] paints, in points — whatever the close
+/// button needs plus its inset, floored at the pointer tier's 38.
+fn header_height() -> f32 {
+    38.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
+}
 
 /// The ✕ every panel closes with — **painted, not typed.**
 ///
@@ -455,7 +761,7 @@ const CLOSE_BUTTON_SIZE: f32 = 22.0;
 /// grid at any scale and cannot depend on a font subset at all.
 pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) =
-        ui.allocate_exact_size(egui::Vec2::splat(CLOSE_BUTTON_SIZE), egui::Sense::click());
+        ui.allocate_exact_size(egui::Vec2::splat(close_button_size()), egui::Sense::click());
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
@@ -468,12 +774,15 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let p = ui.painter();
     p.rect(
         rect,
-        CornerRadius::same(RADIUS - 2),
+        CornerRadius::same(RADIUS_SM),
         fill,
         Stroke::new(1.0, ring),
         egui::StrokeKind::Inside,
     );
-    let x = rect.shrink(7.0);
+    // The cross keeps its proportions as the target grows: a 32 pt finger-sized
+    // button with a 22 pt button's inset would draw a huge ✕, which reads as a
+    // different control rather than the same one, bigger.
+    let x = rect.shrink(rect.width() * 0.32);
     let stroke = Stroke::new(1.6, ink);
     p.line_segment([x.left_top(), x.right_bottom()], stroke);
     p.line_segment([x.right_top(), x.left_bottom()], stroke);
@@ -511,8 +820,8 @@ pub fn panel_header_with(
 ) -> bool {
     let icon = first_drawable(ui.ctx(), icons);
     let avail = ui.available_rect_before_wrap();
-    let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), HEADER_HEIGHT));
-    let radius = CornerRadius::same(RADIUS + 1);
+    let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), header_height()));
+    let radius = CornerRadius::same(RADIUS);
 
     let p = ui.painter();
     p.add(
@@ -533,8 +842,8 @@ pub fn panel_header_with(
     );
     p.line_segment(
         [
-            egui::pos2(band.left() + 7.0, band.top() + 1.5),
-            egui::pos2(band.right() - 7.0, band.top() + 1.5),
+            egui::pos2(band.left() + HEADER_INSET, band.top() + 1.5),
+            egui::pos2(band.right() - HEADER_INSET, band.top() + 1.5),
         ],
         Stroke::new(1.0, SURFACE_HOVER),
     );
@@ -543,7 +852,7 @@ pub fn panel_header_with(
     {
         let mut row = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(band.shrink2(egui::vec2(7.0, 7.0)))
+                .max_rect(band.shrink2(egui::Vec2::splat(HEADER_INSET)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         row.spacing_mut().item_spacing.x = 8.0;
@@ -564,7 +873,7 @@ pub fn panel_header_with(
         row.add(
             egui::Label::new(
                 egui::RichText::new(title)
-                    .font(FontId::new(17.0, brand_family()))
+                    .font(FontId::new(SIZE_TITLE, brand_family()))
                     .color(CREAM),
             )
             .truncate()
@@ -593,7 +902,7 @@ pub fn checkbox(
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     ui.scope(|ui| {
-        let square = CornerRadius::same(2);
+        let square = CornerRadius::same(RADIUS_SM);
         let w = &mut ui.style_mut().visuals.widgets;
         w.noninteractive.corner_radius = square;
         w.inactive.corner_radius = square;
@@ -685,13 +994,51 @@ mod tests {
         );
     }
 
+    /// Every `RightPanel`, walked by index rather than hand-listed.
+    ///
+    /// The list under the test used to be written out by hand, and `Script` was
+    /// added to the enum without being added to it — so the newest panel was the
+    /// one panel whose icon nothing checked. The round trip below is what stops
+    /// that repeating: the second `match` has no wildcard, so a new variant does
+    /// not compile until it is given an index, and giving it an index sends you
+    /// straight to the table above it.
+    fn panel_at(i: usize) -> Option<crate::resources::RightPanel> {
+        use crate::resources::RightPanel as P;
+        let panel = match i {
+            0 => P::None,
+            1 => P::Layers,
+            2 => P::Places,
+            3 => P::Route,
+            4 => P::Assistant,
+            5 => P::Chat,
+            6 => P::Appearance,
+            7 => P::Script,
+            8 => P::Settings,
+            9 => P::About,
+            _ => return None,
+        };
+        let back = match panel {
+            P::None => 0,
+            P::Layers => 1,
+            P::Places => 2,
+            P::Route => 3,
+            P::Assistant => 4,
+            P::Chat => 5,
+            P::Appearance => 6,
+            P::Script => 7,
+            P::Settings => 8,
+            P::About => 9,
+        };
+        assert_eq!(back, i, "panel_at's two tables disagree at {i}");
+        Some(panel)
+    }
+
     /// No panel may wear a glyph the font cannot draw. [`first_drawable`] only
     /// promises to fall back to the *last* candidate, so a list whose tail is
     /// itself missing (`🧭`, `🤖`, `🧍` all were) still renders an empty box — and
     /// now that the header repeats the dock's icon, one bad list draws tofu twice.
     #[test]
     fn every_panel_icon_resolves_to_a_glyph_the_font_has() {
-        use crate::resources::RightPanel;
         let ctx = egui::Context::default();
         install(&ctx);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
@@ -701,15 +1048,9 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                for panel in [
-                    RightPanel::Layers,
-                    RightPanel::Places,
-                    RightPanel::Route,
-                    RightPanel::Assistant,
-                    RightPanel::Chat,
-                    RightPanel::Appearance,
-                    RightPanel::Settings,
-                ] {
+                let mut seen = 0;
+                while let Some(panel) = panel_at(seen) {
+                    seen += 1;
                     let icon = first_drawable(ui.ctx(), panel.icons());
                     let font = TextStyle::Body.resolve(ui.style());
                     assert!(
@@ -718,7 +1059,397 @@ mod tests {
                         panel.label(),
                     );
                 }
+                assert!(seen > 1, "the panel walk found nothing to check");
             },
+        );
+    }
+
+    // ─── The source-walking tofu test ─────────────────────────────────────────
+
+    /// One string literal, located.
+    struct Literal {
+        file: String,
+        line: usize,
+        text: String,
+    }
+
+    /// Every string literal in a file, with comments, `#[cfg(test)]` modules and
+    /// [`first_drawable`] preference lists already accounted for.
+    ///
+    /// Deliberately a 60-line lexer rather than a regex: a regex over Rust source
+    /// cannot tell `"//"` inside a string from a comment, and getting *that*
+    /// backwards is how a scanner reports glyphs that no one ever paints.
+    ///
+    /// Two known limitations, both checked against the tree: a `'"'` char literal
+    /// would desynchronise the scan (there is none, and one would be caught by the
+    /// resulting nonsense rather than passing quietly), and `\u{…}` escapes are
+    /// read as their literal characters, so a glyph spelled as an escape is not
+    /// checked.
+    fn literals_of(file: &str, src: &str) -> Vec<Literal> {
+        // The suite's convention is one trailing `#[cfg(test)]\nmod tests`; a
+        // `#[cfg(test)] fn` helper mid-file (driver.rs has one) must *not* cut the
+        // scan, or 900 lines of the UI that draws the navigation chrome go
+        // unchecked.
+        let src: &str = match src.find("#[cfg(test)]\nmod tests") {
+            Some(cut) => &src[..cut],
+            None => src,
+        };
+        let c: Vec<char> = src.chars().collect();
+        let n = c.len();
+        // (line, start, end, text) per literal, in source order.
+        let mut lits: Vec<(usize, usize, usize, String)> = Vec::new();
+        let mut i = 0;
+        let mut line = 1;
+        let two = |i: usize, a: char, b: char| i + 1 < n && c[i] == a && c[i + 1] == b;
+        while i < n {
+            if c[i] == '\n' {
+                line += 1;
+                i += 1;
+                continue;
+            }
+            if two(i, '/', '/') {
+                while i < n && c[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if two(i, '/', '*') {
+                let mut depth = 1;
+                i += 2;
+                while i < n && depth > 0 {
+                    if c[i] == '\n' {
+                        line += 1;
+                    }
+                    if two(i, '/', '*') {
+                        depth += 1;
+                        i += 2;
+                    } else if two(i, '*', '/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            // Raw string: r"…", r#"…"#, r##"…"##. The look-behind keeps an
+            // identifier that merely *ends* in `r` from opening one.
+            let word_before = i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+            if c[i] == 'r' && !word_before && i + 1 < n && (c[i + 1] == '"' || c[i + 1] == '#') {
+                let start_line = line;
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while j < n && c[j] == '#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < n && c[j] == '"' {
+                    let start = i;
+                    let body = j + 1;
+                    let mut k = body;
+                    let closes = |k: usize| -> bool {
+                        c[k] == '"' && (1..=hashes).all(|h| k + h < n && c[k + h] == '#')
+                    };
+                    while k < n && !closes(k) {
+                        if c[k] == '\n' {
+                            line += 1;
+                        }
+                        k += 1;
+                    }
+                    let text: String = c[body..k.min(n)].iter().collect();
+                    let end = (k + 1 + hashes).min(n);
+                    lits.push((start_line, start, end, text));
+                    i = end;
+                    continue;
+                }
+            }
+            if c[i] == '"' {
+                let start = i;
+                let start_line = line;
+                let mut j = i + 1;
+                let mut text = String::new();
+                while j < n && c[j] != '"' {
+                    if c[j] == '\\' && j + 1 < n {
+                        text.push(c[j + 1]);
+                        j += 2;
+                        continue;
+                    }
+                    if c[j] == '\n' {
+                        line += 1;
+                    }
+                    text.push(c[j]);
+                    j += 1;
+                }
+                lits.push((start_line, start, (j + 1).min(n), text));
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+
+        // A bracketed run of nothing but string literals is a `first_drawable`
+        // preference list, and its whole point is that the earlier entries may be
+        // missing — only the last one has to resolve. Recognising that here is
+        // what keeps the test from flagging the very mechanism that fixes it.
+        let mut fallback_only = vec![false; lits.len()];
+        let mut k = 0;
+        while k < lits.len() {
+            let mut j = lits[k].1;
+            while j > 0 && c[j - 1].is_whitespace() {
+                j -= 1;
+            }
+            if j > 0 && c[j - 1] == '[' {
+                let mut last = k;
+                loop {
+                    let mut p = lits[last].2;
+                    while p < n && (c[p].is_whitespace() || c[p] == ',') {
+                        p += 1;
+                    }
+                    if last + 1 < lits.len() && lits[last + 1].1 == p {
+                        last += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if last > k {
+                    for entry in fallback_only.iter_mut().take(last).skip(k) {
+                        *entry = true;
+                    }
+                    k = last + 1;
+                    continue;
+                }
+            }
+            k += 1;
+        }
+
+        lits.into_iter()
+            .zip(fallback_only)
+            .filter(|(_, skip)| !*skip)
+            .map(|((line, _, _, text), _)| Literal {
+                file: file.to_string(),
+                line,
+                text,
+            })
+            .collect()
+    }
+
+    /// A literal longer than this is prose, not a label: an LLM tool schema, a
+    /// `tracing` line, an assertion message. None of them is ever laid out by
+    /// egui, and none of them can be told apart from a painted label by anything
+    /// a lexer can see — so the scan stops at the length where "this is a caption"
+    /// stops being true.
+    const MAX_LABEL_CHARS: usize = 24;
+
+    /// Painted glyphs that the font cannot draw **today**, and whose files belong
+    /// to someone else this week. Each entry is a bug, not an exemption.
+    ///
+    /// The test asserts every entry is still *hit*, so fixing one turns this list
+    /// red until the entry is deleted with it — an allowlist that cannot quietly
+    /// outlive its reason.
+    ///
+    /// **Currently empty, and that is the goal state.** All five entries it was
+    /// created with were fixed the same day it was written; the const stays so the
+    /// next one has an obvious place to be recorded rather than silenced.
+    const KNOWN_TOFU: &[(&str, char, &str)] = &[];
+
+    /// Walk every `.rs` file under the crate and collect them.
+    fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                source_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// **Nothing the app paints may be a glyph the font lacks.**
+    ///
+    /// [`first_drawable`] exists to guarantee this and is used at six sites
+    /// against some thirty hard-coded glyphs, so the guarantee held wherever
+    /// somebody remembered it. Two characters were shipping as empty boxes when
+    /// this was written — the HUD's `⧉` copy button and the furniture prompt's
+    /// `🪑` — and neither is visible in a review, a `cargo check` or a screenshot
+    /// nobody happens to take of that corner.
+    ///
+    /// So the test does what a reviewer cannot: it reads the source, takes every
+    /// short string literal that is not part of a preference list, and asks the
+    /// *loaded font stack* whether each non-Latin-1 character in it has a glyph.
+    /// Latin-1 is exempt because Ubuntu-Light covers it and a `°` or a `·` is not
+    /// a guess anyone is making.
+    #[test]
+    fn no_painted_glyph_is_tofu() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        source_files(&root, &mut files);
+        assert!(
+            files.len() > 20,
+            "found only {} source files under {} — the walk is broken, not the tree",
+            files.len(),
+            root.display()
+        );
+
+        let mut literals = Vec::new();
+        for path in &files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let Ok(src) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            literals.extend(literals_of(&name, &src));
+        }
+
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                let font = TextStyle::Body.resolve(ui.style());
+                let mut missing: Vec<(String, usize, char)> = Vec::new();
+                for lit in &literals {
+                    if lit.text.chars().count() > MAX_LABEL_CHARS {
+                        continue;
+                    }
+                    for ch in lit.text.chars() {
+                        if (ch as u32) <= 0xFF {
+                            continue;
+                        }
+                        let glyph = ch.to_string();
+                        let drawable = ui.ctx().fonts_mut(|f| f.has_glyphs(&font, &glyph));
+                        if !drawable {
+                            missing.push((lit.file.clone(), lit.line, ch));
+                        }
+                    }
+                }
+
+                let excused = |file: &str, ch: char| {
+                    KNOWN_TOFU.iter().any(|(f, c, _)| *f == file && *c == ch)
+                };
+                let unexcused: Vec<String> = missing
+                    .iter()
+                    .filter(|(file, _, ch)| !excused(file.as_str(), *ch))
+                    .map(|(file, line, ch)| {
+                        format!("{file}:{line} draws U+{:04X} {ch:?}", *ch as u32)
+                    })
+                    .collect();
+                assert!(
+                    unexcused.is_empty(),
+                    "the font cannot draw these, so they paint as empty boxes — pick them \
+                     with `theme::first_drawable` from a list ending in something Latin-1:\n  {}",
+                    unexcused.join("\n  ")
+                );
+
+                // …and the other direction: an entry that no longer matches
+                // anything has been fixed, and a stale excuse is how the next one
+                // gets waved through.
+                for &(file, ch, why) in KNOWN_TOFU {
+                    assert!(
+                        missing
+                            .iter()
+                            .any(|(f, _, c)| f.as_str() == file && *c == ch),
+                        "KNOWN_TOFU still lists {ch:?} in {file} ({why}), but the scan no \
+                         longer finds it — delete the entry",
+                    );
+                }
+            },
+        );
+    }
+
+    // ─── The scales ───────────────────────────────────────────────────────────
+
+    /// The type scale is a *scale*: strictly increasing, with no two entries close
+    /// enough to be indistinguishable on screen. Two sizes half a point apart are
+    /// not a choice, they are the drift this replaced (the app shipped 9.5, 10,
+    /// 10.5, 11 and 11.5 as if they were five different intentions).
+    #[test]
+    fn the_type_scale_is_a_scale() {
+        let scale = [
+            ("tiny", SIZE_TINY),
+            ("chip", SIZE_CHIP),
+            ("sub", SIZE_SUB),
+            ("body", SIZE_BODY),
+            ("value", SIZE_VALUE),
+            ("title", SIZE_TITLE),
+            ("heading", SIZE_HEADING),
+        ];
+        for pair in scale.windows(2) {
+            let ((a, lo), (b, hi)) = (pair[0], pair[1]);
+            assert!(
+                hi - lo >= 1.0,
+                "{a} ({lo}) and {b} ({hi}) are the same size"
+            );
+        }
+        // The style's own entries must come off the scale, or the constants
+        // describe a UI the app is not painting.
+        let s = style_for(false);
+        assert_eq!(s.text_styles[&TextStyle::Body].size, SIZE_BODY);
+        assert_eq!(s.text_styles[&TextStyle::Small].size, SIZE_CHIP);
+        assert_eq!(s.text_styles[&TextStyle::Heading].size, SIZE_HEADING);
+    }
+
+    /// The radius scale, same argument: four values, each visibly a step from the
+    /// next, and [`RADIUS_PILL`] beyond any box this app draws.
+    #[test]
+    fn the_radius_scale_is_a_scale() {
+        assert!(RADIUS_SM < RADIUS && RADIUS < RADIUS_LG);
+        assert!(RADIUS_LG < RADIUS_PILL);
+        // The widgets take the default one — this is the value a caller who
+        // needed it used to read back off the widget table instead.
+        assert_eq!(
+            visuals().widgets.inactive.corner_radius,
+            CornerRadius::same(RADIUS)
+        );
+    }
+
+    /// The touch tier exists to clear [`MIN_TOUCH_TARGET_DP`], and the arithmetic
+    /// that says it does is the only check available in a container with no
+    /// glass. Both platforms that reach the tier are covered, because they get
+    /// there by different routes: Android magnifies the UI (`ui_scale` 1.5) while
+    /// the web magnifies the *canvas* (`index.html`'s stage transform).
+    #[test]
+    fn touch_sizes_clear_the_minimum_target() {
+        // Native Android: ui_scale 1.5, no stage transform.
+        let android = dp_per_point(1.5, 1.5, false);
+        // Web phone: ui_scale 1.0, and a Fairphone 4's 2.75× DPR through the
+        // stage transform.
+        let web = dp_per_point(1.0, 2.75, true);
+        for (name, dp_per_pt) in [("android", android), ("web", web)] {
+            let row_dp = TOUCH_ROW_PTS * dp_per_pt;
+            assert!(
+                row_dp >= MIN_TOUCH_TARGET_DP,
+                "{name}: a touch row is {row_dp:.0} dp, under the {MIN_TOUCH_TARGET_DP:.0} dp \
+                 guideline"
+            );
+            assert!(
+                ROUND_BUTTON_SIZE * dp_per_pt >= MIN_TOUCH_TARGET_DP,
+                "{name}: a dock disc is under the guideline"
+            );
+            // And the conversion the keyboard needs agrees with the row.
+            assert!(min_touch_target_pts(dp_per_pt) <= TOUCH_ROW_PTS + 0.01);
+        }
+        // The pointer tier is deliberately *not* held to it — a mouse is not a
+        // finger, and 24 pt rows are what makes a panel of layer toggles readable.
+        let touch = style_for(true);
+        let pointer = style_for(false);
+        assert!(touch.spacing.interact_size.y > pointer.spacing.interact_size.y);
+        assert_eq!(touch.spacing.interact_size.y, TOUCH_ROW_PTS);
+        // Type does not grow with the targets: the phone's UI is already sharp,
+        // and scaling the text too is what pushes the viewport under
+        // `responsive_right_panel`'s 240 pt floor.
+        assert_eq!(
+            touch.text_styles[&TextStyle::Body].size,
+            pointer.text_styles[&TextStyle::Body].size
         );
     }
 }

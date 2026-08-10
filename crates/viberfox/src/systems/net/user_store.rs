@@ -73,6 +73,12 @@ pub struct UserData {
     /// bookmark) so Home returns to the exact view, not just the spot.
     #[serde(default)]
     pub home: Option<SavedLocation>,
+    /// The Settings panel's own preferences — units, turn chimes,
+    /// keep-screen-on, the quality preset. Kept here rather than in `LayerPrefs`
+    /// because that describes what is *drawn*; this describes how the app should
+    /// behave, and the two get changed for different reasons.
+    #[serde(default)]
+    pub settings: crate::resources::AppPrefs,
     #[serde(default)]
     pub bookmarks: Vec<Bookmark>,
     /// The directory tree the bookmarks hang in (see [`PlaceFolder`]).
@@ -467,6 +473,26 @@ fn migrate(data: &mut UserData) {
 }
 
 impl UserStore {
+    /// The remembered quality preset, read before anything else exists.
+    ///
+    /// `quality::init` has to run at the very top of `run()` — it decides how wide
+    /// the worker pool may be, and every streamer expects it settled before the
+    /// first frame — while the store proper is loaded much later, *after* the
+    /// tracing subscriber, so that "user.json unreadable, kept a copy at …" is a
+    /// message someone actually sees. Reading the one field early is the cheap way
+    /// to satisfy both: a second read of a small JSON file at startup costs
+    /// nothing measurable, and it keeps the quarantine warning where it is useful.
+    ///
+    /// Silent by construction. Any failure here means "no preference", which is
+    /// the correct answer for a missing, unreadable or older file, and the real
+    /// load a moment later is what reports it.
+    #[must_use]
+    pub fn preferred_quality() -> Option<&'static str> {
+        let text = std::fs::read_to_string(user_data_path()).ok()?;
+        let data: UserData = serde_json::from_str(&text).ok()?;
+        data.settings.quality.as_env_word()
+    }
+
     pub fn load() -> Self {
         let path = user_data_path();
         let (data, last_written) = match std::fs::read_to_string(&path) {
@@ -877,6 +903,7 @@ pub fn autosave_user_store(
     mut exits: MessageReader<AppExit>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut store: ResMut<UserStore>,
+    prefs: Res<crate::resources::AppPrefs>,
     globe: Res<crate::systems::globe::GlobeState>,
     camera_state: Res<CameraState>,
     cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -904,6 +931,7 @@ pub fn autosave_user_store(
         *next_at = time.elapsed_secs() + AUTOSAVE_INTERVAL;
     }
 
+    store.data.settings = *prefs;
     store.data.layers = Some(dl.prefs());
     // Both go through `DataLayers`, which sees past driver mode's temporary
     // clear sky to what the user actually set.

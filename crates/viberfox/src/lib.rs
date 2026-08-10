@@ -323,7 +323,7 @@ pub fn run() {
     // Resolve the render budget first: it decides how wide the worker pool below
     // is allowed to be, and every later reader (`setup_camera`, the streamers)
     // expects it settled before the first frame. See `quality`.
-    quality::init();
+    quality::init(systems::user_store::UserStore::preferred_quality());
 
     // Start the CPU worker pool before anything streams (ADR-033). A no-op
     // natively — `AsyncComputeTaskPool` is already a thread pool — and on the web
@@ -609,6 +609,10 @@ pub fn run() {
 
     let user_store = systems::user_store::UserStore::load();
     let session_prefs = user_store.data.session.clone();
+    // Lifted out before the store is moved into the world, so the Settings panel
+    // comes up holding what the user last chose rather than the defaults. This is
+    // also why `AppPrefs` is `Copy`.
+    let app_prefs = user_store.data.settings;
 
     // Headless (`--shot`): no window, and therefore no winit event loop to pump
     // the app — `ScheduleRunnerPlugin` drives the frames instead, as fast as the
@@ -659,6 +663,11 @@ pub fn run() {
         })
         .init_resource::<systems::settings::SettingsState>()
         .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
+        // The user's own preferences — units, turn chimes, keep-screen-on, the
+        // quality preset. Distinct from `DevPanelState` (a debugging surface) and
+        // from `LayerPrefs` (what is drawn); this is what the Settings panel owns,
+        // and `render_settings_panel` reads it unconditionally.
+        .insert_resource(app_prefs)
         .init_resource::<ContextMenuState>()
         .init_resource::<EditDialogState>()
         .init_resource::<systems::gizmo::GizmoState>()
@@ -1303,6 +1312,7 @@ pub fn run() {
                 systems::script_editor::render_script_panel,
                 systems::ui::render_avatar_chooser,
                 systems::settings::render_settings_panel,
+                systems::settings::render_about_panel,
                 // Before the pins and after every panel, for the same reason both of
                 // those hold: it culls against the root `Ui`'s leftover space, which is
                 // only the map once the side panels have taken their width.
@@ -1334,7 +1344,15 @@ pub fn run() {
         // working while backgrounded, and answer the back gesture. Their own
         // `add_systems` call because the Update tuple above is at Bevy's
         // 20-system-per-tuple limit.
-        .add_systems(Update, (quiesce_while_backgrounded, handle_back_gesture))
+        .add_systems(
+            Update,
+            (
+                quiesce_while_backgrounded,
+                handle_back_gesture,
+                apply_screen_wakelock,
+                sync_guidance_pref,
+            ),
+        )
         // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
         // browser have (`systems::onscreen_keyboard`). NativeActivity brings up no
         // IME at all, so every text field in the client can be focused and cannot
@@ -2339,6 +2357,48 @@ fn frame_time_watchdog(
 /// once per shadow cascade (sun + moon, 4 each), so `ktris_shadow` weighs far
 /// heavier than its raw value and is usually what pins this iGPU; `draws` is the
 /// visible mesh count. Watch these against `frame_ms` to see what "too much" is.
+/// Hold the screen awake while navigating, and let the user say no.
+///
+/// The window flag is derived from state rather than set at the two ends of
+/// driver mode, which is what makes the Settings toggle mean anything: turning
+/// it off mid-drive has to release the lock, and `enter`/`exit` cannot observe a
+/// preference changing while they are not being called. Deriving it also removes
+/// the pairing bug — there is no path that sets the flag and forgets to clear it,
+/// because nothing sets it, this only ever reports the current answer.
+///
+/// Edge-triggered on the answer, not the inputs: `set_window_flags` crosses a
+/// JNI-ish boundary into the activity's looper, and doing that every frame for
+/// an unchanged value would be silly.
+fn apply_screen_wakelock(
+    driver: Res<systems::driver::DriverState>,
+    prefs: Res<resources::AppPrefs>,
+    mut held: Local<bool>,
+) {
+    let want = driver.active && prefs.keep_screen_on;
+    if want == *held {
+        return;
+    }
+    *held = want;
+    #[cfg(target_os = "android")]
+    platform::android::set_keep_screen_on(want);
+}
+
+/// Mirror the user's guidance preference into driver mode.
+///
+/// `DriverState` owns the flag the cue system reads, because that system runs
+/// deep inside the driving tick and taking a second resource there would push it
+/// over Bevy's system-parameter limit. So the preference is copied in rather than
+/// read through.
+fn sync_guidance_pref(
+    prefs: Res<resources::AppPrefs>,
+    mut driver: ResMut<systems::driver::DriverState>,
+) {
+    if !prefs.is_changed() {
+        return;
+    }
+    driver.cues = systems::driver::GuidanceSound(prefs.voice_guidance);
+}
+
 /// Stop doing map work while the app is in the background.
 ///
 /// Nothing else notices being backgrounded: the tile streamers keep fetching and

@@ -1382,7 +1382,13 @@ pub fn render_poi_popup(
                         const NO_BROWSER: &str = "Opening links isn't available on this platform";
                         if let Some(url) = &popup.website {
                             if ui
-                                .add_enabled(can_open, egui::Button::new("Website ↗"))
+                                .add_enabled(
+                                    can_open,
+                                    egui::Button::new(format!(
+                                        "Website {}",
+                                        theme::first_drawable(ui.ctx(), &["↗", "»"])
+                                    )),
+                                )
                                 .on_disabled_hover_text(NO_BROWSER)
                                 .clicked()
                             {
@@ -1438,7 +1444,10 @@ pub const fn open_url_supported() -> bool {
 ///
 /// Not every platform can honour this — ask [`open_url_supported`] before
 /// offering the user a control that calls it.
-fn open_url(url: &str) {
+///
+/// `pub` because the About panel's licence links go through the same door: the
+/// scheme restriction and the platform matrix are the whole point of having one.
+pub fn open_url(url: &str) {
     let url = url.trim();
     let url = if url.starts_with("http://") || url.starts_with("https://") {
         url.to_string()
@@ -2070,6 +2079,7 @@ pub fn render_data_layers_panel(
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
     let mut close = false;
+    let mut about = false;
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     crate::systems::egui_manager::responsive_right_panel(
@@ -2081,112 +2091,134 @@ pub fn render_data_layers_panel(
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = crate::resources::RightPanel::Layers;
         close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
-        for (i, def) in LAYER_DEFS.iter().enumerate() {
-            ui.add_space(4.0);
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.layers[i].enabled,
-                egui::RichText::new(def.name).size(14.0),
-            );
-            ui.indent(def.key, |ui| {
-                for (label, style) in def.categories {
-                    let c = egui::Color32::from_rgb(
-                        (style.color[0] * 255.0) as u8,
-                        (style.color[1] * 255.0) as u8,
-                        (style.color[2] * 255.0) as u8,
+        // The body is ~35 rows and ~900 pt tall against a 609 pt phone viewport
+        // (411 dp at `ui_scale` 1.5), and a `Panel` does not scroll on its own —
+        // it simply clips. Everything from "Height" down, including the only
+        // switch that brings the street names back, was unreachable. The header
+        // stays outside so the close button cannot scroll away with the content.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (i, def) in LAYER_DEFS.iter().enumerate() {
+                    ui.add_space(4.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.layers[i].enabled,
+                        egui::RichText::new(def.name).size(14.0),
                     );
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("●").size(12.0).color(c));
-                        ui.label(egui::RichText::new(*label).size(13.0));
+                    ui.indent(def.key, |ui| {
+                        for (label, style) in def.categories {
+                            let c = egui::Color32::from_rgb(
+                                (style.color[0] * 255.0) as u8,
+                                (style.color[1] * 255.0) as u8,
+                                (style.color[2] * 255.0) as u8,
+                            );
+                            ui.horizontal(|ui| {
+                                // `◎`, not `●` — U+25CF is tofu in the bundled
+                                // stack, so the legend's colour dot was a box.
+                                ui.label(egui::RichText::new("◎").size(theme::SIZE_CHIP).color(c));
+                                ui.label(egui::RichText::new(*label).size(13.0));
+                            });
+                        }
+                        // Live moving vehicles ride on the transit layer (ADR-026).
+                        if i == TRANSIT_LAYER {
+                            ui.add_space(2.0);
+                            crate::systems::theme::checkbox(
+                                ui,
+                                &mut dl.vehicles_enabled,
+                                egui::RichText::new("Live vehicles").size(13.0),
+                            );
+                        }
                     });
+                    ui.add_space(4.0);
+                    ui.separator();
                 }
-                // Live moving vehicles ride on the transit layer (ADR-026).
-                if i == TRANSIT_LAYER {
+                ui.add_space(4.0);
+                let tdbag_resp = buildings_section(
+                    ui,
+                    &mut dl,
+                    crate::systems::osm_buildings::tdbag_attribution().is_some(),
+                );
+                // One line per click, so a live session can tell "the click never
+                // reached the widget" from "it toggled and something reverted it"
+                // without a debugger (#12 reported the checkbox stuck).
+                if tdbag_resp.is_some_and(|r| r.clicked()) {
+                    tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
+                }
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.map_enabled,
+                    egui::RichText::new("Map").size(14.0),
+                );
+                ui.indent("map", |ui| {
+                    ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
                     ui.add_space(2.0);
                     crate::systems::theme::checkbox(
                         ui,
-                        &mut dl.vehicles_enabled,
-                        egui::RichText::new("Live vehicles").size(13.0),
+                        &mut dl.trees_enabled,
+                        egui::RichText::new("Trees").size(13.0),
                     );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.furniture_enabled,
+                        egui::RichText::new("Street furniture").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.roads_textured,
+                        egui::RichText::new("Road textures").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.water_shading,
+                        egui::RichText::new("Water shading").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.street_labels,
+                        egui::RichText::new("Street labels").size(13.0),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.height_enabled,
+                    egui::RichText::new("Height").size(14.0),
+                );
+                ui.indent("height", |ui| {
+                    // Say where it works, in the panel rather than in a doc comment: a
+                    // toggle that silently does nothing over Berlin is a bug report.
+                    ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                // In the flow, not `bottom_up`: a bottom-anchored layout inside a scroll
+                // area asks for the scroll viewport's height and pins the credits to the
+                // wrong end of an unbounded canvas. The short form stays here because it
+                // is the layer list's own source note; the full notices — and the ones
+                // this panel never mentioned at all (VersaTiles, AHN, Quaternius, the
+                // font) — are in About, which is where a licence looks for them.
+                ui.add_space(6.0);
+                if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
+                    ui.small(credit);
+                }
+                ui.small(
+                    "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
+                );
+                ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
+                if ui.small_button("Full credits and licences…").clicked() {
+                    about = true;
                 }
             });
-            ui.add_space(4.0);
-            ui.separator();
-        }
-        ui.add_space(4.0);
-        let tdbag_resp = buildings_section(
-            ui,
-            &mut dl,
-            crate::systems::osm_buildings::tdbag_attribution().is_some(),
-        );
-        // One line per click, so a live session can tell "the click never
-        // reached the widget" from "it toggled and something reverted it"
-        // without a debugger (#12 reported the checkbox stuck).
-        if tdbag_resp.is_some_and(|r| r.clicked()) {
-            tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
-        }
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-        crate::systems::theme::checkbox(
-            ui,
-            &mut dl.map_enabled,
-            egui::RichText::new("Map").size(14.0),
-        );
-        ui.indent("map", |ui| {
-            ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
-            ui.add_space(2.0);
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.trees_enabled,
-                egui::RichText::new("Trees").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.furniture_enabled,
-                egui::RichText::new("Street furniture").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.roads_textured,
-                egui::RichText::new("Road textures").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.water_shading,
-                egui::RichText::new("Water shading").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.street_labels,
-                egui::RichText::new("Street labels").size(13.0),
-            );
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-        crate::systems::theme::checkbox(
-            ui,
-            &mut dl.height_enabled,
-            egui::RichText::new("Height").size(14.0),
-        );
-        ui.indent("height", |ui| {
-            // Say where it works, in the panel rather than in a doc comment: a
-            // toggle that silently does nothing over Berlin is a bug report.
-            ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.add_space(6.0);
-            if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
-                ui.small(credit);
-            }
-            ui.small("Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API");
-            ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
-        });
     });
-    if close || (open_before && !open) {
+    if about {
+        *right_panel = crate::resources::RightPanel::About;
+    } else if close || (open_before && !open) {
         *right_panel = crate::resources::RightPanel::None;
     }
 }

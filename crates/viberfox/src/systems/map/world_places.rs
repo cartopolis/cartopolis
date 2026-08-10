@@ -52,7 +52,11 @@ impl InteractKind {
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Place(c) => c.glyph(),
-            Self::Prop(_) => "🪑",
+            // `•`, not `🪑` and not `📌`: the bundled font stack has almost no
+            // emoji at all (see `theme::first_drawable`), and this call site has
+            // no `Context` to run a fallback ladder against, so it has to be a
+            // character known to be in the stack.
+            Self::Prop(_) => "•",
         }
     }
 

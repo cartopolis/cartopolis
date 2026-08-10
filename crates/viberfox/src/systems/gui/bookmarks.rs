@@ -325,7 +325,10 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
     // size from its content rect, so the panel grew by that much *every frame*
     // for as long as the field was open.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        commit = ui.button("✔").on_hover_text("Apply").clicked();
+        commit = ui
+            .button(theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"]))
+            .on_hover_text("Apply")
+            .clicked();
         // `desired_width` is the field's *text* width; its frame padding and
         // stroke sit outside that, so they have to come off too.
         let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
@@ -567,7 +570,11 @@ fn folder_row(
                 {
                     act.delete_folder = Some(id);
                 }
-                if ui.small_button("✏").on_hover_text("Rename").clicked() {
+                if ui
+                    .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+                    .on_hover_text("Rename")
+                    .clicked()
+                {
                     *editing = Some(Rename {
                         item: Item::Folder(id),
                         buf: name.to_string(),
@@ -639,7 +646,7 @@ fn place_row(
         // The dot is the map pin's colour, so the panel and the map read as
         // one thing.
         ui.label(
-            egui::RichText::new("📍")
+            egui::RichText::new(theme::first_drawable(ui.ctx(), &["📍", "⌖", "•"]))
                 .size(12.0)
                 .color(egui_color(color)),
         );
@@ -647,7 +654,11 @@ fn place_row(
             if ui.small_button("🗑").on_hover_text("Delete").clicked() {
                 act.delete_place = Some(id);
             }
-            if ui.small_button("✏").on_hover_text("Rename").clicked() {
+            if ui
+                .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+                .on_hover_text("Rename")
+                .clicked()
+            {
                 *editing = Some(Rename {
                     item: Item::Place(id),
                     buf: name.to_string(),
@@ -655,7 +666,10 @@ fn place_row(
                 });
             }
             if ui
-                .add_enabled(can_update, egui::Button::new("🔄").small())
+                .add_enabled(
+                    can_update,
+                    egui::Button::new(theme::first_drawable(ui.ctx(), &["🔄", "↻", "·"])).small(),
+                )
                 .on_hover_text("Update to current position and view")
                 .clicked()
             {

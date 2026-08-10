@@ -282,8 +282,8 @@ static BUDGET: OnceLock<Budget> = OnceLock::new();
 ///
 /// Idempotent, and deliberately not a panic if called twice: a second call from a
 /// test harness should be a no-op, not a crash in a build that works.
-pub fn init() {
-    let resolved = detect();
+pub fn init(preferred: Option<&str>) {
+    let resolved = detect(preferred);
     if BUDGET.set(resolved).is_ok() {
         tracing::info!(
             tier = ?resolved.tier,
@@ -303,7 +303,11 @@ pub fn init() {
 /// unit test, or a system that beat startup to it).
 #[must_use]
 pub fn budget() -> &'static Budget {
-    BUDGET.get_or_init(detect)
+    // `None` rather than the stored preference: this arm only runs when nobody
+    // called `init`, which means there is no app and therefore no user — a unit
+    // test, or a system that beat startup to it. Reading `user.json` from here
+    // would make a test's answer depend on the developer's saved settings.
+    BUDGET.get_or_init(|| detect(None))
 }
 
 /// Shorthand for the common `budget().tier == Tier::Phone` test.
@@ -312,7 +316,7 @@ pub fn is_phone() -> bool {
     budget().tier == Tier::Phone
 }
 
-fn detect() -> Budget {
+fn detect(preferred: Option<&str>) -> Budget {
     // An explicit setting wins everywhere, which is the whole point of it: it is
     // how the phone budget gets exercised on a machine that can profile it.
     if let Some(v) = crate::env_value("VIBERFOX_QUALITY") {
@@ -323,6 +327,15 @@ fn detect() -> Budget {
                 "unknown VIBERFOX_QUALITY; expected phone|low|mobile or desktop|high"
             ),
         }
+    }
+    // Then the user's own choice from Settings ▸ Map. Below the env var because
+    // that one is a debugging override and has to win over a stored preference to
+    // be useful; above `auto()` because a person who has picked a tier has said
+    // something the detector cannot know — that this phone runs hot, or that this
+    // laptop is nicer than its core count suggests. `None` is "Auto", which is not
+    // a third answer but the absence of one.
+    if let Some(budget) = preferred.and_then(parse) {
+        return budget;
     }
     auto()
 }

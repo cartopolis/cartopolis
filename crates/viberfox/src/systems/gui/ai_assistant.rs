@@ -497,7 +497,10 @@ pub fn poll_ai_response(
 
                 state.display_messages.push(DisplayMessage {
                     is_user: false,
-                    text: format!("[ {} → {} ]", tool_name, result_text),
+                    // `»`, not `→` (and not `➡`, which is equally absent): no
+                    // arrow in any block is in the bundled stack. Latin-1 is the
+                    // only guarantee without a `Context` to probe against.
+                    text: format!("[ {} » {} ]", tool_name, result_text),
                 });
                 state.scroll_to_bottom = true;
 

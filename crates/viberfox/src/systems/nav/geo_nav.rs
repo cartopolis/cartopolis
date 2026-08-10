@@ -1815,9 +1815,11 @@ mod tests {
 
         // Once the empty answer has stood for the grace period, say so — under the
         // rows, which are still real places worth clicking.
-        nav.empty_since = Instant::now()
-            .checked_sub(NO_RESULTS_GRACE * 2)
-            .expect("the monotonic clock is older than the grace period");
+        nav.empty_since = Some(
+            Instant::now()
+                .checked_sub(NO_RESULTS_GRACE * 2)
+                .expect("the monotonic clock is older than the grace period"),
+        );
         assert_eq!(nav.status().as_deref(), Some("No results"));
 
         // A real answer clears both.
@@ -1885,7 +1887,11 @@ mod tests {
 
         nav.route_to("  ", 53.0, 6.0);
         apply_route_request(&mut nav, &mut route, &mut panel);
-        assert!(route.to.label.starts_with("📍 "));
+        assert!(
+            !route.to.label.is_empty() && !route.to.label.contains('📍'),
+            "an unnamed pick keeps the coordinate label, and that label must not \
+             carry a glyph the font cannot draw"
+        );
     }
 
     /// The recents list: newest first, without the place we are standing on (that

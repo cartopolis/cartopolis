@@ -663,12 +663,6 @@ impl DriverState {
         self.solve_error = None;
         self.retry_requested = false;
         self.watch = Some(LocationWatch::start());
-        // Navigation is the one mode where the screen must not sleep: a phone
-        // blanks 30 s into a drive and the app is over, having done nothing wrong.
-        // Paired exactly with `exit`, which early-returns when already inactive, so
-        // the flag cannot be left set.
-        #[cfg(target_os = "android")]
-        crate::platform::android::set_keep_screen_on(true);
         tracing::info!(gps = LocationWatch::available(), "driver mode on");
     }
 
@@ -686,8 +680,6 @@ impl DriverState {
         self.active = false;
         self.armed = false;
         self.watch = None;
-        #[cfg(target_os = "android")]
-        crate::platform::android::set_keep_screen_on(false);
         self.progress = None;
         self.gps_fix = false;
         self.gps = GpsQuality::default();
@@ -2633,7 +2625,9 @@ enum Cue {
 /// What has already been announced. One `Local` on the playing system.
 #[derive(Default)]
 #[cfg_attr(not(feature = "audio"), allow(dead_code))]
-struct CueMemory {
+// `pub` for the same reason as `CueClips`: it is a `Local` in
+// `play_driver_cues`'s signature, which Bevy makes part of the public type.
+pub struct CueMemory {
     active: bool,
     step: Option<usize>,
     band: Option<CueBand>,
@@ -2777,7 +2771,10 @@ fn cue_wav(notes: &[(f32, f32)]) -> Vec<u8> {
 /// tenths of a second of 16-bit mono is ~20 KB, cheap enough that building it
 /// during a drive is not a decision worth a frame budget.
 #[cfg(feature = "audio")]
-struct CueClips {
+// `pub` only because it appears in `play_driver_cues`'s signature as a `Local`,
+// and Bevy's system registration makes that part of the public type. Nothing
+// outside this module has any reason to name it.
+pub struct CueClips {
     prepare: Handle<bevy::audio::AudioSource>,
     approach: Handle<bevy::audio::AudioSource>,
     now: Handle<bevy::audio::AudioSource>,

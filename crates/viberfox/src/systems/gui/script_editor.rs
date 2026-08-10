@@ -298,7 +298,8 @@ pub fn render_script_panel(
             // separate unsaved marker rather than one combined state.
             let (dot, tip) = if editor.running {
                 (
-                    "● running",
+                    // `◎`, not `●`: U+25CF is in none of the four bundled fonts.
+                    "◎ running",
                     "the server is running a compiled copy of this script",
                 )
             } else {

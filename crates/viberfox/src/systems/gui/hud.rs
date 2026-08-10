@@ -1,8 +1,9 @@
 //! Bottom-right status overlay: wall-clock time, the camera's geographic
-//! position and altitude, a compass, and two location actions — ⧉ copies the
-//! current place ("lat, lng, altitude, pitch°, yaw°" — see [`format_place`];
-//! pasteable into the search bar, or into a `?place=` URL on the web) and
-//! ☆ bookmarks it (named by reverse-geocoded address; see `bookmarks`).
+//! position and altitude, a compass, and two location actions — a copy button
+//! takes the current place ("lat, lng, altitude, pitch°, yaw°" — see
+//! [`format_place`]; pasteable into the search bar, or into a `?place=` URL on
+//! the web) and ☆ bookmarks it (named by reverse-geocoded address; see
+//! `bookmarks`).
 //!
 //! The clock shows real local time once [`WorldClock`] has learned the
 //! region's UTC offset (from the transit feed), and UTC until then.
@@ -51,7 +52,8 @@ pub struct HudData {
     pub weather_info: Option<(String, String)>,
     pub geo: Option<(f64, f64)>,
     pub altitude: Option<f64>,
-    /// Show the copy button's "just copied" ✔ state.
+    /// Show the copy button's "just copied" ✔ state. (`✔` is in the bundled
+    /// font — see `theme::first_drawable`'s inventory — so it is safe to type.)
     pub copied: bool,
     /// Show the Set Home button's "just set" ✔ state.
     pub home_set: bool,
@@ -60,7 +62,7 @@ pub struct HudData {
     pub user: Option<String>,
 }
 
-/// Render a place the way the ⧉ button copies it: "lat, lng, altm, pitch°, yaw°",
+/// Render a place the way the copy button copies it: "lat, lng, altm, pitch°, yaw°",
 /// with the view dropped when there is no camera to read it from.
 ///
 /// One function because this string is a small interchange format — the search
@@ -177,7 +179,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
                 c + north * (r - 11.0),
                 egui::Align2::CENTER_CENTER,
                 "N",
-                egui::FontId::proportional(10.0),
+                egui::FontId::proportional(theme::SIZE_TINY),
                 theme::CREAM,
             );
             // Locked: a small padlock at the south edge, clear of the needle.
@@ -210,7 +212,7 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
                     egui::pos2(c.x, rect.bottom() + 7.0),
                     egui::Align2::CENTER_CENTER,
                     caption,
-                    egui::FontId::proportional(10.0),
+                    egui::FontId::proportional(theme::SIZE_TINY),
                     theme::TEXT_DIM,
                 );
             }
@@ -472,13 +474,17 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                     c,
                                     egui::Align2::CENTER_CENTER,
                                     ch.to_uppercase().to_string(),
-                                    egui::FontId::proportional(9.5),
+                                    egui::FontId::proportional(theme::SIZE_TINY),
                                     // Ink on the accent, not white — the same
                                     // 6:1 pairing every filled orange uses.
                                     theme::INK,
                                 );
                             }
-                            ui.label(egui::RichText::new(user).size(12.5).color(theme::CREAM));
+                            ui.label(
+                                egui::RichText::new(user)
+                                    .size(theme::SIZE_SUB)
+                                    .color(theme::CREAM),
+                            );
                         });
                     }
                     // Clock + a small Local/UTC toggle, then the sun-mode
@@ -486,10 +492,13 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                     // for the sky, the way a website theme toggle reads.
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        mono(ui, data.time.clone(), 15.0, theme::CREAM);
+                        mono(ui, data.time.clone(), theme::SIZE_VALUE, theme::CREAM);
                         let zone = if data.utc { "UTC" } else { "Local" };
                         if ui
-                            .add(egui::Button::new(egui::RichText::new(zone).size(10.5)).small())
+                            .add(
+                                egui::Button::new(egui::RichText::new(zone).size(theme::SIZE_TINY))
+                                    .small(),
+                            )
                             .on_hover_text("Toggle the clock between local time and UTC")
                             .clicked()
                         {
@@ -504,7 +513,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                 if ui
                                     .selectable_label(
                                         data.sun_mode == mode,
-                                        egui::RichText::new(label).size(11.0),
+                                        egui::RichText::new(label).size(theme::SIZE_CHIP),
                                     )
                                     .on_hover_text(tip)
                                     .clicked()
@@ -513,8 +522,12 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                                 }
                             };
                         choice(ui, SunMode::Auto, "Auto", "Sun follows the real local time");
-                        choice(ui, SunMode::Day, "☀", "Force daylight (noon)");
-                        choice(ui, SunMode::Night, "🌙", "Force night (midnight)");
+                        // Words, not `☀`/`🌙`: neither is in the bundled font, so
+                        // both were boxes — and next to a textual "Auto" the words
+                        // read better anyway, on touch especially, where the
+                        // explanatory tooltip can never appear.
+                        choice(ui, SunMode::Day, "Day", "Force daylight (noon)");
+                        choice(ui, SunMode::Night, "Night", "Force night (midnight)");
                     });
                     // Weather: an Auto/Manual toggle mirroring the sun switcher,
                     // plus the live forecast readout for the map location.
@@ -523,7 +536,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         if ui
                             .selectable_label(
                                 data.weather_live,
-                                egui::RichText::new("Auto").size(11.0),
+                                egui::RichText::new("Auto").size(theme::SIZE_CHIP),
                             )
                             .on_hover_text("Live weather for the map location (met.no)")
                             .clicked()
@@ -533,7 +546,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         if ui
                             .selectable_label(
                                 !data.weather_live,
-                                egui::RichText::new("Manual").size(11.0),
+                                egui::RichText::new("Manual").size(theme::SIZE_CHIP),
                             )
                             .on_hover_text("Hold the weather; adjust it in the dev panel")
                             .clicked()
@@ -545,7 +558,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         ui.label(
                             egui::RichText::new(short)
                                 .monospace()
-                                .size(11.0)
+                                .size(theme::SIZE_CHIP)
                                 .color(theme::TEXT_DIM),
                         )
                         .on_hover_text(full);
@@ -556,13 +569,13 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         mono(
                             ui,
                             format!("{:.5}° {}", lat.abs(), ns),
-                            11.5,
+                            theme::SIZE_CHIP,
                             theme::TEXT_DIM,
                         );
                         mono(
                             ui,
                             format!("{:.5}° {}", lng.abs(), ew),
-                            11.5,
+                            theme::SIZE_CHIP,
                             theme::TEXT_DIM,
                         );
                     }
@@ -573,7 +586,7 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         } else {
                             format!("alt {alt:.0} m")
                         };
-                        mono(ui, text, 11.5, theme::TEXT_DIM);
+                        mono(ui, text, theme::SIZE_CHIP, theme::TEXT_DIM);
                     }
                     // Heading now lives in the top-right compass overlay.
                     // Location actions.
@@ -581,17 +594,27 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         ui.horizontal(|ui| {
                             if ui
                                 .add(egui::Button::new(if data.home_set {
-                                    "✔"
+                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "Set"])
                                 } else {
-                                    "🏠"
+                                    theme::first_drawable(ui.ctx(), &["🏠", "⌂", "Home"])
                                 }))
                                 .on_hover_text("Set Home (the nav bar's Home button returns here)")
                                 .clicked()
                             {
                                 actions.set_home = true;
                             }
+                            // `⧉` (U+29C9) stood here and is in **none** of the
+                            // four fonts in the Proportional stack, so the copy
+                            // button has been an empty box since it was added —
+                            // exactly what `first_drawable` exists to prevent,
+                            // bypassed by typing the glyph straight in.
+                            let copy_icon = if data.copied {
+                                theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"])
+                            } else {
+                                theme::first_drawable(ui.ctx(), &["📋", "⎘", "Copy"])
+                            };
                             if ui
-                                .add(egui::Button::new(if data.copied { "✔" } else { "⧉" }))
+                                .add(egui::Button::new(copy_icon))
                                 .on_hover_text(
                                     "Copy place — position and view (paste in the \
                                          search bar to return)",

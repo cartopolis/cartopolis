@@ -249,6 +249,20 @@ impl Default for RouteState {
     }
 }
 
+/// Marks a waypoint label that is still just the coordinates a user picked off
+/// the map, rather than a name.
+///
+/// Load-bearing as a *sentinel*, not decoration: `drive_route_geocoding` renames
+/// only a waypoint still wearing it, so a reverse-geocode reply cannot overwrite
+/// a name the user chose or a search result already supplied.
+///
+/// It used to be `"📍 "`, which was the right idea and the wrong character —
+/// U+1F4CD is not in the Body font stack (the ladder at `Icons::here` had
+/// already been falling back past it), so every map-picked endpoint showed an
+/// empty box in front of its coordinates. Latin-1, so it cannot recur; the
+/// `no_painted_glyph_is_tofu` test is what caught it.
+const PICKED_PREFIX: &str = "· ";
+
 impl RouteState {
     fn waypoint_mut(&mut self, end: Endpoint) -> &mut Waypoint {
         match end {
@@ -324,7 +338,7 @@ impl RouteState {
     pub fn set_endpoint_at(&mut self, end: Endpoint, lat: f64, lng: f64) {
         self.picking = None;
         self.waypoint_mut(end)
-            .set(format!("📍 {lat:.5}, {lng:.5}"), (lat, lng));
+            .set(format!("{PICKED_PREFIX}{lat:.5}, {lng:.5}"), (lat, lng));
         self.invalidate();
         spawn_reverse(end, lat, lng, self.reverse.clone());
     }
@@ -390,7 +404,7 @@ pub fn drive_route_geocoding(mut route: ResMut<RouteState>) {
     for (end, label) in reverse {
         let wp = route.waypoint_mut(end);
         // Only rename the pin we placed — the user may have typed over it since.
-        if wp.coord.is_some() && wp.label.starts_with("📍 ") {
+        if wp.coord.is_some() && wp.label.starts_with(PICKED_PREFIX) {
             wp.label = label;
         }
     }
@@ -1378,7 +1392,7 @@ pub fn render_route_panel(
                         // the route from above — entering driver mode goes to the
                         // route anyway, and does the rest of it too.
                         if ui
-                            .button(egui::RichText::new("▶ Driver mode").strong())
+                            .button(egui::RichText::new("Start driving").strong())
                             .on_hover_text(
                                 "Follow this route: strip the map, lock the camera \
                                  behind the arrow, and show the next turn",
@@ -1641,7 +1655,7 @@ fn endpoint_row(
     // reads most hung 26 pt off the right edge, on the platform this release is
     // for. `geo_nav`'s equivalent popup already does exactly this; the two are
     // the same control in two panels and had drifted apart.
-    let screen = ui.ctx().screen_rect();
+    let screen = ui.ctx().viewport_rect();
     let popup_width = field_rect
         .width()
         .max(300.0)

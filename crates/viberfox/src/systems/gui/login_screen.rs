@@ -40,9 +40,42 @@ use crate::systems::session::{
 use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
-/// Card width in points. Wide enough for `user@host:port` on one line, narrow
-/// enough that the three mode rows read as a list rather than a table.
+/// Card width in points, *before* clamping. Wide enough for `user@host:port` on
+/// one line, narrow enough that the mode rows read as a list rather than a table.
 const CARD_W: f32 = 440.0;
+
+/// Margin kept clear around the card, per side.
+const CARD_MARGIN: f32 = 12.0;
+
+/// The card frame's horizontal inner margin, per side. Part of the width the
+/// window occupies on screen — which is the arithmetic the original 484 pt card
+/// missed: `CARD_W` was the *content* width and the 22 pt padding was added to it
+/// twice more.
+const CARD_PAD_X: i8 = 22;
+/// The same, vertically. Counted out of the scroll area's height below for the
+/// same reason.
+const CARD_PAD_Y: i8 = 18;
+
+/// The card's actual width on this viewport.
+///
+/// **A modal that does not fit cannot be panned to.** This `Window` is
+/// `movable(false)`, `resizable(false)` and centre-anchored, so 440 pt of card
+/// plus 44 pt of margins in a 274 pt phone viewport is not "a bit cramped": the
+/// right-hand ~200 pt — including the Sign out button and part of the primary
+/// action — is off the screen with no gesture that can reach it.
+///
+/// Floored well below usable for the same reason the address bar's is: on a
+/// viewport narrower than the floor the card is clipped either way, and a
+/// negative width is a panic in egui's layout rather than an ugly card.
+fn card_width(viewport_w: f32) -> f32 {
+    let chrome = 2.0 * CARD_MARGIN + 2.0 * CARD_PAD_X as f32;
+    CARD_W.min(viewport_w - chrome).max(180.0)
+}
+
+/// What the card occupies on screen: its content plus its own padding.
+fn card_outer_width(viewport_w: f32) -> f32 {
+    card_width(viewport_w) + 2.0 * CARD_PAD_X as f32
+}
 /// How far the card travels on the way in, in points. Small — this is a hint of
 /// motion under the fade, not a slide.
 const RISE: f32 = 14.0;
@@ -145,6 +178,21 @@ impl LoginScreen {
     }
 }
 
+/// The modes this build can actually offer, in the order they are shown.
+///
+/// Offline is always here (it is the absence of a sim, so nothing can take it
+/// away); Solo needs the `solo` feature compiled in; Remote is shown even where
+/// it cannot run, disabled, because "not in this build" is real information
+/// about a feature that exists — see the call site.
+fn offered_kinds() -> Vec<SessionKind> {
+    let mut kinds = vec![SessionKind::Offline];
+    if can_solo() {
+        kinds.push(SessionKind::Solo);
+    }
+    kinds.push(SessionKind::Remote);
+    kinds
+}
+
 /// A bare host means the standard sim port. Typing `sim.example` and getting
 /// "invalid socket address" would be the first thing this screen ever said to
 /// someone, and it is a question the app can answer itself.
@@ -207,12 +255,23 @@ pub fn render_login_screen(
     if screen.anim == 0.0 && session.mode != SessionMode::Offline {
         screen.kind = session.mode.kind();
     }
+    // A remembered mode this build cannot run has no row to show it on, and its
+    // primary button silently does nothing (`build_request` answers `None`).
+    // Offline is the honest fallback — it is what the client is already doing.
+    if screen.kind == SessionKind::Solo && !can_solo() {
+        screen.kind = SessionKind::Offline;
+    }
     let dt = time.delta_secs();
     screen.anim = (screen.anim + dt / FADE_S).min(1.0);
     // Ease-out: fast to visible, settling into place.
     let t = 1.0 - (1.0 - screen.anim) * (1.0 - screen.anim);
 
     let viewport = egui.viewport_pts();
+    let card_w = card_width(viewport.x);
+    // What is left for the card's own content once the margins are taken. The
+    // rows below scroll inside this rather than running off the bottom edge —
+    // the same reason they are clamped sideways.
+    let card_h = (viewport.y - 2.0 * CARD_MARGIN - 2.0 * CARD_PAD_Y as f32).max(160.0);
     let ctx = egui.ctx_mut().clone();
     if screen.logo.is_none() {
         screen.logo = theme::logo_image()
@@ -233,7 +292,10 @@ pub fn render_login_screen(
             // boot splash uses to stand in for `index.html`'s radial one.
             let card = egui::Rect::from_center_size(
                 rect.center(),
-                egui::vec2(CARD_W, (rect.height() * 0.62).min(560.0)),
+                egui::vec2(
+                    card_outer_width(viewport.x),
+                    (rect.height() * 0.62).min(560.0),
+                ),
             );
             for i in 1..=5 {
                 let k = i as f32;
@@ -253,8 +315,8 @@ pub fn render_login_screen(
     let frame = egui::Frame::NONE
         .fill(theme::SURFACE)
         .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(egui::CornerRadius::same(14))
-        .inner_margin(egui::Margin::symmetric(22, 18))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
+        .inner_margin(egui::Margin::symmetric(CARD_PAD_X, CARD_PAD_Y))
         .shadow(egui::Shadow {
             offset: [0, 10],
             blur: 28,
@@ -276,17 +338,26 @@ pub fn render_login_screen(
             egui::vec2(0.0, (1.0 - t) * RISE),
         )
         .frame(frame)
+        .max_width(card_outer_width(viewport.x))
         .show(&ctx, |ui| {
-            ui.set_width(CARD_W);
+            ui.set_width(card_w);
             ui.set_opacity(t);
-            close |= card_ui(
-                ui,
-                &mut screen,
-                &session,
-                &identity,
-                &mut submit,
-                &mut sign_out,
-            );
+            // A short viewport (a phone in landscape is ~185 pt tall here) cuts
+            // the card off the same way a narrow one cuts it off sideways, and a
+            // fixed, centre-anchored window has no way to reach what it hides.
+            egui::ScrollArea::vertical()
+                .max_height(card_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    close |= card_ui(
+                        ui,
+                        &mut screen,
+                        &session,
+                        &identity,
+                        &mut submit,
+                        &mut sign_out,
+                    );
+                });
         });
     ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
 
@@ -374,7 +445,7 @@ fn card_ui(
             );
             ui.label(
                 egui::RichText::new("Choose how you enter the world")
-                    .size(12.0)
+                    .size(theme::SIZE_SUB)
                     .color(theme::TEXT_DIM),
             );
         });
@@ -392,12 +463,16 @@ fn card_ui(
     ui.add_space(10.0);
 
     // ── Mode rows ────────────────────────────────────────────────────────────
-    for kind in [SessionKind::Offline, SessionKind::Solo, SessionKind::Remote] {
-        let enabled = match kind {
-            SessionKind::Solo => can_solo(),
-            SessionKind::Remote => can_simulate(),
-            SessionKind::Offline => true,
-        };
+    //
+    // A mode this build cannot run is **omitted**, not greyed out. The two are
+    // not the same question: `can_simulate()` is false only on the web, where
+    // "Connect to a server" is a real feature waiting on a transport and saying
+    // so is useful — while `can_solo()` is false whenever the `solo` feature is
+    // off, which is the Android and web builds, where an in-process simulator is
+    // not coming and a permanently dead row is just a smaller card for nothing.
+    // It also matters on the one viewport where the card barely fits.
+    for kind in offered_kinds() {
+        let enabled = kind != SessionKind::Remote || can_simulate();
         if mode_row(ui, screen.kind == kind, kind, enabled).clicked() && enabled {
             screen.kind = kind;
         }
@@ -451,15 +526,10 @@ fn card_ui(
             ui.available_width()
         };
         ui.add_enabled_ui(!busy, |ui| {
-            let button = egui::Button::new(
-                egui::RichText::new(label)
-                    .size(15.0)
-                    .strong()
-                    .color(theme::INK),
-            )
-            .fill(theme::FOX)
-            .min_size(egui::vec2(width.max(120.0), 34.0));
-            *submit |= ui.add(button).clicked();
+            // `theme::primary_button_sized`, not a hand-built filled `Button`:
+            // this card and the Route panel's "▶ Driver mode" were the same rank
+            // and did not look alike, which is what that helper exists to end.
+            *submit |= theme::primary_button_sized(ui, label, width).clicked();
         });
         if session.is_online() {
             ui.add_enabled_ui(!busy, |ui| {
@@ -474,10 +544,14 @@ fn card_ui(
     if busy {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.add(egui::Spinner::new().size(15.0).color(theme::FOX));
+            ui.add(
+                egui::Spinner::new()
+                    .size(theme::SIZE_VALUE)
+                    .color(theme::FOX),
+            );
             ui.label(
                 egui::RichText::new(session.status.label())
-                    .size(12.0)
+                    .size(theme::SIZE_SUB)
                     .color(theme::TEXT_DIM),
             );
         });
@@ -485,7 +559,7 @@ fn card_ui(
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(error)
-                .size(12.0)
+                .size(theme::SIZE_SUB)
                 .color(theme::ERROR)
                 .strong(),
         );
@@ -509,7 +583,11 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.0, dot);
-        ui.label(egui::RichText::new(text).size(12.0).color(theme::TEXT));
+        ui.label(
+            egui::RichText::new(text)
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT),
+        );
     });
 }
 
@@ -560,7 +638,7 @@ fn mode_row(ui: &mut egui::Ui, selected: bool, kind: SessionKind, enabled: bool)
         egui::pos2(x, rect.top() + 13.0),
         egui::Align2::LEFT_CENTER,
         kind.label(),
-        egui::FontId::proportional(14.5),
+        egui::FontId::proportional(theme::SIZE_BODY),
         title,
     );
     let blurb_text = if enabled {
@@ -572,7 +650,7 @@ fn mode_row(ui: &mut egui::Ui, selected: bool, kind: SessionKind, enabled: bool)
         egui::pos2(x, rect.top() + 34.0),
         egui::Align2::LEFT_CENTER,
         blurb_text,
-        egui::FontId::proportional(11.5),
+        egui::FontId::proportional(theme::SIZE_CHIP),
         blurb,
     );
     resp
@@ -589,7 +667,7 @@ fn field(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
             egui::pos2(rect.left(), rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(12.5),
+            egui::FontId::proportional(theme::SIZE_SUB),
             theme::TEXT_DIM,
         );
         add(ui);
@@ -638,6 +716,34 @@ mod tests {
     #[test]
     fn empty_stays_empty_so_submit_can_refuse_it() {
         assert_eq!(normalize_server("   "), "");
+    }
+
+    /// The card is `movable(false)`, `resizable(false)` and centre-anchored, so
+    /// whatever it does not fit is unreachable rather than merely awkward.
+    #[test]
+    fn the_card_fits_the_viewport_it_is_centred_in() {
+        // A desktop is wide enough for the preferred width.
+        assert_eq!(card_width(1280.0), CARD_W);
+        // A phone (411 dp at `ui_scale` 1.5) is not — and the padding counts:
+        // the original card was 440 pt of content in a frame with 22 pt either
+        // side, i.e. 484 pt on screen, which is where "1.7× the screen" came from.
+        let phone = card_outer_width(274.0);
+        assert!(
+            phone + 2.0 * CARD_MARGIN <= 274.0,
+            "card {phone} pt does not fit a 274 pt viewport"
+        );
+        // …and never a negative width, whatever the viewport claims to be.
+        assert!(card_width(0.0) > 0.0);
+    }
+
+    /// Offline is always offered — it is the absence of a simulator, so nothing
+    /// can take it away — and Solo is offered only where it can actually run.
+    #[test]
+    fn only_runnable_modes_are_offered() {
+        let kinds = offered_kinds();
+        assert_eq!(kinds.first(), Some(&SessionKind::Offline));
+        assert!(kinds.contains(&SessionKind::Remote));
+        assert_eq!(kinds.contains(&SessionKind::Solo), can_solo());
     }
 
     /// The screen is seeded from `user.json` and writes the same shape back, so a
