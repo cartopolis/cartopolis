@@ -2,7 +2,7 @@
 #
 # Land the current worktree's ticket branch into main, via the Forgejo API.
 #
-#   ./merge-to-main [--wait-secs 2400] [--dry-run]
+#   ./merge-to-main [--wait-secs 2400] [--no-wait] [--dry-run]
 #
 # Push HEAD to the bound branch, wait for CI on the pushed head, and merge only
 # if it is green. Prints one status line per poll; exits non-zero with the
@@ -23,9 +23,11 @@ set -euo pipefail
 
 wait_secs=2400
 dry_run=""
+no_wait=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --wait-secs) wait_secs="$2"; shift 2 ;;
+        --no-wait)   no_wait=1; shift ;;
         --dry-run)   dry_run=1; shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -72,6 +74,15 @@ git push --force-with-lease origin "HEAD:refs/heads/$branch"
 # `pending` both while a run is going and *before any run exists*, so a run that
 # has not been created yet is indistinguishable from one in progress — hence the
 # wait is bounded rather than "until it is not pending".
+if [ -n "$no_wait" ]; then
+    # Only ever on an explicit human instruction. This is the one thing
+    # docs/workflow.md's "the verdict is CI's, not the session's" forbids a
+    # session from choosing for itself, so it is a flag rather than a fallback:
+    # nothing in the script can reach it, and a red run found afterwards is
+    # fixed forward on main.
+    now=$(merge_api "$API/repos/$REPO/commits/$sha/status" | jget state || echo unknown)
+    echo "==> --no-wait: merging without the CI gate (status right now: ${now:-unknown})"
+else
 echo "==> waiting for CI on $sha (up to ${wait_secs}s)"
 deadline=$(( $(date +%s) + wait_secs ))
 state=""
@@ -93,6 +104,7 @@ for s in json.load(sys.stdin).get("statuses",[]):
     sleep 20
 done
 [ "$state" = "success" ] || { echo "==> CI did not go green within ${wait_secs}s (last: ${state:-none})" >&2; exit 1; }
+fi
 
 # ── Open (or reuse) the PR and merge it ──────────────────────────────────────
 existing=$(merge_api "$API/repos/$REPO/pulls?state=open&limit=50" | python3 -c "
