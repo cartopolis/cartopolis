@@ -1,7 +1,7 @@
 ---
 topic: android-build
-triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, "android", "apk", "phone", "ndk"]
-updated: 2026-08-08
+triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, "android", "apk", "phone", "ndk"]
+updated: 2026-08-10
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -146,10 +146,66 @@ exists to refuse. So the lane downloads and caches an NDK instead. Baking it int
 `viberfox-ci:latest` would be strictly better and is only not done because that
 image lives in another repo.
 
-There is deliberately **no APK job**. The signing key would have to be a real
-secret to be worth anything, and an unsigned or debug-signed artifact published on
-every push is a thing people install by mistake. `build-apk.sh` is run by hand
-until there is a release story.
+The APK is a *separate* workflow, not a step here, for deploy-web.yml's reason:
+this lane must stay the fast gate on every push, and a link of the whole Bevy
+stack against a runner with capacity 2 is not that.
+
+## Publishing: one APK, no history, and why the key lives on the host
+
+`deploy-android.yml` builds `arm64-v8a` on every push to `main` and writes the
+result to `/data/viberfox/site/apk/`, i.e. **inside the wasm client's web root**,
+which is what buys the whole serving story for free: Caddy already has that
+directory mounted and `file_server`'d, so there is no second site block, no DNS
+record and no compose edit. The phone install path is
+`https://viberfox.garage44.eu/apk/`. The cost is a coupling that is invisible from
+either file alone — `deploy-web.yml`'s `rsync --delete` would remove `apk/` on the
+next web deploy, so it carries an `--exclude '/apk/'`.
+
+The filenames are **fixed** (`viberfox.apk`, its `.sha256`, an `index.html`), so a
+build overwrites its predecessor and the directory stays at one APK. That is the
+whole retention policy, and it is deliberate: nobody installs last week's build,
+and the runner host's disk is 76% full with a 24 GB Actions cache on it.
+
+**The signing certificate is the thing that has to be stable**, not secret.
+Android keys an installed app to the certificate that signed it and refuses an
+update signed by another one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, whose only
+cure is uninstalling first). A key generated per CI run — which is what
+`build-apk.sh`'s built-in debug keystore would be in a fresh container — therefore
+turns every deploy into an uninstall/reinstall. So the key is generated once and
+kept at `/data/viberfox/android-key/` on the deploy host, mounted read-only into
+the job as `/signing`, and named in the runner's `valid_volumes` alongside the web
+root. It is an ordinary self-signed identity: this is not a Play upload key and
+gains nothing from a passphrase that would have to sit in the same directory to be
+usable.
+
+It is a `.pk8` + `.x509.pem` pair rather than a Java keystore because the host has
+no JDK and no other reason to grow one — `apksigner --key/--cert` takes exactly
+what `openssl` can produce, while `keytool` cannot be asked for that pair. To
+regenerate (and accept that every phone must uninstall once):
+
+```bash
+openssl req -x509 -newkey rsa:2048 -sha256 -days 10950 -nodes \
+    -subj "/CN=Viberfox/O=garage44/C=NL" -keyout /tmp/k.pem -out viberfox.x509.pem
+openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/k.pem -out viberfox.pk8 -nocrypt
+```
+
+**The `.so` is stripped into the APK, and that is the one step that can silently
+break the app.** `build-apk.sh` runs `llvm-strip --strip-unneeded` on the *copy*
+it packages (never on cargo's artifact, which would make the next incremental
+build's freshness check lie). `android_main` survives because it is a dynamic
+symbol — but nothing in Rust references it, so a future change here would produce
+an APK that builds, signs and installs and then does not start, which is why the
+deploy job re-asserts the symbol out of the packaged archive rather than trusting
+the build.
+
+The job installs what the CI image lacks and nothing more: a **JRE** (`apksigner`
+is a shell script around `java`; no JDK is needed because nothing compiles Java),
+`zip`, `cargo-ndk` — needed here and not in the check lane because this one
+*links* — and the SDK's `aapt2`/`zipalign`/`apksigner`/`android.jar` as two direct
+zips from Google. Those are deliberately **not** cached: 124 MB fetched in seconds
+against 124 MB living on the runner host indefinitely. The NDK *is* cached, under
+the same key the check lane uses, so on `main` it is a restore rather than a
+second download.
 
 ## Verification status, 2026-08-08
 
@@ -159,7 +215,8 @@ emulator**. The container has no GPU, no KVM and no Android runtime.
 What is actually proven, and it is worth knowing exactly how far it goes:
 
 - `arm64-v8a`, `android-release`, 28 min from cold. APK 46 MB; the `.so` is
-  152 MB uncompressed, being unstripped.
+  152 MB uncompressed, being unstripped — measured *before* the packaging strip
+  landed with `deploy-android.yml`, so both numbers are now upper bounds.
 - `apksigner verify` passes (v3 scheme).
 - The archive holds `AndroidManifest.xml`, `resources.arsc`, `res/`,
   `lib/arm64-v8a/libviberfox_android.so` and all 35 files of `assets/` — and

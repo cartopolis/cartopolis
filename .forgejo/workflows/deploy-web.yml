@@ -144,8 +144,13 @@ jobs:
       # `--delete` so files from a previous deploy (old content-hashed modules)
       # do not accumulate 70 MB at a time. Written last, after every check above
       # has passed, so a failed build leaves the live site untouched.
+      #
+      # `/apk/` is the one thing under this root that trunk does not produce:
+      # deploy-android.yml publishes the phone build there so it needs no Caddy
+      # site of its own. Without the exclude, `--delete` removes it on the next
+      # web deploy and the download 404s until the next push to main.
       - name: Publish
         run: |
           apt-get update -qq && apt-get install -y -qq rsync >/dev/null
-          rsync -a --delete crates/viberfox/dist/ /publish/
+          rsync -a --delete --exclude '/apk/' crates/viberfox/dist/ /publish/
           echo "published $(du -sh /publish | cut -f1) to /data/viberfox/site"
