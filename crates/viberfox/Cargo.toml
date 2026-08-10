@@ -162,6 +162,18 @@ cpal = { version = "0.17", optional = true }
 # the note.
 [target.'cfg(target_os = "android")'.dependencies]
 bevy = { workspace = true, features = ["android-native-activity"] }
+# JNI, for `platform::android`: the device location provider, `open_url` and the
+# soft-input probe are all calls into the Android *framework*, which is the only
+# way to reach any of them in an APK with no `classes.dex`.
+#
+# Pinned to the version `android-activity` 0.6 already resolves (`jni 0.21.1` in
+# Cargo.lock, via its `cesu8`/`jni-sys` line), so this is a new *edge* in the graph
+# and not a new subtree — nothing extra is compiled for the phone build, and the
+# CI Android check gains no download. If a Bevy bump moves android-activity onto a
+# different jni major, unify this with it rather than letting two copies link:
+# `JavaVM`/`JObject` from two `jni` versions are distinct types, and the error that
+# produces names a trait bound rather than a duplicate crate.
+jni = "0.21.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ehttp = "0.5"

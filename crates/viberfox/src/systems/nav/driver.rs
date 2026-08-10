@@ -463,6 +463,12 @@ impl DriverState {
         self.gps_error = None;
         self.gps_fix = false;
         self.watch = Some(LocationWatch::start());
+        // Navigation is the one mode where the screen must not sleep: a phone
+        // blanks 30 s into a drive and the app is over, having done nothing wrong.
+        // Paired exactly with `exit`, which early-returns when already inactive, so
+        // the flag cannot be left set.
+        #[cfg(target_os = "android")]
+        crate::platform::android::set_keep_screen_on(true);
         tracing::info!(gps = LocationWatch::available(), "driver mode on");
     }
 
@@ -480,6 +486,8 @@ impl DriverState {
         self.active = false;
         self.armed = false;
         self.watch = None;
+        #[cfg(target_os = "android")]
+        crate::platform::android::set_keep_screen_on(false);
         self.progress = None;
         self.gps_fix = false;
         self.arrived = false;

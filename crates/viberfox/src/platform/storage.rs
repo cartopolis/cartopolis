@@ -61,7 +61,16 @@ mod imp {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(p, bytes);
+        // Written through a temp file and a rename rather than straight into place:
+        // a truncating write leaves the entry short for as long as it takes to fill,
+        // and on Android that window is not theoretical — the system kills
+        // backgrounded processes as a matter of routine, so being interrupted
+        // mid-write is the ordinary case. The cost of landing in it is permanent,
+        // because the streamers cache the *bytes* and re-read them forever: a torn
+        // `.mvt` is a tile that fails to decode on every launch until something
+        // happens to call `remove` on it, and a torn `.png` is a texture that never
+        // appears. See `utils::cache::write_atomic` for why the flush matters too.
+        let _ = crate::utils::cache::write_atomic(&p, bytes);
     }
 
     pub async fn remove(key: &str) {
