@@ -325,9 +325,6 @@ pub fn render_map_controls(
     mut camera_state: ResMut<CameraState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
-    data_layers: Res<crate::systems::data_layers::DataLayers>,
-    bookmarks: Res<BookmarksState>,
-    ai: Res<crate::resources::AiAssistantState>,
     right_panel: Res<crate::resources::RightPanel>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
@@ -338,11 +335,16 @@ pub fn render_map_controls(
     // only way to keep these *behind* one is to drop them while it is open. Driver
     // mode is the exception: the compass is part of its chrome, and the planner it
     // was started from is closed anyway.
-    let panel_open = data_layers.panel_open
-        || bookmarks.panel_open
-        || ai.open
-        || !right_panel.is(crate::resources::RightPanel::None);
-    if panel_open && !driver.active {
+    //
+    // `RightPanel` is the whole answer. This used to also OR in `DataLayers::
+    // panel_open`, `BookmarksState::panel_open` and `AiAssistantState::open` — the
+    // booleans the panels carried before the shared dock existed. None of them is
+    // cleared anywhere, and `render_hud` *set* the bookmarks one when you saved a
+    // place, so a single press of ☆ hid the compass, the locate button and the
+    // whole status overlay for the rest of the session. Nothing writes them now
+    // except the `--shot` harness, which sets `RightPanel` alongside them from the
+    // same `--ui` list, so the scripted chrome is unchanged.
+    if !right_panel.is(crate::resources::RightPanel::None) && !driver.active {
         return;
     }
     let Ok((cell, tf)) = camera.single() else {
@@ -660,9 +662,9 @@ pub fn render_hud(
     camera_state: Res<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
     mut store: ResMut<UserStore>,
-    mut bookmarks: ResMut<BookmarksState>,
-    data_layers: Res<crate::systems::data_layers::DataLayers>,
-    ai: Res<crate::resources::AiAssistantState>,
+    // Immutable now that the `panel_open` latch is gone: `request_address` takes
+    // `&self` and queues through interior mutability.
+    bookmarks: ResMut<BookmarksState>,
     identity: Res<crate::resources::AuthIdentity>,
     driver: Res<crate::systems::driver::DriverState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
@@ -672,6 +674,19 @@ pub fn render_hud(
     mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
     map_anchor: Res<MapAnchor>,
 ) {
+    // The status HUD lives in the top-right corner (see `hud_area`), which any
+    // right-docked panel covers — and while driving the map has to stay clear for
+    // the navigation chrome. So drop the HUD whenever a right panel is open, at any
+    // width; egui paints floating Areas above panels, so it can't hide behind one.
+    //
+    // The gate comes *before* the data, not after: building `HudData` is four
+    // `format!`s and a username clone, and every one of them was thrown away
+    // unread on every frame with a panel open. See `render_map_controls` for why
+    // `RightPanel` is the only operand.
+    if !right_panel.is(crate::resources::RightPanel::None) || driver.active {
+        return;
+    }
+
     let ((h, m, s), is_local) = clock.hms();
     let cam = camera.single().ok();
     // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
@@ -711,22 +726,7 @@ pub fn render_hud(
         user: identity.username.clone(),
     };
 
-    // Any docked right-hand panel covers this corner; `RightPanel` is the shared
-    // state the newer panels use, the booleans the older ones do.
-    let right_panel_open = data_layers.panel_open
-        || bookmarks.panel_open
-        || ai.open
-        || !right_panel.is(crate::resources::RightPanel::None);
-
-    // The status HUD now lives in the top-right corner (see `hud_area`), which any
-    // right-docked panel covers — and while driving the map has to stay clear for
-    // the navigation chrome. So drop the HUD whenever a right panel is open, at any
-    // width; egui paints floating Areas above panels, so it can't hide behind one.
-    let actions = if right_panel_open || driver.active {
-        HudActions::default()
-    } else {
-        hud_area(egui.ctx_mut(), &data)
-    };
+    let actions = hud_area(egui.ctx_mut(), &data);
 
     if actions.copy {
         if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
@@ -748,11 +748,11 @@ pub fn render_hud(
             let pose = CameraPose::capture(&camera_state);
             let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
             bookmarks.request_address(id, lat, lng);
-            // Show the new place straight away — it lands at the top level and
-            // is usually dragged into a folder next. `panel_open` alone is the
-            // legacy flag that only tells the HUD to get out of the way; the
-            // panel itself renders off `RightPanel`.
-            bookmarks.panel_open = true;
+            // Show the new place straight away — it lands at the top level and is
+            // usually dragged into a folder next. `RightPanel` is the only state
+            // that opens it; the `bookmarks.panel_open` that used to be set here as
+            // well was a one-way latch nobody ever cleared, and setting it was what
+            // made one ☆ press take the HUD and the compass away permanently.
             *right_panel = crate::resources::RightPanel::Places;
         }
     }

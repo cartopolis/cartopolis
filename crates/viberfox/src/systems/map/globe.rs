@@ -160,6 +160,29 @@ const QT_DEPTH_BIAS_PER_Z: f32 = crate::systems::vector_tiles::DEPTH_BIAS_STEP;
 /// after the vector switch silently made it 512². Restoring it is a restoration,
 /// not a new trade-off.
 pub const GLOBE_TILE_PX: u32 = 256;
+
+/// [`RenderAssetUsages`] for the globe's meshes — the backstop sphere and every
+/// tile patch.
+///
+/// `RENDER_WORLD` **without** `MAIN_WORLD`, which is not the default. The default
+/// keeps the vertex buffers alive in `Assets<Mesh>` for the lifetime of the handle
+/// *as well as* on the GPU, so every mesh is paid for twice — the identical
+/// mistake `tile_loader::TILE_TEXTURE_USAGE` documents for the tile *textures*,
+/// and fixed there, while the meshes it sits next to kept the default. It is not
+/// a rounding error at this count: a tile patch is `qt_segs(z)`² vertices of
+/// position + normal + UV plus its index buffer, and `globe-tile-cost.md` has
+/// several hundred of them live across the 60 km–1,000 km band, on top of the
+/// backstop sphere's own `GLOBE_RINGS × GLOBE_SEGMENTS` grid.
+///
+/// Nothing reads a globe mesh back. There is no mesh raycast anywhere in this
+/// tree — `picking` intersects an analytic plane and an analytic box
+/// (`ray_plane_y`, `ray_unit_box`) and never opens `Assets<Mesh>` — and these
+/// vertices are only ever drawn. The failure mode if that ever changes is the one
+/// `TILE_TEXTURE_USAGE` names, and it is silent: a consumer that wants CPU data
+/// finds it gone once the asset has been prepared. So a future raycast against the
+/// globe means changing this constant, not adding a lookup.
+const GLOBE_MESH_USAGE: RenderAssetUsages = RenderAssetUsages::RENDER_WORLD;
+
 /// Minimum mesh tessellation of one tile patch (segments per axis).
 ///
 /// Enough for any tile whose own angular span is small — which, past about z5, is
@@ -611,7 +634,7 @@ pub fn setup_globe(
     }
     let mut mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        GLOBE_MESH_USAGE,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
@@ -707,9 +730,21 @@ pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
 const SPACE_ATMOSPHERE: bool = true;
 
 /// Whether the space tier should raymarch (see [`SPACE_ATMOSPHERE`]), read once.
+///
+/// Three gates, and the middle one is the load-bearing addition: "a weaker GPU
+/// ever needs it" describes a handset exactly, and `VIBERFOX_NO_SPACE_RAYMARCH`
+/// cannot be set on one. Android has no process environment and no query string,
+/// so every env escape hatch in this codebase is unreachable on the single
+/// platform it would matter most for — hence the tier answers first
+/// (`quality::Budget::space_raymarch`), and the env flag stays as the way to
+/// reproduce the cheap path on a machine that can profile it.
 fn space_raymarch() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| SPACE_ATMOSPHERE && !crate::env_flag("VIBERFOX_NO_SPACE_RAYMARCH"))
+    *ON.get_or_init(|| {
+        SPACE_ATMOSPHERE
+            && crate::quality::budget().space_raymarch
+            && !crate::env_flag("VIBERFOX_NO_SPACE_RAYMARCH")
+    })
 }
 /// Raymarch sky samples per fragment in the space tier. Held at Bevy's default:
 /// measured offscreen at 200 km and 15,000 km, 16 samples costs the same as 6
@@ -1217,7 +1252,7 @@ pub fn update_globe_tiles(
         }
         let mut mesh = Mesh::new(
             bevy::render::mesh::PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
+            GLOBE_MESH_USAGE,
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);

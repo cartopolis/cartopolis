@@ -76,6 +76,20 @@ const MAX_ATTEMPTS: u32 = 2;
 /// this is the stop on a caller that computes a silly number.
 const MAX_GRID: u32 = 256;
 
+/// How far from the map anchor, in RD metres, a cached patch is kept.
+///
+/// The cache had no removal path at all: a patch key is an *absolute* RD box, so
+/// nothing ever invalidated one, and a session that walked across a canal city
+/// accumulated two decks' worth of patches per bridge plus a 256×256 terrain box
+/// (~256 KB) per re-anchor, for the rest of the run. Absolute keys are also what
+/// makes eviction safe — a dropped patch is not stale, only absent, and asking
+/// again re-fetches it.
+///
+/// 8 km is comfortably outside the terrain field's own 6.4 km box and the geometry
+/// ring around it, so everything a consumer can currently ask about survives a
+/// prune; what goes is the town you flew away from.
+const CACHE_KEEP_M: f64 = 8_000.0;
+
 /// MapServer writes `f32::MAX` where the model has no value — the bridge-shaped
 /// holes in the DTM, and everything outside the flight coverage. Compared with a
 /// threshold rather than for equality: the value survives the round trip exactly
@@ -125,6 +139,17 @@ pub struct HeightKey {
     min: [i32; 2],
     max: [i32; 2],
     grid: u32,
+}
+
+impl HeightKey {
+    /// The box's centre in RD metres — what the cache prunes against, since the key
+    /// is the only thing a failure or an in-flight request still carries.
+    fn centre(self) -> [f64; 2] {
+        [
+            (f64::from(self.min[0]) + f64::from(self.max[0])) * 0.5,
+            (f64::from(self.min[1]) + f64::from(self.max[1])) * 0.5,
+        ]
+    }
 }
 
 impl HeightRequest {
@@ -255,6 +280,12 @@ pub struct HeightLayer {
     patches: HashMap<HeightKey, HeightPatch>,
     requested: HashSet<HeightKey>,
     failed: HashMap<HeightKey, u32>,
+    /// RD position the cache was last pruned around, so a stationary anchor costs a
+    /// comparison rather than a scan of every patch every frame.
+    pruned_at: Option<[f64; 2]>,
+    /// Whether the layer was on last frame, so switching it off is an *edge* that
+    /// tears the cache down once — the same shape as `Lod22Buildings::enabled_was`.
+    enabled_was: bool,
     /// Patches fetched this session, for the HUD/metrics readout.
     pub fetched: usize,
     /// Measured ground level at the map anchor, metres above NAP — `None` outside
@@ -272,6 +303,8 @@ impl Default for HeightLayer {
             patches: HashMap::new(),
             requested: HashSet::new(),
             failed: HashMap::new(),
+            pruned_at: None,
+            enabled_was: false,
             fetched: 0,
             ground_m: None,
         }
@@ -320,6 +353,66 @@ impl HeightLayer {
     pub fn settled(&self, req: &HeightRequest) -> bool {
         let key = req.key();
         self.patches.contains_key(&key) || *self.failed.get(&key).unwrap_or(&0) >= MAX_ATTEMPTS
+    }
+
+    /// Drop everything the layer remembers — the patches, the give-up counts and the
+    /// record of what is in flight.
+    ///
+    /// The teardown for the layer being switched off, and it is a *complete* one for
+    /// the same reason `lod22`'s is: a layer that is off should cost nothing at all,
+    /// and holding a few megabytes of measurements for a consumer that has been told
+    /// to stop asking is the shape the neighbouring streamers were careful to avoid.
+    ///
+    /// `requested` and the dispatcher's queue are emptied *together*, which is the
+    /// only pairing that stays consistent: forgetting a key while its job is still
+    /// queued would let the next ask dispatch the same box twice. A task already in
+    /// flight is simply orphaned — it pushes its result as usual and
+    /// `poll_height_layer` frees its slot and removes a key that is no longer there.
+    /// Clearing `failed` is deliberate too: switching the layer back on is the user
+    /// asking again, and it is the one moment a box that has spent its attempts
+    /// deserves another.
+    pub fn forget_all(&mut self) {
+        self.patches.clear();
+        self.requested.clear();
+        self.failed.clear();
+        drop(self.dispatch.drain_pending());
+        self.pruned_at = None;
+    }
+
+    /// Keep only what is within [`CACHE_KEEP_M`] of `centre` (RD metres), and do
+    /// nothing at all while the anchor sits still.
+    ///
+    /// This is the eviction the cache never had. It is keyed on distance rather than
+    /// on the re-anchor generation because a patch key is an absolute RD box: the
+    /// bridge you are standing on is the same measurement before and after a
+    /// re-anchor, and clearing wholesale would re-fetch it from PDOK — a shared
+    /// public service we are a guest on — for no gain.
+    pub fn prune_around(&mut self, centre: [f64; 2]) {
+        // A re-anchor moves the world origin by hundreds of metres at least; a metre
+        // of slop keeps float noise from re-scanning the cache every frame.
+        if self
+            .pruned_at
+            .is_some_and(|p| (p[0] - centre[0]).hypot(p[1] - centre[1]) < 1.0)
+        {
+            return;
+        }
+        self.pruned_at = Some(centre);
+        let near = |k: &HeightKey| {
+            let c = k.centre();
+            (c[0] - centre[0]).hypot(c[1] - centre[1]) <= CACHE_KEEP_M
+        };
+        let before = self.patches.len();
+        self.patches.retain(|k, _| near(k));
+        self.failed.retain(|k, _| near(k));
+        // `requested` is left alone: those fetches are already out, and forgetting a
+        // key here would let the next ask queue a second request for the same box.
+        if before != self.patches.len() {
+            tracing::debug!(
+                dropped = before - self.patches.len(),
+                kept = self.patches.len(),
+                "height patches pruned"
+            );
+        }
     }
 }
 
@@ -385,6 +478,12 @@ const GROUND_PROBE_GRID: u32 = 16;
 /// This is the layer's first consumer and its self-test: one small request per
 /// re-anchor, whose answer says whether the whole path (URL, proxy, projection,
 /// GeoTIFF decode) works *here*. It costs one patch per place you fly to.
+///
+/// It also owns the cache's **removal path**, because it is the one system that
+/// runs every frame holding both the anchor and the layer toggle (it is ordered
+/// after `apply_reanchor` and before `poll_height_layer` for the probe's own sake,
+/// which is exactly where an eviction wants to be): the anchor moving prunes what
+/// is now far away, and the layer going off drops the lot.
 pub fn probe_anchor_ground(
     mut layer: ResMut<HeightLayer>,
     dl: Res<DataLayers>,
@@ -392,11 +491,26 @@ pub fn probe_anchor_ground(
 ) {
     if !dl.height_enabled {
         layer.ground_m = None;
+        // Tear down on the *off edge* only, the way `lod22` and the OSM building
+        // streamers do — a layer that is off must not keep megabytes of answers
+        // alive for consumers that have been told to stop asking, and doing it once
+        // rather than every frame keeps it out of the steady state.
+        if layer.enabled_was {
+            layer.enabled_was = false;
+            layer.forget_all();
+        }
         return;
     }
+    layer.enabled_was = true;
     let Some((lat, lng, _)) = map_anchor.geo else {
         return;
     };
+    // Prune before the coverage test, not after: flying from Groningen to Berlin is
+    // precisely the case where the whole Dutch cache should go, and outside AHN the
+    // early return below would otherwise skip the only eviction there is. RD is
+    // meaningless outside the Netherlands, but it is only ever used here to say
+    // "further away than anything we could still ask about", which it does fine.
+    layer.prune_around(wgs84_to_rd(lat, lng));
     if !HeightLayer::covers(lat, lng) {
         layer.ground_m = None;
         return;
@@ -680,6 +794,50 @@ mod tests {
         assert_ne!(a.key(), c.key());
         assert_ne!(a.key(), d.key());
         assert_ne!(a.key(), a.padded(25.0).key());
+    }
+
+    /// The cache used to have no removal path at all. Flying away must drop the
+    /// measurements you flew away from and keep the ones under you — and switching
+    /// the layer off must leave nothing behind.
+    #[test]
+    fn the_cache_forgets_what_you_flew_away_from() {
+        let groningen = [233_512.0, 581_070.0];
+        let maastricht = [176_000.0, 318_000.0];
+        let mut layer = HeightLayer::default();
+        for centre in [groningen, maastricht] {
+            let req = HeightRequest::around(HeightModel::Terrain, centre, 60.0, 8);
+            layer.patches.insert(
+                req.key(),
+                HeightPatch {
+                    min: req.min,
+                    max: req.max,
+                    w: 1,
+                    h: 1,
+                    samples: vec![1.0],
+                },
+            );
+            layer.failed.insert(req.padded(25.0).key(), MAX_ATTEMPTS);
+        }
+        assert_eq!(layer.patches.len(), 2);
+
+        layer.prune_around(groningen);
+        assert_eq!(layer.patches.len(), 1, "the far patch should be gone");
+        assert_eq!(layer.failed.len(), 1, "and so should its give-up count");
+        assert!(layer
+            .patch(HeightRequest::around(
+                HeightModel::Terrain,
+                groningen,
+                60.0,
+                8
+            ))
+            .is_some());
+
+        // Standing still is not a reason to re-scan, and must not lose anything.
+        layer.prune_around(groningen);
+        assert_eq!(layer.patches.len(), 1);
+
+        layer.forget_all();
+        assert!(layer.patches.is_empty() && layer.failed.is_empty());
     }
 
     /// An OGC service reports a refused request as XML with a 200, so the decoder

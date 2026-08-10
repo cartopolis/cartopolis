@@ -91,6 +91,16 @@ const BUS_HEIGHT: f32 = 3.1;
 const LABEL_W: f32 = 3.0;
 const LABEL_H: f32 = 1.5;
 const LABEL_LIFT: f32 = 2.2;
+/// Painted line badges kept alive. Each is a material plus a 128×64 RGBA texture
+/// (~33 KB on the GPU), and the cache was keyed by `(mode, line)` with **no**
+/// eviction at all: the nationwide feed rolls through 200–800 distinct lines over
+/// half an hour of driving around, so a long session paid tens of megabytes for
+/// badges belonging to buses that left the province.
+///
+/// The cap sits just above [`MAX_VEHICLES`], because that is the most badges that
+/// can be on screen at once — enough headroom that ordinary churn along a route
+/// does not repaint, and a hard stop on the accumulation.
+const MAX_LABEL_MATERIALS: usize = 96;
 
 /// OVapi's line list — a map of every line's public number + mode.
 const LINES_URL: &str = "http://v0.ovapi.nl/line/";
@@ -355,6 +365,26 @@ fn resolve_line_map(
     slot.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
 }
 
+/// Release painted line badges: the material *and* the texture hanging off it.
+///
+/// Dropping the material handle alone would eventually free the image too — it is
+/// the only strong handle to it — but doing both explicitly is what
+/// `transit_live::update_transit_boards` does when it retires a board, and the
+/// point of a teardown is that the memory is gone at a moment you can name.
+fn release_label_materials(
+    handles: impl IntoIterator<Item = Handle<StandardMaterial>>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) {
+    for handle in handles {
+        if let Some(material) = materials.remove(&handle) {
+            if let Some(texture) = material.base_color_texture {
+                images.remove(&texture);
+            }
+        }
+    }
+}
+
 /// Spawn / move / retire the vehicle boxes and their line-number labels:
 /// interpolate each tracked vehicle to this frame, keep the nearest
 /// [`MAX_VEHICLES`] within range, drive one oriented box per vehicle, and hang a
@@ -390,6 +420,17 @@ pub fn update_transit_vehicles(
         for (_, e) in tv.entities.drain().chain(tv.labels.drain()) {
             commands.entity(e).despawn();
         }
+        // …and the painted badges with them. Draining `entities`/`labels` and
+        // returning left `label_mats` standing, so switching the layer off freed
+        // the boxes and kept every texture — which is the one state where the cost
+        // is pure waste, since nothing can ask for a badge again until it is
+        // switched back on. `transit_live` retires a board's image and material
+        // with its entity; this is the same rule, applied to the whole set.
+        release_label_materials(
+            tv.label_mats.drain().map(|(_, h)| h),
+            &mut materials,
+            &mut images,
+        );
         return;
     }
     let (cam_cell, cam_tf) = cam.unwrap();
@@ -431,6 +472,28 @@ pub fn update_transit_vehicles(
         if let Some(e) = tv.labels.remove(&id) {
             commands.entity(e).despawn();
         }
+    }
+
+    // Bound the badge cache. Only ever evict a `(mode, line)` that nothing in this
+    // frame's target set is showing — every live label entity is spawned from the
+    // target set, so a key that is absent from it has no entity holding its
+    // material, and the ones retired just above are despawned in the same command
+    // flush that precedes rendering.
+    if tv.label_mats.len() > MAX_LABEL_MATERIALS {
+        let live: HashSet<String> = target
+            .iter()
+            .filter_map(|(_, _, _, _, transport, line)| {
+                line.as_ref().map(|l| format!("{}:{l}", *transport as u8))
+            })
+            .collect();
+        let evicted: Vec<Handle<StandardMaterial>> = tv
+            .label_mats
+            .iter()
+            .filter(|(key, _)| !live.contains(*key))
+            .map(|(_, handle)| handle.clone())
+            .collect();
+        tv.label_mats.retain(|key, _| live.contains(key));
+        release_label_materials(evicted, &mut materials, &mut images);
     }
 
     let mesh = tv

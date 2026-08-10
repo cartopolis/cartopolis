@@ -1,6 +1,31 @@
 //! Persistent per-user data: last location/camera and bookmarks, stored as
-//! JSON at `data/user.json`. The start of the user-information store that will
-//! later grow OpenSim-style inventory — deliberately simple for now.
+//! JSON at `user.json` under [`crate::utils::cache::app_data_root`]. The start of
+//! the user-information store that will later grow OpenSim-style inventory —
+//! deliberately simple for now.
+//!
+//! **The path is resolved, not literal, and that is load-bearing.** It used to be a
+//! cwd-relative `data/user.json`, which on Android meant the file was never written
+//! at all (a NativeActivity process starts in `/`; every autosave failed into a
+//! `warn!`) and on desktop meant the profile you got depended on the directory you
+//! launched from. `app_data_root` keeps an existing checkout `data/` so nothing
+//! moves under a dev box, and answers with a real per-user directory everywhere else.
+//!
+//! **Two rules keep a bad file from being an unrecoverable one**, because this store
+//! is the only copy of the user's bookmarks:
+//!
+//! - it is written through a temp file and a rename ([`crate::utils::cache::
+//!   write_atomic`]), so a process killed mid-save leaves the previous file intact
+//!   rather than a half one;
+//! - a file that does not parse is *renamed aside* before the store starts fresh.
+//!   Without that, "unreadable" was terminal: the store came up empty with an empty
+//!   `last_written`, and [`autosave_user_store`] — whose first deadline is time zero
+//!   — overwrote the original within a frame of the app starting.
+//!
+//! Schema changes are the other way this file gets lost. Every leaf carries a serde
+//! default, so a field added here (or one written by a newer build and read by an
+//! older one) degrades to that default instead of failing the whole document, and
+//! [`UserData::version`] exists so a change that *cannot* be expressed as a default
+//! has somewhere to branch.
 //!
 //! Locations are stored as geo coordinates (lat, lng, altitude), not BigSpace
 //! cells: geo is anchor-independent, so a saved spot stays valid even if the
@@ -9,7 +34,7 @@
 //! location is fed through the normal teleport path.
 
 use crate::resources::MapAnchor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -22,14 +47,33 @@ use crate::systems::geo_nav::{camera_geo, CameraPose, GeoNavState, Teleport};
 /// Seconds between autosave snapshots of the current location.
 const AUTOSAVE_INTERVAL: f32 = 5.0;
 
+/// Schema revision written into every new file.
+///
+/// 1 is "the schema as of the day versioning was added"; a file with no `version`
+/// at all (0) is everything written before that, which is every file in the wild
+/// today. Nothing branches on it yet and nothing should until it has to — the point
+/// of the field is that the *hook* exists, because adding one retroactively is
+/// impossible: without a number in the file there is no way to tell a document
+/// missing a field from one where the field means something new.
+///
+/// Bump it only for a change serde defaults cannot express — a field that changed
+/// meaning, or a value that has to be recomputed — and put the fix in [`migrate`].
+const USER_DATA_VERSION: u32 = 1;
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct UserData {
+    /// Schema revision this document was written by; see [`USER_DATA_VERSION`].
+    /// `0` on every file written before the field existed.
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
     pub last_location: Option<SavedLocation>,
     /// The user's Home location — set from the status panel's Set Home button
     /// and jumped to by the nav bar's Home button. Camera pose included (like a
     /// bookmark) so Home returns to the exact view, not just the spot.
     #[serde(default)]
     pub home: Option<SavedLocation>,
+    #[serde(default)]
     pub bookmarks: Vec<Bookmark>,
     /// The directory tree the bookmarks hang in (see [`PlaceFolder`]).
     /// `#[serde(default)]` keeps pre-folder files loadable — every bookmark in
@@ -76,16 +120,29 @@ pub struct UserData {
 ///   on they are the last met.no sample, which is worth restoring as a starting
 ///   point (the next fetch replaces it within a frame or two of the anchor
 ///   settling).
+///
+/// Every field is defaulted, and the defaults are the *fresh-install* values rather
+/// than serde's zeroes wherever those differ (`fog_density`), so a block written by
+/// a build that did not have one of these knobs restores as "the app's default"
+/// rather than as "off".
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct SkyPrefs {
+    #[serde(default)]
     pub sun_mode: crate::resources::SunMode,
     /// The clock in hours, 0–24. `Some` only in [`SunMode::Manual`].
     #[serde(default)]
     pub time_of_day: Option<f32>,
     /// Live met.no weather drives cloud/fog/rain (the HUD's weather "Auto").
+    #[serde(default)]
     pub weather_live: bool,
+    /// Defaulted to `DevPanelState::default`'s 0.15, not to 0.0: a missing field
+    /// means "this build didn't write one", and answering that with a fogless sky
+    /// would be a visible change nobody asked for.
+    #[serde(default = "default_fog")]
     pub fog_density: f32,
+    #[serde(default)]
     pub cloud_cover: f32,
+    #[serde(default)]
     pub precipitation: f32,
 }
 
@@ -93,29 +150,45 @@ pub struct SkyPrefs {
 /// DataLayers::prefs`] / `apply_prefs`). Overlay layers are keyed by their
 /// `LAYER_DEFS` key rather than index, so reordering or adding layers never
 /// shuffles a saved file's state onto the wrong layer.
+///
+/// **Every leaf is defaulted, and each default is the value
+/// `DataLayers::default()` gives a fresh install on this device.** Two toggles used
+/// to carry one and the rest did not, which made adding a layer a schema break: one
+/// new `bool` without a default, shipped once, fails the parse of every existing
+/// `user.json` — and before the quarantine in [`UserStore::load`] that meant the
+/// autosave overwrote the file within a frame and took the user's bookmarks with a
+/// map-layer checkbox.
+///
+/// The five detail layers default to [`detail_default`] rather than to `true`: the
+/// fresh-install answer is the render budget's, so on the phone tier it is *off*,
+/// and a hard-coded `true` here would quietly hand a phone the desktop's layer set.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct LayerPrefs {
+    #[serde(default = "yes")]
     pub buildings: bool,
+    #[serde(default = "yes")]
     pub tdbag: bool,
+    #[serde(default = "yes")]
     pub osm_buildings: bool,
+    #[serde(default = "yes")]
     pub map: bool,
+    #[serde(default = "detail_default")]
     pub trees: bool,
+    #[serde(default = "detail_default")]
     pub roads_textured: bool,
+    #[serde(default = "detail_default")]
     pub water_shading: bool,
-    /// Street names over the map (`systems::street_labels`). Defaulted so a file
-    /// written before the layer existed still parses — and it defaults to *on*,
-    /// which is what `DataLayers::default` gives a fresh install.
-    #[serde(default = "yes")]
+    /// Street names over the map (`systems::street_labels`).
+    #[serde(default = "detail_default")]
     pub street_labels: bool,
-    /// Street furniture (`systems::street_furniture`). Defaulted so a file written
-    /// before the layer existed still parses — and it defaults to *on*, which is
-    /// what `DataLayers::default` gives a fresh install.
-    #[serde(default = "yes")]
+    /// Street furniture (`systems::street_furniture`).
+    #[serde(default = "detail_default")]
     pub furniture: bool,
+    /// Off on a fresh install: the vehicle layer is opt-in.
+    #[serde(default)]
     pub vehicles: bool,
-    /// The height layer (`systems::height`). Defaulted, so a file written before it
-    /// existed still parses — and defaults to *off*, because it is a request to a
-    /// third party's service that only answers over the Netherlands.
+    /// The height layer (`systems::height`). Defaults to *off*, because it is a
+    /// request to a third party's service that only answers over the Netherlands.
     #[serde(default)]
     pub height: bool,
     #[serde(default)]
@@ -154,6 +227,32 @@ fn default_style() -> String {
 /// predates it.
 fn yes() -> bool {
     true
+}
+
+/// `#[serde(default)]` for the five detail layers, whose fresh-install state is the
+/// device's render budget rather than a constant (`quality::Budget::detail_layers`
+/// — they are the ones the phone tier starts without).
+fn detail_default() -> bool {
+    crate::quality::budget().detail_layers
+}
+
+/// `#[serde(default)]` for [`SkyPrefs::fog_density`]: `DevPanelState::default`'s
+/// value, kept in step by hand because that struct is not `Deserialize`.
+fn default_fog() -> f32 {
+    0.15
+}
+
+/// `#[serde(default)]` for a place's or folder's name, so a row that lost its name
+/// is a visible entry someone can rename rather than a blank line in the Places
+/// list — an invisible row is one nobody knows to delete.
+fn unnamed() -> String {
+    "Unnamed".to_string()
+}
+
+/// `#[serde(default)]` for a folder's colour — black would be a pin nobody can see
+/// against the map.
+fn default_folder_color() -> [f32; 3] {
+    DEFAULT_PIN_COLOR
 }
 
 impl Default for AvatarAppearance {
@@ -210,13 +309,27 @@ pub struct SavedLocation {
     pub pose: CameraPose,
 }
 
+/// A saved place.
+///
+/// **The coordinates are the one thing here with no serde default**, and that is a
+/// decision rather than an oversight: a place is its position, and defaulting a
+/// missing `lat`/`lng` to zero would invent a bookmark in the Atlantic that jumps
+/// the camera into the ocean when clicked — the same silent-garbage failure
+/// [`restore_start_location`] now refuses. Everything else degrades cleanly, so a
+/// field added to this struct later is not a schema break.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Bookmark {
+    /// Zero when a row lost it. Ids are only compared, never used as an index, so
+    /// two zeroes are a nuisance in the panel rather than a crash — and the next
+    /// [`UserStore::add_bookmark`] hands out `max + 1`, which is still unique.
+    #[serde(default)]
     pub id: u64,
     /// Defaults to the reverse-geocoded address; user-renamable.
+    #[serde(default = "unnamed")]
     pub name: String,
     pub lat: f64,
     pub lng: f64,
+    #[serde(default)]
     pub altitude: f64,
     /// Camera orientation captured when bookmarked, so a jump restores the
     /// exact view. `#[serde(default)]` for pre-pose bookmark files.
@@ -238,9 +351,12 @@ pub struct Bookmark {
 /// colour silently changes when it is dragged somewhere else.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PlaceFolder {
+    #[serde(default)]
     pub id: u64,
+    #[serde(default = "unnamed")]
     pub name: String,
     /// Pin colour for every place in this folder, as sRGB 0–1.
+    #[serde(default = "default_folder_color")]
     pub color: [f32; 3],
     /// Enclosing folder, or `None` at the top level.
     #[serde(default)]
@@ -277,18 +393,114 @@ pub struct UserStore {
     last_written: String,
 }
 
+/// Where `user.json` lives this run.
+///
+/// `utils::cache` is compiled out on wasm (`utils/mod.rs` — there is no filesystem
+/// to resolve a directory on), and the web build's store has always been a no-op:
+/// every `std::fs` call in here fails and the app runs on defaults. The literal path
+/// on that arm is therefore a placeholder that is never opened, not a location.
+fn user_data_path() -> PathBuf {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::utils::cache::app_data_root().join("user.json")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        PathBuf::from("data").join("user.json")
+    }
+}
+
+/// Durable write of the store, on the one arm that has a filesystem. See
+/// [`crate::utils::cache::write_atomic`] for why it is a rename and why the flush
+/// before it matters.
+fn write_user_json(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::utils::cache::write_atomic(path, bytes)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
+/// Rename an unparseable `user.json` to `user.json.corrupt-<unix seconds>` and
+/// return where it went, so the log can name a file someone can actually recover
+/// bookmarks out of by hand. `None` if even the rename failed.
+///
+/// Timestamped rather than a single `.corrupt` sibling: a machine that produces one
+/// bad file usually produces another, and the second must not overwrite the first
+/// copy — which may be the only intact one.
+fn quarantine(path: &Path) -> Option<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut kept = path.to_path_buf().into_os_string();
+    kept.push(format!(".corrupt-{stamp}"));
+    let kept = PathBuf::from(kept);
+    std::fs::rename(path, &kept).ok().map(|()| kept)
+}
+
+/// A store for someone who has none yet — stamped with the current schema so the
+/// first file it writes carries a version.
+fn fresh_data() -> UserData {
+    UserData {
+        version: USER_DATA_VERSION,
+        ..UserData::default()
+    }
+}
+
+/// Bring a document written by an older build up to [`USER_DATA_VERSION`].
+///
+/// **There is nothing to migrate today, and that is the point**: every schema change
+/// so far has been expressible as a serde default, which needs no version at all.
+/// This is the hook for the first one that is not — a field whose *meaning* changed,
+/// or a value that has to be recomputed from another. Such a change branches on
+/// `data.version` here, before the stamp below, and only then bumps the constant.
+///
+/// Note what the shape guarantees: a migration written here only ever sees a
+/// document that came off disk (a fresh store is built by [`fresh_data`] already at
+/// the current version), so it never has to be safe to run against defaults.
+fn migrate(data: &mut UserData) {
+    data.version = USER_DATA_VERSION;
+}
+
 impl UserStore {
     pub fn load() -> Self {
-        let path = PathBuf::from("data").join("user.json");
+        let path = user_data_path();
         let (data, last_written) = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<UserData>(&text) {
-                Ok(data) => (data, text),
+                Ok(mut data) => {
+                    migrate(&mut data);
+                    (data, text)
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, "user.json unreadable; starting fresh");
-                    (UserData::default(), String::new())
+                    // Move the unparseable file aside *before* handing back an empty
+                    // store. The store is the only copy of the user's bookmarks and
+                    // the autosave's first deadline is time zero, so without this the
+                    // original is gone within a frame of the app starting — and the
+                    // one situation in which that happens is the one where something
+                    // is already wrong and the bytes are worth keeping.
+                    match quarantine(&path) {
+                        Some(kept) => tracing::warn!(
+                            error = %e,
+                            kept = %kept.display(),
+                            "user.json did not parse; kept a copy and started fresh"
+                        ),
+                        None => tracing::warn!(
+                            error = %e,
+                            path = %path.display(),
+                            "user.json did not parse and could not be set aside; starting fresh"
+                        ),
+                    }
+                    (fresh_data(), String::new())
                 }
             },
-            Err(_) => (UserData::default(), String::new()),
+            // No file: a first run, or a directory we cannot read. Either way there
+            // is nothing to preserve, so this is the only path that starts blank
+            // without saying anything.
+            Err(_) => (fresh_data(), String::new()),
         };
         Self {
             data,
@@ -310,7 +522,13 @@ impl UserStore {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::write(&self.path, &json) {
+        // Temp file + rename, never a truncating write: this runs every five
+        // seconds and on exit, and the exit case is exactly when the process is
+        // most likely to be killed part-way through (Android kills backgrounded
+        // apps as a matter of routine). A half-written `user.json` is an
+        // unparseable one, which used to be indistinguishable from having no
+        // bookmarks at all.
+        match write_user_json(&self.path, json.as_bytes()) {
             Ok(()) => {
                 self.last_written = json;
                 self.dirty = false;
@@ -493,6 +711,30 @@ impl UserStore {
     }
 }
 
+/// Altitude a restored location may name, in metres. The ceiling is the farthest the
+/// space camera can pull back from the Earth's centre
+/// (`free_camera::ORBIT_MAX_DISTANCE_SPACE`, 45,000 km), so nothing the camera can
+/// legitimately reach is refused; the floor allows a little below sea level and
+/// nothing that would put the camera inside the planet.
+const RESTORE_ALT_RANGE: std::ops::RangeInclusive<f64> = -1_000.0..=45_000_000.0;
+
+/// Is a saved location one the camera could have been at?
+///
+/// The same check `geo_nav::parse_location` runs on pasted text, applied to the one
+/// input that never had it — the file. Text is obviously untrusted and a file
+/// silently is too: it is written by a process that can be killed mid-write, edited
+/// by hand, and (since the serde defaults above) able to supply a field the writer
+/// never wrote.
+///
+/// NaN fails every one of these comparisons, which is the intended answer and worth
+/// stating: a `RangeInclusive::contains` on NaN is `false`, so the pattern needs no
+/// separate `is_nan` arm.
+fn plausible_start(loc: &SavedLocation) -> bool {
+    (-90.0..=90.0).contains(&loc.lat)
+        && (-180.0..=180.0).contains(&loc.lng)
+        && RESTORE_ALT_RANGE.contains(&loc.altitude)
+}
+
 /// Once the world anchor exists, put the session where it should begin, through
 /// the normal teleport path (which restores the camera pose — mode and
 /// orientation — as well as the spot).
@@ -529,6 +771,22 @@ pub fn restore_start_location(
     let Some(loc) = &store.data.last_location else {
         return;
     };
+    if !plausible_start(loc) {
+        // Dropping the restore leaves the default start, which is the only escape
+        // hatch there is: this runs before any UI exists, so a garbled location
+        // teleports the camera into nowhere on *every* launch and the user's only
+        // way out is to find and delete a file they have never heard of. A NaN
+        // latitude, an altitude of 1e30 or a longitude of 400 all reach here the
+        // same way — a truncated write, a hand-edit, or a `serde` default standing
+        // in for a field that went missing.
+        tracing::warn!(
+            lat = loc.lat,
+            lng = loc.lng,
+            altitude = loc.altitude,
+            "ignoring an out-of-range saved location; starting at the default"
+        );
+        return;
+    }
 
     nav.pending_teleport = Some(Teleport {
         lat: loc.lat,
@@ -781,6 +1039,85 @@ mod tests {
         assert_eq!(store.pin_color(Some(id)), [0.1, 0.2, 0.3]);
         assert_eq!(store.pin_color(None), DEFAULT_PIN_COLOR);
         assert_eq!(store.pin_color(Some(9999)), DEFAULT_PIN_COLOR);
+    }
+
+    /// A file written by a build with a sun mode this one has never heard of must
+    /// cost the sky setting and nothing else. Before the hand-written
+    /// `Deserialize`, serde failed the whole document on that one string — and the
+    /// autosave then overwrote it, so a rollback ate every bookmark.
+    #[test]
+    fn an_unknown_sun_mode_costs_only_the_sun_mode() {
+        let json = r#"{
+            "bookmarks": [
+                {"id": 1, "name": "Home", "lat": 53.21, "lng": 6.56, "altitude": 80.0}
+            ],
+            "sky": {"sun_mode": "eclipse", "weather_live": true,
+                    "fog_density": 0.2, "cloud_cover": 0.1, "precipitation": 0.0}
+        }"#;
+        let data: UserData = serde_json::from_str(json).expect("must not fail the document");
+        assert_eq!(data.bookmarks.len(), 1, "the bookmarks survive");
+        let sky = data.sky.expect("the sky block still loads");
+        assert_eq!(sky.sun_mode, crate::resources::SunMode::Auto);
+        assert!(sky.weather_live, "the rest of the block is untouched");
+    }
+
+    /// The same rule one level down: a layer block missing fields (an older build's,
+    /// or a newer one's read back) loads with the fresh-install answer for each,
+    /// rather than failing and taking the file with it.
+    #[test]
+    fn a_partial_layer_block_keeps_fresh_install_defaults() {
+        let prefs: LayerPrefs =
+            serde_json::from_str(r#"{"vehicles": true}"#).expect("a partial layer block must load");
+        assert!(prefs.buildings, "buildings are on for a fresh install");
+        assert!(prefs.map);
+        assert!(prefs.vehicles, "what the file did say is kept");
+        assert!(!prefs.height, "the height layer is opt-in");
+        assert_eq!(
+            prefs.street_labels,
+            crate::quality::budget().detail_layers,
+            "detail layers follow the device's budget, not a constant"
+        );
+    }
+
+    /// A location the camera could never have been at must not be restored: this
+    /// runs before there is any UI to escape with, so a garbled file would teleport
+    /// into nowhere on every launch, forever.
+    #[test]
+    fn an_impossible_saved_location_is_refused() {
+        let at = |lat, lng, altitude| SavedLocation {
+            lat,
+            lng,
+            altitude,
+            pose: CameraPose::default(),
+        };
+        assert!(plausible_start(&at(53.21, 6.56, 120.0)));
+        assert!(
+            plausible_start(&at(0.0, 0.0, 0.0)),
+            "null island is a place"
+        );
+        assert!(!plausible_start(&at(f64::NAN, 6.56, 120.0)));
+        assert!(!plausible_start(&at(53.21, f64::NAN, 120.0)));
+        assert!(!plausible_start(&at(53.21, 6.56, f64::NAN)));
+        assert!(!plausible_start(&at(91.0, 6.56, 120.0)));
+        assert!(!plausible_start(&at(53.21, 400.0, 120.0)));
+        assert!(!plausible_start(&at(53.21, 6.56, 1e30)));
+        assert!(
+            plausible_start(&at(53.21, 6.56, 30_000_000.0)),
+            "a genuine deep-space viewpoint is not garbage"
+        );
+    }
+
+    /// Every file in the wild predates the version field, and must read as 0 — the
+    /// signal a future migration branches on. A fresh store carries the current one
+    /// instead, so it is never mistaken for a legacy document.
+    #[test]
+    fn version_is_zero_on_legacy_files_and_current_on_a_fresh_store() {
+        let legacy: UserData = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.version, 0);
+        let mut migrated = legacy;
+        migrate(&mut migrated);
+        assert_eq!(migrated.version, USER_DATA_VERSION);
+        assert_eq!(fresh_data().version, USER_DATA_VERSION);
     }
 
     #[test]

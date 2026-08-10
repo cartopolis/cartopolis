@@ -168,7 +168,10 @@ impl RightPanel {
 /// ([`crate::systems::user_store::SkyPrefs`]) — the sky comes back the way it
 /// was left. Named variants on the wire, so adding a mode never renumbers the
 /// saved files.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+///
+/// `Deserialize` is hand-written (see below) so that an *unknown* name is a
+/// fallback rather than an error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SunMode {
     /// Realistic: the sun follows the real current time at the map location
@@ -182,6 +185,54 @@ pub enum SunMode {
     /// The dev panel owns the clock: the slider / presets / Quick-cycle set
     /// `time_of_day` directly and `main::apply_sun_mode` leaves it untouched.
     Manual,
+}
+
+/// An unrecognised sun mode reads as [`SunMode::Auto`] instead of failing the parse.
+///
+/// The failure this prevents is disproportionate to its cause: `sun_mode` is one
+/// leaf of one optional block of `user.json`, but serde aborts the *whole document*
+/// on it, so a user who tried a build with a new mode in it and then rolled back
+/// would find every bookmark, their Home and their remembered session gone. Only the
+/// sky knob is worth losing there, and losing it means "the sun goes back to Auto",
+/// which the next autosave records honestly.
+///
+/// This is deliberately **not** `#[serde(other)]` and deliberately not a new
+/// `Unknown` variant. `#[serde(other)]` is only accepted on internally/adjacently
+/// tagged enums, which this — a bare string on disk — is not; and a real variant
+/// would have to be handled by every `match` on `SunMode` (the HUD switcher, the dev
+/// panel, `apply_sun_mode`), all of which would be answering "what does the sun do in
+/// a mode that does not exist?" — a question with no better answer than the default.
+impl<'de> serde::Deserialize<'de> for SunMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct NameVisitor;
+        impl<'de> serde::de::Visitor<'de> for NameVisitor {
+            type Value = SunMode;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sun mode name (auto, day, night, manual)")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<SunMode, E> {
+                Ok(match name {
+                    // The names `#[serde(rename_all = "snake_case")]` writes. Spelled
+                    // out rather than derived, because this side must keep answering
+                    // for names the enum no longer has.
+                    "auto" => SunMode::Auto,
+                    "day" => SunMode::Day,
+                    "night" => SunMode::Night,
+                    "manual" => SunMode::Manual,
+                    other => {
+                        tracing::warn!(mode = %other, "unknown sun mode in user.json; using Auto");
+                        SunMode::default()
+                    }
+                })
+            }
+        }
+        deserializer.deserialize_str(NameVisitor)
+    }
 }
 
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently

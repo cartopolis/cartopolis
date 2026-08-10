@@ -385,7 +385,15 @@ pub(crate) fn advance_facing(current: f32, target: f32, dt: f32) -> f32 {
     wrap_angle_pi(current + ease.clamp(-cap, cap))
 }
 
-const GROUND_HEIGHT: f32 = 0.05; // Region tile top surface (cuboid half-extent y)
+/// Standing height on flat ground: the region tile's top surface (the cuboid's
+/// half-extent in y). The avatar models are authored origin-at-feet, so this *is*
+/// the resting height — not a half-height offset.
+///
+/// Public because collision's snap-out backstop has to reconstruct the same
+/// ground the movement path stands on (`GROUND_HEIGHT + terrain.at(..)`), and a
+/// second copy of the number there is exactly the drift CLAUDE.md's
+/// "standing height comes from THREE places" note is about.
+pub const GROUND_HEIGHT: f32 = 0.05;
 /// Height above the ground at which the avatar stops being a pedestrian: the
 /// building footprints are 2D, so they only apply to something standing on them.
 pub(crate) const AIRBORNE_EPS: f32 = 0.2;

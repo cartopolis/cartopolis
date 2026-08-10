@@ -480,7 +480,19 @@ pub fn run() {
                 },
                 async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
                     min_threads: 2,
-                    max_threads: 12,
+                    // `Budget::worker_cap` is where the phone's ceiling is written,
+                    // and this is the only place that can enforce it on native:
+                    // `platform::workers::submit` *is* `AsyncComputeTaskPool` here,
+                    // and `platform::workers::init` is a no-op off the web (it sizes
+                    // a worker pool that only wasm has). So on a handset the cap was
+                    // silently doing nothing, and the real width was this line.
+                    //
+                    // It matters more than a thread count usually does: our jobs are
+                    // blocking ~120 ms tiny-skia rasterises with no yield point, and
+                    // a phone's 2 big + 6 little cores share one thermal envelope
+                    // with the render thread. Oversubscribing it does not make the
+                    // map arrive sooner, it makes the frame that draws the map late.
+                    max_threads: quality::budget().worker_cap.unwrap_or(12),
                     percent: 0.45,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
@@ -508,7 +520,19 @@ pub fn run() {
                 // on occlusion. This was misdiagnosed for a long time as content
                 // overload (tiles/buildings/shadows/atmosphere) because crashes
                 // struck whenever the window sat covered while logs were read.
-                present_mode: bevy::window::PresentMode::AutoNoVsync,
+                //
+                // Android is the exception, and it is the opposite trade. There is
+                // no Wayland compositor and no i915 here, so none of the above
+                // applies — what "no vsync" buys on a handset is frames the
+                // SurfaceFlinger throws away, paid for in heat on a device that
+                // thermally throttles rather than in anything the user can see.
+                // FIFO is also what every other Android app is doing, so it is what
+                // the display pipeline is tuned for.
+                present_mode: if cfg!(target_os = "android") {
+                    bevy::window::PresentMode::AutoVsync
+                } else {
+                    bevy::window::PresentMode::AutoNoVsync
+                },
                 // On the web the canvas otherwise keeps the fixed `resolution`
                 // above forever — 1280x720 pinned in the corner of whatever size
                 // the browser window actually is, with dead space around it, and
@@ -575,6 +599,14 @@ pub fn run() {
     // Loaded before the app is built, not inside the chain below, because the
     // remembered session in it decides which world this launch enters (and seeds
     // the sign-in screen) — see the connection-mode block further down.
+    // Trim the disk cache to its ceiling before the streamers start refilling it.
+    // Nothing else ever reclaims it, and on a phone an unbounded cache is the app
+    // quietly eating the user's storage. Runs on its own thread, so this returns at
+    // once. `utils::cache` is compiled out on wasm, where the browser's quota is the
+    // bound instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    utils::cache::sweep_cache_root();
+
     let user_store = systems::user_store::UserStore::load();
     let session_prefs = user_store.data.session.clone();
 
@@ -626,6 +658,7 @@ pub fn run() {
             _ => OsmTileUrlTemplate::default(),
         })
         .init_resource::<systems::settings::SettingsState>()
+        .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
         .init_resource::<ContextMenuState>()
         .init_resource::<EditDialogState>()
         .init_resource::<systems::gizmo::GizmoState>()
@@ -892,11 +925,35 @@ pub fn run() {
             // to stay under Bevy's per-tuple system limit.
             (
                 systems::data_layers::apply_minimal_mode
-                    .before(systems::data_layers::apply_feature_toggles),
-                // After the spawners, so new entities get this frame's toggle state.
+                    .before(systems::data_layers::apply_feature_toggles)
+                    .before(systems::data_layers::apply_feature_toggles_to_new),
+                // The full sweep is the expensive one — four queries over every
+                // building, window, 3DBAG mesh, stream tile and region quad — so it
+                // runs only when the answer can have changed. Note the gate is a
+                // *value* comparison, not `resource_changed::<DataLayers>()`:
+                // `update_data_layers` mutably derefs the resource every frame, and
+                // Bevy marks a resource changed on `DerefMut` rather than by value,
+                // so `resource_changed` here would have been true forever and gated
+                // nothing. It also has to cover two inputs that are not toggles at
+                // all — the space-tier boolean and the anchor tile — or a descent
+                // from orbit leaves the buildings hidden.
                 systems::data_layers::apply_feature_toggles
+                    .run_if(systems::data_layers::feature_toggles_changed)
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
+                    .after(rendering::spawn_regions),
+                // …and the entities that streamed in *this* frame get the current
+                // state applied unconditionally, because the gate above is closed on
+                // exactly the frames where nothing about the toggles changed but a
+                // new building may still have arrived. A skipped system still
+                // satisfies its ordering edges, so the `.after` below holds either
+                // way.
+                systems::data_layers::apply_feature_toggles_to_new
+                    .after(systems::data_layers::apply_feature_toggles)
+                    .after(systems::osm_buildings::update_buildings)
+                    .after(systems::map_stream::update_map_stream)
+                    .after(systems::map_stream::apply_stream_textures)
+                    .after(systems::lod22::update_lod22)
                     .after(rendering::spawn_regions),
             ),
             systems::data_layers::handle_poi_click.after(systems::data_layers::update_data_layers),
@@ -1263,6 +1320,35 @@ pub fn run() {
                 systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
                 systems::session::drive_session.after(systems::login_screen::render_login_screen),
             ),
+        )
+        // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
+        // browser have (`systems::onscreen_keyboard`). NativeActivity brings up no
+        // IME at all, so every text field in the client can be focused and cannot
+        // be typed into, which on a routing client means the address bar and the
+        // geo search: the front door.
+        //
+        // It draws into a floating `Area`, never the shared root `Ui`, so it is
+        // deliberately *not* in the Phase 7b chain — same as `dock` and the HUD.
+        //
+        // But it **must run after every system that can draw a text field**, and
+        // that is not a preference. egui surrenders a focused widget's focus on a
+        // click landing anywhere else, so tapping a key unfocuses the field, and
+        // putting that focus back in the same frame is most of what this system
+        // does. Registered earlier, the surrender happens *after* the restore and
+        // undoes it: the keyboard types one character into nothing and hides
+        // itself. Reading the focused field's rect — to decide whether to dock to
+        // the bottom or flip to the top — needs the same ordering, because
+        // `read_response` only sees widgets already drawn this pass.
+        //
+        // Three anchors, because the fields are spread over three phases: the
+        // panel chain (address bar, geo search, chat, assistant, bookmark rename,
+        // route), the sign-in card, and the prim edit dialog.
+        .add_systems(
+            Update,
+            systems::onscreen_keyboard::render_onscreen_keyboard
+                .after(systems::place_pins::render_place_pins)
+                .after(systems::login_screen::render_login_screen)
+                .after(systems::ui::render_edit_dialog),
         )
         // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
         // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
@@ -2258,6 +2344,15 @@ fn log_render_cost(
         return;
     }
     *next = 5.0;
+    // A full walk of every `Mesh3d` entity, resolving each handle into
+    // `Assets<Mesh>` to sum its vertices. That is a real periodic hitch, and on the
+    // one platform where it is most expensive it is also useless: nobody is reading
+    // a phone's log while holding the phone. Desktop keeps it — it is how the tile
+    // and building budgets get watched — but the handset does not pay for a
+    // diagnostic with no reader.
+    if quality::is_phone() {
+        return;
+    }
 
     let tris = |h: &Handle<Mesh>| -> usize {
         meshes.get(h).map_or(0, |m| {

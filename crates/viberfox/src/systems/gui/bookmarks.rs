@@ -355,6 +355,15 @@ pub fn render_bookmarks_panel(
     map_anchor: Res<MapAnchor>,
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Places);
+    // Nothing below this line does anything a closed panel can observe — `open`
+    // cannot become true without the panel already being open, and the closure that
+    // sets `act` never runs — but `flatten` is not free: it clones a `String` per
+    // node and, for every folder, walks all bookmarks calling `is_descendant`. That
+    // is O(folders × places × depth) plus an allocation per row, every frame, for a
+    // panel nobody is looking at. `render_route_panel` guards itself the same way.
+    if !open_before {
+        return;
+    }
     let mut open = open_before;
 
     // Current location + view, for the per-place "update to here" action.

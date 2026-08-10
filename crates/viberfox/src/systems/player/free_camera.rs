@@ -496,6 +496,7 @@ pub fn setup_camera(
     // see the `Msaa` comment below. Detect it rather than keying off the headless
     // run, so `cargo shots` on a real GPU keeps its 2×.
     let software_renderer = adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu;
+    let budget = crate::quality::budget();
 
     // Earth-preset scattering medium for the built-in atmosphere (Bevy 0.19). Its
     // density is rewritten by altitude in `globe::update_globe_visibility` (thin
@@ -533,34 +534,35 @@ pub fn setup_camera(
         root.insert(Visibility::default());
         let mut cam = root.spawn_spatial((
             Camera3d::default(),
-            // 2× MSAA instead of Bevy's implicit 4× default: roughly halves the
-            // main-pass multisample cost for a marginal edge-quality change at
-            // this scene's geometric density.
+            // The sample count is the tier's (`quality::Budget::msaa`, which
+            // carries the whole argument: only 1× and 4× are portable, and an
+            // unsupported request fails to create `main_texture_sampled` — the
+            // canvas stays black and the only log line is `CommandQueue has
+            // un-applied commands`, which describes the symptom and never the
+            // cause), clamped by two things the tier cannot know.
             //
-            // Except on the web, where 2× is not a tuning choice but an invalid
-            // one: WebGPU permits a sample count of only 1 or 4, so requesting 2
-            // fails to create `main_texture_sampled` — and the failure is silent
-            // in the worst way. Nothing renders (black canvas) and every queued
-            // command is then dropped un-applied, so the console fills with
-            // `CommandQueue has un-applied commands` warnings that describe the
-            // symptom and never the cause. 4× is therefore the only anti-aliased
-            // option on WebGPU; `Msaa::Off` is the cheaper one if the extra
-            // resolve shows up in frame times.
-            // ...and on the web that leaves no cheap anti-aliased option at all,
-            // so take none. WebGPU's jump from 2× to 4× doubles the samples
-            // rasterised for every triangle in a scene that is already hundreds
-            // of tiles plus a thousand-odd buildings, and the browser build has
-            // no frame budget to spend on edge quality yet. Raise this to
-            // `Msaa::Sample4` once frame times allow — those are the only two
-            // legal values here.
-            // `software_renderer` is the same restriction arriving from the
-            // other direction: lavapipe reports support for [1, 4] only, so a
-            // headless capture in a container dies in `main_texture_sampled`
-            // exactly as the web build did.
+            // **The web** permits a sample count of only 1 or 4 whatever the
+            // machine underneath is, so a browser in the desktop tier is still
+            // `Off`: WebGPU's jump from 2× to 4× doubles the samples rasterised
+            // for every triangle in a scene of hundreds of tiles plus a
+            // thousand-odd buildings, and the browser build has no frame budget to
+            // spend on edge quality yet. Raise it to `Msaa::Sample4` once frame
+            // times allow — those are the only two legal values there.
+            //
+            // **A software adapter** (lavapipe in a container or CI) reports the
+            // same [1, 4]. Both clamps stay here rather than moving into the
+            // budget because both are properties of *this run's surface and
+            // adapter*, not of the class of machine — which is also what lets
+            // `cargo shots` on a real GPU keep its 2×.
+            //
+            // What did *not* used to be here is the tier: the choice was a bare
+            // `cfg!(target_arch = "wasm32")`, so Android — which answers "native"
+            // to every cfg in this tree — was handed a 2× that a Vulkan
+            // implementation is under no obligation to support.
             if cfg!(target_arch = "wasm32") || software_renderer {
                 Msaa::Off
             } else {
-                Msaa::Sample2
+                budget.msaa
             },
             // Bevy's default far plane (1 km) clips the streamed tile pyramid
             // and the horizon ground disc; reversed-z depth keeps precision
@@ -605,7 +607,21 @@ pub fn setup_camera(
         // over the planet entity below. `update_globe_visibility` no-ops
         // without it, which is what made dropping it a safe web workaround —
         // and what makes restoring it here uneventful.
-        cam.insert(AtmosphereSettings::default());
+        //
+        // The LUT sizes are the tier's. Nothing else here is: the sample counts,
+        // the aerial-view range and the rendering method stay at Bevy's defaults
+        // (`update_globe_visibility` owns the last two of those at runtime), so
+        // the desktop tier restates exactly what `AtmosphereSettings::default()`
+        // gave it. The reason the sizes are worth touching at all is that all four
+        // LUTs are recomputed *every frame* — see `quality::AtmosphereLuts`.
+        let luts = budget.atmosphere_luts;
+        cam.insert(AtmosphereSettings {
+            transmittance_lut_size: luts.transmittance,
+            multiscattering_lut_size: luts.multiscattering,
+            sky_view_lut_size: luts.sky_view,
+            aerial_view_lut_size: luts.aerial_view,
+            ..default()
+        });
         if want_envmap {
             // Sky-driven image-based lighting: surfaces are lit by and reflect
             // the actual atmosphere. 256² IBL cubemap instead of the 512²

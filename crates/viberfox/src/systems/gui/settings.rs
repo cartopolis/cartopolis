@@ -167,17 +167,18 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
     if !AudioInput::available() {
         // The `platform::location` contract: say unavailable rather than show a
         // meter that can never move.
-        ui.colored_label(
-            crate::systems::theme::ERROR,
-            unavailable_reason(),
-        );
+        ui.colored_label(crate::systems::theme::ERROR, unavailable_reason());
         return play_tone;
     }
 
     let running = state.mic.is_some();
     ui.horizontal(|ui| {
         if ui
-            .button(if running { "■  Stop" } else { "●  Test microphone" })
+            .button(if running {
+                "■  Stop"
+            } else {
+                "●  Test microphone"
+            })
             .clicked()
         {
             if running {
@@ -221,19 +222,15 @@ fn unavailable_reason() -> &'static str {
 
 /// A level meter with a peak-hold tick.
 fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 14.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
     let p = ui.painter();
     let radius = egui::CornerRadius::same(3);
     p.rect_filled(rect, radius, crate::systems::theme::SURFACE);
 
     if meter > 0.0 {
-        let filled = egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width() * meter, rect.height()),
-        );
+        let filled =
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * meter, rect.height()));
         p.rect_filled(filled, radius, meter_colour(meter));
     }
     if peak > 0.0 {

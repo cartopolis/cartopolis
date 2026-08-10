@@ -412,10 +412,45 @@ fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoin
 
 // ─── Solving ─────────────────────────────────────────────────────────────────
 
+/// How long the graph cache survives with no solve asking for it.
+///
+/// The cache exists to make *switching travel mode* cost one A* instead of a
+/// whole corridor refetch, which is a thing a user does within seconds of seeing
+/// a route — not minutes. Past that window it is up to three `Arc<RoadGraph>`
+/// built from as many as `MAX_ROUTE_TILES` z14 tiles, i.e. tens of megabytes,
+/// pinned for the rest of the session by one route solved once. On a 4 GB phone
+/// that sits on top of the clipmap's own residency, so it is worth releasing.
+const GRAPH_CACHE_IDLE_S: f32 = 180.0;
+
 /// Start a solve when the endpoints or the mode change, and fold in finished ones.
-pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUrlTemplate>) {
+pub fn drive_route_solver(
+    mut route: ResMut<RouteState>,
+    tile_url: Res<OsmTileUrlTemplate>,
+    time: Res<Time>,
+    mut idle_s: Local<f32>,
+) {
+    // 0. Age the graph cache. Deliberately unconditional — including while a solve
+    //    is in flight, because the worker holds its own `Arc` clones and writes the
+    //    slot back when it finishes, so releasing it early costs at worst the reuse
+    //    this cache was for. Every path that starts or finishes a solve resets the
+    //    timer below.
+    *idle_s += time.delta_secs();
+    if *idle_s > GRAPH_CACHE_IDLE_S {
+        *idle_s = 0.0;
+        if let Ok(mut g) = route.cache.lock() {
+            if g.take().is_some() {
+                tracing::debug!(
+                    "released the routing graph cache after {GRAPH_CACHE_IDLE_S}s idle"
+                );
+            }
+        }
+    }
+
     // 1. Harvest a finished solve (ignoring one the user has already outrun).
     let done = route.results.lock().ok().and_then(|mut g| g.take());
+    if done.is_some() {
+        *idle_s = 0.0;
+    }
     if let Some(job) = done {
         if job.seq == route.seq {
             match job.result {
@@ -460,6 +495,7 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
     route.solved_for = Some(want);
     route.seq += 1;
     route.status = SolveStatus::Fetching(0, 0);
+    *idle_s = 0.0;
     let seq = route.seq;
     let sink = route.results.clone();
     let progress = route.progress.clone();

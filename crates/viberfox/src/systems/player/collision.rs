@@ -412,6 +412,7 @@ pub fn eject_avatar_from_buildings(
     colliders: Res<BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
     mut avatar_state: ResMut<AvatarState>,
     mut avatars: Query<(&GridCell, &mut Transform), With<Avatar>>,
 ) {
@@ -424,7 +425,18 @@ pub fn eject_avatar_from_buildings(
     // Only a pedestrian is ejected. The footprints have no height, so shoving a
     // flying — or falling — avatar sideways would move it around a building it is
     // passing well above.
-    if avatar_state.is_flying || tf.translation.y > crate::systems::avatar::AIRBORNE_EPS {
+    //
+    // The ground this is measured against is the *measured* one. Offline the
+    // transform is the avatar's state rather than a display offset, so standing
+    // still on a hill puts `translation.y` at `GROUND_HEIGHT + terrain.at(..)` —
+    // which above 0.15 m of relief already exceeds `AIRBORNE_EPS`, and the snap-out
+    // backstop then never ran. A teleport that landed inside a building stranded
+    // the avatar there for good. `avatar::handle_avatar_movement` computes the same
+    // ground the same way, a few lines before it calls `slide`.
+    let ground_y =
+        crate::systems::avatar::GROUND_HEIGHT + terrain.at(tf.translation.x, tf.translation.z);
+    if avatar_state.is_flying || tf.translation.y > ground_y + crate::systems::avatar::AIRBORNE_EPS
+    {
         return;
     }
     let base = Vec2::new(

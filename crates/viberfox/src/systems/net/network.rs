@@ -898,7 +898,16 @@ pub fn send_network_intent(
     // ended up inside one (e.g. teleported in — no interiors yet). Anything off the
     // ground is exempt: the footprints are 2D, so a fall past a facade would be
     // steered around a building the avatar is nowhere near the height of.
-    let airborne = avatar_state.display_position.y > AIRBORNE_EPS;
+    // Measured against `position`, never `display_position`. The two differ by
+    // `terrain_lift` (`avatar::smooth_online_avatar_display`), and the sim's frame
+    // is the flat one — it holds no map data, so the relief is added on the display
+    // side only. Reading the display height here meant that switching the Height
+    // layer on made the client believe the avatar was airborne on every frame:
+    // CLAUDE.md measures Dutch-city relief at ~2 m against an `AIRBORNE_EPS` of
+    // 0.2, so collision steering was skipped entirely and the avatar walked through
+    // every wall. The offline path (`avatar::handle_avatar_movement`) always
+    // subtracted the terrain here, which is what made this one visibly a bug.
+    let airborne = avatar_state.position.y > AIRBORNE_EPS;
     if !avatar_state.is_flying && !airborne && layers.buildings_enabled && !colliders.is_empty() {
         let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
         let steered = colliders.steer_velocity(pos, Vec2::new(v.x, v.z));
