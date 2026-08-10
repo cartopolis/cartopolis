@@ -2,6 +2,8 @@
 name = "viberfox_android"
 version.workspace = true
 edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
 
 # The APK's `lib/arm64-v8a/libviberfox_android.so`. A cdylib and nothing else:
 # Android loads a shared object and calls into it, there is no `main`.

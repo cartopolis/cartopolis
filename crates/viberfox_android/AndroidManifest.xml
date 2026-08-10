@@ -16,7 +16,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="eu.garage44.viberfox"
     android:versionCode="1"
-    android:versionName="0.2.0">
+    android:versionName="1.0.0-local">
+
+    <!-- The two version attributes above are **fallbacks that a real build never
+         uses**: `build-apk.sh` passes `--version-code` / `--version-name` to
+         `aapt2 link`, which overwrites them in the compiled manifest. They are
+         kept so that hand-running aapt2 against this file still produces a
+         package that installs.
+
+         They were also, for the whole of this app's history, the only values
+         there were — every APK ever published claimed to be version 1, so
+         nothing on the device could say which build it was and Android had no
+         reason to treat any of them as an update to another. See the version
+         block in `build-apk.sh` for where the real numbers come from and why
+         a CI code is deliberately larger than a local one. -->
 
     <!-- API 28 because that is where Android's Vulkan support becomes something
          wgpu can rely on; below it the GLES fallback would be the only backend and
@@ -82,7 +95,12 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            <!-- Ours, not the stock fullscreen theme it used to be — and the
+                 difference is the first thing anyone installing this sees. A
+                 NativeActivity paints nothing until the surface exists and Bevy
+                 has started, so the theme's `windowBackground` *is* the app for
+                 the first several seconds. See res/values/styles.xml. -->
+            android:theme="@style/Theme.Viberfox"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|locale|fontScale">
 

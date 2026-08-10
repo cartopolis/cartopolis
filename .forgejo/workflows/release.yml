@@ -15,10 +15,73 @@ env:
   CARGO_NET_RETRY: "3"
 
 jobs:
+  # The gate, and it exists because nothing else here is one. CI is not a required
+  # check on this repo and `main` is allowed to be red, so before this job a tag
+  # pushed onto a red `main` published a tarball whose own tests fail — and a
+  # release is the one artifact nobody re-runs the suite against, because it looks
+  # finished.
+  #
+  # A separate job rather than steps inside `release`, for two reasons. It fails in
+  # its own box, so "the release did not publish" says which half broke without
+  # reading a log; and it runs the *dev* profile the tests are normally run in,
+  # where folding it into `release` would either run them under fat LTO (a full
+  # re-link per test binary) or drag a second profile's artifacts into that job's
+  # cache. The cost is one cold build on a rare workflow, which is the right side
+  # of that trade for the thing being published.
+  test:
+    name: gate — tests must pass
+    runs-on: ubuntu-latest
+    container:
+      image: viberfox-ci:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required, not an optimisation: see the release job below.
+          lfs: true
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          key: release-test
+      # This job *runs* what it builds, and `.cargo/config.toml` builds x86_64 at
+      # `target-cpu=x86-64-v3`. Same guard, same reason, as ci.yml's build-test:
+      # on an older runner the failure would otherwise be an illegal instruction
+      # deep inside a test.
+      - name: Runner supports the x86-64-v3 baseline
+        run: |
+          grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo || {
+            echo "::error::Runner CPU lacks AVX2/FMA, but .cargo/config.toml builds for x86-64-v3."
+            exit 1
+          }
+      # The same list ci.yml's build-test job runs, in the same order.
+      - run: cargo test -p viberfox_geo
+      - run: cargo test -p viberfox_core
+      - run: cargo test -p viberfox_simulator
+      - run: cargo test -p viberfox
+      - run: cargo test -p big_space --lib
+      # And the one check that renders: everything above proves the code compiles
+      # and its units behave, this proves the frame had a planet in it. Shipping a
+      # binary that type-checks and draws black is precisely what a release must
+      # not do. Constraints (orbit only, no colour assertions, virtual seconds)
+      # are documented at the same step in ci.yml.
+      - name: Headless scene smoke (orbit)
+        timeout-minutes: 15
+        env:
+          VIBE_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+        run: |
+          cargo run -p viberfox -- \
+            --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
+            --at 53.2194,6.5665,180000 --look=-90,0 \
+            --size 640x360 --settle 2 --wait 60 \
+            --expect 'settled==true' --expect 'globe_rendered>0' || {
+              echo "::error::scene smoke failed — the metrics behind it:"
+              cat /tmp/orbit.json 2>/dev/null || echo "(no dump: the run died before it captured)"
+              exit 1
+            }
+
   # One job builds every target, so the `continuous` publish (which recreates the
   # release) runs once — two publishing jobs would race and clobber each other's
   # assets. Cross-compiles to Windows via the mingw-w64 toolchain in the image.
   release:
+    needs: test
     runs-on: ubuntu-latest
     container:
       image: viberfox-ci:latest
@@ -42,6 +105,16 @@ jobs:
       - name: Build release binary (Windows x86_64, cross)
         run: cargo build -p viberfox --release --target x86_64-pc-windows-gnu
 
+      # Both packages carry the same paperwork, and one of the four files is not
+      # optional: LICENSE-THIRD-PARTY.md is the ODbL / CC BY 4.0 / OFL notice that
+      # OpenStreetMap, 3DBAG and Plus Jakarta Sans require to travel with anything
+      # built from them. A tarball without it is a distribution that does not
+      # discharge its obligations, which is a different kind of bug from a missing
+      # README.
+      #
+      # RUNNING.txt is written here rather than committed because it is about the
+      # *build*, not the source: what CPU this particular binary was compiled for,
+      # which is a property of `.cargo/config.toml` at the moment of the build.
       - name: Package Linux tarball (binary + assets)
         run: |
           set -euo pipefail
@@ -49,11 +122,68 @@ jobs:
           rm -rf "$PKG" dist && mkdir -p "$PKG" dist
           cp target/release/viberfox "$PKG/"
           cp -r assets "$PKG/"
-          [ -f README.md ] && cp README.md "$PKG/" || true
+          # `|| true` on the branch, not on `cp`: under `set -e` a loop whose
+          # last iteration tests false fails the whole step.
+          for f in README.md CHANGELOG.md LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY.md; do
+            [ -f "$f" ] && cp "$f" "$PKG/" || true
+          done
+          cat > "$PKG/RUNNING.txt" <<'TXT'
+          Viberfox — Linux x86_64
+
+          Run ./run.sh; it changes into this directory (so the binary finds
+          assets/) and checks the one requirement that has no polite failure.
+
+          REQUIREMENTS
+            * A CPU with AVX2 and FMA — Intel Haswell (2013) or AMD Excavator
+              (2015) and newer. This build is compiled for the x86-64-v3 baseline;
+              run.sh says so plainly rather than letting the binary take SIGILL.
+            * A GPU and driver with Vulkan.
+            * An internet connection: the map, the buildings, the terrain and the
+              weather are all streamed. Nothing is bundled.
+
+          LICENSING
+            Viberfox itself is MIT OR Apache-2.0 (see LICENSE). The map data,
+            models and font it is built from carry their own terms and their own
+            required notices — LICENSE-THIRD-PARTY.md is that notice, and it is
+            part of this distribution.
+          TXT
+          # The CPU baseline is a real trap and it has no graceful failure mode:
+          # `.cargo/config.toml` builds x86_64 at `target-cpu=x86-64-v3`, so this
+          # binary uses AVX2 and FMA unconditionally and dies with SIGILL — no
+          # message, no log line, an "Illegal instruction" from the shell — on
+          # anything older than Haswell, which includes Atom-derived parts still
+          # on sale. ci.yml guards the *runner* against exactly this with a legible
+          # error; until this block, the shipped binary had no such guard, so the
+          # person least able to diagnose it got the least legible failure.
+          #
+          # Checked here rather than dropped from the build: the SIMD baseline is
+          # deliberate (`crates/viberfox/src/simd_baseline.rs` exists to stop it
+          # being traded away for convenience) and the affected population is
+          # small. What was missing was saying so.
           cat > "$PKG/run.sh" <<'SH'
           #!/usr/bin/env bash
           # Run viberfox from its own directory so it finds ./assets.
           cd "$(dirname "$0")"
+
+          # This build targets x86-64-v3 (AVX2 + FMA). On an older CPU the binary
+          # does not fail politely — it takes SIGILL on the first vector
+          # instruction, which the shell reports as "Illegal instruction" and
+          # nothing else. Say what happened while there is still a shell to say it in.
+          if [ -r /proc/cpuinfo ] && ! grep -qw avx2 /proc/cpuinfo; then
+              cat >&2 <<'MSG'
+          This build needs a CPU with AVX2 and FMA (Intel Haswell / AMD Excavator,
+          2013 or newer). Yours does not report AVX2, so viberfox would stop with
+          "Illegal instruction" the moment it starts.
+
+          Build from source instead — that produces a binary for the machine it is
+          built on:
+
+              git lfs install && git clone https://code.garage44.eu/jeroen/viberfox
+              cd viberfox && cargo run -p viberfox --release
+
+          MSG
+              exit 1
+          fi
           exec ./viberfox "$@"
           SH
           chmod +x "$PKG/run.sh"
@@ -67,7 +197,38 @@ jobs:
           rm -rf "$PKG" && mkdir -p "$PKG"
           cp target/x86_64-pc-windows-gnu/release/viberfox.exe "$PKG/"
           cp -r assets "$PKG/"
-          [ -f README.md ] && cp README.md "$PKG/" || true
+          # `|| true` on the branch, not on `cp`: under `set -e` a loop whose
+          # last iteration tests false fails the whole step.
+          for f in README.md CHANGELOG.md LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY.md; do
+            [ -f "$f" ] && cp "$f" "$PKG/" || true
+          done
+          # No run.sh equivalent: the same AVX2 requirement applies to this binary
+          # (it is the same compiler flags, cross-linked), but a batch file cannot
+          # ask Windows about CPU features without either PowerShell or a helper
+          # binary, and shipping a launcher that is itself compiled for AVX2 would
+          # be a joke at the user's expense. So it is stated in writing instead —
+          # here, and on the release page.
+          cat > "$PKG/RUNNING.txt" <<'TXT'
+          Viberfox — Windows x86_64
+
+          Run viberfox.exe from this folder; it reads assets\ from beside itself.
+
+          REQUIREMENTS
+            * A CPU with AVX2 and FMA — Intel Haswell (2013) or AMD Excavator
+              (2015) and newer. This build is compiled for the x86-64-v3 baseline,
+              and on an older processor it stops immediately with an illegal
+              instruction rather than a message. Building from source produces a
+              binary tuned for your own machine.
+            * A GPU and driver with Vulkan or DX12.
+            * An internet connection: the map, the buildings, the terrain and the
+              weather are all streamed. Nothing is bundled.
+
+          LICENSING
+            Viberfox itself is MIT OR Apache-2.0 (see LICENSE). The map data,
+            models and font it is built from carry their own terms and their own
+            required notices — LICENSE-THIRD-PARTY.md is that notice, and it is
+            part of this distribution.
+          TXT
           zip -qr "dist/$PKG.zip" "$PKG"
           ( cd dist && sha256sum "$PKG.zip" > "$PKG.zip.sha256" )
           ls -la dist
@@ -98,10 +259,48 @@ jobs:
             rid=""
           fi
 
+          # The release notes. Written here rather than left empty because the
+          # page is where two things have to be said and there is nowhere else to
+          # say them: the AVX2 requirement (the binary's only unrecoverable
+          # failure, and it prints nothing), and that there is an Android build at
+          # all — an APK cannot be a release asset here, it lives at its own URL,
+          # so a phone user who lands on this page otherwise leaves empty-handed.
+          NOTES=$(cat <<MD
+          A 3D world built on the real planet: walk a street of OpenStreetMap buildings,
+          keep flying up past the atmosphere, and drop back down anywhere on Earth.
+
+          **Downloads**
+
+          - \`viberfox-linux-x86_64.tar.gz\` — unpack and run \`./run.sh\`
+          - \`viberfox-windows-x86_64.zip\` — unpack and run \`viberfox.exe\`
+          - **Android:** https://viberfox.garage44.eu/apk/ (not an asset here — it is
+            signed and served separately, with install instructions on that page)
+          - **Browser:** https://viberfox.garage44.eu
+
+          Each archive has a \`.sha256\` beside it.
+
+          **Before you download**
+
+          These binaries need a CPU with **AVX2 and FMA** — Intel Haswell (2013) or AMD
+          Excavator (2015) and newer. They are compiled for the x86-64-v3 baseline and
+          will stop with an illegal instruction on anything older; \`run.sh\` checks for
+          it and says so, but Windows cannot. Build from source on an older machine.
+          You also need a GPU with Vulkan (or DX12 on Windows) and an internet
+          connection — the map, buildings, terrain and weather are all streamed.
+
+          **Licence**
+
+          MIT OR Apache-2.0. The map data, models and font carry their own terms;
+          \`LICENSE-THIRD-PARTY.md\` in each archive is the required notice.
+
+          Built from \`$SHA\`. Changes: see \`CHANGELOG.md\` in the archive.
+          MD
+          )
+
           # Create the release if it doesn't exist yet.
           if [ -z "$rid" ]; then
-            body=$(jq -n --arg tag "$TAG" --arg name "$TITLE" --arg sha "$SHA" --argjson pre "$PRE" \
-              '{tag_name:$tag, name:$name, target_commitish:$sha, prerelease:$pre, draft:false}')
+            body=$(jq -n --arg tag "$TAG" --arg name "$TITLE" --arg sha "$SHA" --argjson pre "$PRE" --arg notes "$NOTES" \
+              '{tag_name:$tag, name:$name, target_commitish:$sha, prerelease:$pre, draft:false, body:$notes}')
             rid=$(curl -sf -X POST -H "$auth" -H "Content-Type: application/json" -d "$body" "$API/releases" | jq -r '.id')
           fi
           echo "release id: $rid"

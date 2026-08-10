@@ -11,8 +11,18 @@ members = [
 default-members = ["crates/viberfox"]
 
 [workspace.package]
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
+# `MIT OR Apache-2.0`: the Rust ecosystem's default pair, and the licence of the
+# vendored `big_space` fork in `crates/big_space`, so the notice obligations for
+# the largest piece of third-party *source* in this tree line up with our own.
+# `LICENSE` says the rest; `LICENSE-THIRD-PARTY.md` is the notice for everything
+# that is not source — the map data, the models, the font.
+#
+# Declaring it here does not apply it: a crate only picks it up by writing
+# `license.workspace = true` in its own `[package]`, the way each already does
+# for `version`. `viberfox_android` does; the other five still need the line.
+license = "MIT OR Apache-2.0"
 
 # Warnings are a signal only while there are none standing. The wasm lane carried
 # twelve dead-code warnings for weeks — native-only code missing its

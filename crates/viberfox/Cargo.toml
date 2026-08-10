@@ -2,6 +2,8 @@
 name = "viberfox"
 version.workspace = true
 edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
 
 # macOS `.app` Dock icon: `cargo bundle` builds an `.icns` from these PNGs
 # (macOS has no per-window icon, so `set_window_icon` can't apply it at runtime).
