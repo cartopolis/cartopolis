@@ -1690,7 +1690,7 @@ mod tests {
     ///
     /// ```text
     /// VIBE_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y} \
-    ///   cargo test -p viberfox --bin viberfox solves_a_real_route -- --ignored --nocapture
+    ///   cargo test -p viberfox solves_a_real_route -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]

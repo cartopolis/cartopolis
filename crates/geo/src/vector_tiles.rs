@@ -2745,7 +2745,7 @@ mod tests {
         }
     }
 
-    /// Not a test — an eyeball hatch. `cargo test -p viberfox --bin viberfox
+    /// Not a test — an eyeball hatch. `cargo test -p viberfox_geo
     /// dump_png -- --ignored --nocapture` writes the fixture at z14 and at an
     /// overzoomed z17 so the styling can actually be looked at.
     #[test]
@@ -3151,7 +3151,7 @@ mod tests {
     /// top-down and colour each pixel by how many ribbons cover it, so stubs,
     /// gaps and overlaps are visible without a GPU.
     ///
-    /// `cargo test -p viberfox --bin viberfox dump_road_ribbons -- --ignored
+    /// `cargo test -p viberfox_geo dump_road_ribbons -- --ignored
     /// --nocapture`; `VIBE_DUMP_WIN="x,z,size"` (tile metres) zooms to a junction.
     #[test]
     #[ignore]

@@ -1006,7 +1006,7 @@ mod tests {
         assert_eq!(u.indices.len(), 32 * 3);
     }
 
-    /// What a real cell actually costs. `cargo test -p viberfox --bin viberfox
+    /// What a real cell actually costs. `cargo test -p viberfox_geo
     /// dump_vegetation_cost -- --ignored --nocapture`.
     #[test]
     #[ignore]

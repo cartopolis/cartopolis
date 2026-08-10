@@ -598,7 +598,7 @@ mod tests {
 
     /// Eyeball hatch, like `vector_tiles::dump_png`: writes each class's surface
     /// so the markings can be looked at.
-    /// `cargo test -p viberfox --bin viberfox dump_road_textures -- --ignored`
+    /// `cargo test -p viberfox_geo dump_road_textures -- --ignored`
     #[test]
     #[ignore]
     fn dump_road_textures() {
