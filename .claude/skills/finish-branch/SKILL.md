@@ -30,9 +30,26 @@ sessions. The oldest session file usually holds the design decision; the later
 ones only execute it. If what you are about to merge no longer matches that
 intent, this is a conversation, not a merge.
 
-**3. Merge.** Follow the `commit` skill's conventions for any merge or fixup
-commit. Rebase or merge as the branch's shape warrants; get it into `main` and
-pushed.
+**3. Merge.** When the worktree is bound to a ticket, this is one command:
+
+```bash
+.claude/skills/finish-branch/merge-to-main
+```
+
+It pushes `HEAD` to the bound branch, waits for CI on the pushed head, and opens
+and merges a PR **only on green** — a red run exits non-zero naming the failing
+check, so you fix it and re-run rather than deciding for yourself that it was
+fine. `main` is protected and stays that way: the token can merge a PR but
+cannot push to `main` and holds no admin scope, so this path cannot widen its
+own permissions. `Closes #N` in the PR body closes the issue, which is what
+moves the card to Done.
+
+Say "merge to main" in the driven lane and this is the step —
+[docs/workflow.md](../../../docs/workflow.md#landing-it-the-driven-lane-merges-its-own-branch-2026-08-10).
+Follow the `commit` skill's conventions for any fixup commit along the way.
+
+Without a ticket binding, or when the branch's shape wants a rebase first, do it
+by hand — but the CI-before-merge order is the part that is not optional.
 
 **4. Leave the context ref alone.** There is nothing to clean up. The ref stays
 keyed on the branch name, which remains meaningful long after the branch itself

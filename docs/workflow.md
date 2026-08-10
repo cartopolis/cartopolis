@@ -431,6 +431,45 @@ Commits style, push the branch. `main` is protected; the bot cannot push to it.
 
 `agent:done` means **a branch is waiting for review**, not shipped.
 
+### Landing it: the driven lane merges its own branch (2026-08-10)
+
+In the driven lane you are in the room, so the review has already happened in
+conversation. Saying **"merge to main"** is the instruction to land it, and the
+session does it rather than handing back a branch for you to PR by hand:
+
+```bash
+.claude/skills/finish-branch/merge-to-main
+```
+
+It pushes `HEAD` to the bound branch, **waits for CI on the pushed head**, and
+merges only on green — a red run exits non-zero naming the failing check, so the
+session fixes it and re-runs. That preserves the rule above: the session still
+never decides that its own work is correct, it only decides *when to ask*.
+
+Three properties are deliberate, and the first is what makes this safe to give an
+agent at all:
+
+- **`main` stays protected, and the token cannot unprotect it.** The
+  `viberfox-agent` account reports `protected: true`, `user_can_push: false`,
+  `user_can_merge: true` on `main`, and its token carries `write:repository`
+  with no admin scope. So an accidental `git push origin main` from any session
+  still bounces, and this path cannot widen its own permissions. The merge goes
+  through a PR, which is also what leaves the review record and the CI history.
+- **The board follows for free.** The PR body carries `Closes #N`, so the merge
+  closes the issue, and the watcher moves a closed issue's card to Done — see
+  [States](#states). Nothing new projects onto the board; Forgejo still has no
+  kanban API.
+- **Two tokens, two scopes.** `forgejo.env` stays `write:issue` only, exactly as
+  its own comment claims; the repository-write token lives beside it in
+  `forgejo-merge.env` (mode 600). Revoke it in Forgejo ▸ `viberfox-agent` ▸
+  Settings ▸ Applications ▸ delete "agent-merge", and this path stops working
+  while everything else keeps running.
+
+**The autonomous lane does not get this.** It stops at `agent:done` as before. The
+difference is not the machine, it is the lane: a merge is the one action where a
+wrong inference is expensive to undo, and the driven lane has a person who said
+the word.
+
 ### The verdict is CI's, not the session's
 
 A session that pushes commits does not get `agent:done`. It gets `agent:ci`, and
