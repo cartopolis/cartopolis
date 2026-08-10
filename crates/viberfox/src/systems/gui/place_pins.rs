@@ -90,6 +90,11 @@ pub fn render_place_pins(
     // the shared root `Ui` *before* borrowing the context, so both borrows of
     // `egui` don't overlap (the context is a cheap `Arc` clone).
     let map_rect = egui.ui_mut().available_rect_before_wrap();
+    // Projection answers in window points; the pins are drawn in egui's. Bound
+    // once here rather than called per pin, so the `ResMut` isn't re-borrowed
+    // inside the loop that owns `ctx`.
+    let ui_scale = egui.ui_scale();
+    let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
     let ctx = egui.ctx_mut().clone();
     if map_rect.width() < 2.0 * HEAD_R || map_rect.height() < 3.0 * HEAD_R {
         return; // panels have taken the screen (compact layout)
@@ -130,7 +135,7 @@ pub fn render_place_pins(
         let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
             continue; // behind the camera
         };
-        let tip = egui::pos2(screen.x, screen.y);
+        let tip = to_ui(screen);
         if !map_rect.contains(tip) {
             continue;
         }

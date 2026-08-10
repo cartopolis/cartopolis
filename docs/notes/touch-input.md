@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture"]
-updated: 2026-08-06
+updated: 2026-08-09
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -129,6 +129,89 @@ and `CursorMoved` both report logical points.
 **Only the vertical component of the two-finger drag is read.** A twist that
 isn't perfectly centred moves the centroid sideways, so taking the horizontal
 component too would double-count every rotation as a pan.
+
+## The UI is sharp on a phone and still too small to hit
+
+Reported from a Fairphone 4 on Chromium, 2026-08-09: "the ui widgets are very
+small/hard to read". This is **not** a DPI bug, and looking for one wastes the
+afternoon. `egui_surface` already feeds egui the display's scale factor (on the
+web that is `devicePixelRatio`), so text is rendered at full device resolution.
+The layout is simply built for a mouse: a point on the web is a CSS pixel
+(1/96 in), so `theme::style`'s `interact_size` of 40×24 pt is a **6.3 mm** touch
+target where the platform guidelines ask for ~10 mm.
+
+The mechanism is `EguiManager::ui_scale`, a magnification *on top of* the display
+scale, set by `?ui_scale=` / `VIBERFOX_UI_SCALE` or defaulted per-platform by
+`phone_ui_scale` on `quality::Tier::Phone`.
+
+**But on the web the default is 1.0, because the render budget got there first.**
+This is the part to read before reaching for the knob. `perf/wasm-phone-render-budget`
+(#27, landed the same day) sizes `#stage` to viewport ÷ k and scales it back up
+by k with a CSS transform, where k is `dpr / 1.5` on the phone tier. winit
+measures the *untransformed* box, so Bevy's logical viewport shrinks by k and
+every egui point is painted across k CSS pixels. On the reported Fairphone 4
+(dpr 2.75) k ≈ 1.83, which takes that 24 pt row from 6.3 mm to **11.6 mm**
+without anyone touching the UI. Two independent magnifications is 17 mm, and the
+viewport lands at 143 pt against a 240 pt panel floor.
+
+So the two changes overlap, and the overlap is only visible if you know the
+canvas is a transformed element. Native Android has no such transform and a
+point there is a dp (1/160 in), i.e. **3.8 mm** — which is why the default is
+1.5 on that platform and 1.0 on the web. Four things are worth keeping:
+
+**Scaling points-per-pixel, not the style.** The alternative — multiplying the
+theme's font sizes and spacing — was rejected because it only reaches what the
+theme owns. The dock discs, `theme::close_button`, the place pins, the HUD boxes
+and the driver rail all carry their own point sizes, so a style-only scale grows
+the text and leaves every hand-drawn control the size it was. Scaling ppp is
+uniform by construction.
+
+**It is bounded from above by the panels, not by the finger.** The scale
+multiplies the widgets by dividing the viewport, and `responsive_right_panel`
+floors a compact panel at 240 pt — so the ceiling is wherever the viewport meets
+that floor, which on the web phone tier is *already close* before any
+magnification (a 393 pt handset presents 214 pt through k ≈ 1.83, so the floor
+is doing the wrong thing there on its own — see below).
+
+**It forks egui points from window points, and that is the whole hazard.** They
+were the same number everywhere before this existed, so any code holding a
+position from `Window::cursor_position`, `TouchInput::position` or
+`Camera::world_to_viewport` and handing it to egui was silently correct. Four
+such places existed — the context menu, the place pins, the POI popup and the
+marquee rect — and all four are now routed through `EguiManager::window_to_ui`.
+The failure mode is nasty precisely because it is proportional to distance from
+the top-left corner: at 1.5× a pin near the origin looks fine and one at the far
+edge is a third of a screen out, so it reads as a projection bug. `boot_splash`
+was a fifth, sizing its backdrop from `Window::width()`.
+
+**One detector, borrowed rather than rebuilt.** The tier comes from
+`crate::quality`, which `index.html` decides before the module is even fetched
+(`wasm-performance.md` explains why the browser has to be the one to decide: the
+canvas backing store is set from CSS, so the render scale is a page-layout fact
+Rust cannot reach). An earlier draft of this asked `(pointer: coarse)` from Rust
+instead, which was a second detector answering nearly the same question — and
+two detectors is exactly how the UI ends up finger-sized on a machine rendering
+at desktop resolution.
+
+The borrowed answer is not free: `quality` asks for a coarse pointer **and** a
+viewport under 900 px, so a **large tablet is `Desktop` and gets mouse-sized
+targets** despite being driven by a finger. Wrong for that device, right for a
+touchscreen laptop, and `VIBERFOX_UI_SCALE` is the cover until someone has a
+tablet to test on. If tablets start mattering, the fix is to publish pointer
+coarseness from `index.html` as its own attribute beside `data-quality` — not to
+re-add a media query here.
+
+## Open: the compact panel floor inverts on the web phone tier
+
+Not introduced by either change above, but made reachable by the render budget
+and worth fixing before someone reads it as a UI-scale bug.
+`responsive_right_panel` gives a compact panel `exact_size(viewport_w.max(240.0))`
+— a floor that exists so a narrow window cannot produce a degenerate sliver. On
+the web phone tier the viewport *is* narrower than the floor (214 pt through
+k ≈ 1.83 on a Fairphone 4), so the floor now docks a panel **26 pt wider than
+the screen it sits in**, which is the exact failure it was written to prevent.
+A `min(viewport_w)` alongside the `max` is the shape of the fix; it belongs with
+whoever owns the render budget, not here.
 
 ## Not covered
 

@@ -54,7 +54,20 @@ pub struct EguiManager {
     /// Kept here (rather than re-read from the `Window` each time) because it is
     /// also the fallback for a frame that has **no** surface at all — see
     /// [`begin_egui_frame`].
+    ///
+    /// The scale is the *effective* points-per-pixel — the display's own scale
+    /// factor multiplied by [`Self::ui_scale`] — so everything derived from it
+    /// ([`Self::viewport_pts`], [`Self::compact`]) is already in the same points
+    /// egui lays out in.
     surface: (UVec2, f32),
+    /// UI magnification on top of the display's scale factor. `1.0` everywhere a
+    /// mouse is the pointer; larger on touch, where the layout is otherwise
+    /// correct and physically too small to hit. See [`resolve_ui_scale`].
+    ///
+    /// This is the *only* thing that makes egui points differ from the window's
+    /// logical points, which is why it is also the conversion factor every
+    /// window→egui position has to go through ([`Self::window_to_ui`]).
+    ui_scale: f32,
     /// A modal (currently only `systems::login_screen`) owns the screen this
     /// frame. Pointer input takes care of itself — the modal's backdrop is a real
     /// widget, so egui claims the pointer — but the keyboard does not: the gate
@@ -67,6 +80,90 @@ pub struct EguiManager {
 /// the bottom bar wraps and the right-side panels expand to fill the screen
 /// instead of docking beside the map at a fixed 320 pt.
 pub const COMPACT_WIDTH_PTS: f32 = 640.0;
+
+/// Default UI magnification on the phone tier — **and why the web's is 1.0.**
+///
+/// The question is physical size, not taste. egui lays out in points, the
+/// display scale factor turns those into pixels, and a phone's UI is therefore
+/// already *sharp*; it is simply built for a mouse. `theme::style`'s
+/// `interact_size` of 40×24 pt is the target to size, against a ~7.6 mm platform
+/// guideline (Material's 48 dp) and a fingertip about that wide.
+///
+/// **On the web that has already been fixed, by something else.** The render
+/// budget's stage transform (`index.html`, `docs/notes/wasm-performance.md`)
+/// sizes the canvas to viewport ÷ k and scales it back up by k, where k is
+/// `dpr / 1.5` on the phone tier. winit measures the *untransformed* box, so
+/// Bevy's logical viewport shrinks by k and every egui point is then painted
+/// across k CSS pixels. On the reported Fairphone 4 (dpr 2.75) k ≈ 1.83, which
+/// takes a 24 pt row from 6.3 mm to **11.6 mm** on its own. Magnifying again on
+/// top of that overshoots the guideline by half and — worse — takes the viewport
+/// to 143 pt, well under the 240 pt floor `responsive_right_panel` gives a
+/// compact panel, i.e. a panel wider than the screen it docks in.
+///
+/// Native Android has no such transform: nothing there has magnified anything,
+/// and a point is a dp (1/160 in), so the same row is **3.8 mm**. That is the
+/// platform this constant is still for.
+///
+/// So the default is per-platform and the *override* is the general answer —
+/// see [`resolve_ui_scale`]. Both numbers are arguments from arithmetic, not
+/// measurements; neither has been checked on glass.
+const fn phone_ui_scale() -> f32 {
+    if cfg!(target_arch = "wasm32") {
+        1.0
+    } else {
+        1.5
+    }
+}
+
+/// Clamp for an explicitly requested scale. A typo in a URL should make the UI
+/// awkward, not unrecoverable — at 20× there is no longer a button to press to
+/// get back.
+const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+
+/// How much to magnify the UI over the display's own scale factor.
+///
+/// Resolved once, at startup, from two sources in order:
+///
+/// 1. An explicit `?ui_scale=1.3` (web) / `VIBERFOX_UI_SCALE=1.3` (desktop).
+///    **This is the primary interface, not an escape hatch.** The physical size
+///    of a point varies across devices with the display scale, the platform's
+///    unit and — on the web — the render budget's stage transform, and this
+///    function cannot see any of the three well enough to be right by default.
+/// 2. Otherwise [`phone_ui_scale`] on the phone tier, and 1.0 off it.
+///
+/// **The tier comes from [`crate::quality`], which is deliberately the only
+/// thing in the client that decides what kind of machine this is.** An earlier
+/// version of this asked the browser `(pointer: coarse)` directly, which was a
+/// second detector answering a nearly-identical question — and `quality`'s
+/// module note is explicit that the browser decides once, in `index.html`,
+/// because the canvas resolution is a page-layout fact Rust cannot reach. Two
+/// detectors is how the UI ends up finger-sized on a machine rendering at
+/// desktop resolution, or the reverse.
+///
+/// The cost of borrowing that answer is that `quality` asks for a coarse pointer
+/// **and** a viewport under 900 px, so a large tablet is `Desktop` and gets
+/// mouse-sized targets despite being driven by a finger. That is the wrong
+/// answer for such a device and the right one for a touchscreen laptop, and it
+/// is what `VIBERFOX_UI_SCALE` is for until someone has a tablet to test on.
+fn resolve_ui_scale() -> f32 {
+    if let Some(raw) = crate::env_value("VIBERFOX_UI_SCALE") {
+        match raw.trim().parse::<f32>() {
+            Ok(v) if v.is_finite() => {
+                let clamped = v.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end());
+                if clamped != v {
+                    tracing::warn!("ui scale {v} out of range, using {clamped}");
+                }
+                return clamped;
+            }
+            _ => tracing::warn!("ignoring unparseable ui scale {raw:?}"),
+        }
+    }
+    if crate::quality::is_phone() {
+        phone_ui_scale()
+    } else {
+        1.0
+    }
+}
 
 /// Build a right-docked [`egui::Panel`] that adapts to the viewport: on a wide
 /// screen it docks beside the map at `wide_width` pt and stays resizable; on a
@@ -130,13 +227,18 @@ impl Default for EguiManager {
             style.debug.show_expand_width = false;
             style.debug.show_expand_height = false;
         });
+        let ui_scale = resolve_ui_scale();
+        if ui_scale != 1.0 {
+            tracing::info!("UI scale {ui_scale}× (coarse pointer or VIBERFOX_UI_SCALE)");
+        }
         Self {
             ctx,
             root_ui: None,
             elapsed_time: 0.0,
             // Matches the primary window's default resolution in `main.rs`; only
             // ever used for the frames before the first `begin_egui_frame`.
-            surface: (UVec2::new(1280, 720), 1.0),
+            surface: (UVec2::new(1280, 720), ui_scale),
+            ui_scale,
             modal: false,
         }
     }
@@ -157,17 +259,39 @@ impl EguiManager {
         egui::vec2(physical.x as f32 / scale, physical.y as f32 / scale)
     }
 
-    /// Record the surface this frame is laid out against. The scale is sanitised
-    /// on the way in: it divides every size below, and a display handing back 0
-    /// (or NaN) — which is what a monitor being switched off under us looks like
-    /// — would otherwise turn the whole viewport into infinities.
-    fn set_surface(&mut self, physical: UVec2, scale: f32) {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
+    /// Record the surface this frame is laid out against, given the *display's*
+    /// scale factor; [`Self::ui_scale`] is folded in here so there is one place
+    /// the two are combined and no caller can use the wrong one.
+    ///
+    /// The scale is sanitised on the way in: it divides every size below, and a
+    /// display handing back 0 (or NaN) — which is what a monitor being switched
+    /// off under us looks like — would otherwise turn the whole viewport into
+    /// infinities.
+    fn set_surface(&mut self, physical: UVec2, display_scale: f32) {
+        let display_scale = if display_scale.is_finite() && display_scale > 0.0 {
+            display_scale
         } else {
             1.0
         };
-        self.surface = (physical, scale);
+        self.surface = (physical, display_scale * self.ui_scale);
+    }
+
+    /// The UI magnification in force (see [`resolve_ui_scale`]). Also the factor
+    /// between the window's logical points and egui's.
+    pub fn ui_scale(&self) -> f32 {
+        self.ui_scale
+    }
+
+    /// Convert a position in the window's logical points — which is what
+    /// `Window::cursor_position`, `TouchInput::position` and
+    /// `Camera::world_to_viewport` all speak — into egui points.
+    ///
+    /// The two spaces coincide only while [`Self::ui_scale`] is 1.0, so a
+    /// world-anchored overlay that skips this is *correct on every desktop* and
+    /// slides away from its subject on a phone, proportionally to how far it is
+    /// from the top-left corner.
+    pub fn window_to_ui(&self, p: Vec2) -> egui::Pos2 {
+        egui::pos2(p.x / self.ui_scale, p.y / self.ui_scale)
     }
 
     /// Declare (each frame) whether a modal owns the screen — see the `modal`
@@ -371,15 +495,23 @@ impl PointerBridge {
 /// worth up to three egui events. `systems::touch` is the matching bridge for
 /// the *world* (camera gestures and the emulated mouse) and does not go through
 /// here — it reads the settled `Touches` set instead.
+///
+/// `ui_scale` converts the incoming positions — which are in the *window's*
+/// logical points — into egui's (see [`EguiManager::window_to_ui`]). It is
+/// applied here, at the one place events enter, so that `state.last` and every
+/// event built from it are already in egui's space and nothing downstream has to
+/// remember which of the two it is holding.
 pub(crate) fn pointer_events(
     ev: &bevy::window::WindowEvent,
+    ui_scale: f32,
     state: &mut PointerBridge,
     out: &mut Vec<egui::Event>,
 ) {
     use bevy::window::WindowEvent as We;
+    let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
     match ev {
         We::CursorMoved(e) => {
-            let pos = egui::Pos2::new(e.position.x, e.position.y);
+            let pos = to_ui(e.position);
             state.last = Some(pos);
             out.push(egui::Event::PointerMoved(pos));
         }
@@ -413,7 +545,7 @@ pub(crate) fn pointer_events(
         }
         We::TouchInput(e) => {
             use bevy::input::touch::TouchPhase as BevyPhase;
-            let pos = egui::Pos2::new(e.position.x, e.position.y);
+            let pos = to_ui(e.position);
             out.push(egui::Event::Touch {
                 // One touchscreen; egui only uses this to keep devices apart.
                 device_id: egui::TouchDeviceId(0),
@@ -530,16 +662,17 @@ pub fn begin_egui_frame(
     // motion this frame keeps the position of the last motion ever; the fallback
     // covers a click before any `CursorMoved` has been seen (cursor already
     // inside the window at startup). Headless runs see no window events at all.
+    let ui_scale = egui_manager.ui_scale;
     pointer_bridge.seed(
         windows
             .iter()
             .next()
             .and_then(|w| w.cursor_position())
-            .map(|p| egui::Pos2::new(p.x, p.y)),
+            .map(|p| egui::pos2(p.x / ui_scale, p.y / ui_scale)),
     );
     let mut pending = std::mem::take(&mut *pointer_carry);
     for ev in window_events.read() {
-        pointer_events(ev, &mut pointer_bridge, &mut pending);
+        pointer_events(ev, ui_scale, &mut pointer_bridge, &mut pending);
     }
     events.extend(take_pass_events(&mut pending));
     *pointer_carry = pending;
@@ -897,10 +1030,15 @@ mod tests {
 
     /// Run a window-event stream through the bridge, as `begin_egui_frame` does.
     fn bridge(stream: &[WindowEvent]) -> Vec<egui::Event> {
+        bridge_scaled(stream, 1.0)
+    }
+
+    /// As [`bridge`], with an explicit UI scale.
+    fn bridge_scaled(stream: &[WindowEvent], ui_scale: f32) -> Vec<egui::Event> {
         let mut state = PointerBridge::default();
         let mut out = Vec::new();
         for ev in stream {
-            pointer_events(ev, &mut state, &mut out);
+            pointer_events(ev, ui_scale, &mut state, &mut out);
         }
         out
     }
@@ -1287,6 +1425,87 @@ mod tests {
         }
         mgr.set_surface(UVec2::new(2560, 1440), 2.0);
         assert_eq!(mgr.viewport_pts(), egui::vec2(1280.0, 720.0));
+    }
+
+    /// The UI scale multiplies the widgets by dividing the viewport: the same
+    /// screen holds fewer, larger points. Everything responsive keys off
+    /// `viewport_pts`, so a phone that was merely narrow becomes narrow *and*
+    /// compact from this one number.
+    #[test]
+    fn ui_scale_shrinks_the_viewport_it_magnifies() {
+        let mut mgr = EguiManager::default();
+        mgr.ui_scale = 1.5;
+        // Android, where a phone's whole 1080 px width reaches Bevy: 393 pt of
+        // viewport at a 2.75 scale factor, 262 pt of it after the magnification.
+        mgr.set_surface(UVec2::new(1080, 2280), 2.75);
+        assert!((mgr.viewport_pts().x - 261.8).abs() < 0.1);
+        assert!(mgr.compact());
+    }
+
+    /// Why [`phone_ui_scale`] is 1.0 on the web: the render budget's stage
+    /// transform has already shrunk the surface Bevy sees, so magnifying again
+    /// takes the viewport under the 240 pt floor `responsive_right_panel` gives
+    /// a compact panel — i.e. docks a panel wider than the screen.
+    ///
+    /// Same handset as above, but through the phone tier's k ≈ 1.83: winit
+    /// measures the *untransformed* box, so Bevy's surface is 1080/1.83 px.
+    #[test]
+    fn the_web_phone_tier_has_no_room_to_magnify() {
+        let surface = UVec2::new(590, 1245); // 1080×2280 ÷ 1.83
+        let mut unscaled = EguiManager::default();
+        unscaled.ui_scale = 1.0;
+        unscaled.set_surface(surface, 2.75);
+        assert!(unscaled.viewport_pts().x > 200.0, "usable at 1.0");
+
+        let mut scaled = EguiManager::default();
+        scaled.ui_scale = 1.5;
+        scaled.set_surface(surface, 2.75);
+        assert!(
+            scaled.viewport_pts().x < 240.0,
+            "1.5× would dock a 240 pt panel in a {} pt viewport",
+            scaled.viewport_pts().x
+        );
+    }
+
+    /// Positions enter in the window's logical points and must leave in egui's,
+    /// or every widget is hit-tested at a position that drifts further from the
+    /// finger the further it is from the top-left corner. Converted at the
+    /// bridge so `state.last` — and the button events built from it — are
+    /// already in egui's space.
+    #[test]
+    fn the_pointer_bridge_converts_into_egui_points() {
+        let events = bridge_scaled(&[moved(300.0, 600.0), button(true)], 1.5);
+        let positions: Vec<egui::Pos2> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::PointerMoved(p) => Some(*p),
+                egui::Event::PointerButton { pos, .. } => Some(*pos),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(positions, vec![egui::pos2(200.0, 400.0); 2]);
+    }
+
+    /// The same conversion, for the world-anchored overlays that get their
+    /// positions from `Camera::world_to_viewport` rather than from an event.
+    #[test]
+    fn window_to_ui_matches_the_bridge() {
+        let mut mgr = EguiManager::default();
+        mgr.ui_scale = 1.5;
+        assert_eq!(
+            mgr.window_to_ui(Vec2::new(300.0, 600.0)),
+            egui::pos2(200.0, 400.0)
+        );
+    }
+
+    /// An out-of-range scale is clamped rather than obeyed: at 20× there is no
+    /// longer a button on screen to press to undo it.
+    #[test]
+    fn an_absurd_ui_scale_is_clamped() {
+        for (raw, want) in [(20.0_f32, 3.0_f32), (0.01, 0.5), (1.4, 1.4)] {
+            let clamped = raw.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end());
+            assert_eq!(clamped, want, "clamping {raw}");
+        }
     }
 
     /// Every system that draws into the **shared root `Ui`** must be in the panel

@@ -314,21 +314,17 @@ pub fn render_marquee(mut egui: ResMut<EguiManager>, marquee: Res<MarqueeState>)
         return;
     }
 
+    // The drag was measured against the window's cursor, so both corners are in
+    // window points and have to be converted before egui paints with them.
+    let min = egui.window_to_ui(marquee.start.min(marquee.end));
+    let max = egui.window_to_ui(marquee.start.max(marquee.end));
+    let rect = egui::Rect::from_min_max(min, max);
+
     let ctx = egui.ctx_mut();
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("marquee_rect"),
     ));
-
-    let min = egui::pos2(
-        marquee.start.x.min(marquee.end.x),
-        marquee.start.y.min(marquee.end.y),
-    );
-    let max = egui::pos2(
-        marquee.start.x.max(marquee.end.x),
-        marquee.start.y.max(marquee.end.y),
-    );
-    let rect = egui::Rect::from_min_max(min, max);
 
     let fill =
         egui::Color32::from_rgba_unmultiplied(theme::FOX.r(), theme::FOX.g(), theme::FOX.b(), 28);

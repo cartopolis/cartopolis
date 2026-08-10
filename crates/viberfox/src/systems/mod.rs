@@ -56,4 +56,6 @@ pub use player::{
 // unused import rather than a convenience.
 #[cfg(feature = "audio")]
 pub use player::soundscape;
-pub use viberfox_geo::{furniture, mip, places, road_texture, routing, scatter, vector_tiles};
+pub use viberfox_geo::{
+    furniture, mip, places, pois, road_texture, routing, scatter, vector_tiles,
+};
