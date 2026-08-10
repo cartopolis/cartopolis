@@ -52,6 +52,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "explicit flight — ClientIntent.flying; the sim falls an avatar that isn't flying",
     },
+    ProtocolRevision {
+        version: 13,
+        adr: "",
+        summary: "jump + emotes — ClientIntent.jump, AvatarStateDto.emote; the sim integrates a real gravity arc",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -282,7 +287,46 @@ pub struct AvatarStateDto {
     pub id: u64,
     pub position: Vec3,
     pub yaw: f32,
+    /// An emote this avatar started recently, so a client that just came into
+    /// range still sees a wave in progress rather than missing it. The sim clears
+    /// it after [`EMOTE_REPLICATE_SECS`]; a receiver plays it once per
+    /// `(avatar, sequence)` it has not seen.
+    pub emote: Option<EmoteState>,
 }
+
+/// A one-shot full-body animation an avatar can play. These are clips the
+/// Quaternius "Ultimate Modular" characters already embed — every character glTF
+/// carries the same 24 — so an emote costs no asset, only a name for the index.
+///
+/// Deliberately a closed enum rather than a clip index: the index is a property of
+/// the *asset*, and putting it on the wire would freeze the character set. A
+/// receiver maps the name to whatever its own models call that motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Emote {
+    Wave,
+    /// The generic "use the thing in front of me" motion, also played by the
+    /// world-interaction prompt.
+    Interact,
+    Roll,
+    Punch,
+    Kick,
+    /// Play dead. Every set has one, and someone will find it.
+    Faint,
+}
+
+/// An emote plus the sequence number that makes it re-playable: the same emote
+/// twice in a row is two distinct events, and a receiver diffing on the emote
+/// alone would show only the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmoteState {
+    pub emote: Emote,
+    pub sequence: u32,
+}
+
+/// How long an emote stays on an avatar's replicated state. A little longer than
+/// the longest clip, so a client that receives its first snapshot mid-wave still
+/// plays it, and short enough that it does not replay on a much later snapshot.
+pub const EMOTE_REPLICATE_SECS: f32 = 2.5;
 
 /// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
 /// channel. Geo tiers (country/province/municipality) land with `vibe_geo`.
@@ -347,6 +391,14 @@ pub enum NetMessage {
         /// Vertical thrust while `flying`; ignored otherwise.
         fly_up: bool,
         fly_down: bool,
+        /// One-shot: the client asked to jump this frame. The sim grants it only
+        /// from the ground, so this is a *request*, not an impulse — a client that
+        /// holds the bit down does not climb.
+        jump: bool,
+        /// One-shot: an emote the avatar started this frame, replicated to
+        /// everyone in range through [`AvatarStateDto::emote`]. `None` on almost
+        /// every intent.
+        emote: Option<Emote>,
     },
     ObserverUpdate {
         position: Vec3,

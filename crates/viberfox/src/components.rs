@@ -80,6 +80,16 @@ pub struct RemoteAvatar {
     pub sim_id: u64,
     pub net_position: Vec3,
     pub net_yaw: f32,
+    /// An emote this avatar started that we have not played yet — set for one
+    /// frame by the snapshot apply and consumed by
+    /// `avatar::update_remote_avatar_animation`.
+    pub pending_emote: Option<viberfox_core::Emote>,
+    /// Sequence of the last emote played for this avatar. The sim holds an emote
+    /// on the wire for a couple of seconds (so a client arriving mid-wave sees
+    /// it), which means the same emote arrives in many snapshots; the sequence is
+    /// what turns that level back into an edge, and what distinguishes "waved
+    /// twice" from "still waving".
+    pub last_emote_sequence: Option<u32>,
 }
 
 /// Horizontal speed (m/s) from visual motion, used for remote run vs idle animation.
