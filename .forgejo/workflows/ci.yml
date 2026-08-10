@@ -34,11 +34,6 @@ jobs:
           # finds out at runtime. See `.gitattributes`.
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
-      # Formatting is a convention now (d5c301d), so it needs a gate or it decays
-      # back into per-change churn. Cheap and first: no compilation involved.
-      # `crates/big_space` is excluded on purpose — it is a vendored fork kept
-      # diff-comparable with upstream, so it is listed nowhere here.
-      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator -p viberfox_android --check
       # `--all-targets` now that the vendored big_space fork's test target
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.
@@ -134,6 +129,21 @@ jobs:
           export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
           cargo check -p viberfox_android --target aarch64-linux-android
+
+      # Formatting is a convention (d5c301d) and needs a gate or it decays back
+      # into per-change churn. `crates/big_space` is excluded on purpose — it is a
+      # vendored fork kept diff-comparable with upstream.
+      #
+      # **Last, not first.** It used to be step one, on the reasoning that it is
+      # cheap and needs no compilation. The cost of that ordering was two months of
+      # Android releases: a step failing ends the job, so an unformatted merge
+      # meant the `cargo check`, wasm and Android lanes below never ran at all —
+      # and the Android lane was the only thing in this file that compiles the APK
+      # configuration (`--no-default-features`, hence no `solo`). It had a real
+      # compile error sitting behind the formatting one, `deploy-android.yml` fell
+      # over on it every single push, and the fast red X read as "someone forgot
+      # rustfmt". Whatever gates last cannot hide anything.
+      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator -p viberfox_android --check
 
   build-test:
     name: build & test viberfox
