@@ -1,0 +1,213 @@
+name: Deploy Android
+
+# Build the arm64 APK and publish it to https://viberfox.garage44.eu/apk/, so a
+# phone can install it by tapping a link.
+#
+# Separate from ci.yml for the reason deploy-web.yml is: this is a *link*, thin
+# LTO over the whole Bevy stack, tens of minutes cold against a runner with
+# capacity 2. ci.yml's android lane stays a `cargo check` and remains the gate on
+# every push; this runs only when `main` moves, plus on demand.
+#
+# There is exactly one APK on disk at a time. The filename is fixed, so each run
+# overwrites the last and nothing accumulates — an APK is 25-45 MB and a history
+# of them is 45 MB per push of something nobody would install twice.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  deploy-android:
+    name: build apk & publish
+    runs-on: ubuntu-latest
+    container:
+      image: viberfox-ci:latest
+      # Two mounts, both listed in the runner's `valid_volumes`:
+      #   /publish — the same web root deploy-web.yml writes, so serving the APK
+      #              needs no Caddy site, no DNS record and no second file_server.
+      #              That job's `rsync --delete` excludes `/apk/`; without the
+      #              exclude the next web deploy would silently delete this.
+      #   /signing — the app signing key, deliberately *outside* the web root.
+      #              Android keys an installed app to its certificate, so a key
+      #              that changed per build would mean uninstalling the app before
+      #              every install. Read-only: this job needs to sign, not rotate.
+      options: --volume /data/viberfox/site:/publish --volume /data/viberfox/android-key:/signing:ro
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required, not an optimisation: the font, app icon, star catalog and
+          # map fixtures are `include_bytes!`-ed, so without the smudge filter
+          # this job packages 130-byte LFS pointers into the APK and only finds
+          # out on the phone. See `.gitattributes`.
+          lfs: true
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          # Distinct from every other lane: different target triple and a
+          # release-shaped profile. Sharing a key with the debug native lanes
+          # would thrash both.
+          key: android-release
+
+      # Same cache key as ci.yml's check lane, so on `main` this is a restore
+      # rather than a second 660 MB download. The fetch step below is the
+      # cold-cache path, not the normal one.
+      - name: Cache the Android NDK
+        id: ndk-cache
+        uses: https://github.com/actions/cache@v4
+        with:
+          path: /opt/android-ndk
+          key: android-ndk-r27c
+      - name: Fetch the Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q /tmp/ndk.zip -d /tmp/ndk
+          mv /tmp/ndk/android-ndk-r27c /opt/android-ndk
+          rm -rf /tmp/ndk.zip /tmp/ndk
+
+      # Deliberately *not* cached: 124 MB from Google takes seconds, while a cache
+      # entry is 124 MB living on the runner host forever, and that host's disk is
+      # the thing this whole workflow is trying not to fill.
+      #
+      # Direct zips rather than `sdkmanager`, which would mean the 150 MB
+      # commandline-tools package and a licence dance to obtain the same three
+      # binaries. The zips' internal directory names are codename-based
+      # (`android-14` is build-tools 34.0.0) and unrelated to the API level, hence
+      # the renames — build-apk.sh discovers both by globbing this layout.
+      - name: Fetch the Android SDK bits (aapt2, zipalign, apksigner, android.jar)
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/android-sdk/build-tools /opt/android-sdk/platforms
+          curl -fsSL -o /tmp/bt.zip https://dl.google.com/android/repository/build-tools_r34-linux.zip
+          curl -fsSL -o /tmp/pl.zip https://dl.google.com/android/repository/platform-34-ext8_r01.zip
+          unzip -q /tmp/bt.zip -d /tmp/bt && mv /tmp/bt/* /opt/android-sdk/build-tools/34.0.0
+          unzip -q /tmp/pl.zip -d /tmp/pl && mv /tmp/pl/android-34 /opt/android-sdk/platforms/
+          rm -rf /tmp/bt.zip /tmp/pl.zip /tmp/bt /tmp/pl
+          test -x /opt/android-sdk/build-tools/34.0.0/aapt2
+          test -f /opt/android-sdk/platforms/android-34/android.jar
+
+      # `apksigner` is a shell script that runs `java`, and `zip` is how the .so
+      # gets its `lib/<abi>/` entry. Neither is in viberfox-ci:latest, which has no
+      # other reason to carry a JVM. A JRE is enough — nothing here compiles Java
+      # (that is what `hasCode="false"` buys) and the key comes from the mount, so
+      # `keytool` is never called. Baking these into the image is the better end
+      # state, same as for the NDK; the image lives in another repo.
+      - name: Install the packaging tools (JRE + zip)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends openjdk-17-jre-headless zip >/dev/null
+          java -version 2>&1 | head -1
+
+      # Needed here and not in the check lane because this one *links*: cargo-ndk
+      # is what points the linker at the NDK sysroot. `--locked` so a fresh
+      # dependency release cannot change what this job installs.
+      - name: cargo-ndk
+        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+
+      - name: Build the APK (arm64-v8a, android-release)
+        env:
+          ANDROID_NDK_HOME: /opt/android-ndk
+          ANDROID_SDK_HOME: /opt/android-sdk
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_KEY: /signing/viberfox.pk8
+          ANDROID_CERT: /signing/viberfox.x509.pem
+        run: |
+          rustup target add aarch64-linux-android
+          crates/viberfox_android/build-apk.sh
+
+      # `apksigner verify` runs inside the script. These are the three that catch
+      # a *packaging* regression, and all three are cheap:
+      #
+      #   * `android_main` is looked up by name from C and referenced by nothing in
+      #     Rust, so a linker or strip change that drops it still builds, still
+      #     signs, and produces an app that installs and never starts.
+      #   * a `classes.dex` appearing means `hasCode="false"` stopped being true,
+      #     i.e. something dragged in a Java half and the no-Gradle story broke.
+      #   * `libc++_shared.so` would have to be shipped if a dependency ever pulls
+      #     in C++; today nothing does, and a missing one is a load-time failure on
+      #     the phone rather than a build failure here.
+      - name: Verify the archive
+        run: |
+          set -euo pipefail
+          apk="${CARGO_TARGET_DIR:-target}/android/viberfox-arm64-v8a.apk"
+          unzip -p "$apk" lib/arm64-v8a/libviberfox_android.so > /tmp/lib.so
+          ndk_bin=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin
+          if ! "$ndk_bin/llvm-nm" --dynamic --defined-only /tmp/lib.so | grep -qw android_main; then
+            echo "::error::android_main is not an exported symbol — the APK would install and fail to start."
+            exit 1
+          fi
+          if unzip -l "$apk" | grep -q classes.dex; then
+            echo "::error::the APK contains a classes.dex, so android:hasCode=\"false\" is now a lie."
+            exit 1
+          fi
+          if "$ndk_bin/llvm-readelf" -d /tmp/lib.so | grep -q 'libc++_shared'; then
+            echo "::error::the .so needs libc++_shared.so, which the APK does not ship — it will fail to load."
+            exit 1
+          fi
+          echo "android_main exported, no classes.dex, no C++ runtime needed"
+
+      # Fixed filenames, written through a temp file and renamed: the rename is
+      # atomic within the filesystem, so a phone that starts a download mid-deploy
+      # gets the old APK whole rather than half of the new one. Nothing here is
+      # dated or hashed into a name, which is what keeps the directory at exactly
+      # one APK forever.
+      - name: Publish
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          src="${CARGO_TARGET_DIR:-target}/android/viberfox-arm64-v8a.apk"
+          size=$(du -h "$src" | cut -f1)
+          sha=$(sha256sum "$src" | cut -d' ' -f1)
+          short=${COMMIT:0:8}
+          built=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+          mkdir -p /publish/apk
+          cp "$src" /publish/apk/.viberfox.apk.tmp
+          mv -f /publish/apk/.viberfox.apk.tmp /publish/apk/viberfox.apk
+          echo "$sha  viberfox.apk" > /publish/apk/viberfox.apk.sha256
+
+          # A landing page, because the install path on a phone is "open a link",
+          # and a bare .apk URL gives no way to tell which build is being
+          # installed. Plain HTML on purpose: this directory is inside the wasm
+          # client's web root and must not grow a build step of its own.
+          cat > /publish/apk/index.html <<HTML
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Viberfox for Android</title>
+          <style>
+            body { background:#0C2A33; color:#F2EFEA; font:16px/1.6 system-ui, sans-serif;
+                   margin:0; padding:2rem 1.25rem; }
+            main { max-width:32rem; margin:0 auto; }
+            h1 { color:#FD9212; font-size:1.5rem; margin:0 0 1rem; }
+            a.dl { display:block; background:#FD6012; color:#0C2A33; font-weight:700;
+                   text-align:center; text-decoration:none; padding:0.9rem; border-radius:0.5rem;
+                   margin:1.5rem 0; }
+            dl { display:grid; grid-template-columns:auto 1fr; gap:0.25rem 1rem; font-size:0.9rem; }
+            dt { color:#FD9212; } dd { margin:0; }
+            p { font-size:0.9rem; opacity:0.8; }
+          </style>
+          <main>
+            <h1>Viberfox for Android</h1>
+            <a class="dl" href="viberfox.apk">Download the APK ($size)</a>
+            <dl>
+              <dt>commit</dt><dd>$short</dd>
+              <dt>built</dt><dd>$built</dd>
+              <dt>abi</dt><dd>arm64-v8a, Android 9+</dd>
+              <dt>sha256</dt><dd style="word-break:break-all">$sha</dd>
+            </dl>
+            <p>Android will ask you to allow installing from this browser — it is
+            signed with the project's own key, not Play's. Later builds install
+            over this one; only one build is kept here at a time.</p>
+          </main>
+          HTML
+
+          echo "published $size to https://viberfox.garage44.eu/apk/ (commit $short)"
+          ls -la /publish/apk

@@ -5,9 +5,11 @@
 #   crates/viberfox_android/build-apk.sh              # arm64, android-release
 #   ABI=x86_64 PROFILE=dev ./build-apk.sh             # emulator, faster build
 #
-# The output is a signed debug APK at target/android/viberfox-<abi>.apk, ready for
-# `adb install -r`. Signed with a *debug* key generated on first run — enough for
-# a device to accept it, not for distribution. See docs/notes/android-build.md.
+# The output is a signed APK at target/android/viberfox-<abi>.apk, ready for
+# `adb install -r`. By default it is signed with a debug key generated here on
+# first run — enough for a device to accept it, not for distribution. The
+# `deploy-android` job hands it the published key instead (see the Optional block
+# below and docs/notes/android-build.md).
 #
 # Required in the environment (or discovered under $ANDROID_HOME):
 #   ANDROID_NDK_HOME   NDK r27+                        (compiler, linker, sysroot)
@@ -15,6 +17,11 @@
 #   JAVA_HOME          a JDK 17+                       (apksigner and keytool are
 #                                                       Java programs; nothing here
 #                                                       compiles Java)
+#
+# Optional:
+#   ANDROID_KEY        PKCS#8 DER private key          )  sign with *this* identity
+#   ANDROID_CERT       matching X.509 PEM certificate  )  instead of the debug key
+#   STRIP=0            keep the .so's symbol table (it is ~100 MB of the APK)
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -112,6 +119,22 @@ echo "==> aapt2 (resources + manifest + assets)"
 echo "==> native lib"
 mkdir -p "$work/lib/$ABI"
 cp "$so" "$work/lib/$ABI/"
+# Strip the *copy*, never cargo's artifact — a stripped .so in the target dir would
+# make the next incremental build's freshness check lie. `--strip-unneeded` drops
+# the symbol table and the debug sections and keeps `.dynsym`, which is the only
+# one that matters here: `android_main` is looked up by name from C and nothing in
+# Rust references it, so this is the step that would silently produce an APK that
+# installs and does not start. The deploy job re-asserts the symbol afterwards.
+if [ "${STRIP:-1}" != 0 ]; then
+    llvm_strip="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+    if [ -x "$llvm_strip" ]; then
+        before=$(du -h "$work/lib/$ABI/libviberfox_android.so" | cut -f1)
+        "$llvm_strip" --strip-unneeded "$work/lib/$ABI/libviberfox_android.so"
+        echo "    stripped $before -> $(du -h "$work/lib/$ABI/libviberfox_android.so" | cut -f1)"
+    else
+        echo "    warning: no llvm-strip at $llvm_strip; shipping the .so unstripped" >&2
+    fi
+fi
 # `zip` from inside $work so the entry path is exactly `lib/<abi>/lib*.so`, which
 # is where the framework looks. Compressed (rather than stored + page-aligned)
 # because the manifest sets extractNativeLibs="true" — the installer unpacks the
@@ -120,18 +143,33 @@ cp "$so" "$work/lib/$ABI/"
 (cd "$work" && zip -q -r unaligned.apk "lib/$ABI")
 
 echo "==> sign"
-ks="$out/debug.keystore"
-if [ ! -f "$ks" ]; then
-    echo "    generating a debug keystore (first run)"
-    "$KEYTOOL" -genkeypair -v -keystore "$ks" -storepass android -keypass android \
-        -alias viberfox-debug -keyalg RSA -keysize 2048 -validity 10950 \
-        -dname "CN=Viberfox Debug, O=garage44, C=NL" >/dev/null
+# Which identity signs this matters more than "signed at all" suggests: Android
+# keys an installed app to its signing certificate and refuses an update from a
+# different one (INSTALL_FAILED_UPDATE_INCOMPATIBLE — the user has to uninstall
+# first, losing the tile cache). So a build that is handed a key uses it, and only
+# a build with no key falls back to a keystore generated here, which is per
+# machine and therefore incompatible with everyone else's.
+if [ -n "${ANDROID_KEY:-}" ]; then
+    [ -n "${ANDROID_CERT:-}" ] || { echo "error: \$ANDROID_KEY set without \$ANDROID_CERT" >&2; exit 2; }
+    # --key/--cert rather than --ks: openssl can produce this pair and keytool
+    # cannot be asked for one, which keeps the key's home (the deploy host) free
+    # of a JDK it has no other use for.
+    sign_args=(--key "$ANDROID_KEY" --cert "$ANDROID_CERT")
+else
+    ks="$out/debug.keystore"
+    if [ ! -f "$ks" ]; then
+        echo "    generating a debug keystore (first run)"
+        "$KEYTOOL" -genkeypair -v -keystore "$ks" -storepass android -keypass android \
+            -alias viberfox-debug -keyalg RSA -keysize 2048 -validity 10950 \
+            -dname "CN=Viberfox Debug, O=garage44, C=NL" >/dev/null
+    fi
+    sign_args=(--ks "$ks" --ks-pass pass:android --key-pass pass:android
+               --ks-key-alias viberfox-debug)
 fi
 "$ZIPALIGN" -f -p 4 "$work/unaligned.apk" "$work/aligned.apk"
 # v2 signing (and up) covers the whole archive, so it must come *after* zipalign —
 # align an already-signed APK and the signature no longer matches the bytes.
-"$APKSIGNER" sign --ks "$ks" --ks-pass pass:android --key-pass pass:android \
-    --ks-key-alias viberfox-debug \
+"$APKSIGNER" sign "${sign_args[@]}" \
     --min-sdk-version "$MIN_SDK" \
     --out "$out/viberfox-$ABI.apk" "$work/aligned.apk"
 "$APKSIGNER" verify --min-sdk-version "$MIN_SDK" -v "$out/viberfox-$ABI.apk"
