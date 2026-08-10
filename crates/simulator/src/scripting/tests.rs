@@ -34,7 +34,7 @@ fn outputs(cmds: &[ScriptCommand]) -> Vec<(ScriptLevel, String)> {
 
 #[test]
 fn compiles_and_runs_a_handler() {
-    let mut slot = Slot::compile(1, "function on_start() vf.log('hi') end").expect("compile");
+    let mut slot = Slot::compile(1, "function on_start() vfLog('hi') end").expect("compile");
     slot.queue(ScriptEvent::Start);
     let out = run_to_quiet(&mut slot, 10);
     assert_eq!(
@@ -59,7 +59,7 @@ fn syntax_error_is_reported_not_panicked() {
 fn touch_handler_receives_the_toucher() {
     let mut slot = Slot::compile(
         1,
-        "function on_touch(id, name) vf.say(name .. '/' .. id) end",
+        "function on_touch(id, name) vfSay(name .. '/' .. id) end",
     )
     .expect("compile");
     slot.queue(ScriptEvent::Touch {
@@ -130,8 +130,7 @@ fn memory_ceiling_faults_the_script_only() {
         "expected a memory error, got {errs:?}"
     );
 
-    let mut neighbour =
-        Slot::compile(2, "function on_start() vf.log('fine') end").expect("compile");
+    let mut neighbour = Slot::compile(2, "function on_start() vfLog('fine') end").expect("compile");
     neighbour.queue(ScriptEvent::Start);
     let out = run_to_quiet(&mut neighbour, 10);
     assert_eq!(outputs(&out), vec![(ScriptLevel::Info, "fine".to_string())]);
@@ -143,7 +142,7 @@ fn sandbox_denies_escape_routes() {
     // Neither Luau nor this host provides these; the point is that they are
     // *absent*, so a script referencing one gets nil rather than a capability.
     for expr in ["io", "require", "loadstring", "dofile", "package"] {
-        let src = format!("function on_start() if {expr} ~= nil then vf.log('LEAK') end end");
+        let src = format!("function on_start() if {expr} ~= nil then vfLog('LEAK') end end");
         let mut slot = Slot::compile(1, &src).expect("compile");
         slot.queue(ScriptEvent::Start);
         let out = run_to_quiet(&mut slot, 10);
@@ -163,11 +162,38 @@ fn sandbox_denies_escape_routes() {
         "writing to a sandboxed stdlib table should fault the script"
     );
 
-    // `vf` itself is read-only, so one handler cannot rewrite the API another uses.
-    let mut slot = Slot::compile(1, "function on_start() vf.set_pos = nil end").expect("compile");
+    // A script *can* shadow a vf function, and that is not a hole. The functions
+    // live in the script's own environment — they have to, because the same table
+    // is where `function on_start()` lands, and a read-only one could not hold a
+    // handler. Since every script is its own Luau state, the blast radius of
+    // `vfSay = nil` is the script that wrote it. What it must not do is take the
+    // host with it.
+    let mut slot = Slot::compile(
+        1,
+        "vfSetPos = nil function on_start() vfLog('still here') end",
+    )
+    .expect("compile");
     slot.queue(ScriptEvent::Start);
-    run_to_quiet(&mut slot, 10);
-    assert!(slot.faulted, "the vf table should be read-only");
+    let out = run_to_quiet(&mut slot, 10);
+    assert!(
+        !slot.faulted,
+        "shadowing a vf name should not fault the host"
+    );
+    assert_eq!(
+        outputs(&out),
+        vec![(ScriptLevel::Info, "still here".to_string())]
+    );
+
+    // And the neighbour is untouched, because it is a different VM entirely.
+    let mut neighbour =
+        Slot::compile(2, "function on_start() vfSetPos(1, 2, 3) end").expect("compile");
+    neighbour.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut neighbour, 10);
+    assert!(
+        out.iter()
+            .any(|c| matches!(c, ScriptCommand::SetPos { .. })),
+        "another script's vfSetPos should still work"
+    );
 }
 
 /// A runtime error stops that script and explains itself, rather than unwinding
@@ -193,7 +219,7 @@ fn runtime_error_faults_with_a_message() {
 #[test]
 fn non_finite_positions_are_refused() {
     let mut slot =
-        Slot::compile(1, "function on_start() vf.set_pos(0/0, 0, 0) end").expect("compile");
+        Slot::compile(1, "function on_start() vfSetPos(0/0, 0, 0) end").expect("compile");
     slot.queue(ScriptEvent::Start);
     run_to_quiet(&mut slot, 10);
     assert!(slot.faulted, "a NaN position should be a script error");
@@ -207,7 +233,7 @@ fn non_finite_positions_are_refused() {
 
 #[test]
 fn output_budget_caps_a_logging_loop() {
-    let src = "function on_start() for i = 1, 10000 do vf.log('spam') end end";
+    let src = "function on_start() for i = 1, 10000 do vfLog('spam') end end";
     let mut slot = Slot::compile(1, src).expect("compile");
     slot.queue(ScriptEvent::Start);
     slot.run_slice(SCRIPT_FUEL_SLICE);
@@ -223,7 +249,8 @@ fn output_budget_caps_a_logging_loop() {
 #[test]
 fn timer_interval_is_clamped_to_the_tick() {
     let mut slots = HashMap::new();
-    let mut slot = Slot::compile(1, "function on_start() vf.timer(0.001) end").expect("compile");
+    let mut slot =
+        Slot::compile(1, "function on_start() vfSetTimerEvent(0.001) end").expect("compile");
     slot.queue(ScriptEvent::Start);
     slots.insert(1i64, slot);
     let (tx, _rx) = mpsc::channel();
@@ -244,7 +271,7 @@ fn one_busy_script_does_not_starve_another() {
     let mut hog = Slot::compile(1, "function on_start() while true do end end").expect("compile");
     hog.queue(ScriptEvent::Start);
     slots.insert(1i64, hog);
-    let mut quiet = Slot::compile(2, "function on_start() vf.log('ran') end").expect("compile");
+    let mut quiet = Slot::compile(2, "function on_start() vfLog('ran') end").expect("compile");
     quiet.queue(ScriptEvent::Start);
     slots.insert(2i64, quiet);
 
@@ -271,8 +298,7 @@ fn reload_replaces_the_instance() {
     let host = ScriptHost::spawn();
     host.load(
         1,
-        "counter = 0 function on_touch() counter = counter + 1 vf.log(tostring(counter)) end"
-            .into(),
+        "counter = 0 function on_touch() counter = counter + 1 vfLog(tostring(counter)) end".into(),
     );
     host.event(
         1,
@@ -285,8 +311,7 @@ fn reload_replaces_the_instance() {
     // Reload, then touch once more: the counter must start over at 1.
     host.load(
         1,
-        "counter = 0 function on_touch() counter = counter + 1 vf.log(tostring(counter)) end"
-            .into(),
+        "counter = 0 function on_touch() counter = counter + 1 vfLog(tostring(counter)) end".into(),
     );
     host.event(
         1,
@@ -307,5 +332,182 @@ fn reload_replaces_the_instance() {
     assert!(
         logs.iter().all(|l| l == "1"),
         "the reloaded script kept state from the old instance: {logs:?}"
+    );
+}
+
+/// The editor's reference and the installed API must be the same set.
+///
+/// `viberfox_core::SCRIPT_API` is what an author reads in the panel; this is what
+/// they can actually call. A name in one and not the other is either a function
+/// nobody can find or a documented call that errors when used — and both are the
+/// kind of thing that survives review because each half looks right on its own.
+#[test]
+fn the_catalogue_matches_the_installed_api() {
+    use std::collections::BTreeSet;
+
+    let slot = Slot::compile(1, "").expect("compile");
+    let installed: BTreeSet<String> = slot
+        .env
+        .pairs::<String, mlua::Value>()
+        .filter_map(Result::ok)
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with("vf"))
+        .collect();
+    let catalogued: BTreeSet<String> = viberfox_core::SCRIPT_API
+        .iter()
+        .map(|f| f.name.to_string())
+        .collect();
+
+    let undocumented: Vec<_> = installed.difference(&catalogued).collect();
+    let missing: Vec<_> = catalogued.difference(&installed).collect();
+    assert!(
+        undocumented.is_empty(),
+        "installed but not in SCRIPT_API (the editor will not show these): {undocumented:?}"
+    );
+    assert!(
+        missing.is_empty(),
+        "in SCRIPT_API but not installed (the reference is lying): {missing:?}"
+    );
+}
+
+/// Authors write the degrees the edit dialog shows them; the wire is radians.
+#[test]
+fn rotation_is_degrees_in_and_radians_out() {
+    let mut slot =
+        Slot::compile(1, "function on_start() vfSetRot(0, 180, 0) end").expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut slot, 10);
+    let rot = out
+        .iter()
+        .find_map(|c| match c {
+            ScriptCommand::SetRot { rot, .. } => Some(*rot),
+            _ => None,
+        })
+        .expect("a rotation command");
+    assert!(
+        (rot.y - std::f32::consts::PI).abs() < 1e-5,
+        "180 degrees should reach the wire as pi radians, got {rot:?}"
+    );
+
+    // And it round-trips: what a script reads back is degrees again.
+    let mut slot = Slot::compile(
+        1,
+        "function on_start() local _, y, _ = vfGetRot() vfLog(string.format('%.1f', y)) end",
+    )
+    .expect("compile");
+    slot.shared.view.borrow_mut().rot = glam::Vec3::new(0.0, std::f32::consts::PI, 0.0);
+    slot.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut slot, 10);
+    assert_eq!(
+        outputs(&out),
+        vec![(ScriptLevel::Info, "180.0".to_string())]
+    );
+}
+
+/// Each speaking verb carries its own radius, so the tick loop can deliver by
+/// distance without knowing which one was called.
+#[test]
+fn each_chat_verb_has_its_own_radius() {
+    let mut slot = Slot::compile(
+        1,
+        "function on_start() vfWhisper('a') vfSay('b') vfShout('c') end",
+    )
+    .expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut slot, 10);
+    let radii: Vec<f32> = out
+        .iter()
+        .filter_map(|c| match c {
+            ScriptCommand::Say { radius, .. } => Some(*radius),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(radii.len(), 3);
+    assert!(
+        radii[0] < radii[1] && radii[1] < radii[2],
+        "whisper < say < shout, got {radii:?}"
+    );
+    assert_eq!(radii[1], crate::chat::SAY_RADIUS_M);
+    assert_eq!(radii[2], crate::chat::SHOUT_RADIUS_M);
+}
+
+/// `vfSleep` suspends the handler and lets the rest of the tick happen, then
+/// finishes on its own — the same descheduling a script that overruns gets, but
+/// asked for.
+#[test]
+fn sleep_suspends_the_handler_and_resumes_it() {
+    let mut slot = Slot::compile(
+        1,
+        "function on_start() vfLog('before') vfSleep(0.2) vfLog('after') end",
+    )
+    .expect("compile");
+    slot.queue(ScriptEvent::Start);
+
+    slot.run_slice(SCRIPT_FUEL_SLICE);
+    let first = outputs(&slot.shared.out.borrow());
+    assert_eq!(
+        first,
+        vec![(ScriptLevel::Info, "before".to_string())],
+        "the handler should have run up to the sleep and stopped there"
+    );
+    assert!(
+        slot.running.is_some(),
+        "it should be suspended, not finished"
+    );
+
+    // Nothing more happens until enough simulated time has passed.
+    for _ in 0..3 {
+        slot.shared.time.set(slot.shared.time.get() + 0.05);
+        slot.run_slice(SCRIPT_FUEL_SLICE);
+    }
+    assert!(
+        outputs(&slot.shared.out.borrow())
+            .iter()
+            .all(|(_, t)| t != "after"),
+        "it woke early"
+    );
+
+    slot.shared.time.set(slot.shared.time.get() + 0.05);
+    slot.run_slice(SCRIPT_FUEL_SLICE);
+    let all = outputs(&slot.shared.out.borrow());
+    assert!(
+        all.iter().any(|(_, t)| t == "after"),
+        "the handler should have finished once the clock passed 0.2s: {all:?}"
+    );
+    assert!(slot.running.is_none(), "and then be done");
+}
+
+/// The clock `vfGetTime` reads is simulated time, advanced for every script by
+/// the scheduler — including ones that got no slice.
+#[test]
+fn the_script_clock_advances_with_the_tick() {
+    let (tx, _rx) = mpsc::channel();
+    let mut slots = HashMap::new();
+    slots.insert(
+        1i64,
+        Slot::compile(1, "function on_timer() end").expect("compile"),
+    );
+    let mut cursor = 0;
+    for _ in 0..4 {
+        step(&mut slots, &mut cursor, 0.05, &tx);
+    }
+    let t = slots[&1].shared.time.get();
+    assert!((t - 0.2).abs() < 1e-5, "expected 0.2s of sim time, got {t}");
+}
+
+/// A script can end its own prim, and that is a world mutation like any other —
+/// it leaves the host as a command for the tick loop, not as a direct delete.
+#[test]
+fn die_is_a_command_not_a_side_effect() {
+    let mut slot = Slot::compile(1, "function on_touch() vfDie() end").expect("compile");
+    slot.queue(ScriptEvent::Touch {
+        avatar_id: 1,
+        avatar_name: "ada".into(),
+    });
+    let out = run_to_quiet(&mut slot, 10);
+    assert!(
+        out.iter()
+            .any(|c| matches!(c, ScriptCommand::Die { prim_id } if *prim_id == 1)),
+        "expected a Die for prim 1, got {out:?}"
     );
 }

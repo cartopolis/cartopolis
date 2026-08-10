@@ -683,12 +683,52 @@ pub async fn tick_loop(
         // carries it, so a client never sees half a script's frame of work.
         let commands = scripts.drain();
         let mut script_frames: Vec<Vec<u8>> = Vec::new();
+        let mut died: Vec<i64> = Vec::new();
+        let mut died_regions: Vec<i64> = Vec::new();
+        let mut changed: Vec<i64> = Vec::new();
         for cmd in &commands {
-            if let Some(prim) = w.apply_script_command(cmd) {
-                match encode_app_frame(&NetMessage::PrimUpsert { prim }) {
-                    Ok(bytes) => script_frames.push(bytes),
-                    Err(e) => tracing::error!("script prim upsert encode: {e}"),
+            // `vfDie` is handled before the field writes, and its prim is skipped
+            // by everything after: a script's last act is often a move *and* a
+            // death in the same tick, and broadcasting an update for a prim that
+            // is about to be removed leaves the client holding a resurrected copy.
+            if let crate::scripting::ScriptCommand::Die { prim_id } = cmd {
+                let region_id = w.prim_region(*prim_id);
+                match w.remove_prim(*prim_id) {
+                    Ok(true) => {
+                        died.push(*prim_id);
+                        died_regions.extend(region_id);
+                        scripts.unload(*prim_id);
+                        match encode_app_frame(&NetMessage::PrimRemoved { id: *prim_id }) {
+                            Ok(bytes) => script_frames.push(bytes),
+                            Err(e) => tracing::error!("script prim removed encode: {e}"),
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(prim_id, "vfDie failed: {e:#}"),
                 }
+                continue;
+            }
+            if died.contains(&cmd.prim_id()) {
+                continue;
+            }
+            if w.apply_script_command(cmd).is_some() {
+                changed.push(cmd.prim_id());
+            }
+        }
+        // One update per prim per tick, not one per field written. A handler that
+        // sets a name, a colour and a rotation is describing *one* state, and
+        // sending three full `PrimDto`s makes observers render two intermediates
+        // that never existed as a resting state — as well as tripling the traffic
+        // for a script that touches several fields, which is the normal case.
+        changed.sort_unstable();
+        changed.dedup();
+        for prim_id in changed {
+            let Some(prim) = w.prim(prim_id).cloned() else {
+                continue;
+            };
+            match encode_app_frame(&NetMessage::PrimUpsert { prim }) {
+                Ok(bytes) => script_frames.push(bytes),
+                Err(e) => tracing::error!("script prim upsert encode: {e}"),
             }
         }
         if tick % SCRIPT_FLUSH_TICKS == 0 {
@@ -698,12 +738,16 @@ pub async fn tick_loop(
         let views = w.script_views();
         // Chat and console output need the world only for lookups; take what they
         // need here and release the write lock before any encoding or delivery.
-        let speech: Vec<(String, Vec3, String)> = commands
+        let speech: Vec<(String, Vec3, String, f32)> = commands
             .iter()
             .filter_map(|cmd| match cmd {
-                crate::scripting::ScriptCommand::Say { prim_id, text } => w
+                crate::scripting::ScriptCommand::Say {
+                    prim_id,
+                    text,
+                    radius,
+                } => w
                     .prim(*prim_id)
-                    .map(|p| (p.name.clone(), p.position, text.clone())),
+                    .map(|p| (p.name.clone(), p.position, text.clone(), *radius)),
                 _ => None,
             })
             .collect();
@@ -720,15 +764,22 @@ pub async fn tick_loop(
         for bytes in script_frames {
             let _ = tx.send(bytes);
         }
+        // A prim that deleted itself gives its budget back, and every client's
+        // headroom display is stale until it is told.
+        died_regions.sort_unstable();
+        died_regions.dedup();
+        for region_id in died_regions {
+            broadcast_capacity(&world, &tx, region_id).await;
+        }
         // A prim's speech is local chat like anyone else's: same channel, same
         // radius, same "no history" rule. `sender_id` is 0 — a prim has no avatar
         // id, and the client tags own-lines by that id, so a real one would make
         // whoever shares the number appear to be talking.
         let now_ms = now_millis();
-        for (name, pos, text) in speech {
+        for (name, pos, text, radius) in speech {
             for (id, listener) in &listeners {
                 let d = (*listener - pos).length();
-                if d > crate::chat::SAY_RADIUS_M {
+                if d > radius {
                     continue;
                 }
                 match encode_app_frame(&NetMessage::ChatMessage {

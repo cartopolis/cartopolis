@@ -165,6 +165,13 @@ jobs:
       # Cheap and first: no Bevy in this crate's graph, so it fails in seconds on a
       # geodata regression instead of after the client's full codegen.
       - run: cargo test -p viberfox_geo
+      # The wire and the server. Neither was run here until 2026-08-10, which is
+      # how `message_kind_wire_is_a_bijection` sat red after six message kinds were
+      # added — a green pipeline said nothing about either crate. `viberfox_core`
+      # is seconds; `viberfox_simulator` carries the scripting suite (sandbox
+      # escapes, the memory ceiling, the end-to-end wire tests) and needs no GPU.
+      - run: cargo test -p viberfox_core
+      - run: cargo test -p viberfox_simulator
       - run: cargo test -p viberfox
       # The vendored fork carries the floating-origin correctness tests; they are
       # the reason a `big_space` change can be trusted at all.

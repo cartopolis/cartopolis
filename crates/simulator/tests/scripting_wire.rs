@@ -4,7 +4,7 @@
 //! They test the VM in isolation — a `Slot` compiled and stepped in-process. This
 //! tests everything between it and a client: that a stored script is compiled and
 //! answers, that its console output reaches the wire, that a touch from a
-//! connection becomes an `on_touch`, and that a `vf.set_pos` becomes an authoritative
+//! connection becomes an `on_touch`, and that a `vfSetPos` becomes an authoritative
 //! prim update every observer sees. Each of those is a seam the unit tests cannot
 //! see past, and three of them (the host thread, the tick barrier, the broadcast)
 //! were wired by hand.
@@ -63,13 +63,20 @@ async fn connect_auth(addr: &str) -> Client {
 }
 
 /// Read frames until one matches, discarding the snapshot traffic in between.
+///
+/// The deadline covers the **whole wait**, not each `next()`. A per-frame timeout
+/// cannot fire here: the server sends a snapshot twenty times a second, so a
+/// condition that will never be met still sees traffic forever and the test hangs
+/// rather than failing. It did exactly that, for twenty minutes, before this was a
+/// deadline.
 async fn recv_until<T>(
     c: &mut Client,
     what: &str,
     mut f: impl FnMut(NetMessage) -> Option<T>,
 ) -> T {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(5), c.next())
+        let frame = tokio::time::timeout_at(deadline, c.next())
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
             .unwrap()
@@ -160,7 +167,7 @@ async fn store_compile_touch_and_hear_back() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_touch(id, name) vf.log('touched by ' .. name) end".into(),
+            source: "function on_touch(id, name) vfLog('touched by ' .. name) end".into(),
         },
     )
     .await;
@@ -185,7 +192,7 @@ async fn store_compile_touch_and_hear_back() {
     )
     .await;
     let (level, text) = recv_output(&mut c).await;
-    assert_eq!(level, ScriptLevel::Info);
+    assert_eq!(level, ScriptLevel::Info, "{text}");
     assert_eq!(text, "touched by dev");
 
     // And the editor can read back what it stored.
@@ -208,7 +215,7 @@ async fn store_compile_touch_and_hear_back() {
     assert!(running, "a stored script should read back as running");
 }
 
-/// A script's `vf.set_pos` has to become authoritative world state, not just a
+/// A script's `vfSetPos` has to become authoritative world state, not just a
 /// number inside the VM: it is applied at the tick barrier and broadcast like any
 /// other prim update.
 #[tokio::test]
@@ -227,7 +234,7 @@ async fn script_moves_the_prim_for_everyone() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() vf.set_pos(42.0, 7.0, -3.0) end".into(),
+            source: "function on_start() vfSetPos(42.0, 7.0, -3.0) end".into(),
         },
     )
     .await;
@@ -282,7 +289,7 @@ async fn an_empty_script_removes_it() {
         &NetMessage::SetPrimScript {
             request_id: 2,
             prim_id,
-            source: "function on_start() vf.log('up') end".into(),
+            source: "function on_start() vfLog('up') end".into(),
         },
     )
     .await;
@@ -314,4 +321,92 @@ async fn an_empty_script_removes_it() {
     .await;
     assert!(source.is_empty(), "the script should be gone: {source:?}");
     assert!(!running);
+}
+
+/// The appearance calls reach the wire as ordinary prim state, so a client that
+/// knows nothing about scripting renders the result.
+#[tokio::test]
+async fn appearance_calls_become_prim_state() {
+    let (handle, _dir) = start_sim().await;
+    let mut c = connect_auth(&handle.local_addr.to_string()).await;
+    let region_id = first_region(&mut c).await;
+    let prim_id = create_prim(&mut c, region_id).await;
+
+    send(
+        &mut c,
+        &NetMessage::SetPrimScript {
+            request_id: 2,
+            prim_id,
+            source: "function on_start() \
+                     vfSetName('lantern') \
+                     vfSetAlpha(0.5) \
+                     vfSetGlow(0.75) \
+                     vfSetFullBright(true) \
+                     vfSetRot(0, 90, 0) \
+                     end"
+            .into(),
+        },
+    )
+    .await;
+
+    // One update carries the whole state: the tick loop coalesces a handler's
+    // writes into a single upsert per prim, so there is no torn intermediate to
+    // match by accident. Asserting on the *first* upsert is what proves that — if
+    // each write got its own frame, this one would still have the default alpha.
+    let prim = recv_until(&mut c, "styled prim", |m| match m {
+        NetMessage::PrimUpsert { prim } if prim.id == prim_id && prim.name == "lantern" => {
+            Some(prim)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(prim.surface.alpha, 0.5);
+    assert_eq!(prim.surface.glow, 0.75);
+    assert!(prim.surface.full_bright);
+    // Degrees at the script boundary, radians on the wire.
+    assert!(
+        (prim.rotation.y - std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+        "90 degrees should arrive as pi/2, got {:?}",
+        prim.rotation
+    );
+}
+
+/// `vfDie` removes the prim for everyone and gives its budget back.
+#[tokio::test]
+async fn a_script_can_end_its_own_prim() {
+    let (handle, _dir) = start_sim().await;
+    let addr = handle.local_addr.to_string();
+    let mut c = connect_auth(&addr).await;
+    let region_id = first_region(&mut c).await;
+    let prim_id = create_prim(&mut c, region_id).await;
+
+    send(
+        &mut c,
+        &NetMessage::SetPrimScript {
+            request_id: 2,
+            prim_id,
+            source: "function on_start() vfDie() end".into(),
+        },
+    )
+    .await;
+
+    let removed = recv_until(&mut c, "prim removed", |m| match m {
+        NetMessage::PrimRemoved { id } => Some(id),
+        _ => None,
+    })
+    .await;
+    assert_eq!(removed, prim_id);
+
+    // The capacity broadcast that follows reports the prim is gone. Reading it
+    // back proves the budget was released rather than leaked on a self-delete.
+    let used = recv_until(&mut c, "capacity after death", |m| match m {
+        NetMessage::RegionCapacity {
+            region_id: r,
+            prims_used,
+            ..
+        } if r == region_id => Some(prims_used),
+        _ => None,
+    })
+    .await;
+    assert_eq!(used, 0, "the prim's slot should have been given back");
 }

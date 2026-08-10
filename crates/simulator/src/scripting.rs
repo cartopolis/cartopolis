@@ -31,9 +31,9 @@
 //! Handlers are plain functions defined at the top level of the chunk:
 //!
 //! ```lua
-//! function on_start()  vf.log("hello")            end
-//! function on_touch(id, name)  vf.say(name .. " touched me")  end
-//! function on_timer()  local x, y, z = vf.get_pos()  vf.set_pos(x, y + 0.1, z)  end
+//! function on_start()  vfLog("hello")  vfSetTimerEvent(1.0)  end
+//! function on_touch(id, name)  vfSay(name .. " touched me")  end
+//! function on_timer()  local x, y, z = vfGetPos()  vfSetPos(x, y + 0.1, z)  end
 //! ```
 //!
 //! The chunk runs in its own environment table whose `__index` is the (read-only)
@@ -96,7 +96,7 @@ pub const MAX_SOURCE_BYTES: usize = 64 * 1024;
 /// that into host memory growth.
 const MAX_PENDING_EVENTS: usize = 32;
 
-/// Commands one script may emit per tick. Caps `vf.log` in a loop, which is the
+/// Commands one script may emit per tick. Caps `vfLog` in a loop, which is the
 /// most likely way an author floods the wire by accident.
 const MAX_COMMANDS_PER_TICK: usize = 64;
 
@@ -138,6 +138,14 @@ pub enum ScriptCommand {
         prim_id: i64,
         pos: Vec3,
     },
+    /// Euler rotation in **radians**, converted at the API boundary from the
+    /// degrees an author writes (`vfSetRot`) — the wire and the client's
+    /// `Quat::from_euler` are both radians, and only one of the two conventions
+    /// should ever be in flight past this point.
+    SetRot {
+        prim_id: i64,
+        rot: Vec3,
+    },
     SetColor {
         prim_id: i64,
         color: [f32; 3],
@@ -146,25 +154,77 @@ pub enum ScriptCommand {
         prim_id: i64,
         scale: Vec3,
     },
+    SetAlpha {
+        prim_id: i64,
+        alpha: f32,
+    },
+    SetGlow {
+        prim_id: i64,
+        glow: f32,
+    },
+    SetFullBright {
+        prim_id: i64,
+        on: bool,
+    },
+    SetName {
+        prim_id: i64,
+        name: String,
+    },
+    /// Local chat from the prim, heard within `radius` metres.
     Say {
         prim_id: i64,
         text: String,
+        radius: f32,
     },
     Output {
         prim_id: i64,
         level: ScriptLevel,
         text: String,
     },
+    /// Delete the prim and everything of it, `vfDie`.
+    Die {
+        prim_id: i64,
+    },
+}
+
+impl ScriptCommand {
+    /// The prim this command acts on. Every variant carries one — a script can
+    /// only ever address its own — so this is total rather than an `Option`.
+    #[must_use]
+    pub fn prim_id(&self) -> i64 {
+        match self {
+            Self::SetPos { prim_id, .. }
+            | Self::SetRot { prim_id, .. }
+            | Self::SetColor { prim_id, .. }
+            | Self::SetScale { prim_id, .. }
+            | Self::SetAlpha { prim_id, .. }
+            | Self::SetGlow { prim_id, .. }
+            | Self::SetFullBright { prim_id, .. }
+            | Self::SetName { prim_id, .. }
+            | Self::Say { prim_id, .. }
+            | Self::Output { prim_id, .. }
+            | Self::Die { prim_id } => *prim_id,
+        }
+    }
 }
 
 /// What a script may read about its own prim. Refreshed once per tick from the
 /// authoritative world, so a handler sees a consistent snapshot for its whole run
 /// rather than a value that shifts under it mid-slice.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// Not `Copy` since it grew a name, which is why it is behind a `RefCell` rather
+/// than a `Cell`.
+#[derive(Debug, Clone, Default)]
 pub struct PrimView {
     pub pos: Vec3,
+    /// Radians, as stored on the wire. `vfGetRot` converts on the way out.
+    pub rot: Vec3,
     pub color: [f32; 3],
     pub scale: Vec3,
+    pub alpha: f32,
+    pub glow: f32,
+    pub full_bright: bool,
+    pub name: String,
 }
 
 /// Tick-side → host-thread messages.
@@ -308,16 +368,21 @@ impl Drop for ScriptHost {
     }
 }
 
-/// Per-slot state shared with the `vf.*` host closures. Everything lives on the
+/// Per-slot state shared with the `vf*` host closures. Everything lives on the
 /// host thread, so `Rc`/`Cell` rather than `Arc`/`Mutex`.
 struct Shared {
     prim_id: i64,
     out: RefCell<Vec<ScriptCommand>>,
-    view: Cell<PrimView>,
-    /// Set by `vf.timer(seconds)`; `Some(0.0)` cancels.
+    view: RefCell<PrimView>,
+    /// Set by `vfSetTimerEvent(seconds)`; `Some(0.0)` cancels.
     timer_request: Cell<Option<f32>>,
     /// Commands dropped this tick because the script exceeded its output budget.
     dropped: Cell<u32>,
+    /// Simulated seconds since the script started, advanced by the scheduler and
+    /// zeroed by `vfResetTime`. Simulated rather than wall-clock so `vfGetTime`
+    /// and `vfSleep` agree with the tick that drives them — and so two hosts
+    /// running the same script see the same numbers, as they do for fuel.
+    time: Cell<f32>,
 }
 
 impl Shared {
@@ -403,9 +468,10 @@ impl Slot {
         let shared = Rc::new(Shared {
             prim_id,
             out: RefCell::new(Vec::new()),
-            view: Cell::new(PrimView::default()),
+            view: RefCell::new(PrimView::default()),
             timer_request: Cell::new(None),
             dropped: Cell::new(0),
+            time: Cell::new(0.0),
         });
 
         // The chunk's own global space: writes land here, reads fall through to
@@ -422,6 +488,13 @@ impl Slot {
         env.set_metatable(Some(meta))
             .map_err(|e| format!("could not create environment: {e}"))?;
         install_api(&lua, &env, &shared).map_err(|e| format!("could not install vf API: {e}"))?;
+        // The prelude is host code, so it runs before the ceiling below applies to
+        // the author's chunk.
+        lua.load(PRELUDE)
+            .set_name("=vfprelude")
+            .set_environment(env.clone())
+            .exec()
+            .map_err(|e| format!("could not install the prelude: {e}"))?;
 
         // The ceiling is measured from the *baseline*, and set last, so it means
         // "what this script's own code and data may cost". A fresh Luau state with
@@ -549,52 +622,58 @@ fn clean_error(e: &mlua::Error) -> String {
         None => s,
     }
 }
+/// Lua-side half of the API, loaded into every script's environment before the
+/// author's chunk.
+///
+/// `vfSleep` lives here rather than in Rust because a host function cannot yield
+/// the coroutine it is called from — but Lua code can, and the scheduler already
+/// resumes a yielded handler on the next tick. So sleeping is "yield until the
+/// clock says otherwise", which needs no new machinery in the scheduler at all:
+/// a sleeping script costs one resume and a compare per tick, and is descheduled
+/// by exactly the mechanism that deschedules a script which ran too long.
+const PRELUDE: &str = r#"
+function vfSleep(seconds)
+    local wake = vfGetTime() + seconds
+    while vfGetTime() < wake do
+        coroutine.yield()
+    end
+end
+"#;
 
-/// Install the `vf` table into a script's environment.
+/// Longest string a script may say or log in one call.
+const MAX_TEXT: usize = 500;
+
+/// Chat radii, matching `crate::chat`'s for say and shout. Whisper is Second
+/// Life's 10 m and has no avatar-side equivalent here yet — a prim is the only
+/// thing that whispers.
+const WHISPER_RADIUS_M: f32 = 10.0;
+
+/// Install the `vf*` functions into a script's environment.
 ///
 /// This is the entire authority a script has. Every entry acts on the script's
 /// own prim — `prim_id` is captured, never passed in — so there is no argument an
 /// author can supply that reaches another object.
+///
+/// The names are flat and `vf`-prefixed rather than methods on a `vf` table, which
+/// is Second Life's shape (`llSetPos`, `llSay`) and therefore the one the people
+/// most likely to write these already know. `viberfox_core::SCRIPT_API` is the
+/// catalogue the editor shows, and a test asserts the two agree exactly — add a
+/// function here without listing it there and the suite fails.
 fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Result<()> {
-    let vf = lua.create_table()?;
+    // ── Movement ──
 
     let s = shared.clone();
-    vf.set(
-        "log",
-        lua.create_function(move |_, text: String| {
-            s.push(ScriptCommand::Output {
-                prim_id: s.prim_id,
-                level: ScriptLevel::Info,
-                text: truncate(&text, 500),
-            });
-            Ok(())
-        })?,
-    )?;
-
-    let s = shared.clone();
-    vf.set(
-        "say",
-        lua.create_function(move |_, text: String| {
-            s.push(ScriptCommand::Say {
-                prim_id: s.prim_id,
-                text: truncate(&text, 500),
-            });
-            Ok(())
-        })?,
-    )?;
-
-    let s = shared.clone();
-    vf.set(
-        "get_pos",
+    env.set(
+        "vfGetPos",
         lua.create_function(move |_, ()| {
-            let v = s.view.get().pos;
+            let v = s.view.borrow().pos;
             Ok((v.x, v.y, v.z))
         })?,
     )?;
 
     let s = shared.clone();
-    vf.set(
-        "set_pos",
+    env.set(
+        "vfSetPos",
         lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
             let pos = finite_vec3(x, y, z)?;
             s.push(ScriptCommand::SetPos {
@@ -604,25 +683,49 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
             // Reflect the write locally so a handler that sets and then reads
             // within one slice sees its own value, instead of the stale tick
             // snapshot. The authoritative value still arrives next tick.
-            let mut view = s.view.get();
-            view.pos = pos;
-            s.view.set(view);
+            s.view.borrow_mut().pos = pos;
             Ok(())
         })?,
     )?;
 
     let s = shared.clone();
-    vf.set(
-        "get_scale",
+    env.set(
+        "vfGetRot",
         lua.create_function(move |_, ()| {
-            let v = s.view.get().scale;
+            let v = s.view.borrow().rot;
+            Ok((v.x.to_degrees(), v.y.to_degrees(), v.z.to_degrees()))
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetRot",
+        lua.create_function(move |_, (rx, ry, rz): (f32, f32, f32)| {
+            // Degrees in, radians out: an author reads the numbers off the edit
+            // dialog, which shows degrees, and the wire is radians.
+            let deg = finite_vec3(rx, ry, rz)?;
+            let rot = Vec3::new(deg.x.to_radians(), deg.y.to_radians(), deg.z.to_radians());
+            s.push(ScriptCommand::SetRot {
+                prim_id: s.prim_id,
+                rot,
+            });
+            s.view.borrow_mut().rot = rot;
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfGetScale",
+        lua.create_function(move |_, ()| {
+            let v = s.view.borrow().scale;
             Ok((v.x, v.y, v.z))
         })?,
     )?;
 
     let s = shared.clone();
-    vf.set(
-        "set_scale",
+    env.set(
+        "vfSetScale",
         lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
             let scale = finite_vec3(x, y, z)?;
             // A zero or negative scale is a degenerate mesh, and a huge one is a
@@ -632,49 +735,188 @@ fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Resul
                 prim_id: s.prim_id,
                 scale,
             });
-            let mut view = s.view.get();
-            view.scale = scale;
-            s.view.set(view);
+            s.view.borrow_mut().scale = scale;
             Ok(())
         })?,
     )?;
 
+    // ── Appearance ──
+
     let s = shared.clone();
-    vf.set(
-        "get_color",
+    env.set(
+        "vfGetColor",
         lua.create_function(move |_, ()| {
-            let c = s.view.get().color;
+            let c = s.view.borrow().color;
             Ok((c[0], c[1], c[2]))
         })?,
     )?;
 
     let s = shared.clone();
-    vf.set(
-        "set_color",
+    env.set(
+        "vfSetColor",
         lua.create_function(move |_, (r, g, b): (f32, f32, f32)| {
             let color = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)];
             s.push(ScriptCommand::SetColor {
                 prim_id: s.prim_id,
                 color,
             });
-            let mut view = s.view.get();
-            view.color = color;
-            s.view.set(view);
+            s.view.borrow_mut().color = color;
             Ok(())
         })?,
     )?;
 
     let s = shared.clone();
-    vf.set(
-        "timer",
+    env.set(
+        "vfGetAlpha",
+        lua.create_function(move |_, ()| Ok(s.view.borrow().alpha))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetAlpha",
+        lua.create_function(move |_, a: f32| {
+            let alpha = a.clamp(0.0, 1.0);
+            s.push(ScriptCommand::SetAlpha {
+                prim_id: s.prim_id,
+                alpha,
+            });
+            s.view.borrow_mut().alpha = alpha;
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfGetGlow",
+        lua.create_function(move |_, ()| Ok(s.view.borrow().glow))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetGlow",
+        lua.create_function(move |_, g: f32| {
+            let glow = g.clamp(0.0, 1.0);
+            s.push(ScriptCommand::SetGlow {
+                prim_id: s.prim_id,
+                glow,
+            });
+            s.view.borrow_mut().glow = glow;
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetFullBright",
+        lua.create_function(move |_, on: bool| {
+            s.push(ScriptCommand::SetFullBright {
+                prim_id: s.prim_id,
+                on,
+            });
+            s.view.borrow_mut().full_bright = on;
+            Ok(())
+        })?,
+    )?;
+
+    // ── Chat ──
+
+    let s = shared.clone();
+    env.set(
+        "vfLog",
+        lua.create_function(move |_, text: String| {
+            s.push(ScriptCommand::Output {
+                prim_id: s.prim_id,
+                level: ScriptLevel::Info,
+                text: truncate(&text, MAX_TEXT),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    for (name, radius) in [
+        ("vfWhisper", WHISPER_RADIUS_M),
+        ("vfSay", crate::chat::SAY_RADIUS_M),
+        ("vfShout", crate::chat::SHOUT_RADIUS_M),
+    ] {
+        let s = shared.clone();
+        env.set(
+            name,
+            lua.create_function(move |_, text: String| {
+                s.push(ScriptCommand::Say {
+                    prim_id: s.prim_id,
+                    text: truncate(&text, MAX_TEXT),
+                    radius,
+                });
+                Ok(())
+            })?,
+        )?;
+    }
+
+    // ── Timing ──
+
+    let s = shared.clone();
+    env.set(
+        "vfSetTimerEvent",
         lua.create_function(move |_, seconds: f32| {
             s.timer_request.set(Some(seconds.max(0.0)));
             Ok(())
         })?,
     )?;
 
-    vf.set_readonly(true);
-    env.set("vf", vf)?;
+    let s = shared.clone();
+    env.set(
+        "vfGetTime",
+        lua.create_function(move |_, ()| Ok(s.time.get()))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfResetTime",
+        lua.create_function(move |_, ()| {
+            s.time.set(0.0);
+            Ok(())
+        })?,
+    )?;
+
+    // ── Prim / lifecycle ──
+
+    let s = shared.clone();
+    env.set(
+        "vfGetPrimId",
+        lua.create_function(move |_, ()| Ok(s.prim_id))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfGetName",
+        lua.create_function(move |_, ()| Ok(s.view.borrow().name.clone()))?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfSetName",
+        lua.create_function(move |_, name: String| {
+            // The same cap the edit dialog's field has; a name is a label, and an
+            // unbounded one is a way to put a kilobyte in every snapshot.
+            let name = truncate(&name, 64);
+            s.push(ScriptCommand::SetName {
+                prim_id: s.prim_id,
+                name: name.clone(),
+            });
+            s.view.borrow_mut().name = name;
+            Ok(())
+        })?,
+    )?;
+
+    let s = shared.clone();
+    env.set(
+        "vfDie",
+        lua.create_function(move |_, ()| {
+            s.push(ScriptCommand::Die { prim_id: s.prim_id });
+            Ok(())
+        })?,
+    )?;
+
     Ok(())
 }
 
@@ -750,7 +992,7 @@ fn run(rx: Receiver<HostMsg>, tx: Sender<ScriptCommand>) {
             HostMsg::Tick { dt, views } => {
                 for (prim_id, view) in views {
                     if let Some(slot) = slots.get(&prim_id) {
-                        slot.shared.view.set(view);
+                        *slot.shared.view.borrow_mut() = view;
                     }
                 }
                 step(&mut slots, &mut cursor, dt, &tx);
@@ -771,6 +1013,11 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
 
     for id in &ids {
         if let Some(slot) = slots.get_mut(id) {
+            // The script clock advances with simulated time, for every script,
+            // whether or not it gets a slice this tick — `vfGetTime` measures the
+            // world going by, not the script's own share of the CPU.
+            let t = &slot.shared.time;
+            t.set(t.get() + dt);
             if let Some((interval, remaining)) = slot.timer.as_mut() {
                 *remaining -= dt;
                 if *remaining <= 0.0 {
@@ -797,7 +1044,7 @@ fn step(slots: &mut HashMap<i64, Slot>, cursor: &mut usize, dt: f32, tx: &Sender
         let budget = bank.min(SCRIPT_FUEL_SLICE);
         bank -= slot.run_slice(budget);
 
-        // A `vf.timer` call inside that slice takes effect now.
+        // A `vfSetTimerEvent` call inside that slice takes effect now.
         if let Some(seconds) = slot.shared.timer_request.take() {
             slot.timer = if seconds <= 0.0 {
                 None

@@ -29,23 +29,30 @@ use crate::systems::theme;
 const MAX_CONSOLE_LINES: usize = 200;
 
 /// The starting point offered for a prim with no script. It touches every part of
-/// the model — an event handler, the `vf` API, the prim's own state — so the first
-/// thing an author reads is the shape of a script rather than a blank page.
+/// the model — all three handlers, reading and writing the prim, chat, and the
+/// clock — so the first thing an author reads is the shape of a script rather than
+/// a blank page.
+///
+/// The hover is deliberately **vertical**. A script's `vfSetPos` writes the prim's
+/// sim position, but horizontal placement is re-derived from the geo anchor
+/// (`prim_geo::place_geo_prims`), so an orbiting demo would quietly snap back the
+/// next time the map re-anchors. Height has no such owner and stays put.
 const TEMPLATE: &str = "\
--- Handlers are plain functions: on_start, on_touch, on_timer.
+-- Handlers are plain functions. The host calls them; you define them.
 function on_start()
-    vf.log(\"hello from \" .. \"this prim\")
-    vf.timer(1.0)
+    vfLog(\"hello from \" .. vfGetName())
+    vfSetTimerEvent(0.1)
 end
 
 function on_touch(id, name)
-    vf.say(name .. \" touched me\")
-    vf.set_color(math.random(), math.random(), math.random())
+    vfSay(name .. \" touched me\")
+    vfSetColor(math.random(), math.random(), math.random())
 end
 
 function on_timer()
-    local x, y, z = vf.get_pos()
-    vf.set_pos(x, y + math.sin(os.clock()) * 0.02, z)
+    -- Bob gently, using the script's own clock.
+    local x, y, z = vfGetPos()
+    vfSetPos(x, y + math.sin(vfGetTime() * 2) * 0.01, z)
 end
 ";
 
@@ -148,6 +155,61 @@ impl ScriptEditorState {
     pub fn is_dirty(&self) -> bool {
         self.fetched && self.source != self.saved
     }
+}
+
+/// The collapsed API reference: every `vf*` call and every handler, grouped.
+///
+/// Rendered straight from [`viberfox_core::SCRIPT_API`], which the *server* is
+/// tested against — so this list cannot drift into describing functions that do
+/// not exist. Collapsed by default because it is a reminder, not a tutorial: the
+/// question it answers is "what was that called again", and the answer should not
+/// cost the code area half its height on every open.
+fn reference_ui(ui: &mut egui::Ui) {
+    egui::CollapsingHeader::new("Commands")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Handlers you define — the host calls these when something happens:",
+                )
+                .color(theme::TEXT_DIM)
+                .small(),
+            );
+            for f in viberfox_core::SCRIPT_EVENTS {
+                entry_ui(ui, f);
+            }
+            ui.add_space(4.0);
+            for group in viberfox_core::ScriptGroup::all() {
+                let mut any = false;
+                for f in viberfox_core::api_in_group(*group) {
+                    if !any {
+                        ui.label(
+                            egui::RichText::new(group.label())
+                                .strong()
+                                .color(theme::FOX_TEXT)
+                                .small(),
+                        );
+                        any = true;
+                    }
+                    entry_ui(ui, f);
+                }
+            }
+        });
+}
+
+/// One reference row: the signature in code type, its summary on hover.
+///
+/// The summary is a tooltip rather than a second line because the panel is as
+/// narrow as 320 pt on a phone, where two lines per call turns a 25-entry list
+/// into a scroll of prose.
+fn entry_ui(ui: &mut egui::Ui, f: &viberfox_core::ScriptFn) {
+    ui.label(
+        egui::RichText::new(f.signature)
+            .monospace()
+            .small()
+            .color(theme::TEXT),
+    )
+    .on_hover_text(f.summary);
 }
 
 /// Colour for a console line. Errors are the reason the console exists, so they
@@ -334,6 +396,8 @@ pub fn render_script_panel(
             ui.label(egui::RichText::new("Loading…").color(theme::TEXT_DIM));
             return;
         }
+
+        reference_ui(ui);
 
         if editor.source.is_empty() {
             insert_template = ui

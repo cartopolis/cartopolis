@@ -55,6 +55,56 @@ and it is also the number that decides whether a region can ever have thousands 
 scripted prims — it would need a shared VM with per-script environments, which
 gives up the per-script memory ceiling (the allocator limit is per *state*).
 
+## The API is Second Life's shape, and the catalogue is shared
+
+Calls are flat and `vf`-prefixed — `vfSetPos`, `vfSay`, `vfSetTimerEvent` — which
+is `ll*` with the serial numbers filed off, deliberately. The people most likely
+to write scripts here have twenty years of muscle memory for that namespace, and
+a differently-spelled version of the same idea buys nothing.
+
+Two consequences worth knowing:
+
+- **A script can shadow a `vf` function, and that is not a hole.** The functions
+  live in the script's own environment table, which is also where
+  `function on_start()` lands — a read-only table could not hold a handler. Since
+  every script is its own Luau state, `vfSay = nil` breaks exactly one script.
+  (The earlier design had a read-only `vf` *table*; the flat namespace gave that
+  up, and the thing it was protecting turns out not to need protecting.)
+- **The catalogue lives in `viberfox_core::SCRIPT_API`**, not in the simulator,
+  because the editor renders it and the server implements it. A simulator test
+  compiles an empty script and asserts the installed `vf*` names are exactly the
+  catalogued ones — a reference that drifts is worse than none, since an author
+  trusts it.
+
+What is *not* in the API is equally deliberate. Luau ships `math`, `string`,
+`table` and `os`, so there is no `vfFrand` (`math.random`) and no `vfGetUnixTime`
+(`os.time`). A host function that only forwards to the standard library is a
+second name for one thing.
+
+`vfSleep` is written in Lua, not Rust, and that is the interesting one: a host
+function cannot yield the coroutine that called it, but Lua code can, and the
+scheduler already resumes a yielded handler next tick. So sleeping is "yield
+until the clock says otherwise" — no scheduler machinery at all, and a sleeping
+script is descheduled by exactly the mechanism that deschedules one which
+overran. Its clock (`vfGetTime`) is *simulated* time for the same reason fuel is
+counted in instructions: two hosts running the same script should agree.
+
+## `vfSetPos` is durable in y and not in x/z
+
+A prim's horizontal placement is re-derived from its geo anchor
+(`prim_geo::place_geo_prims`), and the lat/lng projection lives in the **client**
+(`geo_nav::world_to_lat_lng`) — the simulator cannot do the conversion, so a
+script's write to `position.x/z` leaves `geo` stale. In practice horizontal
+motion is visible and persists until the map re-anchors or the client reconnects,
+at which point the prim returns to its anchored spot. Height has no second owner
+and stays where a script puts it.
+
+This is why the editor's template bobs a prim up and down rather than orbiting
+it. Making horizontal motion durable means moving the projection into
+`viberfox_core` and having the sim update `geo` alongside `position` — which is a
+change to how *every* prim edit works, not just scripted ones, and belongs in its
+own diff.
+
 ## The unit of accounting is the region
 
 Capacity (`max_prims`, `max_scripts`, schema V7) hangs off the region row because

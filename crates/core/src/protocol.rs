@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 19] = [
+        const ALL: [MessageKind; 25] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -854,6 +854,12 @@ mod tests {
             ChatSend,
             ChatMessage,
             ChatSubscribe,
+            GetPrimScript,
+            SetPrimScript,
+            PrimScript,
+            ScriptOutput,
+            TouchPrim,
+            RegionCapacity,
         ];
         for k in ALL {
             assert_eq!(
@@ -863,7 +869,9 @@ mod tests {
                 k as u16
             );
         }
-        // Contiguous 1..=19, nothing on either side.
+        // Contiguous from 1, nothing on either side. `ALL` is the list to extend
+        // when a kind is added — that is the point of the test, and the reason it
+        // is written against a hand-maintained list rather than a derive.
         assert_eq!(MessageKind::from_wire(0), None);
         assert_eq!(MessageKind::from_wire(ALL.len() as u16 + 1), None);
     }

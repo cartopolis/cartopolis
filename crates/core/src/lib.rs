@@ -3,6 +3,7 @@
 pub mod error;
 pub mod geo;
 pub mod protocol;
+pub mod script_api;
 pub mod world;
 pub mod yaw;
 
@@ -17,6 +18,7 @@ pub use protocol::{
     NetMessage, PrimDto, PrimGeometry, PrimSurface, ProtocolRevision, RegionDto, ScriptLevel,
     TextureEntry, PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
+pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use world::{
     find_optimal_zoom, format_osm_tile_url, lat_lng_to_tile, lat_lng_to_tile_frac,
     tile_source_kind, tile_to_lat_lng, tile_to_meters, TileKey, TileSourceKind, REGION_SIZE_METERS,

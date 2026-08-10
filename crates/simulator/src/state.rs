@@ -468,8 +468,13 @@ impl SimWorld {
                     p.id,
                     PrimView {
                         pos: p.position,
+                        rot: p.rotation,
                         color: p.color,
                         scale: p.scale,
+                        alpha: p.surface.alpha,
+                        glow: p.surface.glow,
+                        full_bright: p.surface.full_bright,
+                        name: p.name.clone(),
                     },
                 )
             })
@@ -495,8 +500,43 @@ impl SimWorld {
                 let scale = *scale;
                 (*prim_id, Box::new(move |p: &mut PrimDto| p.scale = scale))
             }
-            // Not world state: the caller routes these to chat and to the editor.
-            ScriptCommand::Say { .. } | ScriptCommand::Output { .. } => return None,
+            ScriptCommand::SetRot { prim_id, rot } => {
+                let rot = *rot;
+                (*prim_id, Box::new(move |p: &mut PrimDto| p.rotation = rot))
+            }
+            ScriptCommand::SetAlpha { prim_id, alpha } => {
+                let alpha = *alpha;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.alpha = alpha),
+                )
+            }
+            ScriptCommand::SetGlow { prim_id, glow } => {
+                let glow = *glow;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.glow = glow),
+                )
+            }
+            ScriptCommand::SetFullBright { prim_id, on } => {
+                let on = *on;
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.surface.full_bright = on),
+                )
+            }
+            ScriptCommand::SetName { prim_id, name } => {
+                let name = name.clone();
+                (
+                    *prim_id,
+                    Box::new(move |p: &mut PrimDto| p.name = name.clone()),
+                )
+            }
+            // Not a field write: the caller routes these to chat, to the editor,
+            // and to `remove_prim` respectively.
+            ScriptCommand::Say { .. }
+            | ScriptCommand::Output { .. }
+            | ScriptCommand::Die { .. } => return None,
         };
         let prim = self.prims.iter_mut().find(|p| p.id == prim_id)?;
         mutate(prim);
