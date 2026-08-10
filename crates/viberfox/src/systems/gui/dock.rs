@@ -45,9 +45,17 @@ pub fn render_dock(
     mut right_panel: ResMut<RightPanel>,
     online: Option<Res<OnlineSession>>,
     driver: Res<crate::systems::driver::DriverState>,
+    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
     // Driving owns the screen — its own chrome already occupies the bottom.
     if driver.active {
+        return;
+    }
+    // So does the on-screen keyboard, and for the same reason: it docks to the
+    // bottom edge, which is exactly where these discs sit. An `Area` drawn later
+    // paints over an earlier one, so leaving the dock up would not merely look
+    // crowded — the discs would take taps meant for the bottom key row.
+    if keyboard.is_open() {
         return;
     }
     let has_session = online.is_some();

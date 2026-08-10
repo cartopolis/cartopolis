@@ -75,6 +75,7 @@ pub fn render_place_pins(
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
+    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
     if store.data.bookmarks.is_empty() {
         return;
@@ -89,7 +90,19 @@ pub fn render_place_pins(
     // The map area: the viewport minus whatever the side panels took. Read off
     // the shared root `Ui` *before* borrowing the context, so both borrows of
     // `egui` don't overlap (the context is a cheap `Arc` clone).
-    let map_rect = egui.ui_mut().available_rect_before_wrap();
+    let mut map_rect = egui.ui_mut().available_rect_before_wrap();
+    // The on-screen keyboard is a floating `Area`, so it takes no space out of the
+    // root `Ui` and `available_rect_before_wrap` cannot know about it. Subtract it
+    // by hand, for the reason this whole system culls rather than clips: a pin left
+    // under the keyboard is still an interactive `Area`, and it would eat the taps
+    // meant for the keys on top of it.
+    if let Some(slab) = keyboard.slab() {
+        if slab.top() > map_rect.top() {
+            map_rect.max.y = map_rect.max.y.min(slab.top());
+        } else {
+            map_rect.min.y = map_rect.min.y.max(slab.bottom());
+        }
+    }
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
