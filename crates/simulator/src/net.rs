@@ -191,8 +191,23 @@ pub async fn handle_connection(
                         break;
                     }
                     Some(Ok(bytes)) => {
-                        let msg = decode_app_frame(&bytes)?;
-                        match msg {
+                        // Scoped so a `?` in here *leaves the loop* instead of
+                        // returning out of `handle_connection`. Every fallible
+                        // step below — a truncated postcard body, an encode, a
+                        // send — used to skip the teardown at the end of this
+                        // function, so one malformed frame from an authenticated
+                        // client leaked its avatar into `SimWorld` permanently.
+                        // `snapshot` replicates every avatar to every client, so
+                        // the leak is visible to everyone as a frozen ghost, at
+                        // the tick rate, for the life of the process. The other
+                        // two select arms already use exactly this shape.
+                        //
+                        // The rate-limit skips inside are `return Ok(())` rather
+                        // than `continue` for the same reason: this block is the
+                        // loop body's continuation, not a loop of its own.
+                        let handled: anyhow::Result<()> = async {
+                            let msg = decode_app_frame(&bytes)?;
+                            match msg {
                             NetMessage::ClientIntent {
                                 move_x,
                                 move_z,
@@ -212,7 +227,7 @@ pub async fn handle_connection(
                                     && !jump
                                     && emote.is_none()
                                 {
-                                    continue;
+                                    return Ok(());
                                 }
                                 last_intent = Instant::now();
                                 let mut w = world.write().await;
@@ -230,7 +245,7 @@ pub async fn handle_connection(
                             }
                             NetMessage::ObserverUpdate { position } => {
                                 if last_observer.elapsed() < MIN_OBSERVER_INTERVAL {
-                                    continue;
+                                    return Ok(());
                                 }
                                 last_observer = Instant::now();
                                 let mut w = world.write().await;
@@ -348,13 +363,13 @@ pub async fn handle_connection(
                             NetMessage::ChatSend { scope, body, .. } => {
                                 let body: String = body.trim().chars().take(MAX_CHAT_LEN).collect();
                                 if body.is_empty() {
-                                    continue;
+                                    return Ok(());
                                 }
                                 let now_ms = now_millis();
                                 match scope {
                                     ChatScope::Global => {
                                         if last_global.elapsed() < MIN_GLOBAL_INTERVAL {
-                                            continue;
+                                            return Ok(());
                                         }
                                         last_global = Instant::now();
                                         if let Ok(c) = conn.lock() {
@@ -369,7 +384,7 @@ pub async fn handle_connection(
                                     }
                                     ChatScope::Room(room) => {
                                         if last_room.elapsed() < MIN_ROOM_INTERVAL {
-                                            continue;
+                                            return Ok(());
                                         }
                                         last_room = Instant::now();
                                         let channel = format!("room:{room}");
@@ -385,7 +400,7 @@ pub async fn handle_connection(
                                     }
                                     ChatScope::Local { shout } => {
                                         if last_local.elapsed() < MIN_LOCAL_INTERVAL {
-                                            continue;
+                                            return Ok(());
                                         }
                                         last_local = Instant::now();
                                         let radius = if shout { crate::chat::SHOUT_RADIUS_M } else { crate::chat::SAY_RADIUS_M };
@@ -440,6 +455,13 @@ pub async fn handle_connection(
                             | NetMessage::ChatMessage { .. } => {
                                 tracing::debug!("ignored message from client");
                             }
+                            }
+                            Ok(())
+                        }
+                        .await;
+                        if let Err(e) = handled {
+                            outcome = Err(e);
+                            break;
                         }
                     }
                 }

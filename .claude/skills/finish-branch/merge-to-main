@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# Land the current worktree's ticket branch into main, via the Forgejo API.
+#
+#   ./merge-to-main [--wait-secs 2400] [--no-wait] [--dry-run]
+#
+# Push HEAD to the bound branch, wait for CI on the pushed head, and merge only
+# if it is green. Prints one status line per poll; exits non-zero with the
+# failing check when CI fails, so the caller can fix and re-run.
+#
+# Why a PR and not a push: `main` is protected server-side and stays that way.
+# The `viberfox-agent` token this uses reports `user_can_push: false` and
+# `user_can_merge: true` on main, and carries no admin scope — so it cannot
+# relax the protection it is working within, and an accidental `git push origin
+# main` from any agent still bounces. The PR also leaves the review record and
+# the CI history that a direct push would not.
+#
+# Merging with `Closes #N` in the PR body closes the issue, and the watcher
+# moves a closed issue's card to Done (docs/workflow.md, "States") — Forgejo has
+# no kanban API, so that projection is the watcher's job, not this script's.
+
+set -euo pipefail
+
+wait_secs=2400
+dry_run=""
+no_wait=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --wait-secs) wait_secs="$2"; shift 2 ;;
+        --no-wait)   no_wait=1; shift ;;
+        --dry-run)   dry_run=1; shift ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+for f in "$HOME/.config/viberfox/forgejo.env" "$HOME/.config/viberfox/forgejo-merge.env"; do
+    [ -f "$f" ] || { echo "missing $f — see docs/workflow.md" >&2; exit 1; }
+    set -a; . "$f"; set +a
+done
+: "${FORGEJO_TOKEN:?not set}"; : "${FORGEJO_MERGE_TOKEN:?not set}"
+API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
+REPO="${FORGEJO_REPO:-jeroen/viberfox}"
+
+marker="$(git rev-parse --git-dir)/viberfox-ticket"
+[ -f "$marker" ] || { echo "this worktree is not bound to a ticket — run /ticket" >&2; exit 1; }
+issue=$(sed -n 's/^issue=//p' "$marker" | head -1)
+branch=$(sed -n 's/^branch=//p' "$marker" | head -1)
+[ -n "$issue" ] && [ -n "$branch" ] || { echo "marker is missing issue= or branch=" >&2; exit 1; }
+
+# Repo write scope; the issue scope lives on the other token.
+merge_api() { curl -sf -H "Authorization: token $FORGEJO_MERGE_TOKEN" -H "Content-Type: application/json" "$@"; }
+issue_api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
+
+jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$1',''))"; }
+
+echo "ticket   #$issue"
+echo "branch   $branch"
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "refusing: uncommitted changes — commit them first" >&2
+    git status --short >&2
+    exit 1
+fi
+
+sha=$(git rev-parse HEAD)
+echo "head     $sha"
+[ -n "$dry_run" ] && { echo "(dry run, stopping here)"; exit 0; }
+
+echo "==> pushing HEAD to $branch"
+git push --force-with-lease origin "HEAD:refs/heads/$branch"
+
+# ── Wait for CI on the pushed head ───────────────────────────────────────────
+# The combined status endpoint aggregates every check for the commit. It reports
+# `pending` both while a run is going and *before any run exists*, so a run that
+# has not been created yet is indistinguishable from one in progress — hence the
+# wait is bounded rather than "until it is not pending".
+if [ -n "$no_wait" ]; then
+    # Only ever on an explicit human instruction. This is the one thing
+    # docs/workflow.md's "the verdict is CI's, not the session's" forbids a
+    # session from choosing for itself, so it is a flag rather than a fallback:
+    # nothing in the script can reach it, and a red run found afterwards is
+    # fixed forward on main.
+    now=$(merge_api "$API/repos/$REPO/commits/$sha/status" | jget state || echo unknown)
+    echo "==> --no-wait: merging without the CI gate (status right now: ${now:-unknown})"
+else
+echo "==> waiting for CI on $sha (up to ${wait_secs}s)"
+deadline=$(( $(date +%s) + wait_secs ))
+state=""
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    body=$(merge_api "$API/repos/$REPO/commits/$sha/status" || echo '{}')
+    state=$(printf '%s' "$body" | jget state)
+    total=$(printf '%s' "$body" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('statuses',[])))" 2>/dev/null || echo 0)
+    printf '    %s  state=%-8s checks=%s\n' "$(date +%H:%M:%S)" "${state:-none}" "$total"
+    case "$state" in
+        success) break ;;
+        failure|error)
+            echo "==> CI failed:" >&2
+            printf '%s' "$body" | python3 -c '
+import sys,json
+for s in json.load(sys.stdin).get("statuses",[]):
+    print(f"    {s.get(\"status\"):8} {s.get(\"context\")}  {s.get(\"target_url\")}", file=sys.stderr)'
+            exit 1 ;;
+    esac
+    sleep 20
+done
+[ "$state" = "success" ] || { echo "==> CI did not go green within ${wait_secs}s (last: ${state:-none})" >&2; exit 1; }
+fi
+
+# ── Open (or reuse) the PR and merge it ──────────────────────────────────────
+existing=$(merge_api "$API/repos/$REPO/pulls?state=open&limit=50" | python3 -c "
+import sys,json
+b='$branch'
+print(next((str(p['number']) for p in json.load(sys.stdin) if p['head']['ref']==b), ''))")
+
+if [ -n "$existing" ]; then
+    pr="$existing"
+    echo "==> reusing open PR #$pr"
+else
+    title=$(issue_api "$API/repos/$REPO/issues/$issue" | jget title)
+    pr=$(python3 -c "
+import json,sys
+print(json.dumps({'head':'$branch','base':'main','title':sys.argv[1],
+                  'body':'Closes #$issue'}))" "$title" \
+        | merge_api -X POST -d @- "$API/repos/$REPO/pulls" | jget number)
+    [ -n "$pr" ] || { echo "could not create the PR" >&2; exit 1; }
+    echo "==> opened PR #$pr"
+fi
+
+echo "==> merging PR #$pr into main"
+merge_api -X POST -d "{\"Do\":\"merge\",\"merge_message_field\":\"Closes #$issue\"}" \
+    "$API/repos/$REPO/pulls/$pr/merge" >/dev/null
+echo "    merged"
+
+# The issue should close from the PR body; say so plainly if it did not, since
+# the board projection hangs off the closed state.
+sleep 3
+st=$(issue_api "$API/repos/$REPO/issues/$issue" | jget state)
+echo "==> issue #$issue is $st"
+if [ "$st" != "closed" ]; then
+    echo "    closing it directly"
+    issue_api -X PATCH -d '{"state":"closed"}' "$API/repos/$REPO/issues/$issue" >/dev/null
+fi
+echo "done — the watcher moves the card to Done within ~30s"

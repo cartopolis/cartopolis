@@ -1,7 +1,7 @@
 ---
 topic: tile-raster-cost
 triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly"]
-updated: 2026-08-03
+updated: 2026-08-10
 ---
 
 # Vector-tile rasterisation cost
@@ -29,6 +29,45 @@ summed to ~282 ms against a measured 121 ms total, so that attribution was never
 validated. Re-measure by instrumenting the real `render_mvt` before acting on it.
 
 The benchmarks were reverted, not committed — nothing in the tree measures this.
+
+## Why the overzoom row was so expensive, and what fixed it (2026-08-10)
+
+The `~35 ms` overzoom row above covers **1/64 of the ground** of the `~121 ms`
+whole-tile row. That ratio was recorded and never explained. The cause: the
+sub-tile transform was correct, and the feature loop ignored it — every feature
+in the source body was built into a path and handed to tiny-skia regardless of
+whether it could land on the pixmap.
+
+tiny-skia does not rescue this. In 0.11 `fill_path` clones and transforms the
+whole path *before* any bounds test (its `// TODO: ignore paths outside the
+pixmap` is still there) and `stroke_path` builds the complete stroke outline
+first. Worse, stroke widths scale with the overzoom, so `buildings`' 0.6 px
+outline is a cheap hairline at factor 1 and a 4.8 px stroked outline at factor 8
+— across ~8,500 building features, listed twice in `PAINT_ORDER`.
+
+`render_mvt_sized` now bounds each feature and skips it when it misses the
+sub-tile window (plus the stroke's reach and an anti-alias pixel). Measured with
+the `bench_overzoom_cull` hatch in `vector_tiles.rs`, all sub-tiles of each
+factor, on the CI-style container (so compare the ratio, not the absolutes,
+against the table above):
+
+| factor | before | after |
+|---|---|---|
+| 2 (z15) | 144.4 ms | 140.6 ms |
+| 4 (z16) | 123.1 ms | 78.5 ms |
+| 8 (z17) | 84.9 ms | 41.0 ms |
+
+**Factor 2 barely moves**, and that is the shape of the thing: a quarter-tile
+window still catches most features, so the saving arrives exactly where the
+tiles are deep and numerous. 179 of a fresh anchor's 424 requests are
+overzoomed.
+
+The gate is `culling_off_screen_features_changes_no_pixels`, which renders seven
+sub-tiles across factors 2/4/8 with the cull on and off and asserts byte-identical
+rasters — a margin that is too tight drops a feature that should bleed in from
+just outside the window, which reads as a seam along a tile border. **Still not
+measured: whether this moves `ShotMetrics::settled_s`,** for the same reason as
+the section below — it needs a GPU.
 
 ## How wide the pipeline actually runs (measured 2026-07-31)
 

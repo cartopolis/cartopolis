@@ -417,6 +417,19 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
 /// without that, halving the raster doubles the apparent width of every road and
 /// casing, since the texture is stretched over the same ground either way.
 pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<u8>, String> {
+    // Cull only when overzooming: at `factor == 1` the window is the whole tile,
+    // so every feature passes and the bounds scan is pure overhead.
+    render_mvt_culled(tile, sub, size, sub.factor > 1)
+}
+
+/// [`render_mvt_sized`] with the off-screen-feature cull switchable, so a test can
+/// assert the two produce identical pixels.
+fn render_mvt_culled(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    cull: bool,
+) -> Result<Vec<u8>, String> {
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
     pixmap.fill(tiny_skia::Color::from_rgba8(
         ((palette::PAPER >> 16) & 0xFF) as u8,
@@ -448,7 +461,8 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
         if features.is_empty() {
             continue;
         }
-        let scale = px * f / TileData::extent(meta);
+        let extent = TileData::extent(meta);
+        let scale = px * f / extent;
         let transform = Transform::from_row(
             scale,
             0.0,
@@ -458,14 +472,52 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
             -(sub.y as f32) * px,
         );
 
+        // The slice of the source tile that lands on the pixmap, in tile-extent
+        // units: the transform above puts tile coord `t` at pixel `scale·t −
+        // sub·px`, so the visible band is `[sub·extent/f, (sub+1)·extent/f]`.
+        let win = (
+            sub.x as f32 * extent / f,
+            sub.y as f32 * extent / f,
+            (sub.x + 1) as f32 * extent / f,
+            (sub.y + 1) as f32 * extent / f,
+        );
+
         for feature in features {
             let kind = kind_of(feature);
+            // Bounds once per feature, reused by whichever arm draws it. tiny-skia
+            // has no early-out of its own: `fill_path` clones and transforms the
+            // whole path before any bounds test (its `// TODO: ignore paths
+            // outside the pixmap` is still there), and `stroke_path` builds the
+            // full stroke outline first. So an off-screen feature costs a
+            // `PathBuilder`, a `Path`, a transform pass and — for a non-hairline
+            // width — a complete round-joined outline, to rasterise nothing.
+            let bounds = if cull {
+                geometry_bounds(&feature.geometry)
+            } else {
+                None
+            };
+            // `half_width_px` is the stroke's reach past its own geometry; the
+            // extra pixel covers the anti-aliased edge. A feature with no
+            // computable bounds is always drawn.
+            let visible = |half_width_px: f32| -> bool {
+                let Some((x0, y0, x1, y1)) = bounds else {
+                    return true;
+                };
+                let m = (half_width_px + 1.5) / scale;
+                x1 >= win.0 - m && x0 <= win.2 + m && y1 >= win.1 - m && y0 <= win.3 + m
+            };
             match draw {
                 Draw::Fill(rgb) => {
+                    if !visible(0.0) {
+                        continue;
+                    }
                     paint.shader = shader(*rgb);
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::FillByKind { default, kinds } => {
+                    if !visible(0.0) {
+                        continue;
+                    }
                     let rgb = kind
                         .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
@@ -473,6 +525,9 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::Line { color, width } => {
+                    if !visible(width * wf * 0.5) {
+                        continue;
+                    }
                     paint.shader = shader(*color);
                     stroke_geometry(
                         &mut pixmap,
@@ -483,6 +538,9 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
                     );
                 }
                 Draw::Outline { color, width } => {
+                    if !visible(width * wf * 0.5) {
+                        continue;
+                    }
                     paint.shader = shader(*color);
                     stroke_geometry(
                         &mut pixmap,
@@ -499,6 +557,9 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
                     } else {
                         (fill, w * wf)
                     };
+                    if !visible(width * 0.5) {
+                        continue;
+                    }
                     paint.shader = shader(color);
                     stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width);
                 }
@@ -509,6 +570,36 @@ pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<
     // Fully opaque throughout (opaque background, opaque paints), so tiny-skia's
     // premultiplied buffer is already straight RGBA.
     Ok(pixmap.take())
+}
+
+/// Axis-aligned bounds `(min_x, min_y, max_x, max_y)` of a geometry in tile-extent
+/// units, or `None` when it holds no finite coordinate or is a kind the painter
+/// does not draw — both of which mean "do not cull this".
+///
+/// Polygon interiors are skipped on purpose: a hole lies inside its exterior ring,
+/// so it cannot widen the bounds.
+fn geometry_bounds(geom: &Geometry<f32>) -> Option<(f32, f32, f32, f32)> {
+    let mut b = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let mut any = false;
+    let mut push = |coords: &geo_types::LineString<f32>| {
+        for c in coords.coords() {
+            if c.x.is_finite() && c.y.is_finite() {
+                any = true;
+                b.0 = b.0.min(c.x);
+                b.1 = b.1.min(c.y);
+                b.2 = b.2.max(c.x);
+                b.3 = b.3.max(c.y);
+            }
+        }
+    };
+    match geom {
+        Geometry::LineString(ls) => push(ls),
+        Geometry::MultiLineString(mls) => mls.iter().for_each(&mut push),
+        Geometry::Polygon(p) => push(p.exterior()),
+        Geometry::MultiPolygon(mp) => mp.iter().for_each(|p| push(p.exterior())),
+        _ => return None,
+    }
+    any.then_some(b)
 }
 
 /// Append a ring/line to a path builder. Returns false if it was too short to draw.
@@ -2584,6 +2675,74 @@ mod tests {
         )
         .expect("render sub");
         assert_ne!(whole, zoomed, "overzoom transform had no effect");
+    }
+
+    /// Culling a feature whose bounds miss the sub-tile window must be invisible
+    /// in the output — the whole point is that it is the *same* picture, cheaper.
+    ///
+    /// This is the real gate on the margin arithmetic: get the stroke reach or the
+    /// anti-alias slack wrong and a road or a building edge that should bleed in
+    /// from just outside the window goes missing, which on the map reads as a seam
+    /// along a tile border and is exactly what a rendering change must not do.
+    #[test]
+    fn culling_off_screen_features_changes_no_pixels() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
+        // Corners, edges and middle, across the overzoom range map_stream uses
+        // (z15/z16/z17 over a z14 source → factor 2/4/8).
+        for (factor, x, y) in [
+            (2, 0, 0),
+            (2, 1, 1),
+            (4, 0, 3),
+            (4, 2, 1),
+            (8, 3, 5),
+            (8, 7, 7),
+            (8, 0, 0),
+        ] {
+            let sub = SubTile { factor, x, y };
+            let culled = render_mvt_culled(&tile, sub, TILE_PX, true).expect("culled render");
+            let full = render_mvt_culled(&tile, sub, TILE_PX, false).expect("unculled render");
+            assert_eq!(
+                culled.len(),
+                full.len(),
+                "factor {factor} ({x},{y}): raster size changed"
+            );
+            let differing = culled
+                .iter()
+                .zip(full.iter())
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "factor {factor} ({x},{y}): culling changed {differing} bytes"
+            );
+        }
+    }
+
+    /// Not a test — a measurement hatch for the overzoom cull, since its whole
+    /// justification is a number. `cargo test -p viberfox_geo bench_overzoom_cull
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_overzoom_cull() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
+        for factor in [2u32, 4, 8] {
+            let subs: Vec<SubTile> = (0..factor)
+                .flat_map(|x| (0..factor).map(move |y| SubTile { factor, x, y }))
+                .collect();
+            for (label, cull) in [("cull ", true), ("full ", false)] {
+                let t0 = std::time::Instant::now();
+                for &sub in &subs {
+                    render_mvt_culled(&tile, sub, TILE_PX, cull).expect("render");
+                }
+                let dt = t0.elapsed();
+                println!(
+                    "factor {factor:>2} {label} {:>4} tiles  total {:>8.1} ms  per tile {:>6.2} ms",
+                    subs.len(),
+                    dt.as_secs_f64() * 1000.0,
+                    dt.as_secs_f64() * 1000.0 / subs.len() as f64,
+                );
+            }
+        }
     }
 
     /// Not a test — an eyeball hatch. `cargo test -p viberfox --bin viberfox
