@@ -46,7 +46,7 @@ use mvt_reader::feature::{Feature, Value};
 
 use viberfox_core::world::tile_to_meters;
 
-use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM};
+use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM, TILE_BUFFER_FRAC};
 use viberfox_core::lat_lng_to_tile_frac;
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at
@@ -558,8 +558,23 @@ impl RoadGraph {
             let scale = EXTENT / extent;
             let ox = tile.0 as f64 * EXTENT;
             let oy = tile.1 as f64 * EXTENT;
-            let to_global = |c: &geo_types::Coord<f32>| {
-                (ox + f64::from(c.x) * scale, oy + f64::from(c.y) * scale)
+            // A tile's geometry belongs to that tile, plus the buffer an encoder
+            // clips with. Anything further out is not a street this tile can
+            // speak for, and — the reason this is a hard gate rather than a
+            // tidiness rule — `mvt-reader` clips its coordinate cursor only at
+            // `i32::MAX`, never to the extent, so a crafted or corrupt body puts
+            // a vertex at ~2.1e9. One of those in the graph turns the noding
+            // pass's bucket sweep into ~10^14 iterations and the label index into
+            // that many allocations. `None` here drops the segment it belongs to.
+            let margin = extent * f64::from(TILE_BUFFER_FRAC);
+            let to_global = |c: &geo_types::Coord<f32>| -> Option<(f64, f64)> {
+                let (x, y) = (f64::from(c.x), f64::from(c.y));
+                // Positive test, so a NaN — false against every comparison — is
+                // rejected rather than admitted.
+                if !(x >= -margin && x <= extent + margin && y >= -margin && y <= extent + margin) {
+                    return None;
+                }
+                Some((ox + x * scale, oy + y * scale))
             };
 
             let ferry = meta.name == "ferries";
@@ -600,8 +615,20 @@ impl RoadGraph {
             // handful of buckets each.
             let (x0, x1) = minmax(a.0, b.0);
             let (y0, y1) = minmax(a.1, b.1);
-            for bx in bucket(x0 - NODE_TOL)..=bucket(x1 + NODE_TOL) {
-                for by in bucket(y0 - NODE_TOL)..=bucket(y1 + NODE_TOL) {
+            let (Some((bx0, bx1)), Some((by0, by1))) = (
+                bucket_span(x0 - NODE_TOL, x1 + NODE_TOL),
+                bucket_span(y0 - NODE_TOL, y1 + NODE_TOL),
+            ) else {
+                // Wider than a segment of one tile's geometry can be, so it is not
+                // a street and the sweep over its bbox would not terminate in any
+                // useful time. Emit it as it stands — unnoded, connected to
+                // exactly what it was built from — rather than dropping an edge
+                // the caller already has nodes for.
+                self.emit(seg, seg.a, seg.b);
+                continue;
+            };
+            for bx in bx0..=bx1 {
+                for by in by0..=by1 {
                     let Some(ids) = self.node_buckets.get(&(bx, by)) else {
                         continue;
                     };
@@ -665,7 +692,7 @@ impl RoadGraph {
     fn add_street(
         &mut self,
         feature: &Feature,
-        to_global: &impl Fn(&geo_types::Coord<f32>) -> (f64, f64),
+        to_global: &impl Fn(&geo_types::Coord<f32>) -> Option<(f64, f64)>,
         ferry: bool,
     ) {
         let props = feature.properties.as_ref();
@@ -708,9 +735,16 @@ impl RoadGraph {
             (true, true) => (true, false),
         };
         let mut add_line = |line: &geo_types::LineString<f32>| {
-            let pts: Vec<(f64, f64)> = line.coords().map(to_global).collect();
+            let pts: Vec<Option<(f64, f64)>> = line.coords().map(to_global).collect();
             for w in pts.windows(2) {
-                let (ia, ib) = (self.node(w[0]), self.node(w[1]));
+                // One endpoint outside the tile's window is enough to drop the
+                // segment; the rest of the line is kept, since a way that leaves
+                // the window comes back from the neighbouring tile with the same
+                // lattice node and stitches there.
+                let (Some(a), Some(b)) = (w[0], w[1]) else {
+                    continue;
+                };
+                let (ia, ib) = (self.node(a), self.node(b));
                 if ia == ib {
                     continue; // zero-length after quantisation
                 }
@@ -736,7 +770,7 @@ impl RoadGraph {
     fn add_labels(
         &mut self,
         feature: &Feature,
-        to_global: &impl Fn(&geo_types::Coord<f32>) -> (f64, f64),
+        to_global: &impl Fn(&geo_types::Coord<f32>) -> Option<(f64, f64)>,
     ) {
         let props = feature.properties.as_ref();
         let Some(name) = str_prop(props, "name").filter(|n| !n.is_empty()) else {
@@ -747,20 +781,32 @@ impl RoadGraph {
 
         let mut any = false;
         let mut add_line = |line: &geo_types::LineString<f32>| {
-            let pts: Vec<(f64, f64)> = line.coords().map(to_global).collect();
+            let pts: Vec<Option<(f64, f64)>> = line.coords().map(to_global).collect();
             for w in pts.windows(2) {
-                let id = self.label_segs.len() as u32;
-                self.label_segs.push(LabelSeg {
-                    a: w[0],
-                    b: w[1],
-                    name: name_id,
-                });
+                let (Some(a), Some(b)) = (w[0], w[1]) else {
+                    continue;
+                };
                 // Register in every bucket the segment's bounding box touches, so a
                 // 3×3 bucket probe around a point always sees a nearby segment.
-                let (x0, x1) = minmax(w[0].0, w[1].0);
-                let (y0, y1) = minmax(w[0].1, w[1].1);
-                for bx in bucket(x0)..=bucket(x1) {
-                    for by in bucket(y0)..=bucket(y1) {
+                let (x0, x1) = minmax(a.0, b.0);
+                let (y0, y1) = minmax(a.1, b.1);
+                let (Some((bx0, bx1)), Some((by0, by1))) =
+                    (bucket_span(x0, x1), bucket_span(y0, y1))
+                else {
+                    // Longer than any street name could label. The window above
+                    // should already have refused it; this is the backstop that
+                    // makes the index cost bounded by construction rather than by
+                    // the window being complete.
+                    continue;
+                };
+                let id = self.label_segs.len() as u32;
+                self.label_segs.push(LabelSeg {
+                    a,
+                    b,
+                    name: name_id,
+                });
+                for bx in bx0..=bx1 {
+                    for by in by0..=by1 {
                         self.label_buckets.entry((bx, by)).or_default().push(id);
                     }
                 }
@@ -1951,6 +1997,32 @@ fn bucket(v: f64) -> i32 {
     (v / BUCKET).floor() as i32
 }
 
+/// The inclusive bucket range a lattice span covers, or `None` when it is wider
+/// than a segment of one tile's geometry could possibly be.
+///
+/// This is the backstop for the coordinate window in [`RoadGraph::add_tile`], and
+/// it exists because the failure it guards against is not a wrong answer but an
+/// unbounded amount of work: [`bucket`] casts an `f64` to `i32`, and a float cast
+/// **saturates**, so a coordinate near 2.1e9 — all `mvt-reader` promises, since it
+/// clips its cursor at `i32::MAX` and never to the tile extent — yields
+/// `i32::MAX` and a loop of ~4·10^9 per axis, each iteration of which either
+/// allocates a `Vec` (the label index) or probes a `HashMap` (the noding pass).
+///
+/// [`MAX_SEG_BUCKETS`] is ~16,000 lattice units, four tiles' worth, against the
+/// ~5,100 a tile plus its buffer can span at any zoom — headroom of 3×, which is
+/// the right shape for a guard nothing legitimate should ever meet.
+fn bucket_span(lo: f64, hi: f64) -> Option<(i32, i32)> {
+    let (a, b) = (bucket(lo), bucket(hi));
+    if i64::from(b) - i64::from(a) > MAX_SEG_BUCKETS {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// How many buckets one segment's bounding box may span per axis before
+/// [`bucket_span`] refuses it.
+const MAX_SEG_BUCKETS: i64 = 64;
+
 /// Turn from bearing `from` to bearing `to`, normalised to (−180, 180]; negative
 /// is a left turn.
 fn signed_turn(from: f64, to: f64) -> f64 {
@@ -2021,6 +2093,7 @@ impl Ord for Candidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vector_tiles::synth;
 
     /// The same real z14 Groningen tile the renderer tests use.
     const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
@@ -2065,6 +2138,52 @@ mod tests {
             bike_denied: false,
             unpaved: false,
         });
+    }
+
+    /// A vertex no tile can legitimately carry must never reach the graph.
+    ///
+    /// Tile bytes come from a server we do not run, and `mvt-reader` clips its
+    /// coordinate cursor at `i32::MAX` rather than at the tile's extent, so a few
+    /// bytes of crafted varint deliver ~2.1e9. What follows is not a wrong route:
+    /// `finish`'s noding sweep and the label index are both loops over a
+    /// segment's bucket bounding box, and at that scale each is ~10^14 iterations
+    /// with a `HashMap` probe or a fresh `Vec` in every one.
+    #[test]
+    fn a_street_running_off_to_two_billion_never_enters_the_graph() {
+        let hostile = synth::tile(&[synth::line_layer(
+            "streets",
+            4096,
+            &[(10, 10), (2_000_000_000, 20), (30, 30)],
+        )]);
+        let mut g = RoadGraph::new(53.2194);
+        g.add_tile(&TileData::parse(&hostile).expect("parse"), TILE)
+            .expect("add tile");
+        g.finish();
+        assert!(
+            g.is_empty(),
+            "{} nodes interned from a street that leaves the planet",
+            g.node_count()
+        );
+
+        // …and an ordinary street from the same encoder does enter it, so what
+        // was tested above is a window and not a wall.
+        let ordinary = synth::tile(&[synth::line_layer("streets", 4096, &[(10, 10), (2000, 20)])]);
+        let mut g = RoadGraph::new(53.2194);
+        g.add_tile(&TileData::parse(&ordinary).expect("parse"), TILE)
+            .expect("add tile");
+        g.finish();
+        assert_eq!(g.node_count(), 2, "an ordinary street was refused");
+        assert_eq!(g.edge_count(), 2, "both traversals of one segment");
+    }
+
+    /// The backstop under that window: a bucket sweep must be bounded whatever it
+    /// is handed, because `bucket`'s `as i32` saturates rather than wrapping.
+    #[test]
+    fn the_bucket_span_refuses_what_no_tile_could_span() {
+        // A whole tile is 16 buckets, comfortably inside the ceiling.
+        assert_eq!(bucket_span(0.0, EXTENT), Some((0, 16)));
+        assert!(bucket_span(0.0, 2.1e9).is_none());
+        assert!(bucket_span(-2.1e9, 2.1e9).is_none());
     }
 
     /// The junction cost has to change *route choice*, not just the clock.
