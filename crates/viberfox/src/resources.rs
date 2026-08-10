@@ -511,6 +511,41 @@ pub struct AvatarState {
     pub sim_facing_yaw: f32,
     pub is_flying: bool,
     pub is_walking: bool,
+    /// Current horizontal speed (m/s), ramped toward the held gait's speed by
+    /// `locomotion::advance_speed`. This is the single place the speed model
+    /// lands: `handle_avatar_movement` writes it in every run mode (it is the one
+    /// movement system that always runs in Follow), the offline path integrates
+    /// it, `send_network_intent` turns it into the wish magnitude the sim scales,
+    /// and the animation systems read it to match the clip to the ground.
+    pub ground_speed: f32,
+    /// Unit horizontal direction of travel, **held across a release** so the
+    /// avatar coasts to a stop along its own heading instead of stopping dead the
+    /// frame the key comes up (the wish direction is zero by then).
+    pub move_dir: Vec3,
+    /// Gait the held modifiers ask for (Alt walk / default jog / Shift sprint).
+    pub gait: crate::systems::locomotion::Gait,
+    /// Vertical velocity (m/s, up positive) for the jump/fall arc. The sim owns
+    /// the authoritative copy; this is the client's prediction of it, and offline
+    /// it *is* the avatar's vertical state.
+    pub vertical_velocity: f32,
+    /// Whether the avatar is standing on the ground. Jump needs an explicit flag
+    /// rather than a height test: on a slope the ground moves under the avatar,
+    /// and "y == ground_y" is only true on the frames it happens to be exact.
+    pub grounded: bool,
+    /// Set on the frame Space is pressed on the ground; consumed by whichever
+    /// path owns movement (the offline integrator, or `send_network_intent`, which
+    /// forwards it to the sim as `ClientIntent::jump`). Never banked: a jump asked
+    /// for in mid-air is dropped rather than fired on landing.
+    pub wants_jump: bool,
+    /// An emote the player triggered this frame, consumed by the same two paths.
+    /// The local avatar plays it immediately; online it is also replicated so
+    /// everyone else sees it.
+    pub pending_emote: Option<viberfox_core::Emote>,
+    /// Downward speed at the moment of the last landing (m/s, positive), set for
+    /// one frame. The camera dip and the landing sound read it and it is cleared
+    /// on the next frame — a landing is an event, and this is the cheapest way to
+    /// publish one without a message type.
+    pub landing_impact: f32,
 }
 
 impl Default for AvatarState {
@@ -526,6 +561,14 @@ impl Default for AvatarState {
             sim_facing_yaw: 0.0,
             is_flying: false,
             is_walking: false,
+            ground_speed: 0.0,
+            move_dir: Vec3::ZERO,
+            gait: crate::systems::locomotion::Gait::Jog,
+            vertical_velocity: 0.0,
+            grounded: false,
+            wants_jump: false,
+            pending_emote: None,
+            landing_impact: 0.0,
         }
     }
 }

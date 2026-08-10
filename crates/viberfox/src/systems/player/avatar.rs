@@ -1,14 +1,17 @@
 use crate::components::AvatarModelLoaded;
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
+use crate::systems::locomotion;
 use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
+use bevy::animation::transition::AnimationTransitions;
 use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::ecs::query::Or;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
-use viberfox_core::wrap_angle_pi;
+use std::time::Duration;
+use viberfox_core::{motion, wrap_angle_pi, Emote};
 
 /// One glTF scene to spawn for an avatar, showing only the meshes for the slots in
 /// `mask`. Complete Quaternius characters embed their own clips, so `anims` is the
@@ -19,9 +22,6 @@ struct Holder {
     anims: &'static str,
     mask: SlotMask,
     scale: f32,
-    idle_ix: usize,
-    run_ix: usize,
-    fly_ix: usize,
     anim_speed: f32,
 }
 
@@ -94,11 +94,40 @@ fn classify_slot(name: &str) -> Option<Slot> {
 }
 
 // Clip indices shared by every Quaternius "Ultimate Modular" character glTF (they
-// all embed the same 24-clip set — see `jq '.animations'`).
-const CHAR_IDLE: usize = 4; // Idle
-const CHAR_RUN: usize = 16; // Run
-                            // The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
-                            // it read as flight is the forward lean in `update_avatar_flight_pose`.
+// all embed the same 24-clip set — see `jq -r '.animations[].name'`). Verified
+// against `Man_Casual.gltf`; every character file agrees, which is what makes a
+// mixed avatar's holders phase-lockable at all.
+const CHAR_IDLE: usize = 4;
+const CHAR_WALK: usize = 22;
+const CHAR_RUN: usize = 16;
+// The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
+// it read as flight is the forward lean in `update_avatar_flight_pose`.
+const CHAR_WAVE: usize = 23;
+const CHAR_INTERACT: usize = 10;
+const CHAR_ROLL: usize = 15;
+const CHAR_PUNCH: usize = 13;
+const CHAR_KICK: usize = 11;
+const CHAR_DEATH: usize = 0;
+
+/// Emotes in the order their clips are loaded into the graph, so an [`Emote`] is
+/// an index into [`AvatarAnimations::emotes`]. Adding one means a row here and a
+/// clip index — the graph is built from this table.
+const EMOTE_CLIPS: [(Emote, usize); 6] = [
+    (Emote::Wave, CHAR_WAVE),
+    (Emote::Interact, CHAR_INTERACT),
+    (Emote::Roll, CHAR_ROLL),
+    (Emote::Punch, CHAR_PUNCH),
+    (Emote::Kick, CHAR_KICK),
+    (Emote::Faint, CHAR_DEATH),
+];
+
+/// Where `emote` sits in [`EMOTE_CLIPS`].
+fn emote_slot(emote: Emote) -> usize {
+    EMOTE_CLIPS
+        .iter()
+        .position(|(e, _)| *e == emote)
+        .unwrap_or(0)
+}
 
 /// A holder for one Quaternius character glTF (~1.8 m, scale 1.0; self-animated),
 /// showing the slots in `mask`.
@@ -108,9 +137,6 @@ fn character_holder(scene: &'static str, mask: SlotMask) -> Holder {
         anims: scene,
         mask,
         scale: 1.0,
-        idle_ix: CHAR_IDLE,
-        run_ix: CHAR_RUN,
-        fly_ix: CHAR_IDLE,
         anim_speed: 1.0,
     }
 }
@@ -254,15 +280,20 @@ const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
 const REMOTE_RUN_SPEED_THRESH: f32 = 0.12;
 
-const WALK_SPEED: f32 = 8.0;
-/// Offline flight, mirroring what the sim gives an online client so the same keys
-/// move the avatar at the same rate in every run mode: horizontal is the sim's
-/// speed cap (`SimWorld::apply_intent` MAX_SPEED, which `FLY_MOVE_MULT` reaches),
-/// vertical and the fall rate are `viberfox_simulator::state`'s. Offline used to fly 40 m/s
-/// in both axes — a third faster sideways, three times faster up.
-const FLY_SPEED: f32 = 32.0;
+/// Offline flight's vertical rate, mirroring what the sim gives an online client
+/// so the same keys move the avatar at the same rate in every run mode
+/// (`viberfox_simulator::state::FLY_VERTICAL_SPEED`). The *horizontal* rates now come
+/// from `systems::locomotion`, which is shared by all three copies of the model.
 const FLY_VERTICAL_SPEED: f32 = 12.0;
-const FALL_SPEED: f32 = 12.0;
+
+/// How long Space must be held to take off, rather than jump.
+///
+/// Space is the right key for both verbs and they cannot both be a tap, so the
+/// tap goes to the one that must be instant. A jump fires on the *press*, with no
+/// wait to see whether a hold is coming — holding on from there simply turns the
+/// jump into a take-off, which is a better transition than either alone. Landing
+/// stays a tap, since there is no competing verb in the air.
+const FLIGHT_HOLD_SECS: f32 = 0.25;
 
 /// Turn rate for the avatar's facing: an exponential ease with a hard cap, so a
 /// tap on A snaps crisply to the new heading while an about-face (S) sweeps
@@ -277,6 +308,14 @@ const MAX_TURN_RATE: f32 = 12.0;
 const FLIGHT_LEAN: f32 = 1.05; // ~60°
 const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
 const FLIGHT_LEAN_SMOOTHING: f32 = 6.0;
+
+/// Peak pitch of the jump tuck (~11°), reached at full ascent speed and mirrored
+/// to a backward opening at full descent. Small on purpose: the clip underneath
+/// is still `Idle`, and a large angle turns a jump into a dive.
+const JUMP_TUCK: f32 = 0.2;
+/// The jump/fall pose has to keep up with a 0.64 s arc, so it eases far faster
+/// than the flight lean, which is settling into a cruise.
+const JUMP_TUCK_SMOOTHING: f32 = 18.0;
 
 /// Horizontal forward from orbit [`CameraState::azimuth`] (into the screen / away from camera).
 #[inline]
@@ -357,11 +396,41 @@ pub(crate) const AIRBORNE_EPS: f32 = 0.2;
 pub(crate) struct AvatarAnimations {
     graph_handle: Handle<AnimationGraph>,
     idle_index: AnimationNodeIndex,
+    /// The stroll. Loading it is what lets the avatar have a slow gait at all —
+    /// the client played `Run` at every speed before, which is why the feet slid.
+    walk_index: AnimationNodeIndex,
     run_index: AnimationNodeIndex,
     fly_index: AnimationNodeIndex,
-    /// Playback speed for this model's clips (`AvatarModel::anim_speed`).
+    /// One node per [`EMOTE_CLIPS`] row, in that order.
+    emote_indices: Vec<AnimationNodeIndex>,
+    /// Base playback speed for this model's clips (`Holder::anim_speed`). The
+    /// locomotion clips are scaled on top of this to match ground speed.
     speed: f32,
 }
+
+/// A one-shot emote currently playing on an avatar. Present only while it runs;
+/// [`update_avatar_animation`] removes it when the clip is done or movement
+/// interrupts it.
+#[derive(Component)]
+pub(crate) struct EmotePlayback {
+    emote: Emote,
+    remaining: f32,
+}
+
+/// How long an emote holds the body before locomotion takes over again. The clips
+/// run 1.27–1.67 s; a single duration for all of them is enough because the
+/// transition back cross-fades anyway, and it saves reading every clip's length
+/// out of the asset at runtime.
+const EMOTE_DURATION: f32 = 1.6;
+
+/// Cross-fade time between locomotion clips. Long enough to hide the pop that
+/// `stop`/`play` used to make on every start and stop, short enough that the
+/// avatar does not appear to change its mind — a gait change is a decision, not a
+/// drift.
+const GAIT_FADE: Duration = Duration::from_millis(180);
+/// Emotes cut in faster: a wave that eases in over a fifth of a second reads as
+/// reluctance.
+const EMOTE_FADE: Duration = Duration::from_millis(90);
 
 pub fn spawn_avatar(
     mut commands: Commands,
@@ -399,16 +468,27 @@ pub fn spawn_avatar(
         commands.entity(entity).insert(AvatarModelLoaded);
         let mut entity_anims: Option<AvatarAnimations> = None;
         for h in &holders {
-            let (graph, indices) = AnimationGraph::from_clips([
-                asset_server.load(GltfAssetLabel::Animation(h.idle_ix).from_asset(h.anims)),
-                asset_server.load(GltfAssetLabel::Animation(h.run_ix).from_asset(h.anims)),
-                asset_server.load(GltfAssetLabel::Animation(h.fly_ix).from_asset(h.anims)),
-            ]);
+            // Locomotion first, then the emotes in `EMOTE_CLIPS` order, so an
+            // `Emote` indexes `emote_indices` directly.
+            let mut clips: Vec<Handle<AnimationClip>> = vec![
+                asset_server.load(GltfAssetLabel::Animation(CHAR_IDLE).from_asset(h.anims)),
+                asset_server.load(GltfAssetLabel::Animation(CHAR_WALK).from_asset(h.anims)),
+                asset_server.load(GltfAssetLabel::Animation(CHAR_RUN).from_asset(h.anims)),
+            ];
+            clips.extend(EMOTE_CLIPS.iter().map(|(_, ix)| {
+                asset_server.load(GltfAssetLabel::Animation(*ix).from_asset(h.anims))
+            }));
+            let (graph, indices) = AnimationGraph::from_clips(clips);
             let anims = AvatarAnimations {
                 graph_handle: graphs.add(graph),
                 idle_index: indices[0],
-                run_index: indices[1],
-                fly_index: indices[2],
+                walk_index: indices[1],
+                run_index: indices[2],
+                // Flight has no clip of its own; the forward lean in
+                // `update_avatar_flight_pose` is what distinguishes it from
+                // standing (`docs/notes/avatar-locomotion.md`).
+                fly_index: indices[0],
+                emote_indices: indices[3..].to_vec(),
                 speed: h.anim_speed,
             };
             if entity_anims.is_none() {
@@ -530,10 +610,19 @@ pub fn play_avatar_animation_when_ready(
         .find(|&e| players.get(e).is_ok())
     {
         if let Ok(mut player) = players.get_mut(player_entity) {
-            player.play(anim.idle_index).repeat().set_speed(anim.speed);
+            // Every clip change goes through `AnimationTransitions` from here on,
+            // so the idle has to be started through it too — driving the player
+            // directly leaves the transitions component with no idea what the
+            // "main" animation is, and the first cross-fade then fades from
+            // nothing.
+            let mut transitions = AnimationTransitions::new();
+            transitions
+                .play(&mut player, anim.idle_index, Duration::ZERO)
+                .repeat()
+                .set_speed(anim.speed);
             commands
                 .entity(player_entity)
-                .insert(AnimationGraphHandle(anim.graph_handle.clone()));
+                .insert((AnimationGraphHandle(anim.graph_handle.clone()), transitions));
         }
         return;
     }
@@ -563,10 +652,16 @@ pub fn play_avatar_animation_when_ready(
     );
 
     let mut player = AnimationPlayer::default();
-    player.play(anim.idle_index).repeat().set_speed(anim.speed);
-    commands
-        .entity(armature)
-        .insert((player, AnimationGraphHandle(anim.graph_handle.clone())));
+    let mut transitions = AnimationTransitions::new();
+    transitions
+        .play(&mut player, anim.idle_index, Duration::ZERO)
+        .repeat()
+        .set_speed(anim.speed);
+    commands.entity(armature).insert((
+        player,
+        transitions,
+        AnimationGraphHandle(anim.graph_handle.clone()),
+    ));
 }
 
 /// Tag `entity` and every named descendant with the `AnimationTargetId` its
@@ -598,52 +693,158 @@ fn bind_external_animations(
     path.pop();
 }
 
-/// The locomotion clip an avatar should currently loop.
-#[derive(Clone, Copy)]
-enum Gait {
-    Idle,
-    Run,
-    Fly,
+/// What an avatar's body is doing this frame: which clip, how fast, and whether
+/// it loops. Derived from ground speed rather than from a boolean, which is the
+/// whole of the fix — the clip used to be chosen by "is there input" and played at
+/// a fixed 1.0×, so the legs ran at the animator's speed while the ground moved at
+/// whatever the sim said.
+#[derive(Clone, Copy, PartialEq)]
+struct Pose {
+    clip: PoseClip,
+    /// Playback rate multiplier, before the model's own `anim_speed`.
+    rate: f32,
 }
 
-/// Drive one `AnimationPlayer` to loop the clip for `gait`, stopping the others.
-/// Applied to every player under an avatar (body + outfit holders) so they stay
-/// in lockstep.
-fn play_gait(player: &mut AnimationPlayer, anim: &AvatarAnimations, gait: Gait) {
-    let (want, stop_a, stop_b) = match gait {
-        Gait::Idle => (anim.idle_index, anim.run_index, anim.fly_index),
-        Gait::Run => (anim.run_index, anim.idle_index, anim.fly_index),
-        Gait::Fly => (anim.fly_index, anim.idle_index, anim.run_index),
-    };
-    player.stop(stop_a);
-    player.stop(stop_b);
-    if !player.is_playing_animation(want) {
-        player.play(want).repeat().set_speed(anim.speed);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PoseClip {
+    Idle,
+    Walk,
+    Run,
+    Fly,
+    Emote(usize),
+}
+
+/// Choose the locomotion pose for a ground speed. `running` is the previous
+/// answer, for the hysteresis in `locomotion::wants_run_clip`.
+fn locomotion_pose(speed: f32, flying: bool, running: bool) -> Pose {
+    if flying {
+        return Pose {
+            clip: PoseClip::Fly,
+            rate: 1.0,
+        };
+    }
+    if speed < locomotion::MOVING_EPS {
+        return Pose {
+            clip: PoseClip::Idle,
+            rate: 1.0,
+        };
+    }
+    if locomotion::wants_run_clip(speed, running) {
+        Pose {
+            clip: PoseClip::Run,
+            rate: locomotion::clip_speed_for(speed, locomotion::RUN_CLIP_SPEED),
+        }
+    } else {
+        Pose {
+            clip: PoseClip::Walk,
+            rate: locomotion::clip_speed_for(speed, locomotion::WALK_CLIP_SPEED),
+        }
     }
 }
 
-/// Switch the local avatar's animation between idle, run, and fly based on state.
+impl AvatarAnimations {
+    fn node(&self, clip: PoseClip) -> AnimationNodeIndex {
+        match clip {
+            PoseClip::Idle => self.idle_index,
+            PoseClip::Walk => self.walk_index,
+            PoseClip::Run => self.run_index,
+            PoseClip::Fly => self.fly_index,
+            PoseClip::Emote(slot) => self
+                .emote_indices
+                .get(slot)
+                .copied()
+                .unwrap_or(self.idle_index),
+        }
+    }
+}
+
+/// Drive one player to `pose`, cross-fading if the clip changed and only
+/// adjusting the rate if it didn't.
+///
+/// The rate is re-applied every frame *without* restarting anything: it tracks a
+/// continuously ramping ground speed, so it changes on almost every frame of an
+/// acceleration, and calling `play` for that would restart the stride each time.
+fn apply_pose(
+    player: &mut AnimationPlayer,
+    transitions: &mut AnimationTransitions,
+    anim: &AvatarAnimations,
+    pose: Pose,
+) {
+    let want = anim.node(pose.clip);
+    let repeat = !matches!(pose.clip, PoseClip::Emote(_));
+    if transitions.get_main_animation() != Some(want) {
+        let fade = if repeat { GAIT_FADE } else { EMOTE_FADE };
+        let active = transitions.play(player, want, fade);
+        if repeat {
+            active.repeat();
+        }
+    }
+    if let Some(active) = player.animation_mut(want) {
+        active.set_speed(anim.speed * pose.rate);
+    }
+}
+
+/// Switch the local avatar's animation to match what it is actually doing:
+/// standing, strolling, running (at the speed it is running), flying, or playing
+/// an emote.
 pub fn update_avatar_animation(
-    avatar_state: Res<AvatarState>,
+    mut commands: Commands,
+    time: Res<Time>,
+    mut avatar_state: ResMut<AvatarState>,
     children: Query<&Children>,
     animations_to_play: Query<&AvatarAnimations, With<Avatar>>,
-    mut players: Query<&mut AnimationPlayer>,
-    avatar_query: Query<Entity, With<Avatar>>,
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+    mut avatar_query: Query<(Entity, Option<&mut EmotePlayback>), With<Avatar>>,
+    mut running: Local<bool>,
 ) {
-    let gait = if avatar_state.is_flying {
-        Gait::Fly
-    } else if avatar_state.is_walking {
-        Gait::Run
-    } else {
-        Gait::Idle
-    };
-    for avatar_entity in avatar_query.iter() {
+    let dt = time.delta_secs();
+    let moving = avatar_state.ground_speed >= locomotion::MOVING_EPS;
+    let started = avatar_state.pending_emote.take();
+
+    for (avatar_entity, emote_playback) in avatar_query.iter_mut() {
+        // An emote owns the body until it finishes — or until the avatar moves,
+        // which cancels it. Standing still to wave is a rule players already know,
+        // and it avoids a wave sliding across the pavement.
+        let mut active_emote = None;
+        match (started, emote_playback) {
+            (Some(e), Some(mut playback)) => {
+                playback.emote = e;
+                playback.remaining = EMOTE_DURATION;
+                active_emote = Some(e);
+            }
+            (Some(e), None) => {
+                commands.entity(avatar_entity).insert(EmotePlayback {
+                    emote: e,
+                    remaining: EMOTE_DURATION,
+                });
+                active_emote = Some(e);
+            }
+            (None, Some(mut playback)) => {
+                playback.remaining -= dt;
+                if playback.remaining <= 0.0 || moving {
+                    commands.entity(avatar_entity).remove::<EmotePlayback>();
+                } else {
+                    active_emote = Some(playback.emote);
+                }
+            }
+            (None, None) => {}
+        }
+
+        let pose = match active_emote {
+            Some(e) => Pose {
+                clip: PoseClip::Emote(emote_slot(e)),
+                rate: 1.0,
+            },
+            None => locomotion_pose(avatar_state.ground_speed, avatar_state.is_flying, *running),
+        };
+        *running = pose.clip == PoseClip::Run;
+
         let Ok(anim) = animations_to_play.get(avatar_entity) else {
             continue;
         };
         for child in children.iter_descendants(avatar_entity) {
-            if let Ok(mut player) = players.get_mut(child) {
-                play_gait(&mut player, anim, gait);
+            if let Ok((mut player, mut transitions)) = players.get_mut(child) {
+                apply_pose(&mut player, &mut transitions, anim, pose);
             }
         }
     }
@@ -673,11 +874,23 @@ pub fn update_avatar_flight_pose(
 ) {
     let target = if avatar_state.is_flying && avatar_state.is_walking {
         FLIGHT_LEAN
+    } else if !avatar_state.is_flying && !avatar_state.grounded {
+        // A jump has no clip either (same 24-clip set, same gap), so it gets the
+        // same treatment as flight at a much smaller angle: the body tucks forward
+        // on the way up and opens out as it falls, driven by the vertical velocity
+        // itself. Signed, so the rise and the fall do not look identical — the
+        // give-away that an "airborne" pose is really a single frozen frame.
+        (-avatar_state.vertical_velocity / motion::JUMP_SPEED).clamp(-1.0, 1.0) * JUMP_TUCK
     } else {
         0.0
     };
     let previous = *lean;
-    let a = 1.0 - (-FLIGHT_LEAN_SMOOTHING * time.delta_secs()).exp();
+    let rate = if avatar_state.is_flying {
+        FLIGHT_LEAN_SMOOTHING
+    } else {
+        JUMP_TUCK_SMOOTHING
+    };
+    let a = 1.0 - (-rate * time.delta_secs()).exp();
     *lean += (target - *lean) * a;
     if (target - *lean).abs() < 1e-3 {
         *lean = target;
@@ -792,35 +1005,96 @@ pub fn tick_remote_avatar_motion_hint(
     }
 }
 
-/// Run / idle for other players’ avatars based on [`RemoteAvatarMotionHint::horizontal_speed`].
+/// Walk / run / idle / emote for other players' avatars.
+///
+/// Their speed is *measured* from the smoothed motion rather than replicated
+/// (`RemoteAvatarMotionHint::horizontal_speed`), which is enough to pick the clip
+/// and its rate — so a remote avatar strolling looks like it is strolling, by the
+/// same rule the local one follows. Flight is still not replicated, so a remote
+/// never takes the fly pose.
 pub fn update_remote_avatar_animation(
+    mut commands: Commands,
     online: Option<Res<crate::resources::OnlineSession>>,
+    time: Res<Time>,
     children: Query<&Children>,
     animations_to_play: Query<&AvatarAnimations, With<RemoteAvatar>>,
     hints: Query<&RemoteAvatarMotionHint, With<RemoteAvatar>>,
-    mut players: Query<&mut AnimationPlayer>,
-    remote_roots: Query<Entity, With<RemoteAvatar>>,
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+    mut remote_roots: Query<
+        (Entity, &RemoteAvatar, Option<&mut EmotePlayback>),
+        With<RemoteAvatar>,
+    >,
+    mut running: Local<std::collections::HashMap<Entity, bool>>,
 ) {
     if online.is_none() {
         return;
     }
-    for avatar_entity in remote_roots.iter() {
-        let Ok(animation_to_play) = animations_to_play.get(avatar_entity) else {
+    let dt = time.delta_secs();
+    for (avatar_entity, remote, emote_playback) in remote_roots.iter_mut() {
+        let Ok(anim) = animations_to_play.get(avatar_entity) else {
             continue;
         };
-        // Remotes only replicate horizontal motion, so idle/run (no fly state).
-        let gait = if hints
+        let speed = hints
             .get(avatar_entity)
-            .is_ok_and(|h| h.horizontal_speed > REMOTE_RUN_SPEED_THRESH)
-        {
-            Gait::Run
-        } else {
-            Gait::Idle
-        };
-        for child in children.iter_descendants(avatar_entity) {
-            if let Ok(mut player) = players.get_mut(child) {
-                play_gait(&mut player, animation_to_play, gait);
+            .map_or(0.0, |h| h.horizontal_speed)
+            // Below the old run threshold the measurement is mostly interpolation
+            // noise, so treat it as standing rather than as a very slow walk.
+            .max(0.0);
+        let moving = speed > REMOTE_RUN_SPEED_THRESH;
+
+        // `RemoteAvatar::pending_emote` is set by the snapshot apply when it sees a
+        // sequence it hasn't played yet, so this is an edge, not a level.
+        let mut active_emote = None;
+        match (remote.pending_emote, emote_playback) {
+            (Some(e), Some(mut playback)) => {
+                playback.emote = e;
+                playback.remaining = EMOTE_DURATION;
+                active_emote = Some(e);
             }
+            (Some(e), None) => {
+                commands.entity(avatar_entity).insert(EmotePlayback {
+                    emote: e,
+                    remaining: EMOTE_DURATION,
+                });
+                active_emote = Some(e);
+            }
+            (None, Some(mut playback)) => {
+                playback.remaining -= dt;
+                if playback.remaining <= 0.0 || moving {
+                    commands.entity(avatar_entity).remove::<EmotePlayback>();
+                } else {
+                    active_emote = Some(playback.emote);
+                }
+            }
+            (None, None) => {}
+        }
+
+        let was_running = running.get(&avatar_entity).copied().unwrap_or(false);
+        let pose = match active_emote {
+            Some(e) => Pose {
+                clip: PoseClip::Emote(emote_slot(e)),
+                rate: 1.0,
+            },
+            None => locomotion_pose(if moving { speed } else { 0.0 }, false, was_running),
+        };
+        running.insert(avatar_entity, pose.clip == PoseClip::Run);
+
+        for child in children.iter_descendants(avatar_entity) {
+            if let Ok((mut player, mut transitions)) = players.get_mut(child) {
+                apply_pose(&mut player, &mut transitions, anim, pose);
+            }
+        }
+    }
+}
+
+/// Clear the emote edge once every consumer has seen it (this runs after
+/// [`update_remote_avatar_animation`] in the schedule). Kept separate so the
+/// animation system can take `&RemoteAvatar` immutably alongside its other
+/// queries.
+pub fn clear_remote_emote_edges(mut remotes: Query<&mut RemoteAvatar>) {
+    for mut remote in remotes.iter_mut() {
+        if remote.pending_emote.is_some() {
+            remote.pending_emote = None;
         }
     }
 }
@@ -903,17 +1177,27 @@ pub fn handle_avatar_movement(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    // How long Space has been held this press, and whether the hold has already
+    // been spent on a flight toggle (so it fires once, not every frame past the
+    // threshold).
+    mut space_held: Local<f32>,
+    mut flight_armed: Local<bool>,
 ) {
     // Don't move avatar unless the follow camera is active (Free and Earth
     // modes decouple the camera from the avatar).
     if camera_state.mode != crate::resources::CameraMode::Avatar {
         avatar_state.is_walking = false;
+        // Let the avatar come to rest rather than freezing mid-stride: leaving
+        // the speed latched would have it resume at full pace on returning to
+        // Follow, and (online) keep sending that speed as intent.
+        avatar_state.ground_speed = 0.0;
         return;
     }
     // Don't move while the UI owns the keyboard (text field focused, edit dialog open,
     // or a Ctrl chord like Ctrl+Shift+A); otherwise WASD/S leak into avatar movement.
     if egui_manager.ui_owns_keyboard(edit_dialog.visible, &keyboard_input) {
         avatar_state.is_walking = false;
+        avatar_state.ground_speed = 0.0;
         return;
     }
     if avatar_query.is_empty() {
@@ -933,34 +1217,105 @@ pub fn handle_avatar_movement(
         keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft);
     let move_right =
         keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight);
-    // Same vertical keys as the Fly camera (`free_camera`): E up, Q down, and
+    // Same vertical keys as the Fly camera (`free_camera`): R up, Q down, and
     // nothing else. Shift used to mean down here, which was unambiguous in avatar
     // flight but disagreed with the camera, where Shift is the speed boost — one
-    // hand, two meanings for the same key depending on the mode. Space used to be
-    // a second "up", which is the same mistake in a milder form: two keys for one
-    // direction against one for the other reads as an axis with a typo in it.
-    let fly_up = keyboard_input.pressed(KeyCode::KeyE);
+    // hand, two meanings for the same key depending on the mode. E was the climb
+    // key until the world gained things to interact with; E is the near-universal
+    // "use" binding and a climb key is the cheaper of the two to move.
+    let fly_up = keyboard_input.pressed(KeyCode::KeyR);
     let fly_down = keyboard_input.pressed(KeyCode::KeyQ);
-    // Take off / land. Space is the binding this deserves: every 3D game spends it
-    // on "leave the ground", and with no jump in this world taking off is the
-    // nearest true verb. It was a second "up" until now, which wasted the most
-    // reachable key on the board on an alias for E — and on a *hold*, which a
-    // thumb key is bad at and a tap is exactly right for. F stays as an alias.
-    // Landing needs no descent code: `SimWorld::step` (and the offline path below)
-    // falls an avatar that isn't flying.
-    if keyboard_input.just_pressed(KeyCode::Space) || keyboard_input.just_pressed(KeyCode::KeyF) {
+    // Gait modifiers. Shift sprints, Alt strolls, neither jogs — see
+    // `systems::locomotion`. Shift is free in Follow (the camera's boost is a Fly
+    // binding) and Alt is unused anywhere in this client.
+    let sprint =
+        keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight);
+    let walk_mod =
+        keyboard_input.pressed(KeyCode::AltLeft) || keyboard_input.pressed(KeyCode::AltRight);
+    avatar_state.gait = locomotion::Gait::from_modifiers(sprint, walk_mod);
+
+    // Space is jump *and* take-off, resolved by how long it is held: the press
+    // jumps at once (a jump that waits to see whether a hold is coming is not a
+    // jump), and holding on from there turns that jump into a take-off. Tapping it
+    // in the air lands. F remains the unambiguous flight toggle.
+    let space = keyboard_input.pressed(KeyCode::Space);
+    if keyboard_input.just_pressed(KeyCode::Space) {
+        *space_held = 0.0;
+        if avatar_state.is_flying {
+            avatar_state.is_flying = false; // tap to land
+            *flight_armed = true; // …and don't also take off on the hold
+        } else {
+            avatar_state.wants_jump = true;
+            *flight_armed = false;
+        }
+    } else if space && !*flight_armed {
+        *space_held += delta_time;
+        if *space_held >= FLIGHT_HOLD_SECS {
+            avatar_state.is_flying = true;
+            *flight_armed = true;
+        }
+    }
+    if !space {
+        *flight_armed = false;
+        *space_held = 0.0;
+    }
+    if keyboard_input.just_pressed(KeyCode::KeyF) {
         avatar_state.is_flying = !avatar_state.is_flying;
     }
 
     let az = camera_state.azimuth;
     let wish = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
-    avatar_state.is_walking = wish.length_squared() > 1e-8;
+    let has_input = wish.length_squared() > 1e-8;
+    avatar_state.is_walking = has_input;
     // Face the way we're travelling, in both run modes. The wish direction — not
     // the camera — is the target, so A/D turn the avatar a quarter turn and S
     // brings it about; only the turn *rate* is smoothed, movement is immediate.
     if let Some(target) = yaw_from_dir(wish) {
         avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, target, delta_time);
     }
+
+    // ── The speed model ──────────────────────────────────────────────────────
+    //
+    // Ramp a *speed*, and keep the direction across a key release. Both halves
+    // matter: assigning the target speed outright is what made the avatar start and
+    // stop like a mechanism, and zeroing the direction with the input is what made
+    // it stop dead — the wish vector is already zero on the frame the key comes up,
+    // so there is nothing left to coast along unless it is remembered here.
+    //
+    // This runs in *every* run mode, online included, because it is the one
+    // movement system that always runs in Follow. `send_network_intent` consumes
+    // the result rather than recomputing it, so there is exactly one ramp.
+    if has_input {
+        avatar_state.move_dir = wish;
+    }
+    let (target_speed, accel, decel) = if avatar_state.is_flying {
+        (
+            if has_input {
+                locomotion::FLY_SPEED
+            } else {
+                0.0
+            },
+            locomotion::FLY_ACCEL,
+            locomotion::FLY_DECEL,
+        )
+    } else {
+        (
+            if has_input {
+                avatar_state.gait.speed()
+            } else {
+                0.0
+            },
+            locomotion::GROUND_ACCEL,
+            locomotion::GROUND_DECEL,
+        )
+    };
+    avatar_state.ground_speed = locomotion::advance_speed(
+        avatar_state.ground_speed,
+        target_speed,
+        delta_time,
+        accel,
+        decel,
+    );
     // Only on a real turn: writing the same rotation back would mark the avatar's
     // Transform changed every frame and re-propagate its whole model subtree.
     let rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
@@ -979,13 +1334,8 @@ pub fn handle_avatar_movement(
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
 
-    if avatar_state.is_walking {
-        let speed = if avatar_state.is_flying {
-            FLY_SPEED
-        } else {
-            WALK_SPEED
-        };
-        let delta = wish * speed * delta_time;
+    if avatar_state.ground_speed > 1e-4 {
+        let delta = avatar_state.move_dir * avatar_state.ground_speed * delta_time;
         // Collide against buildings while walking (anything off the ground passes
         // over roofs — the footprints are 2D, so they'd otherwise divert a flight
         // or a fall around a building it clears) when the buildings layer is on.
@@ -1017,9 +1367,9 @@ pub fn handle_avatar_movement(
     // floated the humanoids ~0.45 m.
     //
     // The vertical keys are flight controls, not levitation: an avatar that isn't
-    // flying falls, whatever it is holding. Same rule as the sim
-    // (`SimWorld::step`), so switching flight off in mid-air brings the avatar
-    // down in either run mode.
+    // flying is on the gravity arc, whatever it is holding. Same function as the
+    // sim (`motion::step_fall`), so switching flight off in mid-air brings the
+    // avatar down at the same rate in either run mode.
     // Offline, this transform *is* the avatar's state, so the terrain enters as the
     // ground level itself rather than as a display offset the way it does online
     // (`smooth_online_avatar_display`): lifting the transform after the fact would
@@ -1031,12 +1381,26 @@ pub fn handle_avatar_movement(
         } else if fly_down && transform.translation.y > ground_y {
             transform.translation.y -= FLY_VERTICAL_SPEED * delta_time;
         }
+        transform.translation.y = transform.translation.y.max(ground_y);
+        avatar_state.vertical_velocity = 0.0;
+        avatar_state.grounded = false;
     } else {
-        transform.translation.y -= FALL_SPEED * delta_time;
+        if avatar_state.wants_jump && avatar_state.grounded {
+            avatar_state.vertical_velocity = motion::JUMP_SPEED;
+        }
+        let step = motion::step_fall(
+            transform.translation.y,
+            avatar_state.vertical_velocity,
+            ground_y,
+            delta_time,
+        );
+        transform.translation.y = step.y;
+        avatar_state.vertical_velocity = step.vertical_velocity;
+        avatar_state.grounded = step.grounded;
+        avatar_state.landing_impact = step.landing_speed.unwrap_or(0.0);
     }
-    if transform.translation.y < ground_y {
-        transform.translation.y = ground_y;
-    }
+    // Consumed either way: a jump asked for in mid-air is not banked until landing.
+    avatar_state.wants_jump = false;
 
     // Update avatar state position to match transform (important for camera following)
     avatar_state.position = transform.translation;

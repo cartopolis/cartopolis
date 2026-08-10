@@ -10,6 +10,11 @@
 
 pub mod furniture;
 pub mod mip;
+// Two readers of the tile's `pois` layer, kept separate on purpose: `places`
+// answers "what can the avatar walk up to" (proximity prompts, house numbers,
+// street furniture as colliders), `pois` answers "what stands on the map"
+// (the data-layer markers that used to come from Overpass). See the note.
+pub mod places;
 pub mod pois;
 pub mod road_texture;
 pub mod routing;
