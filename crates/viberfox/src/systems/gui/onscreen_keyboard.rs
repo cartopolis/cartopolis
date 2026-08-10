@@ -459,6 +459,16 @@ impl OnScreenKeyboard {
         self.open && self.enabled
     }
 
+    /// Put the keyboard away without typing anything.
+    ///
+    /// Exists for Android's Back gesture, which has to dismiss the keyboard
+    /// *before* it dismisses anything else — the system IME is the innermost
+    /// thing Back closes on every other Android app, and a keyboard you cannot
+    /// get rid of without submitting is worse than no keyboard.
+    pub fn dismiss(&mut self) {
+        self.open = false;
+    }
+
     // There was a `pub fn enabled()` here too — "does this platform get a keyboard
     // at all", as distinct from "is it up right now". Nothing consumed it, and
     // `[workspace.lints.rust] unused = "deny"` makes an accessor without a caller a

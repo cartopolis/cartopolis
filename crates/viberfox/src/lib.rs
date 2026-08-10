@@ -1162,6 +1162,15 @@ pub fn run() {
                 // movement just did, so all three run after it.
                 systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
                 systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
+                // Turn cues. Here rather than with the rest of driver mode because
+                // the whole soundscape is behind this feature, and because a cue is
+                // a function of the distance the driver tick just computed — it has
+                // to see this frame's band, not last frame's.
+                //
+                // This is the one part of navigation you can use without looking at
+                // the screen, which on a phone in a car is the only way it gets
+                // used at all.
+                systems::driver::play_driver_cues.after(systems::driver::drive_driver_mode),
             ),
         );
     app
@@ -2369,6 +2378,7 @@ fn quiesce_while_backgrounded(mut lifecycle: MessageReader<bevy::window::AppLife
 /// that quits on the first back press while a panel is open would be unusable.
 fn handle_back_gesture(
     keys: Res<ButtonInput<KeyCode>>,
+    mut keyboard: ResMut<systems::onscreen_keyboard::OnScreenKeyboard>,
     mut right_panel: ResMut<resources::RightPanel>,
     mut driver: ResMut<systems::driver::DriverState>,
     mut exit: MessageWriter<AppExit>,
@@ -2378,7 +2388,14 @@ fn handle_back_gesture(
     if !keys.just_pressed(KeyCode::BrowserBack) {
         return;
     }
-    if driver.active {
+    // The keyboard is the innermost rung, because that is where the system IME
+    // sits on every other Android app: Back puts the keyboard away first and only
+    // then starts closing the thing you were typing into. Getting this order
+    // wrong is worse than it sounds — it would have made Back leave driver mode
+    // out from under someone who was only trying to dismiss the keys.
+    if keyboard.is_open() {
+        keyboard.dismiss();
+    } else if driver.active {
         driver.exit();
     } else if *right_panel != resources::RightPanel::None {
         *right_panel = resources::RightPanel::None;

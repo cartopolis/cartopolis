@@ -31,6 +31,46 @@
 //! the one moment navigation is needed. Only the *start* moves; see
 //! [`DriverState::reroute_ready`] for why the cooldown is load-bearing.
 //!
+//! **A reroute keeps the display working, and a failed one does not end the
+//! trip.** Both used to be false, and both were reached by the everyday cases — an
+//! underground car park, a missed motorway exit, a tile server having a moment.
+//! Dropping the route to re-solve blanked the line, the rail, the distance and the
+//! ETA for the whole corridor refetch, and if the solve then failed the tick saw no
+//! route at all and left driver mode *silently*, the explanation being in a panel
+//! the mode had closed. Now the route being replaced is parked in
+//! `navigation::RouteState::held` and everything keeps measuring against it until a
+//! replacement lands, and a failure paints itself on the manoeuvre card with Retry
+//! beside it. The corridor cache also matches a *contained* corridor
+//! (`navigation::covers`), which is what makes the ordinary missed turn re-solve in
+//! one A* instead of a whole refetch.
+//!
+//! **The marker is drawn on the road, not at the fix** ([`SNAP_M`]). A 15 m urban
+//! fix has the arrow wandering through the terrace beside the street while the card
+//! says you are on route; every navigation display snaps. Only the drawing does —
+//! progress, the off-route judgement and the reroute all keep the true position,
+//! because a display that snapped those could no longer notice it was wrong.
+//!
+//! **The chrome says what the fix is worth** ([`GpsQuality`]). "The watch started
+//! and nothing has arrived", "±50 m in a tunnel" and a metre-accurate lock all
+//! rendered identically — as confident navigation — because `accuracy_m` was parsed
+//! by both providers and read by nobody. A poor or stale fix also stands the reroute
+//! down: leaving a tunnel otherwise triggers a full corridor refetch for a vehicle
+//! that never left the road.
+//!
+//! **The guidance is audible** ([`next_cue`]). Three tones on the approach to a
+//! manoeuvre, one on a reroute, one on arrival — on the bands [`countdown`] already
+//! coarsens at, because those are the points at which something changes for the
+//! driver. Not speech: there is no TTS in this tree and a tone is unambiguous at
+//! 120 km/h with the window open.
+//!
+//! **Stop and Route live on the manoeuvre card**, which is the only box that is
+//! always drawn. Stop was on the trip strip, and the strip stands down behind any
+//! docked panel — on a phone, which has no Escape key, that could leave a drive
+//! with no exit at all. Route reopens the planner without leaving the mode, which
+//! is otherwise unreachable mid-drive: the dock, the address bar and the planner
+//! are all suppressed, so there was no way to change the destination, read the turn
+//! list or switch travel mode short of ending the trip.
+//!
 //! The speed pill carries the posted limit beside the speedometer, as a painted
 //! road sign rather than a themed readout ([`speed_limit_sign`]) — same reasoning
 //! as [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
@@ -94,7 +134,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 use web_time::Instant;
 
 use crate::components::Avatar;
-use crate::platform::location::LocationWatch;
+use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
@@ -219,6 +259,37 @@ const APPROACH_M: f64 = 400.0;
 /// [`DriverState::reroute_ready`] — this is the loop breaker, not a politeness.
 const REROUTE_COOLDOWN: f32 = 10.0;
 
+/// How far off the line the vehicle may be and still have its marker drawn *on*
+/// the route rather than at the raw fix.
+///
+/// A phone in an urban canyon reports 10–20 m of error, and unsnapped that is an
+/// arrow wandering through the buildings beside the street while the card says you
+/// are on route — which reads as a positioning bug rather than as the noise it is.
+/// Every navigation display snaps; the number is the honest one, a little under
+/// [`OFF_ROUTE_M`] so a marker never snaps onto a road the display is about to
+/// declare you off. **Only the drawing snaps.** Progress, the off-route judgement
+/// and the reroute all keep using the true position — snapping those would make the
+/// display incapable of noticing that it was wrong, which is the one thing it must
+/// always be able to do.
+const SNAP_M: f64 = 25.0;
+
+/// Above this reported accuracy (metres, 1σ) the fix cannot support a conclusion
+/// about which street you are on, so the chrome says so and the reroute stands down.
+///
+/// Matched to [`OFF_ROUTE_M`] deliberately: "off route" means further from the line
+/// than this, and a fix whose own error bar is that wide cannot tell the two apart.
+/// Leaving a tunnel is the case that made it necessary — the first fixes out are
+/// tens of metres wide, they land on the wrong side of a junction, and a full
+/// corridor refetch fires for a vehicle that never left the road.
+const GPS_POOR_M: f64 = OFF_ROUTE_M;
+
+/// After this long with no *new* fix, the position on screen is a memory.
+///
+/// Detected by the fix changing rather than by a timestamp, because [`GpsFix`]
+/// carries none — see [`GpsQuality`]. Generous, so a parked vehicle whose receiver
+/// happens to repeat a coordinate is not accused of losing signal.
+const GPS_STALE_S: f32 = 12.0;
+
 /// …and for how long it has to hold before the card says so. Undebounced, the
 /// banner fires on any transient: the frames between a teleport being *requested*
 /// and the map re-anchoring under it read as hundreds of metres off route, and
@@ -274,6 +345,105 @@ impl MapOrientation {
                 PERSPECTIVE_LOOKAHEAD,
             ),
         }
+    }
+}
+
+/// How much the position on screen can be trusted this frame.
+///
+/// **Nothing used to say.** `GpsFix::accuracy_m` was parsed by both providers and
+/// read by nobody, `DriverState::gps_fix` was set and never rendered, and the only
+/// thing that could produce a message was an explicit provider *error* — so "the
+/// watch started and no fix has arrived", "50 m of error in a tunnel" and "a
+/// metre, locked on" all displayed as identical, confident navigation. That is the
+/// failure mode a navigation display can least afford: it is not wrong about where
+/// you are, it is silent about not knowing.
+///
+/// [`Self::Stale`] is inferred from the fix not *changing*, which is a compromise:
+/// [`GpsFix`] carries no timestamp, so there is nothing to age. A monotonic `at`
+/// on the fix, stamped by each provider as it writes the slot, is the real answer
+/// and is a `platform::location` change — see this module's commit for the note.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum GpsQuality {
+    /// This build has no provider at all, so the avatar is the position and
+    /// accuracy is not a concept. The desktop default — and not worth a chip,
+    /// because it is the normal state of every desktop run.
+    #[default]
+    NoProvider,
+    /// A watch is running and nothing has come back yet. A cold GNSS start is
+    /// seconds to minutes on a phone, and that wait deserves to be visible.
+    Waiting,
+    /// The provider reported an error (a denied permission, most often).
+    Error,
+    /// Fixes have stopped arriving — see [`GPS_STALE_S`].
+    Stale,
+    /// Arriving, but no better than this many metres ([`GPS_POOR_M`]).
+    Poor(f32),
+    Good,
+}
+
+impl GpsQuality {
+    /// Whether the position is too uncertain to conclude anything from.
+    ///
+    /// Consulted by the reroute, which is the expensive irreversible act: a full
+    /// corridor refetch triggered by tunnel-mouth noise costs the seconds the
+    /// driver needs for the junction they are actually approaching.
+    #[must_use]
+    pub fn unreliable(self) -> bool {
+        matches!(self, Self::Poor(_) | Self::Stale)
+    }
+
+    /// What the chip says, or `None` when there is nothing worth saying. A chip
+    /// that is always up is a chip nobody reads.
+    #[must_use]
+    pub fn chip(self) -> Option<String> {
+        match self {
+            Self::NoProvider | Self::Good => None,
+            Self::Waiting => Some("Waiting for GPS…".to_string()),
+            Self::Error => None, // the provider's own message is shown instead
+            Self::Stale => Some("GPS signal lost — showing the last position".to_string()),
+            Self::Poor(m) => Some(format!("Poor GPS signal (±{m:.0} m)")),
+        }
+    }
+}
+
+/// Classify a fix. Pure, so the states that only occur on a phone in a tunnel are
+/// checkable on a desktop with no receiver.
+fn gps_quality(
+    available: bool,
+    error: bool,
+    accuracy_m: Option<f64>,
+    since_fix_s: Option<f32>,
+) -> GpsQuality {
+    if error {
+        return GpsQuality::Error;
+    }
+    if !available {
+        return GpsQuality::NoProvider;
+    }
+    let Some(accuracy_m) = accuracy_m else {
+        return GpsQuality::Waiting;
+    };
+    if since_fix_s.is_some_and(|s| s > GPS_STALE_S) {
+        return GpsQuality::Stale;
+    }
+    if accuracy_m > GPS_POOR_M {
+        return GpsQuality::Poor(accuracy_m as f32);
+    }
+    GpsQuality::Good
+}
+
+/// Whether the guidance cues sound — the field a Settings row binds to.
+///
+/// A newtype rather than a bare `bool` for one reason: its default is *on*, and
+/// [`DriverState`] keeps its derived `Default` (two dozen fields, every one of
+/// which wants the zero value). Eyes-off-road guidance that has to be switched on
+/// before it works is guidance nobody has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GuidanceSound(pub bool);
+
+impl Default for GuidanceSound {
+    fn default() -> Self {
+        Self(true)
     }
 }
 
@@ -397,6 +567,30 @@ pub struct DriverState {
     pub gps_error: Option<String>,
     /// Set while a device fix — rather than the avatar — is driving the position.
     pub gps_fix: bool,
+    /// How much this frame's position can be trusted. Drawn as a chip, and read by
+    /// the reroute before it spends a corridor fetch on it.
+    pub gps: GpsQuality,
+    /// Whether the guidance cues sound. Public so a Settings row can bind to it.
+    pub cues: GuidanceSound,
+    /// The solver's own message when a reroute could not be answered.
+    ///
+    /// Kept here rather than read off `SolveStatus` at the point of drawing so that
+    /// the card and the retry are looking at the same fact — and so that pressing
+    /// Retry can clear it in the frame the request goes out, rather than leaving
+    /// "no route" on screen beside a spinner.
+    pub solve_error: Option<String>,
+    /// The Retry button was pressed. An edge, consumed by `drive_driver_mode`,
+    /// which owns every reroute — the HUD is not the place to reach into
+    /// `RouteState`.
+    retry_requested: bool,
+    /// Where to draw the vehicle marker instead of the raw position, as an offset
+    /// in world XZ metres, plus the yaw of the road it was snapped to. `None`
+    /// beyond [`SNAP_M`], where the raw fix is the honest thing to draw.
+    snap: Option<(Vec2, f32)>,
+    /// The last *distinct* fix, and when it arrived — the only handle on staleness
+    /// there is, `GpsFix` carrying no timestamp.
+    last_fix: Option<GpsFix>,
+    last_fix_at: Option<Instant>,
     /// A reroute is in flight — the card says so instead of naming a manoeuvre off
     /// a route the vehicle has already left.
     pub rerouting: bool,
@@ -462,6 +656,12 @@ impl DriverState {
         self.last_sample = None;
         self.gps_error = None;
         self.gps_fix = false;
+        self.gps = GpsQuality::default();
+        self.last_fix = None;
+        self.last_fix_at = None;
+        self.snap = None;
+        self.solve_error = None;
+        self.retry_requested = false;
         self.watch = Some(LocationWatch::start());
         // Navigation is the one mode where the screen must not sleep: a phone
         // blanks 30 s into a drive and the app is over, having done nothing wrong.
@@ -490,6 +690,10 @@ impl DriverState {
         crate::platform::android::set_keep_screen_on(false);
         self.progress = None;
         self.gps_fix = false;
+        self.gps = GpsQuality::default();
+        self.snap = None;
+        self.solve_error = None;
+        self.retry_requested = false;
         self.arrived = false;
         self.peek = Peek::default();
         tracing::info!("driver mode off");
@@ -641,17 +845,25 @@ pub fn drive_driver_mode(
         driver.armed = false;
         driver.enter();
     }
-    // The mode exists only for a solved route. Clearing one, or editing an
+    // The mode exists only for a route to drive. Clearing one, or editing an
     // endpoint, drops straight out — better than driving a line that is gone.
     // A solve *in flight* is not gone, though: switching travel mode mid-drive
     // re-runs the search over the cached graph, and being thrown out of navigation
     // for the frames that takes would be absurd.
+    //
+    // **Nor is a reroute that failed.** `RouteState::displayed` still answers with
+    // the route being replaced (`held`), and that is deliberately what this tests:
+    // an underground car park, a missed motorway exit and a tile-server hiccup all
+    // end a solve with `route == None`, and the previous behaviour was to leave
+    // navigation entirely — silently, because the message lives in the Route panel,
+    // which driver mode closed on the way in and whose dock is hidden while driving.
+    // The drive continues, the card says what happened, and the driver decides.
     let solving = matches!(
         route.status,
         crate::systems::navigation::SolveStatus::Fetching(..)
             | crate::systems::navigation::SolveStatus::Solving
     );
-    if driver.active && route.route.is_none() && !solving {
+    if driver.active && route.displayed().is_none() && !solving {
         driver.exit();
     }
     if !driver.active {
@@ -659,7 +871,7 @@ pub fn drive_driver_mode(
         driver.geom_generation = None;
         return;
     }
-    let Some(r) = route.route.as_ref() else {
+    let Some(r) = route.displayed() else {
         return;
     };
     let Some(anchor) = map_anchor.geo else {
@@ -679,9 +891,33 @@ pub fn drive_driver_mode(
     // build has a provider today, so on desktop this arm never fires and the
     // avatar keeps its position — driver mode then narrates the user's own
     // movement, which is exactly what makes it usable without a dongle.
+    let now = Instant::now();
     let fix = driver.watch.as_ref().and_then(LocationWatch::latest);
     driver.gps_error = driver.watch.as_ref().and_then(LocationWatch::error);
     driver.gps_fix = fix.is_some();
+
+    // ── How much the fix is worth ──
+    //
+    // Freshness is measured by the fix *changing*, not by its age: `GpsFix` has no
+    // timestamp to age. A receiver that keeps reporting the same coordinate to the
+    // millimetre has either stopped or is parked, and the two are indistinguishable
+    // from here — hence a generous `GPS_STALE_S`, and a message that says the
+    // position is the last known one rather than claiming the receiver is broken.
+    if let Some(f) = fix {
+        if driver.last_fix != Some(f) {
+            driver.last_fix = Some(f);
+            driver.last_fix_at = Some(now);
+        }
+    }
+    driver.gps = gps_quality(
+        LocationWatch::available(),
+        driver.gps_error.is_some(),
+        fix.map(|f| f.accuracy_m),
+        driver
+            .last_fix_at
+            .map(|t| now.duration_since(t).as_secs_f32()),
+    );
+
     if let Some(fix) = fix {
         place_avatar(anchor, fix.lat, fix.lng, &mut avatar_state, &mut avatars);
         driver.snap_pending = false;
@@ -708,7 +944,6 @@ pub fn drive_driver_mode(
         0.0,
         cell.z as f64 * edge + f64::from(tf.translation.z),
     );
-    let now = Instant::now();
     let (mut measured_speed, mut measured_course) = (None, None);
     if let Some((prev, t)) = driver.last_sample {
         let dt = (now - t).as_secs_f32();
@@ -757,6 +992,34 @@ pub fn drive_driver_mode(
         .geom
         .as_ref()
         .map(|g| project_onto_route(g, r, [lat, lng]));
+
+    // ── Where the marker is *drawn* ──
+    //
+    // On the road, when the fix is close enough to it to make that a statement
+    // rather than a guess (`SNAP_M`). This is the one number on screen that is
+    // read continuously and never consciously, and an arrow that wanders through
+    // the terrace beside the street undoes the display's credibility about
+    // everything else it says. Beyond the threshold the raw position is drawn,
+    // which is the honest picture of being somewhere the route does not go.
+    //
+    // The snapped *yaw* is only taken when the road agrees with the measured
+    // course. On a route driven backwards — a wrong turn into a one-way, the frames
+    // after a U-turn — the segment points where you are being sent rather than
+    // where you are going, and an arrow contradicting the view out of the window is
+    // worse than one that is merely noisy.
+    let snap = progress.and_then(|p| {
+        if p.off_route_m > SNAP_M {
+            return None;
+        }
+        let geom = driver.geom.as_ref()?;
+        let (on, ahead) = point_along(geom, p.along_m)?;
+        let (sx, sz) = lat_lng_to_world(anchor, on[0], on[1]);
+        let (ax, az) = lat_lng_to_world(anchor, ahead[0], ahead[1]);
+        let seg_yaw = f32::atan2((ax - sx) as f32, (az - sz) as f32);
+        let offset = Vec2::new((sx - here.x) as f32, (sz - here.z) as f32);
+        Some((offset, snapped_yaw(driver.course, seg_yaw)))
+    });
+    driver.snap = snap;
     // ── The end of the trip ──
     //
     // Latched (see `DriverState::arrived`): once, on the frame the destination
@@ -801,22 +1064,104 @@ pub fn drive_driver_mode(
     }
     driver.rerouting = driver.reroute_gen.is_some();
 
-    if driver.off_route() && !driver.rerouting && driver.reroute_ready(now) {
+    // A solve that failed is the reroute's other outcome, and it has to be visible
+    // *here* — the Route panel's status line is unreachable mid-drive.
+    //
+    // It stops being news the moment the vehicle is back on the line it is
+    // following: a driver who has rejoined the route by hand does not need a card
+    // about the route they no longer want. Keyed on the measured distance rather
+    // than on `off_route()`, whose grace period would otherwise put two seconds of
+    // "Off route" between the failure and the card that explains it.
+    let back_on_route = progress.is_some_and(|p| p.off_route_m <= OFF_ROUTE_M);
+    driver.solve_error = match &route.status {
+        crate::systems::navigation::SolveStatus::Failed(msg)
+            if !driver.rerouting && !back_on_route =>
+        {
+            Some(msg.clone())
+        }
+        _ => None,
+    };
+
+    // Retry is the same request without the cooldown: the driver has looked at the
+    // failure and asked again, which is exactly the case the loop breaker is not
+    // for. The automatic attempt keeps its floor and keeps running underneath — a
+    // car that failed to reroute in a tunnel gets a fresh route on its own once the
+    // fix comes back, without anyone pressing anything.
+    let retry = std::mem::take(&mut driver.retry_requested);
+    let automatic = driver.off_route()
+        && !driver.rerouting
+        && driver.reroute_ready(now)
+        // A fix whose error bar is as wide as the off-route threshold cannot tell
+        // "left the route" from "left the tunnel". Rerouting on it spends a whole
+        // corridor refetch on noise, at the moment the driver can least afford the
+        // display to be busy.
+        && !driver.gps.unreliable();
+    if retry || automatic {
         driver.reroute_at = Some(now);
         // Only the start moves. The destination is what the user asked for and a
         // reroute must never quietly change it — and re-anchoring the start is
         // exactly what the solver keys on, so this is the whole request.
-        route.set_endpoint_at(crate::systems::navigation::Endpoint::From, lat, lng);
-        // Captured *after* the set: `set_endpoint_at` invalidates, which already
-        // bumps the generation, so this is the value that holds until the solve
-        // lands and bumps it again.
+        //
+        // `reroute_from`, not `set_endpoint_at`: it parks the current route in
+        // `RouteState::held` so the line, the rail, the distance and the ETA all
+        // keep coming from it while the corridor is refetched. The generation is
+        // deliberately *not* bumped by it, which is what leaves the drawn line
+        // alone — so this is captured as the value that holds until the solve lands
+        // and bumps it.
+        route.reroute_from(lat, lng);
         driver.reroute_gen = Some(route.generation);
         // Clear the debounce with it: the position is no longer off *this* route
         // because there is about to be a different one, and leaving it armed would
         // fire a second reroute the instant the cooldown expired.
         driver.off_route_since = None;
         driver.rerouting = true;
-        tracing::info!(lat, lng, "off route — rerouting from the current position");
+        driver.solve_error = None;
+        tracing::info!(lat, lng, retry, "rerouting from the current position");
+    }
+}
+
+/// The point `along` metres into a measured polyline, and the far end of the
+/// segment it falls on — enough to place the marker and to aim it.
+///
+/// Separate from [`nearest_on_polyline`], which answers "how far along and how far
+/// off" and throws the projected point away. It is the same arithmetic run
+/// forwards, and doing it this way round means the snapped marker sits at exactly
+/// the distance the card is counting down from, rather than at a second, nearly
+/// equal projection of its own.
+fn point_along(geom: &RouteGeom, along: f64) -> Option<([f64; 2], [f64; 2])> {
+    if geom.points.len() < 2 {
+        return None;
+    }
+    let along = along.clamp(0.0, geom.total_m);
+    let mut i = 0;
+    while i + 2 < geom.points.len() && geom.cum[i + 1] < along {
+        i += 1;
+    }
+    let (a, b) = (geom.points[i], geom.points[i + 1]);
+    let seg = geom.cum[i + 1] - geom.cum[i];
+    let t = if seg > 1e-6 {
+        ((along - geom.cum[i]) / seg).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    Some(([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], b))
+}
+
+/// The yaw to draw the marker at: the road's, unless the vehicle is plainly not
+/// going that way.
+///
+/// A quarter turn is the cut-off, so ordinary noise about the course — which is
+/// smoothed, and holds its last value at a standstill — still snaps to the street,
+/// while a reversal does not.
+fn snapped_yaw(course: f32, segment: f32) -> f32 {
+    let mut delta = (segment - course).rem_euclid(std::f32::consts::TAU);
+    if delta > std::f32::consts::PI {
+        delta -= std::f32::consts::TAU;
+    }
+    if delta.abs() <= std::f32::consts::FRAC_PI_2 {
+        segment
+    } else {
+        course
     }
 }
 
@@ -1158,6 +1503,12 @@ impl DriverState {
     pub fn recentre(&mut self) {
         self.peek.since = None;
     }
+
+    /// Ask for a failed reroute to be tried again. An edge for `drive_driver_mode`
+    /// to act on, so every path that touches `RouteState` stays in one system.
+    pub fn retry_route(&mut self) {
+        self.retry_requested = true;
+    }
 }
 
 // ─── The arrow ───────────────────────────────────────────────────────────────
@@ -1257,8 +1608,17 @@ pub fn update_driver_arrow(
         }
     };
 
-    let rotation = Quat::from_rotation_y(driver.course);
-    let translation = tf.translation + Vec3::Y * ARROW_Y;
+    // Drawn on the road when the fix is close enough to it to justify saying so —
+    // `drive_driver_mode` decides that and hands over an offset in world XZ metres
+    // (see `SNAP_M`). An offset rather than an absolute position because the
+    // avatar's transform is cell-relative under `big_space`, and a snap is metres:
+    // adding it here cannot cross a cell boundary the avatar has not crossed.
+    let (offset, yaw) = match driver.snap {
+        Some((offset, yaw)) => (Vec3::new(offset.x, 0.0, offset.y), yaw),
+        None => (Vec3::ZERO, driver.course),
+    };
+    let rotation = Quat::from_rotation_y(yaw);
+    let translation = tf.translation + offset + Vec3::Y * ARROW_Y;
     match arrows.single_mut() {
         Ok((_, mut acell, mut atf)) => {
             *acell = *cell;
@@ -1336,7 +1696,10 @@ fn arrow_mesh() -> Mesh {
 /// than sized to content so the compass beneath it has a place to be — the same
 /// reason the status HUD pins its width (`hud::HUD_WIDTH`).
 pub const CARD_WIDTH: f32 = 190.0;
-pub const CARD_HEIGHT: f32 = 118.0;
+/// …including the control row along its bottom, which is why this is 146 and not
+/// the 118 of the instruction alone. `hud` stacks the compass from it, so the
+/// number and the card cannot drift apart.
+pub const CARD_HEIGHT: f32 = 146.0;
 /// Where the card sits, and therefore where everything under it stacks from.
 pub const CARD_MARGIN: f32 = 12.0;
 
@@ -1347,7 +1710,65 @@ const STRIP_WIDTH: f32 = 116.0;
 /// Height of the route rail's track. The one dimension the widget's usefulness
 /// scales with — everything on the route between here and the destination has to
 /// find a distinct pixel on it.
+///
+/// Shorter on a phone, where the strip is stacked *under* the card rather than
+/// beside it (see [`render_driver_hud`]) and the two share one column of screen.
 const RAIL_HEIGHT: f32 = 236.0;
+const RAIL_HEIGHT_COMPACT: f32 = 132.0;
+
+/// How far the GPS chip clears the bottom edge.
+///
+/// Above the speed pill's band on purpose: the Re-centre button is anchored to the
+/// bottom *right* at [`PILL_BOTTOM`], and a chip on the bottom left at the same
+/// height shared a y-band with it — which on a 274 pt viewport is not a near miss
+/// but an overlap, the chip being the wider of the two.
+const CHIP_BOTTOM: f32 = PILL_BOTTOM + 36.0;
+
+/// Where the two anchored boxes go, for a viewport width.
+struct DriverLayout {
+    card_width: f32,
+    strip_width: f32,
+    /// The strip's offset from the top, which on a narrow viewport is *below* the
+    /// card rather than beside it.
+    strip_top: f32,
+    rail_height: f32,
+}
+
+/// Fit the chrome to the screen it is on.
+///
+/// **Nothing in this module read the viewport at all**, which is how a layout that
+/// is unusable on the target device survived: every box is anchored to a corner,
+/// and on a desktop the corners are far enough apart that no arithmetic is needed.
+/// At the 274 pt an Android phone reports, the 190 pt card and the 116 pt strip
+/// each fit and cannot both fit — anchored to opposite edges they overlapped by
+/// 56 pt, one drawing over the other's numbers.
+///
+/// So on a compact viewport the strip stacks under the card instead of beside it.
+/// Stacking down the *right* edge specifically: the column under the card on the
+/// left belongs to the compass and the locate button (`hud::render_map_controls`
+/// stacks them from [`CARD_HEIGHT`]). The rail loses height to pay for it, because
+/// the strip now shares one screen's height with the card rather than owning its
+/// own edge.
+///
+/// A pure function because "does the chrome fit" is arithmetic, and this is another
+/// case of a thing that cannot be checked by looking on the machine it is built on.
+fn driver_layout(viewport_x: f32, compact: bool) -> DriverLayout {
+    let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
+    DriverLayout {
+        card_width: CARD_WIDTH.min(usable),
+        strip_width: STRIP_WIDTH.min(usable),
+        strip_top: if compact {
+            CARD_MARGIN + CARD_HEIGHT + 8.0
+        } else {
+            CARD_MARGIN
+        },
+        rail_height: if compact {
+            RAIL_HEIGHT_COMPACT
+        } else {
+            RAIL_HEIGHT
+        },
+    }
+}
 
 /// Half-width of the track, and the radius of a marker badge sitting on it.
 const RAIL_HALF_W: f32 = 4.0;
@@ -1413,7 +1834,7 @@ pub fn render_driver_hud(
     route: Res<RouteState>,
     ahead: Res<RouteAhead>,
     clock: Res<crate::systems::transit_live::WorldClock>,
-    right_panel: Res<crate::resources::RightPanel>,
+    mut right_panel: ResMut<crate::resources::RightPanel>,
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
     ai: Res<crate::resources::AiAssistantState>,
@@ -1422,21 +1843,36 @@ pub fn render_driver_hud(
     if !driver.active {
         return;
     }
-    let Some(r) = route.route.as_ref() else {
+    // The route being *driven*, which during a reroute is the one being replaced.
+    let Some(r) = route.displayed() else {
         return;
     };
     let progress = driver.progress.unwrap_or_default();
     let arrived = driver.arrived;
     let off_route = driver.off_route();
     let rerouting = driver.rerouting;
+    let failed = driver.solve_error.clone();
     let step = r.steps.get(progress.step);
-    // Escape leaves, and it is not a convenience: the Stop button lives on the
-    // trip strip, and the strip stands down whenever a right-hand panel is open
-    // (it cannot be drawn behind one). Opening the Places list mid-drive
-    // therefore took away the only way out. Gated the same way every other key
-    // binding in the client is, so typing an address does not end the trip.
-    let mut exit =
-        keyboard.just_pressed(KeyCode::Escape) && !egui.ui_owns_keyboard(false, &keyboard);
+    // Phone layout. At 274 pt — the viewport an Android phone actually reports —
+    // the card (190) and the strip (116) both fit the width and cannot both fit it
+    // at once: right- and left-anchored, they overlapped by 56 pt, one drawing over
+    // the other. Nothing here read the viewport at all, which is how that survived:
+    // every box is anchored to a corner, and on a desktop the corners are far apart.
+    let viewport_x = egui.viewport_pts().x;
+    let DriverLayout {
+        card_width,
+        strip_width,
+        strip_top,
+        rail_height,
+    } = driver_layout(viewport_x, egui.compact());
+    // What any full-width box may claim, the chip included.
+    let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
+    // Escape leaves. It is the keyboard's shortcut rather than the only exit now —
+    // Stop moved onto the manoeuvre card, which is always drawn, because a touch
+    // device has no Escape key and the strip Stop used to live on stands down
+    // behind any docked panel. Gated the same way every other key binding in the
+    // client is, so typing an address does not end the trip.
+    let exit = keyboard.just_pressed(KeyCode::Escape) && !egui.ui_owns_keyboard(false, &keyboard);
     let ctx = egui.ctx_mut().clone();
     let panel = |fill: egui::Color32| {
         egui::Frame::NONE
@@ -1446,25 +1882,34 @@ pub fn render_driver_hud(
     };
 
     // ── The manoeuvre card ──
+    //
+    // **Everything that must always be reachable lives on this box**, because this
+    // box is the only one that is always drawn. The trip strip stands down whenever
+    // a right-hand panel is open, and it used to carry Stop — so opening the Places
+    // list on a phone, which has no Escape key to fall back on, left a drive with
+    // no exit at all.
     let mut done = false;
+    let mut retry = false;
+    let mut open_planner = false;
     egui::Area::new(egui::Id::new("driver_maneuver"))
         .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
         .show(&ctx, |ui| {
             // Amber, not red, while the route is being replaced: leaving the line
             // is the normal case (you missed a turn), and the display is already
-            // fixing it. Red is reserved for the state it cannot fix. Green is the
-            // trip being over — the one card that is not an instruction.
+            // fixing it. Red is reserved for the state it cannot fix — which now
+            // includes a reroute that came back empty. Green is the trip being
+            // over — the one card that is not an instruction.
             panel(if arrived {
                 ARRIVE_GREEN
             } else if rerouting {
                 theme::AMBER
-            } else if off_route {
+            } else if off_route || failed.is_some() {
                 theme::ERROR
             } else {
                 DRIVE_BLUE
             })
             .show(ui, |ui| {
-                ui.set_width(CARD_WIDTH - 20.0);
+                ui.set_width(card_width - 20.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     if arrived {
@@ -1482,91 +1927,150 @@ pub fn render_driver_hud(
                                 .truncate(),
                             );
                         }
-                        ui.add_space(3.0);
-                        if ui
-                            .add(egui::Button::new(egui::RichText::new("Done").size(12.5)))
-                            .on_hover_text("End the trip and put the map back")
-                            .clicked()
-                        {
-                            done = true;
-                        }
-                        return;
-                    }
-                    if rerouting {
+                    } else if let Some(err) = &failed {
+                        // The state that used to end the drive without saying
+                        // anything: `route` went to `None`, the tick dropped out of
+                        // driver mode, and the explanation was in a panel nobody
+                        // could see. The route being replaced is still drawn under
+                        // this card, so "keep going on the old line" is a real
+                        // option beside Retry and Stop.
+                        ui.label(big("No new route", 18.0, theme::INK));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(err.as_str())
+                                    .size(11.5)
+                                    .color(theme::INK),
+                            )
+                            .truncate(),
+                        );
+                        ui.label(small("still following the previous route", theme::INK));
+                    } else if rerouting {
                         ui.label(big("Rerouting…", 19.0, theme::INK));
                         ui.label(small("from your current position", theme::INK));
-                        return;
-                    }
-                    if off_route {
-                        // Reached only when a reroute cannot be asked for yet
-                        // (the cooldown, or a solve that failed) — otherwise
-                        // the card above has already taken over.
+                    } else if off_route {
+                        // Reached only when a reroute cannot be asked for yet — the
+                        // cooldown, or a fix too poor to act on.
                         ui.label(big("Off route", 20.0, theme::INK));
                         ui.label(small(
                             &format!("{} from the route", format_distance(progress.off_route_m)),
                             theme::INK,
                         ));
-                        return;
-                    }
-                    // Glyph and distance on one line, street name under it —
-                    // the satnav arrangement, and it keeps the card short
-                    // enough to leave the compass its place below.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
-                        ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
-                        ui.label(big(
-                            &countdown(progress.step_distance_m),
-                            24.0,
-                            theme::CREAM,
-                        ));
-                    });
-                    // Street name, and — when the manoeuvre after this one
-                    // follows immediately — a preview of it on the same row.
-                    // Right-aligned so it reads as a footnote to the turn
-                    // rather than as a competing instruction, and inside the
-                    // card so the compass below keeps its place.
-                    ui.horizontal(|ui| {
-                        if let Some(name) = step.and_then(|s| s.name.as_deref()) {
-                            ui.label(egui::RichText::new(name).size(12.5).color(theme::CREAM));
-                        }
-                        let Some(next) = r.steps.get(progress.step + 1) else {
-                            return;
-                        };
-                        if next_step_gap(r, progress) > THEN_PREVIEW_M {
-                            return;
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            ui.label(
-                                egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
-                                    .size(16.0)
-                                    .color(theme::CREAM),
-                            );
-                            ui.label(
-                                egui::RichText::new("then")
-                                    .size(11.0)
-                                    .color(theme::CREAM.gamma_multiply(0.75)),
+                    } else {
+                        // Glyph and distance on one line, street name under it —
+                        // the satnav arrangement, and it keeps the card short
+                        // enough to leave the compass its place below.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
+                            ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
+                            ui.label(big(
+                                &countdown(progress.step_distance_m),
+                                24.0,
+                                theme::CREAM,
+                            ));
+                        });
+                        // Street name, and — when the manoeuvre after this one
+                        // follows immediately — a preview of it on the same row.
+                        // Right-aligned so it reads as a footnote to the turn
+                        // rather than as a competing instruction, and inside the
+                        // card so the compass below keeps its place.
+                        ui.horizontal(|ui| {
+                            if let Some(name) = step.and_then(|s| s.name.as_deref()) {
+                                ui.label(egui::RichText::new(name).size(12.5).color(theme::CREAM));
+                            }
+                            let Some(next) = r.steps.get(progress.step + 1) else {
+                                return;
+                            };
+                            if next_step_gap(r, progress) > THEN_PREVIEW_M {
+                                return;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    ui.label(
+                                        egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
+                                            .size(16.0)
+                                            .color(theme::CREAM),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("then")
+                                            .size(11.0)
+                                            .color(theme::CREAM.gamma_multiply(0.75)),
+                                    );
+                                },
                             );
                         });
+                        approach_bar(ui, progress.step_distance_m);
+                    }
+
+                    // ── The controls that are always there ──
+                    //
+                    // Stop, because a touch device has no Escape and the strip that
+                    // used to carry it can be covered. Route, because mid-drive
+                    // every other way back is suppressed — the dock, the address bar
+                    // and the planner itself — so there was no way to change the
+                    // destination, read the turn list or switch travel mode without
+                    // first ending the trip.
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new(if arrived { "Done" } else { "Stop" })
+                                    .size(12.0),
+                            ))
+                            .on_hover_text("Leave driver mode and put the map back")
+                            .clicked()
+                        {
+                            done = true;
+                        }
+                        if failed.is_some()
+                            && ui
+                                .add(egui::Button::new(egui::RichText::new("Retry").size(12.0)))
+                                .on_hover_text("Ask for a route from here again")
+                                .clicked()
+                        {
+                            retry = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(egui::Button::new(egui::RichText::new("Route").size(12.0)))
+                                .on_hover_text("Open the planner — destination, turn list, mode")
+                                .clicked()
+                            {
+                                open_planner = true;
+                            }
+                        });
                     });
-                    approach_bar(ui, progress.step_distance_m);
                 });
             });
         });
 
-    // ── Permission trouble. Nothing else would ever say why the arrow is not
-    // moving on a build that does have a provider. ──
-    if let Some(err) = driver.gps_error.clone() {
-        egui::Area::new(egui::Id::new("driver_gps_error"))
+    // ── What the position is worth, bottom left ──
+    //
+    // The provider's own message when there is one, otherwise the quality of the
+    // fix itself (`GpsQuality`). Before this, "the watch has started and nothing has
+    // arrived", "±50 m in a tunnel" and a metre-accurate lock all rendered as the
+    // same confident arrow on the same confident card.
+    let chip = driver
+        .gps_error
+        .as_ref()
+        .map(|err| format!("{err} — following the avatar"))
+        .or_else(|| driver.gps.chip());
+    if let Some(chip) = chip {
+        egui::Area::new(egui::Id::new("driver_gps_chip"))
             .anchor(
                 egui::Align2::LEFT_BOTTOM,
-                egui::vec2(CARD_MARGIN, -PILL_BOTTOM),
+                egui::vec2(CARD_MARGIN, -CHIP_BOTTOM),
             )
             .show(&ctx, |ui| {
                 panel(theme::OVERLAY).show(ui, |ui| {
-                    ui.set_width(260.0);
-                    ui.label(small(&format!("{err} — following the avatar"), theme::WARN));
+                    ui.set_width(260.0_f32.min(usable) - 20.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(chip).size(11.0).color(theme::WARN))
+                            .truncate(),
+                    );
                 });
             });
     }
@@ -1580,24 +2084,28 @@ pub fn render_driver_hud(
         || ai.open
         || !right_panel.is(crate::resources::RightPanel::None);
 
-    let (hh, mm, _) = clock.hms().0;
-    let arrival = arrival_clock(hh, mm, progress.remaining_s);
+    let ((hh, mm, _), local_clock) = clock.hms();
+    let arrival = arrival_clock(hh, mm, progress.remaining_s, local_clock);
     // Not an early `return`: the speed pill and its limit sign are drawn below and
     // sit at the bottom centre, nowhere near the panel.
     if !right_panel_open {
         egui::Area::new(egui::Id::new("driver_strip"))
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(-CARD_MARGIN, CARD_MARGIN),
-            )
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-CARD_MARGIN, strip_top))
             .show(&ctx, |ui| {
                 panel(theme::OVERLAY).show(ui, |ui| {
-                    ui.set_width(STRIP_WIDTH - 20.0);
+                    ui.set_width(strip_width - 20.0);
                     ui.vertical_centered(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
                         // Arrival first: on a drive of any length it is the number
                         // being planned around, which is why a satnav puts it top.
-                        ui.label(big(&arrival, 24.0, theme::CREAM));
+                        // A pace smaller when it carries the " UTC" suffix, which
+                        // otherwise wraps onto a second line in a 96 pt column and
+                        // pushes the rail down.
+                        ui.label(big(
+                            &arrival,
+                            if local_clock { 24.0 } else { 18.0 },
+                            theme::CREAM,
+                        ));
                         if arrived {
                             // The same clock, now a fact rather than a forecast.
                             // What is left is nothing, and `format_duration`
@@ -1619,18 +2127,10 @@ pub fn render_driver_hud(
                             ));
                         }
                         ui.add_space(8.0);
-                        route_rail(ui, &ctx, &ahead, progress);
-                        ui.add_space(6.0);
-                        if ui
-                            // Spelled out, not `✕ Stop`: the cross is not in the
-                            // bundled font and drew as a tofu box (see
-                            // `theme::close_button`, which paints its own).
-                            .add(egui::Button::new(egui::RichText::new("Stop").size(12.5)))
-                            .on_hover_text("Leave driver mode and put the map back")
-                            .clicked()
-                        {
-                            exit = true;
-                        }
+                        route_rail(ui, &ctx, &ahead, progress, rail_height);
+                        // Stop used to live here, and here is exactly where it
+                        // could not be relied on — this whole strip stands down
+                        // behind a docked panel. It is on the manoeuvre card now.
                     });
                 });
             });
@@ -1703,6 +2203,15 @@ pub fn render_driver_hud(
     }
     if recentre {
         driver.recentre();
+    }
+    if retry {
+        driver.retry_route();
+    }
+    // Opening the planner does not leave driver mode: the drive carries on behind
+    // it, the strip stands down as it does for any docked panel, and the card —
+    // Stop included — stays put.
+    if open_planner {
+        *right_panel = crate::resources::RightPanel::Route;
     }
 
     // Arriving and stopping are the same act as far as the mode is concerned —
@@ -1808,9 +2317,15 @@ fn next_step_gap(route: &Route, progress: Progress) -> f64 {
 /// of car parks in one street becomes a legible column rather than one smudge;
 /// anything pushed past the destination cap is dropped and counted, because a
 /// badge drawn over the flag would claim to be the end of the route.
-fn route_rail(ui: &mut egui::Ui, ctx: &egui::Context, ahead: &RouteAhead, progress: Progress) {
+fn route_rail(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    ahead: &RouteAhead,
+    progress: Progress,
+    height: f32,
+) {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, RAIL_HEIGHT), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let x = rect.center().x;
     let top = rect.top() + RAIL_BADGE_R;
@@ -2009,10 +2524,18 @@ fn small(text: &str, color: egui::Color32) -> egui::RichText {
 }
 
 /// Wall-clock time of arrival, `remaining` seconds after `h:m`.
-fn arrival_clock(h: u32, m: u32, remaining_s: f64) -> String {
+///
+/// **Suffixed when the clock is not local.** `WorldClock::hms` returns the time
+/// *and* whether it is local — it is UTC before the anchor's timezone has been
+/// resolved, and permanently so whenever the user has asked for UTC. Discarding
+/// that second value, which this did, produces the one arrival time a driver
+/// cannot detect as wrong: an hour or two out, in the right format, in a box whose
+/// whole job is to be glanced at.
+fn arrival_clock(h: u32, m: u32, remaining_s: f64, local: bool) -> String {
     let mins = (i64::from(h) * 60 + i64::from(m) + (remaining_s / 60.0).round() as i64)
         .rem_euclid(24 * 60);
-    format!("{:02}:{:02}", mins / 60, mins % 60)
+    let suffix = if local { "" } else { " UTC" };
+    format!("{:02}:{:02}{suffix}", mins / 60, mins % 60)
 }
 
 /// The manoeuvre's arrow, resolved against the font that is actually loaded —
@@ -2020,6 +2543,311 @@ fn arrival_clock(h: u32, m: u32, remaining_s: f64) -> String {
 /// (`navigation::Icons` documents the probing this shares).
 fn maneuver_glyph(ctx: &egui::Context, maneuver: Maneuver) -> &'static str {
     probe_glyph(ctx, maneuver.icon_candidates())
+}
+
+// ─── Audio guidance ──────────────────────────────────────────────────────────
+//
+// The single biggest thing missing from a display meant to be used with your eyes
+// on the road: every instruction was silent, so acting on it meant looking at it.
+// Three tones on the approach to a manoeuvre, one when the route is being
+// replaced, one on arrival.
+//
+// **Deliberately not speech.** There is no TTS anywhere in this tree, native has
+// none to borrow, and a synthesised voice reading street names badly is worse than
+// a tone that means "your turn is coming" — the tone is unambiguous at 120 km/h
+// with the window open, which is the whole test.
+//
+// The bands are `countdown`'s own ladder rather than a second set of numbers: the
+// card coarsens at ~400 m, ~150 m and "Now" precisely because those are the points
+// at which something changes for the driver, so a cue at each of them is a cue at
+// each moment the card had something new to say.
+
+/// Where the cues fire, in metres to the manoeuvre.
+///
+/// The `allow` here and on the items below is the price of keeping the cue logic
+/// compiled and tested on a host that cannot build an audio backend — the same
+/// bargain `soundscape` strikes in its module note, and the reason its synthesis
+/// and rate maths are pure functions. `unused = "deny"` is a workspace lint, so
+/// without it a `--no-default-features` build fails on the arithmetic rather than
+/// on anything to do with sound.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+const CUE_PREPARE_M: f64 = 400.0;
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+const CUE_APPROACH_M: f64 = 150.0;
+
+/// How loud a cue is. Under the footsteps, over nothing: it has to be audible in a
+/// car without being the loudest thing the application ever does.
+#[cfg(feature = "audio")]
+const CUE_VOLUME: f32 = 0.45;
+
+/// Sample rate for the cue tones. Same 22.05 kHz `soundscape` synthesises at —
+/// these are pure tones and it is twice what they need.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+const CUE_SAMPLE_RATE: u32 = 22_050;
+
+/// How close the manoeuvre is, coarsened to the three points a driver acts on.
+///
+/// Ordered, and the order is load-bearing: a cue fires when the band gets *deeper*,
+/// so a fix that jitters back over a threshold cannot re-fire the same tone.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+enum CueBand {
+    Prepare,
+    Approach,
+    Now,
+}
+
+/// Which band a distance falls in, or `None` when there is nothing to prepare for.
+///
+/// Gated on the manoeuvre being one you *do* — the same `turn_ahead` test the
+/// camera's junction tighten uses, and for the same reason: the noded graph puts
+/// `Continue` steps in the middle of a curve, and chiming at every vertex of a
+/// bend would train the driver to ignore the chime.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+fn cue_band(step_distance_m: f64, turn_ahead: bool) -> Option<CueBand> {
+    if !turn_ahead {
+        return None;
+    }
+    if step_distance_m <= NOW_M {
+        Some(CueBand::Now)
+    } else if step_distance_m <= CUE_APPROACH_M {
+        Some(CueBand::Approach)
+    } else if step_distance_m <= CUE_PREPARE_M {
+        Some(CueBand::Prepare)
+    } else {
+        None
+    }
+}
+
+/// A sound the drive can make.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+enum Cue {
+    Prepare,
+    Approach,
+    Now,
+    Reroute,
+    Arrived,
+}
+
+/// What has already been announced. One `Local` on the playing system.
+#[derive(Default)]
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+struct CueMemory {
+    active: bool,
+    step: Option<usize>,
+    band: Option<CueBand>,
+    rerouting: bool,
+    arrived: bool,
+}
+
+/// This frame's facts, as the cue logic needs them.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+struct CueInputs {
+    active: bool,
+    step: usize,
+    band: Option<CueBand>,
+    rerouting: bool,
+    arrived: bool,
+}
+
+/// Decide what — if anything — to play, and remember it.
+///
+/// Pure over its own memory so the interesting parts are testable on a host that
+/// cannot build an audio backend at all (`soundscape`'s module note explains why
+/// this project takes that seriously): that a cue fires once per band per
+/// manoeuvre, that a new manoeuvre re-arms the ladder, and that entering driver
+/// mode is silent — the frame the mode turns on is the frame that knows least, and
+/// a "Now" chime for whatever junction you happen to be beside is not a start to
+/// a drive.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+fn next_cue(mem: &mut CueMemory, now: CueInputs) -> Option<Cue> {
+    if !now.active {
+        *mem = CueMemory::default();
+        return None;
+    }
+    let entering = !mem.active;
+    mem.active = true;
+    if mem.step != Some(now.step) {
+        mem.step = Some(now.step);
+        mem.band = None;
+    }
+    let arrived = now.arrived && !mem.arrived;
+    mem.arrived = now.arrived;
+    let rerouting = now.rerouting && !mem.rerouting;
+    mem.rerouting = now.rerouting;
+    let band = match now.band {
+        Some(b) if mem.band.is_none_or(|had| b > had) => {
+            mem.band = Some(b);
+            Some(b)
+        }
+        _ => None,
+    };
+    if entering {
+        return None;
+    }
+    // Arrival wins: it is the end of the trip, and the last manoeuvre's "Now" and
+    // the arrival land within a few metres of each other.
+    if arrived {
+        return Some(Cue::Arrived);
+    }
+    if rerouting {
+        return Some(Cue::Reroute);
+    }
+    match band {
+        Some(CueBand::Prepare) => Some(Cue::Prepare),
+        Some(CueBand::Approach) => Some(Cue::Approach),
+        Some(CueBand::Now) => Some(Cue::Now),
+        None => None,
+    }
+}
+
+/// The notes a cue is made of: `(hertz, seconds)`.
+///
+/// Rising as the manoeuvre closes and falling on a reroute, because a driver
+/// learns these in one trip or not at all and the direction of the pitch is the
+/// only part that carries meaning without being taught.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+fn cue_notes(cue: Cue) -> &'static [(f32, f32)] {
+    match cue {
+        Cue::Prepare => &[(880.0, 0.14)],
+        Cue::Approach => &[(880.0, 0.11), (1174.7, 0.15)],
+        Cue::Now => &[(1174.7, 0.09), (1567.9, 0.18)],
+        // Down, and the only descending cue: something did not go to plan.
+        Cue::Reroute => &[(880.0, 0.12), (587.3, 0.20)],
+        Cue::Arrived => &[(880.0, 0.12), (1108.7, 0.12), (1318.5, 0.24)],
+    }
+}
+
+/// A sequence of notes as a complete WAV file.
+///
+/// Synthesised rather than shipped, exactly as every other sound in this client is
+/// (`soundscape`'s module note): `.gitattributes` tracks audio by extension, so a
+/// shipped chime would be an LFS object with the documented silent-failure mode —
+/// a clone without `git lfs install` gets a 130-byte pointer and no sound, with
+/// nothing in the log. Four lines of arithmetic cannot fail that way.
+///
+/// Each note is enveloped with a 5 ms attack: the discontinuity at the start of a
+/// tone is an audible click, and a click is exactly what a driver hears as a fault.
+#[cfg_attr(not(feature = "audio"), allow(dead_code))]
+fn cue_wav(notes: &[(f32, f32)]) -> Vec<u8> {
+    let attack = (CUE_SAMPLE_RATE as f32 * 0.005) as usize;
+    let mut samples: Vec<i16> = Vec::new();
+    for &(freq, secs) in notes {
+        let len = (CUE_SAMPLE_RATE as f32 * secs) as usize;
+        for i in 0..len {
+            let t = i as f32 / CUE_SAMPLE_RATE as f32;
+            let env = if i < attack {
+                i as f32 / attack.max(1) as f32
+            } else {
+                (-5.0 * (i - attack) as f32 / len.max(1) as f32).exp()
+            };
+            let v = (t * freq * std::f32::consts::TAU).sin() * env * 0.5;
+            samples.push((v.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
+        }
+    }
+
+    // A 44-byte PCM header, hand-written for the same reason `soundscape::synth`
+    // hand-writes its own: it is a fixed run of known constants, and an encoder
+    // crate would be the larger dependency by far.
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // PCM chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&CUE_SAMPLE_RATE.to_le_bytes());
+    out.extend_from_slice(&(CUE_SAMPLE_RATE * 2).to_le_bytes()); // byte rate
+    out.extend_from_slice(&2u16.to_le_bytes()); // block align
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in &samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// The five clips, built on the first frame that needs one.
+///
+/// Lazily rather than in a startup system, because that would be a second
+/// registration for a feature that is off on most launches — and because five
+/// tenths of a second of 16-bit mono is ~20 KB, cheap enough that building it
+/// during a drive is not a decision worth a frame budget.
+#[cfg(feature = "audio")]
+struct CueClips {
+    prepare: Handle<bevy::audio::AudioSource>,
+    approach: Handle<bevy::audio::AudioSource>,
+    now: Handle<bevy::audio::AudioSource>,
+    reroute: Handle<bevy::audio::AudioSource>,
+    arrived: Handle<bevy::audio::AudioSource>,
+}
+
+#[cfg(feature = "audio")]
+impl CueClips {
+    fn build(sources: &mut Assets<bevy::audio::AudioSource>) -> Self {
+        let mut clip = |cue: Cue| {
+            sources.add(bevy::audio::AudioSource {
+                bytes: cue_wav(cue_notes(cue)).into(),
+            })
+        };
+        Self {
+            prepare: clip(Cue::Prepare),
+            approach: clip(Cue::Approach),
+            now: clip(Cue::Now),
+            reroute: clip(Cue::Reroute),
+            arrived: clip(Cue::Arrived),
+        }
+    }
+
+    fn of(&self, cue: Cue) -> Handle<bevy::audio::AudioSource> {
+        match cue {
+            Cue::Prepare => self.prepare.clone(),
+            Cue::Approach => self.approach.clone(),
+            Cue::Now => self.now.clone(),
+            Cue::Reroute => self.reroute.clone(),
+            Cue::Arrived => self.arrived.clone(),
+        }
+    }
+}
+
+/// Sound the guidance cues.
+///
+/// Gated on the `audio` feature (which pulls `alsa-sys`, so a headless host builds
+/// without it) and on [`DriverState::cues`], the field a Settings row binds to.
+#[cfg(feature = "audio")]
+pub fn play_driver_cues(
+    mut commands: Commands,
+    mut sources: ResMut<Assets<bevy::audio::AudioSource>>,
+    driver: Res<DriverState>,
+    mut clips: Local<Option<CueClips>>,
+    mut memory: Local<CueMemory>,
+) {
+    let progress = driver.progress.unwrap_or_default();
+    let cue = next_cue(
+        &mut memory,
+        CueInputs {
+            active: driver.active && driver.cues.0,
+            step: progress.step,
+            band: cue_band(progress.step_distance_m, progress.turn_ahead),
+            rerouting: driver.rerouting,
+            arrived: driver.arrived,
+        },
+    );
+    let Some(cue) = cue else {
+        return;
+    };
+    let clips = clips.get_or_insert_with(|| CueClips::build(&mut sources));
+    commands.spawn((
+        bevy::audio::AudioPlayer(clips.of(cue)),
+        bevy::audio::PlaybackSettings {
+            mode: bevy::audio::PlaybackMode::Despawn,
+            volume: bevy::audio::Volume::Linear(CUE_VOLUME),
+            ..default()
+        },
+    ));
 }
 
 #[cfg(test)]
@@ -2156,12 +2984,17 @@ mod tests {
     }
 
     /// Arrival time is a wall clock, so it has to wrap at midnight rather than
-    /// print "25:10".
+    /// print "25:10" — and it has to say when it is not the *local* wall clock,
+    /// which is the one error in it a driver could not spot.
     #[test]
-    fn arrival_wraps_past_midnight() {
-        assert_eq!(arrival_clock(18, 57, 6.0 * 60.0), "19:03");
-        assert_eq!(arrival_clock(23, 50, 30.0 * 60.0), "00:20");
-        assert_eq!(arrival_clock(9, 0, 0.0), "09:00");
+    fn arrival_wraps_past_midnight_and_admits_utc() {
+        assert_eq!(arrival_clock(18, 57, 6.0 * 60.0, true), "19:03");
+        assert_eq!(arrival_clock(23, 50, 30.0 * 60.0, true), "00:20");
+        assert_eq!(arrival_clock(9, 0, 0.0, true), "09:00");
+        // `WorldClock` is UTC until the anchor's timezone resolves, and stays UTC
+        // whenever the user asked for it. An unlabelled time is then wrong by hours
+        // in a format that looks exactly right.
+        assert_eq!(arrival_clock(18, 57, 6.0 * 60.0, false), "19:03 UTC");
     }
 
     /// The arrow must point along +Z (the avatar's forward, so a course yaw turns
@@ -2574,5 +3407,263 @@ mod tests {
             ..default()
         };
         assert!(next_step_gap(&route, last).is_infinite());
+    }
+
+    /// The snapped marker has to land at exactly the distance the card is counting
+    /// down from — the same projection, run forwards — or the arrow and the number
+    /// disagree about where the vehicle is.
+    #[test]
+    fn the_marker_snaps_onto_the_route_at_its_own_distance() {
+        let route = fixture();
+        let geom = RouteGeom::build(&route).unwrap();
+
+        // A quarter of the way along, 20 m off to the side: the projection says
+        // 276 m along, and the snapped point is 276 m along the line itself.
+        let side = 20.0 / (111_320.0 * 53.0_f64.to_radians().cos());
+        let p = project_onto_route(&geom, &route, [53.0025, 6.0 + side]);
+        let (on, _) = point_along(&geom, p.along_m).expect("a point on the line");
+        assert!(
+            (on[1] - 6.0).abs() < 1e-9,
+            "the snapped point must be on the line, not beside it: {on:?}"
+        );
+        let (along_again, off_again) = nearest_on_polyline(&geom.points, &geom.cum, on);
+        assert!((along_again - p.along_m).abs() < 0.5, "{along_again}");
+        assert!(off_again < 0.01, "the snapped point is on the route by 0");
+
+        // The ends clamp rather than running off the polyline.
+        let start = point_along(&geom, -50.0).unwrap().0;
+        assert!((start[0] - geom.points[0][0]).abs() < 1e-9, "{start:?}");
+        let end = point_along(&geom, geom.total_m * 2.0).unwrap().0;
+        let last = *geom.points.last().unwrap();
+        assert!((end[0] - last[0]).abs() < 1e-9, "{end:?} vs {last:?}");
+    }
+
+    /// …but the marker must not be *aimed* by the road when the vehicle is plainly
+    /// not going that way. A route driven backwards would otherwise show an arrow
+    /// pointing at the windscreen's opposite.
+    #[test]
+    fn a_snapped_yaw_defers_to_a_contradicting_course() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        // Agreeing within a quarter turn: take the road's angle, which is the
+        // whole point — it removes the jitter of a measured course.
+        assert!((snapped_yaw(0.0, 0.2) - 0.2).abs() < 1e-6);
+        assert!((snapped_yaw(0.0, -0.2) - -0.2).abs() < 1e-6);
+        assert!((snapped_yaw(0.0, FRAC_PI_2 - 0.01) - (FRAC_PI_2 - 0.01)).abs() < 1e-6);
+        // Reversed: keep the measured course.
+        assert!((snapped_yaw(0.0, PI) - 0.0).abs() < 1e-6);
+        assert!((snapped_yaw(0.0, PI - 0.1) - 0.0).abs() < 1e-6);
+        // …and it must wrap, or a course near ±π compares against the wrong branch.
+        assert!((snapped_yaw(PI - 0.05, -PI + 0.05) - (-PI + 0.05)).abs() < 1e-6);
+    }
+
+    /// The fix's quality has to be a *state*, because "no fix yet", "50 m in a
+    /// tunnel" and "locked on" all rendered as the same confident navigation.
+    #[test]
+    fn a_fix_is_classified_before_it_is_believed() {
+        // Desktop: no provider, so there is nothing to complain about and nothing
+        // to suppress — driver mode narrates the avatar there.
+        assert_eq!(
+            gps_quality(false, false, None, None),
+            GpsQuality::NoProvider
+        );
+        assert!(!GpsQuality::NoProvider.unreliable());
+        assert!(GpsQuality::NoProvider.chip().is_none());
+
+        // A watch running with nothing back yet is a wait worth showing.
+        assert_eq!(gps_quality(true, false, None, None), GpsQuality::Waiting);
+        assert!(GpsQuality::Waiting.chip().is_some());
+
+        // A good fix says nothing at all.
+        assert_eq!(
+            gps_quality(true, false, Some(6.0), Some(0.5)),
+            GpsQuality::Good
+        );
+        assert!(GpsQuality::Good.chip().is_none());
+
+        // Poor and stale both stand the reroute down: a corridor refetch triggered
+        // by tunnel-mouth noise costs seconds at the worst possible moment.
+        let poor = gps_quality(true, false, Some(GPS_POOR_M + 20.0), Some(0.5));
+        assert!(matches!(poor, GpsQuality::Poor(_)));
+        assert!(poor.unreliable());
+        assert!(poor.chip().unwrap().contains("80 m"));
+        let stale = gps_quality(true, false, Some(5.0), Some(GPS_STALE_S + 1.0));
+        assert_eq!(stale, GpsQuality::Stale);
+        assert!(stale.unreliable());
+        // An explicit provider error beats every inference about the fix.
+        assert_eq!(
+            gps_quality(true, true, Some(5.0), Some(0.1)),
+            GpsQuality::Error
+        );
+    }
+
+    /// The cue ladder: once per band per manoeuvre, re-armed by the next one, and
+    /// silent on the frame driver mode starts — a "Now" chime for whatever junction
+    /// you happen to be beside is not a way to begin a drive.
+    #[test]
+    fn a_cue_fires_once_per_band_and_re_arms_at_the_next_turn() {
+        let mut mem = CueMemory::default();
+        let at = |step: usize, m: f64| CueInputs {
+            active: true,
+            step,
+            band: cue_band(m, true),
+            rerouting: false,
+            arrived: false,
+        };
+
+        // The first driving frame is silent, whatever it finds.
+        assert_eq!(next_cue(&mut mem, at(0, 60.0)), None);
+        // …and having recorded that band, it does not fire it late.
+        assert_eq!(next_cue(&mut mem, at(0, 55.0)), None);
+        // Deeper is a cue; the same band again is not, in either direction.
+        assert_eq!(next_cue(&mut mem, at(0, 10.0)), Some(Cue::Now));
+        assert_eq!(next_cue(&mut mem, at(0, 9.0)), None);
+        assert_eq!(
+            next_cue(&mut mem, at(0, 120.0)),
+            None,
+            "no cue counting back up"
+        );
+
+        // The next manoeuvre re-arms the whole ladder.
+        assert_eq!(
+            next_cue(&mut mem, at(1, 500.0)),
+            None,
+            "nothing to prepare for"
+        );
+        assert_eq!(next_cue(&mut mem, at(1, 380.0)), Some(Cue::Prepare));
+        assert_eq!(next_cue(&mut mem, at(1, 300.0)), None);
+        assert_eq!(next_cue(&mut mem, at(1, 140.0)), Some(Cue::Approach));
+        assert_eq!(next_cue(&mut mem, at(1, 12.0)), Some(Cue::Now));
+
+        // A `Continue` mid-leg is not a manoeuvre and must never chime — the noded
+        // graph puts one at every vertex of a curve.
+        assert_eq!(cue_band(10.0, false), None);
+    }
+
+    /// The two one-off cues are edges, not states: held for as long as the reroute
+    /// takes, they would otherwise fire every frame of it.
+    #[test]
+    fn the_reroute_and_arrival_cues_fire_once_each() {
+        let mut mem = CueMemory::default();
+        let frame = |rerouting, arrived| CueInputs {
+            active: true,
+            step: 0,
+            band: None,
+            rerouting,
+            arrived,
+        };
+        assert_eq!(next_cue(&mut mem, frame(false, false)), None, "entering");
+        assert_eq!(next_cue(&mut mem, frame(true, false)), Some(Cue::Reroute));
+        assert_eq!(next_cue(&mut mem, frame(true, false)), None);
+        assert_eq!(next_cue(&mut mem, frame(false, false)), None);
+        assert_eq!(next_cue(&mut mem, frame(true, false)), Some(Cue::Reroute));
+
+        assert_eq!(next_cue(&mut mem, frame(true, true)), Some(Cue::Arrived));
+        assert_eq!(next_cue(&mut mem, frame(true, true)), None);
+
+        // Leaving driver mode forgets everything, so the next drive starts silent
+        // rather than announcing the previous trip's arrival.
+        assert_eq!(
+            next_cue(
+                &mut mem,
+                CueInputs {
+                    active: false,
+                    step: 0,
+                    band: None,
+                    rerouting: true,
+                    arrived: true,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            next_cue(&mut mem, frame(true, true)),
+            None,
+            "entering again"
+        );
+    }
+
+    /// Every cue must be a decodable WAV, since nothing here has a decoder to fail
+    /// loudly — an unparseable clip is silence with no message anywhere.
+    #[test]
+    fn every_cue_is_a_well_formed_wav() {
+        for cue in [
+            Cue::Prepare,
+            Cue::Approach,
+            Cue::Now,
+            Cue::Reroute,
+            Cue::Arrived,
+        ] {
+            let wav = cue_wav(cue_notes(cue));
+            assert_eq!(&wav[0..4], b"RIFF", "{cue:?}");
+            assert_eq!(&wav[8..12], b"WAVE", "{cue:?}");
+            let data_len = u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize;
+            assert_eq!(wav.len(), 44 + data_len, "{cue:?}: header/payload disagree");
+            assert_eq!(
+                u32::from_le_bytes(wav[24..28].try_into().unwrap()),
+                CUE_SAMPLE_RATE
+            );
+            // Long enough to be heard over a road, short enough not to still be
+            // playing at the junction it announces.
+            let secs = data_len as f32 / 2.0 / CUE_SAMPLE_RATE as f32;
+            assert!((0.10..=0.60).contains(&secs), "{cue:?} runs {secs}s");
+        }
+        // The first sample is the attack's first step, never a full-amplitude
+        // discontinuity — a click is what a driver hears as a fault.
+        let wav = cue_wav(cue_notes(Cue::Now));
+        assert_eq!(i16::from_le_bytes(wav[44..46].try_into().unwrap()), 0);
+    }
+
+    /// Guidance that has to be switched on before it works is guidance nobody has.
+    #[test]
+    fn the_guidance_cues_are_on_by_default() {
+        assert!(DriverState::default().cues.0);
+    }
+
+    /// The chrome has to fit the screen it is on. At 274 pt — the viewport an
+    /// Android phone reports — the card and the strip each fit the width and cannot
+    /// both fit it, so anchored to opposite edges they overlapped by 56 pt.
+    #[test]
+    fn the_chrome_fits_every_viewport_it_is_drawn_on() {
+        for width in [274.0_f32, 320.0, 400.0, 640.0, 800.0, 1280.0] {
+            let compact = width < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
+            let l = driver_layout(width, compact);
+            assert!(
+                l.card_width <= width - 2.0 * CARD_MARGIN + 1e-3,
+                "the card overflows {width} pt"
+            );
+            assert!(
+                l.strip_width <= width - 2.0 * CARD_MARGIN + 1e-3,
+                "the strip overflows {width} pt"
+            );
+            // Either they are side by side with room to spare, or the strip has
+            // been stacked clear of the card.
+            let side_by_side =
+                CARD_MARGIN + l.card_width <= width - CARD_MARGIN - l.strip_width + 1e-3;
+            let stacked = l.strip_top >= CARD_MARGIN + CARD_HEIGHT;
+            assert!(
+                side_by_side || stacked,
+                "card and strip overlap at {width} pt: card {} strip {} top {}",
+                l.card_width,
+                l.strip_width,
+                l.strip_top
+            );
+        }
+        // The desktop layout is unchanged: full-size boxes, both at the top.
+        let wide = driver_layout(1280.0, false);
+        assert_eq!(wide.card_width, CARD_WIDTH);
+        assert_eq!(wide.strip_width, STRIP_WIDTH);
+        assert_eq!(wide.strip_top, CARD_MARGIN);
+        assert_eq!(wide.rail_height, RAIL_HEIGHT);
+    }
+
+    /// The GPS chip must not share a y-band with the Re-centre button, which is
+    /// anchored to the opposite bottom corner — on a narrow viewport that is an
+    /// overlap, not a near miss.
+    #[test]
+    fn the_gps_chip_clears_the_bottom_row() {
+        assert!(
+            CHIP_BOTTOM > PILL_BOTTOM + 24.0,
+            "the chip sits in the Re-centre button's row"
+        );
     }
 }

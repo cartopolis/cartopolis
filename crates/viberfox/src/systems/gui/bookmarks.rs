@@ -230,6 +230,10 @@ struct Actions {
     delete_folder: Option<u64>,
     update: Option<u64>,
     teleport: Option<Teleport>,
+    /// What to call the teleport's destination in the location history.
+    teleport_label: Option<String>,
+    /// "Route here" on a place: its name and where it is.
+    route: Option<(String, f64, f64)>,
     rename: Option<(Item, String)>,
     recolor: Option<(u64, [f32; 3])>,
     toggle_collapse: Option<u64>,
@@ -340,9 +344,10 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
 }
 
 /// The Places side panel: a directory tree of folders and saved locations.
-/// Click a name to jump there (camera view is preserved), 🔄 to update it to the
-/// current view, ✏ to rename, 🗑 to delete; drag a row onto a folder to move it,
-/// and use the folder's colour swatch to recolour its pins on the map.
+/// Click a name to jump there (camera view is preserved), ⚑ to route to it, 🔄 to
+/// update it to the current view, ✏ to rename, 🗑 to delete; drag a row onto a
+/// folder to move it, and use the folder's colour swatch to recolour its pins on
+/// the map.
 #[allow(clippy::too_many_arguments)]
 pub fn render_bookmarks_panel(
     mut egui: ResMut<EguiManager>,
@@ -656,7 +661,23 @@ fn place_row(
             {
                 act.update = Some(id);
             }
+            // Saved places are the destination source that needs no typing, which
+            // is what makes them the important one on a phone — and until this
+            // button existed the only thing a place could do was teleport the
+            // camera to it. It wears the Route panel's own glyph (probed, never
+            // guessed — `theme::first_drawable`) so the button and the panel it
+            // opens read as one thing. Sitting next to the name rather than at the
+            // right edge keeps 🗑 where the hand already expects it.
+            let flag = theme::first_drawable(ui.ctx(), crate::resources::RightPanel::Route.icons());
+            if ui
+                .small_button(flag)
+                .on_hover_text("Route here — make this the destination")
+                .clicked()
+            {
+                act.route = Some((name.to_string(), lat, lng));
+            }
             fill_remaining(ui, |ui| {
+                let title = name.to_string();
                 // The name button is also the drag handle (see `drag_handle`):
                 // sensing both, egui waits to see whether the press turns into a
                 // drag, so a click still jumps.
@@ -683,6 +704,7 @@ fn place_row(
                         altitude: Some(altitude),
                         pose: None,
                     });
+                    act.teleport_label = Some(title);
                 }
             });
         });
@@ -822,7 +844,15 @@ fn apply(
         store.remove_folder(id);
     }
     if let Some(tp) = act.teleport {
+        // Name the visit, so it lists as itself in the address bar's recents
+        // rather than as five decimals.
+        nav.pending_label = act.teleport_label;
         nav.pending_teleport = Some(tp);
+    }
+    if let Some((name, lat, lng)) = act.route {
+        // Queued rather than applied: this panel does not own `RouteState`, and
+        // `geo_nav::drive_geocode` spends the request (see `geo_nav::RouteRequest`).
+        nav.route_to(name, lat, lng);
     }
 }
 
@@ -898,6 +928,98 @@ mod tests {
             }
         }
         (out, dragged)
+    }
+
+    /// Click one point of a place row, chosen from the row's own rect, and return
+    /// what the row asked for. Separate from [`drive`], which aims at the name;
+    /// this one is for the button strip down the right-hand end.
+    fn click_place_row(aim: impl Fn(egui::Rect) -> egui::Pos2) -> Actions {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        let mut target = egui::Pos2::ZERO;
+        let mut out = Actions::default();
+        for frame in 0..5 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            match frame {
+                1 => raw.events.push(egui::Event::PointerMoved(target)),
+                2 => raw.events.push(button(target, true)),
+                3 => raw.events.push(button(target, false)),
+                _ => {}
+            }
+            let mut act = Actions::default();
+            let mut editing = None;
+            let _ = ctx.run_ui(raw, |ui| {
+                egui::Panel::right("places_test")
+                    .default_size(300.0)
+                    .show(ui, |ui| {
+                        let top = ui.cursor().min;
+                        let right = ui.max_rect().right();
+                        place_row(
+                            ui,
+                            &mut act,
+                            &mut editing,
+                            1,
+                            0,
+                            "Test place",
+                            [1.0, 0.2, 0.2],
+                            (1.0, 2.0, 10.0),
+                            true,
+                        );
+                        let row =
+                            egui::Rect::from_min_max(top, egui::pos2(right, ui.cursor().min.y));
+                        target = aim(row);
+                    });
+            });
+            if act.route.is_some() {
+                out.route = act.route;
+            }
+            if act.teleport.is_some() {
+                out.teleport = act.teleport;
+            }
+            if act.update.is_some() {
+                out.update = act.update;
+            }
+        }
+        out
+    }
+
+    /// The ⚑ must actually receive its press.
+    ///
+    /// A saved place is the destination that needs no typing, so this button is
+    /// the one that matters most on a phone — and it lives in a row whose name is
+    /// a `click_and_drag` widget, which is the arrangement that has eaten a
+    /// button's click here before (see the module docs). Swept in from the right
+    /// edge rather than aimed, because the strip is four small buttons whose
+    /// widths come from the font.
+    #[test]
+    fn the_route_button_in_a_place_row_receives_its_click() {
+        let mut routed = None;
+        for step in 0..30 {
+            let dx = 6.0 + step as f32 * 4.0;
+            let act = click_place_row(|r| egui::pos2(r.right() - dx, r.center().y));
+            if act.route.is_some() {
+                assert!(
+                    act.teleport.is_none(),
+                    "routing to a place must not also fly to it"
+                );
+                routed = act.route;
+                break;
+            }
+        }
+        assert_eq!(
+            routed,
+            Some(("Test place".to_string(), 1.0, 2.0)),
+            "the ⚑ never received a click"
+        );
     }
 
     /// A press-and-release on a row must act on the row, and must not leave a
