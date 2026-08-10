@@ -1,7 +1,7 @@
 ---
 topic: wasm-performance
 triggers: [platform/workers.rs, quality.rs, index.html, lod22.rs, osm_buildings.rs, IoTaskPool, cdp_probe, "wasm", "web build", "phone", "mobile", "render scale", "devicePixelRatio"]
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # What actually costs frames on the web build
@@ -36,12 +36,20 @@ triangles — `?no_shadows` exists to check that one.
 
 ## Still true, still costing
 
-Parsing is still into **untyped `serde_json::Value`** rather than derived structs
-(`lod22.rs:459`, `osm_buildings.rs:108` and `:1845`), so dropping the tree costs
-more than building it. That cost merely moved off the main thread; it was not
-removed. Typing these is the next win if 3DBAG streaming latency matters.
+Parsing is **half fixed** (restated 2026-08-10). `lod22.rs` is typed now — its
+`parse_cell` uses a derived `Deserialize` — so the 3DBAG path no longer boxes
+every coordinate of a ~4 MB cell. What is still an untyped `serde_json::Value`
+walk is the OSM building path: `osm_buildings.rs:203` (`fetch_coverage`) and
+`:2222` (`parse_buildings`), the latter over a multi-megabyte Overpass response.
+Dropping that tree still costs more than building it, and that cost moved off the
+main thread rather than going away. Typing `parse_buildings` is the remaining win.
 
-check: `grep -q "serde_json::Value" crates/viberfox/src/systems/map/lod22.rs`
+check: `grep -qE 'serde_json::from_str::<serde_json::Value>|: serde_json::Value = serde_json::from_str' crates/viberfox/src/systems/map/osm_buildings.rs`
+
+The previous check pointed at `lod22.rs` and had become a **false green**: after
+that file was typed, its only remaining match was the comment explaining that it
+is *not* a `Value` walk, so the grep kept passing while the fact it guarded had
+already changed. Hence the pattern above matches a parse *call*, not a mention.
 
 Overpass's validate-before-persist survived the move via a derived
 `OverpassRemark` struct (serde skips `elements` without allocating). Its
