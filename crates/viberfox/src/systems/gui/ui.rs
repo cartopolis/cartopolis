@@ -254,6 +254,7 @@ pub fn render_menu_bar(
                             for panel in [
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
+                                crate::resources::RightPanel::Settings,
                             ] {
                                 // Same glyph the panel's own header wears, so the menu entry
                                 // and the badge it opens are recognisably one thing.

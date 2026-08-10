@@ -90,6 +90,7 @@ pub enum RightPanel {
     Chat,
     Appearance,
     Script,
+    Settings,
 }
 
 impl RightPanel {
@@ -120,6 +121,7 @@ impl RightPanel {
             Self::Chat => "Nearby Chat",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
+            Self::Settings => "Settings",
         }
     }
 
@@ -151,6 +153,9 @@ impl RightPanel {
             // subset, like every other glyph that was guessed at rather than
             // checked (see the note above).
             Self::Script => &["📝", "✎", "▤", "S"],
+            // `⚙` is the obvious one and, like `🧭` and `✕` before it, is not in
+            // the bundled subset — hence the ladder down to a letter.
+            Self::Settings => &["⚙", "⚒", "◈", "S"],
         }
     }
 }

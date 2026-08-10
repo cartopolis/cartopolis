@@ -708,6 +708,7 @@ mod tests {
                     RightPanel::Assistant,
                     RightPanel::Chat,
                     RightPanel::Appearance,
+                    RightPanel::Settings,
                 ] {
                     let icon = first_drawable(ui.ctx(), panel.icons());
                     let font = TextStyle::Body.resolve(ui.style());

@@ -46,7 +46,13 @@ solo = ["dep:viberfox_simulator"]
 #
 # The clips themselves are synthesised at startup, so this adds no assets and no
 # Git LFS exposure; the only cost is the decoder and the platform backend.
-audio = ["bevy/bevy_audio", "bevy/wav"]
+#
+# `dep:cpal` is the *capture* half. `bevy_audio` wraps rodio, which is output-only,
+# so the microphone needs cpal directly — but cpal is already in the graph *under*
+# rodio, so this adds a direct edge rather than a new crate. It rides the same
+# feature because it links the same ALSA on Linux: a headless build that opts out
+# of `bevy_audio` must not be given an alsa-sys dependency by the back door.
+audio = ["bevy/bevy_audio", "bevy/wav", "dep:cpal"]
 # Faster incremental linking when hacking gameplay; not for release binaries.
 fast-dev = ["bevy/dynamic_linking"]
 # Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
@@ -115,8 +121,10 @@ gribberish = { version = "1.5", default-features = false }
 bevy = { workspace = true, features = ["wayland"] }
 
 # Web build (ADR-033): the browser `fetch` backend for `platform::http`. wasm-only
-# so native builds never see it — native HTTP is `ureq`. Not yet compiled here (no
-# wasm toolchain in the dev image); the seam is in place for when it is.
+# so native builds never see it — native HTTP is `ureq`. This *can* be compiled in
+# the dev image since 2026-08-10, but not with a bare `cargo check --target`:
+# see docs/notes/checking-the-web-build.md for the four flags it needs and why
+# each one's error names something other than its cause.
 # Native-only deps whose crates don't build for wasm (or are meaningless there).
 # Their call sites are cfg-gated to the matching target (ADR-030/033).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -134,6 +142,10 @@ ureq.workspace = true
 # (`utils::clipboard` has a no-op arm for it).
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 arboard.workspace = true
+# Microphone capture for `platform::audio` (see the `audio` feature above).
+# Version-matched to the cpal rodio already resolves, so Cargo unifies to one
+# copy rather than compiling two ALSA backends.
+cpal = { version = "0.17", optional = true }
 
 # Android (`docs/notes/android-build.md`). `android-native-activity` picks the
 # `android-activity` backend, and without one of the two that crate is a bare
@@ -204,7 +216,28 @@ web-sys = { version = "0.3", features = [
     "GeolocationCoordinates",
     "GeolocationPositionError",
     "PositionOptions",
+    # Microphone capture (`platform::audio`): `getUserMedia` through
+    # `MediaDevices`, then a WebAudio graph — a `MediaStreamAudioSourceNode` into
+    # a `ScriptProcessorNode` whose `AudioProcessingEvent` carries the PCM.
+    "MediaDevices",
+    "MediaStream",
+    # Stopping each track is what clears the browser's recording indicator;
+    # closing the AudioContext alone does not.
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "MediaStreamAudioSourceNode",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioNode",
+    "AudioDestinationNode",
+    "AudioBuffer",
+    "AudioProcessingEvent",
+    "ScriptProcessorNode",
 ] }
+# `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
+# off a rejected permission promise. Already in the graph under web-sys; named
+# here only to make the import legal.
+js-sys = "0.3"
 # Await the `writeText` promise so a rejected clipboard write is logged rather
 # than left as an unhandled rejection (`utils::clipboard`). Already in the graph
 # under bevy — naming it here only makes the import legal.

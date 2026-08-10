@@ -82,6 +82,9 @@ pub struct Soundscape {
     steps: [Handle<AudioSource>; 2],
     land: Handle<AudioSource>,
     wind: Handle<AudioSource>,
+    /// The Settings ▸ Audio sound test. Public because it is played from the
+    /// panel rather than from this module's own systems.
+    pub test_tone: Handle<AudioSource>,
 }
 
 #[cfg(feature = "audio")]
@@ -101,6 +104,7 @@ pub fn setup_soundscape(mut commands: Commands, mut sources: ResMut<Assets<Audio
         steps: [source(synth::footstep(0.9)), source(synth::footstep(1.15))],
         land: source(synth::landing()),
         wind: source(synth::wind()),
+        test_tone: source(synth::test_tone()),
     };
     // The wind runs from startup at zero volume rather than being spawned when
     // motion begins: a looping source started mid-motion has an audible attack,
@@ -312,6 +316,43 @@ pub mod synth {
                 to_i16((lp * 0.8 + thump * 0.6) * env)
             })
             .collect();
+        wav(&samples)
+    }
+
+    /// The Audio settings tab's sound test: a short two-tone chime.
+    ///
+    /// Deliberately **not** a sine sweep or a single sine. The question the test
+    /// answers is "is sound reaching my ears from *this* application", and a pure
+    /// tone is easy to mistake for tinnitus or a coincidental system sound, while
+    /// a sweep tells you nothing extra unless you are checking frequency response.
+    /// Two clearly-pitched notes (A5 then E6, a rising fifth) are unmistakably
+    /// deliberate and unmistakably ours.
+    ///
+    /// Each note is enveloped: a 5 ms attack and a decay to silence. Without the
+    /// attack the discontinuity at the start of a tone is an audible click, which
+    /// on a *speaker test* is exactly the artefact that makes someone think their
+    /// output is broken.
+    pub fn test_tone() -> Vec<u8> {
+        const NOTES: [f32; 2] = [880.0, 1318.5];
+        const NOTE_SECS: f32 = 0.18;
+        let note_len = (SAMPLE_RATE as f32 * NOTE_SECS) as usize;
+        let attack = (SAMPLE_RATE as f32 * 0.005) as usize;
+
+        let mut samples: Vec<i16> = Vec::with_capacity(note_len * NOTES.len());
+        for freq in NOTES {
+            for i in 0..note_len {
+                let secs = i as f32 / SAMPLE_RATE as f32;
+                let env = if i < attack {
+                    i as f32 / attack as f32
+                } else {
+                    // Exponential decay reads as a struck note; linear reads as a
+                    // fade-out, which is what a sound *card* dying sounds like.
+                    (-6.0 * (i - attack) as f32 / note_len as f32).exp()
+                };
+                let v = (secs * freq * std::f32::consts::TAU).sin() * env * 0.35;
+                samples.push((v.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
+            }
+        }
         wav(&samples)
     }
 

@@ -420,7 +420,11 @@ unclear signal must not start a build.
 A worktree on the issue's branch, cut from `origin/main` unless it is a
 [takeover](#handover). Verify with `cargo check -p <crate>` and
 `cargo test -p viberfox_geo && cargo test -p viberfox`, commit in Conventional
-Commits style, push the branch. `main` is protected; the bot cannot push to it.
+Commits style, push the branch. `main` is protected: direct pushes are whitelisted
+to `jeroen`, so the bot cannot push to it. It *can* open and merge a PR through
+the API — the protection sets no merge whitelist, no required approvals and no
+status checks — but that is a thing to do when asked, not a lane the bot drives
+itself into.
 
 > **Not `--bin viberfox`.** That was the command here until 2026-08-06, and since
 > the lib+shim split ([client-build-cost.md](notes/client-build-cost.md)) it runs

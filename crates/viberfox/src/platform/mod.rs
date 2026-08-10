@@ -9,6 +9,7 @@
 //! First seam: [`http`] — one async fetch on Bevy's `IoTaskPool`, replacing the
 //! per-fetcher `std::thread::spawn` + blocking `ureq` pattern (ADR-033 Phase 1).
 
+pub mod audio;
 pub mod http;
 pub mod location;
 pub mod storage;
