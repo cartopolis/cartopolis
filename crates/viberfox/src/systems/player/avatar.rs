@@ -718,27 +718,37 @@ pub fn sync_avatar_animations(
     avatars: Query<Entity, Or<(With<Avatar>, With<RemoteAvatar>)>>,
     children: Query<&Children>,
     mut players: Query<&mut AnimationPlayer>,
+    // Reused across frames and avatars. A preset avatar — all four slots from one
+    // style — resolves to a *single* holder, which is the common case and the one
+    // that leaves here having done nothing; it should not also cost two heap
+    // allocations per frame for the privilege.
+    mut holder_players: Local<Vec<Entity>>,
+    mut seeks: Local<Vec<(AnimationNodeIndex, f32)>>,
 ) {
     for avatar in avatars.iter() {
-        let holder_players: Vec<Entity> = children
-            .iter_descendants(avatar)
-            .filter(|&e| players.get(e).is_ok())
-            .collect();
+        holder_players.clear();
+        holder_players.extend(
+            children
+                .iter_descendants(avatar)
+                .filter(|&e| players.get(e).is_ok()),
+        );
         if holder_players.len() < 2 {
             continue;
         }
-        let seeks: Vec<(AnimationNodeIndex, f32)> = {
+        seeks.clear();
+        {
             let Ok(leader) = players.get(holder_players[0]) else {
                 continue;
             };
-            leader
-                .playing_animations()
-                .map(|(&node, active)| (node, active.seek_time()))
-                .collect()
-        };
+            seeks.extend(
+                leader
+                    .playing_animations()
+                    .map(|(&node, active)| (node, active.seek_time())),
+            );
+        }
         for &follower in &holder_players[1..] {
             if let Ok(mut player) = players.get_mut(follower) {
-                for &(node, t) in &seeks {
+                for &(node, t) in seeks.iter() {
                     if let Some(active) = player.animation_mut(node) {
                         active.seek_to(t);
                     }
