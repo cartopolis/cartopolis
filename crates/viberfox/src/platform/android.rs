@@ -310,6 +310,108 @@ fn open_url_inner(env: &mut JNIEnv, activity: &JObject, url: &str) -> Result<(),
     })
 }
 
+/// Hand a block of text to the system share sheet.
+///
+/// This exists so a crash on a phone can be read **without a workstation**. The
+/// whole diagnostic story for Android otherwise assumes `adb`: logcat needs a
+/// cable, an app may only read its own log since Android 4.1, and the app's own
+/// files live under `getFilesDir()`, which nothing on a non-rooted device can
+/// open. A share sheet sidesteps all of it — the user picks where the text goes,
+/// so it is also not telemetry: nothing leaves the device unless they send it.
+///
+/// It is deliberately usable **before Bevy exists**. `ACTION_SEND` is a plain
+/// binder call through the application context, needing no window, no surface and
+/// no renderer, which matters because the failure being reported is one that
+/// killed the app before it could draw anything.
+pub fn share_text(subject: &str, body: &str) -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    match share_text_inner(&mut env, &activity, subject, body) {
+        Ok(()) => Ok(()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
+fn share_text_inner(
+    env: &mut JNIEnv,
+    activity: &JObject,
+    subject: &str,
+    body: &str,
+) -> Result<(), Fail> {
+    env.with_local_frame::<_, _, Fail>(16, |env| {
+        let action: JObject = env.new_string("android.intent.action.SEND")?.into();
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        let mime: JObject = env.new_string("text/plain")?.into();
+        env.call_method(
+            &intent,
+            "setType",
+            "(Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&mime)],
+        )?;
+        let key_subject: JObject = env.new_string("android.intent.extra.SUBJECT")?.into();
+        let val_subject: JObject = env.new_string(subject)?.into();
+        env.call_method(
+            &intent,
+            "putExtra",
+            "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&key_subject), JValue::Object(&val_subject)],
+        )?;
+        let key_text: JObject = env.new_string("android.intent.extra.TEXT")?.into();
+        let val_text: JObject = env.new_string(body)?.into();
+        env.call_method(
+            &intent,
+            "putExtra",
+            "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&key_text), JValue::Object(&val_text)],
+        )?;
+        // A chooser, not the bare intent: without one Android may silently pick a
+        // remembered default, and the point here is that the user sees the text
+        // and decides where it goes.
+        let title: JObject = env.new_string("Viberfox crash report")?.into();
+        let chooser = env
+            .call_static_method(
+                "android/content/Intent",
+                "createChooser",
+                "(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;",
+                &[JValue::Object(&intent), JValue::Object(&title)],
+            )?
+            .l()?;
+        env.call_method(
+            &chooser,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(FLAG_ACTIVITY_NEW_TASK)],
+        )?;
+        // The *application* context, for the reason `open_url` gives: the
+        // activity's own `startActivity` touches the decor view from this thread.
+        let app_ctx = env
+            .call_method(
+                activity,
+                "getApplicationContext",
+                "()Landroid/content/Context;",
+                &[],
+            )?
+            .l()?;
+        env.call_method(
+            &app_ctx,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&chooser)],
+        )?;
+        Ok(())
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 1. Location
 // ---------------------------------------------------------------------------

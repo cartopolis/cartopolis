@@ -352,8 +352,94 @@ fn install_android_panic_hook() {
             location = location.as_deref().unwrap_or("<unknown>"),
             "PANIC — the app is about to abort"
         );
+        // …and to disk, because logcat needs a cable and the person holding this
+        // phone may not have one. The next launch picks it up (`offer_last_crash`)
+        // and hands it to the share sheet.
+        let report = format!(
+            "viberfox {} ({})\nabi: {}\npanic: {}\nat: {}\n",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("VIBERFOX_BUILD_SHA").unwrap_or("unknown build"),
+            std::env::consts::ARCH,
+            payload,
+            location.as_deref().unwrap_or("<unknown>"),
+        );
+        let _ = std::fs::write(crash_report_path(), report);
         previous(info);
     }));
+}
+
+/// A file that exists only while a run is in the foreground.
+///
+/// Written at startup, removed when the app exits or is suspended. Finding it at
+/// the *next* startup therefore means the previous run died on screen without
+/// unwinding — which, combined with the absence of a panic report, is the one
+/// piece of evidence that separates "our Rust panicked" from "the process was
+/// killed underneath us", i.e. a driver or surface failure or the OOM killer.
+///
+/// That distinction is worth a file because it is the difference between a bug we
+/// can find by reading and one that needs a device.
+#[cfg(target_os = "android")]
+fn run_breadcrumb_path() -> std::path::PathBuf {
+    utils::cache::app_data_root().join("run-in-progress")
+}
+
+/// Where a panic report is left for the next launch to find.
+///
+/// Under the app's own data directory, which is the one location a
+/// NativeActivity can always write (`utils::cache::app_data_root`). Nothing on a
+/// non-rooted phone can read it, which is exactly why the next launch offers it
+/// to the share sheet rather than expecting anyone to go and find it.
+#[cfg(target_os = "android")]
+fn crash_report_path() -> std::path::PathBuf {
+    utils::cache::app_data_root().join("last-crash.txt")
+}
+
+/// If the previous run left a panic report, hand it to the share sheet and delete
+/// it.
+///
+/// Called before the `App` is built, and that is the whole point: the crash this
+/// reports is one that killed the app before it drew a frame, so anything that
+/// needs a window — a panel, a dialog, an egui anything — is unavailable by
+/// definition. `ACTION_SEND` is a binder call and needs none of it.
+///
+/// The file is removed **before** the share sheet is launched, not after, so a
+/// crash report that itself somehow triggers a crash cannot become a loop that
+/// makes the app unusable.
+#[cfg(target_os = "android")]
+fn offer_last_crash() {
+    let path = crash_report_path();
+    let breadcrumb = run_breadcrumb_path();
+    let unclean = breadcrumb.exists();
+    let _ = std::fs::remove_file(&breadcrumb);
+    let report = match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let _ = std::fs::remove_file(&path);
+            text
+        }
+        // No panic report, but the previous run never got to tidy up: it was
+        // killed rather than unwound. Say exactly that, because "the app closed
+        // itself" and "the app panicked" look identical from the outside and are
+        // nothing alike to debug.
+        Err(_) if unclean => format!(
+            "viberfox {} ({})\nabi: {}\nThe previous run ended without a Rust panic and \
+             without being suspended — the process was killed. That points at the \
+             graphics driver, the Vulkan surface, or the OOM killer rather than at \
+             our own code. A full `adb logcat` or an Android bug report is what \
+             names it.\n",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("VIBERFOX_BUILD_SHA").unwrap_or("unknown build"),
+            std::env::consts::ARCH,
+        ),
+        Err(_) => return,
+    };
+    if report.trim().is_empty() {
+        return;
+    }
+    tracing::error!(%report, "the previous run ended in a panic");
+    match platform::android::share_text("Viberfox crash report", &report) {
+        Ok(()) => tracing::info!("offered the previous crash report to the share sheet"),
+        Err(e) => tracing::warn!(error = %e, "could not offer the crash report"),
+    }
 }
 
 pub fn run() {
@@ -361,6 +447,12 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     install_android_panic_hook();
+    // Before anything else can fail: if the last run died, let the user send the
+    // reason somewhere useful without needing a cable.
+    #[cfg(target_os = "android")]
+    offer_last_crash();
+    #[cfg(target_os = "android")]
+    let _ = std::fs::write(run_breadcrumb_path(), "");
 
     // Resolve the render budget first: it decides how wide the worker pool below
     // is allowed to be, and every later reader (`setup_camera`, the streamers)
@@ -2451,11 +2543,24 @@ fn sync_guidance_pref(
 /// never re-queued and the tile is simply missing forever afterwards.
 ///
 /// This is a no-op on desktop, where `AppLifecycle` never leaves `Running`.
-fn quiesce_while_backgrounded(mut lifecycle: MessageReader<bevy::window::AppLifecycle>) {
+fn quiesce_while_backgrounded(
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut exits: MessageReader<AppExit>,
+) {
+    // Leaving on purpose — suspended or exiting — is not a crash, so the
+    // breadcrumb goes. What it must survive is the app dying on screen.
+    #[cfg(target_os = "android")]
+    if exits.read().next().is_some() {
+        let _ = std::fs::remove_file(run_breadcrumb_path());
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = exits.read().next();
     for event in lifecycle.read() {
         match event {
             bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
                 platform::workers::set_paused(true);
+                #[cfg(target_os = "android")]
+                let _ = std::fs::remove_file(run_breadcrumb_path());
             }
             bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
                 platform::workers::set_paused(false);
