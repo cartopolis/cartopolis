@@ -1,6 +1,6 @@
 name: Deploy web
 
-# Build the wasm client and publish it to https://viberfox.garage44.eu.
+# Build the wasm client and publish it to https://cartopolis.garage44.eu.
 #
 # Separate from ci.yml on purpose. This job rebuilds std (`-Z build-std`, needed
 # for atomics) and links ~70 MB with LTO, so it is tens of minutes cold against a
@@ -25,12 +25,12 @@ jobs:
     name: build wasm & publish
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
       # The runner and the web host are the same machine, so publishing is a
-      # copy rather than a transfer. `/data/viberfox/site` is the only path the
+      # copy rather than a transfer. `/data/cartopolis/site` is the only path the
       # runner permits mounting (`valid_volumes` in its config); Caddy has the
-      # same directory mounted read-only as /srv/viberfox.
-      options: --volume /data/viberfox/site:/publish
+      # same directory mounted read-only as /srv/cartopolis.
+      options: --volume /data/cartopolis/site:/publish
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,8 +58,8 @@ jobs:
           have=$(wasm-bindgen --version | awk '{print $2}')
           echo "lockfile: $want / image: $have"
           [ "$want" = "$have" ] || {
-            echo "::error::wasm-bindgen $have in viberfox-ci:latest, but Cargo.lock wants $want."
-            echo "Rebuild the image with --build-arg WASM_BINDGEN_VERSION=$want (~/build/viberfox-ci-image)."
+            echo "::error::wasm-bindgen $have in cartopolis-ci:latest, but Cargo.lock wants $want."
+            echo "Rebuild the image with --build-arg WASM_BINDGEN_VERSION=$want (~/build/cartopolis-ci-image)."
             exit 1
           }
 
@@ -102,7 +102,7 @@ jobs:
         # to get right, and `web-release` already carries opt-level 3 + thin LTO.
         # Revisit as a deliberate change with the feature flags spelled out.
         run: |
-          cd crates/viberfox
+          cd crates/cartopolis
           trunk build --cargo-profile web-release --dist dist
 
       # Verify what was produced rather than assuming the flags took. Both of
@@ -111,7 +111,7 @@ jobs:
       # against 114 MB unstripped.
       - name: Verify the module is threaded
         run: |
-          wasm=$(ls crates/viberfox/dist/*_bg.wasm)
+          wasm=$(ls crates/cartopolis/dist/*_bg.wasm)
           # Derived from the wasm name, never `ls *.js | head -1`: trunk emits two
           # JS files — the wasm-bindgen glue `<name>-<hash>.js` beside its
           # `<name>-<hash>_bg.wasm`, and the separate `<hash>-loader.js` from
@@ -146,7 +146,7 @@ jobs:
       # sends no Accept-Encoding still needs it.
       - name: Pre-compress the large assets
         run: |
-          cd crates/viberfox/dist
+          cd crates/cartopolis/dist
           for f in *.wasm *.js; do [ -f "$f" ] && gzip -9 -k -f "$f"; done
           ls -la *.wasm* *.js* | awk '{print $5, $9}'
 
@@ -161,5 +161,5 @@ jobs:
       - name: Publish
         run: |
           apt-get update -qq && apt-get install -y -qq rsync >/dev/null
-          rsync -a --delete --exclude '/apk/' crates/viberfox/dist/ /publish/
-          echo "published $(du -sh /publish | cut -f1) to /data/viberfox/site"
+          rsync -a --delete --exclude '/apk/' crates/cartopolis/dist/ /publish/
+          echo "published $(du -sh /publish | cut -f1) to /data/cartopolis/site"

@@ -1,11 +1,11 @@
 ---
 name: ticket
-description: File a viberfox issue on the kanban board from a session you are steering (Zed or claude.ai/code), with a spec you and the user just agreed on. Use when work should be tracked as a ticket — whether it is being started now, deferred, or handed to the autonomous agent. Applies the `driven` label so the watcher leaves it alone.
+description: File a cartopolis issue on the kanban board from a session you are steering (Zed or claude.ai/code), with a spec you and the user just agreed on. Use when work should be tracked as a ticket — whether it is being started now, deferred, or handed to the autonomous agent. Applies the `driven` label so the watcher leaves it alone.
 ---
 
 # ticket
 
-File a Forgejo issue for viberfox from *this* session, with the spec already
+File a Forgejo issue for cartopolis from *this* session, with the spec already
 written. See [docs/workflow.md](../../../docs/workflow.md) for the two lanes and
 why the default is `driven`.
 
@@ -21,7 +21,7 @@ filing** — this is the review step the whole workflow is built around.
 
 ```markdown
 ## Problem
-What is wrong, citing `crates/viberfox/src/systems/foo.rs:120`.
+What is wrong, citing `crates/cartopolis/src/systems/foo.rs:120`.
 
 ## Approach
 The change, in terms of crates and files.
@@ -30,7 +30,7 @@ The change, in terms of crates and files.
 - [ ] A checklist someone else can verify.
 
 ## Verification
-`cargo check -p viberfox`, `cargo test -p viberfox_geo && cargo test -p viberfox`,
+`cargo check -p cartopolis`, `cargo test -p cartopolis_geo && cargo test -p cartopolis`,
 and any visual check via `cargo shots`.
 
 ## Out of scope

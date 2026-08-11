@@ -81,7 +81,7 @@ per commit.
   push to `main`, gated on WebGPU before it downloads anything.
 - **Android** — an installable APK, built with no Gradle and no Java: a
   `cdylib`, a manifest and the assets directory. Published at
-  <https://viberfox.garage44.eu/apk/>.
+  <https://cartopolis.garage44.eu/apk/>.
 
 ### Tools
 

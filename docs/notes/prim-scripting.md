@@ -7,7 +7,7 @@ updated: 2026-08-10
 # What the scripting engine is, and what mlua hands you that Luau does not
 
 Prims run **Luau**, through `mlua`, one VM per scripted prim, on a dedicated OS
-thread (`viberfox_simulator::scripting`).
+thread (`cartopolis_simulator::scripting`).
 
 ## Why Luau, and why the choice is not really about the language
 
@@ -100,7 +100,7 @@ Two consequences worth knowing:
   every script is its own Luau state, `vfSay = nil` breaks exactly one script.
   (The earlier design had a read-only `vf` *table*; the flat namespace gave that
   up, and the thing it was protecting turns out not to need protecting.)
-- **The catalogue lives in `viberfox_core::SCRIPT_API`**, not in the simulator,
+- **The catalogue lives in `cartopolis_core::SCRIPT_API`**, not in the simulator,
   because the editor renders it and the server implements it. A simulator test
   compiles an empty script and asserts the installed `vf*` names are exactly the
   catalogued ones — a reference that drifts is worse than none, since an author
@@ -131,7 +131,7 @@ and stays where a script puts it.
 
 This is why the editor's template bobs a prim up and down rather than orbiting
 it. Making horizontal motion durable means moving the projection into
-`viberfox_core` and having the sim update `geo` alongside `position` — which is a
+`cartopolis_core` and having the sim update `geo` alongside `position` — which is a
 change to how *every* prim edit works, not just scripted ones, and belongs in its
 own diff.
 

@@ -39,7 +39,7 @@ fn default_aoi() -> f32 {
 }
 
 fn default_osm_tile_url_template() -> String {
-    viberfox_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
+    cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE.into()
 }
 
 fn default_texture_dir() -> String {
@@ -60,13 +60,13 @@ impl Default for SimConfig {
 }
 
 impl SimConfig {
-    /// `vibe.toml` (optional) + env `VIBE_*` (e.g. `VIBE_listen`, `VIBE_database_path`).
+    /// `cartopolis.toml` (optional) + env `CARTO_*` (e.g. `CARTO_listen`, `CARTO_database_path`).
     pub fn load() -> anyhow::Result<Self> {
         let mut figment = Figment::new().merge(Serialized::defaults(SimConfig::default()));
-        if Path::new("vibe.toml").exists() {
-            figment = figment.merge(Toml::file("vibe.toml"));
+        if Path::new("cartopolis.toml").exists() {
+            figment = figment.merge(Toml::file("cartopolis.toml"));
         }
-        figment = figment.merge(Env::prefixed("VIBE_"));
+        figment = figment.merge(Env::prefixed("CARTO_"));
         Ok(figment.extract()?)
     }
 

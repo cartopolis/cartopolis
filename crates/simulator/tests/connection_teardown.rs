@@ -13,13 +13,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use cartopolis_core::{
+    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, PROTOCOL_VERSION,
+};
+use cartopolis_simulator::{ensure_account, serve, SimConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use viberfox_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, NetMessage, PROTOCOL_VERSION,
-};
-use viberfox_simulator::{ensure_account, serve, SimConfig};
 
 type Client = Framed<TcpStream, LengthDelimitedCodec>;
 
@@ -92,7 +92,7 @@ async fn a_malformed_frame_removes_the_sender_s_avatar() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("teardown.db").to_str().unwrap().to_string();
     {
-        let conn = viberfox_simulator::db::open_and_migrate(&db).unwrap();
+        let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
         ensure_account(&conn, "dev", "dev").unwrap();
     }
     let handle = serve(Arc::new(SimConfig {

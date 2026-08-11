@@ -26,15 +26,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-env_file="${VIBERFOX_FORGEJO_ENV:-$HOME/.config/viberfox/forgejo.env}"
+env_file="${CARTO_FORGEJO_ENV:-$HOME/.config/cartopolis/forgejo.env}"
 [ -f "$env_file" ] || { echo "missing $env_file — see docs/workflow.md" >&2; exit 1; }
 set -a; . "$env_file"; set +a
 : "${FORGEJO_TOKEN:?not set in $env_file}"
 API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
-REPO="${FORGEJO_REPO:-jeroen/viberfox}"
-CONTEXT_REMOTE="${VIBERFOX_AGENT_CONTEXT_REMOTE:-ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git}"
+REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
+CONTEXT_REMOTE="${CARTO_AGENT_CONTEXT_REMOTE:-ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git}"
 
-marker="$(git rev-parse --git-dir)/viberfox-ticket"
+marker="$(git rev-parse --git-dir)/cartopolis-ticket"
 [ -f "$marker" ] || {
     echo "this worktree is not bound to a ticket — run /ticket first." >&2; exit 1; }
 

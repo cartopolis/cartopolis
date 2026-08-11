@@ -24,7 +24,7 @@
 
 ## Decision
 
-Use Bevy's ECS with one system file per concern under `crates/viberfox/src/systems/` (database, rendering, tile_loader, network, avatar, camera/free_camera, picking, gizmo, ui, globe, …), all registered in `main.rs`.
+Use Bevy's ECS with one system file per concern under `crates/cartopolis/src/systems/` (database, rendering, tile_loader, network, avatar, camera/free_camera, picking, gizmo, ui, globe, …), all registered in `main.rs`.
 
 **Approach**:
 - **Resources** (`resources.rs`, plus a few local to their system): `Database`, `GameState`, `AvatarState`, `CameraState`, `MouseState`, `TileCache`
@@ -62,4 +62,4 @@ Use Bevy's ECS with one system file per concern under `crates/viberfox/src/syste
 
 - [ADR-001](./001-bevy-game-engine.md): Bevy provides the ECS
 - [ADR-002](./002-sqlite-storage.md): Database loads into ECS via systems
-- Registration/ordering: `crates/viberfox/src/main.rs`
+- Registration/ordering: `crates/cartopolis/src/main.rs`

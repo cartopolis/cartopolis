@@ -22,7 +22,7 @@ Themes connect **vision goals** to **ADRs**. Rows **without** ADRs are **intenti
 | Runtime & ops | P-03 | P1 | R2 | partial | 014 | |
 | Workspace boundaries | P-05 | P0 | R2 | partial | 015 | |
 | Platform portability & web target | G-09, G-02, P-05 | P1 | R2 | proposed | 030, 033 | 030 = provider/plugin pattern; 033 = standalone + wasm32 targets, phased (Viewer first, no server change) |
-| Public data relay & upstream policy | G-04, P-03, P-05 | P1 | R2 | proposed | 034 | `vibe_relay` upstream registry (L0 direct / L1 path-mount / L2 adapter); single origin, shared cache, one UA |
+| Public data relay & upstream policy | G-04, P-03, P-05 | P1 | R2 | proposed | 034 | `cartopolis_relay` upstream registry (L0 direct / L1 path-mount / L2 adapter); single origin, shared cache, one UA |
 | Map tile hosting | G-04, P-03 | P1 | R2 | partial | 035 | Self-hosted **vector** tiles (Shortbread MVT); **server live** at `tiles.garage44.eu` (mirror of VersaTiles' 62 GB planet, `versatiles` server in the geo compose stack); client-side styling responds to day/night + weather; overzoom past ~z14 |
 | Layered access & entitlements | G-09, G-05, G-02, P-04 | P1 | R2 | proposed | 031 | Two tiers: **Viewer** (no login) / **Simulation** (login: avatars, prims, editing, chat); + future ACL; server-enforced |
 | Buildings from map data | G-04, P-03 | P1 | R1 | partial | 022, 027 | Overpass extruded footprints; 3DBAG LoD2.2 where covered |
@@ -34,9 +34,9 @@ Themes connect **vision goals** to **ADRs**. Rows **without** ADRs are **intenti
 | Asset pipeline & storage | G-01, G-05 | P0 | R2+ | gap | — | Add ADR(s) per roadmap before rich assets; ADR-021 also defers a **capacity-bounded asset ADR** that is still unwritten |
 | AuthN | G-05, P-04 | P0 | R2+ | partial | 016 | Session / identity; authorization in a later ADR |
 | AuthZ / world edits | G-05, P-01, P-04 | P0 | R2+ | partial | 016 | v0: any authenticated principal = same mutation rights (ADR-016); roles/ACLs later |
-| Chat & social presence | G-03 | P2 | R1 | partial | 028 | Simulation tier (ADR-031); Local/Global/Rooms built (v11), geo tiers pending vibe_geo |
+| Chat & social presence | G-03 | P2 | R1 | partial | 028 | Simulation tier (ADR-031); Local/Global/Rooms built (v11), geo tiers pending cartopolis_geo |
 | Voice / WebRTC / video | G-03, P-07 | P2 | R1 | gap | — | After auth + ops basics |
-| LLM-assisted generation | G-06, P-06 | P1 | R1→R2+ | **shipped, undocumented** | — | In-client copilot exists (`viberfox/src/systems/ai_assistant.rs`: `create_prim` / `update_prim` / `delete_prim` / `list_prims` tool calls). The **R1 boundary ADR is overdue** — write it, then split R2+ children for action schema, model boundary, review UX |
+| LLM-assisted generation | G-06, P-06 | P1 | R1→R2+ | **shipped, undocumented** | — | In-client copilot exists (`cartopolis/src/systems/ai_assistant.rs`: `create_prim` / `update_prim` / `delete_prim` / `list_prims` tool calls). The **R1 boundary ADR is overdue** — write it, then split R2+ children for action schema, model boundary, review UX |
 | Companion / GNSS | G-07, P-07 | P2 | R1 | gap | — | Privacy before R2 |
 | Scripting & integrations | G-08, P-04 | P1 | R1→R2 | gap | — | |
 | Observability & abuse signals | P-03, P-04 | P1 | R2 | gap | — | With rate limits |

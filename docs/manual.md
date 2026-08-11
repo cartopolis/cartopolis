@@ -1,4 +1,4 @@
-# Viberfox — User Manual
+# Cartopolis — User Manual
 
 A short guide to getting around the world, authoring objects, and using the
 developer tools. For build/run instructions and system requirements, see the
@@ -23,7 +23,7 @@ developer tools. For build/run instructions and system requirements, see the
 ## Starting up
 
 ```bash
-cargo run -p viberfox
+cargo run -p cartopolis
 ```
 
 This launches the client in **solo mode**: an in-process sim starts on loopback and
@@ -31,14 +31,14 @@ the client connects to it. Your world is authoritative in that sim and persisted
 `data/world.db`. To join a live world instead, point it at a running sim server:
 
 ```bash
-cargo run -p viberfox -- --connect <host:port>
+cargo run -p cartopolis -- --connect <host:port>
 ```
 
 Or run with no sim at all — single user, no auth, no persistence (also what `--shot`
 uses):
 
 ```bash
-cargo run -p viberfox -- --offline
+cargo run -p cartopolis -- --offline
 ```
 
 None of that is fixed for the run: **☰ ▸ Sign in…** opens the sign-in screen over
@@ -58,7 +58,7 @@ last location and camera are restored on startup. To open somewhere specific
 instead, name a place at launch (see [Sharing a place](#sharing-a-place)):
 
 ```bash
-VIBERFOX_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°" cargo run -p viberfox
+CARTO_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°" cargo run -p cartopolis
 ```
 
 ## Getting around
@@ -106,7 +106,7 @@ ready, which jumps to an orbit that frames the entire planet.
 
 ### Going somewhere specific
 
-Click the fox mark in the top-left corner (or press **Ctrl + L**) to open the
+Click the app mark in the top-left corner (or press **Ctrl + L**) to open the
 address bar, then search for a place by name. Each suggestion says what kind of
 place it is and how far away it is — which is how you tell the Amsterdam down the
 road from the one in Missouri. The world is anchored in real geography, so moving
@@ -199,7 +199,7 @@ a pair without angles just keeps your current view).
 The same string opens a session somewhere:
 
 - **Web:** `?place=53.21940,6.56650,120,-12.5,45` on the page URL.
-- **Desktop:** `VIBERFOX_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°"` in the
+- **Desktop:** `CARTO_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°"` in the
   environment.
 
 A launch place takes precedence over the restored last location, so a shared
@@ -296,7 +296,7 @@ cargo shots --only globe,route   # just these two
 cargo shots --size 2560x1440     # override the manifest's size
 ```
 
-`cargo shots` is an alias for `cargo run -p viberfox --
+`cargo shots` is an alias for `cargo run -p cartopolis --
 --shots`, so it accepts the rest of the scripted-shot flags too (`--csv`,
 `--dump-state`, `--settle`, … — see [`CLAUDE.md`](../CLAUDE.md)). Because it
 needs no display, it is a build step: it works over SSH and in CI.
@@ -313,7 +313,7 @@ Per-shot manifest keys: `name`, `description`, `at = [lat, lng, alt_m]`,
 top-level `size`, `out_dir`, `settle`, `wait`, `mode`, `hide_ui` and `tile_url`
 apply to every shot that doesn't override them. (`tile_url` pins the basemap:
 a scripted run never gets one from a server handshake, and the built-in fallback
-is raster — which the route planner can't solve against. `VIBE_TILE_URL` still
+is raster — which the route planner can't solve against. `CARTO_TILE_URL` still
 wins over it.) Unknown keys are a hard error, so a typo fails the run instead of
 quietly doing nothing.
 
@@ -352,15 +352,15 @@ Open the AI panel with **Ctrl + Shift + A** (or ☰ ▸ Assistant) for
 LLM-assisted world building. It needs an Anthropic API key in the environment:
 
 ```bash
-ANTHROPIC_KEY=sk-... cargo run -p viberfox
+ANTHROPIC_KEY=sk-... cargo run -p cartopolis
 # Optionally override the model:
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001 cargo run -p viberfox
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001 cargo run -p cartopolis
 ```
 
 ## Troubleshooting
 
 - **Flicker on Wayland (GLES):** force the Vulkan backend with
-  `WGPU_BACKEND=vulkan cargo run -p viberfox`.
+  `WGPU_BACKEND=vulkan cargo run -p cartopolis`.
 - **Build errors after a toolchain/dependency bump:** `cargo clean` and rebuild.
 
 More runtime knobs and known-issue workarounds are documented in

@@ -41,6 +41,7 @@
 //! space. Without that, `sandbox(true)` would make the global table read-only and
 //! every script would fail on its first `function` statement.
 
+use cartopolis_core::ScriptLevel;
 use glam::Vec3;
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, LuaOptions, StdLib, Thread, VmState};
@@ -50,7 +51,6 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
-use viberfox_core::ScriptLevel;
 
 /// Per-script memory ceiling, over and above the interpreter's own baseline (see
 /// [`Slot::compile`]). Enforced by the Lua allocator, so a script that asks for
@@ -337,7 +337,7 @@ impl ScriptHost {
         let (host_tx, host_rx) = mpsc::channel::<HostMsg>();
         let (cmd_tx, cmd_rx) = mpsc::channel::<ScriptCommand>();
         let thread = std::thread::Builder::new()
-            .name("viberfox-scripts".into())
+            .name("cartopolis-scripts".into())
             .spawn(move || run(host_rx, cmd_tx))
             .expect("spawn script host thread");
         Self {
@@ -767,7 +767,7 @@ const WHISPER_RADIUS_M: f32 = 10.0;
 ///
 /// The names are flat and `vf`-prefixed rather than methods on a `vf` table, which
 /// is Second Life's shape (`llSetPos`, `llSay`) and therefore the one the people
-/// most likely to write these already know. `viberfox_core::SCRIPT_API` is the
+/// most likely to write these already know. `cartopolis_core::SCRIPT_API` is the
 /// catalogue the editor shows, and a test asserts the two agree exactly — add a
 /// function here without listing it there and the suite fails.
 fn install_api(lua: &Lua, env: &mlua::Table, shared: &Rc<Shared>) -> mlua::Result<()> {

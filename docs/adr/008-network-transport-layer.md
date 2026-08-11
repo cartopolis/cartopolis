@@ -24,7 +24,7 @@
 
 ## Decision
 
-Use **TCP** with **length-prefixed frames** (little-endian `u32` length + payload) as the **v0 transport** between `vibe_sim` and `viberfox`.
+Use **TCP** with **length-prefixed frames** (little-endian `u32` length + payload) as the **v0 transport** between `cartopolis_simulator` and `cartopolis`.
 
 **Approach**:
 - One connection per client session; sim is listener.
@@ -36,7 +36,7 @@ Use **TCP** with **length-prefixed frames** (little-endian `u32` length + payloa
 - **`tokio`** (`net`, `io-util`, `macros`, `rt-multi-thread`) for async accept/read/write on the sim and client network tasks.
 - **`tokio-util::codec::LengthDelimitedCodec`** (configure **max frame length** and length field width/endianness to match the written spec) for **battle-tested framing** instead of hand-rolled `read_exact` loops.
 - **`bytes::BytesMut`** (pulled in via tokio/tokio-util) for zero-copy-ish buffer reuse where it matters.
-- Errors: **`thiserror`** in `vibe_core` / library boundaries; **`anyhow`** (or `eyre`) only at **binary** `main` for top-level reporting—standard Rust layering.
+- Errors: **`thiserror`** in `cartopolis_core` / library boundaries; **`anyhow`** (or `eyre`) only at **binary** `main` for top-level reporting—standard Rust layering.
 - Future **TLS** on TCP: **`tokio-rustls`** + **`rustls`** (ring/aws-lc per platform policy), not OpenSSL via FFI unless required.
 
 ## Rationale

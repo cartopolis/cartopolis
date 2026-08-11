@@ -20,7 +20,7 @@
 **Problem**: We want a browser (`wasm32`) build without foreclosing native-only features
 (in-world browsers, local file import, the embedded solo sim), and without letting the
 browser's limits dictate the whole architecture. Today the client assumes native primitives
-throughout — raw TCP (`systems/network.rs`), an in-process `vibe_sim` over loopback
+throughout — raw TCP (`systems/network.rs`), an in-process `cartopolis_simulator` over loopback
 (`solo.rs`, ADR-016), blocking `ureq` on `std::thread::spawn` (tile/transit/overpass/lod22
 loaders), `std::fs` caches, and `rusqlite` for offline mode. None of these exist in a browser
 sandbox. The naive fixes pull in opposite directions: design for the intersection of both
@@ -63,7 +63,7 @@ Adopt a two-tier capability model. Every platform-varying concern is classified 
 
 Supporting rules:
 
-- **Data in `vibe_core`, capability in the client (ADR-015).** An in-world browser is, in the
+- **Data in `cartopolis_core`, capability in the client (ADR-015).** An in-world browser is, in the
   data model, a prim property: a `MediaSurface { url, nav_state, poster, … }` DTO that
   serializes over the wire and into SQLite. The sim and *both* client builds understand a prim
   can carry media; only the code that turns that data into pixels is platform-specific. The
@@ -79,7 +79,7 @@ Supporting rules:
   into a feature system is the signal that concern wanted to be a trait or a plugin.
 
 Web build is necessarily **online-only**: `solo` (ADR-016), `--offline`, and all `rusqlite`
-usage are additive capabilities the wasm `App` omits; it connects to a remote `vibe_sim` via
+usage are additive capabilities the wasm `App` omits; it connects to a remote `cartopolis_simulator` via
 the `WebSocket` transport provider.
 
 ## Rationale
@@ -125,6 +125,6 @@ the `WebSocket` transport provider.
 ## Related
 
 - [ADR-008](./008-network-transport-layer.md): Transport becomes the first substitutable provider; codec (ADR-009) unchanged
-- [ADR-015](./015-workspace-module-boundaries.md): Portable data in `vibe_core`, capability impls in `viberfox`
+- [ADR-015](./015-workspace-module-boundaries.md): Portable data in `cartopolis_core`, capability impls in `cartopolis`
 - [ADR-016](./016-authentication-and-session-model-v0.md): `solo` feature is the precedent build-time capability gate; embedded sim is additive/native-only
 - [ADR-007](./007-simulation-vs-client-process-model.md): Web client keeps the real client/sim split (remote sim)

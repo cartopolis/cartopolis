@@ -39,16 +39,16 @@ Idle (4) and Run (16).
 `SimWorld::apply_intent` derives speed from the **magnitude** of the wish vector,
 not from a speed field. So walk / jog / sprint / flight are four magnitudes the
 client picks, and the sim needs no concept of a gait. Both ends call
-`viberfox_core::motion::sim_speed_for_wish`, so prediction cannot drift from
+`cartopolis_core::motion::sim_speed_for_wish`, so prediction cannot drift from
 authority by transcription.
 
 **This is the lever to reach for first** for anything that changes how fast the
 avatar moves. It cost nothing on the wire. Jump and emotes did *not* fit through
 it (see below) and cost protocol 13.
 
-## `viberfox_core::motion` exists because three copies could not be kept in step
+## `cartopolis_core::motion` exists because three copies could not be kept in step
 
-The fall/climb/speed constants were duplicated in `viberfox_simulator::state`,
+The fall/climb/speed constants were duplicated in `cartopolis_simulator::state`,
 `network::send_network_intent` (prediction) and `avatar::handle_avatar_movement`
 (offline), each with a comment asking the next person to update the others. They
 are one module now. **Do not re-inline them**: a mismatch between the first two
@@ -103,7 +103,7 @@ every Linux build, including headless ones that will never open a device. So it
 is the `audio` feature — in `default`, off for hosts that can't build it:
 
 ```bash
-cargo check -p viberfox --no-default-features --features solo   # the agent container, CI
+cargo check -p cartopolis --no-default-features --features solo   # the agent container, CI
 ```
 
 The container has no root and cannot install the headers, so **the playback

@@ -158,9 +158,9 @@ The bisect, for whoever has a GPU:
 
 ```bash
 # does it track altitude (depth) or tile count (memory)?
-cargo run -p viberfox -- --shot /tmp/s.png --at 53.2,6.5,60000 \
+cargo run -p cartopolis -- --shot /tmp/s.png --at 53.2,6.5,60000 \
     --at 53.2,6.5,10000000 --frames 12 --look=-90,0 --csv /tmp/s.csv
-VIBERFOX_NO_OCEAN=1 cargo run -p viberfox -- --shot /tmp/a.png \
+CARTO_NO_OCEAN=1 cargo run -p cartopolis -- --shot /tmp/a.png \
     --at 53.2,6.5,1000000 --look=-90,0 --dump-state /tmp/a.json
 ```
 
@@ -188,7 +188,7 @@ and for the same reason. A `--frames` sweep from 35,000 km to street level with
 Verifying this work kept producing "cannot find function `render_mvt_sized` in
 module `vector_tiles`" for code that was correct and had compiled a minute
 earlier. Cause: other worktrees building concurrently into the container's one
-`CARGO_TARGET_DIR`, leaving several `libviberfox_geo-*.rmeta` in
+`CARGO_TARGET_DIR`, leaving several `libcartopolis_geo-*.rmeta` in
 `debug/deps/` — only one of which held the new symbol. `cargo` linked whichever
 won. `CARGO_TARGET_DIR=/tmp/... cargo test …` for a trustworthy answer; a
 compile error that contradicts the source is this, not the source. The related

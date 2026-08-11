@@ -6,7 +6,7 @@
 #     cargo shots --only globe,route  # just these
 #
 # `cargo shots` is an alias for
-# `cargo run -p viberfox -- --shots`, so it takes the rest of
+# `cargo run -p cartopolis -- --shots`, so it takes the rest of
 # the harness's flags too (`--csv /tmp/shots.csv`, `--size 2560x1440`, …).
 #
 # To add or move a view: fly there in the app, then Dev panel ▸ README
@@ -18,7 +18,7 @@
 #
 # The tile source is pinned here because a scripted run never gets one from the
 # server handshake, and the built-in fallback is the *raster* OSM basemap — on
-# which the `route` shot has no graph to solve against (ADR-037). `VIBE_TILE_URL`
+# which the `route` shot has no graph to solve against (ADR-037). `CARTO_TILE_URL`
 # still overrides this, so a local mirror needs no edit to this file.
 tile_url = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}"
 size = "1600x900"

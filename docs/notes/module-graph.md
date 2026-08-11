@@ -6,7 +6,7 @@ updated: 2026-08-06
 
 # The client's modules are coupled by state, not by behaviour
 
-Measured 2026-08-06 over `crates/viberfox/src/systems/*.rs` (50 files) by
+Measured 2026-08-06 over `crates/cartopolis/src/systems/*.rs` (50 files) by
 extracting every `crate::systems::<m>` / `super::<m>::` reference into an edge
 list, then computing in-degree and mutual pairs.
 
@@ -117,7 +117,7 @@ struct — a quarter of the module graph pointed at the camera module to write
 (`format_osm_tile_url`, `tile_source_kind`) lived in `tile_loader`, so the byte
 layer imported upward to decide what to fetch. Those moved to `core::world`
 beside `TileKey` and `DEFAULT_TILE_URL_TEMPLATE`; `build_mip_chain` (pure) went
-to `viberfox_geo::mip` and `image_from_mip_chain` (Bevy) to `tile_loader`. The
+to `cartopolis_geo::mip` and `image_from_mip_chain` (Bevy) to `tile_loader`. The
 pipeline now reads one way: core -> tile_source -> tile_loader -> rendering.
 
 The distinction that matters when picking the next one: both of these moved
@@ -174,11 +174,11 @@ this note said the *package* had to be renamed, which is wrong. Verified
 and its dependents resolve `use core::f32::consts::PI` to the sysroot as normal.
 So `cargo run -p core` was available all along.
 
-It was not taken. The workspace uses `viberfox_core`, `viberfox_geo`,
-`viberfox_simulator` and `viberfox`, because a package whose name and lib name
+It was not taken. The workspace uses `cartopolis_core`, `cartopolis_geo`,
+`cartopolis_simulator` and `cartopolis`, because a package whose name and lib name
 disagree is a wrinkle every reader has to look up, and prefixing everything
 removes the question instead of answering it. The crate names barely appear in
-code anyway — `viberfox_geo` is named twice in the whole tree, since
+code anyway — `cartopolis_geo` is named twice in the whole tree, since
 `systems/mod.rs` re-exports its modules flat and call sites write
 `systems::vector_tiles`.
 

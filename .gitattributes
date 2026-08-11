@@ -9,8 +9,8 @@
 #
 #  1. **Some of these are `include_bytes!`-ed at compile time** — the brand font
 #     (`assets/fonts/*.ttf`, see `systems::theme`), the app icon
-#     (`assets/icon/viberfox.png`), the star catalog (`assets/sky/*.bin`) and the
-#     routing/tile/vegetation test fixture (`crates/viberfox/tests/fixtures/*.mvt`).
+#     (`assets/icon/cartopolis.png`), the star catalog (`assets/sky/*.bin`) and the
+#     routing/tile/vegetation test fixture (`crates/cartopolis/tests/fixtures/*.mvt`).
 #     Without the smudge filter those are 130-byte pointer files and the build
 #     happily embeds the pointer: the font panics in epaint, the icon doesn't
 #     decode, the fixture tests run on garbage. Every `actions/checkout` in

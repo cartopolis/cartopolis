@@ -3,11 +3,14 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "simulator", about = "Headless Viberfox simulation server")]
+#[command(name = "simulator", about = "Headless Cartopolis simulation server")]
 pub struct SimCli {
-    #[arg(long, help = "TCP listen address (overrides vibe.toml / VIBE_listen)")]
+    #[arg(
+        long,
+        help = "TCP listen address (overrides cartopolis.toml / CARTO_listen)"
+    )]
     pub listen: Option<String>,
-    #[arg(long, help = "SQLite path (overrides VIBE_database_path)")]
+    #[arg(long, help = "SQLite path (overrides CARTO_database_path)")]
     pub database_path: Option<String>,
     #[arg(long, help = "Simulation tick rate (Hz)")]
     pub tick_hz: Option<f32>,

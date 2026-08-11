@@ -1,8 +1,8 @@
 name: CI
 
-# Build and test viberfox on every push / PR.
+# Build and test cartopolis on every push / PR.
 # Runs on the self-hosted Forgejo runner (code.garage44.eu) in the prebuilt
-# `viberfox-ci` image, which already carries the Rust toolchain + Bevy build
+# `cartopolis-ci` image, which already carries the Rust toolchain + Bevy build
 # deps (clang/lld/wayland/xkbcommon), so no per-run apt/rustup setup.
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
     name: cargo check
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +54,7 @@ jobs:
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
       # ALSA headers, for the `audio` feature — which is on by default, so this is
-      # needed by any `cargo check`/`cargo test` of `viberfox` that does not pass
+      # needed by any `cargo check`/`cargo test` of `cartopolis` that does not pass
       # `--no-default-features`. `bevy_audio` pulls `alsa-sys`, whose build script
       # is a `pkg-config` call that hard-fails without `alsa.pc`.
       #
@@ -64,7 +64,7 @@ jobs:
       # last (same commit as this) is what surfaced it. The two faults have the
       # same shape and the same lesson.
       #
-      # Belongs in `viberfox-ci:latest` rather than here; it is a step only because
+      # Belongs in `cartopolis-ci:latest` rather than here; it is a step only because
       # that image lives in another repo. `deploy-android.yml` installs its JRE the
       # same way and for the same reason.
       - name: ALSA headers for the audio feature
@@ -99,12 +99,12 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p viberfox --no-default-features --target wasm32-unknown-unknown
+          cargo check -p cartopolis --no-default-features --target wasm32-unknown-unknown
 
       # The same rot-gate as the wasm lane above, for the same reason: the Android
       # build adds `cfg(target_os = "android")` arms to `utils::clipboard`,
       # `utils::cache` and `lib.rs`'s CLI, plus a whole crate
-      # (`crates/viberfox_android`) whose dependencies are target-gated and
+      # (`crates/cartopolis_android`) whose dependencies are target-gated and
       # therefore *empty* in the `cargo check --workspace` above. Every line of it
       # is invisible to every other lane in this file.
       #
@@ -112,7 +112,7 @@ jobs:
       # and it catches what rots — a renamed item behind an android cfg, a
       # dependency that grows a backend Android does not have (`arboard` was
       # exactly that), a Bevy bump that moves `bevy::android::ANDROID_APP`.
-      # `crates/viberfox_android/build-apk.sh` is the other half, and it is run by
+      # `crates/cartopolis_android/build-apk.sh` is the other half, and it is run by
       # hand — see docs/notes/android-build.md for why there is no APK job here.
       #
       # Unlike wasm, this one cannot be a bare `rustup target add`: `blake3` (under
@@ -123,7 +123,7 @@ jobs:
       # shipped app to make CI cheaper is the trade `src/simd_baseline.rs` exists
       # to prevent.
       #
-      # Downloaded and cached here rather than baked into `viberfox-ci:latest`
+      # Downloaded and cached here rather than baked into `cartopolis-ci:latest`
       # because the image is a separate repo and this gate should not wait on it.
       # Moving it into the image is the better end state: it would turn a ~660 MB
       # cache restore into nothing at all, and this lane would become one `cargo
@@ -154,7 +154,7 @@ jobs:
       # subcommand on every cold cache.
       #
       # `28` in the compiler name is the API level, and it must match the
-      # `minSdkVersion` in `crates/viberfox_android/AndroidManifest.xml` — the NDK
+      # `minSdkVersion` in `crates/cartopolis_android/AndroidManifest.xml` — the NDK
       # encodes the level into the `.so`'s symbol requirements, so a mismatch is a
       # dynamic-linker failure at launch on the oldest device the manifest claims
       # to support.
@@ -165,7 +165,7 @@ jobs:
           rustup target add aarch64-linux-android
           export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          cargo check -p viberfox_android --target aarch64-linux-android
+          cargo check -p cartopolis_android --target aarch64-linux-android
 
       # Formatting is a convention (d5c301d) and needs a gate or it decays back
       # into per-change churn. `crates/big_space` is excluded on purpose — it is a
@@ -180,13 +180,13 @@ jobs:
       # compile error sitting behind the formatting one, `deploy-android.yml` fell
       # over on it every single push, and the fast red X read as "someone forgot
       # rustfmt". Whatever gates last cannot hide anything.
-      - run: cargo fmt -p viberfox -p viberfox_geo -p viberfox_core -p viberfox_simulator -p viberfox_android --check
+      - run: cargo fmt -p cartopolis -p cartopolis_geo -p cartopolis_core -p cartopolis_simulator -p cartopolis_android --check
 
   build-test:
-    name: build & test viberfox
+    name: build & test cartopolis
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -197,7 +197,7 @@ jobs:
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
       # ALSA headers, for the `audio` feature — which is on by default, so this is
-      # needed by any `cargo check`/`cargo test` of `viberfox` that does not pass
+      # needed by any `cargo check`/`cargo test` of `cartopolis` that does not pass
       # `--no-default-features`. `bevy_audio` pulls `alsa-sys`, whose build script
       # is a `pkg-config` call that hard-fails without `alsa.pc`.
       #
@@ -207,7 +207,7 @@ jobs:
       # last (same commit as this) is what surfaced it. The two faults have the
       # same shape and the same lesson.
       #
-      # Belongs in `viberfox-ci:latest` rather than here; it is a step only because
+      # Belongs in `cartopolis-ci:latest` rather than here; it is a step only because
       # that image lives in another repo. `deploy-android.yml` installs its JRE the
       # same way and for the same reason.
       - name: ALSA headers for the audio feature
@@ -229,15 +229,15 @@ jobs:
       # `cargo test` compiles the crate and runs its tests in one pass.
       # Cheap and first: no Bevy in this crate's graph, so it fails in seconds on a
       # geodata regression instead of after the client's full codegen.
-      - run: cargo test -p viberfox_geo
+      - run: cargo test -p cartopolis_geo
       # The wire and the server. Neither was run here until 2026-08-10, which is
       # how `message_kind_wire_is_a_bijection` sat red after six message kinds were
-      # added — a green pipeline said nothing about either crate. `viberfox_core`
-      # is seconds; `viberfox_simulator` carries the scripting suite (sandbox
+      # added — a green pipeline said nothing about either crate. `cartopolis_core`
+      # is seconds; `cartopolis_simulator` carries the scripting suite (sandbox
       # escapes, the memory ceiling, the end-to-end wire tests) and needs no GPU.
-      - run: cargo test -p viberfox_core
-      - run: cargo test -p viberfox_simulator
-      - run: cargo test -p viberfox
+      - run: cargo test -p cartopolis_core
+      - run: cargo test -p cartopolis_simulator
+      - run: cargo test -p cartopolis
       # The vendored fork carries the floating-origin correctness tests; they are
       # the reason a `big_space` change can be trusted at all.
       - run: cargo test -p big_space --lib
@@ -254,7 +254,7 @@ jobs:
       #
       # Four constraints, all measured in docs/notes/headless-shots-software-renderer.md:
       #   * Orbit only. The image has no GPU — Mesa lavapipe is baked into
-      #     `viberfox-ci:latest` and `WGPU_BACKEND=vulkan` with it — and a 400 m
+      #     `cartopolis-ci:latest` and `WGPU_BACKEND=vulkan` with it — and a 400 m
       #     ground view never settles on a CPU rasteriser (~5 min). Orbit settles
       #     in 6.7 s at 250 ms/frame. Ground level is triage, not a gate: raising
       #     `--wait` does not fix it, it just fails slower.
@@ -272,9 +272,9 @@ jobs:
       - name: Headless scene smoke (orbit)
         timeout-minutes: 15
         env:
-          VIBE_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+          CARTO_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run -p viberfox -- \
+          cargo run -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \

@@ -20,7 +20,7 @@
 
 **Interest management v0**: the server tracks each client’s **observer position** in sim space and includes only regions/prims within a **configurable radius** (`aoi_radius`, default 500 m). **OSM tiles** are **not** proxied through the sim; clients derive `TileKey`s (ADR-006) client-side and fetch over HTTP (ADR-004). The server’s role stays **world + avatars** only.
 
-**Implementation** (`vibe_sim/src/state.rs`, `net.rs`):
+**Implementation** (`cartopolis_simulator/src/state.rs`, `net.rs`):
 - `SimWorld::set_observer` records the observer; `snapshot()` filters regions by `(origin - observer).length_squared() <= aoi_radius²`, then prims by the surviving region set.
 - **Current limitation**: avatars are replicated to **all** clients regardless of AOI — only regions/prims are distance-filtered. AOI for avatars is future work.
 - A server-side tile cache or CDN redirect is deferred to a future ADR.

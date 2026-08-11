@@ -81,7 +81,7 @@ spawns entities. Disabling a layer flips `Visibility` rather than despawning.
 - **Attribution obligation**: ODbL requires credit. The Data Layers panel
   carries "Data © OpenStreetMap contributors (ODbL), via Overpass API".
 - **Client-side fetching** means each client queries Overpass independently. If
-  the layer set grows or player counts rise, move the fetch behind `vibe_sim`
+  the layer set grows or player counts rise, move the fetch behind `cartopolis_simulator`
   (a shared cache and one upstream identity) — that would supersede this ADR.
 - **Node-only POIs**: stops mapped as ways/relations (large station areas) are
   skipped. Acceptable for v0; `out center;` would cover them later.

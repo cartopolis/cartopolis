@@ -14,7 +14,7 @@
 
 ## Context
 
-**Problem**: Running `vibe_sim` on a host (ADR-007) requires **listen address**, **database path**, **tile URL template**, **texture dir**, **tick rate**, and **AOI radius** (ADR-012) without recompiling.
+**Problem**: Running `cartopolis_simulator` on a host (ADR-007) requires **listen address**, **database path**, **tile URL template**, **texture dir**, **tick rate**, and **AOI radius** (ADR-012) without recompiling.
 
 **Requirements**:
 - Sensible defaults for local dev
@@ -23,10 +23,10 @@
 
 ## Decision
 
-**Layered config**: defaults in code → optional `vibe.toml` → `VIBE_*` env vars → CLI flags (`clap`), each layer overriding the previous.
+**Layered config**: defaults in code → optional `cartopolis.toml` → `CARTO_*` env vars → CLI flags (`clap`), each layer overriding the previous.
 
-**Implementation** (`vibe_sim/src/config.rs`, `cli.rs`):
-- **`figment`** with `Serialized::defaults` + `Toml` + `Env::prefixed("VIBE_")` providers on a `serde`-derived `SimConfig`. `apply_cli` layers `clap` flag overrides on top.
+**Implementation** (`cartopolis_simulator/src/config.rs`, `cli.rs`):
+- **`figment`** with `Serialized::defaults` + `Toml` + `Env::prefixed("CARTO_")` providers on a `serde`-derived `SimConfig`. `apply_cli` layers `clap` flag overrides on top.
 - Logging: **`tracing`** + **`tracing-subscriber`** with `EnvFilter`.
 
 **Config keys** (all with in-code defaults):
@@ -36,7 +36,7 @@
 - `osm_tile_url_template` (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`) — client tile handoff, ADR-004
 - `texture_dir` (`data/textures`) — directory of `*.png` textures served to clients
 
-`vibe.toml` is loaded only if present; env keys are `VIBE_<field>` (e.g. `VIBE_listen`).
+`cartopolis.toml` is loaded only if present; env keys are `CARTO_<field>` (e.g. `CARTO_listen`).
 
 ## Rationale
 

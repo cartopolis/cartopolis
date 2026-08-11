@@ -1,5 +1,5 @@
 [package]
-name = "viberfox_core"
+name = "cartopolis_core"
 # Was pinned at 0.1.0 while the rest of the workspace moved. Nothing depends on
 # it by version — all three consumers are bare `path` dependencies — so the pin
 # bought nothing and only made `cargo metadata` disagree with the release it is

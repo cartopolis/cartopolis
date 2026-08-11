@@ -91,7 +91,7 @@ nothing, which reads as the sky *ending*.
   `bruneton_functions::transmittance_lut_r_mu_to_uv` turns `(r, mu)` into the UV.
   It was not taken because the analytic `sun_transmittance_at` is one CPU
   evaluation per frame instead of a per-pixel fetch, needs no `#ifdef` fallback
-  for `VIBERFOX_NO_ATMOSPHERE`, and — the deciding reason — keeps the clouds
+  for `CARTO_NO_ATMOSPHERE`, and — the deciding reason — keeps the clouds
   consistent with *our* sun light and *our* fog colour, which are also
   `utils::sun`. Matching Bevy's sky exactly while mismatching our own sun would
   have been the worse of the two consistencies. Revisit if the scene's lighting

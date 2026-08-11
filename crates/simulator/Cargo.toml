@@ -1,12 +1,12 @@
 [package]
-name = "viberfox_simulator"
+name = "cartopolis_simulator"
 version.workspace = true
 edition.workspace = true
 # The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
 license.workspace = true
 
 [lib]
-name = "viberfox_simulator"
+name = "cartopolis_simulator"
 path = "src/lib.rs"
 
 # The *binary* keeps the short name: it is what a user runs, and unlike the
@@ -32,7 +32,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-viberfox_core = { path = "../core" }
+cartopolis_core = { path = "../core" }
 
 [dev-dependencies]
 tempfile = "3.0"

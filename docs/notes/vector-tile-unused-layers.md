@@ -7,7 +7,7 @@ updated: 2026-08-10
 # What else is already in the vector tile
 
 Surveyed 2026-07-31 on the Groningen z14 fixture
-(`crates/viberfox/tests/fixtures/groningen_z14.mvt`, 495 KB), by dumping every
+(`crates/cartopolis/tests/fixtures/groningen_z14.mvt`, 495 KB), by dumping every
 layer's feature count, property keys and `kind` histogram. `map_geometry` fetches
 this body once per cell and decodes all of it, so anything listed here costs **no
 request** — the only question is whether we build something out of it.

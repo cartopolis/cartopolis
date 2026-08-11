@@ -46,7 +46,7 @@ fourteen within four days — the `check:` grep below is the durable pointer.)
 Dropping that tree still costs more than building it, and that cost moved off the
 main thread rather than going away. Typing `parse_buildings` is the remaining win.
 
-check: `grep -qE 'serde_json::from_str::<serde_json::Value>|: serde_json::Value = serde_json::from_str' crates/viberfox/src/systems/map/osm_buildings.rs`
+check: `grep -qE 'serde_json::from_str::<serde_json::Value>|: serde_json::Value = serde_json::from_str' crates/cartopolis/src/systems/map/osm_buildings.rs`
 
 The previous check pointed at `lod22.rs` and had become a **false green**: after
 that file was typed, its only remaining match was the comment explaining that it
@@ -75,7 +75,7 @@ reads:
 * **Thermals.** 8 cores in `available_parallelism`, of which 6 are efficiency
   cores sharing an envelope with the render thread and the compositor.
 
-`?quality=phone` / `VIBERFOX_QUALITY=phone` forces the tier on any platform that
+`?quality=phone` / `CARTO_QUALITY=phone` forces the tier on any platform that
 *has* a query string or an environment — which is how it gets profiled on a
 machine that can profile it, and which excludes Android (see below);
 `?quality=high` forces it off. Auto-detection has two arms, not one: on the web
@@ -142,8 +142,8 @@ above, and the alternative is a void.
 **The table is the tier**, so a knob that has no `Budget` field is a knob the
 phone does not get. That is the rule the four rows added on 2026-08-10 exist to
 enforce, and it is not a style preference: **every env-var and query-string
-escape hatch is unreachable on Android.** `VIBERFOX_FPS_CAP`,
-`VIBERFOX_NO_SPACE_RAYMARCH` and `VIBERFOX_QUALITY` all go through
+escape hatch is unreachable on Android.** `CARTO_FPS_CAP`,
+`CARTO_NO_SPACE_RAYMARCH` and `CARTO_QUALITY` all go through
 `std::env::var` off wasm, and a zygote-launched NativeActivity process has no
 settable environment and no `?query=` — so on the one platform the phone tier was
 written for, "force it with an env var" is not an answer to anything.

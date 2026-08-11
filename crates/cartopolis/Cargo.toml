@@ -1,0 +1,281 @@
+[package]
+name = "cartopolis"
+version.workspace = true
+edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
+
+# macOS `.app` Dock icon: `cargo bundle` builds an `.icns` from these PNGs
+# (macOS has no per-window icon, so `set_window_icon` can't apply it at runtime).
+[package.metadata.bundle]
+name = "Cartopolis"
+identifier = "eu.garage44.cartopolis"
+icon = ["assets/icon/cartopolis.png"]
+
+# A lib target plus a shim bin, rather than bin-only. `cargo test` links the
+# rlib; bin-only forced it to recompile the whole crate under `cfg(test)` as a
+# second artifact. See docs/notes/client-build-cost.md.
+[lib]
+name = "cartopolis"
+path = "src/lib.rs"
+# A lib target makes `cargo test` collect doc-tests, and rustdoc does NOT receive
+# `.cargo/config.toml`'s `rustflags` — those only reach rustc; rustdoc needs
+# `rustdocflags`. So every doc-test built without `target-cpu=x86-64-v3` and
+# tripped `simd_baseline`'s AVX2 `compile_error!`. Nothing here is a library API
+# whose examples need executing, so collect none rather than duplicate the flag.
+doctest = false
+
+[[bin]]
+name = "cartopolis"
+path = "src/main.rs"
+
+[features]
+# `solo`: one-command dev — run an in-process simulator and connect to it (ADR-016).
+# On by default for dev; turn off for lean/release client builds (then `--connect`
+# is required for online play).
+default = ["solo", "audio"]
+solo = ["dep:cartopolis_simulator"]
+# `audio`: the avatar soundscape (`systems::soundscape` — footsteps, landings,
+# wind). On by default, because a city you can walk through in silence reads as a
+# viewer rather than as a place.
+#
+# It is a *feature* rather than an always-on dependency for one reason: on Linux
+# `bevy_audio` pulls `alsa-sys`, whose build script needs the ALSA **development
+# headers** (`libasound2-dev`) and hard-fails at build time without them. That is
+# a new system prerequisite for every Linux build of this client, including
+# headless ones that will never open a device — the agent container and CI among
+# them. Those build with `--no-default-features --features solo`.
+#
+# The clips themselves are synthesised at startup, so this adds no assets and no
+# Git LFS exposure; the only cost is the decoder and the platform backend.
+#
+# `dep:cpal` is the *capture* half. `bevy_audio` wraps rodio, which is output-only,
+# so the microphone needs cpal directly — but cpal is already in the graph *under*
+# rodio, so this adds a direct edge rather than a new crate. It rides the same
+# feature because it links the same ALSA on Linux: a headless build that opts out
+# of `bevy_audio` must not be given an alsa-sys dependency by the back door.
+audio = ["bevy/bevy_audio", "bevy/wav", "dep:cpal"]
+# Faster incremental linking when hacking gameplay; not for release binaries.
+fast-dev = ["bevy/dynamic_linking"]
+# Opt out of the SIMD baseline `src/simd_baseline.rs` asserts. For bisecting a
+# codegen bug, or a host that really does predate AVX2 — not for shipped builds,
+# where it silently costs several times the tile raster throughput.
+scalar-fallback = []
+
+[dependencies]
+anyhow.workspace = true
+bevy.workspace = true
+bevy_image.workspace = true
+big_space.workspace = true
+clap.workspace = true
+earcutr.workspace = true
+fontdue.workspace = true
+image.workspace = true
+tiff.workspace = true
+postcard.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+dotenvy.workspace = true
+serde_json.workspace = true
+# Parse the optional `--login` credentials file (ADR-016).
+toml = "0.8"
+cartopolis_core = { path = "../core" }
+cartopolis_geo = { path = "../geo" }
+# Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
+cartopolis_simulator = { path = "../simulator", optional = true }
+bytes.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+# The client-intent channel behind `OnlineSession` — pure-Rust and wasm-safe,
+# unlike tokio's `sync::mpsc`, so the online session type compiles on the web
+# build (the transport itself, `network.rs`, stays native). ADR-033.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+# `poll_once`/`block_on` for draining `IoTaskPool` fetch tasks without blocking the
+# schedule (platform::http). Already in the tree via Bevy's async_executor.
+futures-lite = "2"
+# Portable `Instant`/`SystemTime` (ADR-033): plain `std` on native, JS-backed on
+# wasm where `std::time::Instant::now()` panics. Already in the tree via Bevy.
+web-time = "1"
+tzf-rs = "1.3.6"
+jiff = "0.2.34"
+# Direct handle on winit purely to build a `window::Icon` for the runtime OS
+# window icon (Bevy 0.19's `Window` has no icon field). Version-matched to
+# bevy_winit so Cargo unifies to the one compiled winit — `default-features =
+# false` adds nothing bevy hasn't already enabled. See `systems::window_icon`.
+winit = { version = "0.30", default-features = false }
+# GRIB2 decode for live GFS global cloud cover (ADR-032). Default features off:
+# `jpeg` pulls openjpeg-sys (a cmake-built C lib that does not build for wasm32,
+# ADR-033) and `png` pulls the png crate — both only decode DRS templates 5.40/5.41,
+# which the field we request does not use. NOMADS packs GFS `TCDC:entire atmosphere`
+# with DRS template **5.3** (complex packing + spatial differencing), which gribberish
+# decodes unconditionally. Everything left is pure Rust. If a future field 404s with a
+# template error, check the DRS template before adding the feature back.
+gribberish = { version = "1.5", default-features = false }
+
+# Wayland windowing is Linux-only. Kept off the shared bevy feature list (see the
+# workspace Cargo.toml) so macOS/Windows builds never pull the wayland stack; winit
+# uses the native AppKit/Win32 backend there. Cargo unions these features with the
+# main `bevy.workspace = true` entry above, so on Linux the feature set is unchanged.
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { workspace = true, features = ["wayland"] }
+
+# Web build (ADR-033): the browser `fetch` backend for `platform::http`. wasm-only
+# so native builds never see it — native HTTP is `ureq`. This *can* be compiled in
+# the dev image since 2026-08-10, but not with a bare `cargo check --target`:
+# see docs/notes/checking-the-web-build.md for the four flags it needs and why
+# each one's error names something other than its cause.
+# Native-only deps whose crates don't build for wasm (or are meaningless there).
+# Their call sites are cfg-gated to the matching target (ADR-030/033).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The sim transport (network.rs) + solo sim are tokio/TCP — native only. The web
+# build is Phase-1 Viewer with no sim (ADR-031/033); `OnlineSession`'s channel is
+# futures-channel, so nothing wasm-side needs tokio.
+tokio.workspace = true
+tokio-util.workspace = true
+ureq.workspace = true
+
+# The desktop clipboard. Deliberately *not* under `cfg(not(wasm32))` with the rest:
+# Android is a native target too, and arboard is X11/Wayland/AppKit/Win32 only — it
+# has no android backend and does not build for one. Android's clipboard is a JNI
+# call through `ClipboardManager`, which is its own seam and not wired yet
+# (`utils::clipboard` has a no-op arm for it).
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+arboard.workspace = true
+# Microphone capture for `platform::audio` (see the `audio` feature above).
+# Version-matched to the cpal rodio already resolves, so Cargo unifies to one
+# copy rather than compiling two ALSA backends.
+cpal = { version = "0.17", optional = true }
+
+# Android (`docs/notes/android-build.md`). `android-native-activity` picks the
+# `android-activity` backend, and without one of the two that crate is a bare
+# `compile_error!` — it owns the `android_main` entrypoint, so exactly one backend
+# must be linked, and nothing in Bevy's default set picks one for us (this
+# workspace builds bevy with `default-features = false`).
+#
+# NativeActivity rather than GameActivity because it needs **no Java at all**:
+# `android.app.NativeActivity` is in the framework, so the APK is a manifest plus
+# a `.so` plus assets, with no AAR to resolve, no `classes.dex` to build and no
+# Gradle. GameActivity is the direction Google points, but its Java class ships in
+# an AAR with transitive androidx dependencies, and resolving those without Gradle
+# is most of what a Gradle project is for. The price is the soft keyboard — see
+# the note.
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { workspace = true, features = ["android-native-activity"] }
+# JNI, for `platform::android`: the device location provider, `open_url` and the
+# soft-input probe are all calls into the Android *framework*, which is the only
+# way to reach any of them in an APK with no `classes.dex`.
+#
+# Pinned to the version `android-activity` 0.6 already resolves (`jni 0.21.1` in
+# Cargo.lock, via its `cesu8`/`jni-sys` line), so this is a new *edge* in the graph
+# and not a new subtree — nothing extra is compiled for the phone build, and the
+# CI Android check gains no download. If a Bevy bump moves android-activity onto a
+# different jni major, unify this with it rather than letting two copies link:
+# `JavaVM`/`JObject` from two `jni` versions are distinct types, and the error that
+# produces names a trait bound rather than a duplicate crate.
+jni = "0.21.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ehttp = "0.5"
+# Web render backend (ADR-033). WebGPU, not WebGL2, and the difference is not
+# cosmetic: WebGL2 has no compute pipeline, no storage buffers and no storage
+# textures *as an API*, so on it Bevy drops the atmosphere, SSAO, OIT and
+# environment-map generation outright and falls back to CPU light clustering and
+# CPU batching preprocessing. Running those unoptimised over a few hundred draws
+# measured ~10 s per frame — the fallbacks, not the shaders, were the cost. WebGPU
+# exposes all of it, so the GPU paths light up and the workarounds below come out.
+#
+# The two are mutually exclusive: bevy's `webgpu` feature *overrides* `webgl2`, so
+# this build requires a browser that exposes WebGPU, and there is no automatic
+# WebGL2 fallback left to inherit. Chromium-based browsers have it; **Firefox on
+# Linux does not necessarily**, and its failure mode is worth recognising —
+# `canvas.getContext()` returns null and wgpu reports "webgpu not available or
+# canvas already in use", which reads like a canvas bug rather than a missing
+# feature. Observed on Firefox 153 here with no `dom.webgpu.enabled` user pref;
+# check `about:support` under Graphics before suspecting the build.
+#
+# `web` is not optional and not cosmetic: `bevy_platform::time::Instant` resolves to
+# `web_time` only under `cfg(all(target_arch = "wasm32", feature = "web"))` and
+# otherwise falls through to `use std::time`, whose `Instant::now()` is the
+# `unsupported` stub that panics "time not implemented on this platform". Bevy calls
+# it constantly (frame timing, asset channels), so without this the browser build
+# carries a landmine under every clock read — it surfaced as tiles dying mid-decode
+# with a stack that pointed at the raster code rather than at the clock. Our own
+# code was already on the `web-time` shim; this puts Bevy's on it too.
+bevy = { workspace = true, features = ["webgpu", "web"] }
+# `getrandom` (via uuid v4 + others) needs its JS backend on wasm, where there is
+# no OS RNG (ADR-033). Feature-unifies with the graph's 0.2 instance.
+getrandom = { version = "0.2", features = ["js"] }
+# Read the page's query string, which is where `env_flag` gets its switches on a
+# platform with no environment (ADR-033). Already in the graph via bevy/wgpu, so
+# naming it here costs no build time — only these three features.
+# `Navigator`/`Geolocation*`/`PositionOptions` are the device-location seam
+# (`platform::location`), which driver mode uses on the web; `Clipboard` is the
+# copy half of `utils::clipboard` (the paste half can't use it — see that
+# module); `Document`/`Element` read the render tier index.html resolved onto
+# `<html data-quality>` before the module was fetched (`crate::quality`); the
+# rest read the page's query string.
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "Location",
+    "UrlSearchParams",
+    "Navigator",
+    "Clipboard",
+    "Geolocation",
+    "GeolocationPosition",
+    "GeolocationCoordinates",
+    "GeolocationPositionError",
+    "PositionOptions",
+    # Microphone capture (`platform::audio`): `getUserMedia` through
+    # `MediaDevices`, then a WebAudio graph — a `MediaStreamAudioSourceNode` into
+    # a `ScriptProcessorNode` whose `AudioProcessingEvent` carries the PCM.
+    "MediaDevices",
+    "MediaStream",
+    # Stopping each track is what clears the browser's recording indicator;
+    # closing the AudioContext alone does not.
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "MediaStreamAudioSourceNode",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioNode",
+    "AudioDestinationNode",
+    "AudioBuffer",
+    "AudioProcessingEvent",
+    "ScriptProcessorNode",
+] }
+# `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
+# off a rejected permission promise. Already in the graph under web-sys; named
+# here only to make the import legal.
+js-sys = "0.3"
+# Await the `writeText` promise so a rejected clipboard write is logged rather
+# than left as an unhandled rejection (`utils::clipboard`). Already in the graph
+# under bevy — naming it here only makes the import legal.
+wasm-bindgen-futures = "0.4"
+# `Closure`, to hand `watchPosition` a Rust callback it can keep calling
+# (`platform::location`). Already in the graph under web-sys; named here for the
+# import.
+wasm-bindgen = "0.2"
+# jiff (timezone/local-time) needs its `js` backend on wasm — `Timestamp::now()`
+# otherwise panics ("current time not possible with just std"). ADR-033.
+jiff = { version = "0.2.34", features = ["js"] }
+# Real threads for the CPU half of tile decoding (ADR-033, `platform::workers`).
+# `std::thread::spawn` is Unsupported on wasm32 even with atomics — creating a
+# thread is a JS act — so this starts Web Workers that re-instantiate the module
+# against the shared imported memory. `es_modules` matches trunk's
+# `wasm-bindgen --target web` output.
+wasm_thread = { version = "0.3", features = ["es_modules"] }
+
+# Embeds the app icon (assets/icon/cartopolis.ico) into the Windows .exe via
+# `build.rs`. NOT host-gated: cross-compiling to Windows from the Linux CI needs
+# winresource on the Linux host so build.rs (which gates on the *target* OS) can
+# invoke it. For any non-Windows target build.rs never calls it. See `build.rs`.
+[build-dependencies]
+winresource = "0.1"
+
+[lints]
+workspace = true

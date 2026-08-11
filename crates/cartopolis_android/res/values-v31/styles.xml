@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 31+ (Android 12) draws a *system* splash screen for every cold start, ahead
+  of the window this app creates, and it takes its colour and icon from the theme
+  rather than from anything the app does. Leave these unset and the platform picks
+  its own — the launcher icon on `windowBackground`'s colour, or on white — and
+  the handover into our slate window is a flash of the wrong colour on the one
+  transition a first-time installer is watching most closely.
+
+  These are the *platform* `windowSplashScreen*` attributes, not androidx's
+  `core-splashscreen` compat library: that would be an AAR, which would mean Java,
+  which is the whole thing `android:hasCode="false"` buys us
+  (docs/notes/android-build.md). They compile because aapt2 links against the
+  API 34 android.jar; the `-v31` qualifier is what keeps them off older devices,
+  where an unknown attribute in a theme is a resource-not-found at inflate time.
+
+  A resource qualifier *replaces* its base rather than merging with it, so every
+  item in `values/styles.xml` is repeated here. Adding one there and not here is
+  the failure mode, and it only shows up on a modern phone.
+-->
+<resources>
+    <style name="Theme.Cartopolis" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/window_background</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+
+        <item name="android:windowSplashScreenBackground">@color/brand_surface</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/icon_foreground</item>
+        <!-- Nothing animates, so this is not a duration to play — it is how long
+             the platform is willing to hold the splash. 1000 ms is the documented
+             ceiling; anything longer is ignored. It buys nothing on a fast start
+             and covers the surface handover on a slow one. -->
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
+    </style>
+</resources>

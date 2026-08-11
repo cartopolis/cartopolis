@@ -77,7 +77,7 @@ the very modal that is meant to be showing a spinner.
 
 ## The wire has no account creation
 
-`AuthCredential` is `Password` or `Token` (`viberfox_core::protocol`); there is no
+`AuthCredential` is `Password` or `Token` (`cartopolis_core::protocol`); there is no
 register message, and `simulator::ensure_account` is a server-side function solo
 mode calls on its own database. So the sign-in screen can only *sign in*. Adding
 "create an account" is a protocol change (a `PROTOCOL_HISTORY` row), not a UI one

@@ -23,12 +23,12 @@
 
 ## Decision
 
-Split into **simulation** (headless, authoritative state, DB writer) and **client** (Bevy render + input + network consumer) as **separate binaries** sharing a **`vibe_core`** library.
+Split into **simulation** (headless, authoritative state, DB writer) and **client** (Bevy render + input + network consumer) as **separate binaries** sharing a **`cartopolis_core`** library.
 
-- **`vibe_sim`**: Tokio; fixed-tick loop; loads config (ADR-014); owns network listen; applies intents; persists via ADR-013.
-- **`viberfox`** (Bevy client): **offline by default** (local SQLite); `--connect host:port` switches to online — connect to sim, spawn entities from snapshots, send intent.
-  - **Update (2026, ADR-016/031):** the default is now **solo** — an in-process `vibe_sim` on loopback reached through the authenticated online path, so the client is server-authoritative in every mode. `--connect host:port` = external sim; `--offline` = no sim at all (single user, no auth). The old client-side local-SQLite world was removed (no `Database`/`db/` on the client); persistence lives only in `vibe_sim`.
-- **Shared `vibe_core`**: types, coordinate model (ADR-006), protocol codec (ADR-008/009), region/prim DTOs.
+- **`cartopolis_simulator`**: Tokio; fixed-tick loop; loads config (ADR-014); owns network listen; applies intents; persists via ADR-013.
+- **`cartopolis`** (Bevy client): **offline by default** (local SQLite); `--connect host:port` switches to online — connect to sim, spawn entities from snapshots, send intent.
+  - **Update (2026, ADR-016/031):** the default is now **solo** — an in-process `cartopolis_simulator` on loopback reached through the authenticated online path, so the client is server-authoritative in every mode. `--connect host:port` = external sim; `--offline` = no sim at all (single user, no auth). The old client-side local-SQLite world was removed (no `Database`/`db/` on the client); persistence lives only in `cartopolis_simulator`.
+- **Shared `cartopolis_core`**: types, coordinate model (ADR-006), protocol codec (ADR-008/009), region/prim DTOs.
 
 Both binaries use **`tracing`** for structured logs (ADR-014).
 
@@ -36,7 +36,7 @@ Both binaries use **`tracing`** for structured logs (ADR-014).
 
 **Primary Reasoning**:
 1. **Authority boundary**: Standard "sim vs viewer" split.
-2. **Deployment**: VPS can run `vibe_sim` only (ADR-014).
+2. **Deployment**: VPS can run `cartopolis_simulator` only (ADR-014).
 3. **Testing**: Sim binary can run integration tests without a window.
 
 **Alternatives Considered**:
@@ -62,4 +62,4 @@ Both binaries use **`tracing`** for structured logs (ADR-014).
 - [ADR-003](./003-ecs-architecture.md): Client keeps Bevy ECS; sim may use ECS or minimal state (implementation choice after this ADR)
 - [ADR-008](./008-network-transport-layer.md): Sim accepts connections
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Only sim opens DB for writes
-- [ADR-015](./015-workspace-module-boundaries.md): Crate layout for `vibe_core` / `vibe_sim` / `viberfox`
+- [ADR-015](./015-workspace-module-boundaries.md): Crate layout for `cartopolis_core` / `cartopolis_simulator` / `cartopolis`

@@ -32,7 +32,7 @@ jobs:
     name: gate — tests must pass
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,10 +52,10 @@ jobs:
             exit 1
           }
       # The same list ci.yml's build-test job runs, in the same order.
-      - run: cargo test -p viberfox_geo
-      - run: cargo test -p viberfox_core
-      - run: cargo test -p viberfox_simulator
-      - run: cargo test -p viberfox
+      - run: cargo test -p cartopolis_geo
+      - run: cargo test -p cartopolis_core
+      - run: cargo test -p cartopolis_simulator
+      - run: cargo test -p cartopolis
       - run: cargo test -p big_space --lib
       # And the one check that renders: everything above proves the code compiles
       # and its units behave, this proves the frame had a planet in it. Shipping a
@@ -65,9 +65,9 @@ jobs:
       - name: Headless scene smoke (orbit)
         timeout-minutes: 15
         env:
-          VIBE_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+          CARTO_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run -p viberfox -- \
+          cargo run -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -84,7 +84,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,10 +100,10 @@ jobs:
           key: release
 
       - name: Build release binary (Linux x86_64)
-        run: cargo build -p viberfox --release
+        run: cargo build -p cartopolis --release
 
       - name: Build release binary (Windows x86_64, cross)
-        run: cargo build -p viberfox --release --target x86_64-pc-windows-gnu
+        run: cargo build -p cartopolis --release --target x86_64-pc-windows-gnu
 
       # Both packages carry the same paperwork, and one of the four files is not
       # optional: LICENSE-THIRD-PARTY.md is the ODbL / CC BY 4.0 / OFL notice that
@@ -118,9 +118,9 @@ jobs:
       - name: Package Linux tarball (binary + assets)
         run: |
           set -euo pipefail
-          PKG=viberfox-linux-x86_64
+          PKG=cartopolis-linux-x86_64
           rm -rf "$PKG" dist && mkdir -p "$PKG" dist
-          cp target/release/viberfox "$PKG/"
+          cp target/release/cartopolis "$PKG/"
           cp -r assets "$PKG/"
           # `|| true` on the branch, not on `cp`: under `set -e` a loop whose
           # last iteration tests false fails the whole step.
@@ -128,7 +128,7 @@ jobs:
             [ -f "$f" ] && cp "$f" "$PKG/" || true
           done
           cat > "$PKG/RUNNING.txt" <<'TXT'
-          Viberfox — Linux x86_64
+          Cartopolis — Linux x86_64
 
           Run ./run.sh; it changes into this directory (so the binary finds
           assets/) and checks the one requirement that has no polite failure.
@@ -142,7 +142,7 @@ jobs:
               weather are all streamed. Nothing is bundled.
 
           LICENSING
-            Viberfox itself is MIT OR Apache-2.0 (see LICENSE). The map data,
+            Cartopolis itself is MIT OR Apache-2.0 (see LICENSE). The map data,
             models and font it is built from carry their own terms and their own
             required notices — LICENSE-THIRD-PARTY.md is that notice, and it is
             part of this distribution.
@@ -157,12 +157,12 @@ jobs:
           # person least able to diagnose it got the least legible failure.
           #
           # Checked here rather than dropped from the build: the SIMD baseline is
-          # deliberate (`crates/viberfox/src/simd_baseline.rs` exists to stop it
+          # deliberate (`crates/cartopolis/src/simd_baseline.rs` exists to stop it
           # being traded away for convenience) and the affected population is
           # small. What was missing was saying so.
           cat > "$PKG/run.sh" <<'SH'
           #!/usr/bin/env bash
-          # Run viberfox from its own directory so it finds ./assets.
+          # Run cartopolis from its own directory so it finds ./assets.
           cd "$(dirname "$0")"
 
           # This build targets x86-64-v3 (AVX2 + FMA). On an older CPU the binary
@@ -172,19 +172,19 @@ jobs:
           if [ -r /proc/cpuinfo ] && ! grep -qw avx2 /proc/cpuinfo; then
               cat >&2 <<'MSG'
           This build needs a CPU with AVX2 and FMA (Intel Haswell / AMD Excavator,
-          2013 or newer). Yours does not report AVX2, so viberfox would stop with
+          2013 or newer). Yours does not report AVX2, so cartopolis would stop with
           "Illegal instruction" the moment it starts.
 
           Build from source instead — that produces a binary for the machine it is
           built on:
 
-              git lfs install && git clone https://code.garage44.eu/jeroen/viberfox
-              cd viberfox && cargo run -p viberfox --release
+              git lfs install && git clone https://code.garage44.eu/jeroen/cartopolis
+              cd cartopolis && cargo run -p cartopolis --release
 
           MSG
               exit 1
           fi
-          exec ./viberfox "$@"
+          exec ./cartopolis "$@"
           SH
           chmod +x "$PKG/run.sh"
           tar -czf "dist/$PKG.tar.gz" "$PKG"
@@ -193,9 +193,9 @@ jobs:
       - name: Package Windows zip (binary + assets)
         run: |
           set -euo pipefail
-          PKG=viberfox-windows-x86_64
+          PKG=cartopolis-windows-x86_64
           rm -rf "$PKG" && mkdir -p "$PKG"
-          cp target/x86_64-pc-windows-gnu/release/viberfox.exe "$PKG/"
+          cp target/x86_64-pc-windows-gnu/release/cartopolis.exe "$PKG/"
           cp -r assets "$PKG/"
           # `|| true` on the branch, not on `cp`: under `set -e` a loop whose
           # last iteration tests false fails the whole step.
@@ -209,9 +209,9 @@ jobs:
           # be a joke at the user's expense. So it is stated in writing instead —
           # here, and on the release page.
           cat > "$PKG/RUNNING.txt" <<'TXT'
-          Viberfox — Windows x86_64
+          Cartopolis — Windows x86_64
 
-          Run viberfox.exe from this folder; it reads assets\ from beside itself.
+          Run cartopolis.exe from this folder; it reads assets\ from beside itself.
 
           REQUIREMENTS
             * A CPU with AVX2 and FMA — Intel Haswell (2013) or AMD Excavator
@@ -224,7 +224,7 @@ jobs:
               weather are all streamed. Nothing is bundled.
 
           LICENSING
-            Viberfox itself is MIT OR Apache-2.0 (see LICENSE). The map data,
+            Cartopolis itself is MIT OR Apache-2.0 (see LICENSE). The map data,
             models and font it is built from carry their own terms and their own
             required notices — LICENSE-THIRD-PARTY.md is that notice, and it is
             part of this distribution.
@@ -271,11 +271,11 @@ jobs:
 
           **Downloads**
 
-          - \`viberfox-linux-x86_64.tar.gz\` — unpack and run \`./run.sh\`
-          - \`viberfox-windows-x86_64.zip\` — unpack and run \`viberfox.exe\`
-          - **Android:** https://viberfox.garage44.eu/apk/ (not an asset here — it is
+          - \`cartopolis-linux-x86_64.tar.gz\` — unpack and run \`./run.sh\`
+          - \`cartopolis-windows-x86_64.zip\` — unpack and run \`cartopolis.exe\`
+          - **Android:** https://cartopolis.garage44.eu/apk/ (not an asset here — it is
             signed and served separately, with install instructions on that page)
-          - **Browser:** https://viberfox.garage44.eu
+          - **Browser:** https://cartopolis.garage44.eu
 
           Each archive has a \`.sha256\` beside it.
 

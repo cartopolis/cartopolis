@@ -27,7 +27,7 @@ spin it, and dive back down into the detailed streamed-tile city view.
   surface at the sim anchor (no re-anchoring of the local scene).
 - A camera that can retreat to orbit the Earth's centre from space and return to the
   local surface orbit continuously (no visible jump at the handoff).
-- Reuse the existing WGS84 ECEF/ENU math (`vibe_core::geo`) rather than a parallel
+- Reuse the existing WGS84 ECEF/ENU math (`cartopolis_core::geo`) rather than a parallel
   coordinate system, and the existing OSM tile source for the globe skin.
 - Render across a ~10⁷ m depth range without wrecking the near-field city precision.
 

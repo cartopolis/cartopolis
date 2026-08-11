@@ -9,7 +9,7 @@ Shared vocabulary for docs and ADRs. Refine as the domain stabilizes.
 | **Interest / AOI** | Rules for **which** world data a client receives based on position or other criteria (see ADR-012). |
 | **Prim** | A **placed 3D primitive** or object instance in stored world data (see storage ADRs). |
 | **Region** | A **logical slice of world** with geographic or grid context (see ADR-006, ADR-002). |
-| **Sim** | The **headless simulation** process that owns authoritative state and speaks the wire protocol (`vibe_sim`). |
+| **Sim** | The **headless simulation** process that owns authoritative state and speaks the wire protocol (`cartopolis_simulator`). |
 | **World model** | The **data and rules** that define what exists in the space (geometry, regions, prims, replicated state). |
 
 ## Related

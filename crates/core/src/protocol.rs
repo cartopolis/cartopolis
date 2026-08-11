@@ -370,7 +370,7 @@ pub const EMOTE_REPLICATE_SECS: f32 = 2.5;
 pub const MAX_ROOM_LEN: usize = 64;
 
 /// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
-/// channel. Geo tiers (country/province/municipality) land with `vibe_geo`.
+/// channel. Geo tiers (country/province/municipality) land with `cartopolis_geo`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ChatScope {
     /// Proximity chat; `shout` widens the radius. Ephemeral, never stored.

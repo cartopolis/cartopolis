@@ -7,8 +7,8 @@ updated: 2026-08-10
 # Vector-tile rasterisation cost
 
 Measured 2026-07-25 on the Groningen z14 fixture
-(`crates/viberfox/tests/fixtures/groningen_z14.mvt`, 495 KB, 8552 buildings /
-95 streets), `dev-bevy` with `viberfox` forced to `opt-level = 3`, min-of-30
+(`crates/cartopolis/tests/fixtures/groningen_z14.mvt`, 495 KB, 8552 buildings /
+95 streets), `dev-bevy` with `cartopolis` forced to `opt-level = 3`, min-of-30
 with warmup:
 
 | Stage | Time |
@@ -111,7 +111,7 @@ therefore filled 4-wide with 14 cores idle. `main` now overrides the widths
 (io ≈ 30%, async-compute ≈ 45%, `compute` keeps the rest).
 
 Seconds for `MapStream::streaming_busy` to fall, `--shot` over Groningen on
-`dev-bevy` (which leaves `viberfox` itself at opt-level 1 — a release build is
+`dev-bevy` (which leaves `cartopolis` itself at opt-level 1 — a release build is
 faster in absolute terms; the ratio is what matters here):
 
 | Case | 4/4 (stock) | io=7, cpu=10 |
@@ -207,7 +207,7 @@ that share it 85.7 ms together. At seven decodes per cell that is 379 ms, of whi
 time, but it is what a burst of 400 cells after a teleport is made of.
 
 **Do not compare 41.8 ms against the ~2.7 ms parse in the table above.** Different
-box and different profile (that table forced `viberfox` to `opt-level = 3`; this
+box and different profile (that table forced `cartopolis` to `opt-level = 3`; this
 was a `dev-bevy` container build), so only the *ratio* carries over. The harness
 that produced it was a `dump_parse_cost` test on the branch this measurement came
 from, which did not merge — nothing in the tree measures it now, exactly as the

@@ -1,6 +1,6 @@
 ---
 topic: android-build
-triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
+triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
 updated: 2026-08-10
 ---
 
@@ -9,10 +9,10 @@ updated: 2026-08-10
 There is no Gradle project in this repo and no Java or Kotlin source, and that is
 a decision rather than an omission. The whole app is:
 
-- `crates/viberfox_android` — a `cdylib` that owns the `android_main` symbol and
-  calls `viberfox::run()`. Fifteen lines.
-- `crates/viberfox_android/AndroidManifest.xml` — the app definition.
-- `crates/viberfox_android/build-apk.sh` — `cargo ndk` → `aapt2` → `zipalign` →
+- `crates/cartopolis_android` — a `cdylib` that owns the `android_main` symbol and
+  calls `cartopolis::run()`. Fifteen lines.
+- `crates/cartopolis_android/AndroidManifest.xml` — the app definition.
+- `crates/cartopolis_android/build-apk.sh` — `cargo ndk` → `aapt2` → `zipalign` →
   `apksigner`, in that order, about eighty lines.
 - `assets/`, copied into the APK unchanged.
 
@@ -27,7 +27,7 @@ is for.
 
 GameActivity is where Google points, and where `winit`'s default feature points
 (`android-game-activity`; we select `android-native-activity` explicitly in
-`crates/viberfox/Cargo.toml`). Its C++ half is vendored *into* the `.so` by the
+`crates/cartopolis/Cargo.toml`). Its C++ half is vendored *into* the `.so` by the
 `android-activity` crate and costs nothing extra — but its Java half ships as
 `androidx.games:games-activity`, an AAR with transitive androidx dependencies.
 Resolving those by hand is a Maven client; resolving them with Gradle is a Gradle
@@ -57,7 +57,7 @@ streamed OSM / 3DBAG / AHN map and a local avatar, with no simulator, no auth an
 no world persistence. Two consequences that look like bugs if you don't know:
 
 The APK is built `--no-default-features`, so the `solo` feature — and with it the
-in-process `viberfox_simulator` and its bundled SQLite — is not compiled at all.
+in-process `cartopolis_simulator` and its bundled SQLite — is not compiled at all.
 Nothing cross-compiles `rusqlite` for Android today, and nobody has tried.
 
 What that leaves on the phone is a *map viewer*, and it is worth being concrete
@@ -140,7 +140,7 @@ refuse outright. Background location is not declared and should not be.
 **`arboard` is not a native-platform dependency, it is a desktop one.** It has X11,
 Wayland, AppKit and Win32 backends and no Android one, so it does not build for
 `aarch64-linux-android`. It lived under `cfg(not(target_arch = "wasm32"))` in
-`crates/viberfox/Cargo.toml`, which is a gate Android passes. This is the general
+`crates/cartopolis/Cargo.toml`, which is a gate Android passes. This is the general
 shape of the trap: this tree's platform seams were built as *native vs wasm*
 (ADR-030/033), and Android is a third thing that answers "native" to every one of
 them. Expect the next such dependency to be found the same way — by the build
@@ -174,7 +174,7 @@ stays (its `android_log-sys` layer writes to logcat properly) and the subscriber
 does not run. Its default filter is replaced with the desktop one, because
 `LogPlugin`'s own default lets everything through at INFO and buries the app's
 lines under Bevy's startup and asset chatter. Read it with
-`adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+`adb logcat -s cartopolis:V bevy_render:V wgpu:V`.
 
 **`--platform` must equal `minSdkVersion`.** The NDK bakes the API level into the
 `.so`'s symbol requirements. Build against 34 while the manifest claims 28 and the
@@ -187,7 +187,7 @@ archive, so `zipalign` on a signed APK invalidates the signature it just moved.
 **The shipped `release` profile cannot link this target on a normal box**, which is
 why `android-release` exists. Fat LTO over one codegen unit puts the bitcode for
 the entire Bevy stack in a single rustc process; on the 22 GB build container that
-process was killed by the OOM killer (signal 9) during the `viberfox_android`
+process was killed by the OOM killer (signal 9) during the `cartopolis_android`
 cdylib, *after* an hour spent compiling everything below it — so the failure
 arrives at the very end and looks like a mystery rather than a resource limit.
 `android-release` is `release` with thin LTO over 16 codegen units, the same trade
@@ -196,8 +196,8 @@ frame-time claim is inherited from the web profile's note, not re-measured here.
 
 ## The CI gate is a check, and why the NDK is in it
 
-`ci.yml`'s `check` job compiles `viberfox_android` for `aarch64-linux-android`.
-This matters more than the equivalent line for wasm does: `viberfox_android`'s
+`ci.yml`'s `check` job compiles `cartopolis_android` for `aarch64-linux-android`.
+This matters more than the equivalent line for wasm does: `cartopolis_android`'s
 dependencies are target-gated, so in the plain `cargo check --workspace` the crate
 is *empty* — an ordinary workspace build proves nothing at all about it.
 
@@ -205,9 +205,9 @@ That lane needs the NDK, and the wasm lane's `rustup target add` trick is not
 enough, because `blake3` (under `bevy_asset`) compiles `blake3_neon.c` for every
 little-endian aarch64 target and a build script's `cc` runs at check time. blake3's
 `no_neon` feature would remove the requirement — and would also turn off SIMD in
-the shipped app, which is the exact trade `crates/viberfox/src/simd_baseline.rs`
+the shipped app, which is the exact trade `crates/cartopolis/src/simd_baseline.rs`
 exists to refuse. So the lane downloads and caches an NDK instead. Baking it into
-`viberfox-ci:latest` would be strictly better and is only not done because that
+`cartopolis-ci:latest` would be strictly better and is only not done because that
 image lives in another repo. Reproducing that lane in the agent container needs
 two more steps that CI gets for free —
 [container-android-toolchain.md](container-android-toolchain.md).
@@ -239,15 +239,15 @@ true and covers wasm as a side effect.
 ## Publishing: one APK, no history, and why the key lives on the host
 
 `deploy-android.yml` builds `arm64-v8a` on every push to `main` and writes the
-result to `/data/viberfox/site/apk/`, i.e. **inside the wasm client's web root**,
+result to `/data/cartopolis/site/apk/`, i.e. **inside the wasm client's web root**,
 which is what buys the whole serving story for free: Caddy already has that
 directory mounted and `file_server`'d, so there is no second site block, no DNS
 record and no compose edit. The phone install path is
-`https://viberfox.garage44.eu/apk/`. The cost is a coupling that is invisible from
+`https://cartopolis.garage44.eu/apk/`. The cost is a coupling that is invisible from
 either file alone — `deploy-web.yml`'s `rsync --delete` would remove `apk/` on the
 next web deploy, so it carries an `--exclude '/apk/'`.
 
-The filenames are **fixed** (`viberfox.apk`, its `.sha256`, an `index.html`), so a
+The filenames are **fixed** (`cartopolis.apk`, its `.sha256`, an `index.html`), so a
 build overwrites its predecessor and the directory stays at one APK. That is the
 whole retention policy, and it is deliberate: nobody installs last week's build,
 and the runner host's disk is 76% full with a 24 GB Actions cache on it.
@@ -258,7 +258,7 @@ update signed by another one (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, whose only
 cure is uninstalling first). A key generated per CI run — which is what
 `build-apk.sh`'s built-in debug keystore would be in a fresh container — therefore
 turns every deploy into an uninstall/reinstall. So the key is generated once and
-kept at `/data/viberfox/android-key/` on the deploy host, mounted read-only into
+kept at `/data/cartopolis/android-key/` on the deploy host, mounted read-only into
 the job as `/signing`, and named in the runner's `valid_volumes` alongside the web
 root. It is an ordinary self-signed identity: this is not a Play upload key and
 gains nothing from a passphrase that would have to sit in the same directory to be
@@ -271,8 +271,8 @@ regenerate (and accept that every phone must uninstall once):
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -sha256 -days 10950 -nodes \
-    -subj "/CN=Viberfox/O=garage44/C=NL" -keyout /tmp/k.pem -out viberfox.x509.pem
-openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/k.pem -out viberfox.pk8 -nocrypt
+    -subj "/CN=Cartopolis/O=garage44/C=NL" -keyout /tmp/k.pem -out cartopolis.x509.pem
+openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/k.pem -out cartopolis.pk8 -nocrypt
 ```
 
 **The `.so` is stripped into the APK, and that is the one step that can silently
@@ -299,9 +299,9 @@ Built and packaged in the headless container; **never run on a device or an
 emulator**. The container has no GPU, no KVM and no Android runtime.
 
 **The APK has never once published.** `deploy-android.yml` failed on every push
-to `main` from the day it landed, and `https://viberfox.garage44.eu/apk/` was a
+to `main` from the day it landed, and `https://cartopolis.garage44.eu/apk/` was a
 404 for the whole of that period — for the CI-ordering reason above, with a real
-compile break behind it. `cargo check -p viberfox_android --target
+compile break behind it. `cargo check -p cartopolis_android --target
 aarch64-linux-android` passed for the first time in this repo's history on
 2026-08-10. So the packaging facts below, which predate that, were measured on a
 one-off manual build and not on anything CI ever reproduced.
@@ -313,7 +313,7 @@ What is actually proven, and it is worth knowing exactly how far it goes:
   landed with `deploy-android.yml`, so both numbers are now upper bounds.
 - `apksigner verify` passes (v3 scheme).
 - The archive holds `AndroidManifest.xml`, `resources.arsc`, `res/`,
-  `lib/arm64-v8a/libviberfox_android.so` and all 35 files of `assets/` — and
+  `lib/arm64-v8a/libcartopolis_android.so` and all 35 files of `assets/` — and
   **no `classes.dex`**, which is the check that `hasCode="false"` is telling the
   truth.
 - `android_main` is present in the `.so`'s dynamic symbol table as a `GLOBAL
@@ -331,7 +331,7 @@ whether Bevy acquires a Vulkan surface and survives pause/resume, whether the
 touch bridges behave as they do in a browser, whether the drawn keyboard is
 reachable with a thumb, whether the location poll ever moves, and whether 63 MB
 of glTF loads through the `AssetManager` in a tolerable time. Treat a first run
-as diagnosis and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+as diagnosis and watch `adb logcat -s cartopolis:V bevy_render:V wgpu:V`.
 
 The 2026-08-10 pass added a good deal of Android-only behaviour on top of this —
 a location provider, an on-screen keyboard, `AppLifecycle::WillSuspend` flushes,

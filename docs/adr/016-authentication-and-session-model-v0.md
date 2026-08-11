@@ -17,13 +17,13 @@
 
 ## Context
 
-**Problem**: [Vision](../abstract/vision.md) ties **governance** (G-05) and **mutating security** (P-04) to **known identity** before uploads, world edits, or social sends. ADR-009 already gates **world traffic** on a **Handshake → Ack**, but it does not define **what “proof” means**, **who stores sessions**, or how a **principal** (stable account id) is bound to a TCP connection. Without that, implementers cannot wire auth consistently across `vibe_sim` and clients.
+**Problem**: [Vision](../abstract/vision.md) ties **governance** (G-05) and **mutating security** (P-04) to **known identity** before uploads, world edits, or social sends. ADR-009 already gates **world traffic** on a **Handshake → Ack**, but it does not define **what “proof” means**, **who stores sessions**, or how a **principal** (stable account id) is bound to a TCP connection. Without that, implementers cannot wire auth consistently across `cartopolis_simulator` and clients.
 
 **Requirements**:
 - **Single authority**: the simulation server **issues and validates** sessions for v0 (aligns with P-01 / authoritative server story).
 - **Composable with ADR-009**: handshake carries **credentials**; Ack carries **session id** and **principal id** (or error).
 - **Simple v0 UX**: the **client binary** accepts **username and password** (CLI flags or equivalent) and uses them to populate the handshake — no separate login UI required for early iteration.
-- **Server-side account admin**: the **sim binary** (or dedicated **`vibe_sim` subcommand**) exposes **CLI** operations to **create**, **edit**, and **delete** local users against the same credential store as the handshake — no separate admin UI for v0.
+- **Server-side account admin**: the **sim binary** (or dedicated **`cartopolis_simulator` subcommand**) exposes **CLI** operations to **create**, **edit**, and **delete** local users against the same credential store as the handshake — no separate admin UI for v0.
 - **Rust CLI stack**: use **mainstream ecosystem crates** for parsing and operator UX (**`clap`**, companions below)—no ad hoc `std::env::args` parsing.
 - **Simple v0 authorization**: after successful auth, **all principals share the same mutation rights** (no roles, ACLs, or per-resource policy yet). A later ADR can introduce **AuthZ** without changing the session model.
 - **Versioning**: auth handshake fields evolve under **protocol_version** (ADR-009, P-02). **OIDC, API keys, mutual TLS** stay out of scope until a follow-up ADR.
@@ -33,7 +33,7 @@
 **v0 model**: After TCP connect (ADR-008), the client completes an **authentication handshake** inside the ADR-009 envelope. The server verifies **credentials**, creates a **server-side session**, and returns an **opaque session id** plus a **stable principal id**. Until Ack succeeds, the server **must not** send world snapshot or accept **mutating** application messages (read-only probes if any are defined stay explicitly whitelisted in spec).
 
 **Approach**:
-- **Client CLI**: parse args with **`clap`** (derive API, same as ADR-014). Expose **username** and **password** via flags (e.g. `--user`, `--password`) before opening the TCP connection; exact names in generated help. **Note:** passwords on argv are visible in OS process listings; acceptable for **lab/dev** only — prefer **`VIBE_PASSWORD`** (or similar) **environment variable** when you need slightly better hygiene on shared machines; use **`dialoguer`** (e.g. `Password` prompt) when neither flag nor env is set, if you want a safe default path.
+- **Client CLI**: parse args with **`clap`** (derive API, same as ADR-014). Expose **username** and **password** via flags (e.g. `--user`, `--password`) before opening the TCP connection; exact names in generated help. **Note:** passwords on argv are visible in OS process listings; acceptable for **lab/dev** only — prefer **`CARTO_PASSWORD`** (or similar) **environment variable** when you need slightly better hygiene on shared machines; use **`dialoguer`** (e.g. `Password` prompt) when neither flag nor env is set, if you want a safe default path.
 - **Wire**: the handshake payload carries **username** plus **password** (or a derived proof if we add challenge–response later). Server verifies against a **local credential store** (hashed password in SQLite per ADR-002/013, or a minimal server config file for smoke tests — pick one path in implementation and document it). Prefer **`argon2`** (or **`bcrypt`**) via the **`password-hash`** / **`argon2`** crates for storage; **`zeroize`** on structures that hold plaintext passwords **in memory** until hashing or send completes.
 - **Server CLI (user CRUD)**: implement **create**, **edit**, and **delete** as **`clap`** subcommands (e.g. `user add`, `user passwd`, `user rm` — exact spelling in derive + `--help`). Same **dialoguer** / env / argv pattern for secrets as the client. **`clap_complete`** (optional) can generate shell completions for packaged binaries. Operator-facing errors at the **binary** boundary may use **`miette`** or **`color-eyre`** for readable reports; keep **`thiserror`** in libraries (ADR-008 layering). Commands **mutate the credential store only** through the **single server writer** path (ADR-013): no hand-editing the DB file while the sim is running. **Create**: username + password. **Edit**: at minimum **password change**; optional **username rename** if the schema supports it without breaking foreign keys. **Delete**: remove the account record; document behavior for **active sessions** (v0: connection remains until disconnect; new handshakes fail) and for **owned world data** (defer detailed cascade rules unless already modeled).
 - **Principal**: stable internal identifier derived from the account record (e.g. UUID or row id), not the display username string alone if usernames can change later.
@@ -57,7 +57,7 @@ adds the Simulation tier. The CLI modes below are **dev shortcuts** that pre-see
 transition (auto-connect + auto-login), not the product's default entry — a fresh web
 or desktop launch lands anonymous and upgrades on a login action.
 
-Adding auth must not change the dev DX: `cargo run -p viberfox --profile dev-bevy`
+Adding auth must not change the dev DX: `cargo run -p cartopolis --profile dev-bevy`
 still launches a working sim+viewer with one command. This is achieved without a
 solo-only code path:
 
@@ -66,15 +66,15 @@ solo-only code path:
   supplies a remote address + `--login` credentials. Everything downstream —
   handshake, auth, snapshot apply — is identical, so external connect stays
   first-class and always-tested.
-- **In-process sim over loopback TCP.** `vibe_sim` is split into a **lib**
+- **In-process sim over loopback TCP.** `cartopolis_simulator` is split into a **lib**
   (`serve(config) -> SimHandle`, `ensure_account(...)`) + a thin bin (ADR-015). In
-  solo mode `viberfox` runs `serve` on a background tokio runtime bound to
+  solo mode `cartopolis` runs `serve` on a background tokio runtime bound to
   `127.0.0.1:0` (ephemeral), reads back `SimHandle::local_addr`, and connects to it
   as a normal authenticated client. **No in-memory bypass** of the socket or the
   auth handshake — that would create a divergent, rotting path. `tokio`/`rusqlite`
   are already client deps, so the added weight is small.
-- **Feature-gated.** A default-on `solo` cargo feature pulls the `vibe_sim` lib into
-  `viberfox`. Release/lean client builds turn it off and require `--connect`.
+- **Feature-gated.** A default-on `solo` cargo feature pulls the `cartopolis_simulator` lib into
+  `cartopolis`. Release/lean client builds turn it off and require `--connect`.
 - **Auto-provisioned dev account.** In solo mode the client calls the sim lib's
   `ensure_account` (idempotent) at startup, so the real argon2 handshake runs every
   launch with no manual `user add` and no "skip auth in solo" shortcut.

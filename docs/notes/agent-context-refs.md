@@ -7,7 +7,7 @@ updated: 2026-07-30
 # Carrying agent chat context on a git ref
 
 Work on this repo happens partly through `claude.ai/code`, which — because
-`viberfox-agent` on the VPS runs `claude remote-control --spawn worktree` — is a
+`cartopolis-agent` on the VPS runs `claude remote-control --spawn worktree` — is a
 thin client over a container here, not an Anthropic-hosted sandbox. The
 transcripts are therefore ordinary files on our own volume
 (`agent_claude` → `/home/agent/.claude/projects/<slug>/*.jsonl`), and every
@@ -16,12 +16,12 @@ exact rather than guessed.
 
 The reasoning behind an unfinished branch is published as a digest on
 **`refs/agent-context/<branch>`** in a **separate, private repo**
-(`jeroen/viberfox-agent-context`), readable by people with access to that repo.
+(`jeroen/cartopolis-agent-context`), readable by people with access to that repo.
 
 **Digests are kept, including after the branch lands.** That reverses the
 original requirement, which was that a digest be *unretrievable* once merged —
 and that requirement is what drove most of the machinery described below. It
-existed because digests were pushed into the public viberfox repo, so the only
+existed because digests were pushed into the public cartopolis repo, so the only
 way to limit who could read one was to limit how long it existed. A private repo
 answers that directly, and keeping the digest is worth more: "why is this code
 like this?" outlives the branch by years, while the commit body only holds what
@@ -32,19 +32,19 @@ hatch for a digest that must genuinely go (a credential past the redaction, say)
 not a routine step at merge time. Everything measured below still holds; it is
 the *when* that changed.
 
-## Why a private repo, and not viberfox itself
+## Why a private repo, and not cartopolis itself
 
 Corrected 2026-07-30. The digests were originally pushed to a namespace inside
-`jeroen/viberfox`, on the reasoning that a namespace outside `refs/heads/*` is
+`jeroen/cartopolis`, on the reasoning that a namespace outside `refs/heads/*` is
 not picked up by clone or plain fetch. That is true, and it is **not an access
 control** — measured:
 
 ```
-git clone --no-local https://code.garage44.eu/jeroen/viberfox.git   # anonymous
+git clone --no-local https://code.garage44.eu/jeroen/cartopolis.git   # anonymous
 git fetch origin '+refs/agent-context/*:refs/agent-context/*'       # all four refs
 ```
 
-viberfox is a public repo, so *anyone*, with no account, retrieved every digest
+cartopolis is a public repo, so *anyone*, with no account, retrieved every digest
 by asking for the refspec. The namespace choice buys **discoverability
 hygiene**, not privacy, and the two were conflated.
 
@@ -113,7 +113,7 @@ routine deletion was dropped.
 ## Where the prune is triggered from
 
 `hooks/post-receive.d/prune-agent-context`, now installed in **both** server
-repos — the private context repo (where deletions happen) and viberfox (kept so
+repos — the private context repo (where deletions happen) and cartopolis (kept so
 a stray legacy ref still prunes). Forgejo's
 global `core.hooksPath` means a repo's own `hooks/post-receive` is never run by
 git, but the generated dispatcher in the shared hooks dir loops over

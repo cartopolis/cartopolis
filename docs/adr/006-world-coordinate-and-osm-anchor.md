@@ -14,7 +14,7 @@
 
 > **Superseded.** The absolute-f32 sim-unit region frame here proved too imprecise at
 > planet scale (ADR-019) and too coupled (map vs sim, ADR-020). Only the Web-Mercator
-> **tile math** survives, implemented in `vibe_core::world` (`lat_lng_to_tile`,
+> **tile math** survives, implemented in `cartopolis_core::world` (`lat_lng_to_tile`,
 > `tile_key_from_lat_lng`, `REGION_ZOOM_LEVEL = 17`). The region model itself is being
 > retired — see ADR-021 and the capacity-bounded asset direction. Kept for history.
 
@@ -37,7 +37,7 @@ Define and document one **canonical coordinate contract** in shared types (libra
 - **Tile derivation**: `TileKey(x, y, z)` computed from anchor + `lod_level` (ADR-004); document rounding and zoom default.
 - **Non-goal**: Sub-centimeter survey accuracy; **good enough** for aligned ground textures and consistent AOI.
 
-**Rust ecosystem** (implement in `vibe_core`, ADR-015):
+**Rust ecosystem** (implement in `cartopolis_core`, ADR-015):
 - **`serde`** for any coordinate / region-anchor DTOs shared with the wire (already used in the project).
 - **`glam`** for `Vec3` / transforms in protocol and sim when they must round-trip with Bevy (`glam` with `serde` feature); avoids ad hoc tuple types.
 - Prefer **small, explicit** Web Mercator → tile math in-tree for v0; add **`geo-types`** or **`proj`** only if CRS needs exceed slippy-map assumptions (keeps deps lean until required).
@@ -65,7 +65,7 @@ Define and document one **canonical coordinate contract** in shared types (libra
 - AOI and tile policy can reference one spec (ADR-012)
 
 **Negative**:
-- Must keep conversion code in sync on all binaries (mitigation: single `vibe_core` per ADR-015)
+- Must keep conversion code in sync on all binaries (mitigation: single `cartopolis_core` per ADR-015)
 - Projection upgrades may shift textures slightly (mitigation: version the conversion helper)
 
 ## Related

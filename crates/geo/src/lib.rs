@@ -5,7 +5,7 @@
 //! whole contract — see `Cargo.toml` for why it is enforced by a crate boundary
 //! rather than a convention.
 //!
-//! `viberfox` re-exports these four modules from `systems`, so client code still
+//! `cartopolis` re-exports these four modules from `systems`, so client code still
 //! writes `systems::vector_tiles` and does not name this crate directly.
 
 pub mod furniture;

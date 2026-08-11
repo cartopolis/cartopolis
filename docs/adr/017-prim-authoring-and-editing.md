@@ -29,7 +29,7 @@
 
 **Add client→server prim CRUD to the protocol, apply it server-side with immediate DB persistence and delta broadcast, and drive it from an in-house egui UI** (context menu, edit dialog, transform gizmo) with hand-rolled raycast selection.
 
-**Protocol** (`vibe_core/src/protocol.rs`) — variants and wire kinds:
+**Protocol** (`cartopolis_core/src/protocol.rs`) — variants and wire kinds:
 
 | Variant | Dir | Kind | Purpose |
 |---------|-----|------|---------|
@@ -40,17 +40,17 @@
 | `PrimRemoved` | S→C | 7 | Emitted on delete |
 | `TextureCatalog*` / `TextureRequest` / `TextureData` | C↔S | 12–16 | Standard texture library, streamed from the sim |
 
-`PrimDto` gained `texture_id: Option<String>` and (later, ADR-018) the `PrimSurface` + `PrimGeometry` fields, all `#[serde(default)]` for rollout. This ADR introduced the CRUD kinds; ADR-018 (v8) added surface + geometry. The current wire version and the full revision log live in `PROTOCOL_HISTORY` (`crates/vibe_core/src/protocol.rs`).
+`PrimDto` gained `texture_id: Option<String>` and (later, ADR-018) the `PrimSurface` + `PrimGeometry` fields, all `#[serde(default)]` for rollout. This ADR introduced the CRUD kinds; ADR-018 (v8) added surface + geometry. The current wire version and the full revision log live in `PROTOCOL_HISTORY` (`crates/cartopolis_core/src/protocol.rs`).
 
-**Server** (`vibe_sim`): `SimWorld` holds an `Arc<Mutex<Connection>>` (connection kept alive past `load_world`) and gains `add_prim`/`update_prim`/`remove_prim`, each persisting via `db.rs` and returning the authoritative `PrimDto`. `net.rs` handles the CRUD messages and broadcasts `PrimUpsert`/`PrimRemoved` **immediately** on mutation (not at the next tick); the full `WorldSnapshot` remains the consistency fallback. Migration `V2` added the `texture_id` column.
+**Server** (`cartopolis_simulator`): `SimWorld` holds an `Arc<Mutex<Connection>>` (connection kept alive past `load_world`) and gains `add_prim`/`update_prim`/`remove_prim`, each persisting via `db.rs` and returning the authoritative `PrimDto`. `net.rs` handles the CRUD messages and broadcasts `PrimUpsert`/`PrimRemoved` **immediately** on mutation (not at the next tick); the full `WorldSnapshot` remains the consistency fallback. Migration `V2` added the `texture_id` column.
 
-**Client** (`viberfox`):
+**Client** (`cartopolis`):
 - **Selection** — hand-rolled ray/mesh picking in `picking.rs` (no external raycast crate); `Selected` marker + `ContextMenuState`.
 - **UI** — an **in-house egui plugin** (`egui_manager.rs`, egui 0.35 + egui-wgpu; not `bevy_egui`): context menu ("Create/Edit/Delete") and an edit dialog (name, shape, transform, color, texture grid). Field changes send `UpdatePrim` live.
 - **Gizmo** — in-house translate/rotate/scale handles + toolbar (`gizmo.rs`), keyboard **T/R/S**, updates throttled to the tick rate.
 - **Textures** — a standard library streamed from the sim (`TextureCatalog`/`TextureData`), keyed by string id stored in `PrimDto::texture_id`, applied as `base_color_texture` on `StandardMaterial`.
 
-Implemented across `vibe_core/src/protocol.rs`, `vibe_sim/src/{state,net,db}.rs`, and `viberfox/src/systems/{picking,ui,gizmo,prim_ops,rendering,egui_manager}.rs`.
+Implemented across `cartopolis_core/src/protocol.rs`, `cartopolis_simulator/src/{state,net,db}.rs`, and `cartopolis/src/systems/{picking,ui,gizmo,prim_ops,rendering,egui_manager}.rs`.
 
 ## Rationale
 
@@ -86,5 +86,5 @@ Implemented across `vibe_core/src/protocol.rs`, `vibe_sim/src/{state,net,db}.rs`
 - [ADR-009](./009-application-protocol-envelope-v0.md): Envelope carries the new kinds (7–16).
 - [ADR-011](./011-static-world-replication-v0.md): Graduates prims from static to mutable via delta messages.
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Single-writer; adds the migration and write functions.
-- [ADR-015](./015-workspace-module-boundaries.md): Shared types in `vibe_core`, mutation in `vibe_sim`, UI in `viberfox`.
+- [ADR-015](./015-workspace-module-boundaries.md): Shared types in `cartopolis_core`, mutation in `cartopolis_simulator`, UI in `cartopolis`.
 - [ADR-018](./018-prim-texture-surface-params.md): Extends prims with surface + geometry params (protocol v8).

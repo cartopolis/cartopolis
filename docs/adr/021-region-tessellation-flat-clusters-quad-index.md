@@ -76,9 +76,9 @@ B region (4,j) origin = anchor + 4·256·East + j·256·North   ← continues A'
 
 ## Rationale
 
-1. **Keeps the sim flat and globe-agnostic.** No geodesy or sphere math in `vibe_sim`; it simulates flat squares in local meters, exactly as today (P-05).
+1. **Keeps the sim flat and globe-agnostic.** No geodesy or sphere math in `cartopolis_simulator`; it simulates flat squares in local meters, exactly as today (P-05).
 2. **True squares preserve the SL/OpenSim model** — fixed-size rectangular regions/parcels with consistent X/Y axes and north, which authoring and gameplay assume.
-3. **Matches islands-of-simulation reality.** Viberfox visits cities with ocean between; global seamless tiling buys little, and (B) puts the only seams where nothing is simulated.
+3. **Matches islands-of-simulation reality.** Cartopolis visits cities with ocean between; global seamless tiling buys little, and (B) puts the only seams where nothing is simulated.
 4. **Global index gives the benefits of (A) without its costs.** Stable worldwide addressing, discovery, and neighbour queries — without warped cells or sphere math in the sim.
 
 **Alternatives Considered**:
@@ -95,7 +95,7 @@ B region (4,j) origin = anchor + 4·256·East + j·256·North   ← continues A'
 - Regions are exact, seamless squares where it matters (inside a cluster); flat sim math is always valid.
 - Stable global addressing + discovery + neighbour lookup via the quad index.
 - On-demand activation works without a pre-instantiated global grid.
-- `vibe_sim` stays flat and unchanged in spirit.
+- `cartopolis_simulator` stays flat and unchanged in spirit.
 
 **Negative**:
 - **Two identifiers per region** (cluster-local `(i,j)` + global S2 cell): must keep the mapping consistent (mitigation: derive the cell from the anchor; store both; one is canonical for the DB key).

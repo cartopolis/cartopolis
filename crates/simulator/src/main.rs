@@ -1,9 +1,9 @@
 //! Headless simulation server binary — a thin wrapper over the `simulator` lib
 //! (ADR-007). Loads layered config (ADR-014), serves, and runs until Ctrl-C.
 
+use cartopolis_simulator::{cli::SimCli, serve, SimConfig};
 use clap::Parser;
 use std::sync::Arc;
-use viberfox_simulator::{cli::SimCli, serve, SimConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

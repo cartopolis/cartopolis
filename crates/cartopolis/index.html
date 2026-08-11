@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Cartopolis</title>
+    <!-- The WebGPU gate must come BEFORE the `rel="rust"` link below; see the
+         comment in it for why the order is load-bearing rather than stylistic. -->
+    <script>
+      // WebGPU is a hard requirement (ADR-033): bevy's `webgpu` feature overrides
+      // `webgl2`, so there is no fallback renderer left to degrade to — and we do
+      // not want one, since the WebGL2 path is what cost ~10 s per frame.
+      //
+      // Without this gate the failure is thoroughly misleading. wgpu reports
+      // `canvas.getContext() returned null; webgpu not available or canvas already
+      // in use`, which reads as a canvas bug, and it arrives as a Rust panic from
+      // deep inside bevy_render — after the browser has downloaded and compiled
+      // ~70 MB of wasm it was never going to be able to run.
+      //
+      // ORDER MATTERS. Trunk replaces the `<link data-trunk rel="rust"/>` element
+      // *in place* with its module loader, and emits the wasm `<link rel=preload>`
+      // at the end of <head>. Both must therefore come after this script: aborting
+      // the parser here means neither is ever reached, and nothing is fetched. Put
+      // this after the rust link and the loader is parsed first, at which point
+      // only `window.stop()`'s cancellation of already-queued work saves you —
+      // which is a coincidence, not a design.
+      //
+      // `document.write` + `window.stop()` rather than a nicer DOM build: both are
+      // synchronous, and anything deferred (DOMContentLoaded, an `await`) hands
+      // control back to the parser, which is precisely what must not happen.
+      //
+      // Scope: this catches "the browser has no WebGPU at all", which is the case
+      // actually seen in the wild (Firefox 153/Linux: `navigator.gpu` absent). It
+      // cannot catch "WebGPU exists but yields no adapter" — that needs
+      // `await navigator.gpu.requestAdapter()`, and awaiting anything here means
+      // letting the parser run on. Those still surface as the wgpu panic.
+      if (!navigator.gpu) {
+        document.write(
+          // Brand palette, not the browser's default greys: this page is the
+          // only Cartopolis some visitors ever see. Slate `#1b2830` is
+          // `theme::SURFACE`, `#dfe5e7` is `TEXT`, `#f2efea` is `CREAM`,
+          // `#10181e` is `INK` and `#ff9457` is `ACCENT_TEXT` — the same five
+          // constants the loader below and the app itself paint from.
+          '<style>' +
+            'body{margin:0;background:#1b2830}' +
+            '.u{color:#dfe5e7;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
+            '.u h1{font-size:1.3rem;font-weight:600;color:#f2efea}' +
+            '.u code{background:#10181e;padding:.1em .4em;border-radius:3px}' +
+            '.u a{color:#ff9457}' +
+          '</style>' +
+          '<div class="u">' +
+            "<h1>This browser can't run Cartopolis</h1>" +
+            '<p>Cartopolis renders with <b>WebGPU</b>, which this browser does not ' +
+            'expose (<code>navigator.gpu</code> is missing). Nothing has been ' +
+            'downloaded.</p>' +
+            '<p>Chromium-based browsers support it. Firefox does too, but not yet ' +
+            'by default on every platform — check <code>about:support</code> under ' +
+            '<i>Graphics</i>, and <code>dom.webgpu.enabled</code> in ' +
+            '<code>about:config</code>.</p>' +
+            // The one audience this page can actually help: an Android visitor
+            // does not need WebGPU at all, because there is a native app. Without
+            // this the gate is a dead end on the platform most likely to hit it.
+            '<p>On <b>Android</b> there is a native app that needs no WebGPU: ' +
+            '<a href="/apk/" style="color:#FD9212">cartopolis.garage44.eu/apk</a>.</p>' +
+          '</div>'
+        );
+        window.stop();
+      }
+    </script>
+    <!-- Boot recorder. Must run before the loader below, and before any Rust:
+         the failures worth catching on a device with no console — a module that
+         will not instantiate, a memory that cannot be reserved — happen *during*
+         instantiation, so nothing our `tracing` logger does will ever see them.
+         `onerror` and `unhandledrejection` are the only things that will.
+
+         It buffers rather than rendering, because at this point in the parse the
+         overlay it writes into does not exist yet. -->
+    <script>
+      (function () {
+        var lines = [];
+        window.__boot = { lines: lines, failed: false, onLine: null };
+        function push(level, text) {
+          if (lines.length > 400) lines.shift();
+          lines.push({ level: level, text: text });
+          if (window.__boot.onLine) window.__boot.onLine();
+        }
+        function fmt(args) {
+          return Array.prototype.map
+            .call(args, function (a) {
+              if (typeof a === "string") return a;
+              try { return JSON.stringify(a); } catch (e) { return String(a); }
+            })
+            .join(" ")
+            // Bevy's wasm logger writes `%c`-styled console output; strip the
+            // directives and the CSS that follows them so the line stays legible.
+            .replace(/%c/g, "")
+            .replace(/(color|background|font-style)\s*:[^;]*;?/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+        }
+        ["log", "info", "warn", "error"].forEach(function (k) {
+          var orig = console[k].bind(console);
+          console[k] = function () {
+            push(k, fmt(arguments));
+            orig.apply(null, arguments);
+          };
+        });
+        window.addEventListener("error", function (e) {
+          window.__boot.failed = true;
+          push("error", e.message + (e.filename ? " (" + e.filename + ")" : ""));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          window.__boot.failed = true;
+          push("error", "unhandled rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+        });
+      })();
+    </script>
+    <!-- RENDER SCALE, and the tier the whole client reads.
+         ===============================================================
+         Must run before the loader below: `crates/cartopolis/src/quality.rs`
+         reads the `data-quality` attribute this sets during startup, and the
+         canvas has to exist and be sized before winit adopts it.
+
+         Two things are decided here, and both have to be, because neither can
+         be decided from Rust.
+
+         **The tier.** A phone is not a small desktop — see `quality.rs` for what
+         the client does with the answer. The signals that identify one
+         (`matchMedia`, `devicePixelRatio`, viewport size) are all page-side, and
+         re-deriving them in Rust would mean two detectors that can disagree with
+         each other about a machine they are both looking at.
+
+         **The render scale**, which is the larger of the two wins and is *only*
+         expressible here. On the web the render resolution is not a renderer
+         setting: wgpu's surface `configure` writes `canvas.width/height` from
+         the window's physical size, and that comes from winit's `ResizeObserver`
+         measuring this element's device-pixel content box — CSS size ×
+         `devicePixelRatio`. A Fairphone 4 reports a DPR near 2.75, so a canvas
+         laid out across its 393 CSS-px viewport renders 1080×2340 real pixels,
+         with HDR, an atmosphere and a tonemapper over every one of them. Bevy's
+         `scale_factor_override` cannot help: winit's web `request_inner_size`
+         sets the CSS size, so asking for fewer physical pixels shrinks the
+         visible canvas instead of the buffer behind it.
+
+         What does work is ordinary layout. `#stage` is sized to viewport ÷ k in
+         CSS pixels — so its backing store is (viewport × DPR) ÷ k device pixels —
+         and then scaled back up by k with a transform, which is not a layout
+         property and so does not feed back into the observed size. The canvas
+         covers the screen; the renderer pays for 1/k² of it. At the phone cap
+         that is a little over a quarter of the pixels.
+
+         `transform` and not `zoom`: zoom *is* a layout property in the browsers
+         that support it, so it would change the measured box and the scale would
+         cancel itself out.
+
+         Pointer coordinates survive this. winit takes them from `offsetX/offsetY`,
+         which the browser reports in the element's own untransformed coordinate
+         system — the same space the backing store is in. -->
+    <script>
+      (function () {
+        // An explicit `?quality=` wins, and is spelled the same way
+        // `CARTO_QUALITY` is on the desktop (`quality.rs` parses the same
+        // words, so the two halves cannot drift on vocabulary).
+        //
+        // The `cartopolis_` prefix is optional here because it is optional in
+        // `env_value`, which accepts both spellings in either case. Matching only
+        // the bare one would let `?CARTO_QUALITY=phone` put the renderer in
+        // the phone tier while the page went on rendering at full resolution —
+        // a half-applied budget, with nothing to say so.
+        // `decodeURIComponent` throws on a malformed escape (`?quality=%`), and
+        // throwing here would leave `data-quality` unset and the stage unsized
+        // over a typo. An unreadable value is simply not a forced tier.
+        var forced = (/[?&](?:cartopolis_)?quality=([^&]*)/i.exec(location.search) || [])[1];
+        try {
+          forced = forced ? decodeURIComponent(forced).trim().toLowerCase() : "";
+        } catch (e) {
+          forced = "";
+        }
+
+        var phone;
+        if (forced === "phone" || forced === "low" || forced === "mobile") {
+          phone = true;
+        } else if (forced === "desktop" || forced === "high") {
+          phone = false;
+        } else {
+          // Coarse pointer *and* a small viewport. Either alone is wrong: a
+          // touchscreen laptop has the first, a narrow desktop window the
+          // second, and neither is a device that needs the phone budget.
+          var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+          var short = Math.min(window.innerWidth, window.innerHeight) < 900;
+          phone = !!(coarse && short);
+        }
+        // `documentElement` exists as soon as `<html>` is open, so this is
+        // readable from Rust however late the module instantiates. The stage
+        // itself cannot be laid out yet — it is in `<body>`, which this script
+        // precedes — so the second half of the job runs down there, off this
+        // decision.
+        document.documentElement.dataset.quality = phone ? "phone" : "desktop";
+        window.__phone = phone;
+      })();
+    </script>
+    <!-- Build this crate's `cartopolis` bin for wasm, Phase-1 Viewer (no sim,
+         so no default `solo` feature). ADR-031/033. -->
+    <link data-trunk rel="rust" data-bin="cartopolis" data-cargo-no-default-features
+          data-initializer="loader.js" />
+    <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
+         root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
+    <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        /* Brand slate, not black: this is what shows for the frames before the
+           loader paints, and a black flash reads as a broken page. Matches
+           `systems::theme::SURFACE`. */
+        background: #1b2830;
+        /* Pull-to-refresh and rubber-banding are chrome-level gestures: they are
+           decided before any pointer event is dispatched, so `preventDefault`
+           in the canvas handler cannot reach them. A downward drag on the map
+           would otherwise reload the page. */
+        overscroll-behavior: none;
+      }
+      /* The render-scale carrier. Sized in px and scaled by the script in
+         <body>; `transform-origin: 0 0` so scaling grows it toward the bottom
+         right and it still starts at the top-left of the viewport.
+
+         `position: fixed` rather than in flow: a transformed element keeps its
+         *untransformed* box for layout, so an in-flow stage would reserve a
+         viewport-sized hole and leave the scaled-up canvas overlapping whatever
+         followed it. */
+      #stage {
+        position: fixed;
+        top: 0;
+        left: 0;
+        transform-origin: 0 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        /* The touch bridge (`systems::touch`) needs every finger, and the
+           browser's default gesture layer claims most of them first: a
+           one-finger drag scrolls, two fingers pinch-zoom the *page*, and a
+           double tap zooms. `touch-action: none` hands the lot to us — without
+           it the map is inert under exactly the gestures it exists for, and no
+           `TouchInput` ever reaches Rust to explain why. Not redundant with
+           winit's own `preventDefault`: this is consulted by the compositor
+           before the event is dispatched at all. */
+        touch-action: none;
+        /* A long press is our context menu (`systems::touch`); left to itself
+           the browser answers it with a text-selection callout over the map. */
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      /* Same brand tones as the <head> abort page above — an "it doesn't work
+         here" screen is still the product's screen. */
+      .unsupported {
+        color: #dfe5e7;
+        background: #1b2830;
+        font: 15px/1.6 system-ui, sans-serif;
+        max-width: 34rem;
+        margin: 12vh auto;
+        padding: 0 1.5rem;
+      }
+      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f2efea; }
+      .unsupported code {
+        background: #10181e;
+        padding: 0.1em 0.4em;
+        border-radius: 3px;
+      }
+      .unsupported a { color: #ff9457; }
+
+      /* The wordmark face, the same file `systems::theme` embeds for the Bevy
+         splash — without it the handover swaps typeface mid-load, which is the
+         one difference the eye catches every time. `swap` so a slow font never
+         holds the wordmark back: the fallback stack is close enough for the
+         moment it is up. */
+      @font-face {
+        font-family: "Cartopolis Brand";
+        src: url("assets/fonts/PlusJakartaSans-SemiBold.ttf") format("truetype");
+        font-weight: 600;
+        font-display: swap;
+      }
+
+      /* Loader, not a splash — and yet it has to *be* the splash.
+         ===============================================================
+         The engine cannot draw until ~70 MB has been fetched and compiled, so
+         on the web this covers the first several seconds of the product. It
+         used to spend them on a monospace checklist of GPU/asset/worker probes
+         over a scrolling boot log: a build harness, shown to every visitor,
+         while `systems::splash` — whose module note says the two are drawn to
+         match — waited behind it with the logo and the wordmark. So the brand
+         is here now and the instrumentation is behind `?log` (and the failure
+         state, where it is exactly what you want). Keep the palette, the type
+         sizes and the motto in step with `systems::theme` and
+         `systems::splash`; they are one screen handed over mid-load. */
+      #loader {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.9rem;
+        /* The loader, the Bevy splash and the app chrome all paint from
+           `systems::theme`'s palette — keep these in step with it. */
+        background: #1b2830;
+        color: #a8b1ba;
+        font: 13px/1.5 system-ui, -apple-system, sans-serif;
+        transition: opacity 0.4s ease;
+        padding: 6vh 1.5rem;
+        box-sizing: border-box;
+      }
+      #loader.done { opacity: 0; pointer-events: none; }
+      /* Brand block: logo, wordmark, motto — the Bevy splash's layout, in CSS.
+         `#brand` owns its own gap so the checklist appearing under `?log` cannot
+         push the wordmark off centre. */
+      #brand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.35rem;
+        margin-bottom: 0.6rem;
+      }
+      #logo {
+        /* 168 px is the Bevy splash's own logo size. The `vh` term is what keeps
+           a landscape phone from pushing the wordmark and the progress track off
+           the bottom of a 360 px-tall viewport. */
+        width: min(40vw, 30vh, 168px);
+        height: auto;
+        /* No layout shift and no broken-image icon if the copy-dir is missing:
+           the box is reserved, and `onerror` removes the element. */
+        aspect-ratio: 1;
+      }
+      #wordmark {
+        font-family: "Cartopolis Brand", system-ui, -apple-system, sans-serif;
+        font-weight: 600;
+        /* `theme::SPLASH_WORDMARK` / `SPLASH_MOTTO`, in px — egui points and CSS
+           pixels are the same unit at the scale factor both sides are laid out
+           against. */
+        font-size: 40px;
+        line-height: 1.1;
+        color: #f2efea;
+      }
+      #motto {
+        font-size: 16px;
+        color: #a8b1ba;
+      }
+      #track {
+        width: min(22rem, 70vw);
+        height: 3px;
+        background: #263842;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #bar {
+        width: 0%;
+        height: 100%;
+        background: #fd6012;
+        border-radius: 2px;
+        transition: width 0.2s linear;
+      }
+      /* Used when the transfer reports no total: motion without a false number. */
+      #bar.indeterminate {
+        width: 35% !important;
+        animation: sweep 1.1s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        0% { margin-left: -35%; }
+        100% { margin-left: 100%; }
+      }
+      #loader[data-state="failed"] #bar { background: #e88b7d; animation: none; }
+      #loader[data-state="failed"] #status { color: #e88b7d; }
+      /* The instrumentation. Hidden by default — it is a developer console, and
+         it was the first thing every visitor saw for the whole download. It
+         comes back for the two audiences that want it: `?log`, and any run that
+         has actually failed (`data-state="failed"`, set by the fatal-check
+         branch and by the boot recorder's `onerror`), where this list *is* the
+         diagnosis on a phone with no console. The probes still run and still
+         fill in either way; only the display is gated, so nothing has to be
+         re-run when a failure reveals it. */
+      #checks, #bootlog { display: none; }
+      #loader[data-log] #checks,
+      #loader[data-state="failed"] #checks { display: flex; }
+      #loader[data-log] #bootlog,
+      #loader[data-state="failed"] #bootlog { display: block; }
+      #checks {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        width: min(30rem, 90vw);
+        flex-direction: column;
+        gap: 0.2rem;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #checks li { display: flex; gap: 0.6rem; align-items: baseline; }
+      /* Fixed-width mark so the labels line up while rows are still settling. */
+      #checks .mark { flex: none; width: 1ch; text-align: center; color: #767f87; }
+      #checks .label { flex: none; }
+      #checks .note { color: #767f87; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* No green in the brand palette (systems::theme has no success colour), so
+         "passed" is just ordinary text — the eye is meant to catch the failures. */
+      #checks li[data-ok="yes"] .mark { color: #dfe5e7; }
+      #checks li[data-ok="warn"] .mark,
+      #checks li[data-ok="warn"] .note { color: #d8c07a; }
+      #checks li[data-ok="no"] .mark,
+      #checks li[data-ok="no"] .note,
+      #checks li[data-ok="no"] .label { color: #e88b7d; }
+      #bootlog {
+        width: min(64rem, 100%);
+        height: 9rem;
+        overflow: hidden;
+        margin: 0;
+        padding: 0.6rem 0.8rem;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid #3c5564;
+        border-radius: 6px;
+        color: #767f87;
+        font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #android-hint {
+        margin: 14px 0 0;
+        text-align: center;
+        font: 14px/1.4 "Plus Jakarta Sans", system-ui, sans-serif;
+      }
+      #android-hint a { color: #fd9212; text-decoration: none; }
+      #android-hint a:hover { text-decoration: underline; }
+      #bootlog .warn { color: #d8c07a; }
+      #bootlog .error { color: #e88b7d; }
+    </style>
+  </head>
+  <body>
+    <!-- The canvas is placed here rather than left to winit (`Window::canvas`
+         adopts it by this id) so it can sit inside `#stage`, which is what the
+         render scale acts on. See the RENDER SCALE comment in <head>.
+
+         `width="1"` is deliberate: the loader hands over on the first canvas
+         wider than 1 px, and an unsized canvas defaults to 300×150 — which would
+         satisfy that test before Bevy had drawn a single frame. -->
+    <div id="stage"><canvas id="cartopolis-canvas" width="1" height="1"></canvas></div>
+    <script>
+      (function () {
+        var phone = window.__phone;
+        // Device pixels per CSS pixel we are willing to render. 1.5 keeps text
+        // and the map's line work from going visibly soft while cutting a 2.75×
+        // screen to ~30% of its pixels; 1 would be cheaper and looks it. The
+        // desktop tier is uncapped — a workstation GPU is not what runs out here.
+        var MAX_DPR = phone ? 1.5 : Infinity;
+        // …and an absolute ceiling, for the large high-DPI screen that satisfies
+        // the DPR cap and is still far too many pixels for a mobile GPU.
+        var MAX_PIXELS = phone ? 1300000 : Infinity;
+
+        var stage = document.getElementById("stage");
+
+        function layout() {
+          var vw = window.innerWidth;
+          var vh = window.innerHeight;
+          var dpr = window.devicePixelRatio || 1;
+          // Both caps expressed as a divisor, then the stricter one wins. k > 1
+          // shrinks the buffer; k == 1 leaves the page exactly as it was before
+          // any of this existed, transform included.
+          var k = Math.max(1, dpr / MAX_DPR, Math.sqrt((vw * vh * dpr * dpr) / MAX_PIXELS));
+          stage.style.width = vw / k + "px";
+          stage.style.height = vh / k + "px";
+          stage.style.transform = k === 1 ? "none" : "scale(" + k + ")";
+          window.__renderScale = {
+            k: k,
+            dpr: dpr,
+            width: Math.round((vw * dpr) / k),
+            height: Math.round((vh * dpr) / k),
+          };
+        }
+
+        layout();
+        // `resize` covers rotation and the mobile browser's collapsing chrome.
+        // DPR can also change without one — a window dragged between monitors of
+        // different densities — which is what the media query catches.
+        window.addEventListener("resize", layout);
+        var dpr = window.devicePixelRatio || 1;
+        var watch = window.matchMedia("(resolution: " + dpr + "dppx)");
+        if (watch.addEventListener) watch.addEventListener("change", layout);
+      })();
+    </script>
+    <!-- The same screen `systems::splash` paints, in the seconds before it can:
+         logo, wordmark, motto, then the progress this half is uniquely able to
+         report. The logo is fetched from the asset tree trunk copies next to the
+         page (`rel="copy-dir"`); if that copy is missing the mark removes itself
+         rather than showing a broken-image icon — and the "Asset tree" check
+         below will say why. -->
+    <div id="loader" data-state="loading">
+      <div id="brand">
+        <img id="logo" src="assets/icon/cartopolis.png" alt=""
+             onerror="this.remove()" />
+        <div id="wordmark">Cartopolis</div>
+        <div id="motto">Explore our world</div>
+      </div>
+      <div id="track"><div id="bar"></div></div>
+      <div id="status">Downloading engine…</div>
+      <ul id="checks"></ul>
+      <pre id="bootlog"></pre>
+      <!-- Shown only on Android. The wasm client is a ~70 MB download that a
+           phone browser will run slowly at best; the APK is the better answer and
+           was, until now, discoverable only from a note in docs/. -->
+      <p id="android-hint" hidden>
+        <a href="/apk/">On an Android phone? Install the app instead →</a>
+      </p>
+    </div>
+    <script>
+      // Reveal the APK link on Android only. A userAgent test is the right tool
+      // here despite its reputation: the question is literally "is this device
+      // running the OS the APK targets", which no feature test can answer.
+      if (/Android/i.test(navigator.userAgent)) {
+        document.getElementById("android-hint").hidden = false;
+      }
+      // `?log` (or `?LOG`) keeps the loader up after the first frame — the flag
+      // the hand-over below already reads. It reveals the checklist and the boot
+      // log too, and it has to be set here rather than there because the CSS
+      // needs it before the first paint, not after the engine has drawn.
+      if (/(^|[?&])(log|LOG)(=|&|$)/.test(location.search)) {
+        document.getElementById("loader").dataset.log = "";
+      }
+    </script>
+    <script>
+      // Sanity checks, run in parallel with the download.
+      //
+      // The `navigator.gpu` gate in <head> is a *pre-download* abort, and its own
+      // comment explains why it can only ever answer "is there a WebGPU API at
+      // all": awaiting anything there hands control back to the parser, which is
+      // the one thing it must not do. These run after the parse, so they can await
+      // — which is what the questions that actually matter require. Is there an
+      // adapter behind the API? Did the asset tree ship next to the page? Will the
+      // tile decode get real cores? On a phone with no console, this list is the
+      // whole diagnosis.
+      //
+      // A failure here is reported, not acted on: `window.stop()` would abort the
+      // in-flight module fetch and save the transfer, but trunk's own `onFailure`
+      // would then overwrite the explanation with the resulting fetch abort — a
+      // worse message for a better bandwidth bill.
+      (function () {
+        var CHECKS = [
+          {
+            label: "GPU adapter",
+            // The only fatal one. `navigator.gpu` present with nothing behind it
+            // is exactly the case the <head> gate cannot catch, and wgpu reports
+            // it as `canvas.getContext() returned null` from deep inside
+            // bevy_render — a canvas-shaped lie, arriving after 70 MB.
+            fatal: true,
+            run: async function () {
+              if (!navigator.gpu) return { ok: "no", note: "navigator.gpu missing" };
+              var adapter = await navigator.gpu.requestAdapter();
+              if (!adapter) return { ok: "no", note: "WebGPU present, no compatible adapter" };
+              // `adapter.info` is the current spec; `requestAdapterInfo()` is the
+              // older async spelling still shipping in some browsers. Either may
+              // report empty strings — the fields are privacy-gated, not missing.
+              var info = adapter.info ||
+                (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : null);
+              var desc = info && [info.vendor, info.architecture].filter(Boolean).join(" ");
+              return { ok: "yes", note: desc || "available" };
+            },
+          },
+          {
+            label: "Asset tree",
+            // Trunk copies `assets/` next to the page (`rel="copy-dir"`) and Bevy
+            // loads from that root. When the copy is missing the first symptom is
+            // a shader that never compiles, seconds later and nowhere near the
+            // cause. A text asset, deliberately: the binaries here are LFS-tracked
+            // and a pointer file would still answer 200.
+            run: async function () {
+              var r = await fetch("assets/shaders/water.wgsl", { cache: "no-store" });
+              if (!r.ok) return { ok: "no", note: "assets/ → HTTP " + r.status };
+              var head = (await r.text()).slice(0, 200);
+              if (head.indexOf("git-lfs") !== -1) {
+                return { ok: "no", note: "LFS pointer, not the asset — `git lfs pull`" };
+              }
+              return { ok: "yes", note: "reachable" };
+            },
+          },
+          {
+            label: "Worker threads",
+            // Not fatal — the single-threaded build is a supported target. But
+            // without shared memory `platform::workers` puts every tile decode on
+            // the main thread, between animation frames, and the map fills in at a
+            // crawl rather than not at all. That is worth naming before someone
+            // reports it as a performance bug.
+            run: async function () {
+              if (typeof SharedArrayBuffer === "undefined" || !self.crossOriginIsolated) {
+                return { ok: "warn", note: "single-threaded — no cross-origin isolation (COOP/COEP)" };
+              }
+              return { ok: "yes", note: (navigator.hardwareConcurrency || "?") + " cores" };
+            },
+          },
+          {
+            label: "Render budget",
+            // Not a check — a report. On a phone with no console this is the
+            // only place the two decisions made before any Rust ran are
+            // visible, and both are worth seeing when a device turns out slow:
+            // whether it was recognised as a phone at all, and how many pixels
+            // it ended up committing to. `?quality=high` forces the full budget
+            // if this got it wrong.
+            run: async function () {
+              var tier = document.documentElement.dataset.quality || "?";
+              var s = window.__renderScale;
+              if (!s) return { ok: "warn", note: tier + ", render scale not applied" };
+              var note = tier + " · " + s.width + "×" + s.height;
+              if (s.k > 1) note += " (1/" + s.k.toFixed(2) + " of " + s.dpr + "× DPR)";
+              return { ok: "yes", note: note };
+            },
+          },
+          {
+            label: "Heap reservation",
+            // The boot failures on small devices are memory, not code: the module
+            // reserves a large 32-bit heap during instantiation, before any Rust
+            // logger exists, so a device that cannot back it fails silently. 256
+            // MiB is well under what the engine asks for, which makes a failure
+            // here conclusive and a pass merely encouraging — hence the wording.
+            run: async function () {
+              try {
+                var m = new WebAssembly.Memory({ initial: 4096 }); // 4096 × 64 KiB
+                m = null;
+                return { ok: "yes", note: "256 MiB probe reserved" };
+              } catch (e) {
+                return { ok: "warn", note: "could not reserve 256 MiB — the engine needs more" };
+              }
+            },
+          },
+        ];
+
+        var list = document.getElementById("checks");
+        CHECKS.forEach(function (check) {
+          var li = document.createElement("li");
+          li.dataset.ok = "pending";
+          ["mark", "label", "note"].forEach(function (cls) {
+            var span = document.createElement("span");
+            span.className = cls;
+            li.appendChild(span);
+          });
+          li.querySelector(".mark").textContent = "·";
+          li.querySelector(".label").textContent = check.label;
+          li.querySelector(".note").textContent = "checking…";
+          list.appendChild(li);
+
+          // Each check settles on its own; a slow adapter query must not hold up
+          // the asset fetch, and neither may reject into the boot recorder's
+          // `unhandledrejection` hook and fail the whole boot on its own.
+          Promise.resolve()
+            .then(check.run)
+            .catch(function (e) {
+              return { ok: check.fatal ? "no" : "warn", note: String((e && e.message) || e) };
+            })
+            .then(function (r) {
+              li.dataset.ok = r.ok;
+              li.querySelector(".mark").textContent =
+                { yes: "✓", warn: "!", no: "✕" }[r.ok] || "·";
+              li.querySelector(".note").textContent = r.note;
+              if (r.ok === "no" && check.fatal) {
+                window.__boot.failed = true;
+                var s = document.getElementById("status");
+                if (s) s.textContent = "Can't run here — " + check.label + ": " + r.note;
+                document.getElementById("loader").dataset.state = "failed";
+              }
+            });
+        });
+      })();
+    </script>
+    <script>
+      (function () {
+        var loader = document.getElementById("loader");
+        var log = document.getElementById("bootlog");
+
+        function render() {
+          var b = window.__boot;
+          log.textContent = "";
+          b.lines.slice(-10).forEach(function (l) {
+            var span = document.createElement("span");
+            span.className = l.level;
+            span.textContent = l.text + "\n";
+            log.appendChild(span);
+          });
+          if (b.failed) loader.dataset.state = "failed";
+        }
+        window.__boot.onLine = render;
+        render();
+
+        // Hand over on the first drawn frame, not on `onSuccess`: the module
+        // instantiating is not the same as anything being on screen, and hiding
+        // early would show a blank canvas before Bevy's splash appears.
+        // One detector for the flag: the block under the loader markup set
+        // `data-log` before the first paint (the CSS needed it then), so read
+        // that back rather than parsing the query string a second time.
+        var keep = loader.dataset.log !== undefined;
+        (function wait() {
+          if (window.__boot.failed) return;
+          var c = document.querySelector("canvas");
+          if (c && c.width > 1 && c.height > 1) {
+            requestAnimationFrame(function () {
+              requestAnimationFrame(function () {
+                if (window.__boot.failed || keep) return;
+                loader.classList.add("done");
+                setTimeout(function () { loader.remove(); }, 500);
+              });
+            });
+            return;
+          }
+          requestAnimationFrame(wait);
+        })();
+      })();
+    </script>
+  </body>
+</html>

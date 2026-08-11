@@ -1,4 +1,4 @@
-# Viberfox
+# Cartopolis
 
 A networked 3D virtual world built with Rust and Bevy, anchored in the real planet. Walk a street of buildings imported from [OpenStreetMap](https://www.openstreetmap.org/), then keep flying up — through the atmosphere, past the planet turning below you, into space — and drop back down anywhere on Earth. Build in place, and share the world with others in real time.
 
@@ -23,24 +23,24 @@ _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](d
 
 The same client ships three ways, from one codebase:
 
-- **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
-- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target. The published binaries need a CPU with **AVX2 and FMA** (Haswell/Excavator or newer) — they are compiled for the `x86-64-v3` baseline, and on anything older they stop with an illegal instruction; build from source there.
-- **Android** — an installable APK at **[viberfox.garage44.eu/apk](https://viberfox.garage44.eu/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/viberfox_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
+- **Web (WebAssembly)** — play in a browser at **[cartopolis.garage44.eu](https://cartopolis.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
+- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/cartopolis/releases), or build from source. macOS builds from source too; Linux is the primary development target. The published binaries need a CPU with **AVX2 and FMA** (Haswell/Excavator or newer) — they are compiled for the `x86-64-v3` baseline, and on anything older they stop with an illegal instruction; build from source there.
+- **Android** — an installable APK at **[cartopolis.garage44.eu/apk](https://cartopolis.garage44.eu/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/cartopolis_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
 
 Native is the faster and more capable of the three — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
 
 ## Running from source
 
 ```bash
-cargo run -p viberfox
+cargo run -p cartopolis
 ```
 
 Starts in **solo mode**: an in-process sim runs on loopback and the client connects over the same authenticated path an external server uses. Your world is persisted to `data/world.db`.
 
 ```bash
-cargo run -p viberfox -- --connect <host:port>   # split mode: connect to a live sim
-cargo run -p viberfox -- --offline               # no sim: single user, no auth or persistence
-cargo run -p viberfox_simulator                  # the sim server, standalone
+cargo run -p cartopolis -- --connect <host:port>   # split mode: connect to a live sim
+cargo run -p cartopolis -- --offline               # no sim: single user, no auth or persistence
+cargo run -p cartopolis_simulator                  # the sim server, standalone
 ```
 
 You need a Rust toolchain, a C compiler and a working GPU driver — details, release builds and the web build are in the [development guide](docs/guides/development.md). **Run `git lfs install` before cloning**: binary assets live in Git LFS and several are compiled into the binary, so a pointer file fails at runtime rather than at build time.
@@ -57,15 +57,15 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 
 | Crate | Role |
 |-------|------|
-| `viberfox_core` | Shared protocol types and tile/coordinate math |
-| `viberfox_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
-| `viberfox_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
-| `viberfox` | Bevy game client — rendering, ECS systems, UI |
+| `cartopolis_core` | Shared protocol types and tile/coordinate math |
+| `cartopolis_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
+| `cartopolis_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
+| `cartopolis` | Bevy game client — rendering, ECS systems, UI |
 | `big_space` | Vendored floating-origin fork, for planet-scale coordinates |
 
 ## Licence
 
-Viberfox is dual-licensed under **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)**, at your option — the Rust ecosystem's default pair, and the licence of the vendored `big_space` fork, so the two sets of notice obligations line up. [`LICENSE`](LICENSE) has the detail.
+Cartopolis is dual-licensed under **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)**, at your option — the Rust ecosystem's default pair, and the licence of the vendored `big_space` fork, so the two sets of notice obligations line up. [`LICENSE`](LICENSE) has the detail.
 
 That covers the source. The map data, the geodata services, the avatars and the font each carry their own terms, and several of them — the ODbL, CC BY 4.0, the OFL — require their notice to travel with anything built from the work. **[`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) is that notice, and it is the canonical list**: it ships in the release tarball, in the Windows zip and inside the APK, and the in-app About panel renders it. The Credits below are the same list written for a reader; add a source to the file, not only here.
 

@@ -6,7 +6,7 @@ description: Retrieve the agent chat digest for a branch from refs/agent-context
 # branch-context
 
 Fetch and read the chat digest published for a branch. Sessions run through
-`claude.ai/code` execute in the `viberfox-agent` container on the VPS, and a
+`claude.ai/code` execute in the `cartopolis-agent` container on the VPS, and a
 `Stop` hook publishes a mechanical digest of each session to
 `refs/agent-context/<branch>` in a **separate, private repo**. That ref carries
 the *why* — the
@@ -22,12 +22,12 @@ name is gone.
 
 ## Retrieve
 
-The digests live in `jeroen/viberfox-agent-context`, **not** in this repo — it
+The digests live in `jeroen/cartopolis-agent-context`, **not** in this repo — it
 is private, because a transcript is never reviewed for credentials before it is
-published and viberfox itself is public. Fetch from there explicitly:
+published and cartopolis itself is public. Fetch from there explicitly:
 
 ```bash
-git fetch ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git \
+git fetch ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git \
     '+refs/agent-context/*:refs/agent-context/*'
 git for-each-ref 'refs/agent-context/**' --format='%(refname:lstrip=2)'
 ```

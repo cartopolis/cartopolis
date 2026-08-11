@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preprocess 3DBAG building data into per-cell files the viberfox client can
+"""Preprocess 3DBAG building data into per-cell files the cartopolis client can
 stream, so covered areas (e.g. Groningen) get authoritative BAG heights served
 from our own host instead of the slow live API / OSM height guesses.
 
@@ -59,7 +59,7 @@ ATTRIBUTION = (
 
 
 def lat_lng_to_tile(lat, lng, z):
-    """Slippy-map tile (x, y) for a lat/lng — identical to viberfox_core::world."""
+    """Slippy-map tile (x, y) for a lat/lng — identical to cartopolis_core::world."""
     n = 2.0 ** z
     x = int((lng + 180.0) / 360.0 * n)
     lat_rad = math.radians(lat)

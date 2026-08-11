@@ -8,16 +8,16 @@ updated: 2026-08-06
 
 Measured 2026-08-06, workstation (22 cores, rustc 1.97.1, clang+lld,
 `target-cpu=x86-64-v3`). Method: touch or append a `pub const` to one file, then
-time `cargo build -p viberfox --profile dev-bevy` with dependencies already
-built. The "cold incremental" rows delete `target/dev-bevy/incremental/viberfox-*`
+time `cargo build -p cartopolis --profile dev-bevy` with dependencies already
+built. The "cold incremental" rows delete `target/dev-bevy/incremental/cartopolis-*`
 first, which is what CI and every profile switch effectively do.
 
 | Scenario | Time |
 |---|---|
 | Edit a leaf system (`water.rs`) | 3.8 s |
 | Edit a widely-imported module (`resources.rs`) | 3.9 s |
-| Edit `viberfox_core` (rebuilds sim + client) | 4.8 s |
-| Compile `viberfox`, deps warm, **incremental cache cold** | **52.4 s** |
+| Edit `cartopolis_core` (rebuilds sim + client) | 4.8 s |
+| Compile `cartopolis`, deps warm, **incremental cache cold** | **52.4 s** |
 | …of which `cargo check` (frontend only) | 7.1 s |
 | `cargo check` no-op after working in `dev-bevy` | 9.5 s |
 
@@ -39,15 +39,15 @@ switching profiles, flipping `solo` / `fast-dev` / `scalar-fallback`, and every
 Both are described as they *were* when measured; the section below records what
 was done about them the same day.
 
-**The bin-only target doubled the test build.** `viberfox` had no lib target, so
-`cargo test -p viberfox --bin viberfox` compiled all ~52k lines a second time
+**The bin-only target doubled the test build.** `cartopolis` had no lib target, so
+`cargo test -p cartopolis --bin cartopolis` compiled all ~52k lines a second time
 under `cfg(test)` as a separate artifact. Note that `cargo check` does not
 compile `cfg(test)` code at all, which is why the suite can rot unseen.
 
 > That command outlived the fix and became a trap: with the shim bin in place it
 > selects a nine-line target with no tests in it, so it runs **0 tests and exits
 > 0**. It was still the autonomous lane's verification gate in `workflow.md` and
-> in the `ticket` skill until 2026-08-06. The command is `cargo test -p viberfox`.
+> in the `ticket` skill until 2026-08-06. The command is `cargo test -p cartopolis`.
 
 **Two dev profiles are maintained and both are paid for.** `target/` measured
 **170 GB**: `debug` 94 GB, `dev-bevy` 72 GB, `release` 2.2 GB, `web-release`
@@ -61,10 +61,10 @@ Measured on the same machine, same method, after the changes:
 
 | | Before | After |
 |---|---|---|
-| Edit a geodata file → its tests green | part of a 52.4 s binary compile | **2.2 s** (`cargo test -p viberfox_geo`, 60 tests, no Bevy in the graph) |
+| Edit a geodata file → its tests green | part of a 52.4 s binary compile | **2.2 s** (`cargo test -p cartopolis_geo`, 60 tests, no Bevy in the graph) |
 | Edit a leaf system → full client suite green | second full `cfg(test)` build | **5.4 s** |
-| `cargo check -p viberfox` | — | 7.5 s |
-| `cargo check -p viberfox --all-targets` | — | 8.2 s |
+| `cargo check -p cartopolis` | — | 7.5 s |
+| `cargo check -p cartopolis --all-targets` | — | 8.2 s |
 | `target/` | 197 GB | **118 GB** |
 
 Four changes, in order of what they bought:
@@ -74,7 +74,7 @@ Four changes, in order of what they bought:
 2. **One dev profile.** `dev` and `dev-bevy` were both maintained; collapsing
    them removed a duplicate artifact set and the 9.5 s no-op check, and dropped
    workspace debuginfo to `line-tables-only`.
-3. **`crates/geo` (`viberfox_geo`).** The Bevy-free half, below.
+3. **`crates/geo` (`cartopolis_geo`).** The Bevy-free half, below.
 4. **Deleting the orphaned `target/dev-bevy`** — 79 GB no build config could
    reach any more.
 
@@ -104,7 +104,7 @@ would have compiled and then failed under `cargo test`.
 
 `street_furniture` went the same way on the same day (990 pure / 110 ECS),
 which took `mvt-reader` and `geo-types` out of the client's manifest — it was
-the last file in `viberfox` parsing MVT. geo is now 7,945 lines and 74 tests,
+the last file in `cartopolis` parsing MVT. geo is now 7,945 lines and 74 tests,
 with a ~1 s edit-to-green loop.
 
 A remaining tier (`terrain`, `height`, `route_ahead`, `collision`, `tile_source`

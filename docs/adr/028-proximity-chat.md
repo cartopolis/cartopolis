@@ -21,7 +21,7 @@
 > **Implemented (protocol v11):** Local (proximity say/shout), Global, and Rooms —
 > `ChatSend`/`ChatMessage`/`ChatSubscribe` (kinds 17–19), `ChatHub` routing, per-scope
 > rate limits, SQLite scrollback for durable channels (migration V6), and the egui chat
-> panel. **Deferred to `vibe_geo`:** the geo tiers (country/province/municipality) and
+> panel. **Deferred to `cartopolis_geo`:** the geo tiers (country/province/municipality) and
 > avatar geo-authority on the sim — they slot in as extra channels behind the same
 > `resolve()` with no protocol change.
 
@@ -73,7 +73,7 @@ proximity chat is where co-presence actually reads as social.
 
 **Approach**:
 
-### Place model (`vibe_geo`, new crate)
+### Place model (`cartopolis_geo`, new crate)
 
 A resolved location is a **sparse hierarchy**, so degradation is "the list is
 shorter" rather than a special case:
@@ -237,7 +237,7 @@ somewhere to land, and the client needs no per-country knowledge.
 - Client and server compute identical membership from identical data.
 - Adding a country or upgrading NL to polygon accuracy is provider registration
   plus a data file; protocol, persistence, and UI are untouched.
-- `vibe_geo` gives the eventual BAG/BRT work a home, without committing to a
+- `cartopolis_geo` gives the eventual BAG/BRT work a home, without committing to a
   generic pipeline before there is a second consumer to shape it.
 
 **Negative / risks**:
@@ -267,8 +267,8 @@ somewhere to land, and the client needs no per-country knowledge.
   this process*". Correct today; silently wrong the moment a second sim exists.
   `ChatBus` is the seam, but the limitation must be documented and revisited before
   multi-sim, since clients will have come to depend on channel completeness.
-- **New crate** (`vibe_geo`) touches ADR-015's crate boundaries; it is placed
-  outside `vibe_core` so `rusqlite` and the geometry stack stay out of the
+- **New crate** (`cartopolis_geo`) touches ADR-015's crate boundaries; it is placed
+  outside `cartopolis_core` so `rusqlite` and the geometry stack stay out of the
   protocol crate.
 - **Scrollback growth and data-subject rights** (deletion, export) are unaddressed
   in v0 beyond a retention bound.
@@ -277,7 +277,7 @@ somewhere to land, and the client needs no per-country knowledge.
   real-time media is a different transport (WebRTC: ICE/DTLS/SRTP + an SFU), not a
   `ChatBus` publish. The direction we are leaning is **str0m** (a sans-IO WebRTC
   crate, sans-IO the same way `rtc` is): because it imposes no runtime or clock of
-  its own, the SFU state machine can be **embedded in `vibe_sim`** and driven from
+  its own, the SFU state machine can be **embedded in `cartopolis_simulator`** and driven from
   the existing tick loop, keeping media in-process rather than a separate service.
   SDP offer/answer can ride the existing ADR-009 envelope as new message kinds
   rather than adding a signaling server. Sequencing: this waits until **ADR-016
@@ -293,7 +293,7 @@ somewhere to land, and the client needs no per-country knowledge.
 - [ADR-009](./009-application-protocol-envelope-v0.md): Envelope reused unchanged; this adds message kinds 17–19 and shipped as wire revision **v11** (see `PROTOCOL_HISTORY`).
 - [ADR-012](./012-interest-management-and-osm-tiles.md): Tier 0 needs the same entity proximity query as observer AOI; one index should serve both.
 - [ADR-013](./013-sqlite-migrations-and-server-writer.md): Scrollback writes go through the single server writer; this is also why a shared-SQLite chat bus was rejected.
-- [ADR-015](./015-workspace-module-boundaries.md): Adds the `vibe_geo` crate.
+- [ADR-015](./015-workspace-module-boundaries.md): Adds the `cartopolis_geo` crate.
 - [ADR-016](./016-authentication-and-session-model-v0.md): Prerequisite for an ungated chat send path.
 - [ADR-029](./029-geo-anchored-prim-storage.md): Geo-anchored positions (`f64` lat/lng) that `resolve()` consumes directly — no tangent-frame conversion.
 - [ADR-031](./031-layered-access-model.md): Chat is a Simulation-tier feature (login required).

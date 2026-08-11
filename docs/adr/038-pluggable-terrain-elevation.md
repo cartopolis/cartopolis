@@ -30,7 +30,7 @@ Two smaller problems ride along:
    `y = 0` is not merely "missing relief" — it is a latent datum inconsistency between two
    datasets that are meant to agree.
 2. **Ground height is assumed, never queried.** `geo_nav::AVATAR_GROUND_Y`, the gravity clamp in
-   `avatar::handle_avatar_movement` and `vibe_sim::state`'s spawn `y` each hard-code a constant.
+   `avatar::handle_avatar_movement` and `cartopolis_simulator::state`'s spawn `y` each hard-code a constant.
    Nothing in the codebase can answer "how high is the ground here?".
 
 **What resolution this needs.** The features wanted — canal banks, ditch profiles, dijk slopes,
@@ -271,14 +271,14 @@ the TIN exists and can be judged against a real source.
   a broken one.
 - **Water depth is invented.** Plausible, not surveyed; it will not match a bathymetric chart.
   Unavoidable — no LiDAR product has it either.
-- **The sim has no terrain.** `vibe_sim` stays authoritative for avatar position with no height
+- **The sim has no terrain.** `cartopolis_simulator` stays authoritative for avatar position with no height
   field, so ground-following is client-side prediction — the split already documented for
   building collision (`systems/collision.rs`). *Mitigation*: reuse that pattern.
 - **Another preprocessing pipeline and dataset to host**, per region. *Mitigation*: same tooling
   shape, same Caddy; AHN's refresh cadence is years.
 - **Attribution is per source and mandatory**, and now varies by where the camera is.
 - **Three hard-coded ground constants must change together** (`geo_nav::AVATAR_GROUND_Y`, the
-  gravity clamp in `avatar::handle_avatar_movement`, `vibe_sim::state`'s spawn `y`) — the trio
+  gravity clamp in `avatar::handle_avatar_movement`, `cartopolis_simulator::state`'s spawn `y`) — the trio
   CLAUDE.md already flags as easy to miss.
 - **Roads mismatch at kerbs** until a polygon road source or a road-aware weld lands.
 

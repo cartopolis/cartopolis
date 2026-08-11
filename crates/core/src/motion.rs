@@ -3,10 +3,10 @@
 //!
 //! An avatar's motion is computed in three places:
 //!
-//! 1. `viberfox_simulator::state::SimWorld` — the authority.
-//! 2. `viberfox`'s `network::send_network_intent` — client-side prediction, which
+//! 1. `cartopolis_simulator::state::SimWorld` — the authority.
+//! 2. `cartopolis`'s `network::send_network_intent` — client-side prediction, which
 //!    integrates what it believes the sim is about to do.
-//! 3. `viberfox`'s `avatar::handle_avatar_movement` — the `--offline` path, where
+//! 3. `cartopolis`'s `avatar::handle_avatar_movement` — the `--offline` path, where
 //!    there is no sim and the client *is* the authority.
 //!
 //! When (1) and (2) disagree the prediction error grows every frame until

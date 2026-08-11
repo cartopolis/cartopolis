@@ -12,8 +12,8 @@ is the point: "why is this code like this?" outlives the branch by years, while 
 commit body only ever holds what the author thought to write down at the time.
 
 > This skill used to destroy the digest at merge time, from when digests were
-> pushed into the public viberfox repo where anyone could read them. Moving them
-> to the private `viberfox-agent-context` repo removed that reason. See
+> pushed into the public cartopolis repo where anyone could read them. Moving them
+> to the private `cartopolis-agent-context` repo removed that reason. See
 > [docs/notes/agent-context-refs.md](../../../docs/notes/agent-context-refs.md)
 > for what the destruction machinery was and why it is now only a manual escape
 > hatch.
@@ -62,7 +62,7 @@ redaction, or something was pasted that should never have been typed — it take
 both halves, and neither alone is enough:
 
 ```bash
-CTX=ssh://git@code.garage44.eu:2222/jeroen/viberfox-agent-context.git
+CTX=ssh://git@code.garage44.eu:2222/jeroen/cartopolis-agent-context.git
 git push "$CTX" --delete refs/agent-context/<branch>   # server prunes on receipt
 git update-ref -d refs/agent-context/<branch>          # then this clone
 git reflog expire --expire-unreachable=now --all

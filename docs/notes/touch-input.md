@@ -141,7 +141,7 @@ The layout is simply built for a mouse: a point on the web is a CSS pixel
 target where the platform guidelines ask for ~10 mm.
 
 The mechanism is `EguiManager::ui_scale`, a magnification *on top of* the display
-scale, set by `?ui_scale=` / `VIBERFOX_UI_SCALE` or defaulted per-platform by
+scale, set by `?ui_scale=` / `CARTO_UI_SCALE` or defaulted per-platform by
 `phone_ui_scale` on `quality::Tier::Phone`.
 
 **But on the web the default is 1.0, because the render budget got there first.**
@@ -196,7 +196,7 @@ at desktop resolution.
 The borrowed answer is not free: `quality` asks for a coarse pointer **and** a
 viewport under 900 px, so a **large tablet is `Desktop` and gets mouse-sized
 targets** despite being driven by a finger. Wrong for that device, right for a
-touchscreen laptop, and `VIBERFOX_UI_SCALE` is the cover until someone has a
+touchscreen laptop, and `CARTO_UI_SCALE` is the cover until someone has a
 tablet to test on. If tablets start mattering, the fix is to publish pointer
 coarseness from `index.html` as its own attribute beside `data-quality` — not to
 re-add a media query here.

@@ -17,14 +17,14 @@
 
 ## Context
 
-**Problem**: We want viberfox reachable **in a browser** without foreclosing native-only
+**Problem**: We want cartopolis reachable **in a browser** without foreclosing native-only
 capability (ADR-030) and without the browser's limits dictating the architecture. ADR-030 set
 the *pattern* (substitutable providers + additive plugins) and ADR-031 the *access model*
 (anonymous Viewer → login → ACL). Neither says **what we actually build and ship**. This ADR
 defines the target matrix, the dependency/feature topology that produces both from one crate,
 the server-side work the web target implies, and the delivery order.
 
-**Current state** (measured, `crates/viberfox`):
+**Current state** (measured, `crates/cartopolis`):
 
 | Native-only primitive | Sites | Status |
 |---|---|---|
@@ -40,7 +40,7 @@ No wasm scaffolding exists yet. Two facts shape the design:
    → blocking `ureq::get` → `mpsc` back to a Bevy system. One `HttpFetch` provider replaces all
    of them without touching their parsing/meshing logic. The uniformity is the leverage.
 2. **Client SQLite is already gone**, so the only remaining "embedded authority" is the `solo`
-   in-process `vibe_sim` — already a Cargo feature, already off-able.
+   in-process `cartopolis_simulator` — already a Cargo feature, already off-able.
 
 **New constraints since ADR-030**:
 - ~~**A C dependency entered the client.**~~ **Resolved before this ADR lands.** ADR-032's GFS
@@ -60,7 +60,7 @@ No wasm scaffolding exists yet. Two facts shape the design:
   assumed to.
 
 **Requirements**:
-- One `viberfox` crate produces both targets; feature logic is not duplicated (P-05).
+- One `cartopolis` crate produces both targets; feature logic is not duplicated (P-05).
 - The web build ships **useful value without the sim** (ADR-031 Viewer tier).
 - Native keeps every capability it has today, plus room for native-only additions (ADR-030).
 - Web/native share one session flow: start anonymous, upgrade at login (ADR-031).
@@ -91,7 +91,7 @@ additive capabilities selected by Cargo feature.
 the impl). Four seams, matching ADR-030: `Transport`, `HttpFetch`, `KvStore`, `Clipboard`.
 
 **Additive capabilities become optional deps**, off for wasm:
-- `solo` → `dep:vibe_sim` (already a feature; wasm builds `--no-default-features`).
+- `solo` → `dep:cartopolis_simulator` (already a feature; wasm builds `--no-default-features`).
 - `tokio` / `tokio-util` / `ureq` / `arboard` / `clap` / `dotenvy` / `toml` → optional,
   native-only, `#[cfg]`-excluded on wasm.
 - `gribberish` (pure Rust, no default features) is wasm-buildable, so it needs no `#[cfg]`;
@@ -106,7 +106,7 @@ needs a wasm subscriber (console) instead of the env-filter writer.
 
 ### Server-side work the web target implies
 
-1. **WebSocket acceptor in `vibe_sim`**, alongside the existing TCP listener. Same `NetMessage`
+1. **WebSocket acceptor in `cartopolis_simulator`**, alongside the existing TCP listener. Same `NetMessage`
    frames (ADR-008/009 unchanged); WebSocket is already message-framed, so one `encode_app_frame`
    per binary message and length-delimiting is skipped on that path.
 2. **Serve everything from one origin — no CORS.** An earlier draft called for a "CORS edge";
@@ -116,7 +116,7 @@ needs a wasm subscriber (console) instead of the env-filter writer.
    today, which are separate origins — the migration is Caddy routes, not headers. See
    [ADR-034](./034-public-data-relay.md) for the layout.
 3. **A Public-tier data relay — see [ADR-034](./034-public-data-relay.md).** A registry of
-   upstream adapters (`vibe_relay`, lib + thin bin, embedded in `vibe_sim` by default) on a
+   upstream adapters (`cartopolis_relay`, lib + thin bin, embedded in `cartopolis_simulator` by default) on a
    three-level ladder: **L0** direct (third-party that sends CORS and carries no identification
    obligation — currently empty), **L1** path-mount (our services; **Caddy config, no Rust**),
    **L2** relay adapter (transform, cache, identification, or otherwise unreachable). Every
@@ -137,7 +137,7 @@ needs a wasm subscriber (console) instead of the env-filter writer.
    decode costs (which is now pure Rust — see Context). Secondary wins: the client stops
    re-deriving the GFS cycle clock, and one warm cache serves every viewer. **Native uses the same
    endpoint**, at which point `gribberish` leaves the client for the relay.
-6. **The AI assistant moves into `vibe_sim`, admin-only.** `ai_assistant.rs` sends an
+6. **The AI assistant moves into `cartopolis_simulator`, admin-only.** `ai_assistant.rs` sends an
    `ANTHROPIC_API_KEY` from the client — impossible in a browser, and undesirable on native. It
    becomes a `NetMessage` handled by the sim, gated on ADR-031's `Authorized(ai)` capability
    (**admin users only**, since it spends real money). It is *not* a relay adapter: the relay
@@ -145,7 +145,7 @@ needs a wasm subscriber (console) instead of the env-filter writer.
 
 ### Delivery phases (mapped to ADR-031 tiers)
 
-- **Phase 1 — Web Viewer (Public tier). No `vibe_sim` changes at all.** Land `HttpFetch` +
+- **Phase 1 — Web Viewer (Public tier). No `cartopolis_simulator` changes at all.** Land `HttpFetch` +
   `KvStore` providers, the wasm Bevy profile, and the optional-dep split; build with
   `--no-default-features`. The whole Public tier is client→external-service, so this ships the
   anonymous map/lookup/layers viewer on the web **before** any transport or protocol work.
@@ -153,12 +153,12 @@ needs a wasm subscriber (console) instead of the env-filter writer.
   adapters (3, 5), and **self-hosted tiles (4) — the long pole**, since a compliant base map is
   what makes a public web viewer possible at all.
 - **Phase 2 — Web Simulation (Authenticated tier).** `Transport` provider (client WebSocket) +
-  `vibe_sim` WS acceptor. Login becomes the ADR-031 runtime upgrade; avatars, prims, editing and
+  `cartopolis_simulator` WS acceptor. Login becomes the ADR-031 runtime upgrade; avatars, prims, editing and
   chat come with it.
 - **Phase 3 — Native-only extras.** In-world browsers and friends as ADR-030 additive plugins,
   each shipping its web fallback in the same change.
 
-**CI**: add `cargo check --target wasm32-unknown-unknown -p viberfox --no-default-features` to
+**CI**: add `cargo check --target wasm32-unknown-unknown -p cartopolis --no-default-features` to
 the existing Forgejo Actions fast-lane, so the web target cannot rot silently. Standalone
 release binaries keep the existing tag-driven Linux release workflow.
 
@@ -186,7 +186,7 @@ release binaries keep the existing tag-driven Linux release workflow.
 
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
-| Separate `viberfox-web` crate | Clean isolation | Duplicate feature logic; drift | Violates P-05; the whole point is one codebase |
+| Separate `cartopolis-web` crate | Clean isolation | Duplicate feature logic; drift | Violates P-05; the whole point is one codebase |
 | Web build waits for the WS transport | One big launch | Delays all web value behind server work | Phase 1 needs no server change; shipping earlier de-risks |
 | Keep GRIB decode client-side, `gribberish` `default-features = false` | No server work; drops the C dependency today; decode verified unchanged (template 5.3) | NOMADS CORS still blocks the browser; every client re-fetches | **Adopted for native now**, but it does not unblock web — the endpoint still lands for CORS |
 | Hand-roll a template 5.3 decoder to drop `gribberish` too | Zero GRIB dependency | ~150 lines of bit-level packing + spatial differencing to own; breaks silently if NCEP repacks | `gribberish` minus its C features is already pure Rust and wasm-clean — no benefit left to buy |
