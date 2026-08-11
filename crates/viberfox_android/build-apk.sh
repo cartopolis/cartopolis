@@ -67,6 +67,10 @@ short_sha=$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 
 VERSION_CODE=${VERSION_CODE:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
 VERSION_NAME=${VERSION_NAME:-"$workspace_version+$short_sha"}
+# Baked into the binary so a crash report can name the build it came from. The
+# report is shared from the phone by whoever hit the crash, and "viberfox 1.0.0"
+# alone does not identify which of a day's builds that was.
+export VIBERFOX_BUILD_SHA="$VERSION_NAME"
 case "$VERSION_CODE" in
     ''|*[!0-9]*) echo "error: VERSION_CODE must be a positive integer, got '$VERSION_CODE'" >&2; exit 2 ;;
 esac
