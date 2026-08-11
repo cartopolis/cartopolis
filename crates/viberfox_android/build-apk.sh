@@ -117,6 +117,42 @@ work="$out/$ABI"
 rm -rf "$work"
 mkdir -p "$work/res" "$out"
 
+# Well-formedness of every XML we are about to hand aapt2, checked *before* the
+# thirteen-minute Rust build rather than after it.
+#
+# This is here because it has already happened: a `--version-code` written inside
+# an XML comment (a double hyphen is illegal there) and a comment placed among an
+# element's attributes (a node cannot live in an attribute list) both shipped, and
+# both were found by aapt2 at the very end of a cold `android-release` build that
+# had just compiled the entire Bevy stack. aapt2's message — "not well-formed
+# (invalid token)" with a line and column — is perfectly good; it just arrives
+# sixteen minutes too late to be cheap.
+#
+# Python is used rather than xmllint because the CI image is known to have it and
+# `libxml2-utils` is not something this script should require. Failing here costs
+# a second.
+echo "==> checking the XML is well-formed"
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "crates/viberfox_android" <<'PYEOF'
+import pathlib, sys, xml.etree.ElementTree as ET
+
+root = pathlib.Path(sys.argv[1])
+bad = []
+for path in sorted(list(root.glob("AndroidManifest.xml")) + list((root / "res").rglob("*.xml"))):
+    try:
+        ET.parse(path)
+    except ET.ParseError as exc:
+        bad.append(f"{path}: {exc}")
+if bad:
+    print("XML is not well-formed; aapt2 would reject this after the whole build:")
+    for line in bad:
+        print(f"  {line}")
+    sys.exit(1)
+PYEOF
+else
+    echo "    (no python3; skipping — aapt2 will catch it at the end instead)" >&2
+fi
+
 echo "==> cargo ndk ($ABI / $TRIPLE, profile $PROFILE)"
 # `--no-default-features` drops `solo`: Phase-1 Android is the offline viewer, so
 # there is no in-process simulator on the phone and therefore no bundled SQLite to
