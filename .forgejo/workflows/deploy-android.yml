@@ -12,11 +12,24 @@ name: Deploy Android
 # overwrites the last and nothing accumulates — an APK is 25-45 MB and a history
 # of them is 45 MB per push of something nobody would install twice.
 on:
-  push:
-    branches: [main]
+  # Manual only. This used to run on every push to `main`, which on a
+  # capacity-2 runner meant the APK competed with CI for a slot on every
+  # merge — and a publish is not something you want to happen because a
+  # README typo landed. `workflow_dispatch` from the Actions tab, or:
+  #   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+  #     -d '{"ref":"main"}' \
+  #     "$FORGEJO_API/repos/$FORGEJO_REPO/actions/workflows/deploy-android.yml/dispatches"
   workflow_dispatch:
 
 env:
+  # Save the Rust cache even when the job fails. `rust-cache`'s post step is
+  # gated on `success()`, so until today — when this workflow succeeded for the
+  # first time ever, after six failures — the `android-release` cache had never
+  # once been written, and every APK build recompiled the whole Bevy stack from
+  # nothing. Every one of those failures happened *after* the 13-minute compile,
+  # at packaging or verification, so the expensive half was always done and
+  # always thrown away.
+  CACHE_ON_FAILURE: "true"
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: "3"
 
