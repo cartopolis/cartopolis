@@ -115,7 +115,8 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends openjdk-17-jre-headless zip >/dev/null
-          java -version 2>&1 | head -1
+          java_version=$(java -version 2>&1)
+          printf '%s\n' "${java_version%%$'\n'*}"
 
       # Needed here and not in the check lane because this one *links*: cargo-ndk
       # is what points the linker at the NDK sysroot. `--locked` so a fresh
@@ -234,7 +235,16 @@ jobs:
           # Read the version back out of the archive rather than recomputing it
           # from the same inputs the build used — that is the difference between
           # reporting what was built and reporting what we meant to build.
-          badging=$(/opt/android-sdk/build-tools/34.0.0/aapt2 dump badging "$src" | head -1)
+          # Captured whole, then trimmed — never `aapt2 ... | head -1`.
+          #
+          # `head` exits after its line and closes the pipe, and `aapt2 dump
+          # badging` on a 40 MB APK is usually still writing, so it takes SIGPIPE
+          # and `pipefail` promotes 141 to the step's status. It is a *race*, which
+          # is the worst shape for this: the first publish of this app succeeded
+          # and the next one failed on the identical command. Same fault the verify
+          # step above had; this was the one it hid behind.
+          badging_all=$(/opt/android-sdk/build-tools/34.0.0/aapt2 dump badging "$src")
+          badging=${badging_all%%$'\n'*}
           vname=$(printf '%s' "$badging" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           vcode=$(printf '%s' "$badging" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
           echo "packaged $vname (code $vcode)"

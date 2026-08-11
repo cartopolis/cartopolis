@@ -50,7 +50,11 @@ jobs:
       # browser, as an opaque import error. Cheap to assert, miserable to debug.
       - name: wasm-bindgen CLI matches the lockfile
         run: |
-          want=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          # No `| head`: it closes the pipe on a reader that may still be
+          # writing, and under `pipefail` that is a 141 that fails the deploy for
+          # no reason. `awk` with an exit does the same job from inside one process.
+          want=$(awk '/^name = "wasm-bindgen"$/ { found = 1; next }
+                      found && /^version/ { gsub(/[",]/, "", $3); print $3; exit }' Cargo.lock)
           have=$(wasm-bindgen --version | awk '{print $2}')
           echo "lockfile: $want / image: $have"
           [ "$want" = "$have" ] || {
