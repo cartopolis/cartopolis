@@ -2684,7 +2684,6 @@ mod tests {
         ));
     }
 
-
     /// The same shape, at a size a real feature could have, still parses — which
     /// is what proves the guard is discriminating and, incidentally, that the
     /// test encoder emits a tile mvt-reader accepts at all.
@@ -2696,7 +2695,6 @@ mod tests {
         assert_eq!(tile.features(meta).len(), 1);
     }
 
-
     #[test]
     fn an_oversized_body_is_refused_by_length_alone() {
         let Err(err) = TileData::parse(&vec![0u8; MAX_TILE_BYTES + 1]) else {
@@ -2704,7 +2702,6 @@ mod tests {
         };
         assert!(err.contains("mvt body of"), "wrong refusal: {err}");
     }
-
 
     /// Two live **low-zoom** tiles must decode.
     ///
@@ -2735,7 +2732,6 @@ mod tests {
             );
         }
     }
-
 
     #[test]
     fn fixture_has_expected_shortbread_layers() {
@@ -4090,5 +4086,3 @@ mod tests {
         assert!(!looks_like_raster(GRONINGEN_Z14));
     }
 }
-
-

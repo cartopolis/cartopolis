@@ -317,8 +317,50 @@ fn parse_cli() -> Cli {
 /// Build and run the client. The `viberfox` binary is a one-line shim over this
 /// (`src/main.rs`); everything lives in the lib target so `cargo test` links the
 /// rlib instead of compiling all ~52k lines a second time under `cfg(test)`.
+
+/// Make a panic visible on a phone.
+///
+/// Android discards a process's stderr unless something arranges otherwise, and
+/// this tree deliberately leaves Bevy's `LogPlugin` in place there (its
+/// `android_log-sys` layer is the only thing that reaches logcat). But
+/// `std::panic`'s default hook writes to stderr and does not go through
+/// `tracing` — so on Android a panic is *completely silent*: the process dies,
+/// logcat shows nothing from us, and the app "exits before it shows anything".
+///
+/// That is indistinguishable from a dozen other failures, which is the real cost.
+/// The hook routes the payload and location through `tracing::error!` so it lands
+/// in logcat under the `viberfox` tag, then calls the previous hook so the abort
+/// behaviour is unchanged.
+///
+/// It is installed as the first statement of `run` because a panic before this
+/// point is one nobody can see, and everything above it is a constant.
+#[cfg(target_os = "android")]
+fn install_android_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+        tracing::error!(
+            panic = %payload,
+            location = location.as_deref().unwrap_or("<unknown>"),
+            "PANIC — the app is about to abort"
+        );
+        previous(info);
+    }));
+}
+
 pub fn run() {
     dotenvy::dotenv().ok();
+
+    #[cfg(target_os = "android")]
+    install_android_panic_hook();
 
     // Resolve the render budget first: it decides how wide the worker pool below
     // is allowed to be, and every later reader (`setup_camera`, the streamers)
