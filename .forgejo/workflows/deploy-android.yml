@@ -158,25 +158,38 @@ jobs:
           apk="${CARGO_TARGET_DIR:-target}/android/viberfox-arm64-v8a.apk"
           unzip -p "$apk" lib/arm64-v8a/libviberfox_android.so > /tmp/lib.so
           ndk_bin=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin
-          if ! "$ndk_bin/llvm-nm" --dynamic --defined-only /tmp/lib.so | grep -qw android_main; then
-            echo "::error::android_main is not an exported symbol — the APK would install and fail to start."
-            exit 1
-          fi
-          if unzip -l "$apk" | grep -q classes.dex; then
-            echo "::error::the APK contains a classes.dex, so android:hasCode=\"false\" is now a lie."
-            exit 1
-          fi
-          if "$ndk_bin/llvm-readelf" -d /tmp/lib.so | grep -q 'libc++_shared'; then
-            echo "::error::the .so needs libc++_shared.so, which the APK does not ship — it will fail to load."
-            exit 1
-          fi
+          # Each check reads its tool's output into a variable and matches with
+          # `case`, rather than piping into `grep -q`.
+          #
+          # That is not style. `grep -q` exits the instant it matches, which closes
+          # the pipe; the tool upstream then takes SIGPIPE and dies with 141, and
+          # `pipefail` makes 141 the pipeline's status. Every one of these three
+          # sat inside an `if`, so `set -e` could not fire on them — but the step
+          # still ended up exiting 141 *after* printing its own success line, which
+          # cost a complete 16-minute build whose APK had already been packaged,
+          # signed and verified. A check that fails the build it just passed is
+          # worse than no check.
+          nm_out=$("$ndk_bin/llvm-nm" --dynamic --defined-only /tmp/lib.so)
+          case "$nm_out" in
+            *android_main*) ;;
+            *) echo "::error::android_main is not an exported symbol — the APK would install and fail to start."; exit 1 ;;
+          esac
+          zip_list=$(unzip -l "$apk")
+          case "$zip_list" in
+            *classes.dex*) echo "::error::the APK contains a classes.dex, so android:hasCode=\"false\" is now a lie."; exit 1 ;;
+          esac
+          dyn_out=$("$ndk_bin/llvm-readelf" -d /tmp/lib.so)
+          case "$dyn_out" in
+            *libc++_shared*) echo "::error::the .so needs libc++_shared.so, which the APK does not ship — it will fail to load."; exit 1 ;;
+          esac
           # Program headers, `LOAD` rows, last column is the alignment — printed
           # in hex, hence `$((...))` rather than awk's `strtonum`, which is a gawk
           # extension this image has no reason to carry. It is the *smallest*
           # alignment that decides: the loader maps every segment, so one 4 KB
           # LOAD fails on a 16 KB-page device even if the rest are fine.
           align=0
-          for a in $("$ndk_bin/llvm-readelf" --program-headers /tmp/lib.so | awk '$1 == "LOAD" { print $NF }'); do
+          ph_out=$("$ndk_bin/llvm-readelf" --program-headers /tmp/lib.so)
+          for a in $(printf '%s\n' "$ph_out" | awk '$1 == "LOAD" { print $NF }'); do
             v=$((a))
             if [ "$align" = 0 ] || [ "$v" -lt "$align" ]; then align=$v; fi
           done
