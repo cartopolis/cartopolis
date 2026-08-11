@@ -34,6 +34,24 @@ jobs:
           # finds out at runtime. See `.gitattributes`.
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
+      # ALSA headers, for the `audio` feature — which is on by default, so this is
+      # needed by any `cargo check`/`cargo test` of `viberfox` that does not pass
+      # `--no-default-features`. `bevy_audio` pulls `alsa-sys`, whose build script
+      # is a `pkg-config` call that hard-fails without `alsa.pc`.
+      #
+      # This has been broken since the `audio` feature landed and nobody saw it,
+      # because `cargo fmt --check` used to be the *first* step of this job and was
+      # failing — so the job died before reaching any cargo command. Moving fmt to
+      # last (same commit as this) is what surfaced it. The two faults have the
+      # same shape and the same lesson.
+      #
+      # Belongs in `viberfox-ci:latest` rather than here; it is a step only because
+      # that image lives in another repo. `deploy-android.yml` installs its JRE the
+      # same way and for the same reason.
+      - name: ALSA headers for the audio feature
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends libasound2-dev >/dev/null
       # `--all-targets` now that the vendored big_space fork's test target
       # compiles again (it gained the `bevy` dev-dependency the vendor drop had
       # removed), so its tests are type-checked here rather than rotting unseen.
@@ -159,6 +177,24 @@ jobs:
           # finds out at runtime. See `.gitattributes`.
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
+      # ALSA headers, for the `audio` feature — which is on by default, so this is
+      # needed by any `cargo check`/`cargo test` of `viberfox` that does not pass
+      # `--no-default-features`. `bevy_audio` pulls `alsa-sys`, whose build script
+      # is a `pkg-config` call that hard-fails without `alsa.pc`.
+      #
+      # This has been broken since the `audio` feature landed and nobody saw it,
+      # because `cargo fmt --check` used to be the *first* step of this job and was
+      # failing — so the job died before reaching any cargo command. Moving fmt to
+      # last (same commit as this) is what surfaced it. The two faults have the
+      # same shape and the same lesson.
+      #
+      # Belongs in `viberfox-ci:latest` rather than here; it is a step only because
+      # that image lives in another repo. `deploy-android.yml` installs its JRE the
+      # same way and for the same reason.
+      - name: ALSA headers for the audio feature
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends libasound2-dev >/dev/null
       # `.cargo/config.toml` builds x86_64 at `target-cpu=x86-64-v3` (AVX2+FMA)
       # to light up the SIMD already present in tiny-skia and the pixel loops.
       # Cross-compiling to it is always fine, but this job *runs* what it builds,
