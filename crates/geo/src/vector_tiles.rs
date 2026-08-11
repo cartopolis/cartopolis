@@ -138,18 +138,49 @@ impl TileData {
 /// hostile tile server and the allocator.
 pub const MAX_TILE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Ceiling on the number of coordinate slots a body may ask `mvt-reader` to
-/// *reserve*, which is the thing that actually blows up (see
-/// [`guard_tile_body`]). One slot is a `geo_types::Coord<f32>`, 8 bytes, so this
-/// is 256 MiB of requested capacity.
+/// **There is no capacity ceiling any more, and that is a measurement, not a
+/// retreat.** Kept as a named constant only so the note below has somewhere to
+/// live and nothing silently re-adds one.
 ///
-/// Measured on the same fixture, with the estimator below: a genuine 495 KB city
-/// tile asks for **3.1 M slots (25 MB)** — mvt-reader over-reserves by roughly an
-/// order of magnitude even on well-formed input, which is why the ceiling cannot
-/// simply be "a few megabytes". This leaves ~10× headroom over the densest real
-/// tile measured, and still refuses the pathological ones by six orders of
-/// magnitude, so there is no plausible tile in the middle.
-pub const MAX_TILE_COORD_CAPACITY: usize = 32 * 1024 * 1024;
+/// A guard here shipped on 2026-08-11 and was reverted the same day, because it
+/// refused real tiles. What follows is what was measured, so nobody rebuilds it.
+///
+/// The idea was to walk the protobuf, compute what `mvt-reader` will
+/// `Vec::with_capacity`, and refuse a body that asks for too much. The attack is
+/// real: a body of `[9, 0, 0]` repeated is all `MoveTo`, and each one reserves the
+/// whole feature's command length, so cost grows quadratically. Measured with
+/// `VmPeak` across a full `get_features`:
+///
+/// | body | estimate | actual virtual cost |
+/// |------|----------|---------------------|
+/// | bomb, 12 KB | 48 M slots | **+320 MiB** |
+/// | bomb, 30 KB | 300 M | **+1.9 GiB** |
+/// | bomb, 60 KB | 1 200 M | **+6.9 GiB** |
+///
+/// But the estimate does not predict cost, and that is the finding:
+///
+/// | body | estimate | worst single feature | actual virtual cost |
+/// |------|----------|---------------------|---------------------|
+/// | z10 10/526/334, 69 KB | 57 M | 55 M | none measurable |
+/// | z10 10/527/336, 79 KB | 92 M | 74 M | none measurable |
+/// | z10 10/534/336, 157 KB | **545 M** | **421 M** | **none measurable** |
+/// | z14 Groningen, 653 KB | 12 M | 8 M | none measurable |
+///
+/// A real z10 tile asks for 545 M slots — more than a 30 KB bomb — and costs
+/// nothing, because generalised low-zoom geometry is one enormous multi-part
+/// coastline whose parts do not stay live at once. A 12 KB bomb asks for 48 M and
+/// costs 320 MiB. No threshold on the total separates them; neither does the
+/// worst single feature (421 M real against 48 M bomb); neither does slots per
+/// body byte (3 463 real against 3 992 for the tamest bomb). Three metrics, three
+/// overlaps — the walker models an allocation pattern `mvt-reader` does not
+/// actually have.
+///
+/// So the guard is gone and only [`MAX_TILE_BYTES`] remains. That leaves the tree
+/// where it was before, exposed to a tile server serving a deliberate bomb —
+/// which is worth stating plainly rather than papering over: the fix is to bound
+/// the allocation where it happens (a patched or vendored `mvt-reader` whose
+/// capacity is `min(len, remaining)`), not to guess from the outside.
+pub const MAX_TILE_COORD_CAPACITY: usize = usize::MAX;
 
 /// Refuse a tile body that would make `mvt-reader` abort the process.
 ///
@@ -188,234 +219,7 @@ fn guard_tile_body(bytes: &[u8]) -> Result<(), String> {
             bytes.len()
         ));
     }
-    let Some(coords) = geometry_capacity(bytes) else {
-        return Err("mvt body is not walkable as a vector tile".to_string());
-    };
-    if coords > MAX_TILE_COORD_CAPACITY {
-        return Err(format!(
-            "mvt geometry would reserve {coords} coordinates ({} MiB), past the {} MiB \
-             ceiling — refusing the tile",
-            coords.saturating_mul(8) / (1024 * 1024),
-            MAX_TILE_COORD_CAPACITY * 8 / (1024 * 1024),
-        ));
-    }
     Ok(())
-}
-
-/// How many `Coord` slots `mvt-reader` will reserve for this body, or `None` if
-/// the body is not shaped like a protobuf we can walk — which the caller reads as
-/// "refuse it", for the reason in [`guard_tile_body`].
-///
-/// Only three fields of the MVT schema are needed to reach a command stream —
-/// `Tile.layers = 3`, `Layer.features = 2`, `Feature.geometry = 4` — so this
-/// walks records and skips everything else rather than decoding the schema. Both
-/// encodings of `geometry` are handled: packed (what every encoder emits) and
-/// one-varint-per-record (which proto2 permits, which prost accepts, and which
-/// would otherwise be a way to hand the bomb over unexamined).
-fn geometry_capacity(bytes: &[u8]) -> Option<usize> {
-    let mut total: usize = 0;
-    let mut tile = Scan::new(bytes);
-    while !tile.done() {
-        let (field, body) = tile.record()?;
-        let Body::Bytes(layer) = body else { continue };
-        if field != 3 {
-            continue;
-        }
-        let mut layer = Scan::new(layer);
-        while !layer.done() {
-            let (field, body) = layer.record()?;
-            let Body::Bytes(feature) = body else { continue };
-            if field != 2 {
-                continue;
-            }
-            // One state machine per feature, fed by every `geometry` record it
-            // has: prost concatenates them into the single `Vec<u32>` that
-            // `parse_geometry` walks, so the command/parameter alternation runs
-            // straight across a record boundary — and across a change of
-            // encoding, since proto2 lets the two be mixed.
-            let mut geometry = GeomScan::default();
-            let mut feature = Scan::new(feature);
-            while !feature.done() {
-                match feature.record()? {
-                    (4, Body::Bytes(packed)) => geometry.feed(packed),
-                    (4, Body::Varint(value)) => geometry.step(value),
-                    _ => {}
-                }
-            }
-            total = total.saturating_add(geometry.capacity());
-            // Nothing past the ceiling can come back under it, and the caller
-            // only compares against the ceiling — so stop walking a bomb.
-            if total > MAX_TILE_COORD_CAPACITY {
-                return Some(total);
-            }
-        }
-    }
-    Some(total)
-}
-
-/// The running total for one feature's geometry command stream.
-///
-/// `len` is `geometry_data.len()` as mvt-reader sees it (one entry per varint),
-/// and `vecs` is how many vectors of that capacity it will retain: the one it
-/// starts with, plus one per `MoveTo` and one per `ClosePath`. Counting every
-/// `MoveTo` over-counts a polygon slightly — the retain there is driven by
-/// `ClosePath` — which is the right direction to be wrong in for a safety bound,
-/// and costs a factor under two on the fixture (1.9 M slots exact, 3.1 M counted).
-#[derive(Default)]
-struct GeomScan {
-    len: usize,
-    vecs: usize,
-    /// Parameter integers still owed to the command being read.
-    pending: u64,
-}
-
-impl GeomScan {
-    /// One entry of the stream, command or parameter depending on where the
-    /// alternation stands. This is `parse_geometry`'s own loop, minus the
-    /// arithmetic on coordinates nobody here reads.
-    fn step(&mut self, value: u64) {
-        self.len = self.len.saturating_add(1);
-        if self.pending > 0 {
-            self.pending -= 1;
-            return;
-        }
-        match value & 0x7 {
-            // MoveTo / LineTo: the top 29 bits are the count of *points*, and a
-            // point is two parameter integers.
-            1 => {
-                self.pending = (value >> 3).saturating_mul(2);
-                self.vecs = self.vecs.saturating_add(1);
-            }
-            2 => self.pending = (value >> 3).saturating_mul(2),
-            7 => self.vecs = self.vecs.saturating_add(1),
-            // An unknown command id leaves the alternation where it is, exactly
-            // as mvt-reader does — the next entry is read as a command again.
-            _ => {}
-        }
-    }
-
-    /// A packed run of entries.
-    fn feed(&mut self, geometry: &[u8]) {
-        let mut s = Scan::new(geometry);
-        while !s.done() {
-            if self.pending == 0 {
-                let Some(command) = s.varint() else { return };
-                self.step(command);
-            } else {
-                // A run of parameters: only how many there are matters, so skip
-                // the bytes instead of decoding zigzag values nothing reads.
-                // This is what keeps the scan a byte loop over a 500 KB body.
-                let skipped = s.skip_varints(self.pending);
-                self.len = self.len.saturating_add(skipped as usize);
-                self.pending -= skipped;
-            }
-        }
-    }
-
-    /// Slots mvt-reader will reserve for this feature: the capacity it asks for
-    /// each time, which is the whole stream's length, times the number of vectors
-    /// it keeps.
-    fn capacity(&self) -> usize {
-        self.len.saturating_mul(self.vecs.saturating_add(1))
-    }
-}
-
-/// A minimal protobuf record reader — just enough to walk to the geometry.
-///
-/// Deliberately not prost: we hold no `.proto` for the MVT schema (mvt-reader
-/// owns the generated types and does not re-export them), and a decode is exactly
-/// the work being guarded against. Everything here is bounds-checked through
-/// `Option`, so a truncated body ends the walk instead of indexing off the end.
-struct Scan<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-/// One record's body: the value itself for a varint field, the bytes for a
-/// length-delimited one, and nothing for the fixed-width ones — which the MVT
-/// schema does not use and this walker only has to step over.
-enum Body<'a> {
-    Varint(u64),
-    Bytes(&'a [u8]),
-    Fixed,
-}
-
-impl<'a> Scan<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
-    }
-
-    fn done(&self) -> bool {
-        self.at >= self.bytes.len()
-    }
-
-    /// A base-128 varint, or `None` when truncated or over-long.
-    fn varint(&mut self) -> Option<u64> {
-        let mut value: u64 = 0;
-        let mut shift = 0;
-        loop {
-            let byte = *self.bytes.get(self.at)?;
-            self.at += 1;
-            value |= u64::from(byte & 0x7F) << shift;
-            if byte & 0x80 == 0 {
-                return Some(value);
-            }
-            shift += 7;
-            if shift >= 64 {
-                return None;
-            }
-        }
-    }
-
-    /// Consume up to `n` varints without decoding them; returns how many were
-    /// actually there. The last byte of a varint is the one with the top bit
-    /// clear, which is the whole test.
-    fn skip_varints(&mut self, n: u64) -> u64 {
-        let mut seen = 0;
-        while seen < n && self.at < self.bytes.len() {
-            if self.bytes[self.at] & 0x80 == 0 {
-                seen += 1;
-            }
-            self.at += 1;
-        }
-        seen
-    }
-
-    /// The next record's field number and body.
-    fn record(&mut self) -> Option<(u64, Body<'a>)> {
-        let key = self.varint()?;
-        let (field, wire) = (key >> 3, key & 0x7);
-        let body = match wire {
-            0 => Body::Varint(self.varint()?),
-            1 => {
-                self.take(8)?;
-                Body::Fixed
-            }
-            2 => {
-                let len = usize::try_from(self.varint()?).ok()?;
-                Body::Bytes(self.take(len)?)
-            }
-            5 => {
-                self.take(4)?;
-                Body::Fixed
-            }
-            // Groups (3, 4) and the reserved 6 and 7. A group has no length to
-            // skip it by, only a matching end marker somewhere further on, and
-            // walking that correctly means recursing on attacker-chosen nesting.
-            // The MVT schema has no group field anywhere, so refusing is both
-            // cheap and total — see [`guard_tile_body`] for why refusing beats
-            // waving it through.
-            _ => return None,
-        };
-        Some((field, body))
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.at.checked_add(n)?;
-        let slice = self.bytes.get(self.at..end)?;
-        self.at = end;
-        Some(slice)
-    }
 }
 
 /// Edge length in pixels of a rendered tile. Larger than the 256 px raster tiles
@@ -2880,29 +2684,6 @@ mod tests {
         ));
     }
 
-    /// The tile body is network-controlled, the shipped profile is
-    /// `panic = "abort"`, and mvt-reader answers a crafted geometry stream with a
-    /// terabyte-scale `Vec::with_capacity` — so this has to come back as an
-    /// ordinary `Err` from a function whose signature already returns one.
-    ///
-    /// Note what the assertion on the length says: the body is 60 KB, so it is
-    /// **not** the size ceiling that catches this. A cap loose enough to admit
-    /// the 495 KB fixture is loose enough to admit a bomb, because the blow-up is
-    /// quadratic in the length.
-    #[test]
-    fn a_geometry_bomb_is_refused_before_mvt_reader_sees_it() {
-        let bomb = synth::geometry_bomb(20_000);
-        assert!(
-            bomb.len() < MAX_TILE_BYTES,
-            "the length ceiling must not be what catches this ({} bytes)",
-            bomb.len()
-        );
-        let Err(err) = TileData::parse(&bomb) else {
-            panic!("the bomb parsed");
-        };
-        assert!(err.contains("would reserve"), "wrong refusal: {err}");
-    }
-
     /// The same shape, at a size a real feature could have, still parses — which
     /// is what proves the guard is discriminating and, incidentally, that the
     /// test encoder emits a tile mvt-reader accepts at all.
@@ -2914,21 +2695,6 @@ mod tests {
         assert_eq!(tile.features(meta).len(), 1);
     }
 
-    /// The disarm the fail-closed rule exists for.
-    ///
-    /// A proto2 group is the one thing `prost` skips and this walker will not, so
-    /// if "cannot walk it" meant "accept it", two bytes in front of a bomb would
-    /// turn the whole guard off. It has to be the refusal that wins.
-    #[test]
-    fn a_group_wire_type_is_refused_rather_than_waved_through() {
-        let mut disarmed = synth::varint((99 << 3) | 3); // start group, field 99
-        disarmed.extend(synth::geometry_bomb(20_000));
-        let Err(err) = TileData::parse(&disarmed) else {
-            panic!("the disarmed bomb parsed");
-        };
-        assert!(err.contains("not walkable"), "wrong refusal: {err}");
-    }
-
     #[test]
     fn an_oversized_body_is_refused_by_length_alone() {
         let Err(err) = TileData::parse(&vec![0u8; MAX_TILE_BYTES + 1]) else {
@@ -2937,24 +2703,34 @@ mod tests {
         assert!(err.contains("mvt body of"), "wrong refusal: {err}");
     }
 
-    /// The number [`MAX_TILE_COORD_CAPACITY`] was chosen from, pinned so that a
-    /// drift in the estimator — walking less of the tile than it thinks, say —
-    /// fails here rather than silently disarming the guard.
+    /// Two live **low-zoom** tiles must decode.
     ///
-    /// It is also the measurement worth knowing on its own: a well-formed 495 KB
-    /// city tile makes mvt-reader reserve ~3.1 M coordinate slots, ~25 MB, for a
-    /// tile whose geometry is a small fraction of that.
+    /// This is the regression the capacity guard caused and the reason it was
+    /// reverted: z10 geometry is one huge multi-part coastline, which the walker
+    /// scored as a bomb, so the coarse basemap came up with holes in it and
+    /// `refusing the tile` in the log. Real bytes from `tiles.garage44.eu`, kept
+    /// as fixtures so a future guard has to pass them before it ships.
     #[test]
-    fn a_real_tile_is_far_inside_the_geometry_ceiling() {
-        let asked = geometry_capacity(GRONINGEN_Z14).expect("the fixture must be walkable");
-        assert!(
-            (3_000_000..3_300_000).contains(&asked),
-            "the fixture asks for {asked} coordinate slots; it measured 3,132,917"
-        );
-        assert!(
-            asked * 4 < MAX_TILE_COORD_CAPACITY,
-            "the ceiling leaves less than 4x headroom over a real tile"
-        );
+    fn low_zoom_tiles_decode() {
+        for (name, body) in [
+            (
+                "10/526/334",
+                &include_bytes!("../tests/fixtures/lowzoom_10_526_334.mvt")[..],
+            ),
+            (
+                "10/534/336",
+                &include_bytes!("../tests/fixtures/lowzoom_10_534_336.mvt")[..],
+            ),
+        ] {
+            let tile = match TileData::parse(body) {
+                Ok(t) => t,
+                Err(e) => panic!("{name} must decode — the live basemap serves it: {e}"),
+            };
+            assert!(
+                tile.layer("water").is_some() || tile.layer("land").is_some(),
+                "{name} decoded but carries none of the layers a basemap tile has"
+            );
+        }
     }
 
     #[test]
