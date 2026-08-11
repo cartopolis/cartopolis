@@ -19,8 +19,12 @@
     android:versionName="1.0.0-local">
 
     <!-- The two version attributes above are **fallbacks that a real build never
-         uses**: `build-apk.sh` passes `--version-code` / `--version-name` to
-         `aapt2 link`, which overwrites them in the compiled manifest. They are
+         uses**: `build-apk.sh` passes its own version-code and version-name
+         flags to `aapt2 link`, which overwrites these in the compiled manifest.
+         (Those flag names are spelled without their leading dashes here on
+         purpose: a double hyphen is illegal *inside* an XML comment, and
+         writing them out cost this project one 16-minute build that compiled
+         the entire Bevy stack before aapt2 read the file.) They are
          kept so that hand-running aapt2 against this file still produces a
          package that installs.
 
@@ -90,16 +94,21 @@
              `android_main` again, i.e. the app restarting when you rotate the phone
              or the system flips to dark mode. Handling them ourselves hands winit a
              resize instead. -->
+        <!-- `android:theme` below is ours, not the stock fullscreen theme it used
+             to be — and the difference is the first thing anyone installing this
+             sees. A NativeActivity paints nothing until the surface exists and
+             Bevy has started, so the theme's `windowBackground` *is* the app for
+             the first several seconds. See res/values/styles.xml.
+
+             The comment lives here, above the tag, and not among the attributes
+             where it was first written: a comment is a node, and a node cannot
+             sit inside another element's attribute list. XML has no diagnostic
+             kinder than "not well-formed" for it. -->
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"
-            <!-- Ours, not the stock fullscreen theme it used to be — and the
-                 difference is the first thing anyone installing this sees. A
-                 NativeActivity paints nothing until the surface exists and Bevy
-                 has started, so the theme's `windowBackground` *is* the app for
-                 the first several seconds. See res/values/styles.xml. -->
             android:theme="@style/Theme.Viberfox"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|locale|fontScale">
