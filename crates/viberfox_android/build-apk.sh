@@ -61,7 +61,9 @@ PACKAGE=eu.garage44.viberfox
 # the workspace version and the commit it was built from. The workspace version
 # is read out of the root Cargo.toml rather than repeated here, because a version
 # written down twice is a version that disagrees with itself.
-workspace_version=$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# `sed | head` would be the same SIGPIPE race the deploy workflow hit; `sed`'s
+# own `q` ends it from inside one process instead.
+workspace_version=$(sed -n '/^\[workspace\.package\]/,/^\[/ { s/^version = "\(.*\)"/\1/p; }' Cargo.toml | sed -n '1p')
 [ -n "$workspace_version" ] || { echo "error: no version in [workspace.package] of Cargo.toml" >&2; exit 2; }
 short_sha=$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 
