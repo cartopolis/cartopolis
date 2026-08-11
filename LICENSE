@@ -1,0 +1,29 @@
+Viberfox is dual-licensed under **either** of
+
+  * Apache License, Version 2.0 — LICENSE-APACHE
+    (also at http://www.apache.org/licenses/LICENSE-2.0)
+  * MIT license — LICENSE-MIT
+    (also at http://opensource.org/licenses/MIT)
+
+at your option. In SPDX terms: `MIT OR Apache-2.0`.
+
+Why both, rather than one of them: this is the Rust ecosystem's default pair, so
+a downstream project can take Viberfox under whichever half already matches its
+own licence file without a second conversation. It is also the licence of the
+vendored `big_space` fork under `crates/big_space/`, which means the notice
+obligations for the largest piece of third-party source in this tree line up
+exactly with our own instead of being a separate case.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you, as defined in the Apache-2.0 licence, shall
+be dual-licensed as above, without any additional terms or conditions.
+
+---
+
+**This file covers the source code only.** The map data, the geodata services,
+the avatar models and the bundled font each carry their own licence, and several
+of them (ODbL, CC BY 4.0, the OFL) require an attribution notice to travel with
+anything built from them. That notice is LICENSE-THIRD-PARTY.md, and it is the
+canonical list — it ships in the release tarball, in the Windows zip and inside
+the APK, and the in-app About panel renders it. Add a data source there, not
+here and not only in the README.

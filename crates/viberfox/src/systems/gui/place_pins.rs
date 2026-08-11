@@ -75,6 +75,7 @@ pub fn render_place_pins(
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
+    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
     if store.data.bookmarks.is_empty() {
         return;
@@ -89,7 +90,19 @@ pub fn render_place_pins(
     // The map area: the viewport minus whatever the side panels took. Read off
     // the shared root `Ui` *before* borrowing the context, so both borrows of
     // `egui` don't overlap (the context is a cheap `Arc` clone).
-    let map_rect = egui.ui_mut().available_rect_before_wrap();
+    let mut map_rect = egui.ui_mut().available_rect_before_wrap();
+    // The on-screen keyboard is a floating `Area`, so it takes no space out of the
+    // root `Ui` and `available_rect_before_wrap` cannot know about it. Subtract it
+    // by hand, for the reason this whole system culls rather than clips: a pin left
+    // under the keyboard is still an interactive `Area`, and it would eat the taps
+    // meant for the keys on top of it.
+    if let Some(slab) = keyboard.slab() {
+        if slab.top() > map_rect.top() {
+            map_rect.max.y = map_rect.max.y.min(slab.top());
+        } else {
+            map_rect.min.y = map_rect.min.y.max(slab.bottom());
+        }
+    }
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -125,7 +138,10 @@ pub fn render_place_pins(
     // shared magnitude — back out of every point it is added to.
     let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
 
-    let mut jump: Option<Teleport> = None;
+    // Carries the place's name alongside the teleport: the address bar's recents
+    // list reads `pending_label`, and a jump that arrives without one shows up
+    // there as a bare coordinate pair rather than as the place you saved.
+    let mut jump: Option<(Teleport, String)> = None;
     let mut drawn = 0usize;
     for b in &store.data.bookmarks {
         let Some(delta) = place_delta(&globe, anchor, cam_world, in_space, b.lat, b.lng, &terrain)
@@ -150,12 +166,15 @@ pub fn render_place_pins(
         ) {
             // Same jump the panel's row does: keep the current camera mode and
             // move it to the spot (`pose: None`).
-            jump = Some(Teleport {
-                lat: b.lat,
-                lng: b.lng,
-                altitude: Some(b.altitude),
-                pose: None,
-            });
+            jump = Some((
+                Teleport {
+                    lat: b.lat,
+                    lng: b.lng,
+                    altitude: Some(b.altitude),
+                    pose: None,
+                },
+                b.name.clone(),
+            ));
         }
     }
     // "The pins aren't showing" has three very different causes — no anchor, all
@@ -167,8 +186,9 @@ pub fn render_place_pins(
         map_rect = ?(map_rect.min.x, map_rect.min.y, map_rect.max.x, map_rect.max.y),
         "place pins"
     );
-    if let Some(tp) = jump {
+    if let Some((tp, label)) = jump {
         nav.pending_teleport = Some(tp);
+        nav.pending_label = Some(label);
     }
 }
 

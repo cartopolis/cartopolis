@@ -5,16 +5,25 @@
 //! and that is a thing the browser and a desktop OS do completely differently. So
 //! it goes behind a provider like [`crate::platform::http`] does for fetching:
 //! one API ([`LocationWatch`]), a wasm implementation over
-//! `navigator.geolocation`, and a native implementation that currently reports
-//! nothing at all.
+//! `navigator.geolocation`, an Android implementation over `LocationManager`, and
+//! a desktop implementation that reports nothing at all.
 //!
-//! **Native reports nothing on purpose.** A Linux desktop has no location unless
+//! **Desktop reports nothing on purpose.** A Linux desktop has no location unless
 //! something is plugged into it, and the honest answer to "where am I" on a box
 //! with no GNSS is *unknown* — not a guess, and not a silent fallback that looks
 //! like a fix. [`LocationWatch::available`] is `false` there, and driver mode
 //! reads the avatar's own position instead (see `systems::driver`). A real
 //! backend — a USB GNSS dongle over serial, GeoClue2, gpsd — drops in behind this
 //! same API without any caller changing.
+//!
+//! **Android is the third arm, and it is the one that had to be designed around a
+//! constraint rather than around an API.** The phone has GNSS, but the natural way
+//! to read it (`LocationListener`) is a Java interface, and this app ships no
+//! `classes.dex` — see `crate::platform::android` and `docs/notes/android-build.md`
+//! for what it does instead and, more importantly, for which of its claims a device
+//! still has to confirm. None of that reaches this file: the Android arm writes the
+//! same [`GpsFix`] into the same slot, and reports a denied permission as an `Err`
+//! for the same reason the browser's arm does.
 //!
 //! The watch is a *subscription*: [`LocationWatch::start`] begins it, dropping the
 //! value ends it. Nothing polls a provider that no one is listening to, which
@@ -44,21 +53,30 @@ pub struct GpsFix {
 
 /// The slot a provider writes into. `Result` so a permission denial reaches the
 /// UI as a message rather than as an eternal "waiting for a fix".
-type Slot = Arc<Mutex<Option<Result<GpsFix, String>>>>;
+///
+/// `pub(crate)` only so the Android provider — which lives beside this module
+/// rather than inside it, being 400 lines of JNI — can write into it.
+pub(crate) type Slot = Arc<Mutex<Option<Result<GpsFix, String>>>>;
 
 /// A live subscription to the device's position. Drop it to unsubscribe.
 pub struct LocationWatch {
     slot: Slot,
+    // One field, two mutually exclusive cfgs: Android is never `wasm32`, so the
+    // two attributes cannot both apply and produce a duplicate field. Sharing the
+    // name keeps `start`/`drop` reading as one shape with a per-platform body
+    // rather than as two parallel structs.
     #[cfg(target_arch = "wasm32")]
     inner: Option<wasm::Watch>,
+    #[cfg(target_os = "android")]
+    inner: Option<crate::platform::android::LocationSubscription>,
 }
 
 impl LocationWatch {
     /// Whether this build has a provider that can produce a fix at all. `false`
-    /// on native today — see the module note.
+    /// on desktop — see the module note.
     #[must_use]
     pub const fn available() -> bool {
-        cfg!(target_arch = "wasm32")
+        cfg!(any(target_arch = "wasm32", target_os = "android"))
     }
 
     /// Begin watching. Cheap and non-blocking; the first fix arrives later (a cold
@@ -71,7 +89,16 @@ impl LocationWatch {
             let inner = wasm::start(slot.clone());
             Self { slot, inner }
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        {
+            // The Android provider does its own work on its own thread, including
+            // waiting out the runtime-permission dialog — which is why this is
+            // still "cheap and non-blocking" on a platform where the first fix can
+            // be two minutes away.
+            let inner = crate::platform::android::start_location(slot.clone());
+            Self { slot, inner }
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         {
             tracing::info!(
                 "no native location provider in this build — driver mode follows the avatar"
@@ -100,6 +127,15 @@ impl Drop for LocationWatch {
         #[cfg(target_arch = "wasm32")]
         if let Some(inner) = self.inner.take() {
             wasm::stop(inner);
+        }
+        // Explicit, rather than letting the field's own `Drop` do it: a subscription
+        // that unsubscribed as a side effect of a field going out of scope would be
+        // read as an unused field by `unused = "deny"`, and silencing that with an
+        // `allow` would hide the day it really did become unused. The call also
+        // makes the two arms symmetrical.
+        #[cfg(target_os = "android")]
+        if let Some(inner) = self.inner.take() {
+            inner.stop();
         }
     }
 }

@@ -404,10 +404,18 @@ fn spawn_map_tile(
                 }
                 return;
             }
+            // The clipmap's raster size, read here rather than threaded in — it is a
+            // `OnceLock` load, and this is the one place that decides how much of
+            // the phone's memory the 224-tile ring costs. 512² RGBA plus mips is
+            // ~1.4 MB a tile; 256² is a quarter of that, and the globe already
+            // measured 512² as 2-3× oversampled per axis for the same reason
+            // (`docs/notes/globe-tile-cost.md`). Scan conversion is ~area, so it is
+            // also most of the time-to-first-map.
+            let tile_px = crate::quality::budget().tile_px;
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
                 Ok(payload) => {
                     crate::platform::workers::submit(Box::new(move || {
-                        let decoded = match payload.decode() {
+                        let decoded = match payload.decode(tile_px) {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
                                 let (data, mip_count) =

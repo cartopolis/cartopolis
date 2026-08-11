@@ -230,6 +230,10 @@ struct Actions {
     delete_folder: Option<u64>,
     update: Option<u64>,
     teleport: Option<Teleport>,
+    /// What to call the teleport's destination in the location history.
+    teleport_label: Option<String>,
+    /// "Route here" on a place: its name and where it is.
+    route: Option<(String, f64, f64)>,
     rename: Option<(Item, String)>,
     recolor: Option<(u64, [f32; 3])>,
     toggle_collapse: Option<u64>,
@@ -321,7 +325,10 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
     // size from its content rect, so the panel grew by that much *every frame*
     // for as long as the field was open.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        commit = ui.button("✔").on_hover_text("Apply").clicked();
+        commit = ui
+            .button(theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"]))
+            .on_hover_text("Apply")
+            .clicked();
         // `desired_width` is the field's *text* width; its frame padding and
         // stroke sit outside that, so they have to come off too.
         let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
@@ -340,9 +347,10 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
 }
 
 /// The Places side panel: a directory tree of folders and saved locations.
-/// Click a name to jump there (camera view is preserved), 🔄 to update it to the
-/// current view, ✏ to rename, 🗑 to delete; drag a row onto a folder to move it,
-/// and use the folder's colour swatch to recolour its pins on the map.
+/// Click a name to jump there (camera view is preserved), ⚑ to route to it, 🔄 to
+/// update it to the current view, ✏ to rename, 🗑 to delete; drag a row onto a
+/// folder to move it, and use the folder's colour swatch to recolour its pins on
+/// the map.
 #[allow(clippy::too_many_arguments)]
 pub fn render_bookmarks_panel(
     mut egui: ResMut<EguiManager>,
@@ -355,6 +363,15 @@ pub fn render_bookmarks_panel(
     map_anchor: Res<MapAnchor>,
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Places);
+    // Nothing below this line does anything a closed panel can observe — `open`
+    // cannot become true without the panel already being open, and the closure that
+    // sets `act` never runs — but `flatten` is not free: it clones a `String` per
+    // node and, for every folder, walks all bookmarks calling `is_descendant`. That
+    // is O(folders × places × depth) plus an allocation per row, every frame, for a
+    // panel nobody is looking at. `render_route_panel` guards itself the same way.
+    if !open_before {
+        return;
+    }
     let mut open = open_before;
 
     // Current location + view, for the per-place "update to here" action.
@@ -553,7 +570,11 @@ fn folder_row(
                 {
                     act.delete_folder = Some(id);
                 }
-                if ui.small_button("✏").on_hover_text("Rename").clicked() {
+                if ui
+                    .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+                    .on_hover_text("Rename")
+                    .clicked()
+                {
                     *editing = Some(Rename {
                         item: Item::Folder(id),
                         buf: name.to_string(),
@@ -625,7 +646,7 @@ fn place_row(
         // The dot is the map pin's colour, so the panel and the map read as
         // one thing.
         ui.label(
-            egui::RichText::new("📍")
+            egui::RichText::new(theme::first_drawable(ui.ctx(), &["📍", "⌖", "•"]))
                 .size(12.0)
                 .color(egui_color(color)),
         );
@@ -633,7 +654,11 @@ fn place_row(
             if ui.small_button("🗑").on_hover_text("Delete").clicked() {
                 act.delete_place = Some(id);
             }
-            if ui.small_button("✏").on_hover_text("Rename").clicked() {
+            if ui
+                .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+                .on_hover_text("Rename")
+                .clicked()
+            {
                 *editing = Some(Rename {
                     item: Item::Place(id),
                     buf: name.to_string(),
@@ -641,13 +666,32 @@ fn place_row(
                 });
             }
             if ui
-                .add_enabled(can_update, egui::Button::new("🔄").small())
+                .add_enabled(
+                    can_update,
+                    egui::Button::new(theme::first_drawable(ui.ctx(), &["🔄", "↻", "·"])).small(),
+                )
                 .on_hover_text("Update to current position and view")
                 .clicked()
             {
                 act.update = Some(id);
             }
+            // Saved places are the destination source that needs no typing, which
+            // is what makes them the important one on a phone — and until this
+            // button existed the only thing a place could do was teleport the
+            // camera to it. It wears the Route panel's own glyph (probed, never
+            // guessed — `theme::first_drawable`) so the button and the panel it
+            // opens read as one thing. Sitting next to the name rather than at the
+            // right edge keeps 🗑 where the hand already expects it.
+            let flag = theme::first_drawable(ui.ctx(), crate::resources::RightPanel::Route.icons());
+            if ui
+                .small_button(flag)
+                .on_hover_text("Route here — make this the destination")
+                .clicked()
+            {
+                act.route = Some((name.to_string(), lat, lng));
+            }
             fill_remaining(ui, |ui| {
+                let title = name.to_string();
                 // The name button is also the drag handle (see `drag_handle`):
                 // sensing both, egui waits to see whether the press turns into a
                 // drag, so a click still jumps.
@@ -674,6 +718,7 @@ fn place_row(
                         altitude: Some(altitude),
                         pose: None,
                     });
+                    act.teleport_label = Some(title);
                 }
             });
         });
@@ -813,7 +858,15 @@ fn apply(
         store.remove_folder(id);
     }
     if let Some(tp) = act.teleport {
+        // Name the visit, so it lists as itself in the address bar's recents
+        // rather than as five decimals.
+        nav.pending_label = act.teleport_label;
         nav.pending_teleport = Some(tp);
+    }
+    if let Some((name, lat, lng)) = act.route {
+        // Queued rather than applied: this panel does not own `RouteState`, and
+        // `geo_nav::drive_geocode` spends the request (see `geo_nav::RouteRequest`).
+        nav.route_to(name, lat, lng);
     }
 }
 
@@ -889,6 +942,98 @@ mod tests {
             }
         }
         (out, dragged)
+    }
+
+    /// Click one point of a place row, chosen from the row's own rect, and return
+    /// what the row asked for. Separate from [`drive`], which aims at the name;
+    /// this one is for the button strip down the right-hand end.
+    fn click_place_row(aim: impl Fn(egui::Rect) -> egui::Pos2) -> Actions {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        let mut target = egui::Pos2::ZERO;
+        let mut out = Actions::default();
+        for frame in 0..5 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            match frame {
+                1 => raw.events.push(egui::Event::PointerMoved(target)),
+                2 => raw.events.push(button(target, true)),
+                3 => raw.events.push(button(target, false)),
+                _ => {}
+            }
+            let mut act = Actions::default();
+            let mut editing = None;
+            let _ = ctx.run_ui(raw, |ui| {
+                egui::Panel::right("places_test")
+                    .default_size(300.0)
+                    .show(ui, |ui| {
+                        let top = ui.cursor().min;
+                        let right = ui.max_rect().right();
+                        place_row(
+                            ui,
+                            &mut act,
+                            &mut editing,
+                            1,
+                            0,
+                            "Test place",
+                            [1.0, 0.2, 0.2],
+                            (1.0, 2.0, 10.0),
+                            true,
+                        );
+                        let row =
+                            egui::Rect::from_min_max(top, egui::pos2(right, ui.cursor().min.y));
+                        target = aim(row);
+                    });
+            });
+            if act.route.is_some() {
+                out.route = act.route;
+            }
+            if act.teleport.is_some() {
+                out.teleport = act.teleport;
+            }
+            if act.update.is_some() {
+                out.update = act.update;
+            }
+        }
+        out
+    }
+
+    /// The ⚑ must actually receive its press.
+    ///
+    /// A saved place is the destination that needs no typing, so this button is
+    /// the one that matters most on a phone — and it lives in a row whose name is
+    /// a `click_and_drag` widget, which is the arrangement that has eaten a
+    /// button's click here before (see the module docs). Swept in from the right
+    /// edge rather than aimed, because the strip is four small buttons whose
+    /// widths come from the font.
+    #[test]
+    fn the_route_button_in_a_place_row_receives_its_click() {
+        let mut routed = None;
+        for step in 0..30 {
+            let dx = 6.0 + step as f32 * 4.0;
+            let act = click_place_row(|r| egui::pos2(r.right() - dx, r.center().y));
+            if act.route.is_some() {
+                assert!(
+                    act.teleport.is_none(),
+                    "routing to a place must not also fly to it"
+                );
+                routed = act.route;
+                break;
+            }
+        }
+        assert_eq!(
+            routed,
+            Some(("Test place".to_string(), 1.0, 2.0)),
+            "the ⚑ never received a click"
+        );
     }
 
     /// A press-and-release on a row must act on the row, and must not leave a

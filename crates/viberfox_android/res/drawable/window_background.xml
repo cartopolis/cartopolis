@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the phone shows while the app is starting, and it is not a nicety.
+  NativeActivity draws nothing at all until the native surface exists and Bevy is
+  up — and "up" here means the Bevy startup schedule plus tens of megabytes of
+  glTF read through the framework AssetManager. On a mid-range phone that is
+  plausibly ten to thirty seconds. With the stock
+  `@android:style/Theme.NoTitleBar.Fullscreen` the window background for those
+  seconds is the platform default, which is to say a black rectangle, which reads
+  as an app that installed and crashed.
+
+  So the window background is the brand instead: the app's own teal with the fox
+  centred on it, i.e. exactly the picture the boot splash inside the client draws,
+  handed over without a seam. Nothing here animates and nothing here is code —
+  it is the framework painting a drawable before a single Rust instruction runs.
+
+  `@mipmap/icon_foreground` rather than `@mipmap/icon`: on API 26+ the latter
+  resolves to the adaptive-icon XML, which would draw its own teal plate behind
+  the fox on top of this one. The foreground layer is a plain bitmap in every
+  density bucket and is transparent outside the glyph. It carries the adaptive
+  icon's 108/72 padding, so the item is sized 1.5× the fox we want to see:
+  192dp of canvas ≈ 128dp of fox.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/brand_teal" />
+    <item
+        android:gravity="center"
+        android:width="192dp"
+        android:height="192dp"
+        android:drawable="@mipmap/icon_foreground" />
+</layer-list>

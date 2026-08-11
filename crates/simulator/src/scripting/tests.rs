@@ -105,6 +105,75 @@ fn runaway_loop_yields_and_stays_resumable() {
     }
 }
 
+/// The other half of the runaway loop, and the one that was never tested: the
+/// **top level** of the chunk, which does not run in a handler.
+///
+/// `Slot::compile` used to `exec()` the chunk — a `lua_pcall` on the main state,
+/// where Luau cannot yield, so mlua discarded the interrupt's yield and this
+/// one-liner never returned. The host thread stopped serving every other script,
+/// its unbounded inbox kept filling at the tick rate, and because the source is
+/// stored before it is compiled, restarting the server replayed it.
+///
+/// The test is "it returns at all". `#[should_panic]` would not do: a hang has no
+/// panic, and the harness's own timeout is what a reader would have to know about.
+#[test]
+fn a_runaway_top_level_returns_instead_of_hanging_the_host() {
+    let result = Slot::compile(1, "while true do end");
+    let Err(err) = result else {
+        panic!("an unbounded top level should not compile into a running script");
+    };
+    assert!(
+        err.contains("load budget"),
+        "the author should be told which limit stopped them: {err}"
+    );
+
+    // The interpreter is still usable afterwards — the budget stops the chunk, it
+    // does not poison the host.
+    let mut ok = Slot::compile(2, "function on_start() vfLog('fine') end").expect("compile");
+    ok.queue(ScriptEvent::Start);
+    assert_eq!(
+        outputs(&run_to_quiet(&mut ok, 10)),
+        vec![(ScriptLevel::Info, "fine".to_string())]
+    );
+}
+
+/// The second route to the same hang: a metamethod on the chunk's environment.
+///
+/// `Slot::handler` is called from Rust, on the host thread, at a point where the
+/// fuel bank cannot suspend anything. With a metamethod-respecting `get` a script
+/// could put its own `__index` on `getfenv()` and have every handler lookup run
+/// arbitrary Lua there — including a loop. `raw_get` reads the field and never
+/// asks the metatable, so the script simply has no handler.
+#[test]
+fn a_handler_lookup_cannot_run_script_code() {
+    let mut slot = Slot::compile(
+        1,
+        "setmetatable(getfenv(), {__index = function(_, k) while true do end end})",
+    )
+    .expect("compile");
+
+    // The lookup must answer "no handler" rather than executing the metamethod.
+    assert!(
+        slot.handler("on_start").is_none(),
+        "a handler lookup resolved through the script's own metatable"
+    );
+
+    // And the scheduler agrees: an event for a handler that does not exist is
+    // skipped, not run through `__index`.
+    slot.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut slot, 10);
+    assert!(outputs(&out).is_empty(), "expected nothing, got {out:?}");
+
+    // The `vf` functions are still reachable, so the raw read is finding the real
+    // fields and not simply failing everything.
+    let mut normal = Slot::compile(2, "function on_start() vfLog('hi') end").expect("compile");
+    normal.queue(ScriptEvent::Start);
+    assert_eq!(
+        outputs(&run_to_quiet(&mut normal, 10)),
+        vec![(ScriptLevel::Info, "hi".to_string())]
+    );
+}
+
 /// A script that exceeds its byte ceiling faults with a memory error; the host
 /// survives and every other script is unaffected.
 #[test]
@@ -141,7 +210,14 @@ fn memory_ceiling_faults_the_script_only() {
 fn sandbox_denies_escape_routes() {
     // Neither Luau nor this host provides these; the point is that they are
     // *absent*, so a script referencing one gets nil rather than a capability.
-    for expr in ["io", "require", "loadstring", "dofile", "package"] {
+    //
+    // `debug` is the one that was *present*: under the `luau` feature
+    // `StdLib::ALL_SAFE` is `u32::MAX`, so `Lua::new()` opened it. Luau's version
+    // is only `{info, traceback}` and `sandbox(true)` freezes it, so nothing was
+    // exploitable — but the security model said it was not there, and this is the
+    // assertion that would have said otherwise (and will, if a future Luau grows
+    // the library while the stdlib set is taken from `ALL_SAFE` again).
+    for expr in ["io", "require", "loadstring", "dofile", "package", "debug"] {
         let src = format!("function on_start() if {expr} ~= nil then vfLog('LEAK') end end");
         let mut slot = Slot::compile(1, &src).expect("compile");
         slot.queue(ScriptEvent::Start);
@@ -196,6 +272,24 @@ fn sandbox_denies_escape_routes() {
     );
 }
 
+/// The other side of the explicit stdlib list: what an author is promised is
+/// still there.
+///
+/// `docs/notes/prim-scripting.md` justifies the *absence* of `vfFrand` and
+/// `vfGetUnixTime` by the presence of `math.random` and `os.time`, so narrowing
+/// the library set is a documented-API change, not a tidy-up.
+#[test]
+fn the_standard_libraries_an_author_is_promised_are_present() {
+    for expr in ["math.random", "string.format", "table.insert", "os.time"] {
+        let src = format!("function on_start() if {expr} == nil then vfLog('MISSING') end end");
+        let mut slot = Slot::compile(1, &src).expect("compile");
+        slot.queue(ScriptEvent::Start);
+        let out = run_to_quiet(&mut slot, 10);
+        assert!(!slot.faulted, "`{expr}` is not reachable from a script");
+        assert!(outputs(&out).is_empty(), "`{expr}` is missing");
+    }
+}
+
 /// A runtime error stops that script and explains itself, rather than unwinding
 /// into the host.
 #[test]
@@ -231,6 +325,51 @@ fn non_finite_positions_are_refused() {
         .any(|c| matches!(c, ScriptCommand::SetPos { .. })));
 }
 
+/// The same rule for the scalar setters, which is where NaN actually got through.
+///
+/// `non_finite_positions_are_refused` tested the neighbouring call: `vfSetPos`
+/// went through `finite_vec3`, while colour, alpha and glow went through
+/// `f32::clamp`, which *propagates* NaN — it is a range limit, not a validator. A
+/// NaN colour is persisted to SQLite and sent to every client's material.
+#[test]
+fn non_finite_appearance_values_are_refused() {
+    for call in [
+        "vfSetColor(0/0, 0, 0)",
+        "vfSetColor(0, 1/0, 0)",
+        "vfSetAlpha(0/0)",
+        "vfSetGlow(0/0)",
+    ] {
+        let src = format!("function on_start() {call} end");
+        let mut slot = Slot::compile(1, &src).expect("compile");
+        slot.queue(ScriptEvent::Start);
+        let out = run_to_quiet(&mut slot, 10);
+        assert!(slot.faulted, "`{call}` should be a script error");
+        assert!(
+            !out.iter().any(|c| matches!(
+                c,
+                ScriptCommand::SetColor { .. }
+                    | ScriptCommand::SetAlpha { .. }
+                    | ScriptCommand::SetGlow { .. }
+            )),
+            "`{call}` reached the world anyway: {out:?}"
+        );
+    }
+
+    // The valid range still works, and still clamps.
+    let mut slot =
+        Slot::compile(1, "function on_start() vfSetColor(2, -1, 0.5) end").expect("compile");
+    slot.queue(ScriptEvent::Start);
+    let out = run_to_quiet(&mut slot, 10);
+    let color = out
+        .iter()
+        .find_map(|c| match c {
+            ScriptCommand::SetColor { color, .. } => Some(*color),
+            _ => None,
+        })
+        .expect("a colour command");
+    assert_eq!(color, [1.0, 0.0, 0.5]);
+}
+
 #[test]
 fn output_budget_caps_a_logging_loop() {
     let src = "function on_start() for i = 1, 10000 do vfLog('spam') end end";
@@ -242,6 +381,50 @@ fn output_budget_caps_a_logging_loop() {
         "per-tick output budget was not applied"
     );
     assert!(slot.shared.dropped.get() > 0, "drops should be counted");
+}
+
+/// The event queue drops the right things when it is full.
+///
+/// The plain ring buffer evicted the *front*, and the front is `Start` — so a
+/// script whose handler is slower than its own timer lost its initialisation and
+/// then ran forever without it, which reads as "the script does nothing" with no
+/// error anywhere. Timers also coalesce: a second pending `on_timer` only asks for
+/// the same handler twice in a row later, and queueing them is what filled the
+/// queue in the first place.
+#[test]
+fn a_flood_of_events_keeps_start_and_coalesces_timers() {
+    let mut slot =
+        Slot::compile(1, "function on_start() end function on_timer() end").expect("compile");
+    slot.queue(ScriptEvent::Start);
+    for _ in 0..MAX_PENDING_EVENTS * 4 {
+        slot.queue(ScriptEvent::Timer);
+    }
+    let timers = slot
+        .pending
+        .iter()
+        .filter(|e| matches!(e, ScriptEvent::Timer))
+        .count();
+    assert_eq!(timers, 1, "timers should collapse to one pending fire");
+    assert!(
+        slot.pending.iter().any(|e| matches!(e, ScriptEvent::Start)),
+        "the Start event was evicted, so the script would run uninitialised"
+    );
+
+    // A flood of *distinct* events still evicts, and still not the Start.
+    for i in 0..MAX_PENDING_EVENTS * 2 {
+        slot.queue(ScriptEvent::Touch {
+            avatar_id: i as u64,
+            avatar_name: "ada".into(),
+        });
+    }
+    assert!(
+        slot.pending.len() <= MAX_PENDING_EVENTS,
+        "queue is unbounded"
+    );
+    assert!(
+        slot.pending.iter().any(|e| matches!(e, ScriptEvent::Start)),
+        "the Start event was evicted by a touch flood"
+    );
 }
 
 /// A script asking for a faster timer than the tick rate gets the tick rate, not

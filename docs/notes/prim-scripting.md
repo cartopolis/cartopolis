@@ -21,11 +21,41 @@ Three capabilities decided it, and standard Lua has only two:
   a yield, an over-budget script is descheduled and resumes next tick. That is
   the difference between a fuel bank that is a scheduler and one that is a
   killer, and it is why `while true do end` costs its author a slow prim and
-  costs its neighbours nothing.
+  costs its neighbours nothing — **provided every entry point actually runs in a
+  coroutine**. See below; for the top-level chunk it did not, for months.
 
 So the comparison that decided this was Luau against *standard Lua*, not against
 the wider field. Anything proposed to replace it has to answer the same question
 first: can an over-budget script be suspended and resumed, or only killed?
+
+## A fuel yield is silently a no-op outside a coroutine
+
+The single most important thing to know before adding an entry point, because it
+looks like nothing is wrong and there is no diagnostic anywhere. Found and fixed
+2026-08-10.
+
+Luau's `lua_isyieldable` is `nCcalls <= baseCcalls`, and **only `lua_resume`
+raises the base** — so a body running under a plain `pcall` is not yieldable.
+When the interrupt hands back `VmState::Yield` there, mlua **discards it without
+error**: no log line, no `Err`, no panic. Fuel accounting therefore appears to be
+installed and enforces nothing.
+
+`Slot::compile` ran the author's top-level chunk exactly that way, so
+`while true do end` at the top level hung the host thread forever — while the
+note above, the code comment beside it and the test suite all said it could not.
+The test survived because it only covered a loop inside `on_start`, which *is*
+resumed and *was* correctly metered. The consequences compounded in a way worth
+knowing, because they are what the symptom looks like from outside: the host
+thread never returns to `rx.recv()`, `HostMsg` is unbounded and fed by every
+scripted prim 20×/s, so the process grows until OOM — and since source is
+persisted *before* it runs, a restart replays it and hangs again before any other
+prim compiles, still logging "scripts loaded" with the full count.
+
+**The rule: every path that executes author code must go through a fuel-bounded
+thread, never `pcall`.** A new entry point is exactly where this comes back, and
+the sandbox has a second door onto the same problem — `Slot::handler` uses
+`raw_get` because a top-level `setmetatable(getfenv(), …)` is not something
+`luaL_sandbox` prevents.
 
 ## Two things `sandbox(true)` does not do
 

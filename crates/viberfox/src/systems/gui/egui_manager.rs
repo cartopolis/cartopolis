@@ -74,6 +74,19 @@ pub struct EguiManager {
     /// below only yields on *text* focus, which would leave WASD flying the avatar
     /// behind a card that has the user's attention.
     modal: bool,
+    /// Events produced by something *inside* the Update schedule that wants to
+    /// reach egui as if a device had produced them — currently only
+    /// `systems::onscreen_keyboard`, which is a keyboard drawn in egui and
+    /// therefore cannot exist before the pass it types into has begun.
+    ///
+    /// Drained by [`begin_egui_frame`] into the **next** frame's `RawInput`,
+    /// appended after the pointer batch exactly where the physical keyboard's
+    /// events go. That placement is the point: `take_pass_events` splits the
+    /// pointer stream so a press carries the position it had at its own point in
+    /// the batch (`docs/notes/touch-input.md`), and a key event spliced into the
+    /// middle of that would break the ordering contract for no gain — a key has
+    /// no position.
+    injected: Vec<egui::Event>,
 }
 
 /// Viewport widths (in points) below this are treated as "compact" (phone-ish):
@@ -240,6 +253,7 @@ impl Default for EguiManager {
             surface: (UVec2::new(1280, 720), ui_scale),
             ui_scale,
             modal: false,
+            injected: Vec::new(),
         }
     }
 }
@@ -280,6 +294,27 @@ impl EguiManager {
     /// between the window's logical points and egui's.
     pub fn ui_scale(&self) -> f32 {
         self.ui_scale
+    }
+
+    /// The *display's* own scale factor, with [`Self::ui_scale`] divided back
+    /// out — physical pixels per window logical point, which is what winit
+    /// reports and what `devicePixelRatio` is on the web.
+    ///
+    /// Exposed separately from [`Self::viewport_pts`] because the two answer
+    /// different questions: layout wants points, but anything reasoning about
+    /// *physical* size (a touch target in millimetres) needs the pixel density
+    /// and the magnification apart, not multiplied together.
+    pub fn display_scale(&self) -> f32 {
+        self.surface.1 / self.ui_scale.max(f32::EPSILON)
+    }
+
+    /// Queue events for the next `RawInput` — see the `injected` field.
+    ///
+    /// Deliberately additive and un-deduplicated: the caller is producing the
+    /// events a device would have produced, and a device is allowed to repeat
+    /// itself.
+    pub fn inject_events(&mut self, events: impl IntoIterator<Item = egui::Event>) {
+        self.injected.extend(events);
     }
 
     /// Convert a position in the window's logical points — which is what
@@ -740,6 +775,25 @@ pub fn begin_egui_frame(
             });
         }
     }
+
+    // The in-app on-screen keyboard (`systems::onscreen_keyboard`), which is the
+    // only keyboard two of our platforms have: NativeActivity brings up no IME at
+    // all. It draws in Update, i.e. *inside* the pass it types into, so it cannot
+    // put anything into this frame's `RawInput` — it queues instead, and lands one
+    // frame later, here.
+    //
+    // Appended in the same place as the physical keyboard's events, after the
+    // pointer batch, for the same reason: `take_pass_events` owns the ordering of
+    // the pointer stream and a key event carries no position to order.
+    //
+    // Deliberately NOT behind `forward_keys`. That gate exists because egui keeps
+    // focus on the last-clicked widget and would let a game key activate it; these
+    // events are only produced while a text field is focused, and the very act of
+    // tapping a key momentarily takes that focus away (which the keyboard puts
+    // back) — so testing `text_edit_focused()` here would drop exactly the
+    // keystroke that caused it.
+    let injected = std::mem::take(&mut egui_manager.injected);
+    events.extend(injected);
 
     let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(logical_w, logical_h));
 
@@ -1496,6 +1550,64 @@ mod tests {
             mgr.window_to_ui(Vec2::new(300.0, 600.0)),
             egui::pos2(200.0, 400.0)
         );
+    }
+
+    /// The seam the on-screen keyboard is built on: an event queued during
+    /// `Update` must turn up in the **next** frame's `RawInput`, and the queue
+    /// must be empty afterwards.
+    ///
+    /// It cannot be the same frame — `begin_egui_frame` has already assembled
+    /// `RawInput` and begun the pass by the time any UI system runs — and a queue
+    /// that were not drained would replay the last character typed on every frame
+    /// forever, which is the failure this pins.
+    #[test]
+    fn injected_events_reach_the_next_frames_input() {
+        let mut app = ui_app(Some(Window::default()));
+        app.update();
+        app.world_mut()
+            .resource_mut::<EguiManager>()
+            .inject_events([egui::Event::Text("q".to_owned())]);
+
+        let before = app
+            .world()
+            .resource::<EguiManager>()
+            .ctx
+            .input(|i| i.events.len());
+        app.update();
+
+        let mgr = app.world().resource::<EguiManager>();
+        assert!(
+            mgr.injected.is_empty(),
+            "the injection queue was not drained"
+        );
+        assert!(
+            mgr.ctx.input(|i| i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(t) if t == "q"))),
+            "the queued character never reached egui (had {before} events before)"
+        );
+
+        // And exactly once: a second frame with nothing queued must be quiet.
+        app.update();
+        let mgr = app.world().resource::<EguiManager>();
+        assert!(
+            !mgr.ctx
+                .input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))),
+            "the injected event was replayed on a later frame"
+        );
+    }
+
+    /// The display scale and the UI magnification have to come apart again:
+    /// `set_surface` multiplies them into one number, and anything reasoning
+    /// about *physical* size (`onscreen_keyboard`'s 48 dp touch target) needs the
+    /// density on its own.
+    #[test]
+    fn display_scale_survives_being_folded_into_the_surface() {
+        let mut mgr = EguiManager::default();
+        mgr.ui_scale = 1.5;
+        mgr.set_surface(UVec2::new(1080, 2280), 2.75);
+        assert!((mgr.display_scale() - 2.75).abs() < 1e-4);
     }
 
     /// An out-of-range scale is clamped rather than obeyed: at 20× there is no

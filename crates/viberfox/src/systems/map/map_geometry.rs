@@ -1059,9 +1059,16 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mes
         // the shore field and the water shader read as metres from the anchor.
         uvs = positions.iter().map(|p| [wx + p[0], wz + p[2]]).collect();
     }
+    // `RENDER_WORLD` without `MAIN_WORLD` — the surface cells are uploaded and only
+    // ever drawn, never read back on the CPU (the shore field, the collider index
+    // and the routing graph all come from the tile data, not from this mesh), so
+    // the main-world copy `default()` would keep alive for the lifetime of the
+    // handle is pure duplication. Same reasoning as `tile_loader::TILE_TEXTURE_USAGE`
+    // and, since the cells are spawned in the frame their mesh is added, the
+    // auto-`Aabb` pass still sees the geometry before extraction takes it.
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)

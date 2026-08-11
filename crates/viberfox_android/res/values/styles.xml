@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The activity's theme. It exists for one attribute — `windowBackground` — and
+  `res/drawable/window_background.xml` explains why that one matters more than a
+  theme normally does.
+
+  The parent is still the stock fullscreen theme, so nothing about the window's
+  behaviour changes: no title bar, no status bar, and the manifest's
+  `configChanges` list still keeps a rotation from restarting the process. This
+  only repaints the gap between "the launcher accepted the tap" and "wgpu has a
+  surface".
+
+  `values-v31/` overrides the whole style for API 31+, where the framework draws
+  its own splash screen ahead of this and needs to be told the same colours.
+-->
+<resources>
+    <style name="Theme.Viberfox" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/window_background</item>
+        <!-- API 27+, so every device this APK installs on (minSdk 28). Without
+             it a fullscreen window is letterboxed away from the camera cutout
+             and the map loses a strip down one edge on most modern phones. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

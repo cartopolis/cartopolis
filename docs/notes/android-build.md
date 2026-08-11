@@ -1,6 +1,6 @@
 ---
 topic: android-build
-triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, "android", "apk", "phone", "ndk"]
+triggers: [viberfox_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
 updated: 2026-08-10
 ---
 
@@ -33,15 +33,22 @@ GameActivity is where Google points, and where `winit`'s default feature points
 Resolving those by hand is a Maven client; resolving them with Gradle is a Gradle
 project. Rejected for Phase 1, worth revisiting only alongside the item below.
 
-**The price is the soft keyboard.** NativeActivity has no built-in IME
-integration: `android-activity` exposes `show_soft_input()`, but the characters
-the keyboard produces do not arrive as text events the way they do under
-GameActivity. So every egui text field on the phone — the address bar, bookmark
-rename, chat, the AI panel — can be focused and cannot be typed into. Everything
+**The price is the system IME, and that price is still being paid.**
+NativeActivity has no built-in IME integration: `android-activity` exposes
+`show_soft_input()`, but the characters the keyboard produces do not arrive as
+text events the way they do under GameActivity. So no egui text field on the
+phone can ever receive a character from the platform's own keyboard. Everything
 that is a tap, a drag or a pinch works, because the touch bridges
-(`docs/notes/touch-input.md`) were already there. If typing on the phone becomes
-the thing that matters, that is the trigger to take on GameActivity and Gradle,
-not a bug to fix in place.
+(`docs/notes/touch-input.md`) were already there.
+
+What changed on 2026-08-10 is the *consequence*, not the constraint: the client
+draws its own keyboard (`systems::onscreen_keyboard`, see
+`docs/notes/touch-input.md`), so the address bar and the geo search are usable
+without an IME. The IME fact above is why that system exists and must stay in
+the note — nothing in the tree will re-enable the platform keyboard. A real IME
+is still the trigger for taking on GameActivity and Gradle, and the bar for that
+is now higher than "typing does not work": it is autocorrect, the user's own
+layout, non-Latin scripts and dictation.
 
 ## What the phone runs
 
@@ -59,9 +66,10 @@ fully — pan, pinch, twist, tilt are all `TouchGestures`, and taps reach pickin
 the gizmo and the pins through the emulated mouse (`docs/notes/touch-input.md`).
 **The avatar cannot walk**: movement is WASD and there is no touch equivalent
 anywhere in the tree, so this is the same gap the web build has on a phone rather
-than something the port introduced. **Nothing that needs typing works**, which
-here means the address bar and geo search, bookmark rename, chat and the AI panel
-— that one *is* Android's doing, and it is the NativeActivity trade below.
+than something the port introduced. **Typing works, but only through a keyboard
+we draw ourselves** — the platform IME is unreachable under NativeActivity (the
+trade above), so `systems::onscreen_keyboard` stands in for it everywhere:
+address bar, geo search, bookmark rename, chat, the AI panel.
 
 `lib.rs`'s `parse_cli()` hands Android a fixed `--offline`. It cannot call
 `Cli::parse()`: a NativeActivity process is started by the zygote, so the `argv`
@@ -70,6 +78,62 @@ of — and clap's response to an unknown flag is `exit(2)`, i.e. the app dying o
 launch with nothing on screen and one line in `logcat`. There is no equivalent of
 the web build's `?query=string` switch surface yet; anything the phone needs to be
 told has to become UI or an env default.
+
+## `hasCode="false"` is a design constraint, not a packaging detail
+
+Reaching a framework service from `android_main` is plain JNI and costs nothing.
+Reaching one that wants a **callback** costs the whole Gradle project, because
+every push-shaped API in the platform is typed on a Java interface that only a
+`classes.dex` can implement. `platform::android` (added 2026-08-10) is the first
+place this bit, and the shape generalises:
+
+- `LocationManager.requestLocationUpdates(…, LocationListener, Looper)` needs an
+  interface implementation. So does every sibling: `getCurrentLocation` wants a
+  `java.util.function.Consumer`, `registerGnssStatusCallback` a
+  `GnssStatus.Callback`, `addNmeaListener` an `OnNmeaMessageListener`.
+- **`java.lang.reflect.Proxy` is not the escape hatch it looks like.** It
+  synthesises an implementation of an interface at runtime and needs an
+  `InvocationHandler` — itself an interface. The recursion does not bottom out.
+- `InMemoryDexClassLoader` over hand-authored dex bytes would work and is
+  rejected on this note's own grounds: it is Java bytecode we author and `d8`
+  compiles, wearing a byte array.
+
+So location is **pulled, not pushed**: `requestLocationUpdates` is registered
+with the `PendingIntent` overload — a broadcast with deliberately no receiver,
+whose only job is to make the provider *run* — and the fix is read by polling
+`getLastKnownLocation`, which the framework refreshes from any fix the provider
+reports, whoever asked for it. Permission likewise goes out through
+`Activity.requestPermissions` and comes back through polled
+`checkSelfPermission`, because the result callback is unreachable for the same
+reason.
+
+**Four claims in that design need a device**, and they are written out in falling
+order of confidence in `run_location`'s doc comment — read them there, not here,
+because they are what a first `adb install` is for. The load-bearing one: *fixes
+caused by our own registration land in the cache we poll*. If AOSP's
+`LocationProviderManager` turns out to keep last-location per client rather than
+per provider, the poll returns the same position forever and the symptom is an
+arrow that never moves. **There is no third dex-free option if it fails** — the
+fallback with the best chance is `getCurrentLocation`, which needs a `Consumer`,
+i.e. GameActivity and Gradle. That is the standing fact here: this seam has
+exactly one dex-free implementation and one fallback, and the fallback is the
+move this note already names as expensive.
+
+Two things that were *not* hard, recorded so they are not re-investigated:
+
+- **Keep-screen-on needs no JNI at all.** `AndroidApp::set_window_flags` wraps
+  `ANativeActivity_setWindowFlags`, and that NDK function posts to the UI
+  thread's looper itself — which is the hop we would otherwise have needed a
+  `Runnable` for, and a `Runnable` is an interface.
+- **`open_url` is plain framework classes** (`Uri`, `Intent`, `Context`), started
+  from the *application* context and not the activity: `android_main`'s thread is
+  not the UI thread, `Activity.startActivity` touches the decor view from the
+  calling thread, and `ContextImpl.startActivity` is a pure binder call.
+
+The manifest declares FINE **and** COARSE deliberately: since API 31 the
+permission dialog only offers an Approximate choice when COARSE is declared, so
+asking for FINE alone forces someone who wants to share a rough position to
+refuse outright. Background location is not declared and should not be.
 
 ## Things that are not obvious and cost time
 
@@ -144,11 +208,33 @@ little-endian aarch64 target and a build script's `cc` runs at check time. blake
 the shipped app, which is the exact trade `crates/viberfox/src/simd_baseline.rs`
 exists to refuse. So the lane downloads and caches an NDK instead. Baking it into
 `viberfox-ci:latest` would be strictly better and is only not done because that
-image lives in another repo.
+image lives in another repo. Reproducing that lane in the agent container needs
+two more steps that CI gets for free —
+[container-android-toolchain.md](container-android-toolchain.md).
 
 The APK is a *separate* workflow, not a step here, for deploy-web.yml's reason:
 this lane must stay the fast gate on every push, and a link of the whole Bevy
 stack against a runner with capacity 2 is not that.
+
+**A cheap gate placed first hides every expensive gate behind it**, and this lane
+is where that cost two months of Android releases. `cargo fmt --check` used to be
+the *first* step of the `check` job; a failing step ends the job, so one
+unformatted merge meant the `cargo check`, wasm and Android lanes below it never
+ran — and this is the only lane in CI that compiles the APK's configuration.
+Behind the formatting error sat a real compile error, so `deploy-android.yml`
+fell over on every push while the fast red X read as "someone forgot rustfmt",
+which is exactly what it was and exactly what it was concealing. `fmt` is last
+now. The general rule, worth applying to any gate added here: **whatever gates
+last cannot hide anything.**
+
+The break it hid is this tree's recurring platform-vs-feature confusion, and it
+will come back. The APK builds `--no-default-features`, so no `solo`, so
+`SessionMode::Solo` and `SessionStatus::Starting` are never constructed — and
+`[workspace.lints.rust] unused = "deny"` makes dead code a hard error. Both
+carried `cfg_attr(target_arch = "wasm32", allow(dead_code))`: a *platform* gate
+standing in for a *feature* condition, which Android passes and therefore fails
+on. Gate on `not(feature = "solo")`, which is the condition that is actually
+true and covers wasm as a side effect.
 
 ## Publishing: one APK, no history, and why the key lives on the host
 
@@ -207,10 +293,18 @@ against 124 MB living on the runner host indefinitely. The NDK *is* cached, unde
 the same key the check lane uses, so on `main` it is a restore rather than a
 second download.
 
-## Verification status, 2026-08-08
+## Verification status, 2026-08-10
 
 Built and packaged in the headless container; **never run on a device or an
 emulator**. The container has no GPU, no KVM and no Android runtime.
+
+**The APK has never once published.** `deploy-android.yml` failed on every push
+to `main` from the day it landed, and `https://viberfox.garage44.eu/apk/` was a
+404 for the whole of that period — for the CI-ordering reason above, with a real
+compile break behind it. `cargo check -p viberfox_android --target
+aarch64-linux-android` passed for the first time in this repo's history on
+2026-08-10. So the packaging facts below, which predate that, were measured on a
+one-off manual build and not on anything CI ever reproduced.
 
 What is actually proven, and it is worth knowing exactly how far it goes:
 
@@ -234,6 +328,15 @@ What is actually proven, and it is worth knowing exactly how far it goes:
 
 Everything past "does it load" is open, and the first `adb install` answers it:
 whether Bevy acquires a Vulkan surface and survives pause/resume, whether the
-touch bridges behave as they do in a browser, and whether 63 MB of glTF loads
-through the `AssetManager` in a tolerable time. Treat a first run as diagnosis
-and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+touch bridges behave as they do in a browser, whether the drawn keyboard is
+reachable with a thumb, whether the location poll ever moves, and whether 63 MB
+of glTF loads through the `AssetManager` in a tolerable time. Treat a first run
+as diagnosis and watch `adb logcat -s viberfox:V bevy_render:V wgpu:V`.
+
+The 2026-08-10 pass added a good deal of Android-only behaviour on top of this —
+a location provider, an on-screen keyboard, `AppLifecycle::WillSuspend` flushes,
+a phone render budget, an app-data root for `user.json`. Every one of them is
+compiled and unit-tested and **none of them has run on hardware**. Do not read
+"it checks" as more than it is; this note's whole point is that the gap between
+compiling for `aarch64-linux-android` and running on a phone is where all the
+remaining risk lives.

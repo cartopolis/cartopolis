@@ -1,7 +1,13 @@
 [package]
 name = "viberfox_core"
-version = "0.1.0"
-edition = "2021"
+# Was pinned at 0.1.0 while the rest of the workspace moved. Nothing depends on
+# it by version — all three consumers are bare `path` dependencies — so the pin
+# bought nothing and only made `cargo metadata` disagree with the release it is
+# part of.
+version.workspace = true
+edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
 
 [dependencies]
 glam = { workspace = true }

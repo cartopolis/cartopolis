@@ -23,9 +23,9 @@ _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](d
 
 The same client ships three ways, from one codebase:
 
-- **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`.
-- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target.
-- **Android** — builds from source to an installable APK (`crates/viberfox_android/build-apk.sh`); nothing is published yet. Early: it is the offline map viewer, it has no soft keyboard, and it has not been run on a device. [What that means](docs/notes/android-build.md).
+- **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
+- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target. The published binaries need a CPU with **AVX2 and FMA** (Haswell/Excavator or newer) — they are compiled for the `x86-64-v3` baseline, and on anything older they stop with an illegal instruction; build from source there.
+- **Android** — an installable APK at **[viberfox.garage44.eu/apk](https://viberfox.garage44.eu/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/viberfox_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
 
 Native is the faster and more capable of the three — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
 
@@ -48,6 +48,7 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 ## Documentation
 
 - [User manual](docs/manual.md) — controls, getting around, authoring, the developer panel.
+- [Changelog](CHANGELOG.md) — what changed, per release.
 - [Development guide](docs/guides/development.md) — prerequisites, dev loop, tests, code map, conventions, CI.
 - [Server guide](docs/guides/server.md) — deploying the sim and the self-hosted geo services.
 - [`docs/notes/`](docs/notes/) — standing constraints and measurements; [`CLAUDE.md`](CLAUDE.md)'s *Known issues* is the trap list worth skimming first. `docs/adr/` and `docs/abstract/` are a frozen archive of the earlier decision log.
@@ -62,6 +63,12 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 | `viberfox` | Bevy game client — rendering, ECS systems, UI |
 | `big_space` | Vendored floating-origin fork, for planet-scale coordinates |
 
+## Licence
+
+Viberfox is dual-licensed under **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)**, at your option — the Rust ecosystem's default pair, and the licence of the vendored `big_space` fork, so the two sets of notice obligations line up. [`LICENSE`](LICENSE) has the detail.
+
+That covers the source. The map data, the geodata services, the avatars and the font each carry their own terms, and several of them — the ODbL, CC BY 4.0, the OFL — require their notice to travel with anything built from the work. **[`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) is that notice, and it is the canonical list**: it ships in the release tarball, in the Windows zip and inside the APK, and the in-app About panel renders it. The Credits below are the same list written for a reader; add a source to the file, not only here.
+
 ## Credits
 
 - **Engine** — built with [Bevy](https://bevy.org/).
@@ -72,3 +79,6 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 - **Buildings (LoD2.2)** — [3DBAG](https://3dbag.nl/) by the 3D geoinformation group, TU Delft, CC BY 4.0 — derived from the Kadaster's [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) registry and AHN, both via [PDOK](https://www.pdok.nl/). Netherlands only.
 - **Elevation** — [AHN](https://www.ahn.nl/) height rasters (DTM/DSM), served by [PDOK](https://www.pdok.nl/), CC0. Netherlands only.
 - **Public transport** — live departures and vehicle positions from [OVapi](https://ovapi.nl/), the open key-free feed of Dutch [NDOV](https://ndovloket.nl/) operator data. Netherlands only.
+- **Weather** — forecasts from [MET Norway](https://api.met.no/), CC BY 4.0, and global cloud cover from the [NOAA Global Forecast System](https://nomads.ncep.noaa.gov/), public domain.
+- **Night sky** — star positions and magnitudes from the [HYG Database](https://github.com/astronexus/HYG-Database) v4.1 by David Nash, CC BY-SA 4.0 — a compilation of the Hipparcos, Yale Bright Star and Gliese catalogs.
+- **Type** — [Plus Jakarta Sans](https://fonts.google.com/specimen/Plus+Jakarta+Sans) by Tokotype, SIL Open Font License 1.1.

@@ -39,11 +39,17 @@
       // letting the parser run on. Those still surface as the wgpu panic.
       if (!navigator.gpu) {
         document.write(
+          // Brand palette, not the browser's default greys: this page is the
+          // only Viberfox some visitors ever see. Teal `#0c2a33` is
+          // `theme::SURFACE`, `#dce6e8` is `TEXT`, `#f2efea` is `CREAM`,
+          // `#071a20` is `INK` and `#ff9457` is `FOX_TEXT` — the same five
+          // constants the loader below and the app itself paint from.
           '<style>' +
-            'body{margin:0;background:#111}' +
-            '.u{color:#ddd;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
-            '.u h1{font-size:1.3rem;font-weight:600}' +
-            '.u code{background:#222;padding:.1em .4em;border-radius:3px}' +
+            'body{margin:0;background:#0c2a33}' +
+            '.u{color:#dce6e8;font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem}' +
+            '.u h1{font-size:1.3rem;font-weight:600;color:#f2efea}' +
+            '.u code{background:#071a20;padding:.1em .4em;border-radius:3px}' +
+            '.u a{color:#ff9457}' +
           '</style>' +
           '<div class="u">' +
             "<h1>This browser can't run Viberfox</h1>" +
@@ -54,6 +60,11 @@
             'by default on every platform — check <code>about:support</code> under ' +
             '<i>Graphics</i>, and <code>dom.webgpu.enabled</code> in ' +
             '<code>about:config</code>.</p>' +
+            // The one audience this page can actually help: an Android visitor
+            // does not need WebGPU at all, because there is a native app. Without
+            // this the gate is a dead end on the platform most likely to hit it.
+            '<p>On <b>Android</b> there is a native app that needs no WebGPU: ' +
+            '<a href="/apk/" style="color:#FD9212">viberfox.garage44.eu/apk</a>.</p>' +
           '</div>'
         );
         window.stop();
@@ -248,25 +259,48 @@
         -webkit-user-select: none;
         -webkit-touch-callout: none;
       }
+      /* Same brand tones as the <head> abort page above — an "it doesn't work
+         here" screen is still the product's screen. */
       .unsupported {
-        color: #ddd;
-        background: #111;
+        color: #dce6e8;
+        background: #0c2a33;
         font: 15px/1.6 system-ui, sans-serif;
         max-width: 34rem;
         margin: 12vh auto;
         padding: 0 1.5rem;
       }
-      .unsupported h1 { font-size: 1.3rem; font-weight: 600; }
+      .unsupported h1 { font-size: 1.3rem; font-weight: 600; color: #f2efea; }
       .unsupported code {
-        background: #222;
+        background: #071a20;
         padding: 0.1em 0.4em;
         border-radius: 3px;
       }
-      .unsupported a { color: #7ab7ff; }
+      .unsupported a { color: #ff9457; }
 
-      /* Loader, not a splash. The splash is Bevy's and cannot draw until the
-         engine is up; this covers the ~70 MB download and compile before that,
-         and its whole job is to report progress honestly. */
+      /* The wordmark face, the same file `systems::theme` embeds for the Bevy
+         splash — without it the handover swaps typeface mid-load, which is the
+         one difference the eye catches every time. `swap` so a slow font never
+         holds the wordmark back: the fallback stack is close enough for the
+         moment it is up. */
+      @font-face {
+        font-family: "Viberfox Brand";
+        src: url("assets/fonts/PlusJakartaSans-SemiBold.ttf") format("truetype");
+        font-weight: 600;
+        font-display: swap;
+      }
+
+      /* Loader, not a splash — and yet it has to *be* the splash.
+         ===============================================================
+         The engine cannot draw until ~70 MB has been fetched and compiled, so
+         on the web this covers the first several seconds of the product. It
+         used to spend them on a monospace checklist of GPU/asset/worker probes
+         over a scrolling boot log: a build harness, shown to every visitor,
+         while `systems::splash` — whose module note says the two are drawn to
+         match — waited behind it with the logo and the wordmark. So the brand
+         is here now and the instrumentation is behind `?log` (and the failure
+         state, where it is exactly what you want). Keep the palette, the type
+         sizes and the motto in step with `systems::theme` and
+         `systems::splash`; they are one screen handed over mid-load. */
       #loader {
         position: fixed;
         inset: 0;
@@ -286,6 +320,40 @@
         box-sizing: border-box;
       }
       #loader.done { opacity: 0; pointer-events: none; }
+      /* Brand block: logo, wordmark, motto — the Bevy splash's layout, in CSS.
+         `#brand` owns its own gap so the checklist appearing under `?log` cannot
+         push the wordmark off centre. */
+      #brand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.35rem;
+        margin-bottom: 0.6rem;
+      }
+      #logo {
+        /* 168 px is the Bevy splash's own logo size. The `vh` term is what keeps
+           a landscape phone from pushing the wordmark and the progress track off
+           the bottom of a 360 px-tall viewport. */
+        width: min(40vw, 30vh, 168px);
+        height: auto;
+        /* No layout shift and no broken-image icon if the copy-dir is missing:
+           the box is reserved, and `onerror` removes the element. */
+        aspect-ratio: 1;
+      }
+      #wordmark {
+        font-family: "Viberfox Brand", system-ui, -apple-system, sans-serif;
+        font-weight: 600;
+        /* `theme::SPLASH_WORDMARK` / `SPLASH_MOTTO`, in px — egui points and CSS
+           pixels are the same unit at the scale factor both sides are laid out
+           against. */
+        font-size: 40px;
+        line-height: 1.1;
+        color: #f2efea;
+      }
+      #motto {
+        font-size: 16px;
+        color: #9fb3bf;
+      }
       #track {
         width: min(22rem, 70vw);
         height: 3px;
@@ -311,12 +379,24 @@
       }
       #loader[data-state="failed"] #bar { background: #e88b7d; animation: none; }
       #loader[data-state="failed"] #status { color: #e88b7d; }
+      /* The instrumentation. Hidden by default — it is a developer console, and
+         it was the first thing every visitor saw for the whole download. It
+         comes back for the two audiences that want it: `?log`, and any run that
+         has actually failed (`data-state="failed"`, set by the fatal-check
+         branch and by the boot recorder's `onerror`), where this list *is* the
+         diagnosis on a phone with no console. The probes still run and still
+         fill in either way; only the display is gated, so nothing has to be
+         re-run when a failure reveals it. */
+      #checks, #bootlog { display: none; }
+      #loader[data-log] #checks,
+      #loader[data-state="failed"] #checks { display: flex; }
+      #loader[data-log] #bootlog,
+      #loader[data-state="failed"] #bootlog { display: block; }
       #checks {
         list-style: none;
         margin: 0;
         padding: 0;
         width: min(30rem, 90vw);
-        display: flex;
         flex-direction: column;
         gap: 0.2rem;
         font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -349,6 +429,13 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
+      #android-hint {
+        margin: 14px 0 0;
+        text-align: center;
+        font: 14px/1.4 "Plus Jakarta Sans", system-ui, sans-serif;
+      }
+      #android-hint a { color: #fd9212; text-decoration: none; }
+      #android-hint a:hover { text-decoration: underline; }
       #bootlog .warn { color: #d8c07a; }
       #bootlog .error { color: #e88b7d; }
     </style>
@@ -405,12 +492,45 @@
         if (watch.addEventListener) watch.addEventListener("change", layout);
       })();
     </script>
+    <!-- The same screen `systems::splash` paints, in the seconds before it can:
+         logo, wordmark, motto, then the progress this half is uniquely able to
+         report. The logo is fetched from the asset tree trunk copies next to the
+         page (`rel="copy-dir"`); if that copy is missing the mark removes itself
+         rather than showing a broken-image icon — and the "Asset tree" check
+         below will say why. -->
     <div id="loader" data-state="loading">
+      <div id="brand">
+        <img id="logo" src="assets/icon/viberfox.png" alt=""
+             onerror="this.remove()" />
+        <div id="wordmark">Viberfox</div>
+        <div id="motto">Explore our world</div>
+      </div>
       <div id="track"><div id="bar"></div></div>
       <div id="status">Downloading engine…</div>
       <ul id="checks"></ul>
       <pre id="bootlog"></pre>
+      <!-- Shown only on Android. The wasm client is a ~70 MB download that a
+           phone browser will run slowly at best; the APK is the better answer and
+           was, until now, discoverable only from a note in docs/. -->
+      <p id="android-hint" hidden>
+        <a href="/apk/">On an Android phone? Install the app instead →</a>
+      </p>
     </div>
+    <script>
+      // Reveal the APK link on Android only. A userAgent test is the right tool
+      // here despite its reputation: the question is literally "is this device
+      // running the OS the APK targets", which no feature test can answer.
+      if (/Android/i.test(navigator.userAgent)) {
+        document.getElementById("android-hint").hidden = false;
+      }
+      // `?log` (or `?LOG`) keeps the loader up after the first frame — the flag
+      // the hand-over below already reads. It reveals the checklist and the boot
+      // log too, and it has to be set here rather than there because the CSS
+      // needs it before the first paint, not after the engine has drawn.
+      if (/(^|[?&])(log|LOG)(=|&|$)/.test(location.search)) {
+        document.getElementById("loader").dataset.log = "";
+      }
+    </script>
     <script>
       // Sanity checks, run in parallel with the download.
       //
@@ -575,7 +695,10 @@
         // Hand over on the first drawn frame, not on `onSuccess`: the module
         // instantiating is not the same as anything being on screen, and hiding
         // early would show a blank canvas before Bevy's splash appears.
-        var keep = /(^|[?&])(log|LOG)(=|&|$)/.test(location.search);
+        // One detector for the flag: the block under the loader markup set
+        // `data-log` before the first paint (the CSS needed it then), so read
+        // that back rather than parsing the query string a second time.
+        var keep = loader.dataset.log !== undefined;
         (function wait() {
           if (window.__boot.failed) return;
           var c = document.querySelector("canvas");

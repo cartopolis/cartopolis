@@ -110,8 +110,10 @@ const FIT_MARGIN: f32 = 0.85;
 /// so without this a long avenue gets its name stamped along itself six times.
 const SAME_NAME_GAP_M: f32 = 260.0;
 
-/// Height above the ground plane, in metres. Just over the route line's 0.5 —
-/// physical separation as well as the depth bias, exactly as the route does it.
+/// Height above the ground **under the label**, in metres. Just over the route
+/// line's 0.5 — physical separation as well as the depth bias, exactly as the route
+/// does it. Added to `TerrainField::at`, which is `0.0` with the Height layer off,
+/// so with no relief this is the flat `y` it always was.
 const LABEL_Y: f32 = 0.55;
 
 /// Rung on the shared depth-bias ladder: above the route ribbon (20) and its
@@ -268,6 +270,12 @@ pub struct StreetLabelSigns {
 #[derive(PartialEq)]
 struct PlacedState {
     revision: u32,
+    /// `TerrainField::revision` the labels were lifted onto. The ground arrives a
+    /// second or two after the anchor it belongs to and moves again whenever the
+    /// layer is switched, so a label placed before it landed is sitting on the old
+    /// flat plane — the same contract the surfaces, both building streamers and the
+    /// route line carry (see CLAUDE.md).
+    terrain_revision: u32,
     height_m: f32,
     /// Camera heading the labels were oriented for.
     yaw: f32,
@@ -308,6 +316,7 @@ pub fn update_street_labels(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    terrain: Res<crate::systems::terrain::TerrainField>,
     mut placed_query: SignQuery,
 ) {
     let Ok((cam_cell, cam_tf)) = camera.single() else {
@@ -339,6 +348,7 @@ pub fn update_street_labels(
     let view_at = ground_focus(cam_ground, alt, cam_tf.forward().as_vec3());
     let want = PlacedState {
         revision: store.revision,
+        terrain_revision: terrain.revision,
         height_m,
         yaw: cam_yaw,
         at: view_at,
@@ -348,6 +358,7 @@ pub fn update_street_labels(
         let turned = angle_delta(p.yaw, cam_yaw).abs() > YAW_REPLACE;
         let moved = p.at.distance(view_at) > MOVE_REPLACE_M;
         if p.revision == want.revision
+            && p.terrain_revision == want.terrain_revision
             && p.height_m == want.height_m
             && !turned
             && !moved
@@ -449,7 +460,19 @@ pub fn update_street_labels(
         if let Some(mut m) = materials.get_mut(&material.0) {
             m.base_color_texture = Some(texture.clone());
         }
-        let world = Vec3::new(p.centre.x, LABEL_Y, p.centre.y);
+        // Stand on the measured ground, which the road under the label is standing
+        // on too. One height for the whole quad — a label is a flat plate, and the
+        // rule the water, the bridge decks and the buildings follow — but taken as
+        // the *highest* of the two ends and the centre rather than the centre
+        // alone: on a slope the ends are what a centre sample would bury, and
+        // [`LABEL_Y`] is only half a metre of clearance to lose.
+        let half = p.dir * p.width_m * 0.5;
+        let ends = [p.centre - half, p.centre, p.centre + half];
+        let ground = ends
+            .iter()
+            .map(|s| terrain.at(s.x, s.y))
+            .fold(f32::MIN, f32::max);
+        let world = Vec3::new(p.centre.x, ground + LABEL_Y, p.centre.y);
         let (grid_cell, local) = grid.translation_to_grid(world.as_dvec3());
         *cell = grid_cell;
         // `dir` is where the baseline runs in world XZ; a yaw rotation sends the

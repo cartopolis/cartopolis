@@ -292,7 +292,13 @@ pub fn drive_route_ahead(
         }
         return;
     }
-    let Some(r) = route.route.as_ref() else {
+    // `displayed`, not `route`: a reroute in flight has no solved route for a
+    // while, and dropping the rail for the duration would empty the strip of
+    // everything it knows about the road ahead — which is unchanged past the turn
+    // that was missed. The generation is what identifies a rail's polyline, and a
+    // reroute deliberately does not bump it (`RouteState::reroute_from`), so this
+    // holds its markers and its speed limits until a different route lands.
+    let Some(r) = route.displayed() else {
         if ahead.generation.is_some() {
             ahead.reset();
         }

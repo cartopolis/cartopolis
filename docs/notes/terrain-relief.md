@@ -85,6 +85,22 @@ RD box onto the world box directly. RD is rotated against Web Mercator by the me
 convergence (~1° over NL) and scaled slightly differently: the axis-aligned shortcut
 puts the corners of a 6.4 km field ~80 m out, which is a hill in the wrong place.
 
+## The field arrives *after* the anchor, so every consumer needs a revision
+
+`at()` returns 0 while the request is in flight, which is the same answer it gives
+outside the Netherlands and with the layer off — that uniformity is what lets a
+consumer add the lift unconditionally. The price is that every streamer builds its
+first cells on flat ground and must retear when the real field lands a second or
+two later. `TerrainField::revision` is that signal, and a consumer holds the
+revision it built against beside its cell keys.
+
+**The failure is silent and one-sided**, which is why this is written down: the
+consumers that *were* wired sink or rise together and look right, and the one that
+was not stays where it was while the ground moves under it. Street labels
+(2026-08-10) were exactly that — the road surfaces beneath them were displaced,
+the names were not, and with the Height layer on the text sank into the road. A
+new thing standing on the ground is not done until it carries the revision.
+
 ## The physics stays flat; only the picture stands on the ground
 
 `simulator` is authoritative for the avatar and holds **no map data at all** — the

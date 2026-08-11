@@ -16,8 +16,9 @@
 
 use bevy::prelude::*;
 
-use crate::resources::{AvatarState, CameraMode, CameraState};
+use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::geo_nav::{world_to_lat_lng, GeoNavState};
 use crate::systems::theme;
 use crate::systems::world_places::{Interactable, WorldPlaces};
 use viberfox_core::Emote;
@@ -55,6 +56,12 @@ pub struct TargetInfo {
     pub glyph: &'static str,
     pub verb: &'static str,
     pub detail: Option<&'static str>,
+    /// Where the thing is, in anchored world XZ. Carried so the prompt can offer
+    /// to *route* to it: the store is keyed by cell and the target may have gone
+    /// out of range (or out of the ring entirely) between the prompt appearing and
+    /// the button being pressed, and re-querying by name would be a different
+    /// question with a different answer.
+    pub pos: Vec2,
 }
 
 impl TargetInfo {
@@ -64,6 +71,7 @@ impl TargetInfo {
             glyph: i.kind.glyph(),
             verb: i.kind.verb(),
             detail: i.kind.detail(),
+            pos: i.pos,
         }
     }
 
@@ -79,6 +87,25 @@ impl TargetInfo {
 
 /// How long an acted-on line stays on screen.
 const LAST_LINE_SECS: f32 = 4.0;
+
+impl InteractState {
+    /// Act on whatever the prompt is offering. One definition, because there are
+    /// two ways to ask for it — the E key and a tap on the prompt itself — and a
+    /// second copy of "play the clip, remember the line, start its timer" is how
+    /// they would come to behave differently.
+    fn act(&mut self, avatar_state: &mut AvatarState) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
+        // The same one-shot channel the emote keys use, so acting on the world and
+        // emoting are the same motion as far as the animation and the wire are
+        // concerned — which is exactly right, since `Interact` *is* the clip for
+        // "use the thing in front of me".
+        avatar_state.pending_emote = Some(Emote::Interact);
+        self.last = Some(target.line());
+        self.last_ttl = LAST_LINE_SECS;
+    }
+}
 
 /// Emote hotkeys. Digits, because they are the row every game puts emotes on and
 /// nothing else in this client binds them.
@@ -170,59 +197,109 @@ pub fn handle_interaction_input(
     }
 
     if keyboard.just_pressed(KeyCode::KeyE) {
-        if let Some(target) = state.target.clone() {
-            // The same one-shot channel the emote keys use, so acting on the world
-            // and emoting are the same motion as far as the animation and the wire
-            // are concerned — which is exactly right, since `Interact` *is* the
-            // clip for "use the thing in front of me".
-            avatar_state.pending_emote = Some(Emote::Interact);
-            state.last = Some(target.line());
-            state.last_ttl = LAST_LINE_SECS;
-        }
+        state.act(&mut avatar_state);
     }
 }
 
-/// Draw the prompt over the map.
+/// Draw the prompt over the map, and let it be *pressed*.
 ///
 /// Anchored to the bottom-centre of the *map area* rather than the window, and
 /// culled to it, for the reason `place_pins` documents: the shared root `Ui`'s
 /// leftover rect is exactly the map, and drawing outside it puts an interactive
 /// overlay on top of a panel. This runs inside the panel chain so that rect is
 /// the real one.
+///
+/// It used to read `Sit at Bench   [E]` and be `interactable(false)` — a keyboard
+/// hint on the one platform with no keyboard, advertising an action the prompt
+/// itself could not take. The line is a button now, and the key hint only appears
+/// on a viewport wide enough to imply a keyboard. The second button is the one
+/// this module could not offer at all: a POI you walked up to is a *destination*,
+/// and there was no way to make it one.
+///
+/// Only the buttons sense the pointer — the frame around them does not — so the
+/// prompt still cannot eat a click meant for the map it floats over, which is the
+/// property that made it non-interactive in the first place.
 pub fn render_interaction_prompt(
     mut egui_manager: ResMut<EguiManager>,
     camera_state: Res<CameraState>,
-    state: Res<InteractState>,
+    mut state: ResMut<InteractState>,
+    mut avatar_state: ResMut<AvatarState>,
+    mut nav: ResMut<GeoNavState>,
+    map_anchor: Res<MapAnchor>,
 ) {
     if camera_state.mode != CameraMode::Avatar {
         return;
     }
-    let Some(text) = state
-        .target
-        .as_ref()
-        .map(|t| format!("{}  {}   [E]", t.glyph, t.line()))
-        .or_else(|| state.last.clone())
-    else {
+    let target = state.target.clone();
+    let receipt = state.last.clone();
+    if target.is_none() && receipt.is_none() {
         return;
-    };
+    }
 
+    let compact = egui_manager.compact();
     let map = egui_manager.ui_mut().available_rect_before_wrap();
     if map.width() < 1.0 || map.height() < 1.0 {
         return;
     }
-    // A prompt is a hint, not a control: it must never eat a click meant for the
-    // map behind it.
     let pos = egui::pos2(map.center().x, map.bottom() - PROMPT_BOTTOM_MARGIN);
+    let mut acted = false;
+    let mut routed = false;
     egui::Area::new(egui::Id::new("interact_prompt"))
         .order(egui::Order::Background)
+        // A live prompt is a control; the receipt left behind after acting is not.
+        .interactable(target.is_some())
         .fixed_pos(pos)
         .pivot(egui::Align2::CENTER_BOTTOM)
-        .interactable(false)
         .show(&egui_manager.ctx.clone(), |ui| {
             theme::overlay_frame().show(ui, |ui| {
-                ui.label(egui::RichText::new(text).color(theme::TEXT).strong());
+                ui.horizontal(|ui| {
+                    let Some(t) = &target else {
+                        // Nothing in range: what is left is the line naming what
+                        // was last acted on, which is a receipt and not a button.
+                        if let Some(last) = &receipt {
+                            ui.label(egui::RichText::new(last).color(theme::TEXT).strong());
+                        }
+                        return;
+                    };
+                    // The key hint is a fact about the *input*, not about the
+                    // action, so it is only stated where a keyboard is plausible.
+                    let hint = if compact { "" } else { "   [E]" };
+                    if ui
+                        .button(
+                            egui::RichText::new(format!("{}  {}{hint}", t.glyph, t.line()))
+                                .color(theme::TEXT)
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        acted = true;
+                    }
+                    // Probed, not guessed, and the Route panel's own glyph — see
+                    // `theme::first_drawable` and `RightPanel::icons`.
+                    let flag = theme::first_drawable(ui.ctx(), RightPanel::Route.icons());
+                    if ui
+                        .button(flag)
+                        .on_hover_text("Route here — make this the destination")
+                        .clicked()
+                    {
+                        routed = true;
+                    }
+                });
             });
         });
+
+    if acted {
+        state.act(&mut avatar_state);
+    }
+    if routed {
+        // The store holds anchored world XZ; the planner speaks lat/lng. Without
+        // an anchor there is no mapping between them yet, and the button simply
+        // does nothing rather than routing to null island.
+        if let (Some(t), Some(anchor)) = (&target, map_anchor.geo) {
+            let (lat, lng) = world_to_lat_lng(anchor, t.pos.x as f64, t.pos.y as f64);
+            nav.route_to(t.name.clone(), lat, lng);
+        }
+    }
 }
 
 /// Gap between the prompt and the bottom of the map area. Clear of the bottom
@@ -263,6 +340,40 @@ mod tests {
         use crate::systems::places::PoiCategory;
         let cafe = target("Vismarkt", InteractKind::Place(PoiCategory::Drink));
         assert_eq!(cafe.line(), "Look at Vismarkt (café)");
+    }
+
+    /// Tapping the prompt has to do exactly what E does — same clip, same
+    /// receipt, same timer — because on a phone it is the *only* way to do it.
+    /// One method, so the two cannot drift.
+    #[test]
+    fn acting_plays_the_clip_and_leaves_a_receipt() {
+        let mut state = InteractState::default();
+        let mut avatar = AvatarState::default();
+
+        // Nothing in range: pressing anything is a no-op, not a wave at thin air.
+        state.act(&mut avatar);
+        assert!(avatar.pending_emote.is_none());
+        assert!(state.last.is_none());
+
+        state.target = Some(target("Bench", InteractKind::Prop(FurnitureKind::Bench)));
+        state.act(&mut avatar);
+        assert!(matches!(avatar.pending_emote, Some(Emote::Interact)));
+        assert_eq!(state.last.as_deref(), Some("Sit at Bench"));
+        assert!(state.last_ttl > 0.0, "the receipt must fade on its own");
+    }
+
+    /// The prompt offers to route to what it names, so the target has to remember
+    /// where it is — the store is keyed by cell and may have retired the thing
+    /// between the prompt appearing and the button being pressed.
+    #[test]
+    fn a_target_remembers_where_it_is() {
+        use crate::systems::places::PoiCategory;
+        let it = Interactable {
+            pos: Vec2::new(120.0, -40.0),
+            name: "Vismarkt".to_string(),
+            kind: InteractKind::Place(PoiCategory::Drink),
+        };
+        assert_eq!(TargetInfo::of(&it).pos, Vec2::new(120.0, -40.0));
     }
 
     /// Every emote key is distinct and maps to a distinct emote — a duplicate

@@ -1,7 +1,7 @@
 ---
 topic: headless-shots-software-renderer
 triggers: [shot_harness.rs, "--shot", "--expect", "cargo shots", lavapipe, llvmpipe, Msaa, headless, "no GPU", container, CI, ci.yml, "scene smoke", "capture never completed", software renderer, AsyncComputeTaskPool, quiesce, "black image"]
-updated: 2026-08-06
+updated: 2026-08-10
 ---
 
 # `--shot` on a software renderer
@@ -104,6 +104,16 @@ after the verdict is invisible in that frame's image anyway. Pausing **parks** j
 rather than dropping them — the streamers de-duplicate on "a fetch is in flight", so
 a discarded decode is never re-queued and the tile would be missing for every later
 shot in a `--shots` run.
+
+**`set_paused` is no longer the harness's alone** (2026-08-10). Android's
+`quiesce_while_backgrounded` pauses the pool on `AppLifecycle::WillSuspend` and
+un-pauses it on `WillResume | Running`, for battery. That is the right behaviour
+on a phone and it makes the flag a *shared* one: any writer that sets `false`
+while the harness is quiescing re-admits the streamers and hands back exactly the
+"black scene with only the chrome, exit 0" above. Whether Bevy emits a `Running`
+lifecycle message on the headless desktop path — which would trip this on every
+CI capture — is **not verified here**; it needs a machine that can render. If a
+third writer is ever added, the flag has to become owned rather than global.
 
 ### The failure has a second face, and it is worse
 

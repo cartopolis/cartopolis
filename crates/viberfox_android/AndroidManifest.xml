@@ -16,7 +16,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="eu.garage44.viberfox"
     android:versionCode="1"
-    android:versionName="0.2.0">
+    android:versionName="1.0.0-local">
+
+    <!-- The two version attributes above are **fallbacks that a real build never
+         uses**: `build-apk.sh` passes `--version-code` / `--version-name` to
+         `aapt2 link`, which overwrites them in the compiled manifest. They are
+         kept so that hand-running aapt2 against this file still produces a
+         package that installs.
+
+         They were also, for the whole of this app's history, the only values
+         there were — every APK ever published claimed to be version 1, so
+         nothing on the device could say which build it was and Android had no
+         reason to treat any of them as an update to another. See the version
+         block in `build-apk.sh` for where the real numbers come from and why
+         a CI code is deliberately larger than a local one. -->
 
     <!-- API 28 because that is where Android's Vulkan support becomes something
          wgpu can rely on; below it the GLES fallback would be the only backend and
@@ -37,11 +50,32 @@
          streamed. Without this the app starts and renders an empty globe. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Deliberately NOT requesting location. `platform::location` has only a web
-         implementation (`navigator.geolocation`); there is no native provider, and
-         `LocationWatch::available()` reports that rather than inventing a fix. A
-         permission the app cannot act on is a prompt that buys the user nothing.
-         It goes in when the JNI provider does. -->
+    <!-- Location. These were deliberately absent until the JNI provider existed,
+         on the rule that a permission the app cannot act on is a prompt that buys
+         the user nothing: `platform::location` had only a web arm, and
+         `LocationWatch::available()` said so rather than inventing a fix. That
+         changed with `platform::android` — driver mode now follows the device on
+         the phone instead of the avatar.
+
+         Both are listed, and FINE is not a superset of COARSE at the manifest
+         level: since API 31 the permission dialog offers the user a Precise /
+         Approximate choice and will only offer Approximate if COARSE is declared
+         too. Requesting FINE alone means a user who wants to share a rough
+         position has to refuse outright. The provider accepts either grant and
+         reports the resulting accuracy honestly (`GpsFix::accuracy_m`).
+
+         These are *dangerous* permissions, so from API 23 the manifest entry only
+         makes them requestable — the app must also ask at runtime, which
+         `platform::android::request_permission` does. There is no background
+         location here and there must not be: the fix is only read while driver
+         mode is on and the app is on screen, so ACCESS_BACKGROUND_LOCATION would
+         be a Play-review conversation in exchange for nothing. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Advisory: the app is fully usable without GNSS (it is a map viewer first),
+         so a device with no location hardware must still be able to install. -->
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
         android:label="Viberfox"
@@ -61,7 +95,12 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            <!-- Ours, not the stock fullscreen theme it used to be — and the
+                 difference is the first thing anyone installing this sees. A
+                 NativeActivity paints nothing until the surface exists and Bevy
+                 has started, so the theme's `windowBackground` *is* the app for
+                 the first several seconds. See res/values/styles.xml. -->
+            android:theme="@style/Theme.Viberfox"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|locale|fontScale">
 

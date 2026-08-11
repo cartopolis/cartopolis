@@ -13,6 +13,33 @@ pub use viberfox_core::{tile_source_kind, TileKey, TileSourceKind};
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
 
+/// Wait after a tile's first failure before it may be re-queued, doubling with
+/// each further failure.
+///
+/// Any positive number would break the loop; 2 s is chosen so a *transient*
+/// failure (one dropped request while the camera settles) still heals within a
+/// second or two of arriving somewhere.
+const TILE_RETRY_BACKOFF_SECS: f64 = 2.0;
+
+/// Failures before a tile is given up on for this run.
+///
+/// Three, and then silence. The failure this bounds is not a flaky network — the
+/// disk cache and `tile_source`'s single-flight table make a repeat *fetch* nearly
+/// free — it is a body that decodes wrong every time it is decoded, which costs a
+/// ~120 ms worker rasterise and an `error!` line to establish, forever, at frame
+/// rate. There is no count of retries that fixes a corrupt tile, so the useful
+/// question is only how quickly we stop asking.
+const TILE_MAX_ATTEMPTS: u32 = 3;
+
+/// One tile's failure history, for the backoff.
+#[derive(Clone, Copy)]
+struct TileFailure {
+    attempts: u32,
+    /// Clock reading (`Time::elapsed_secs_f64`) of the last failure. Bevy's clock,
+    /// not `Instant` — which panics on wasm.
+    at: f64,
+}
+
 /// Decoded, mipmapped tile image handed back from a worker thread. Decoding and
 /// mip-chain generation happen off the main thread; only the cheap `Image`/`Assets`
 /// insertion stays on it. `data` holds the full packed mip chain.
@@ -35,6 +62,14 @@ pub struct TileCache {
     dispatch: Dispatcher<(TileKey, String)>,
     /// Completed fetches drained on the main thread (`None` = fetch/decode failed).
     results: Arc<Mutex<Vec<(TileKey, Option<TileImageData>)>>>,
+    /// Tiles that have failed, with a backoff. Main-thread only (unlike `handles`
+    /// and `loading`, which the tasks touch), so it needs no lock.
+    ///
+    /// The bookkeeping the other streamers get from
+    /// [`CellStream`](crate::platform::stream::CellStream); this loader predates it
+    /// and still drives a bare [`Dispatcher`], so it keeps its own small copy
+    /// rather than growing a refactor into a fix.
+    failed: HashMap<TileKey, TileFailure>,
 }
 
 impl Default for TileCache {
@@ -44,8 +79,72 @@ impl Default for TileCache {
             loading: Arc::new(Mutex::new(HashMap::new())),
             dispatch: Dispatcher::new(TILE_WORKERS, 0.0),
             results: Arc::new(Mutex::new(Vec::new())),
+            failed: HashMap::new(),
         }
     }
+}
+
+impl TileCache {
+    /// Record a failure and answer whether this tile has spent its attempts.
+    fn note_failure(&mut self, key: TileKey, now: f64) -> u32 {
+        let f = self.failed.entry(key).or_insert(TileFailure {
+            attempts: 0,
+            at: now,
+        });
+        f.attempts += 1;
+        f.at = now;
+        f.attempts
+    }
+
+    /// Whether a tile may be queued at `now` — false while it is inside its
+    /// backoff, and false forever once it has exhausted [`TILE_MAX_ATTEMPTS`].
+    fn may_retry(&self, key: &TileKey, now: f64) -> bool {
+        match self.failed.get(key) {
+            None => true,
+            Some(f) if f.attempts >= TILE_MAX_ATTEMPTS => false,
+            // Doubling, capped by the attempt budget above, so the sequence is
+            // 2 s then 4 s and then the tile is done. `powi` rather than a shift:
+            // the exponent is bounded by `TILE_MAX_ATTEMPTS` today, and a shift
+            // silently becomes a debug-build panic if that constant is ever raised
+            // past the width of the integer.
+            Some(f) => now - f.at >= TILE_RETRY_BACKOFF_SECS * 2f64.powi(f.attempts as i32 - 1),
+        }
+    }
+}
+
+/// Drop a tile's on-disk cache entry, so a corrupt body is not re-served from
+/// disk on every retry and on every subsequent run.
+///
+/// The key is **the body that was actually fetched**, which for a vector source is
+/// the z14 ancestor the overzoom resolved to, not the z15–z17 key that was asked
+/// for — evicting the requested key would delete nothing and leave the poison in
+/// place. Classification follows the *template*, not the payload variant, because
+/// a vector template that answered with an image (the `looks_like_raster`
+/// backstop) was still fetched at the ancestor.
+///
+/// Called on every failure, not only a decode one. A fetch that failed never wrote
+/// the key (`tile_source::fetch_uncached` only `put`s a body it got), so the
+/// removal is a no-op there — the same trade `lod22` makes, and cheaper than
+/// carrying the reason back from the worker.
+///
+/// What this cannot reach is `tile_source`'s in-memory LRU, which still holds the
+/// same bytes until it rolls over. That is what the backoff is for: eviction stops
+/// the failure surviving a restart, the backoff stops it costing anything before
+/// then.
+fn evict_cached_tile(key: TileKey, template: &str) {
+    use crate::systems::vector_tiles;
+
+    let kind = tile_source_kind(template);
+    let source = if kind == TileSourceKind::Raster {
+        key
+    } else {
+        let ((z, x, y), _) = vector_tiles::SubTile::resolve(key.z, key.x, key.y);
+        TileKey::new(x, y, z)
+    };
+    let cache_key = crate::systems::tile_source::tile_cache_key(&source, kind);
+    IoTaskPool::get()
+        .spawn(async move { crate::platform::storage::remove(&cache_key).await })
+        .detach();
 }
 
 /// Spawn one tile fetch+decode task (ADR-033 seam): await the fetch on the
@@ -62,10 +161,14 @@ fn spawn_tile_task(
 ) {
     IoTaskPool::get()
         .spawn(async move {
+            // Read the budget here, on the task, rather than threading it in: it is
+            // a process-wide `OnceLock` (see `crate::quality`) and an atomic load,
+            // and the alternative is a fifth argument every caller has to carry.
+            let tile_px = crate::quality::budget().tile_px;
             match fetch_tile_payload(&key, &template).await {
                 Ok(payload) => {
                     crate::platform::workers::submit(Box::new(move || {
-                        let outcome = match payload.decode() {
+                        let outcome = match payload.decode(tile_px) {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());
                                 let (data, mip_count) =
@@ -156,20 +259,67 @@ pub enum TilePayload {
 impl TilePayload {
     /// The CPU half: parse/rasterise into RGBA. Pure computation — no I/O, no
     /// globals — which is what lets it run on a worker.
-    pub fn decode(self) -> Result<image::RgbaImage, String> {
+    ///
+    /// `size` is the edge length a *vector* body is rasterised at, and it is the
+    /// caller's because it is a budget decision: `quality::Budget::tile_px` is 512
+    /// on a desktop and 256 on a phone, where the clipmap's 224 tiles are ~310 MB
+    /// of texture at the larger size and ~78 MB at the smaller. This is the same
+    /// knob [`GlobeTilePayload::decode`] already took, arriving on the flat path a
+    /// release late. A raster source arrives at whatever size it was served at and
+    /// is left alone — there is nothing to re-rasterise, only pixels to resample,
+    /// and resampling on the CPU would cost more than the memory it saved.
+    pub fn decode(self, size: u32) -> Result<image::RgbaImage, String> {
         use crate::systems::vector_tiles;
         match self {
-            TilePayload::Raster(bytes) => image::load_from_memory(&bytes)
-                .map(|img| img.to_rgba8())
-                .map_err(|e| e.to_string()),
+            TilePayload::Raster(bytes) => decode_tile_image(&bytes),
             TilePayload::Vector { bytes, sub } => {
                 let tile = vector_tiles::TileData::parse(&bytes)?;
-                let rgba = vector_tiles::render_mvt(&tile, sub).map_err(|e| e.to_string())?;
-                image::RgbaImage::from_raw(vector_tiles::TILE_PX, vector_tiles::TILE_PX, rgba)
+                let rgba =
+                    vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
+                image::RgbaImage::from_raw(size, size, rgba)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
             }
         }
     }
+}
+
+/// Largest edge a served tile image may declare before we refuse to decode it.
+///
+/// Every basemap this client speaks to serves 256² or 512²; a satellite source
+/// someone points `VIBE_TILE_URL` at might serve 1024² or 2048². 4096 clears all
+/// of those with room to spare while capping a decoded surface at 4096² × 4 B =
+/// 64 MB — small enough that the worst case is a slow frame rather than a dead
+/// process.
+const MAX_TILE_EDGE_PX: u32 = 4096;
+
+/// Decode an encoded tile image (PNG/JPEG/WebP) to RGBA, under limits.
+///
+/// **`image::load_from_memory` has no bound of its own, and the compressed body
+/// is not one.** A ~200 KB PNG that declares 30000×30000 is a perfectly legal
+/// file; `to_rgba8()` on it asks the allocator for 3.6 GB. `http::MAX_BODY` caps
+/// what arrives over the wire, which is precisely what a decompression bomb is
+/// built to slip past — and the shipped profile is `panic = "abort"`, so an
+/// allocation failure here is not an error path this function can return, it is
+/// the app disappearing. A hostile tile server is not the only way to reach it: a
+/// truncated or misencoded body from our own host reads its dimensions out of the
+/// header just as trustingly.
+///
+/// The width/height limits are the ones that actually bind — `Limits::max_alloc`
+/// is documented as non-strict and some decoders ignore it, so it is a second
+/// line, not the fence.
+fn decode_tile_image(bytes: &[u8]) -> Result<image::RgbaImage, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    // `Limits` is `#[non_exhaustive]`, so it has to be built from `default()` and
+    // amended rather than written out — which is also what keeps this correct when
+    // `image` grows a limit we have not thought about.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_TILE_EDGE_PX);
+    limits.max_image_height = Some(MAX_TILE_EDGE_PX);
+    limits.max_alloc = Some(u64::from(MAX_TILE_EDGE_PX) * u64::from(MAX_TILE_EDGE_PX) * 4);
+    reader.limits(limits);
+    Ok(reader.decode().map_err(|e| e.to_string())?.to_rgba8())
 }
 
 /// The network half: fetch the tile body and classify it, decoding nothing.
@@ -265,9 +415,7 @@ impl GlobeTilePayload {
 
         match self {
             GlobeTilePayload::Raster(bytes) => {
-                let mut rgba = image::load_from_memory(&bytes)
-                    .map_err(|e| e.to_string())?
-                    .to_rgba8();
+                let mut rgba = decode_tile_image(&bytes)?;
                 paint_water_alpha_by_colour(&mut rgba);
                 Ok((rgba, true))
             }
@@ -330,6 +478,9 @@ pub fn load_region_tiles(
     time: Res<Time>,
     region_query: Query<(Entity, &RegionTile), Without<RegionTileTexture>>,
 ) {
+    let now = time.elapsed_secs_f64();
+    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
+
     // 1. Drain finished fetches: upload the texture and publish its handle.
     let finished: Vec<(TileKey, Option<TileImageData>)> = tile_cache
         .results
@@ -356,10 +507,30 @@ pub fn load_region_tiles(
                     handles.insert(tile_key, handle);
                 }
                 tracing::info!(tile = %tile_key.to_path(), "tile loaded and applied");
+                // A good tile clears any history, so an earlier transient failure
+                // doesn't keep counting against a key that now works.
+                tile_cache.failed.remove(&tile_key);
             }
             None => {
-                // Fetch/decode failed — already logged by the worker. Clearing the
-                // loading flag below lets it be retried on a later frame.
+                // Fetch/decode failed — already logged by the worker.
+                //
+                // Clearing the `loading` flag below is what used to be the *whole*
+                // of this arm, and by itself it is a hot loop: step 2 re-queues the
+                // key on the very next frame, the fetch is served straight back out
+                // of the byte cache, and a body that decodes wrong decodes wrong
+                // again — a ~120 ms worker rasterise and an `error!` line every
+                // frame, forever, with nothing to show that anything is wrong
+                // beyond the log. `lod22` and `osm_buildings` both learned this and
+                // both do what this now does: evict the cached body and back off.
+                let attempts = tile_cache.note_failure(tile_key, now);
+                evict_cached_tile(tile_key, &template);
+                if attempts >= TILE_MAX_ATTEMPTS {
+                    tracing::warn!(
+                        tile = %tile_key.to_path(),
+                        attempts,
+                        "giving up on map tile for this run"
+                    );
+                }
             }
         }
         if let Ok(mut loading) = tile_cache.loading.lock() {
@@ -368,7 +539,6 @@ pub fn load_region_tiles(
     }
 
     // 2. Attach ready textures / enqueue missing ones onto the dispatcher.
-    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
     for (entity, region_tile) in region_query.iter() {
         let tile_key = region_tile.tile_key;
 
@@ -380,6 +550,13 @@ pub fn load_region_tiles(
                 });
                 continue;
             }
+        }
+
+        // Before the `loading` flag, not after: a tile inside its backoff must not
+        // be marked in-flight, or nothing ever clears the flag and the retry the
+        // backoff is holding back can never happen at all.
+        if !tile_cache.may_retry(&tile_key, now) {
+            continue;
         }
 
         {
@@ -395,7 +572,6 @@ pub fn load_region_tiles(
     }
 
     // 3. Dispatch queued tiles up to the concurrency cap as fetch+decode tasks.
-    let now = time.elapsed_secs_f64();
     let results = tile_cache.results.clone();
     while let Some((key, template)) = tile_cache.dispatch.next(now) {
         spawn_tile_task(key, template, results.clone());
@@ -484,6 +660,39 @@ mod tests {
             "https://tiles.garage44.eu/tiles/osm/14/8490/5319",
             "an empty template must fall back to the default vector source, not raster OSM"
         );
+    }
+
+    /// The property under test is not "a failed tile retries" — it is that it
+    /// *stops*. The arm this replaced only cleared the `loading` flag, so the tile
+    /// was re-queued on the very next frame and a body that decodes wrong burned a
+    /// ~120 ms worker rasterise and an `error!` line per frame for the life of the
+    /// process.
+    #[test]
+    fn a_failing_tile_backs_off_and_then_gives_up() {
+        let mut cache = TileCache::default();
+        let key = TileKey::new(8490, 5319, 14);
+
+        assert!(
+            cache.may_retry(&key, 0.0),
+            "a tile with no history loads immediately"
+        );
+
+        assert_eq!(cache.note_failure(key, 0.0), 1);
+        assert!(!cache.may_retry(&key, 0.5), "inside the first backoff");
+        assert!(cache.may_retry(&key, TILE_RETRY_BACKOFF_SECS));
+
+        assert_eq!(cache.note_failure(key, 10.0), 2);
+        assert!(
+            !cache.may_retry(&key, 10.0 + TILE_RETRY_BACKOFF_SECS),
+            "the backoff doubles with each failure"
+        );
+        assert!(cache.may_retry(&key, 10.0 + TILE_RETRY_BACKOFF_SECS * 2.0));
+
+        assert_eq!(cache.note_failure(key, 20.0), TILE_MAX_ATTEMPTS);
+        // Exhausted, and no amount of waiting brings it back: a body that is
+        // corrupt now is corrupt in an hour, and the cost of finding out again is
+        // a worker core for 120 ms.
+        assert!(!cache.may_retry(&key, 1.0e9));
     }
 
     #[test]

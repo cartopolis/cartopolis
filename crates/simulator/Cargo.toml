@@ -2,6 +2,8 @@
 name = "viberfox_simulator"
 version.workspace = true
 edition.workspace = true
+# The workspace declares `MIT OR Apache-2.0`; a crate only inherits it by asking.
+license.workspace = true
 
 [lib]
 name = "viberfox_simulator"

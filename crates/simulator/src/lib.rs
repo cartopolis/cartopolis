@@ -124,14 +124,30 @@ async fn accept_loop(
     chat: Arc<chat::ChatHub>,
     scripts: scripting::ScriptHandle,
 ) {
+    // Consecutive failures, for the backoff below. Reset by any success.
+    let mut failures: u32 = 0;
     loop {
         let (stream, addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("accept failed: {e:#}");
+                // Back off, because the interesting `accept` errors are the
+                // *persistent* ones. `EMFILE` (out of file descriptors) does not
+                // clear because we looped; it clears when a connection closes, and
+                // until then this loop is a core burnt at millions of iterations a
+                // second, each writing a warn line — a log that fills the disk
+                // while the server does nothing. Doubling from 50 ms to a second
+                // costs a transient error almost nothing and gives a real one room
+                // to resolve.
+                failures = failures.saturating_add(1);
+                let backoff = std::time::Duration::from_millis(50)
+                    .saturating_mul(1 << failures.min(5))
+                    .min(std::time::Duration::from_secs(1));
+                tracing::warn!(failures, ?backoff, "accept failed: {e:#}");
+                tokio::time::sleep(backoff).await;
                 continue;
             }
         };
+        failures = 0;
         tracing::info!(%addr, "accepted");
         let world_c = world.clone();
         let cfg_c = config.clone();

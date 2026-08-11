@@ -21,6 +21,126 @@ use web_time::Instant;
 /// because the compass and the locate button under it have to agree.
 pub const MAP_CONTROLS_TOP: f32 = 52.0;
 
+/// Width reserved for the app-menu button at the right end of the address bar,
+/// in points: the glyph plus `theme::style`'s 9 pt of horizontal button padding
+/// either side, with a couple of points of slack.
+///
+/// Reserved rather than measured because the row is inside a size-to-content
+/// `Area`, whose `available_width` is *last frame's* width — reading it back to
+/// size this frame's content is the feedback loop the driver bar's module note
+/// describes, and it settles wherever the first frame happened to land.
+///
+/// Wider on a compact layout, where the button spells "Menu" out beside the
+/// glyph: a tooltip is the only label an icon-only control has, and a touch
+/// pointer produces no hover at all (`docs/notes/touch-input.md`), so on the one
+/// viewport where this button is the only route to Settings, sign-in and Exit it
+/// is also the one where its tooltip can never appear.
+fn menu_width(compact: bool) -> f32 {
+    if compact {
+        74.0
+    } else {
+        38.0
+    }
+}
+
+/// Outer margin of the address-bar card (its `fixed_pos`, mirrored on the right).
+const BAR_MARGIN: f32 = 8.0;
+
+/// The address bar's row height, from `interact_size.y` below. Also the height
+/// the search field is allocated at on a compact layout.
+const BAR_ROW_H: f32 = 26.0;
+
+/// Width the search field gets on a compact viewport: everything the row has
+/// after the mark, the menu button and the gaps between them.
+///
+/// Floored well below anything usable on purpose — the floor is what happens on
+/// a viewport narrower than the controls themselves, and a field clipped to 110
+/// pt can still be typed into, while a negative width is a panic in egui's
+/// layout.
+fn compact_search_width(viewport_w: f32) -> f32 {
+    // Card margins (`BAR_MARGIN` each side) + the frame's own 8 pt inner margins
+    // + the two 6 pt item gaps in the row.
+    const CHROME: f32 = 2.0 * BAR_MARGIN + 2.0 * 8.0 + 2.0 * 6.0;
+    (viewport_w - CHROME - theme::LOGO_SIZE - menu_width(true)).max(110.0)
+}
+
+/// Back / Forward / Home — the location history, as three glyph buttons in the
+/// address bar or three named entries in the app menu. One function, because a
+/// phone folding them into a menu must not become a second history.
+///
+/// Returns whether one of them fired, so a menu caller can close itself.
+fn history_ui(
+    ui: &mut egui::Ui,
+    nav: &mut crate::systems::geo_nav::GeoNavState,
+    home: Option<&crate::systems::user_store::SavedLocation>,
+    labelled: bool,
+) -> bool {
+    let mut acted = false;
+    // The glyph is a *candidate*, not a promise. The bundled font stack turns out
+    // to have almost no emoji at all — `◀`, `▶` and `🏠` are all missing from it,
+    // so these three buttons have been painting empty boxes on the desktop, where
+    // `labelled` is false and the glyph is all there is. `first_drawable` falls
+    // through to the word, which is worse-looking than an icon and infinitely
+    // better than a box.
+    let ctx_for_labels = ui.ctx().clone();
+    let label = move |candidates: &[&'static str], word: &'static str| {
+        let glyph = theme::first_drawable(&ctx_for_labels, candidates);
+        if glyph == word {
+            word.to_string()
+        } else if labelled {
+            format!("{glyph}  {word}")
+        } else {
+            glyph.to_string()
+        }
+    };
+    if ui
+        .add_enabled(
+            nav.can_go_back(),
+            egui::Button::new(label(&["◀", "Back"], "Back")),
+        )
+        .on_hover_text("Back to the previous location")
+        .on_disabled_hover_text("No previous location")
+        .clicked()
+    {
+        nav.go_back();
+        acted = true;
+    }
+    if ui
+        .add_enabled(
+            nav.can_go_forward(),
+            egui::Button::new(label(&["▶", "Forward"], "Forward")),
+        )
+        .on_hover_text("Forward to the next location")
+        .on_disabled_hover_text("No next location")
+        .clicked()
+    {
+        nav.go_forward();
+        acted = true;
+    }
+    // Home, browser-style: jump to the user's saved Home location (set from the
+    // status panel's 🏠 button). Disabled until a Home has been saved.
+    if ui
+        .add_enabled(
+            home.is_some(),
+            egui::Button::new(label(&["🏠", "⌂", "Home"], "Home")),
+        )
+        .on_hover_text("Go to your Home location")
+        .on_disabled_hover_text("No Home set — use the 🏠 button in the status panel")
+        .clicked()
+    {
+        if let Some(h) = home {
+            nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
+                lat: h.lat,
+                lng: h.lng,
+                altitude: Some(h.altitude),
+                pose: Some(h.pose.clone()),
+            });
+            acted = true;
+        }
+    }
+    acted
+}
+
 /// The app menu's account entry (`systems::session`), bundled into one parameter
 /// because [`render_menu_bar`] was already at Bevy's 16-parameter ceiling — the
 /// same reason `network::AuthWriteback` exists.
@@ -50,6 +170,16 @@ pub struct SignInMenu<'w> {
 /// The panel toggles that used to live here (AI, Layers, Places, Appearance) and
 /// the camera-mode picker live in the bottom bar ([`camera_picker_ui`],
 /// `chat::render_chat_panel`), so this card is navigation only.
+///
+/// **On a compact viewport the row folds.** Unfolded, the desktop row is the
+/// mark, three history buttons, a 215 pt field, the camera picker and the menu —
+/// ~460 pt of content in a `274 pt` phone viewport (411 dp at `ui_scale` 1.5).
+/// A content-sized `Area` does not wrap, so the overflow simply hangs off the
+/// right edge, and the menu button is drawn *last*: the one control that reaches
+/// Settings, Appearance, the Assistant, sign-in and Exit was the first thing to
+/// fall off the screen. So on compact the card pins itself to the viewport, the
+/// history buttons and the camera picker move *into* the menu (where they get
+/// words instead of glyphs — see [`MENU_W`]), and the field takes what is left.
 #[allow(clippy::too_many_arguments)]
 pub fn render_menu_bar(
     mut egui: ResMut<EguiManager>,
@@ -89,7 +219,9 @@ pub fn render_menu_bar(
     // behind a panel. On a wide viewport the panel docks to the right and never
     // reaches this corner, so the card stays. `*open` is left alone: closing the
     // panel brings the bar back in the state it was folded away in.
-    if egui.compact() && !right_panel.is(RightPanel::None) {
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    if compact && !right_panel.is(RightPanel::None) {
         nav.search_has_focus = false;
         return;
     }
@@ -128,7 +260,7 @@ pub fn render_menu_bar(
     // height and the card overlays them when it unfolds.
     egui::Area::new(egui::Id::new("menu_bar"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(8.0, 8.0))
+        .fixed_pos(egui::pos2(BAR_MARGIN, BAR_MARGIN))
         .show(ctx, |ui| {
             // `Frame::popup` rather than `theme::overlay_frame`: the shared overlay
             // frame is translucent, which is right for a HUD readout and wrong behind
@@ -154,8 +286,20 @@ pub fn render_menu_bar(
                     // `interact_size.y` is the row height and `horizontal` centres against it,
                     // so bumping it gives the buttons and the taller search field a common,
                     // roomier height that lines up.
-                    ui.style_mut().spacing.interact_size.y = 26.0;
+                    ui.style_mut().spacing.interact_size.y = BAR_ROW_H;
                     ui.style_mut().spacing.item_spacing.x = 6.0;
+                    // Pin the card to the screen on a compact viewport. `set_width`
+                    // (min *and* max) rather than `set_max_width`, so the width is a
+                    // constant rather than a function of the content — see `MENU_W`
+                    // on why the content may not be measured here.
+                    if compact && *open {
+                        ui.set_width(
+                            compact_search_width(viewport_w)
+                                + theme::LOGO_SIZE
+                                + menu_width(true)
+                                + 12.0,
+                        );
+                    }
                     ui.horizontal(|ui| {
                         // The mark, and the switch. Frameless: the asset is already a rounded
                         // teal card, so egui's button frame would draw a box around a box.
@@ -192,61 +336,61 @@ pub fn render_menu_bar(
                         if !*open {
                             return;
                         }
-                        // Browser-style Back / Forward through the location history. Every
-                        // teleport (search, bookmark, Home, coords) is a history entry.
-                        if ui
-                            .add_enabled(nav.can_go_back(), egui::Button::new("◀"))
-                            .on_hover_text("Back to the previous location")
-                            .on_disabled_hover_text("No previous location")
-                            .clicked()
-                        {
-                            nav.go_back();
-                        }
-                        if ui
-                            .add_enabled(nav.can_go_forward(), egui::Button::new("▶"))
-                            .on_hover_text("Forward to the next location")
-                            .on_disabled_hover_text("No next location")
-                            .clicked()
-                        {
-                            nav.go_forward();
-                        }
-                        // Home button, browser-style, beside the address/search bar: jump to
-                        // the user's saved Home location (set via the status panel's 🏠
-                        // button). Disabled until a Home has been saved.
                         let home = store.data.home.clone();
-                        let resp = ui
-                            .add_enabled(home.is_some(), egui::Button::new("🏠"))
-                            .on_hover_text("Go to your Home location")
-                            .on_disabled_hover_text(
-                                "No Home set — use the 🏠 button in the status panel",
+                        if compact {
+                            // Everything but the field and the way into the menu has
+                            // folded (see the doc comment). The field is allocated an
+                            // explicit width rather than left to fill: inside a
+                            // size-to-content `Area` "fill" means last frame's width.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(compact_search_width(viewport_w), BAR_ROW_H),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
+                                },
                             );
-                        if resp.clicked() {
-                            if let Some(h) = &home {
-                                nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
-                                    lat: h.lat,
-                                    lng: h.lng,
-                                    altitude: Some(h.altitude),
-                                    pose: Some(h.pose.clone()),
-                                });
-                            }
-                        }
-                        // Browser-style geo search: place names via Nominatim, or pasted
-                        // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
-                        // reached from the always-visible bottom bar (🧭 Route), alongside the
-                        // other right-hand panels, rather than this card.
-                        crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
+                        } else {
+                            // Browser-style Back / Forward through the location history. Every
+                            // teleport (search, bookmark, Home, coords) is a history entry.
+                            history_ui(ui, &mut nav, home.as_ref(), false);
+                            // Browser-style geo search: place names via Nominatim, or pasted
+                            // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
+                            // reached from the always-visible bottom bar (⚑ Route), alongside the
+                            // other right-hand panels, rather than this card.
+                            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
 
-                        // Camera mode, beside the address it applies to — "where am I looking
-                        // from" is the same question as "where am I". It sat in the bottom bar
-                        // while this strip auto-hid and could not be relied on.
-                        camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
+                            // Camera mode, beside the address it applies to — "where am I looking
+                            // from" is the same question as "where am I". It sat in the bottom bar
+                            // while this strip auto-hid and could not be relied on.
+                            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
+                        }
 
                         // The app menu, at the far end where a browser puts it. Probed rather
                         // than hard-coded: `☰` is one of the few symbols the loaded font
                         // actually has, but that is a fact about the font stack, not a
                         // guarantee (see `theme::first_drawable`).
                         let hamburger = theme::first_drawable(ui.ctx(), &["☰", "≡", "⋮", "="]);
-                        ui.menu_button(hamburger, |ui| {
+                        let menu_label = if compact {
+                            format!("{hamburger}  Menu")
+                        } else {
+                            hamburger.to_string()
+                        };
+                        ui.menu_button(menu_label, |ui| {
+                            if compact {
+                                // The folded controls, with words: a glyph-only button
+                                // explains itself in a tooltip, and a touch pointer
+                                // never produces one (`docs/notes/touch-input.md`).
+                                if history_ui(ui, &mut nav, home.as_ref(), true) {
+                                    ui.close();
+                                }
+                                camera_picker_ui(
+                                    ui,
+                                    &mut camera_state,
+                                    !avatars.is_empty(),
+                                    &globe,
+                                );
+                                ui.separator();
+                            }
                             // Panels you *visit* rather than flip: Appearance is a wardrobe and
                             // the Assistant is a conversation, so neither earns a permanent
                             // disc in the dock next to the four places you actually navigate
@@ -255,6 +399,11 @@ pub fn render_menu_bar(
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
                                 crate::resources::RightPanel::Settings,
+                                // About carries the attribution the map data's
+                                // licences require, so it must be reachable from
+                                // the running app, not only from a file in the
+                                // tarball.
+                                crate::resources::RightPanel::About,
                             ] {
                                 // Same glyph the panel's own header wears, so the menu entry
                                 // and the badge it opens are recognisably one thing.
@@ -321,9 +470,10 @@ pub fn render_menu_bar(
     }
 }
 
-/// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View Whole
-/// Earth"), drawn in the address bar beside the search field. The mode is also
-/// Tab-cyclable. Follow needs an avatar (logged-in viewer only).
+/// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View whole
+/// Earth"), drawn in the address bar beside the search field — or, on a compact
+/// viewport, as a submenu of the app menu. The mode is also Tab-cyclable. Follow
+/// needs an avatar (logged-in viewer only).
 pub fn camera_picker_ui(
     ui: &mut egui::Ui,
     camera_state: &mut crate::resources::CameraState,
@@ -332,9 +482,11 @@ pub fn camera_picker_ui(
 ) {
     use crate::resources::CameraMode;
     let label = match camera_state.mode {
-        CameraMode::Avatar => "📷 Follow",
-        CameraMode::Free => "📷 Fly",
-        CameraMode::Orbit => "📷 Earth",
+        // `⌖` rather than `📷`: the camera emoji is not in the bundled stack, and
+        // a crosshair is a fair reading of "which camera am I looking through".
+        CameraMode::Avatar => "⌖ Follow",
+        CameraMode::Free => "⌖ Fly",
+        CameraMode::Orbit => "⌖ Earth",
     };
     ui.menu_button(label, |ui| {
         let mut pick: Option<CameraMode> = None;
@@ -358,7 +510,7 @@ pub fn camera_picker_ui(
         let mut whole_earth = false;
         if globe.ready {
             ui.separator();
-            if ui.button("🌍 View Whole Earth").clicked() {
+            if ui.button("View whole Earth").clicked() {
                 whole_earth = true;
             }
         }
@@ -582,7 +734,13 @@ pub fn render_dev_panel(
                     });
                 let copied = copied_at.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
                 if ui
-                    .add_enabled(fix.is_some(), egui::Button::new("📋 Copy as preset"))
+                    .add_enabled(
+                        fix.is_some(),
+                        egui::Button::new(format!(
+                            "{}  Copy as preset",
+                            theme::first_drawable(ui.ctx(), &["📋", "⎘", "·"])
+                        )),
+                    )
                     .on_hover_text("Copies this camera as a [[shot]] block for docs/shots.toml")
                     .clicked()
                 {
@@ -612,7 +770,11 @@ pub fn render_dev_panel(
                 // docs/img/screenshot-{1..N}.png. The `capture_requested` guard stops
                 // a held click from queuing more than one capture.
                 if ui
-                    .button(format!("📷 Capture slot {}", shot.next_slot + 1))
+                    .button(format!(
+                        "{}  Capture slot {}",
+                        theme::first_drawable(ui.ctx(), &["📷", "⌖", "·"]),
+                        shot.next_slot + 1
+                    ))
                     .on_hover_text(
                         "Hides the UI for one frame, then saves docs/img/screenshot-N.png",
                     )
@@ -665,78 +827,85 @@ pub fn render_avatar_chooser(
     .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
         let panel = crate::resources::RightPanel::Appearance;
         close = theme::panel_header(ui, panel.icons(), panel.label());
-        let d = &mut chooser.draft;
-        ui.label("Body");
-        ui.horizontal(|ui| {
-            for sex in AvatarSex::ALL {
-                if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
-                    d.sex = sex;
-                    fix_styles_for_sex(d, sex);
-                }
-            }
-        });
-        let sex = d.sex;
+        // Outside the scroll area, so the header and the close button stay put
+        // while the body scrolls under them — and so the body is what is
+        // reachable on a 609 pt viewport, where these rows overrun the screen.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let d = &mut chooser.draft;
+                ui.label("Body");
+                ui.horizontal(|ui| {
+                    for sex in AvatarSex::ALL {
+                        if ui.selectable_label(d.sex == sex, sex.label()).clicked() {
+                            d.sex = sex;
+                            fix_styles_for_sex(d, sex);
+                        }
+                    }
+                });
+                let sex = d.sex;
 
-        ui.add_space(6.0);
-        // Preset: set all four clothing slots at once (quick whole-look pick).
-        ui.label("Preset");
-        let preset = d.uniform_style().unwrap_or("Custom").to_string();
-        egui::ComboBox::from_id_salt("avatar_preset")
-            .selected_text(preset)
-            .show_ui(ui, |ui| {
-                for style in styles_for(sex) {
+                ui.add_space(6.0);
+                // Preset: set all four clothing slots at once (quick whole-look pick).
+                ui.label("Preset");
+                let preset = d.uniform_style().unwrap_or("Custom").to_string();
+                egui::ComboBox::from_id_salt("avatar_preset")
+                    .selected_text(preset)
+                    .show_ui(ui, |ui| {
+                        for style in styles_for(sex) {
+                            if ui
+                                .selectable_label(d.uniform_style() == Some(style), style)
+                                .clicked()
+                            {
+                                d.head = style.to_string();
+                                d.top = style.to_string();
+                                d.legs = style.to_string();
+                                d.feet = style.to_string();
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.label("Customise");
+                slot_combo(ui, "Head", sex, &mut d.head);
+                slot_combo(ui, "Top", sex, &mut d.top);
+                slot_combo(ui, "Legs", sex, &mut d.legs);
+                slot_combo(ui, "Shoes", sex, &mut d.feet);
+
+                // Accessory (optional, non-weapon).
+                egui::ComboBox::from_id_salt("avatar_accessory")
+                    .selected_text(format!(
+                        "Accessory: {}",
+                        d.accessory.as_deref().unwrap_or("None")
+                    ))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
+                            d.accessory = None;
+                        }
+                        for acc in accessory_styles_for(sex) {
+                            if ui
+                                .selectable_label(d.accessory.as_deref() == Some(acc), acc)
+                                .clicked()
+                            {
+                                d.accessory = Some(acc.to_string());
+                            }
+                        }
+                    });
+
+                ui.separator();
+                let changed = *d != saved;
+                ui.horizontal(|ui| {
                     if ui
-                        .selectable_label(d.uniform_style() == Some(style), style)
+                        .add_enabled(changed, egui::Button::new("Apply"))
                         .clicked()
                     {
-                        d.head = style.to_string();
-                        d.top = style.to_string();
-                        d.legs = style.to_string();
-                        d.feet = style.to_string();
+                        apply = true;
                     }
-                }
-            });
-
-        ui.separator();
-        ui.label("Customize");
-        slot_combo(ui, "Head", sex, &mut d.head);
-        slot_combo(ui, "Top", sex, &mut d.top);
-        slot_combo(ui, "Legs", sex, &mut d.legs);
-        slot_combo(ui, "Shoes", sex, &mut d.feet);
-
-        // Accessory (optional, non-weapon).
-        egui::ComboBox::from_id_salt("avatar_accessory")
-            .selected_text(format!(
-                "Accessory: {}",
-                d.accessory.as_deref().unwrap_or("None")
-            ))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(d.accessory.is_none(), "None").clicked() {
-                    d.accessory = None;
-                }
-                for acc in accessory_styles_for(sex) {
-                    if ui
-                        .selectable_label(d.accessory.as_deref() == Some(acc), acc)
-                        .clicked()
-                    {
-                        d.accessory = Some(acc.to_string());
+                    if !changed {
+                        ui.weak("This is your current avatar.");
                     }
-                }
+                });
             });
-
-        ui.separator();
-        let changed = *d != saved;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(changed, egui::Button::new("Apply"))
-                .clicked()
-            {
-                apply = true;
-            }
-            if !changed {
-                ui.weak("This is your current avatar.");
-            }
-        });
     });
     if apply {
         store.data.appearance = chooser.draft.clone();
@@ -997,7 +1166,7 @@ pub fn sync_dialog_to_selection(
     prim_query: Query<(&Prim, &Transform)>,
 ) {
     // Only follow selection for an open editor of an existing prim (never clobber a
-    // half-filled "Create Prim" dialog).
+    // half-filled "Create object" dialog).
     if !edit_dialog.visible || edit_dialog.is_new {
         return;
     }
@@ -1043,10 +1212,17 @@ pub fn render_context_menu(
     let menu_pos = egui.window_to_ui(context_menu.screen_pos);
 
     let ctx = egui.ctx_mut();
-    let mut menu_open = true;
 
-    Window::new("Context Menu")
-        .open(&mut menu_open)
+    // No title bar: this is a context menu, and egui's stock window chrome gave it
+    // a draggable caption reading "Context Menu" plus a collapse triangle — three
+    // affordances a menu does not have. The last entry is the way out (there is no
+    // Escape handler, and a phone has no Escape key), so nothing is lost with the
+    // caption's ✕.
+    Window::new("context menu")
+        .id(egui::Id::new("prim_context_menu"))
+        .title_bar(false)
+        .resizable(false)
+        .frame(egui::Frame::popup(&ctx.style_of(ctx.theme())))
         .fixed_pos(menu_pos)
         .show(ctx, |ui| {
             // ── Routing, first and primary ──
@@ -1059,7 +1235,10 @@ pub fn render_context_menu(
             // rarer case.
             if let Some((lat, lng)) = context_menu.lat_lng {
                 if ui
-                    .button("🚩 Route to here")
+                    .button(format!(
+                        "{}  Route to here",
+                        theme::first_drawable(ui.ctx(), &["🚩", "⚑", "·"])
+                    ))
                     .on_hover_text("Set this point as the destination")
                     .clicked()
                 {
@@ -1085,8 +1264,15 @@ pub fn render_context_menu(
             }
 
             if let Some(prim_id) = context_menu.hit_prim_id {
-                // Clicked on an existing prim
-                if ui.button("Edit Prim (E)").clicked() {
+                // Clicked on an existing object.
+                //
+                // No key hints in these labels: `E` is *interact* (it was the
+                // flight climb key once), `D` strafes right, and Escape closes
+                // nothing — three hints that named the wrong key, on a surface a
+                // phone reaches with no keyboard at all. Delete/Backspace does
+                // delete a selection (`picking`), but that belongs beside the
+                // selection, not on a menu entry.
+                if ui.button("Edit object…").clicked() {
                     for entity in selected_query.iter() {
                         commands.entity(entity).remove::<Selected>();
                     }
@@ -1103,7 +1289,7 @@ pub fn render_context_menu(
                     context_menu.visible = false;
                 }
 
-                if ui.button("Delete Prim (D)").clicked() {
+                if ui.button("Delete object").clicked() {
                     tracing::info!(prim_id, "deleting prim");
                     game_state.prims_to_delete.push(prim_id);
                     context_menu.visible = false;
@@ -1113,8 +1299,11 @@ pub fn render_context_menu(
                 // `--offline` has no one to store a script or fire a touch.
                 if let Some(session) = online.as_ref() {
                     if ui
-                        .button("📝 Edit script…")
-                        .on_hover_text("Write a Luau script that runs on this prim")
+                        .button(format!(
+                            "{}  Edit script…",
+                            theme::first_drawable(ui.ctx(), &["📝", "✎", "·"])
+                        ))
+                        .on_hover_text("Write a Luau script that runs on this object")
                         .clicked()
                     {
                         script_editor.open(prim_id);
@@ -1123,7 +1312,7 @@ pub fn render_context_menu(
                     }
                     if ui
                         .button("Touch")
-                        .on_hover_text("Fire the prim's on_touch handler")
+                        .on_hover_text("Fire the object's on_touch handler")
                         .clicked()
                     {
                         let _ = session.intent_tx.unbounded_send(
@@ -1140,10 +1329,10 @@ pub fn render_context_menu(
                 // now also opens where there is no region at all (for the routing
                 // entries above, and so `--offline` has a map right-click), so
                 // this can no longer assume one exists.
-                if ui.button("Create Prim (C)").clicked() {
+                if ui.button("Create object…").clicked() {
                     edit_dialog.prim_id = None;
                     edit_dialog.is_new = true;
-                    edit_dialog.name = "Prim".to_string();
+                    edit_dialog.name = "Object".to_string();
                     edit_dialog.color = [0.5, 0.5, 0.5]; // neutral gray
                     edit_dialog.shape = "box".to_string();
                     edit_dialog.texture_id = None;
@@ -1165,17 +1354,41 @@ pub fn render_context_menu(
                 }
             }
 
-            if ui.button("Cancel (ESC)").clicked() {
+            ui.separator();
+            if ui.button("Close").clicked() {
                 context_menu.visible = false;
             }
         });
-
-    if !menu_open {
-        context_menu.visible = false;
-    }
 }
 
-/// Render the prim edit dialog
+/// Width of the object editor and its texture picker, clamped to the viewport.
+///
+/// The floor is deliberately below anything comfortable: on a viewport narrower
+/// than the floor the dialog is cut off either way, and a width that goes
+/// negative is a panic in egui's layout rather than an ugly dialog.
+fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
+    preferred.min(viewport_w - 16.0).max(200.0)
+}
+
+/// The frame the object editor and the texture picker wear: the sign-in card's
+/// recipe, which is what a themed window looks like in this app — a surface fill,
+/// a hairline, the shared corner radius and real margins.
+fn dialog_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::window(style)
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .inner_margin(egui::Margin::symmetric(10, 10))
+}
+
+/// The object (prim) editor.
+///
+/// **It wears the panels' chrome, not egui's.** This is the primary surface of
+/// the building tool — right-click anything in the world and it opens — and it
+/// was the one window still carrying a stock title bar, collapse triangle and
+/// close glyph, against nine right-hand panels wearing `theme::panel_header`'s
+/// raised band, fox medallion and painted cross. The recipe is the sign-in
+/// card's: `title_bar(false)`, a themed frame, and the shared header for the
+/// title and the way out.
 pub fn render_edit_dialog(
     mut egui: ResMut<EguiManager>,
     mut edit_dialog: ResMut<EditDialogState>,
@@ -1187,29 +1400,48 @@ pub fn render_edit_dialog(
         return;
     }
 
+    // 320 pt of dialog does not fit a 274 pt phone viewport, and a `Window` is no
+    // help there: it clamps its *position* to the screen, not its size. The Shape
+    // tab is a good 700 pt tall on its own, so the height needs the same treatment
+    // — `vscroll` below, bounded by this.
+    let viewport = egui.viewport_pts();
+    let width = dialog_width(viewport.x, 320.0);
+    let max_height = (viewport.y - 24.0).max(200.0);
     let ctx = egui.ctx_mut();
     let mut dialog_open = true;
 
     let title = if edit_dialog.is_new {
-        "Create Prim"
+        "Create object"
     } else {
-        "Edit Prim"
+        "Edit object"
     };
 
     Window::new(title)
-        .open(&mut dialog_open)
-        .default_width(320.0)
+        .id(egui::Id::new("prim_edit_dialog"))
+        .title_bar(false)
+        .default_width(width)
+        .max_width(width)
+        .max_height(max_height)
+        .vscroll(true)
+        .frame(dialog_frame(&ctx.style_of(ctx.theme())))
         .show(ctx, |ui| {
+            ui.set_max_width(width);
+            if theme::panel_header(ui, &["▤", "◈", "E"], title) {
+                dialog_open = false;
+            }
             // Tab bar
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut edit_dialog.active_tab, 0, "Edit");
-                ui.selectable_value(&mut edit_dialog.active_tab, 1, "Object");
-                ui.selectable_value(&mut edit_dialog.active_tab, 2, "Texture");
+                // Not "Edit / Object / Texture": the dialog is *called* "Edit
+                // object" now, so two of those three named the dialog rather than
+                // the tab. These name what is behind them.
+                ui.selectable_value(&mut edit_dialog.active_tab, 0, "Basics");
+                ui.selectable_value(&mut edit_dialog.active_tab, 1, "Shape");
+                ui.selectable_value(&mut edit_dialog.active_tab, 2, "Surface");
             });
             ui.separator();
 
             match edit_dialog.active_tab {
-                // ── Edit tab ────────────────────────────────────────────────
+                // ── Basics tab ──────────────────────────────────────────────
                 0 => {
                     use crate::systems::gizmo::GizmoMode;
                     egui::Grid::new("edit_grid")
@@ -1241,13 +1473,13 @@ pub fn render_edit_dialog(
                             ui.end_row();
                         });
                 }
-                // ── Object tab ──────────────────────────────────────────────
+                // ── Shape tab ───────────────────────────────────────────────
                 1 => {
                     egui::Grid::new("object_grid")
                         .num_columns(2)
                         .spacing([8.0, 4.0])
                         .show(ui, |ui| {
-                            ui.label("Building Block Type");
+                            ui.label("Building block type");
                             egui::ComboBox::from_id_salt("shape_combo")
                                 .selected_text(shape_display_name(&edit_dialog.shape))
                                 .show_ui(ui, |ui| {
@@ -1351,7 +1583,7 @@ pub fn render_edit_dialog(
                     ui.separator();
 
                     // Path Cut Begin and End
-                    ui.label("Path Cut Begin and End");
+                    ui.label("Path cut begin and end");
                     ui.horizontal(|ui| {
                         let pce = edit_dialog.path_cut_end;
                         let pcb = edit_dialog.path_cut_begin;
@@ -1394,7 +1626,7 @@ pub fn render_edit_dialog(
                     ui.add_space(4.0);
 
                     // Twist Begin and End (degrees, −360..360)
-                    ui.label("Twist Begin and End");
+                    ui.label("Twist begin and end");
                     ui.horizontal(|ui| {
                         ui.label("B");
                         ui.add(
@@ -1436,7 +1668,7 @@ pub fn render_edit_dialog(
                     ui.add_space(4.0);
 
                     // Top Shear (−0.5..0.5 per axis)
-                    ui.label("Top Shear");
+                    ui.label("Top shear");
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::DragValue::new(&mut edit_dialog.warp.top_shear_x)
@@ -1457,7 +1689,7 @@ pub fn render_edit_dialog(
                     ui.add_space(4.0);
 
                     // Slice Begin and End (trims the path 0..1, begin ≤ end)
-                    ui.label("Slice Begin and End");
+                    ui.label("Slice begin and end");
                     ui.horizontal(|ui| {
                         let sb = edit_dialog.warp.slice_begin;
                         let se = edit_dialog.warp.slice_end;
@@ -1479,7 +1711,7 @@ pub fn render_edit_dialog(
                         );
                     });
                 }
-                // ── Texture tab ─────────────────────────────────────────────
+                // ── Surface tab ─────────────────────────────────────────────
                 _ => {
                     egui::Grid::new("texture_grid")
                         .num_columns(2)
@@ -1543,7 +1775,7 @@ pub fn render_edit_dialog(
                             );
                             ui.end_row();
 
-                            ui.label("Full Bright");
+                            ui.label("Full bright");
                             crate::systems::theme::checkbox(
                                 ui,
                                 &mut edit_dialog.surface.full_bright,
@@ -1555,7 +1787,7 @@ pub fn render_edit_dialog(
                     ui.separator();
 
                     // Repeats Per Face (tiling count per axis, with optional flip).
-                    ui.label("Repeats Per Face");
+                    ui.label("Repeats per face");
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::DragValue::new(&mut edit_dialog.surface.repeat_u)
@@ -1597,7 +1829,7 @@ pub fn render_edit_dialog(
                     ui.add_space(4.0);
 
                     // Repeats Per Meter: derives per-face repeats from object size on Apply.
-                    ui.label("Repeats Per Meter");
+                    ui.label("Repeats per metre");
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::DragValue::new(&mut edit_dialog.repeats_per_meter)
@@ -1668,14 +1900,27 @@ pub fn render_edit_dialog(
         game_state.editing_prim_id = None;
     }
 
-    // Texture picker window
+    // Texture picker window — the editor's chrome, for the same reason the editor
+    // has it: two windows opened from one another, one themed and one stock, look
+    // like two applications.
     if edit_dialog.texture_picker_open && edit_dialog.visible {
         let mut picker_open = edit_dialog.texture_picker_open;
         let mut clicked_texture: Option<String> = None;
-        Window::new("Texture Library")
-            .open(&mut picker_open)
-            .default_width(380.0)
-            .show(egui.ctx_mut(), |ui| {
+        let picker_w = dialog_width(egui.viewport_pts().x, 380.0);
+        let picker_h = (egui.viewport_pts().y - 24.0).max(200.0);
+        let ctx = egui.ctx_mut();
+        Window::new("texture library")
+            .id(egui::Id::new("prim_texture_picker"))
+            .title_bar(false)
+            .default_width(picker_w)
+            .max_width(picker_w)
+            .max_height(picker_h)
+            .frame(dialog_frame(&ctx.style_of(ctx.theme())))
+            .show(ctx, |ui| {
+                ui.set_max_width(picker_w);
+                if theme::panel_header(ui, &["▤", "◈", "T"], "Texture library") {
+                    picker_open = false;
+                }
                 egui::ScrollArea::vertical()
                     .max_height(400.0)
                     .show(ui, |ui| {
@@ -2174,4 +2419,48 @@ fn shape_display_name(key: &str) -> &str {
         .find(|(k, _)| *k == key)
         .map(|(_, label)| *label)
         .unwrap_or(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address bar is a size-to-content `Area`, so nothing clamps it: what
+    /// the row asks for is what it takes, off the edge of the screen included.
+    /// These are the two numbers that decide whether the app menu — the only
+    /// route to Settings, sign-in and Exit — is on the screen at all.
+    #[test]
+    fn the_compact_address_bar_fits_a_phone() {
+        // 411 dp at `ui_scale` 1.5, i.e. what `quality::Tier::Phone` resolves an
+        // ordinary Android handset to.
+        let viewport = 274.0;
+        let field = compact_search_width(viewport);
+        let card = field + theme::LOGO_SIZE + menu_width(true) + 12.0;
+        assert!(
+            card <= viewport - 2.0 * BAR_MARGIN + 0.5,
+            "card {card} does not fit {viewport} pt with its margins"
+        );
+        assert!(field >= 110.0, "the search field is unusable at {field} pt");
+    }
+
+    /// A viewport narrower than the chrome must still produce a positive width:
+    /// egui's layout panics on a negative one, so the failure mode of "someone
+    /// opened this at 200 pt" has to be a cramped field, not a crash.
+    #[test]
+    fn a_tiny_viewport_still_yields_a_usable_field() {
+        assert_eq!(compact_search_width(120.0), 110.0);
+        assert!(compact_search_width(0.0) > 0.0);
+    }
+
+    /// The object editor asks for 320 pt, which is wider than a phone. A
+    /// `Window` clamps its position to the screen but never its width, so this
+    /// is the only thing keeping the Save/Cancel row reachable.
+    #[test]
+    fn the_object_editor_is_clamped_to_the_viewport() {
+        assert_eq!(dialog_width(1280.0, 320.0), 320.0);
+        assert_eq!(dialog_width(274.0, 320.0), 258.0);
+        assert_eq!(dialog_width(274.0, 380.0), 258.0);
+        // …and never negative, whatever the viewport claims to be.
+        assert!(dialog_width(0.0, 320.0) > 0.0);
+    }
 }

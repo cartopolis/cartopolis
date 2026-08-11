@@ -206,7 +206,13 @@ fn shore_image(data: &[u8], size: u32, label: &str) -> Image {
         TextureDimension::D2,
         data.to_vec(),
         TextureFormat::R8Unorm,
-        RenderAssetUsages::default(),
+        // `RENDER_WORLD` only, exactly as `tile_loader::TILE_TEXTURE_USAGE` argues:
+        // a shore field is rasterised on a worker, uploaded, and thereafter only
+        // sampled by `water.wgsl` — nothing reads a texel back. The default keeps
+        // the decoded bytes in `Assets<Image>` as well, and this is the one texture
+        // there is **one of per water cell** (1024² R8 = 1 MiB each), so over a
+        // canal city the duplicate is the largest image cost in the app.
+        RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::ClampToEdge,

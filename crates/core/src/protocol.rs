@@ -354,6 +354,21 @@ pub struct EmoteState {
 /// plays it, and short enough that it does not replay on a much later snapshot.
 pub const EMOTE_REPLICATE_SECS: f32 = 2.5;
 
+/// Longest room name the server will act on.
+///
+/// `ChatScope::Room` is a `String` off the wire, so its only other bound is
+/// `MAX_FRAME` — 32 MiB. The server turns it into a channel key (`format!(
+/// "room:{room}")`), clones that per recipient and re-encodes it into every
+/// outgoing frame, so a name that size is an allocation multiplier on a message
+/// path that runs at tens of frames a second. 64 characters is past any name
+/// anyone types and nowhere near the range where the cost matters.
+///
+/// Not a wire-format change (nothing is added to or removed from a message), so
+/// it appends no row to [`PROTOCOL_HISTORY`]: a client that ignores it gets its
+/// oversized room send refused, exactly as it gets an over-long chat body
+/// truncated today.
+pub const MAX_ROOM_LEN: usize = 64;
+
 /// Chat scope a client sends into (ADR-028). The server resolves it to a concrete
 /// channel. Geo tiers (country/province/municipality) land with `vibe_geo`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

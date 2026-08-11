@@ -1504,13 +1504,27 @@ impl MeshData {
     }
 
     /// Finalise into a `Mesh` (or `None` if empty).
+    ///
+    /// `RENDER_WORLD` only, for the same reason `tile_loader::TILE_TEXTURE_USAGE`
+    /// is: keeping `MAIN_WORLD` as well (which is what `default()` means) holds the
+    /// vertex buffers alive in `Assets<Mesh>` for the lifetime of the handle *on
+    /// top of* the copy on the GPU, and nothing here ever reads them back — a
+    /// building mesh is built on a worker, uploaded, and only ever drawn. These are
+    /// the largest meshes in the app: a merged 3DBAG cell (`lod22`) is ~10^5
+    /// vertices at ~40 B each, with up to 7×7 cells live, so the duplicate is tens
+    /// of megabytes of resident main-world memory that no code path can observe.
+    ///
+    /// The one visible consequence is diagnostic: `log_render_cost` counts an
+    /// extracted mesh as zero triangles (it already does this for the tiles and the
+    /// globe), so `ktris_buildings` under-reports. That is a known, deliberate
+    /// trade — see the non-panicking accessors there.
     pub(crate) fn into_mesh(self) -> Option<Mesh> {
         if self.indices.is_empty() {
             return None;
         }
         let mut mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+            RenderAssetUsages::RENDER_WORLD,
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);

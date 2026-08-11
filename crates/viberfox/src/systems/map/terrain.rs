@@ -585,9 +585,16 @@ pub fn displaced_grid(field: &TerrainField, centre: Vec2, size: f32, divisions: 
             indices.extend_from_slice(&[b, a, c, c, d, b]);
         }
     }
+    // `RENDER_WORLD` only: the relief grid is regenerated from the field whenever
+    // the revision moves, so the vertex buffer is never a source of truth anyone
+    // reads back — keeping the main-world copy `default()` implies just doubles the
+    // resident cost of every clipmap level. `map_stream` spawns the tile in the
+    // same frame it adds this mesh, so the auto-`Aabb` pass still sees the
+    // positions; a handle stashed for later reuse could not do this (that is why
+    // `street_labels`' shared quad keeps `MAIN_WORLD`).
     Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)

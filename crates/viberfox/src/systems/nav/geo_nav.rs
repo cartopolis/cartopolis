@@ -29,8 +29,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::Avatar;
 use crate::platform::http;
-use crate::resources::{AvatarState, CameraMode, CameraState};
+use crate::resources::{AvatarState, CameraMode, CameraState, RightPanel};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::navigation::{Endpoint, RouteState};
 use crate::systems::theme;
 use viberfox_core::world::tile_to_meters;
 
@@ -81,6 +82,18 @@ const MAX_IN_FLIGHT: u32 = 3;
 const CACHE_CAP: usize = 64;
 const MIN_QUERY_LEN: usize = 2;
 const MAX_SUGGESTIONS: usize = 8;
+/// How long an empty answer has to stand before the dropdown says "No results".
+///
+/// Nominatim does no prefix matching at all — it looks whole word tokens up by
+/// equality — so *every* keystroke on the way to a full name answers `[]`
+/// ("Groning" returns nothing; "Groningen" returns three). Reporting that
+/// immediately meant the dropdown announced failure between keystrokes, on the
+/// query the user had not finished typing yet. The grace is a little longer than
+/// a comfortable typing interval, so the message only appears once typing has
+/// actually stopped. See `docs/notes/geocoding-latency.md`.
+const NO_RESULTS_GRACE: Duration = Duration::from_millis(600);
+/// How many previously visited places the empty address bar offers.
+const RECENT_SUGGESTIONS: usize = 6;
 /// Avatar rest height after a teleport. The humanoid models are authored
 /// origin-at-feet, so this is the ground/tile surface (`avatar::GROUND_HEIGHT`);
 /// the offline gravity clamp rests the feet at the same value. (Was 0.45 = ground
@@ -181,12 +194,41 @@ struct GeocodeReply {
     result: Result<Vec<GeoSuggestion>, String>,
 }
 
+/// A destination on its way to the route planner, from a row that cannot reach it.
+///
+/// Everything that names a place — a search hit, a saved place, the shop the
+/// avatar is standing in front of — is a destination, and until this existed none
+/// of them could be routed to: [`RouteState::set_endpoint_at`] had exactly two
+/// callers, the Route panel's own fields and the map's context menu, so the only
+/// way to navigate to something you had *found* was to fly there and long-press
+/// the map. The three sources queue this instead, because none of them owns the
+/// planner: the Places panel and the interaction prompt are drawn by systems that
+/// do not take `RouteState`, and the address bar is drawn from inside
+/// `ui::render_menu_bar`, whose signature is the top bar's. They all hold
+/// [`GeoNavState`], which is already the client's "where do you want to go"
+/// resource, so it carries the request and `apply_route_request` spends it.
+pub struct RouteRequest {
+    /// The name the user just read on the row they tapped.
+    pub label: String,
+    pub lat: f64,
+    pub lng: f64,
+}
+
 #[derive(Resource)]
 pub struct GeoNavState {
     pub query: String,
     suggestions: Vec<GeoSuggestion>,
     show_suggestions: bool,
+    /// A *failure* — a request that errored out. Not "no results", which is an
+    /// answer and is timed (see [`empty_since`](Self::empty_since)).
     error: Option<String>,
+    /// The suggestions on screen answer an earlier query than the one in the
+    /// field. They stay up, dimmed, rather than being cleared — see
+    /// [`apply_suggestions`](Self::apply_suggestions).
+    stale: bool,
+    /// When the current query first came back empty, or `None` if it has not.
+    /// [`status`](Self::status) waits [`NO_RESULTS_GRACE`] on this.
+    empty_since: Option<Instant>,
     /// Time of the last edit (debounce timer).
     last_edit: Option<Instant>,
     last_sent: String,
@@ -204,6 +246,13 @@ pub struct GeoNavState {
     /// startup restore. Consumed by `apply_teleport` (kept until the world
     /// anchor exists).
     pub pending_teleport: Option<Teleport>,
+    /// The name to file the next teleport under in the history, when the caller
+    /// has one. `None` leaves the entry named by its coordinates — which is all a
+    /// startup restore or a globe descent can honestly say about itself.
+    pub pending_label: Option<String>,
+    /// A destination waiting to be handed to the route planner. See
+    /// [`RouteRequest`]; spent by `apply_route_request`.
+    pub route_request: Option<RouteRequest>,
     /// Browser-style location history; `history[history_pos]` is where we are.
     /// Every teleport that isn't itself a Back/Forward move truncates the
     /// forward entries and appends the destination (see `apply_teleport`).
@@ -244,21 +293,91 @@ impl GeoNavState {
     /// Put an answer on screen — shared by a network reply and a cache hit, so
     /// the two are indistinguishable to the user (including an Enter pressed
     /// before the results landed).
+    ///
+    /// **An empty answer does not clear the list.** The endpoint does no prefix
+    /// matching, so a half-typed name is answered `[]` as a matter of course
+    /// (`docs/notes/geocoding-latency.md`), and assigning that unconditionally
+    /// made the dropdown blink empty between keystrokes — the search read as
+    /// broken exactly while it was working. The last real list stays up instead,
+    /// marked [`stale`](Self::stale) so the rows can be drawn dimmed, and the
+    /// "No results" verdict is deferred to [`status`](Self::status).
     fn apply_suggestions(&mut self, list: Vec<GeoSuggestion>) {
-        self.error = list.is_empty().then(|| "No results".to_string());
+        self.error = None;
+        if list.is_empty() {
+            self.empty_since.get_or_insert_with(Instant::now);
+            // Enter is still spent even when there is nothing to jump to, or the
+            // *next* answer to land would teleport on a keystroke long past.
+            self.teleport_on_result = false;
+            self.show_suggestions = true;
+            if !self.suggestions.is_empty() {
+                self.stale = true;
+                return; // keep what is on screen
+            }
+            self.stale = false;
+            self.suggestions = list;
+            return;
+        }
+
+        self.empty_since = None;
+        self.stale = false;
         if self.teleport_on_result {
             self.teleport_on_result = false;
-            if let Some(first) = list.first() {
-                self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
-                self.query = first.label.clone();
-                self.show_suggestions = false;
-            } else {
-                self.show_suggestions = true;
-            }
+            let first = &list[0];
+            self.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+            self.pending_label = Some(first.name.clone());
+            self.query = first.label.clone();
+            self.show_suggestions = false;
         } else {
             self.show_suggestions = true;
         }
         self.suggestions = list;
+    }
+
+    /// The line under the rows, if any: a failure at once, "No results" only once
+    /// an empty answer has stood for [`NO_RESULTS_GRACE`].
+    fn status(&self) -> Option<String> {
+        if let Some(e) = &self.error {
+            return Some(e.clone());
+        }
+        self.empty_since
+            .filter(|t| t.elapsed() >= NO_RESULTS_GRACE)
+            .map(|_| "No results".to_string())
+    }
+
+    /// Forget the answer on screen. Called when the field is emptied — a stale
+    /// list under a blank query is not "the last thing you searched", it is a
+    /// list of places with nothing tying them to what the bar now says.
+    fn forget_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.stale = false;
+        self.empty_since = None;
+    }
+
+    /// Ask for a route to a named place, from a row that has no way to reach the
+    /// planner itself. See [`RouteRequest`].
+    pub fn route_to(&mut self, label: impl Into<String>, lat: f64, lng: f64) {
+        self.route_request = Some(RouteRequest {
+            label: label.into(),
+            lat,
+            lng,
+        });
+    }
+
+    /// The places visited this session, newest first, excluding the one we are
+    /// standing on.
+    ///
+    /// This is a destination source in its own right, and the only one that needs
+    /// no typing *and* no prior curation — which is what makes it worth surfacing
+    /// on a phone, where the Back button is the only thing the history was
+    /// reachable through and it can only walk one step at a time.
+    fn recent_entries(&self) -> impl Iterator<Item = (usize, &NavEntry)> {
+        let here = self.history_pos;
+        self.history
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(move |(i, _)| *i != here)
+            .take(RECENT_SUGGESTIONS)
     }
 
     /// Drop the suggestion list. Called when the address bar folds away — the
@@ -380,6 +499,20 @@ pub struct NavEntry {
     pub lng: f64,
     pub altitude: f64,
     pub pose: CameraPose,
+    /// What the place was called when it was visited, when whoever queued the
+    /// teleport knew ([`GeoNavState::pending_label`]). A recents row reads far
+    /// better as "Vismarkt" than as five decimals, and the coordinates are the
+    /// honest fallback for a jump that arrived without a name.
+    pub label: Option<String>,
+}
+
+impl NavEntry {
+    /// How this entry names itself in a list.
+    fn title(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| format!("{:.5}, {:.5}", self.lat, self.lng))
+    }
 }
 
 /// A camera orientation snapshot, persisted with saved locations and bookmarks
@@ -485,6 +618,8 @@ impl Default for GeoNavState {
             suggestions: Vec::new(),
             show_suggestions: false,
             error: None,
+            stale: false,
+            empty_since: None,
             last_edit: None,
             last_sent: String::new(),
             last_sent_at: None,
@@ -494,6 +629,8 @@ impl Default for GeoNavState {
             force_search: false,
             results: Arc::new(Mutex::new(Vec::new())),
             pending_teleport: None,
+            pending_label: None,
+            route_request: None,
             history: Vec::new(),
             history_pos: 0,
             from_history: false,
@@ -803,6 +940,31 @@ pub fn distance_label(from: (f64, f64), to: (f64, f64)) -> String {
     }
 }
 
+/// What a suggestion row came back with: the row was clicked (go there), or its
+/// ⚑ was (route there).
+///
+/// A struct rather than a bare `Response` because the row now carries a second
+/// verb. It keeps [`clicked`](Self::clicked) as an inherent method so a row still
+/// reads at the call site exactly as it did when it *was* a `Response`.
+pub struct SuggestionPick {
+    pub response: egui::Response,
+    routed: bool,
+}
+
+impl SuggestionPick {
+    /// The row itself was clicked — go to this place.
+    #[must_use]
+    pub fn clicked(&self) -> bool {
+        self.response.clicked()
+    }
+
+    /// The row's ⚑ was clicked — make this place the destination instead.
+    #[must_use]
+    pub fn routed(&self) -> bool {
+        self.routed
+    }
+}
+
 /// One suggestion row, shared by the address bar's dropdown and the route panel's
 /// endpoint fields so the two lists cannot drift apart.
 ///
@@ -811,32 +973,91 @@ pub fn distance_label(from: (f64, f64), to: (f64, f64)) -> String {
 /// block is one click target — `UiBuilder::sense` puts a single response over the
 /// laid-out content, which a `Button` could not do without collapsing both lines
 /// into one string and losing the type hierarchy that makes the row scannable.
+///
+/// No ⚑: in the *route panel's* dropdown the row already is the endpoint setter,
+/// so a "route here" beside it would be the same click twice. Use
+/// [`destination_row`] wherever the row is only a place.
 pub fn suggestion_row(
     ui: &mut egui::Ui,
     s: &GeoSuggestion,
     viewer: Option<(f64, f64)>,
     width: f32,
-) -> egui::Response {
+) -> SuggestionPick {
+    suggestion_row_inner(ui, s, viewer, width, false, false)
+}
+
+/// [`suggestion_row`] plus a ⚑ that routes to the place instead of flying to it.
+///
+/// `stale` dims the row: the answers on screen are for an earlier query than the
+/// one in the field (see `GeoNavState::apply_suggestions`). They are still real
+/// places and still worth clicking, so they are dimmed rather than removed or
+/// disabled.
+pub fn destination_row(
+    ui: &mut egui::Ui,
+    s: &GeoSuggestion,
+    viewer: Option<(f64, f64)>,
+    width: f32,
+    stale: bool,
+) -> SuggestionPick {
+    suggestion_row_inner(ui, s, viewer, width, true, stale)
+}
+
+fn suggestion_row_inner(
+    ui: &mut egui::Ui,
+    s: &GeoSuggestion,
+    viewer: Option<(f64, f64)>,
+    width: f32,
+    route_action: bool,
+    stale: bool,
+) -> SuggestionPick {
     // Reserve the highlight's place in the paint list *before* the content, so the
     // fill lands behind the text rather than over it.
     let bg = ui.painter().add(egui::Shape::Noop);
     let inner = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
         ui.set_width(width);
         ui.spacing_mut().item_spacing.y = 1.0;
+        if stale {
+            ui.set_opacity(0.55);
+        }
+        let mut routed = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.add(
-                egui::Label::new(egui::RichText::new(&s.name).strong())
-                    .truncate()
-                    .selectable(false),
-            );
-            if let Some(kind) = &s.kind {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(kind).small().weak())
-                        .truncate()
-                        .selectable(false),
+            // The ⚑ takes the right edge first and the name gets what is genuinely
+            // left. A `truncate()` label asks for everything available, so laid out
+            // the other way round it would push the button clean off the row — the
+            // same rule the Places rows follow.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if route_action {
+                    // The glyph the Route panel itself wears, so the button and the
+                    // panel it opens are recognisably one thing — and probed rather
+                    // than guessed, because the bundled font has neither 🧭 nor an
+                    // arrow and a guess draws as an empty box (`theme::first_drawable`).
+                    let flag = theme::first_drawable(ui.ctx(), RightPanel::Route.icons());
+                    routed = ui
+                        .small_button(flag)
+                        .on_hover_text("Route here — make this the destination")
+                        .clicked();
+                }
+                let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                ui.allocate_ui_with_layout(
+                    size,
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&s.name).strong())
+                                .truncate()
+                                .selectable(false),
+                        );
+                        if let Some(kind) = &s.kind {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(kind).small().weak())
+                                    .truncate()
+                                    .selectable(false),
+                            );
+                        }
+                    },
                 );
-            }
+            });
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -858,7 +1079,9 @@ pub fn suggestion_row(
                 );
             }
         });
+        routed
     });
+    let routed = inner.inner;
     let resp = inner.response;
     if resp.hovered() {
         let v = ui.visuals().widgets.hovered;
@@ -873,11 +1096,59 @@ pub fn suggestion_row(
             ),
         );
     }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    SuggestionPick {
+        response: resp.on_hover_cursor(egui::CursorIcon::PointingHand),
+        routed,
+    }
+}
+
+/// Hand a queued destination to the route planner and bring its panel up.
+///
+/// Goes through `RouteState`'s own setters and not `Waypoint::set`, for the
+/// reason those methods' docs give: a caller that sets the field itself silently
+/// skips the invalidate, leaving the previous route still drawn under a new
+/// destination.
+///
+/// Which setter depends on whether we have a name. A named request takes
+/// [`RouteState::set_endpoint_named`], which skips the reverse lookup entirely —
+/// we already hold the better name, the one the user just read on the row they
+/// tapped, and the geocoder would spend a round trip to come back with
+/// "Kerkstraat 12" where the row said "Albert Heijn". Only a request that
+/// arrives unnamed falls back to [`RouteState::set_endpoint_at`] and its
+/// coordinate label.
+fn apply_route_request(nav: &mut GeoNavState, route: &mut RouteState, panel: &mut RightPanel) {
+    let Some(req) = nav.route_request.take() else {
+        return;
+    };
+    let label = req.label.trim();
+    if label.is_empty() {
+        route.set_endpoint_at(Endpoint::To, req.lat, req.lng);
+    } else {
+        route.set_endpoint_named(Endpoint::To, label, req.lat, req.lng);
+    }
+    // The start fills itself in: opening the panel runs `default_start`, which is
+    // where "here" is defined. Same contract as the map's "Route to here".
+    *panel = RightPanel::Route;
+    tracing::info!(lat = req.lat, lng = req.lng, "routing to a picked place");
 }
 
 /// Poll finished lookups into the UI state and send the debounced next query.
-pub fn drive_geocode(mut nav: ResMut<GeoNavState>) {
+///
+/// It also spends any queued [`RouteRequest`], which is not geocoding — it is
+/// here because this is the geo-nav system that runs unconditionally every frame,
+/// and the three destination sources that queue one are all UI systems that
+/// cannot take `RouteState` themselves (see [`RouteRequest`]). The panel opens on
+/// the frame this runs, which may be the one after the tap; a panel appearing a
+/// frame late is not observable, and a dedicated system would be.
+pub fn drive_geocode(
+    mut nav: ResMut<GeoNavState>,
+    mut route: ResMut<RouteState>,
+    mut right_panel: ResMut<RightPanel>,
+) {
+    if nav.route_request.is_some() {
+        apply_route_request(&mut nav, &mut route, &mut right_panel);
+    }
+
     // Harvest every finished lookup. Each is cached under the query it answered
     // (so retyping never asks twice), but only the one matching what is in the
     // field right now reaches the UI — the others are replies the user has
@@ -982,6 +1253,14 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         nav.teleport_on_result = false;
         nav.error = None;
         nav.show_suggestions = true;
+        // Re-arm the "No results" grace on every keystroke: the answer on screen
+        // is for a query that is now one character old, so whatever it said about
+        // emptiness says nothing about this one. Emptying the field entirely drops
+        // the list, which is what puts the recents back.
+        nav.empty_since = None;
+        if nav.query.trim().is_empty() {
+            nav.forget_suggestions();
+        }
     }
     if field.gained_focus() {
         // Browser UX: select the whole query on focus so typing replaces it
@@ -1006,9 +1285,13 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         if let Some(fix) = parse_location(&nav.query) {
             nav.pending_teleport = Some(Teleport::fix(fix));
             nav.show_suggestions = false;
-        } else if nav.query.trim() == nav.last_sent && !nav.suggestions.is_empty() {
+        } else if nav.query.trim() == nav.last_sent && !nav.stale && !nav.suggestions.is_empty() {
+            // …but never off a *stale* list: those hits answer a query the field no
+            // longer holds, and Enter is the one gesture that would fly there
+            // without the user having read the row.
             let first = nav.suggestions[0].clone();
             nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+            nav.pending_label = Some(first.name);
             nav.query = first.label;
             nav.show_suggestions = false;
         } else {
@@ -1040,14 +1323,36 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         }
         s
     });
-    let has_content = coord_entry.is_some() || !nav.suggestions.is_empty() || nav.error.is_some();
-    let show_popup =
-        (nav.show_suggestions || (field.has_focus() && coord_entry.is_some())) && has_content;
+    // With nothing typed, the bar offers where you have already been. That list
+    // needs no keyboard, which is the whole point of it on a phone: Back walks the
+    // history one step at a time and is the only other way to reach it.
+    let recents: Vec<(usize, GeoSuggestion)> = if nav.query.trim().is_empty() && field.has_focus() {
+        nav.recent_entries()
+            .map(|(i, e)| {
+                let mut s = GeoSuggestion::plain(e.title(), e.lat, e.lng);
+                s.kind = Some("recent".to_string());
+                (i, s)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let status = nav.status();
+    let stale = nav.stale;
+    let has_content = coord_entry.is_some()
+        || !nav.suggestions.is_empty()
+        || !recents.is_empty()
+        || status.is_some();
+    let show_popup = (nav.show_suggestions
+        || (field.has_focus() && (coord_entry.is_some() || !recents.is_empty())))
+        && has_content;
     if !show_popup {
         return;
     }
 
     let mut picked: Option<GeoSuggestion> = None;
+    let mut routed: Option<GeoSuggestion> = None;
+    let mut picked_recent: Option<usize> = None;
     let mut popup_hovered = false;
     egui::Area::new(egui::Id::new("geo_nav_suggestions"))
         .order(egui::Order::Foreground)
@@ -1067,18 +1372,64 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
                     if i > 0 {
                         ui.separator();
                     }
-                    if suggestion_row(ui, s, viewer, width).clicked() {
+                    // The coordinate entry is never stale — it is derived from what
+                    // is in the field this instant, not from an answer.
+                    let dim = stale && !(i == 0 && coord_entry.is_some());
+                    let row = destination_row(ui, s, viewer, width, dim);
+                    if row.clicked() {
                         picked = Some((*s).clone());
                     }
+                    if row.routed() {
+                        routed = Some((*s).clone());
+                    }
                 }
-                if let Some(err) = &nav.error {
-                    ui.weak(err.as_str());
+                if !recents.is_empty() {
+                    ui.label(egui::RichText::new("Recent").small().weak());
+                    for (n, (idx, s)) in recents.iter().enumerate() {
+                        if n > 0 {
+                            ui.separator();
+                        }
+                        let row = destination_row(ui, s, viewer, width, false);
+                        if row.clicked() {
+                            picked_recent = Some(*idx);
+                        }
+                        if row.routed() {
+                            routed = Some(s.clone());
+                        }
+                    }
+                }
+                if let Some(msg) = &status {
+                    ui.weak(msg.as_str());
                 }
                 popup_hovered = ui.ui_contains_pointer();
             });
         });
 
-    if let Some(s) = picked {
+    if let Some(s) = routed {
+        // Routing to a hit does *not* fly there: the whole point is that you are
+        // planning a journey to somewhere you are not.
+        nav.route_to(s.name, s.lat, s.lng);
+        nav.show_suggestions = false;
+        nav.teleport_on_result = false;
+    } else if let Some(i) = picked_recent {
+        // A revisit restores the framing it was seen with, exactly as Back does —
+        // but it is a fresh visit, not a history move, so it appends.
+        let (tp, label) = {
+            let e = &nav.history[i];
+            (
+                Teleport {
+                    lat: e.lat,
+                    lng: e.lng,
+                    altitude: Some(e.altitude),
+                    pose: Some(e.pose.clone()),
+                },
+                e.label.clone(),
+            )
+        };
+        nav.pending_label = label;
+        nav.pending_teleport = Some(tp);
+        nav.show_suggestions = false;
+    } else if let Some(s) = picked {
         // The direct coordinate entry keeps its pasted altitude and view; a
         // Nominatim hit is only a spot. It also leaves the field alone: the user
         // typed those coordinates, and replacing them with "Go to 53.21940, …"
@@ -1088,6 +1439,7 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
             Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix)),
             None => {
                 nav.pending_teleport = Some(Teleport::geo(s.lat, s.lng, None));
+                nav.pending_label = Some(s.name);
                 nav.query = s.label;
             }
         }
@@ -1160,6 +1512,9 @@ pub fn apply_teleport(
         .ok()
         .map(|(cell, tf)| globe.altitude_m(cell, tf));
     let tp = nav.pending_teleport.take().unwrap();
+    // Taken with the teleport it belongs to, never on its own: a label left
+    // behind by a jump that never applied would end up naming the next one.
+    let label = nav.pending_label.take();
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
     // Restore the saved camera orientation first, so the placement below and
     // camera_controls (which runs after) use the intended mode and angle.
@@ -1311,6 +1666,7 @@ pub fn apply_teleport(
             lng,
             altitude,
             pose,
+            label,
         });
     }
 
@@ -1439,6 +1795,224 @@ mod tests {
         assert!(nav.cached("fresh").is_some());
     }
 
+    /// The mitigation `docs/notes/geocoding-latency.md` asks for: Nominatim does
+    /// no prefix matching, so a half-typed name answers `[]` as a matter of
+    /// course. Clearing the list on that made the dropdown blink empty between
+    /// keystrokes and announce "No results" for a query nobody had finished
+    /// typing — the search read as broken exactly while it was working.
+    #[test]
+    fn an_empty_answer_keeps_the_last_list_and_holds_its_verdict() {
+        let mut nav = GeoNavState::default();
+        nav.apply_suggestions(vec![suggestion("Groningen, Nederland")]);
+        assert!(!nav.stale);
+        assert_eq!(nav.status(), None);
+
+        // "Groninge" → "Groningen…" mid-word: nothing comes back.
+        nav.apply_suggestions(Vec::new());
+        assert_eq!(nav.suggestions.len(), 1, "the last real list must stay up");
+        assert!(nav.stale, "…but marked, so the rows can be dimmed");
+        assert_eq!(nav.status(), None, "and no verdict yet");
+
+        // Once the empty answer has stood for the grace period, say so — under the
+        // rows, which are still real places worth clicking.
+        nav.empty_since = Some(
+            Instant::now()
+                .checked_sub(NO_RESULTS_GRACE * 2)
+                .expect("the monotonic clock is older than the grace period"),
+        );
+        assert_eq!(nav.status().as_deref(), Some("No results"));
+
+        // A real answer clears both.
+        nav.apply_suggestions(vec![suggestion("Groningen, Nederland")]);
+        assert!(!nav.stale);
+        assert_eq!(nav.status(), None);
+    }
+
+    /// A failure is not a "no results", and does not wait: the network being down
+    /// is a fact about now, not a verdict on the query.
+    #[test]
+    fn a_failure_is_reported_at_once() {
+        let mut nav = GeoNavState::default();
+        nav.error = Some("Search failed: timeout".to_string());
+        assert_eq!(nav.status().as_deref(), Some("Search failed: timeout"));
+    }
+
+    /// Emptying the field drops the answers with it — a list of places under a
+    /// blank query is not "the last thing you searched", it is a list with nothing
+    /// tying it to what the bar says.
+    #[test]
+    fn emptying_the_field_forgets_the_answers() {
+        let mut nav = GeoNavState::default();
+        nav.apply_suggestions(vec![suggestion("Groningen, Nederland")]);
+        nav.apply_suggestions(Vec::new());
+        assert!(nav.stale);
+        nav.forget_suggestions();
+        assert!(nav.suggestions.is_empty() && !nav.stale && nav.empty_since.is_none());
+    }
+
+    /// "Route here" from a row is the sentence this whole path exists for, and it
+    /// must behave exactly as the map's own "Route to here" does — including
+    /// dropping the route that was drawn for the previous destination.
+    #[test]
+    fn routing_to_a_place_sets_the_destination_and_opens_the_panel() {
+        // `set_endpoint_at` fires the reverse geocode on the `IoTaskPool`.
+        bevy::tasks::IoTaskPool::get_or_init(Default::default);
+
+        let mut nav = GeoNavState::default();
+        let mut route = RouteState::default();
+        let mut panel = RightPanel::None;
+
+        nav.route_to("Vismarkt", 53.2194, 6.5665);
+        apply_route_request(&mut nav, &mut route, &mut panel);
+
+        assert!(nav.route_request.is_none(), "the request is spent");
+        assert_eq!(route.to.coord, Some((53.2194, 6.5665)));
+        // The name the user just read on the row, not the coordinates the reverse
+        // lookup is only now going out to fetch.
+        assert_eq!(route.to.label, "Vismarkt");
+        assert!(panel.is(RightPanel::Route), "and the planner is on screen");
+
+        // Routing somewhere is not flying there.
+        assert!(nav.pending_teleport.is_none());
+    }
+
+    /// A nameless place still routes; it just wears its coordinates, which is what
+    /// `set_endpoint_at` puts there for a map pick.
+    #[test]
+    fn routing_without_a_name_keeps_the_coordinate_label() {
+        bevy::tasks::IoTaskPool::get_or_init(Default::default);
+        let mut nav = GeoNavState::default();
+        let mut route = RouteState::default();
+        let mut panel = RightPanel::None;
+
+        nav.route_to("  ", 53.0, 6.0);
+        apply_route_request(&mut nav, &mut route, &mut panel);
+        assert!(
+            !route.to.label.is_empty() && !route.to.label.contains('📍'),
+            "an unnamed pick keeps the coordinate label, and that label must not \
+             carry a glyph the font cannot draw"
+        );
+    }
+
+    /// The recents list: newest first, without the place we are standing on (that
+    /// one is not somewhere to go), capped so the dropdown stays a dropdown.
+    #[test]
+    fn recents_read_newest_first_and_skip_where_we_are() {
+        let mut nav = GeoNavState::default();
+        for i in 0..(RECENT_SUGGESTIONS + 3) {
+            nav.record_visit(NavEntry {
+                lat: i as f64,
+                lng: 0.0,
+                altitude: 100.0,
+                pose: CameraPose::default(),
+                label: Some(format!("place {i}")),
+            });
+        }
+        let names: Vec<String> = nav.recent_entries().map(|(_, e)| e.title()).collect();
+        assert_eq!(names.len(), RECENT_SUGGESTIONS);
+        let here = nav.history[nav.history_pos].title();
+        assert!(
+            !names.contains(&here),
+            "where we already are is not a destination"
+        );
+        assert_eq!(names[0], format!("place {}", RECENT_SUGGESTIONS + 1));
+
+        // A visit that arrived without a name still lists — as its coordinates,
+        // which is all a startup restore can honestly say about itself.
+        nav.record_visit(NavEntry {
+            lat: 53.2194,
+            lng: 6.5665,
+            altitude: 100.0,
+            pose: CameraPose::default(),
+            label: None,
+        });
+        nav.record_visit(NavEntry {
+            lat: 1.0,
+            lng: 1.0,
+            altitude: 100.0,
+            pose: CameraPose::default(),
+            label: None,
+        });
+        let names: Vec<String> = nav.recent_entries().map(|(_, e)| e.title()).collect();
+        assert_eq!(names[0], "53.21940, 6.56650");
+    }
+
+    /// Enter must not fly to the top of a *stale* list: those hits answer a query
+    /// the field no longer holds, and Enter is the one gesture that acts without
+    /// the user having read the row.
+    #[test]
+    fn an_empty_answer_spends_a_pending_enter_without_jumping() {
+        let mut nav = GeoNavState::default();
+        nav.apply_suggestions(vec![suggestion("Groningen, Nederland")]);
+        nav.teleport_on_result = true;
+        nav.apply_suggestions(Vec::new());
+        assert!(!nav.teleport_on_result, "the flag must be spent");
+        assert!(
+            nav.pending_teleport.is_none(),
+            "and it must not jump to a hit for an older query"
+        );
+    }
+
+    /// Drive one row through egui and click at `aim` (computed from the row's own
+    /// rect, since the layout decides where things land).
+    fn click_row(aim: impl Fn(egui::Rect) -> egui::Pos2) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let s = GeoSuggestion::plain("Vismarkt, Groningen", 53.2194, 6.5665);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        let mut target = egui::Pos2::ZERO;
+        let (mut clicked, mut routed) = (false, false);
+        for frame in 0..5 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            match frame {
+                1 => raw.events.push(egui::Event::PointerMoved(target)),
+                2 => raw.events.push(button(target, true)),
+                3 => raw.events.push(button(target, false)),
+                _ => {}
+            }
+            let _ = ctx.run_ui(raw, |ui| {
+                let pick = destination_row(ui, &s, Some((53.0, 6.0)), 360.0, false);
+                target = aim(pick.response.rect);
+                clicked |= pick.clicked();
+                routed |= pick.routed();
+            });
+        }
+        (clicked, routed)
+    }
+
+    /// The ⚑ sits *inside* a widget that senses clicks over the whole row, which is
+    /// the arrangement that eats a button's press when it goes the other way round
+    /// (see the `dnd_drag_source` entry in CLAUDE.md). It works here because egui
+    /// registers a `UiBuilder::sense` scope's own widget *before* its contents and
+    /// only updates it in place afterwards, so the button is on top of the row
+    /// rather than under it — a fact worth a test rather than a comment, since
+    /// nothing about the code says it and the failure is a dead button.
+    #[test]
+    fn the_route_button_is_clickable_inside_the_row() {
+        // The button is on the row's first line, hard against the right edge.
+        let hit = [6.0_f32, 10.0, 14.0].iter().any(|&dy| {
+            let (clicked, routed) = click_row(|r| egui::pos2(r.right() - 10.0, r.top() + dy));
+            routed && !clicked
+        });
+        assert!(hit, "the ⚑ never received a click");
+    }
+
+    /// …and the rest of the row still goes to the row, or picking a search result
+    /// would have stopped working.
+    #[test]
+    fn clicking_the_name_still_picks_the_row() {
+        let (clicked, routed) = click_row(|r| egui::pos2(r.left() + 24.0, r.top() + 10.0));
+        assert!(clicked, "the row itself must still take a click");
+        assert!(!routed, "and must not route");
+    }
+
     #[test]
     fn a_cache_hit_teleports_just_like_a_reply() {
         // Enter pressed before the results landed, then an answer we already
@@ -1506,6 +2080,7 @@ mod tests {
             lng: 0.0,
             altitude: 100.0,
             pose: CameraPose::default(),
+            label: None,
         };
         let mut nav = GeoNavState::default();
         assert!(!nav.can_go_back() && !nav.can_go_forward());

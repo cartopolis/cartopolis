@@ -31,8 +31,22 @@
 //! be made from Rust at all. One detector, read by both halves, is the only
 //! version of this where the tier the renderer thinks it is in and the resolution
 //! it is actually rendering at cannot disagree.
+//!
+//! ## Why a field here rather than another env flag
+//!
+//! Every escape hatch this codebase grew — `VIBERFOX_FPS_CAP`,
+//! `VIBERFOX_NO_SPACE_RAYMARCH`, `VIBERFOX_QUALITY` itself — reaches the process
+//! through an environment or a query string, and **Android has neither**: the
+//! zygote's `argv` belongs to `app_process` (which is why `Cli::parse()` must not
+//! run there at all, see CLAUDE.md) and there is no shell to export a variable
+//! from. So on the one platform the phone budget exists for, an env-gated knob is
+//! not a weaker default — it is unreachable. Anything a handset needs turned down
+//! belongs in [`Budget`], where `auto()` can answer for it.
 
 use std::sync::OnceLock;
+
+use bevy::math::{UVec2, UVec3};
+use bevy::render::view::Msaa;
 
 /// Which class of machine this run is being asked to render on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,6 +96,112 @@ pub struct Budget {
     /// compositor — and each Web Worker re-instantiates the whole module against
     /// the shared memory. `None` = as many as the machine reports, minus one.
     pub worker_cap: Option<usize>,
+    /// Main-pass MSAA sample count.
+    ///
+    /// **A sample count is a correctness question before it is a cost one.** Only
+    /// 1 and 4 are portable: WebGPU permits exactly those two, Mesa lavapipe
+    /// advertises exactly those two, and Vulkan's *guaranteed minimum* for
+    /// `framebufferColorSampleCounts` is `VK_SAMPLE_COUNT_1_BIT |
+    /// VK_SAMPLE_COUNT_4_BIT` — 2× is an optional capability that a mobile GPU is
+    /// free not to have. wgpu-core validates the request against the adapter's
+    /// per-format `TextureFormatFeatureFlags`, so asking for an unsupported 2×
+    /// fails to create `main_texture_sampled` and **nothing renders**, with the
+    /// only console output being `CommandQueue has un-applied commands` — the
+    /// symptom, never the cause. `free_camera::setup_camera` had already learned
+    /// this twice (web, then lavapipe) and both times fixed it with a `cfg!`;
+    /// Android is a third platform that answers "native" to every one of those
+    /// tests and was still being handed 2×.
+    ///
+    /// Off, not `Sample4`, for the phone. `AtmosphereSettings` carries
+    /// `#[require(Hdr)]`, so the main texture is `Rgba16Float`: at 1080×2340 that
+    /// is 8 B/px of colour before multisampling, and 2× colour plus depth already
+    /// exceeds the on-chip tile budget of an Adreno/Mali, which answers by binning
+    /// the pass into more tiles and re-issuing the draws for each. 4× is worse
+    /// again. Edge quality is the cheapest thing a handset has to give up.
+    pub msaa: Msaa,
+    /// Resolution of bevy_pbr's four atmosphere lookup tables.
+    ///
+    /// The atmosphere itself stays on in every tier — it *is* the sky — but its
+    /// LUT sizes were never anything but `AtmosphereSettings::default()`, and the
+    /// LUTs are recomputed **every frame**. See [`AtmosphereLuts`].
+    pub atmosphere_luts: AtmosphereLuts,
+    /// Whether the space tier may switch the atmosphere to
+    /// `AtmosphereMode::Raymarched` (`globe::space_raymarch`).
+    ///
+    /// A full-screen ray march at `globe::GLOBE_SKY_SAMPLES` per fragment,
+    /// measured at a few ms on a desktop iGPU and never measured on a handset. It
+    /// buys the planet its atmospheric limb, which is worth those milliseconds on
+    /// a machine that has them; the phone tier keeps `LookupTexture` and loses the
+    /// limb. Note this only ever applied above `GLOBE_SHOW_ALT` — the city view is
+    /// unaffected either way.
+    pub space_raymarch: bool,
+    /// Edge length, in pixels, that a vector tile body is rasterised to for the
+    /// flat clipmap.
+    ///
+    /// The globe already made this decision (`globe::GLOBE_TILE_PX` = 256, carried
+    /// by `vector_tiles::render_mvt_sized`) after `docs/notes/globe-tile-cost.md`
+    /// measured its leaves at 170–340 screen px against a 512² raster — 2–3×
+    /// oversampled per axis, for 4–9× the scan conversion. The flat path never got
+    /// the same treatment, and it is the larger of the two: a phone clipmap is 224
+    /// tiles, and 512² RGBA plus mips is ~1.4 MB each — ~310 MB of texture,
+    /// against ~78 MB at 256². `docs/notes/tile-raster-cost.md` has scan
+    /// conversion dominating parsing ~20×, and it scales with area, so this is
+    /// also most of the time-to-first-map.
+    ///
+    /// **The honest cost:** at street level the finest clipmap ring is ~2.8
+    /// texel/m at 512² and ~1.4 texel/m at 256², which is a visibly softer
+    /// basemap if you look for it. It is acceptable *there specifically* because
+    /// at ground level the imagery is not what you are looking at — the vector
+    /// `surfaces` geometry (`map_geometry`) is drawn over it, and the imagery is
+    /// the backdrop between the polygons. It would not be acceptable on a tier
+    /// where the imagery is the map.
+    pub tile_px: u32,
+}
+
+/// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
+///
+/// At Bevy's defaults that is roughly 4 M ray-march steps per frame before a
+/// single pixel of sky is shaded: transmittance 256×128 × 40 samples,
+/// multiscattering 32×32 × 64 dirs × 20 samples, sky-view 400×200 × 16, aerial
+/// view 32³ × 10. Halving each axis takes it to ~1 M.
+///
+/// **Sizes, not sample counts.** The per-ray sample counts are left at Bevy's
+/// defaults on both tiers, for the same reason `globe::GLOBE_SKY_SAMPLES` is:
+/// starving the integration trades a fixed cost for visible banding, while the
+/// LUT is a texture whose resolution nothing on a 1080-px-wide screen can
+/// resolve. What this does cost is gradient smoothness — a 200×100 sky-view LUT
+/// is where dawn's colour ramp lives, so if the phone sky ever bands across the
+/// horizon this is the knob, not the samples.
+#[derive(Clone, Copy, Debug)]
+pub struct AtmosphereLuts {
+    pub transmittance: UVec2,
+    pub multiscattering: UVec2,
+    pub sky_view: UVec2,
+    pub aerial_view: UVec3,
+}
+
+impl AtmosphereLuts {
+    /// `AtmosphereSettings::default()`, restated so the desktop tier changes
+    /// nothing and a Bevy upgrade that moves the defaults shows up as a diff here
+    /// rather than as a silent tier change.
+    pub(crate) const fn bevy_defaults() -> Self {
+        Self {
+            transmittance: UVec2::new(256, 128),
+            multiscattering: UVec2::new(32, 32),
+            sky_view: UVec2::new(400, 200),
+            aerial_view: UVec3::new(32, 32, 32),
+        }
+    }
+
+    /// Every axis halved.
+    pub(crate) const fn halved() -> Self {
+        Self {
+            transmittance: UVec2::new(128, 64),
+            multiscattering: UVec2::new(16, 16),
+            sky_view: UVec2::new(200, 100),
+            aerial_view: UVec3::new(16, 16, 16),
+        }
+    }
 }
 
 impl Budget {
@@ -96,6 +216,16 @@ impl Budget {
             radius_bias: 0,
             per_frame_divisor: 1,
             worker_cap: None,
+            // 2× instead of Bevy's implicit 4×: roughly halves the main-pass
+            // multisample cost for a marginal edge-quality change at this scene's
+            // geometric density. `setup_camera` still overrides this to `Off` on a
+            // software adapter, which reports the same 1-or-4 restriction the web
+            // does — that is an *adapter* fact, not a tier one, so it cannot live
+            // here.
+            msaa: Msaa::Sample2,
+            atmosphere_luts: AtmosphereLuts::bevy_defaults(),
+            space_raymarch: true,
+            tile_px: crate::systems::vector_tiles::TILE_PX,
         }
     }
 
@@ -115,6 +245,14 @@ impl Budget {
             radius_bias: 1,
             per_frame_divisor: 2,
             worker_cap: Some(3),
+            msaa: Msaa::Off,
+            atmosphere_luts: AtmosphereLuts::halved(),
+            space_raymarch: false,
+            // Half of `vector_tiles::TILE_PX`, and the same 256 the globe settled
+            // on. Written out rather than derived from `TILE_PX / 2` so raising
+            // the flat map's raster size later does not silently raise the
+            // phone's with it.
+            tile_px: 256,
         }
     }
 
@@ -144,8 +282,8 @@ static BUDGET: OnceLock<Budget> = OnceLock::new();
 ///
 /// Idempotent, and deliberately not a panic if called twice: a second call from a
 /// test harness should be a no-op, not a crash in a build that works.
-pub fn init() {
-    let resolved = detect();
+pub fn init(preferred: Option<&str>) {
+    let resolved = detect(preferred);
     if BUDGET.set(resolved).is_ok() {
         tracing::info!(
             tier = ?resolved.tier,
@@ -153,6 +291,9 @@ pub fn init() {
             bloom = resolved.bloom,
             sky_ibl = resolved.sky_ibl,
             detail_layers = resolved.detail_layers,
+            msaa = resolved.msaa.samples(),
+            space_raymarch = resolved.space_raymarch,
+            tile_px = resolved.tile_px,
             "render budget resolved"
         );
     }
@@ -162,7 +303,11 @@ pub fn init() {
 /// unit test, or a system that beat startup to it).
 #[must_use]
 pub fn budget() -> &'static Budget {
-    BUDGET.get_or_init(detect)
+    // `None` rather than the stored preference: this arm only runs when nobody
+    // called `init`, which means there is no app and therefore no user — a unit
+    // test, or a system that beat startup to it. Reading `user.json` from here
+    // would make a test's answer depend on the developer's saved settings.
+    BUDGET.get_or_init(|| detect(None))
 }
 
 /// Shorthand for the common `budget().tier == Tier::Phone` test.
@@ -171,7 +316,7 @@ pub fn is_phone() -> bool {
     budget().tier == Tier::Phone
 }
 
-fn detect() -> Budget {
+fn detect(preferred: Option<&str>) -> Budget {
     // An explicit setting wins everywhere, which is the whole point of it: it is
     // how the phone budget gets exercised on a machine that can profile it.
     if let Some(v) = crate::env_value("VIBERFOX_QUALITY") {
@@ -182,6 +327,15 @@ fn detect() -> Budget {
                 "unknown VIBERFOX_QUALITY; expected phone|low|mobile or desktop|high"
             ),
         }
+    }
+    // Then the user's own choice from Settings ▸ Map. Below the env var because
+    // that one is a debugging override and has to win over a stored preference to
+    // be useful; above `auto()` because a person who has picked a tier has said
+    // something the detector cannot know — that this phone runs hot, or that this
+    // laptop is nicer than its core count suggests. `None` is "Auto", which is not
+    // a third answer but the absence of one.
+    if let Some(budget) = preferred.and_then(parse) {
+        return budget;
     }
     auto()
 }
@@ -287,5 +441,40 @@ mod tests {
         for base in [1_usize, 2, 8, 12] {
             assert_eq!(desktop.per_frame(base), base);
         }
+        assert_eq!(
+            desktop.tile_px,
+            crate::systems::vector_tiles::TILE_PX,
+            "the desktop tier must rasterise at the size the flat map was tuned at"
+        );
+    }
+
+    /// The phone tier must ask for a sample count every adapter is *required* to
+    /// have. Vulkan guarantees only 1 and 4 in `framebufferColorSampleCounts`,
+    /// WebGPU permits only 1 and 4, and lavapipe advertises only 1 and 4 — so 2×
+    /// is a request a handset may legally refuse, and wgpu answers a refusal by
+    /// failing to create `main_texture_sampled`, i.e. by rendering nothing at all.
+    /// A tier that ships a black screen is not a cheaper tier.
+    #[test]
+    fn the_phone_tier_asks_for_a_universally_supported_sample_count() {
+        assert!(
+            matches!(Budget::phone().msaa, Msaa::Off | Msaa::Sample4),
+            "only 1× and 4× are guaranteed; anything else can fail to render"
+        );
+    }
+
+    /// Halving is the whole claim, so state it as one: every LUT axis strictly
+    /// smaller than Bevy's default, none of them zero (a zero-sized texture is a
+    /// wgpu validation error, not a cheap one).
+    #[test]
+    fn the_phone_atmosphere_luts_are_smaller_and_non_empty() {
+        let (a, b) = (AtmosphereLuts::bevy_defaults(), AtmosphereLuts::halved());
+        assert!(b.transmittance.cmplt(a.transmittance).all());
+        assert!(b.multiscattering.cmplt(a.multiscattering).all());
+        assert!(b.sky_view.cmplt(a.sky_view).all());
+        assert!(b.aerial_view.cmplt(a.aerial_view).all());
+        assert!(b.transmittance.min_element() > 0);
+        assert!(b.multiscattering.min_element() > 0);
+        assert!(b.sky_view.min_element() > 0);
+        assert!(b.aerial_view.min_element() > 0);
     }
 }

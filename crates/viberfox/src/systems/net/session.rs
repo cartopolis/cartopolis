@@ -101,7 +101,17 @@ impl SessionKind {
 ///
 /// Only `Offline` is reachable on the web build (`can_simulate`), hence the
 /// allow — same reason as `network::LinkState`.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+///
+/// The `solo` arm of that allow is the more interesting one, and it is here
+/// because leaving it out cost this project every Android release it never had.
+/// `Solo` is constructed only where the `solo` feature compiles, and the APK is
+/// built `--no-default-features` (nothing cross-compiles `rusqlite` for Android)
+/// — so on that target the variant is dead, `[workspace.lints.rust] unused =
+/// "deny"` turns dead code into a hard error, and the whole client crate fails to
+/// build. Gating on the *platform* would have been the third instance of the trap
+/// CLAUDE.md names: this tree's seams were written as native-vs-wasm and Android
+/// answers "native" to all of them. Gate on the feature that is actually absent.
+#[cfg_attr(any(target_arch = "wasm32", not(feature = "solo")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum SessionMode {
     #[default]
@@ -133,7 +143,11 @@ impl SessionMode {
 }
 
 /// How far the current mode has got. `Offline` is a resting state, not a failure.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+///
+/// Same two-part allow as [`SessionMode`]: `Starting` means "booting the
+/// in-process sim", which is unreachable both on the web and in any build without
+/// the `solo` feature — the Android APK being the one that matters.
+#[cfg_attr(any(target_arch = "wasm32", not(feature = "solo")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum SessionStatus {
     #[default]

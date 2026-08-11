@@ -91,6 +91,12 @@ pub enum RightPanel {
     Appearance,
     Script,
     Settings,
+    /// Version, build and the third-party notices. Not a nicety: ODbL
+    /// (OpenStreetMap and everything derived from it), CC BY 4.0 (3DBAG, MET
+    /// Norway) and the SIL OFL all require the attribution to travel with the
+    /// distributed work, and until this existed the app's only credit was three
+    /// `ui.small()` lines at the foot of the Layers panel.
+    About,
 }
 
 impl RightPanel {
@@ -117,11 +123,15 @@ impl RightPanel {
             Self::Layers => "Map layers",
             Self::Places => "Saved places",
             Self::Route => "Route",
-            Self::Assistant => "AI Assistant",
-            Self::Chat => "Nearby Chat",
+            // Sentence case throughout: these strings are the dock tooltip, the
+            // menu entry and the panel header, and "AI Assistant" beside "Map
+            // layers" read as two different applications.
+            Self::Assistant => "AI assistant",
+            Self::Chat => "Nearby chat",
             Self::Appearance => "Appearance",
             Self::Script => "Script",
             Self::Settings => "Settings",
+            Self::About => "About",
         }
     }
 
@@ -156,6 +166,143 @@ impl RightPanel {
             // `⚙` is the obvious one and, like `🧭` and `✕` before it, is not in
             // the bundled subset — hence the ladder down to a letter.
             Self::Settings => &["⚙", "⚒", "◈", "S"],
+            // `ⓘ` is not in the bundled subset either; `◎` is one of the few
+            // symbols probing shows the font actually has (see the note above).
+            Self::About => &["ℹ", "ⓘ", "◎", "?"],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application preferences (Settings ▸ General / Map)
+// ---------------------------------------------------------------------------
+
+/// Which units distances and speeds are shown in.
+///
+/// Named variants on the wire for the same reason [`SunMode`] has them: adding a
+/// unit system must not renumber saved files.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Units {
+    /// Metres and kilometres, km/h. The default, and what every formatter in the
+    /// client currently hard-codes.
+    #[default]
+    Metric,
+    /// Feet and miles, mph.
+    Imperial,
+}
+
+impl Units {
+    pub const ALL: [Self; 2] = [Self::Metric, Self::Imperial];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Metric => "Metric (km)",
+            Self::Imperial => "Imperial (mi)",
+        }
+    }
+}
+
+/// The render budget the user asks for, as opposed to the one
+/// [`crate::quality`] detects.
+///
+/// `Auto` is the detector's answer and is what every install has had until now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityPreset {
+    #[default]
+    Auto,
+    /// `quality::Budget::phone` — everything that costs fill or main-thread time,
+    /// off or halved.
+    Low,
+    /// `quality::Budget::desktop` — the settings the rest of the client is tuned
+    /// against.
+    High,
+}
+
+impl QualityPreset {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Low, Self::High];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Automatic",
+            Self::Low => "Battery saver",
+            Self::High => "Full detail",
+        }
+    }
+
+    /// The word `VIBERFOX_QUALITY` / `?quality=` spells this preset, or `None`
+    /// for `Auto` (which is the absence of an override). This is the *whole*
+    /// contract with `quality::parse`, and it is deliberately one function: the
+    /// vocabulary is duplicated there and in `index.html` already.
+    #[must_use]
+    pub fn as_env_word(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Low => Some("phone"),
+            Self::High => Some("desktop"),
+        }
+    }
+}
+
+/// The settings that are neither a map layer nor a sky knob: the General and Map
+/// tabs of Settings.
+///
+/// **A resource *and* a serde value.** It is edited as a resource and belongs in
+/// `user.json` beside [`crate::systems::user_store::LayerPrefs`] and `SkyPrefs`,
+/// which is one line in `UserData` — every leaf carries a default, so adding it
+/// cannot fail an existing file's parse (the failure mode that store's module
+/// note describes at length).
+///
+/// Three of these fields have no consumer in the client *yet*, and they say so
+/// individually. That is deliberate and is the alternative to faking the effect:
+/// a switch that flips a bool nobody reads is a promise to wire it, while a
+/// switch that appears to work and does not is a bug report.
+#[derive(Resource, Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AppPrefs {
+    /// Distances, speeds and elevations. **No consumer yet**:
+    /// `navigation::format_distance` / `format_duration` and the driver bar's
+    /// speed pill are metric-hardcoded (`systems/nav/`), so this is the field
+    /// they read when they grow a second unit system.
+    #[serde(default)]
+    pub units: Units,
+    /// Hold the screen awake while driver mode is running. **No consumer yet**:
+    /// there is no wake-lock seam in `platform` — on the web that is
+    /// `navigator.wakeLock`, on Android a `FLAG_KEEP_SCREEN_ON` on the activity
+    /// window, and neither exists in this tree.
+    #[serde(default = "crate::resources::yes")]
+    pub keep_screen_on: bool,
+    /// Play the turn chime (and, later, spoken guidance) while navigating.
+    /// **Read by the turn-chime work in progress**; harmless while nothing reads
+    /// it, since the default is the behaviour the app already had.
+    #[serde(default = "crate::resources::yes")]
+    pub voice_guidance: bool,
+    /// What the user asked the render budget to be. Applied at **startup only**
+    /// — `quality::budget()` is a process-wide `OnceLock` read by systems that
+    /// run before the world exists, so there is nothing here that can change a
+    /// running process's tier. The panel says so rather than implying otherwise.
+    #[serde(default)]
+    pub quality: QualityPreset,
+}
+
+/// serde's `default` for a bool that starts on.
+pub(crate) fn yes() -> bool {
+    true
+}
+
+/// Hand-written rather than derived, so `AppPrefs::default()` and a `user.json`
+/// with no `settings` block agree. A derived `Default` would give `false` for the
+/// two bools while serde gave `true`, i.e. a fresh install and an upgraded one
+/// would behave differently — the exact trap `LayerPrefs`' note documents.
+impl Default for AppPrefs {
+    fn default() -> Self {
+        Self {
+            units: Units::default(),
+            keep_screen_on: yes(),
+            voice_guidance: yes(),
+            quality: QualityPreset::default(),
         }
     }
 }
@@ -168,7 +315,10 @@ impl RightPanel {
 /// ([`crate::systems::user_store::SkyPrefs`]) — the sky comes back the way it
 /// was left. Named variants on the wire, so adding a mode never renumbers the
 /// saved files.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+///
+/// `Deserialize` is hand-written (see below) so that an *unknown* name is a
+/// fallback rather than an error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SunMode {
     /// Realistic: the sun follows the real current time at the map location
@@ -182,6 +332,54 @@ pub enum SunMode {
     /// The dev panel owns the clock: the slider / presets / Quick-cycle set
     /// `time_of_day` directly and `main::apply_sun_mode` leaves it untouched.
     Manual,
+}
+
+/// An unrecognised sun mode reads as [`SunMode::Auto`] instead of failing the parse.
+///
+/// The failure this prevents is disproportionate to its cause: `sun_mode` is one
+/// leaf of one optional block of `user.json`, but serde aborts the *whole document*
+/// on it, so a user who tried a build with a new mode in it and then rolled back
+/// would find every bookmark, their Home and their remembered session gone. Only the
+/// sky knob is worth losing there, and losing it means "the sun goes back to Auto",
+/// which the next autosave records honestly.
+///
+/// This is deliberately **not** `#[serde(other)]` and deliberately not a new
+/// `Unknown` variant. `#[serde(other)]` is only accepted on internally/adjacently
+/// tagged enums, which this — a bare string on disk — is not; and a real variant
+/// would have to be handled by every `match` on `SunMode` (the HUD switcher, the dev
+/// panel, `apply_sun_mode`), all of which would be answering "what does the sun do in
+/// a mode that does not exist?" — a question with no better answer than the default.
+impl<'de> serde::Deserialize<'de> for SunMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct NameVisitor;
+        impl<'de> serde::de::Visitor<'de> for NameVisitor {
+            type Value = SunMode;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sun mode name (auto, day, night, manual)")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<SunMode, E> {
+                Ok(match name {
+                    // The names `#[serde(rename_all = "snake_case")]` writes. Spelled
+                    // out rather than derived, because this side must keep answering
+                    // for names the enum no longer has.
+                    "auto" => SunMode::Auto,
+                    "day" => SunMode::Day,
+                    "night" => SunMode::Night,
+                    "manual" => SunMode::Manual,
+                    other => {
+                        tracing::warn!(mode = %other, "unknown sun mode in user.json; using Auto");
+                        SunMode::default()
+                    }
+                })
+            }
+        }
+        deserializer.deserialize_str(NameVisitor)
+    }
 }
 
 /// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
@@ -397,7 +595,7 @@ pub struct EditDialogState {
     pub visible: bool,
     pub is_new: bool,
     pub prim_id: Option<i64>,
-    pub active_tab: u8, // 0 = Edit, 1 = Object, 2 = Texture
+    pub active_tab: u8, // 0 = Basics, 1 = Shape, 2 = Surface
     pub name: String,
     pub shape: String,
     pub position: [f32; 3],
@@ -857,4 +1055,45 @@ impl NetworkMailbox {
 pub struct MapAnchor {
     /// `(lat, lng, base zoom)`. `None` until the first anchor is placed.
     pub geo: Option<(f64, f64, u32)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh install and an upgraded one must land on the same settings. The
+    /// two paths are different code — `Default` for the first, serde's per-field
+    /// defaults for the second — and they only agree because someone made them.
+    #[test]
+    fn missing_settings_deserialise_to_the_fresh_install_values() {
+        let from_empty: AppPrefs = serde_json::from_str("{}").expect("every leaf is defaulted");
+        assert_eq!(from_empty, AppPrefs::default());
+        assert!(from_empty.keep_screen_on, "screen-on starts on");
+        assert!(from_empty.voice_guidance, "guidance starts on");
+    }
+
+    /// The file is the user's only copy of these, so a round trip may not lose
+    /// one — and an unknown *name* must not fail the whole document either.
+    #[test]
+    fn settings_round_trip_through_json() {
+        let prefs = AppPrefs {
+            units: Units::Imperial,
+            keep_screen_on: false,
+            voice_guidance: false,
+            quality: QualityPreset::Low,
+        };
+        let text = serde_json::to_string(&prefs).expect("serialises");
+        assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);
+    }
+
+    /// The quality preset's only contract with `crate::quality` is the word it
+    /// spells, and that vocabulary is duplicated in `quality::parse` and in
+    /// `index.html`. A word only one side knows puts the canvas resolution and
+    /// the renderer's settings in different tiers, and nothing reports that.
+    #[test]
+    fn the_quality_preset_speaks_the_tier_vocabulary() {
+        assert_eq!(QualityPreset::Auto.as_env_word(), None);
+        assert_eq!(QualityPreset::Low.as_env_word(), Some("phone"));
+        assert_eq!(QualityPreset::High.as_env_word(), Some("desktop"));
+    }
 }

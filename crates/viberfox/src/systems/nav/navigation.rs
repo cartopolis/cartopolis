@@ -184,6 +184,27 @@ pub struct RouteState {
     pub to: Waypoint,
     pub mode: TravelMode,
     pub route: Option<Route>,
+    /// The route the display keeps using while a replacement is being solved.
+    ///
+    /// Only [`Self::reroute_from`] fills it, and that is the point: an ordinary
+    /// edit in the planner *should* take the line away (the destination the user is
+    /// looking at is no longer the one drawn), while a reroute should not. Missing
+    /// a turn moved the start by a hundred metres and blanked the whole display —
+    /// line, distance, ETA, rail — for as long as the corridor took to refetch,
+    /// which on a cold cache on a phone is seconds to tens of seconds, against a
+    /// `driver::REROUTE_COOLDOWN` of ten. The previous route is still the best
+    /// answer anyone has during that window, and it is still *nearly* right: the
+    /// vehicle is off it by definition, but everything past the missed turn is
+    /// unchanged.
+    ///
+    /// Cleared by [`Self::invalidate`] (so every other path drops it) and by a
+    /// solve that lands. A failed one keeps it, which is what lets driver mode stay
+    /// in navigation and offer Retry instead of quietly ending the trip — and it
+    /// therefore outlives a trip that is *stopped* on a failed reroute, leaving the
+    /// last route driven on the map. That is the rule driver mode already follows
+    /// for a completed trip: clearing the line is the planner's act, and a driver
+    /// who has just parked may well want to look at what they drove.
+    pub held: Option<Route>,
     pub status: SolveStatus,
     /// Endpoint awaiting a click on the map, if the user armed "pick on map".
     pub picking: Option<Endpoint>,
@@ -213,6 +234,7 @@ impl Default for RouteState {
             to: Waypoint::default(),
             mode: TravelMode::default(),
             route: None,
+            held: None,
             status: SolveStatus::Idle,
             picking: None,
             from_editing: false,
@@ -226,6 +248,20 @@ impl Default for RouteState {
         }
     }
 }
+
+/// Marks a waypoint label that is still just the coordinates a user picked off
+/// the map, rather than a name.
+///
+/// Load-bearing as a *sentinel*, not decoration: `drive_route_geocoding` renames
+/// only a waypoint still wearing it, so a reverse-geocode reply cannot overwrite
+/// a name the user chose or a search result already supplied.
+///
+/// It used to be `"📍 "`, which was the right idea and the wrong character —
+/// U+1F4CD is not in the Body font stack (the ladder at `Icons::here` had
+/// already been falling back past it), so every map-picked endpoint showed an
+/// empty box in front of its coordinates. Latin-1, so it cannot recur; the
+/// `no_painted_glyph_is_tofu` test is what caught it.
+const PICKED_PREFIX: &str = "· ";
 
 impl RouteState {
     fn waypoint_mut(&mut self, end: Endpoint) -> &mut Waypoint {
@@ -241,7 +277,48 @@ impl RouteState {
             self.route = None;
             self.generation = self.generation.wrapping_add(1);
         }
+        // A held route outlives an invalidate only when the same call put it there
+        // ([`Self::reroute_from`] assigns *after* this runs). Everything else — a
+        // cleared endpoint, a swap, Clear — means the drawn line is no longer an
+        // answer to any question the user is asking, so it goes.
+        self.held = None;
         self.solved_for = None;
+    }
+
+    /// The route the display should draw and measure against: the solved one, or
+    /// the one being replaced while a reroute is in flight ([`Self::held`]).
+    ///
+    /// Read by everything that *shows* a route — the world visuals, the driver
+    /// chrome, the route rail. Deliberately not read by anything that *edits* one:
+    /// the planner's turn list, `frame_route` and the step teleports all still key
+    /// off `route`, because a held route is a thing being driven, not a thing being
+    /// worked on.
+    #[must_use]
+    pub fn displayed(&self) -> Option<&Route> {
+        self.route.as_ref().or(self.held.as_ref())
+    }
+
+    /// Re-solve from a new start, keeping the current route on screen until the
+    /// answer lands.
+    ///
+    /// Two things separate this from a bare `set_endpoint_at(From, …)`, and both
+    /// matter to a display that has to keep working through it:
+    ///
+    /// - the route moves into [`Self::held`] rather than being dropped, so the
+    ///   line, the remaining distance and the ETA keep coming from *something*
+    ///   instead of falling back to zeros;
+    /// - taking it out first means `invalidate` sees no route and so does **not**
+    ///   bump the generation — which is exactly what makes `update_route_visuals`
+    ///   leave the drawn line alone rather than despawning and rebuilding it. The
+    ///   generation still bumps when the solve finishes, so "the reroute landed" is
+    ///   as detectable as it was.
+    ///
+    /// Only the start moves. The destination is what the user asked for, and a
+    /// reroute that quietly changed it would be unforgivable.
+    pub fn reroute_from(&mut self, lat: f64, lng: f64) {
+        let previous = self.route.take();
+        self.set_endpoint_at(Endpoint::From, lat, lng);
+        self.held = previous;
     }
 
     /// Ask the panel to resolve this endpoint from a map click.
@@ -261,9 +338,29 @@ impl RouteState {
     pub fn set_endpoint_at(&mut self, end: Endpoint, lat: f64, lng: f64) {
         self.picking = None;
         self.waypoint_mut(end)
-            .set(format!("📍 {lat:.5}, {lng:.5}"), (lat, lng));
+            .set(format!("{PICKED_PREFIX}{lat:.5}, {lng:.5}"), (lat, lng));
         self.invalidate();
         spawn_reverse(end, lat, lng, self.reverse.clone());
+    }
+
+    /// Set an endpoint that already knows what it is called.
+    ///
+    /// [`Self::set_endpoint_at`] exists for a point picked off the map, where the
+    /// only honest label is a coordinate pair until the reverse geocoder answers.
+    /// Everything that routes to a *named* thing — a search result, a saved place,
+    /// a POI you walked up to — already has the name, and firing a reverse lookup
+    /// to rediscover it costs a network round trip to arrive at a worse answer
+    /// than the one in hand ("Kerkstraat 12" rather than "Albert Heijn").
+    pub fn set_endpoint_named(
+        &mut self,
+        end: Endpoint,
+        label: impl Into<String>,
+        lat: f64,
+        lng: f64,
+    ) {
+        self.picking = None;
+        self.waypoint_mut(end).set(label.into(), (lat, lng));
+        self.invalidate();
     }
 
     /// Default the start to the user's current position when it is empty.
@@ -307,7 +404,7 @@ pub fn drive_route_geocoding(mut route: ResMut<RouteState>) {
     for (end, label) in reverse {
         let wp = route.waypoint_mut(end);
         // Only rename the pin we placed — the user may have typed over it since.
-        if wp.coord.is_some() && wp.label.starts_with("📍 ") {
+        if wp.coord.is_some() && wp.label.starts_with(PICKED_PREFIX) {
             wp.label = label;
         }
     }
@@ -412,10 +509,45 @@ fn spawn_reverse(end: Endpoint, lat: f64, lng: f64, sink: Arc<Mutex<Vec<(Endpoin
 
 // ─── Solving ─────────────────────────────────────────────────────────────────
 
+/// How long the graph cache survives with no solve asking for it.
+///
+/// The cache exists to make *switching travel mode* cost one A* instead of a
+/// whole corridor refetch, which is a thing a user does within seconds of seeing
+/// a route — not minutes. Past that window it is up to three `Arc<RoadGraph>`
+/// built from as many as `MAX_ROUTE_TILES` z14 tiles, i.e. tens of megabytes,
+/// pinned for the rest of the session by one route solved once. On a 4 GB phone
+/// that sits on top of the clipmap's own residency, so it is worth releasing.
+const GRAPH_CACHE_IDLE_S: f32 = 180.0;
+
 /// Start a solve when the endpoints or the mode change, and fold in finished ones.
-pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUrlTemplate>) {
+pub fn drive_route_solver(
+    mut route: ResMut<RouteState>,
+    tile_url: Res<OsmTileUrlTemplate>,
+    time: Res<Time>,
+    mut idle_s: Local<f32>,
+) {
+    // 0. Age the graph cache. Deliberately unconditional — including while a solve
+    //    is in flight, because the worker holds its own `Arc` clones and writes the
+    //    slot back when it finishes, so releasing it early costs at worst the reuse
+    //    this cache was for. Every path that starts or finishes a solve resets the
+    //    timer below.
+    *idle_s += time.delta_secs();
+    if *idle_s > GRAPH_CACHE_IDLE_S {
+        *idle_s = 0.0;
+        if let Ok(mut g) = route.cache.lock() {
+            if g.take().is_some() {
+                tracing::debug!(
+                    "released the routing graph cache after {GRAPH_CACHE_IDLE_S}s idle"
+                );
+            }
+        }
+    }
+
     // 1. Harvest a finished solve (ignoring one the user has already outrun).
     let done = route.results.lock().ok().and_then(|mut g| g.take());
+    if done.is_some() {
+        *idle_s = 0.0;
+    }
     if let Some(job) = done {
         if job.seq == route.seq {
             match job.result {
@@ -428,9 +560,16 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
                         "route solved"
                     );
                     route.route = Some(r);
+                    // The replacement is here, so the one the display was holding
+                    // on to has done its job.
+                    route.held = None;
                     route.status = SolveStatus::Idle;
                 }
                 Err(e) => {
+                    // `held` is deliberately *not* cleared: a failed reroute leaves
+                    // the previous route as the only thing anyone can act on, and
+                    // driver mode paints the failure over it rather than ending the
+                    // trip. An ordinary failed solve has nothing held anyway.
                     route.route = None;
                     route.status = SolveStatus::Failed(e.to_string());
                 }
@@ -460,6 +599,7 @@ pub fn drive_route_solver(mut route: ResMut<RouteState>, tile_url: Res<OsmTileUr
     route.solved_for = Some(want);
     route.seq += 1;
     route.status = SolveStatus::Fetching(0, 0);
+    *idle_s = 0.0;
     let seq = route.seq;
     let sink = route.results.clone();
     let progress = route.progress.clone();
@@ -580,6 +720,35 @@ async fn fetch_tier(
     bodies
 }
 
+/// Whether a cached corridor contains every tile a new one wants, so its graph can
+/// be reused whole.
+///
+/// **This is what makes a reroute cheap.** Missing a turn re-solves from a start a
+/// few hundred metres along the route to the same destination, and the capsule that
+/// covers is a shorter, narrower version of the one already in the cache — same
+/// tiles, minus a few at the tail. Keyed on exact equality alone that is a cache
+/// miss and a full corridor refetch: up to `MAX_ROUTE_TILES` requests, seconds to
+/// tens of seconds on a cold phone, during which the display has no route. With
+/// containment it is one A*.
+///
+/// Reusing a *superset* is safe in a way reusing an overlapping neighbour would not
+/// be: every road the new corridor asked for is present, so the search sees at
+/// least as much of the network as it requested. It also sees a little more, which
+/// can only improve the answer — `RoadGraph::route` snaps into the routable core of
+/// whatever graph it is handed, and a bigger core is a better place to snap into.
+///
+/// Direct-to-direct only. A staged corridor is three graphs on two lattices whose
+/// endpoint patches must stay separate (see `routing::Corridor::Staged`), and
+/// "contains" for that is a per-tier question worth answering only if long-haul
+/// reroutes ever become a case anyone has.
+fn covers(have: &routing::Corridor, want: &routing::Corridor) -> bool {
+    let (routing::Corridor::Direct(have), routing::Corridor::Direct(want)) = (have, want) else {
+        return false;
+    };
+    let have: std::collections::HashSet<(i64, i64)> = have.iter().copied().collect();
+    want.iter().all(|t| have.contains(t))
+}
+
 /// Corridor → tiles → bytes. The I/O half of a solve.
 async fn fetch_corridor(
     from: (f64, f64),
@@ -602,9 +771,11 @@ async fn fetch_corridor(
     progress.0.store(0, Ordering::Relaxed);
 
     // Same corridor as last time → skip the fetch entirely and reuse the graphs.
+    // Or a corridor *contained* in the last one, which is the reroute case and the
+    // reason this second test exists.
     if let Some(graphs) = cache.lock().ok().and_then(|g| {
         g.as_ref()
-            .filter(|(c, _)| *c == corridor)
+            .filter(|(c, _)| *c == corridor || covers(c, &corridor))
             .map(|(_, g)| g.clone())
     }) {
         progress.0.store(total, Ordering::Relaxed);
@@ -813,7 +984,13 @@ pub fn update_route_visuals(
     for e in existing.iter() {
         commands.entity(e).despawn();
     }
-    let Some(r) = &route.route else {
+    // `displayed`, not `route`: a reroute in flight has moved the route it is
+    // replacing into `held`, and the line must stay on the map while the corridor
+    // is refetched. That case does not usually reach here at all — a reroute does
+    // not bump the generation, so the key above matches and this system returns
+    // early — but a *failed* reroute does bump it, and this is what keeps the line
+    // drawn under the failure card instead of erasing it along with the answer.
+    let Some(r) = route.displayed() else {
         return;
     };
 
@@ -1215,7 +1392,7 @@ pub fn render_route_panel(
                         // the route from above — entering driver mode goes to the
                         // route anyway, and does the rest of it too.
                         if ui
-                            .button(egui::RichText::new("▶ Driver mode").strong())
+                            .button(egui::RichText::new("Start driving").strong())
                             .on_hover_text(
                                 "Follow this route: strip the map, lock the camera \
                                  behind the arrow, and show the next turn",
@@ -1472,14 +1649,30 @@ fn endpoint_row(
         return;
     }
     let mut picked = None;
+    // Clamp to the viewport, both the width and the left edge. The old
+    // `field_rect.width().max(300.0)` was an unconditional 300 pt floor, and a
+    // phone's egui viewport is 274 pt wide — so the one dropdown a routing user
+    // reads most hung 26 pt off the right edge, on the platform this release is
+    // for. `geo_nav`'s equivalent popup already does exactly this; the two are
+    // the same control in two panels and had drifted apart.
+    let screen = ui.ctx().viewport_rect();
+    let popup_width = field_rect
+        .width()
+        .max(300.0)
+        .min((screen.width() - 32.0).max(160.0));
+    let mut popup_pos = field_rect.left_bottom() + egui::vec2(0.0, 2.0);
+    popup_pos.x = popup_pos
+        .x
+        .min(screen.right() - popup_width - 16.0)
+        .max(screen.left() + 16.0);
     egui::Area::new(egui::Id::new(("route_suggestions", hint)))
         .order(egui::Order::Foreground)
-        .fixed_pos(field_rect.left_bottom() + egui::vec2(0.0, 2.0))
+        .fixed_pos(popup_pos)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 // Same rows as the address bar's dropdown — name, what kind of
                 // place it is, the address context and how far away it is.
-                let width = field_rect.width().max(300.0);
+                let width = popup_width;
                 ui.set_min_width(width);
                 ui.set_max_width(width);
                 for (i, s) in wp.suggestions.iter().enumerate() {
@@ -2009,6 +2202,86 @@ mod tests {
     /// unit test has no Bevy app to create for it.
     fn with_task_pool() {
         bevy::tasks::IoTaskPool::get_or_init(Default::default);
+    }
+
+    fn a_route() -> Route {
+        Route {
+            mode: TravelMode::Car,
+            points: vec![[53.20, 6.55], [53.205, 6.55], [53.21, 6.55]],
+            distance_m: 1000.0,
+            duration_s: 60.0,
+            steps: Vec::new(),
+        }
+    }
+
+    /// A reroute must not blank the display. It keeps the previous route to draw
+    /// and measure against, and — the part that does the actual work — it leaves
+    /// the generation alone, which is what stops `update_route_visuals` despawning
+    /// the line and rebuilding it from nothing.
+    #[test]
+    fn a_reroute_holds_the_previous_route_and_the_drawn_line() {
+        with_task_pool();
+        let mut route = RouteState::default();
+        route.route = Some(a_route());
+        let gen_before = route.generation;
+
+        route.reroute_from(53.2001, 6.5502);
+
+        assert!(route.route.is_none(), "the solved route is gone");
+        assert!(route.held.is_some(), "…but the display still has one");
+        assert!(route.displayed().is_some());
+        assert_eq!(
+            route.generation, gen_before,
+            "an unchanged generation is what keeps the line on the map"
+        );
+        assert!(route.solved_for.is_none(), "and a solve is due");
+        assert_eq!(route.to.coord, None, "only the start moved");
+        assert_eq!(route.from.coord, Some((53.2001, 6.5502)));
+    }
+
+    /// Everything that is *not* a reroute must still take the line away — the whole
+    /// reason `held` is set by one method rather than by `invalidate` itself.
+    #[test]
+    fn an_ordinary_edit_drops_a_held_route() {
+        with_task_pool();
+        let mut route = RouteState::default();
+        route.route = Some(a_route());
+        route.reroute_from(53.2001, 6.5502);
+        assert!(route.held.is_some());
+
+        // The user picks a new destination mid-reroute.
+        route.set_endpoint_at(Endpoint::To, 53.30, 6.60);
+        assert!(
+            route.held.is_none(),
+            "the held line must not outlive the trip"
+        );
+        assert!(route.displayed().is_none());
+    }
+
+    /// A reroute's corridor is a shorter, narrower version of the one already
+    /// cached, so it must hit the cache — a full refetch is the seconds of blank
+    /// display this exists to remove. And an overlapping corridor that is *not*
+    /// contained must miss, or a solve would run on a graph missing its own roads.
+    #[test]
+    fn a_contained_corridor_reuses_the_cached_graph() {
+        let wide = routing::Corridor::Direct(vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
+        let narrow = routing::Corridor::Direct(vec![(1, 0), (2, 0)]);
+        assert!(covers(&wide, &narrow));
+        assert!(covers(&wide, &wide), "equality is containment");
+        assert!(!covers(&narrow, &wide));
+        assert!(
+            !covers(&wide, &routing::Corridor::Direct(vec![(2, 0), (4, 0)])),
+            "one tile short is a miss, not a nearly-hit"
+        );
+        // Staged is three graphs on two lattices; containment is not asked there.
+        assert!(!covers(
+            &wide,
+            &routing::Corridor::Staged {
+                start: vec![(0, 0)],
+                end: vec![(1, 0)],
+                coarse: vec![(2, 0)],
+            }
+        ));
     }
 
     /// …but it must never stamp over a start the user chose. This is the one that

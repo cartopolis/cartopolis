@@ -323,7 +323,7 @@ pub fn run() {
     // Resolve the render budget first: it decides how wide the worker pool below
     // is allowed to be, and every later reader (`setup_camera`, the streamers)
     // expects it settled before the first frame. See `quality`.
-    quality::init();
+    quality::init(systems::user_store::UserStore::preferred_quality());
 
     // Start the CPU worker pool before anything streams (ADR-033). A no-op
     // natively — `AsyncComputeTaskPool` is already a thread pool — and on the web
@@ -480,7 +480,19 @@ pub fn run() {
                 },
                 async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
                     min_threads: 2,
-                    max_threads: 12,
+                    // `Budget::worker_cap` is where the phone's ceiling is written,
+                    // and this is the only place that can enforce it on native:
+                    // `platform::workers::submit` *is* `AsyncComputeTaskPool` here,
+                    // and `platform::workers::init` is a no-op off the web (it sizes
+                    // a worker pool that only wasm has). So on a handset the cap was
+                    // silently doing nothing, and the real width was this line.
+                    //
+                    // It matters more than a thread count usually does: our jobs are
+                    // blocking ~120 ms tiny-skia rasterises with no yield point, and
+                    // a phone's 2 big + 6 little cores share one thermal envelope
+                    // with the render thread. Oversubscribing it does not make the
+                    // map arrive sooner, it makes the frame that draws the map late.
+                    max_threads: quality::budget().worker_cap.unwrap_or(12),
                     percent: 0.45,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
@@ -508,7 +520,19 @@ pub fn run() {
                 // on occlusion. This was misdiagnosed for a long time as content
                 // overload (tiles/buildings/shadows/atmosphere) because crashes
                 // struck whenever the window sat covered while logs were read.
-                present_mode: bevy::window::PresentMode::AutoNoVsync,
+                //
+                // Android is the exception, and it is the opposite trade. There is
+                // no Wayland compositor and no i915 here, so none of the above
+                // applies — what "no vsync" buys on a handset is frames the
+                // SurfaceFlinger throws away, paid for in heat on a device that
+                // thermally throttles rather than in anything the user can see.
+                // FIFO is also what every other Android app is doing, so it is what
+                // the display pipeline is tuned for.
+                present_mode: if cfg!(target_os = "android") {
+                    bevy::window::PresentMode::AutoVsync
+                } else {
+                    bevy::window::PresentMode::AutoNoVsync
+                },
                 // On the web the canvas otherwise keeps the fixed `resolution`
                 // above forever — 1280x720 pinned in the corner of whatever size
                 // the browser window actually is, with dead space around it, and
@@ -575,8 +599,20 @@ pub fn run() {
     // Loaded before the app is built, not inside the chain below, because the
     // remembered session in it decides which world this launch enters (and seeds
     // the sign-in screen) — see the connection-mode block further down.
+    // Trim the disk cache to its ceiling before the streamers start refilling it.
+    // Nothing else ever reclaims it, and on a phone an unbounded cache is the app
+    // quietly eating the user's storage. Runs on its own thread, so this returns at
+    // once. `utils::cache` is compiled out on wasm, where the browser's quota is the
+    // bound instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    utils::cache::sweep_cache_root();
+
     let user_store = systems::user_store::UserStore::load();
     let session_prefs = user_store.data.session.clone();
+    // Lifted out before the store is moved into the world, so the Settings panel
+    // comes up holding what the user last chose rather than the defaults. This is
+    // also why `AppPrefs` is `Copy`.
+    let app_prefs = user_store.data.settings;
 
     // Headless (`--shot`): no window, and therefore no winit event loop to pump
     // the app — `ScheduleRunnerPlugin` drives the frames instead, as fast as the
@@ -626,6 +662,12 @@ pub fn run() {
             _ => OsmTileUrlTemplate::default(),
         })
         .init_resource::<systems::settings::SettingsState>()
+        .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
+        // The user's own preferences — units, turn chimes, keep-screen-on, the
+        // quality preset. Distinct from `DevPanelState` (a debugging surface) and
+        // from `LayerPrefs` (what is drawn); this is what the Settings panel owns,
+        // and `render_settings_panel` reads it unconditionally.
+        .insert_resource(app_prefs)
         .init_resource::<ContextMenuState>()
         .init_resource::<EditDialogState>()
         .init_resource::<systems::gizmo::GizmoState>()
@@ -892,11 +934,35 @@ pub fn run() {
             // to stay under Bevy's per-tuple system limit.
             (
                 systems::data_layers::apply_minimal_mode
-                    .before(systems::data_layers::apply_feature_toggles),
-                // After the spawners, so new entities get this frame's toggle state.
+                    .before(systems::data_layers::apply_feature_toggles)
+                    .before(systems::data_layers::apply_feature_toggles_to_new),
+                // The full sweep is the expensive one — four queries over every
+                // building, window, 3DBAG mesh, stream tile and region quad — so it
+                // runs only when the answer can have changed. Note the gate is a
+                // *value* comparison, not `resource_changed::<DataLayers>()`:
+                // `update_data_layers` mutably derefs the resource every frame, and
+                // Bevy marks a resource changed on `DerefMut` rather than by value,
+                // so `resource_changed` here would have been true forever and gated
+                // nothing. It also has to cover two inputs that are not toggles at
+                // all — the space-tier boolean and the anchor tile — or a descent
+                // from orbit leaves the buildings hidden.
                 systems::data_layers::apply_feature_toggles
+                    .run_if(systems::data_layers::feature_toggles_changed)
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
+                    .after(rendering::spawn_regions),
+                // …and the entities that streamed in *this* frame get the current
+                // state applied unconditionally, because the gate above is closed on
+                // exactly the frames where nothing about the toggles changed but a
+                // new building may still have arrived. A skipped system still
+                // satisfies its ordering edges, so the `.after` below holds either
+                // way.
+                systems::data_layers::apply_feature_toggles_to_new
+                    .after(systems::data_layers::apply_feature_toggles)
+                    .after(systems::osm_buildings::update_buildings)
+                    .after(systems::map_stream::update_map_stream)
+                    .after(systems::map_stream::apply_stream_textures)
+                    .after(systems::lod22::update_lod22)
                     .after(rendering::spawn_regions),
             ),
             systems::data_layers::handle_poi_click.after(systems::data_layers::update_data_layers),
@@ -1105,6 +1171,15 @@ pub fn run() {
                 // movement just did, so all three run after it.
                 systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
                 systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
+                // Turn cues. Here rather than with the rest of driver mode because
+                // the whole soundscape is behind this feature, and because a cue is
+                // a function of the distance the driver tick just computed — it has
+                // to see this frame's band, not last frame's.
+                //
+                // This is the one part of navigation you can use without looking at
+                // the screen, which on a phone in a car is the only way it gets
+                // used at all.
+                systems::driver::play_driver_cues.after(systems::driver::drive_driver_mode),
             ),
         );
     app
@@ -1237,6 +1312,7 @@ pub fn run() {
                 systems::script_editor::render_script_panel,
                 systems::ui::render_avatar_chooser,
                 systems::settings::render_settings_panel,
+                systems::settings::render_about_panel,
                 // Before the pins and after every panel, for the same reason both of
                 // those hold: it culls against the root `Ui`'s leftover space, which is
                 // only the map once the side panels have taken their width.
@@ -1263,6 +1339,48 @@ pub fn run() {
                 systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
                 systems::session::drive_session.after(systems::login_screen::render_login_screen),
             ),
+        )
+        // The two systems that make the app a well-behaved Android citizen: stop
+        // working while backgrounded, and answer the back gesture. Their own
+        // `add_systems` call because the Update tuple above is at Bevy's
+        // 20-system-per-tuple limit.
+        .add_systems(
+            Update,
+            (
+                quiesce_while_backgrounded,
+                handle_back_gesture,
+                apply_screen_wakelock,
+                sync_guidance_pref,
+            ),
+        )
+        // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
+        // browser have (`systems::onscreen_keyboard`). NativeActivity brings up no
+        // IME at all, so every text field in the client can be focused and cannot
+        // be typed into, which on a routing client means the address bar and the
+        // geo search: the front door.
+        //
+        // It draws into a floating `Area`, never the shared root `Ui`, so it is
+        // deliberately *not* in the Phase 7b chain — same as `dock` and the HUD.
+        //
+        // But it **must run after every system that can draw a text field**, and
+        // that is not a preference. egui surrenders a focused widget's focus on a
+        // click landing anywhere else, so tapping a key unfocuses the field, and
+        // putting that focus back in the same frame is most of what this system
+        // does. Registered earlier, the surrender happens *after* the restore and
+        // undoes it: the keyboard types one character into nothing and hides
+        // itself. Reading the focused field's rect — to decide whether to dock to
+        // the bottom or flip to the top — needs the same ordering, because
+        // `read_response` only sees widgets already drawn this pass.
+        //
+        // Three anchors, because the fields are spread over three phases: the
+        // panel chain (address bar, geo search, chat, assistant, bookmark rename,
+        // route), the sign-in card, and the prim edit dialog.
+        .add_systems(
+            Update,
+            systems::onscreen_keyboard::render_onscreen_keyboard
+                .after(systems::place_pins::render_place_pins)
+                .after(systems::login_screen::render_login_screen)
+                .after(systems::ui::render_edit_dialog),
         )
         // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
         // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
@@ -2239,6 +2357,113 @@ fn frame_time_watchdog(
 /// once per shadow cascade (sun + moon, 4 each), so `ktris_shadow` weighs far
 /// heavier than its raw value and is usually what pins this iGPU; `draws` is the
 /// visible mesh count. Watch these against `frame_ms` to see what "too much" is.
+/// Hold the screen awake while navigating, and let the user say no.
+///
+/// The window flag is derived from state rather than set at the two ends of
+/// driver mode, which is what makes the Settings toggle mean anything: turning
+/// it off mid-drive has to release the lock, and `enter`/`exit` cannot observe a
+/// preference changing while they are not being called. Deriving it also removes
+/// the pairing bug — there is no path that sets the flag and forgets to clear it,
+/// because nothing sets it, this only ever reports the current answer.
+///
+/// Edge-triggered on the answer, not the inputs: `set_window_flags` crosses a
+/// JNI-ish boundary into the activity's looper, and doing that every frame for
+/// an unchanged value would be silly.
+fn apply_screen_wakelock(
+    driver: Res<systems::driver::DriverState>,
+    prefs: Res<resources::AppPrefs>,
+    mut held: Local<bool>,
+) {
+    let want = driver.active && prefs.keep_screen_on;
+    if want == *held {
+        return;
+    }
+    *held = want;
+    #[cfg(target_os = "android")]
+    platform::android::set_keep_screen_on(want);
+}
+
+/// Mirror the user's guidance preference into driver mode.
+///
+/// `DriverState` owns the flag the cue system reads, because that system runs
+/// deep inside the driving tick and taking a second resource there would push it
+/// over Bevy's system-parameter limit. So the preference is copied in rather than
+/// read through.
+fn sync_guidance_pref(
+    prefs: Res<resources::AppPrefs>,
+    mut driver: ResMut<systems::driver::DriverState>,
+) {
+    if !prefs.is_changed() {
+        return;
+    }
+    driver.cues = systems::driver::GuidanceSound(prefs.voice_guidance);
+}
+
+/// Stop doing map work while the app is in the background.
+///
+/// Nothing else notices being backgrounded: the tile streamers keep fetching and
+/// the worker pool keeps rasterising, on a device whose battery the user is not
+/// looking at. `workers::set_paused` already exists for the shot harness and
+/// *parks* jobs rather than dropping them, which is the property that matters —
+/// the streamers de-duplicate on "a fetch is in flight", so a discarded decode is
+/// never re-queued and the tile is simply missing forever afterwards.
+///
+/// This is a no-op on desktop, where `AppLifecycle` never leaves `Running`.
+fn quiesce_while_backgrounded(mut lifecycle: MessageReader<bevy::window::AppLifecycle>) {
+    for event in lifecycle.read() {
+        match event {
+            bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
+                platform::workers::set_paused(true);
+            }
+            bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
+                platform::workers::set_paused(false);
+            }
+            bevy::window::AppLifecycle::Idle => {}
+        }
+    }
+}
+
+/// Android's back gesture, which until now did nothing at all.
+///
+/// Under NativeActivity the key is delivered to the app and consumed there, so a
+/// user who swipes back — the first thing every Android user reaches for to
+/// dismiss something — got no response, and the only way out of a full-screen
+/// panel was to find its close button. Back now unwinds the same stack Escape
+/// does on the desktop, innermost first: leave driver mode, then close the open
+/// panel, and only quit when there is nothing left to dismiss.
+///
+/// Quitting last is the part worth stating. Android's convention is that back
+/// from the root screen leaves the app, and an app that refuses to is a worse
+/// citizen than one that exits when you meant to close a panel — but a map client
+/// that quits on the first back press while a panel is open would be unusable.
+fn handle_back_gesture(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut keyboard: ResMut<systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut right_panel: ResMut<resources::RightPanel>,
+    mut driver: ResMut<systems::driver::DriverState>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    // `BrowserBack` is what winit maps Android's back key to. Desktop keyboards
+    // can carry the same key, and doing the same thing there is right anyway.
+    if !keys.just_pressed(KeyCode::BrowserBack) {
+        return;
+    }
+    // The keyboard is the innermost rung, because that is where the system IME
+    // sits on every other Android app: Back puts the keyboard away first and only
+    // then starts closing the thing you were typing into. Getting this order
+    // wrong is worse than it sounds — it would have made Back leave driver mode
+    // out from under someone who was only trying to dismiss the keys.
+    if keyboard.is_open() {
+        keyboard.dismiss();
+    } else if driver.active {
+        driver.exit();
+    } else if *right_panel != resources::RightPanel::None {
+        *right_panel = resources::RightPanel::None;
+    } else {
+        exit.write(AppExit::Success);
+    }
+}
+
 fn log_render_cost(
     time: Res<Time<Real>>,
     mut next: Local<f32>,
@@ -2258,6 +2483,15 @@ fn log_render_cost(
         return;
     }
     *next = 5.0;
+    // A full walk of every `Mesh3d` entity, resolving each handle into
+    // `Assets<Mesh>` to sum its vertices. That is a real periodic hitch, and on the
+    // one platform where it is most expensive it is also useless: nobody is reading
+    // a phone's log while holding the phone. Desktop keeps it — it is how the tile
+    // and building budgets get watched — but the handset does not pay for a
+    // diagnostic with no reader.
+    if quality::is_phone() {
+        return;
+    }
 
     let tris = |h: &Handle<Mesh>| -> usize {
         meshes.get(h).map_or(0, |m| {

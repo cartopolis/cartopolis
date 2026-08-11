@@ -1,7 +1,7 @@
 ---
 topic: navigation
 triggers: [driver.rs, route_ahead.rs, navigation.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown]
-updated: 2026-08-08
+updated: 2026-08-10
 ---
 
 # The navigation display
@@ -221,6 +221,24 @@ clear of that edge and stay put.
 That takes the **Stop** button with it, which is why Escape leaves driver mode
 too: opening the Places list mid-drive otherwise removed the only way out. It is
 gated on `EguiManager::ui_owns_keyboard`, so typing an address does not end a trip.
+
+## Driver mode owns two platform resources, not just a camera
+
+Both added 2026-08-10, both paired **exactly** with entering and leaving the mode
+rather than with the app's lifetime, and both are the kind of thing that is
+invisible until it is missing:
+
+- **The screen stays lit.** A phone blanks 30 s into a drive and navigation is
+  over. `driver::start`/`exit` set and clear the keep-screen-on window flag
+  (`platform::android`); holding it for the whole session would burn a battery
+  for a map nobody is driving with.
+- **Android has a position source at all.** `LocationWatch::available()` was
+  `cfg!(target_arch = "wasm32")`, so driver mode on the phone narrated the avatar
+  — which on a device with no keyboard does not move. There is a real provider
+  now, and everything the rest of this note says about course-over-ground applies
+  to it unchanged (a device fix has no facing, which is why the heading was never
+  the avatar's in the first place). It is **unverified on hardware**;
+  `docs/notes/android-build.md` has the four claims that need a device.
 
 ## Not implemented: lane guidance
 

@@ -46,8 +46,8 @@ use std::collections::HashMap;
 use mvt_reader::feature::Feature;
 
 use crate::pois::{single_point, tag_str};
-use crate::scatter::{hash3, rand01, srgb_to_linear_rgb};
-use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
+use crate::scatter::{bucket_range, hash3, rand01, srgb_to_linear_rgb};
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData, TILE_BUFFER_FRAC};
 
 /// Altitude at which furniture starts merging into the paving.
 ///
@@ -198,7 +198,13 @@ pub fn extract_furniture(
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
 
-    let ways = WayField::build(tile, scale, extent);
+    // `tile_m`, not this layer's `scale`/`extent`: [`WayField`] reads the
+    // *`streets`* layer, and MVT declares an extent per layer. Handing it the
+    // `pois` numbers happened to work only because Shortbread emits 4096
+    // everywhere — on any tile where the two differ, every bench took its angle
+    // from a street field scaled by the wrong factor, i.e. from streets that were
+    // nowhere near it.
+    let ways = WayField::build(tile, tile_m);
 
     let mut out = Vec::new();
     let mut truncated = false;
@@ -259,29 +265,47 @@ pub fn extract_furniture(
 /// [`clipped_rings`](crate::systems::vector_tiles::clipped_rings) exists for
 /// matters when a shape's *area* is being filled; here only a direction is read
 /// off, and a segment that runs out past the tile edge points the same way
-/// whether or not its far end is trimmed. Dropping the ones fully outside is
-/// enough.
+/// whether or not its far end is trimmed. What is dropped instead is any segment
+/// with an endpoint outside the tile's own buffer window — which is a bound on
+/// the *index*, not a cartographic judgement, and the reason is in
+/// [`TILE_BUFFER_FRAC`].
 struct WayField {
     segs: Vec<([f32; 2], [f32; 2])>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
+    /// The cell's ground size, which is what bounds the bucket grid — see
+    /// [`bucket_range`](crate::scatter::bucket_range).
+    tile_m: f32,
 }
 
 impl WayField {
     const CELL: f32 = 24.0;
 
-    fn build(tile: &TileData, scale: f32, extent: f32) -> Self {
+    /// Build the field from the tile's `streets` layer.
+    ///
+    /// Takes `tile_m` and derives the scale from the *streets* layer's own
+    /// extent. It used to be handed the caller's `scale`/`extent`, which is the
+    /// `pois` layer's — see [`extract_furniture`].
+    fn build(tile: &TileData, tile_m: f32) -> Self {
         use geo_types::Geometry;
 
         let mut field = Self {
             segs: Vec::new(),
             buckets: HashMap::new(),
+            tile_m,
         };
         let Some(meta) = tile.layer("streets") else {
             return field;
         };
         let features = tile.features(meta);
+        let extent = TileData::extent(meta);
+        let scale = tile_m / extent;
 
-        let margin = extent * 0.25;
+        let margin = extent * TILE_BUFFER_FRAC;
+        // Written as a positive test, so a NaN — false against every comparison —
+        // is rejected rather than admitted.
+        let in_range = |c: &geo_types::Coord<f32>| {
+            c.x >= -margin && c.y >= -margin && c.x <= extent + margin && c.y <= extent + margin
+        };
         for feature in features {
             let lines: Vec<&geo_types::LineString<f32>> = match &feature.geometry {
                 Geometry::LineString(ls) => vec![ls],
@@ -290,13 +314,14 @@ impl WayField {
             };
             for line in lines {
                 for w in line.0.windows(2) {
-                    let out_of_range = |c: &geo_types::Coord<f32>| {
-                        c.x < -margin
-                            || c.y < -margin
-                            || c.x > extent + margin
-                            || c.y > extent + margin
-                    };
-                    if out_of_range(&w[0]) && out_of_range(&w[1]) {
+                    // *Both* endpoints, where this used to demand that both be
+                    // out of range before it dropped anything. One wild end was
+                    // enough: `mvt-reader` clips its cursor at `i32::MAX` and
+                    // never to the extent (see `TILE_BUFFER_FRAC`), so a segment
+                    // running from a plausible bench-side vertex to ~2.1e9 was
+                    // accepted, and the bbox loop in `push` then tried to insert
+                    // on the order of 10^14 buckets.
+                    if !in_range(&w[0]) || !in_range(&w[1]) {
                         continue;
                     }
                     field.push(
@@ -317,8 +342,11 @@ impl WayField {
         self.segs.push((a, b));
         let (minx, maxx) = (a[0].min(b[0]), a[0].max(b[0]));
         let (minz, maxz) = (a[1].min(b[1]), a[1].max(b[1]));
-        for i in (minx / Self::CELL).floor() as i32..=(maxx / Self::CELL).floor() as i32 {
-            for j in (minz / Self::CELL).floor() as i32..=(maxz / Self::CELL).floor() as i32 {
+        // Clamped to the tile's own grid, which is the backstop for the window
+        // above: `as i32` saturates on a float, so an unclamped bound is
+        // `i32::MAX` and the loop never finishes.
+        for i in bucket_range(minx, maxx, Self::CELL, self.tile_m) {
+            for j in bucket_range(minz, maxz, Self::CELL, self.tile_m) {
                 self.buckets.entry((i, j)).or_default().push(idx);
             }
         }
@@ -692,6 +720,7 @@ pub fn paving_base(factor: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vector_tiles::synth;
 
     const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -765,7 +794,7 @@ mod tests {
         // 15° of *some* street direction" — a hashed angle would land ~17% of them
         // there by chance.
         let items = extract_furniture(&fixture(), TILE_M, 3).expect("extract");
-        let ways = WayField::build(&fixture(), TILE_M / 4096.0, 4096.0);
+        let ways = WayField::build(&fixture(), TILE_M);
 
         let benches: Vec<_> = items
             .iter()
@@ -821,6 +850,7 @@ mod tests {
         let mut ways = WayField {
             segs: Vec::new(),
             buckets: HashMap::new(),
+            tile_m: 200.0,
         };
         ways.push([0.0, 0.0], [100.0, 0.0]);
 
@@ -844,6 +874,9 @@ mod tests {
             let mut ways = WayField {
                 segs: Vec::new(),
                 buckets: HashMap::new(),
+                // Wide enough that the grid clamp cannot reach the ±150 m
+                // segments below; this test is about angles, not bounds.
+                tile_m: 600.0,
             };
             ways.push([-dx * 50.0, -dz * 50.0], [dx * 50.0, dz * 50.0]);
             let yaw = ways.facing(3.0, 3.0, ORIENT_RADIUS_M).expect("a path");
@@ -855,6 +888,67 @@ mod tests {
                 "way ({dx}, {dz}): the front has a {along} component along it"
             );
         }
+    }
+
+    /// MVT declares an extent **per layer**, and the way field reads `streets`
+    /// while its caller is walking `pois`. Handing it the caller's numbers put
+    /// every street of such a tile at a fraction of its true distance, so a bench
+    /// lined itself up with whatever happened to land near the wrong position —
+    /// invisible on Shortbread, where every layer is 4096, and wrong on the first
+    /// source that is not.
+    #[test]
+    fn the_way_field_is_scaled_by_the_streets_layers_own_extent() {
+        let bytes = synth::tile(&[
+            synth::line_layer("streets", 512, &[(0, 0), (512, 0)]),
+            synth::line_layer("pois", 4096, &[(0, 0), (4096, 0)]),
+        ]);
+        let tile = TileData::parse(&bytes).expect("parse");
+        let ways = WayField::build(&tile, 1000.0);
+
+        assert_eq!(ways.segs.len(), 1, "one street segment expected");
+        let (a, b) = ways.segs[0];
+        assert!(a[0].abs() < 1e-3, "the street starts at {a:?}");
+        // The street spans its whole tile, so in metres it must span the whole
+        // 1000 m cell. Scaled by the `pois` extent instead it stops at 125 m.
+        assert!(
+            (b[0] - 1000.0).abs() < 1e-3,
+            "the street ends at {b:?}, not at 1000 m"
+        );
+    }
+
+    /// One wild endpoint has to be enough to drop a segment.
+    ///
+    /// `mvt-reader` clips its coordinate cursor at `i32::MAX` and never to the
+    /// layer's extent, so a few bytes of crafted varint put a vertex at ~2.1e9.
+    /// The old test demanded that *both* endpoints be out of range before it
+    /// rejected anything, so a segment from a plausible vertex to that one was
+    /// kept — and the bbox loop in `push` then asked for ~10^14 buckets, each an
+    /// allocation. The map is drawn from bytes a server we do not run handed us.
+    #[test]
+    fn a_way_running_off_to_two_billion_is_dropped() {
+        let bytes = synth::tile(&[synth::line_layer(
+            "streets",
+            4096,
+            &[(100, 100), (2_000_000_000, 5)],
+        )]);
+        let tile = TileData::parse(&bytes).expect("parse");
+        let ways = WayField::build(&tile, TILE_M);
+        assert!(ways.segs.is_empty(), "a segment running to 2e9 was kept");
+
+        // …and the grid clamp bounds `push` even if a segment ever gets past the
+        // window, which is the half that makes this a guarantee rather than a
+        // filter that has to be complete.
+        let mut field = WayField {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+            tile_m: TILE_M,
+        };
+        field.push([0.0, 0.0], [2.1e9, 2.1e9]);
+        assert!(
+            field.buckets.len() < 20_000,
+            "{} buckets from one segment",
+            field.buckets.len()
+        );
     }
 
     #[test]

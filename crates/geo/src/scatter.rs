@@ -34,7 +34,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData};
+use crate::vector_tiles::{palette, SurfaceGroup, SurfaceMesh, TileData, TILE_BUFFER_FRAC};
 
 /// Altitude at which trees start merging into the flat fill.
 pub const TREE_FADE_START: f32 = 500.0;
@@ -383,6 +383,9 @@ pub struct RoadMask {
     /// they belong to.
     segs: Vec<([f32; 2], [f32; 2], f32)>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
+    /// The cell's ground size, which is what bounds the bucket grid — see
+    /// [`bucket_range`].
+    tile_m: f32,
 }
 
 impl RoadMask {
@@ -398,11 +401,29 @@ impl RoadMask {
         let mut mask = Self {
             segs: Vec::new(),
             buckets: HashMap::new(),
+            tile_m,
         };
         let Some(meta) = tile.layer("streets") else {
             return mask;
         };
         let scale = tile_m / TileData::extent(meta);
+        // The window a street segment has to lie in to be this tile's business at
+        // all. It replaces an `is_finite` filter on the points, which let a
+        // coordinate near `i32::MAX` — all `mvt-reader` guarantees, see
+        // `TILE_BUFFER_FRAC` — straight into `push`, where the bbox loop then
+        // tried to insert on the order of 10^14 buckets and died in the
+        // allocator. `trees_enabled` defaults on, so that was the *default* path
+        // on a body nobody here authored.
+        //
+        // Testing the segment rather than filtering the points is also the
+        // stricter reading: dropping a bad point from the list silently welds its
+        // two neighbours together into a street that was never in the data.
+        let margin = tile_m * TILE_BUFFER_FRAC;
+        let inside = |p: [f32; 2]| {
+            // Written as a positive test so a NaN — which compares false against
+            // everything — is rejected rather than admitted.
+            p[0] >= -margin && p[0] <= tile_m + margin && p[1] >= -margin && p[1] <= tile_m + margin
+        };
 
         for feature in tile.features(meta) {
             let Some((_, half)) = drawn_street(feature) else {
@@ -414,12 +435,11 @@ impl RoadMask {
                 _ => continue,
             };
             for ls in lines {
-                let pts: Vec<[f32; 2]> =
-                    ls.0.iter()
-                        .filter(|c| c.x.is_finite() && c.y.is_finite())
-                        .map(|c| [c.x * scale, c.y * scale])
-                        .collect();
+                let pts: Vec<[f32; 2]> = ls.0.iter().map(|c| [c.x * scale, c.y * scale]).collect();
                 for w in pts.windows(2) {
+                    if !inside(w[0]) || !inside(w[1]) {
+                        continue;
+                    }
                     mask.push(w[0], w[1], half);
                 }
             }
@@ -435,8 +455,8 @@ impl RoadMask {
         self.segs.push((a, b, half));
         let (minx, maxx) = (a[0].min(b[0]) - half, a[0].max(b[0]) + half);
         let (minz, maxz) = (a[1].min(b[1]) - half, a[1].max(b[1]) + half);
-        for i in (minx / Self::CELL).floor() as i32..=(maxx / Self::CELL).floor() as i32 {
-            for j in (minz / Self::CELL).floor() as i32..=(maxz / Self::CELL).floor() as i32 {
+        for i in bucket_range(minx, maxx, Self::CELL, self.tile_m) {
+            for j in bucket_range(minz, maxz, Self::CELL, self.tile_m) {
                 self.buckets.entry((i, j)).or_default().push(idx);
             }
         }
@@ -462,6 +482,33 @@ impl RoadMask {
         }
         false
     }
+}
+
+/// The inclusive range of grid cells a span covers, clamped to the tile's own
+/// grid.
+///
+/// The clamp is the second half of the guard the segment window in
+/// [`RoadMask::build`] is the first half of, and it is deliberately redundant with
+/// it: a bucket loop is the one place in this file where a single bad number does
+/// not produce a wrong answer but an unbounded amount of *work*, and `as i32` on a
+/// float saturates rather than wrapping, so an unclamped `(2.1e9 / 32).floor() as
+/// i32` is `i32::MAX` and the loop below never finishes. Nothing outside the tile
+/// plus its buffer can ever be queried — [`RoadMask::blocks`] is asked about tree
+/// positions, which come from the tile's own polygons — so cells beyond that are
+/// not just unsafe, they are unreachable.
+///
+/// An empty range (`lo > hi`) is the natural answer for a span entirely outside,
+/// and `for i in lo..=hi` simply does not run.
+pub(crate) fn bucket_range(
+    min: f32,
+    max: f32,
+    cell: f32,
+    tile_m: f32,
+) -> std::ops::RangeInclusive<i32> {
+    let limit = ((tile_m * (1.0 + TILE_BUFFER_FRAC)) / cell).ceil() as i32;
+    let lo = ((min / cell).floor() as i32).max(-limit);
+    let hi = ((max / cell).floor() as i32).min(limit);
+    lo..=hi
 }
 
 /// Recognises the tile border, where a polygon's "edge" is an artefact of the
@@ -925,6 +972,7 @@ mod tests {
         let mut mask = RoadMask {
             segs: Vec::new(),
             buckets: HashMap::new(),
+            tile_m: 400.0,
         };
         mask.push([0.0, 0.0], [100.0, 0.0], 1.0); // a path
         mask.push([0.0, 200.0], [100.0, 200.0], 11.0); // a motorway
@@ -939,6 +987,67 @@ mod tests {
         // extended a motorway's width beyond its last vertex would clear a bald
         // disc at every tile seam.
         assert!(!mask.blocks(-20.0, 200.0, 2.0));
+    }
+
+    /// A coordinate no legitimate tile carries must cost a rejected segment, not
+    /// an unbounded loop.
+    ///
+    /// `mvt-reader` clips its cursor at `i32::MAX` and never to the extent, so a
+    /// few bytes of crafted varint deliver ~2.1e9 here. The bbox loop in
+    /// [`RoadMask::push`] then covers ~6·10^7 cells per axis — 10^14 `HashMap`
+    /// inserts of a fresh `Vec`, which is a hang followed by an OOM kill, on the
+    /// default path (`trees_enabled` is on). Both halves of the guard are
+    /// exercised: the window in `build` never sees this call, and the clamp here
+    /// bounds it anyway.
+    #[test]
+    fn a_wild_coordinate_cannot_sweep_the_bucket_grid() {
+        let mut mask = RoadMask {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+            tile_m: 1472.0,
+        };
+        mask.push([0.0, 0.0], [2.1e9, 2.1e9], 1.0);
+        mask.push([-2.1e9, 0.0], [0.0, 0.0], 1.0);
+        mask.push([f32::NAN, 0.0], [10.0, 10.0], 1.0);
+        // The tile's own grid is 1472 m of 32 m cells plus the buffer margin, so
+        // ~117² cells is the ceiling however wild the input. Unclamped, the first
+        // of these alone asks for ~4·10^15.
+        assert!(
+            mask.buckets.len() < 20_000,
+            "{} buckets from three bad segments",
+            mask.buckets.len()
+        );
+    }
+
+    /// …and the window that keeps them out is wide enough for real data. The
+    /// fixture's street geometry stops at ±1.6% of the extent past the tile edge,
+    /// so a 25% window drops none of it.
+    #[test]
+    fn the_road_mask_keeps_every_street_of_a_real_tile() {
+        let tile_m = 1472.0;
+        let mask = RoadMask::build(&fixture(), tile_m);
+        let margin = tile_m * TILE_BUFFER_FRAC;
+        // 2,595 segments are encoded in the fixture's `streets` layer before
+        // `drawn_street` drops the tunnels and the unclassed ways.
+        assert!(
+            mask.segs.len() > 500,
+            "the window swallowed the fixture's streets: {} segments",
+            mask.segs.len()
+        );
+        for (a, b, _) in &mask.segs {
+            for p in [a, b] {
+                assert!(
+                    p[0] >= -margin && p[0] <= tile_m + margin,
+                    "segment endpoint at x = {} is outside the window",
+                    p[0]
+                );
+                assert!(
+                    p[1] >= -margin && p[1] <= tile_m + margin,
+                    "segment endpoint at z = {} is outside the window",
+                    p[1]
+                );
+            }
+        }
     }
 
     /// Same seed → same forest. A cell that streams out and back must regrow

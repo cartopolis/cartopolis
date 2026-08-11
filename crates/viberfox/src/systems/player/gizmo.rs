@@ -47,10 +47,20 @@ pub fn handle_gizmo_mode_input(
     mut gizmo_state: ResMut<GizmoState>,
     keyboard: Res<ButtonInput<KeyCode>>,
     egui_manager: Res<EguiManager>,
+    selected: Query<(), With<Selected>>,
 ) {
     // Ignore T/R/S when a text field is focused or a Ctrl chord is held; stays live
     // while the edit dialog is open (pass `false`) so mode switching works during editing.
     if egui_manager.ui_owns_keyboard(false, &keyboard) {
+        return;
+    }
+    // …and only while something is actually selected, because two of these three
+    // keys belong to the avatar as well: `R` is the flight climb key and `S` walks
+    // backwards. Without this the gizmo mode silently changed under you every time
+    // you walked, and the mode you next selected an object with was whichever
+    // direction you had last moved in. The gizmo is only meaningful with a
+    // selection, so gating on one costs nothing and ends the collision.
+    if selected.is_empty() {
         return;
     }
     if keyboard.just_pressed(KeyCode::KeyT) {

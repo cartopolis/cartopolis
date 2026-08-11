@@ -34,7 +34,7 @@ use crate::components::FreeCamera;
 use crate::components::{DataLayerMarkers, StopRing};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -115,6 +115,18 @@ const LAYER_CELL_RADIUS: i64 = 3;
 /// camera's own cell — comfortably past both, with a cell of slack for the
 /// camera sitting near an edge.
 const DETAIL_CELL_RADIUS: i64 = 1;
+/// How far the parsed Overpass detail is *kept* after its cell has gone, in
+/// LAYER_ZOOM cells from the camera's own cell.
+///
+/// [`DataLayers::detail_pois`] is a cache against a rate-limited service, so it
+/// deliberately outlives the markers it enriches — but "deliberately outlives"
+/// and "never freed" are not the same thing, and this is the difference. Eight
+/// cells is ~11 km at these latitudes, i.e. a 24 km square: every cell of a city
+/// you are moving around in stays cached (and a re-anchor across town costs no
+/// query), while the city you flew away from is released. The 3×3 ring the
+/// detail pass actually covers ([`DETAIL_CELL_RADIUS`]) sits well inside it, so
+/// the eviction can never fight the fetch.
+const DETAIL_CACHE_RADIUS: i64 = 8;
 /// Give up on a cell after this many failed fetch rounds.
 const MAX_CELL_ATTEMPTS: u32 = 5;
 /// How near an Overpass POI must be to a placed marker to be taken as the same
@@ -489,6 +501,23 @@ pub struct DataLayers {
     /// Detail that has arrived, whether or not its markers have. Held rather
     /// than applied-and-dropped so a cell that streams out and back is enriched
     /// again without a second query.
+    ///
+    /// This is the one of the four per-cell maps that deliberately **outlives**
+    /// its cell — and it is the only thing that does. It is not an oversight and
+    /// it must not be pruned alongside `pois` / `enriched` / `cells`: it is also
+    /// the de-duplication key for the detail stream (`dl.details.request` is only
+    /// made for a cell absent from here), and `CellStream::reset` on a re-anchor
+    /// wipes that stream's own `requested` set. Prune it with its siblings and a
+    /// re-anchor, or a walk out of a cell and back, re-queries a *rate-limited*
+    /// Overpass for ground already answered for.
+    ///
+    /// What it must not do is grow without bound — every z14 cell ever visited ×
+    /// every enabled layer, each holding a `Vec<Poi>` of owned names, websites and
+    /// addresses. So it is bounded by *distance* instead of by lifetime:
+    /// [`DETAIL_CACHE_RADIUS`] cells around the camera survive, the rest are
+    /// dropped when the camera changes cell. That keeps the whole of a city in
+    /// hand — which is the case the cache exists for — and lets the city you flew
+    /// away from go.
     detail_pois: HashMap<LayerCell, Vec<Poi>>,
     /// One unlit material shared by all depth-tested marker geometry (hue is
     /// per-vertex): poles, pin stems, pin ground discs.
@@ -732,6 +761,43 @@ pub struct PoiPopup {
     pub osm_id: i64,
 }
 
+/// The cells of a square ring of `radius`, as **offsets** from its centre,
+/// nearest first (Chebyshev, the same metric the retire test uses).
+///
+/// Offsets rather than absolute cells, because that is what makes the answer a
+/// constant: the ordering is by distance from the centre and is therefore
+/// translation-invariant, so the ring the camera wants at `(ccx, ccy)` is this
+/// list with `(ccx, ccy)` added to every entry. It used to be rebuilt — a `Vec`
+/// allocated and sorted — once per enabled layer per frame for a set that only
+/// depends on a compile-time constant.
+///
+/// The sort is stable and the generation order is row-major, so this is the
+/// exact order the per-frame version produced; a change here changes which cells
+/// win the fetch budget on a fresh anchor.
+fn ring_offsets(radius: i64) -> Vec<(i64, i64)> {
+    let mut cells: Vec<(i64, i64)> =
+        Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            cells.push((dx, dy));
+        }
+    }
+    cells.sort_by_key(|(dx, dy)| dx.abs().max(dy.abs()));
+    cells
+}
+
+/// The marker ring ([`LAYER_CELL_RADIUS`]), built once.
+fn marker_ring() -> &'static [(i64, i64)] {
+    static RING: OnceLock<Vec<(i64, i64)>> = OnceLock::new();
+    RING.get_or_init(|| ring_offsets(LAYER_CELL_RADIUS))
+}
+
+/// The Overpass detail ring ([`DETAIL_CELL_RADIUS`]), built once.
+fn detail_ring() -> &'static [(i64, i64)] {
+    static RING: OnceLock<Vec<(i64, i64)>> = OnceLock::new();
+    RING.get_or_init(|| ring_offsets(DETAIL_CELL_RADIUS))
+}
+
 /// Stream marker cells for every enabled layer as the camera roams, and apply
 /// enable/disable toggles from the panel by flipping entity visibility.
 pub fn update_data_layers(
@@ -747,15 +813,13 @@ pub fn update_data_layers(
     bigspace: Query<Entity, With<BigSpace>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     tile_url: Res<OsmTileUrlTemplate>,
+    // The camera's LAYER_ZOOM cell last frame. Only used to decide when the
+    // detail cache is worth sweeping — see [`DETAIL_CACHE_RADIUS`].
+    mut last_camera_cell: Local<Option<(i64, i64)>>,
 ) {
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
     };
-    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
-    // Which source places the markers this frame. A raster template (or none at
-    // all, before a handshake) has no point layers to read, so Overpass is the
-    // whole source there, exactly as it was for every layer before.
-    let from_tile = tile_source_kind(&template) == TileSourceKind::Vector;
 
     // Re-anchor (ADR-025): when the map origin moves, drop every loaded cell and
     // re-establish at the new location, exactly like the buildings. Dropping
@@ -797,7 +861,9 @@ pub fn update_data_layers(
         // *match* is against marker positions in the old origin's frame, so it
         // has to be re-run. Only `enriched` is cleared above — the parsed POIs
         // themselves stay, which is what stops a re-anchor re-querying Overpass
-        // for ground it already has.
+        // for ground it already has. A re-anchor that actually *moves* far enough
+        // to make them worthless drops them anyway, through the distance sweep at
+        // the end of this system rather than from here.
         dl.details.reset();
         dl.anchor = None;
     }
@@ -827,6 +893,15 @@ pub fn update_data_layers(
         return;
     }
 
+    // Below the altitude gate on purpose: reading the template takes a mutex and
+    // clones a `String`, and from orbit — where this system does nothing else at
+    // all — that was the entire per-frame cost of a frozen streamer.
+    let template = tile_url.0.lock().map(|g| g.clone()).unwrap_or_default();
+    // Which source places the markers this frame. A raster template (or none at
+    // all, before a handshake) has no point layers to read, so Overpass is the
+    // whole source there, exactly as it was for every layer before.
+    let from_tile = tile_source_kind(&template) == TileSourceKind::Vector;
+
     // Camera's LAYER_ZOOM cell from its base-zoom tile coords.
     let world_x = cell.x as f32 * WORLD_CELL_EDGE + tf.translation.x;
     let world_z = cell.z as f32 * WORLD_CELL_EDGE + tf.translation.z;
@@ -838,37 +913,30 @@ pub fn update_data_layers(
     // both de-dups and holds the backoff, so there is no second retry loop: a cell
     // that failed waits its 15 s / 30 s / 1 m / … out, because Overpass 504s come
     // in bursts and retrying straight away only burns the attempt budget.
+    //
+    // The ring itself is a constant ([`ring_offsets`]) rather than a `Vec` built
+    // and sorted per enabled layer per frame; the `request` calls stay, because
+    // `CellStream::request` *is* the retry pump — a cell inside its backoff is
+    // one that has been asked for and refused, and skipping the ask because the
+    // ring has not moved would strand it there for good.
     let now_secs = time.elapsed_secs_f64();
-    let ring = |radius: i64| {
-        let mut cells: Vec<(i64, i64)> = Vec::new();
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                cells.push((ccx + dx, ccy + dy));
-            }
-        }
-        cells.sort_by_key(|c| (c.0 - ccx).abs().max((c.1 - ccy).abs()));
-        cells
-    };
-    let mut enqueue: Vec<LayerCell> = Vec::new();
-    let mut enqueue_details: Vec<LayerCell> = Vec::new();
     for li in 0..dl.layers.len() {
         if !dl.layers[li].enabled {
             continue;
         }
-        enqueue.extend(ring(LAYER_CELL_RADIUS).into_iter().map(|c| (li, c.0, c.1)));
+        for (dx, dy) in marker_ring() {
+            dl.cells.request((li, ccx + dx, ccy + dy), now_secs);
+        }
         // Nothing to enrich when Overpass is already placing the markers.
         if from_tile {
-            enqueue_details.extend(ring(DETAIL_CELL_RADIUS).into_iter().map(|c| (li, c.0, c.1)));
-        }
-    }
-    for job in enqueue {
-        dl.cells.request(job, now_secs);
-    }
-    for job in enqueue_details {
-        // A cell answered before a re-anchor is still answered: the detail is
-        // anchor-independent, only the position match is not.
-        if !dl.detail_pois.contains_key(&job) {
-            dl.details.request(job, now_secs);
+            for (dx, dy) in detail_ring() {
+                let job = (li, ccx + dx, ccy + dy);
+                // A cell answered before a re-anchor is still answered: the detail
+                // is anchor-independent, only the position match is not.
+                if !dl.detail_pois.contains_key(&job) {
+                    dl.details.request(job, now_secs);
+                }
+            }
         }
     }
 
@@ -1109,7 +1177,8 @@ pub fn update_data_layers(
             dl.layers[li].pois.remove(&c);
             // The markers are going, so their enrichment goes with them; the
             // parsed detail in `detail_pois` stays, and re-entry re-joins it
-            // without a query.
+            // without a query. It is not kept *forever* — the distance sweep at
+            // the end of this system is what bounds it.
             dl.layers[li].enriched.remove(&c);
             dl.cells.forget(&(li, c.0, c.1));
         }
@@ -1127,6 +1196,24 @@ pub fn update_data_layers(
                 commands.entity(entity).insert(visibility);
             }
         }
+    }
+
+    // Bound the one map that outlives its cells. `detail_pois` is a cache against
+    // a rate-limited Overpass — it is *meant* to survive a cell retire and a
+    // re-anchor (see its field doc, and the de-duplication it does at the request
+    // site above), which is why it is not pruned with `pois` and `enriched`. But
+    // "survives its cell" was implemented as "is never freed", and the key space
+    // is every z14 cell ever visited × every enabled layer, each holding owned
+    // names, websites and addresses. Distance is the bound: whatever is within
+    // DETAIL_CACHE_RADIUS of the camera stays, the rest goes.
+    //
+    // Swept only when the camera changes cell, which is the only thing that can
+    // move an entry across the threshold — a stationary camera pays nothing, and
+    // the sweep itself is bounded by what it just kept.
+    if *last_camera_cell != Some((ccx, ccy)) {
+        *last_camera_cell = Some((ccx, ccy));
+        dl.detail_pois
+            .retain(|(_, cx, cy), _| (cx - ccx).abs().max((cy - ccy).abs()) <= DETAIL_CACHE_RADIUS);
     }
 }
 
@@ -1285,12 +1372,34 @@ pub fn render_poi_popup(
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
+                        // Both buttons hand their URL to `open_url`, which cannot
+                        // reach a browser on every platform. Grey them out there
+                        // rather than let a press do nothing — a control that
+                        // swallows a tap is indistinguishable from a broken app.
+                        let can_open = open_url_supported();
+                        /// Shown on hover where the buttons are dead, so the
+                        /// greying is explained rather than merely observed.
+                        const NO_BROWSER: &str = "Opening links isn't available on this platform";
                         if let Some(url) = &popup.website {
-                            if ui.button("Website ↗").clicked() {
+                            if ui
+                                .add_enabled(
+                                    can_open,
+                                    egui::Button::new(format!(
+                                        "Website {}",
+                                        theme::first_drawable(ui.ctx(), &["↗", "»"])
+                                    )),
+                                )
+                                .on_disabled_hover_text(NO_BROWSER)
+                                .clicked()
+                            {
                                 open = Some(url.clone());
                             }
                         }
-                        if ui.button("OSM").clicked() {
+                        if ui
+                            .add_enabled(can_open, egui::Button::new("OSM"))
+                            .on_disabled_hover_text(NO_BROWSER)
+                            .clicked()
+                        {
                             open = Some(format!(
                                 "https://www.openstreetmap.org/node/{}",
                                 popup.osm_id
@@ -1307,9 +1416,38 @@ pub fn render_poi_popup(
     }
 }
 
+/// Whether [`open_url`] can actually open anything on this platform.
+///
+/// The catch-all arm of `open_url` exists so an unhandled target is a dead button
+/// rather than a build break — but a dead button that looks alive is its own lie:
+/// on Android the popup's `Website ↗` and `OSM` buttons were enabled, clickable,
+/// and did nothing but write a log line the phone has no way to show. Callers ask
+/// this and `add_enabled` the button with the answer, so an unsupported platform
+/// says so in the only vocabulary a button has.
+///
+/// **This list is the one to edit.** It deliberately restates the `cfg` of the
+/// arms of `open_url` that do real work rather than deriving anything clever from
+/// them: when Android's `Intent.ACTION_VIEW` lands (or `web-sys`'s `window.open`
+/// for wasm), add that target here in the same commit that adds its arm below and
+/// the buttons come back to life with no other edit anywhere.
+pub const fn open_url_supported() -> bool {
+    cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "android"
+    ))
+}
+
 /// Open a URL in the system browser. Scheme-restricted to http(s): OSM tag
 /// values are untrusted data, and a bare domain gets https:// prepended.
-fn open_url(url: &str) {
+///
+/// Not every platform can honour this — ask [`open_url_supported`] before
+/// offering the user a control that calls it.
+///
+/// `pub` because the About panel's licence links go through the same door: the
+/// scheme restriction and the platform matrix are the whole point of having one.
+pub fn open_url(url: &str) {
     let url = url.trim();
     let url = if url.starts_with("http://") || url.starts_with("https://") {
         url.to_string()
@@ -1343,13 +1481,19 @@ fn open_url(url: &str) {
     // found it). A catch-all makes an unhandled platform a dead button instead of
     // a build break.
     //
-    // Android's real implementation is an `Intent.ACTION_VIEW` through JNI, which
-    // needs the activity handle and a JVM-attached thread — the same shape as the
-    // clipboard seam, and deferred with it (`docs/notes/android-build.md`).
+    // Android is an `Intent.ACTION_VIEW` through JNI (`platform::android`), started
+    // from the *application* context rather than the activity — see that module for
+    // why the activity's own `startActivity` is the wrong one to call off the UI
+    // thread.
+    #[cfg(target_os = "android")]
+    let result: std::io::Result<()> =
+        crate::platform::android::open_url(&url).map_err(std::io::Error::other);
+
     #[cfg(not(any(
         target_os = "linux",
         target_os = "macos",
         target_os = "windows",
+        target_os = "android",
         target_arch = "wasm32"
     )))]
     let result: std::io::Result<()> = {
@@ -1436,9 +1580,135 @@ pub fn apply_minimal_mode(
     }
 }
 
-/// Apply the Buildings / Map feature toggles by writing entity visibility.
-/// Runs every frame with compare-before-write, so it is cheap when nothing
-/// changed and newly streamed-in entities pick up the current toggle state.
+/// Is the camera in the space tier? Factored out because the answer has to be
+/// identical in the three places that need it — the run condition, the full
+/// sweep and the `Added` pass — and a threshold recomputed three ways is a
+/// threshold that will eventually be crossed in two of them and not the third.
+fn camera_in_space(
+    globe: &crate::systems::globe::GlobeState,
+    cam: Option<(&GridCell, &Transform)>,
+) -> bool {
+    cam.is_some_and(|(cell, tf)| globe.in_space(cell, tf))
+}
+
+/// The visibility every toggle-gated entity group should be carrying right now.
+///
+/// One value, derived once, consumed by both [`apply_feature_toggles`] and
+/// [`apply_feature_toggles_to_new`] — the two systems must never be able to
+/// answer differently, or a building that streamed in on a quiet frame comes up
+/// hidden and stays that way until the next time a toggle happens to move. It is
+/// also what the run condition compares, so "did anything change" and "what
+/// should it be" are the same expression.
+// `pub` only because it appears in `feature_toggles_changed`'s `Local`, and that
+// is a public system; the fields stay private.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ToggleWants {
+    /// OSM extrusions + their lit windows.
+    osm: Visibility,
+    /// 3DBAG LoD2.2 meshes.
+    lod22: Visibility,
+    /// A streamed ground tile that has imagery (or is the backstop level); one
+    /// that has neither is always hidden, whatever this says.
+    map: Visibility,
+    /// The map anchor's own tile, or `None` before the first anchor. A legacy
+    /// region quad outside it is stale and hidden regardless of the toggles.
+    anchor_tile: Option<(i64, i64, i64)>,
+}
+
+impl ToggleWants {
+    fn of(dl: &DataLayers, in_space: bool, map_anchor: &crate::resources::MapAnchor) -> Self {
+        // The panel toggle AND the space tier (from orbit the flat patch floats
+        // over the globe, parallax-shifted — ADR-025). Folding both in here is
+        // what keeps these systems the *sole* visibility writer for these
+        // entities, rather than racing another one.
+        let base = dl.buildings_enabled && !in_space;
+        let map = if dl.map_enabled && !in_space {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        Self {
+            osm: if base && dl.osm_buildings_enabled {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            },
+            // 3DBAG-off despawns its meshes (`lod22::update_lod22`); this covers
+            // the master Buildings toggle, the space tier, and the frame before
+            // teardown.
+            lod22: if base && dl.tdbag_enabled {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            },
+            map,
+            // The legacy region quad is a single tile-sized textured slab pinned
+            // to the world origin, and unlike everything else it does NOT follow
+            // a re-anchor (ADR-025). Re-anchored elsewhere it becomes a lone patch
+            // of the *old* city's imagery sitting exactly where the camera lands —
+            // the one recognisable thing in an otherwise empty view, which reads as
+            // "streaming is broken" rather than "you are somewhere else". Hide it
+            // once the map anchor has left its tile; the streamed tiles cover that
+            // ground now.
+            anchor_tile: map_anchor.geo.map(|(clat, clng, z)| {
+                let (ax, ay) = viberfox_core::world::lat_lng_to_tile(clat, clng, z);
+                (ax, ay, z as i64)
+            }),
+        }
+    }
+}
+
+/// Run condition for [`apply_feature_toggles`]: has anything the sweep writes
+/// actually changed since it last ran?
+///
+/// **Not `resource_changed::<DataLayers>()`.** That would be true every single
+/// frame and gate nothing: `update_data_layers` takes `ResMut<DataLayers>` and
+/// mutably dereferences it unconditionally (`dl.cells.drain_despawns`), and Bevy
+/// marks a resource changed on `DerefMut` rather than by comparing values. So the
+/// condition compares the derived answer instead — four booleans and an
+/// `Option<(i64, i64, i64)>` — which is both exact and immune to any future
+/// writer touching an unrelated field of the resource.
+///
+/// The other two inputs are not toggles at all and are why this is a hand-written
+/// condition rather than a change-detection one: the space-tier boolean flips on
+/// camera *altitude*, and the anchor tile moves on a re-anchor. Miss either and
+/// the buildings stay hidden after a descent from orbit.
+pub fn feature_toggles_changed(
+    dl: Res<DataLayers>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+    mut last: Local<Option<ToggleWants>>,
+) -> bool {
+    let want = ToggleWants::of(
+        &dl,
+        camera_in_space(&globe, camera.single().ok()),
+        &map_anchor,
+    );
+    // `None` on the first evaluation, so the sweep always runs once — which is
+    // also what applies the persisted toggles from `user.json` at startup.
+    if *last == Some(want) {
+        return false;
+    }
+    *last = Some(want);
+    true
+}
+
+/// Apply the Buildings / Map feature toggles by writing entity visibility, over
+/// **every** matching entity in the world.
+///
+/// Gated by [`feature_toggles_changed`], because the world is the wrong size to
+/// sweep per frame: four queries over every OSM building, every lit window, every
+/// 3DBAG mesh, every streamed ground tile and every region quad is tens of
+/// thousands of rows, and the compare-before-write below only dodges the *change
+/// detection* — the archetype walk and the `&mut Visibility` fetch behind it are
+/// paid whether or not a byte moves. Nothing here can change without one of the
+/// five values in [`ToggleWants`] changing, so a steady state costs the condition
+/// and nothing else.
+///
+/// Entities that stream in *between* two toggle changes are the other half of the
+/// contract, and they are [`apply_feature_toggles_to_new`]'s — that one runs every
+/// frame but only ever touches rows Bevy has already marked as new.
 pub fn apply_feature_toggles(
     dl: Res<DataLayers>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -1495,79 +1765,185 @@ pub fn apply_feature_toggles(
     // Mirror the panel's 3DBAG toggle into `osm_buildings`' coverage gate — the
     // coverage predicates are free functions over statics, out of reach of this
     // resource. `lod22::update_lod22` tears its meshes down on the off-edge.
+    //
+    // These two live in the *gated* system deliberately. They are writes derived
+    // purely from the toggles, so replaying them every frame said nothing new —
+    // and `colliders` is a `ResMut`, so touching it unconditionally marked
+    // `BuildingColliders` changed on every frame of the run for any reader that
+    // ever wants to watch it.
     crate::systems::osm_buildings::set_tdbag_enabled(dl.tdbag_enabled);
     // And both source toggles into the collision index, so a hidden source's
     // footprints stop acting as invisible walls (collision matches what's drawn).
     colliders.set_sources(dl.osm_buildings_enabled, dl.tdbag_enabled);
 
-    // Sole visibility writer for these entities: the panel toggle AND the space
-    // tier (from orbit the flat patch floats over the globe, parallax-shifted —
-    // ADR-025). Folding both in here avoids racing another writer.
-    let in_space = camera
-        .single()
-        .map(|(cell, tf)| globe.in_space(cell, tf))
-        .unwrap_or(false);
-    let base = dl.buildings_enabled && !in_space;
-    let want = if base && dl.osm_buildings_enabled {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    let want = ToggleWants::of(
+        &dl,
+        camera_in_space(&globe, camera.single().ok()),
+        &map_anchor,
+    );
     for mut vis in osm_meshes.iter_mut() {
-        if *vis != want {
-            *vis = want;
+        if *vis != want.osm {
+            *vis = want.osm;
         }
     }
-    // 3DBAG-off despawns its meshes (`lod22::update_lod22`); this covers the
-    // master Buildings toggle, the space tier, and the frame before teardown.
-    let want = if base && dl.tdbag_enabled {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
     for mut vis in lod22_meshes.iter_mut() {
-        if *vis != want {
-            *vis = want;
+        if *vis != want.lod22 {
+            *vis = want.lod22;
         }
     }
-    let want = if dl.map_enabled && !in_space {
-        Visibility::Inherited
+    for (mut vis, ready, backstop) in map.iter_mut() {
+        let tile_vis = map_tile_want(&want, ready, backstop);
+        if *vis != tile_vis {
+            *vis = tile_vis;
+        }
+    }
+    for (region, mut vis) in region_quads.iter_mut() {
+        let region_vis = region_want(&want, region);
+        if *vis != region_vis {
+            *vis = region_vis;
+        }
+    }
+}
+
+/// What one streamed ground tile should be showing.
+///
+/// A tile with no imagery yet stays hidden so the coarser clipmap level beneath it
+/// shows through — blurry map, not grey squares (`crate::components::MapBackstop`
+/// has the argument). The coarsest level is exempt: nothing is stacked under it, so
+/// hiding it would open a hole to the sky at the horizon. This has to happen here
+/// rather than in `map_stream`, because these systems are the sole visibility writer
+/// for a `StreamTile` and would otherwise un-hide them the next frame.
+fn map_tile_want(want: &ToggleWants, ready: bool, backstop: bool) -> Visibility {
+    if ready || backstop {
+        want.map
     } else {
         Visibility::Hidden
-    };
-    // A tile with no imagery yet stays hidden so the coarser clipmap level beneath
-    // it shows through — blurry map, not grey squares (`crate::components::MapBackstop`
-    // has the argument). The coarsest level is exempt: nothing is stacked under it,
-    // so hiding it would open a hole to the sky at the horizon. This has to happen
-    // here rather than in `map_stream`, because this system is the sole visibility
-    // writer for a `StreamTile` and would otherwise un-hide them the next frame.
-    for (mut vis, ready, backstop) in map.iter_mut() {
-        let want = if ready || backstop {
-            want
-        } else {
-            Visibility::Hidden
-        };
-        if *vis != want {
-            *vis = want;
+    }
+}
+
+/// What one legacy region quad should be showing — see the `anchor_tile` field of
+/// [`ToggleWants`] for why a quad outside the current anchor tile is hidden
+/// outright.
+fn region_want(want: &ToggleWants, region: &crate::components::Region) -> Visibility {
+    let stale = want
+        .anchor_tile
+        .is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
+    if stale {
+        Visibility::Hidden
+    } else {
+        want.map
+    }
+}
+
+/// The other half of [`apply_feature_toggles`]: give **newly spawned** entities
+/// this frame's toggle state.
+///
+/// This one is not gated, because a building can stream in on a frame where no
+/// toggle moved and it still has to come up correct — but it is filtered on
+/// `Added<…>`, so on a quiet frame the cost is one change-tick comparison per row
+/// and no `&mut Visibility` fetch at all (Bevy tests a query's filter before it
+/// fetches the row's data). That is the whole trade: the per-frame work drops from
+/// "read and compare a component on every building in the city" to "compare a tick
+/// on every building in the city", and the writes, the `GlobalTransform` traffic
+/// and the render-world re-extraction behind them only happen for rows that are
+/// genuinely new.
+///
+/// The ground-tile query is the one that needs care, because a `StreamTile` has
+/// **two** edges, not one. `Added<StreamTile>` catches it the moment it is spawned
+/// (untextured, and therefore hidden); `Added<StreamTileReady>` catches the *same*
+/// entity again later, when `map_stream` hands it a material — a second, separate
+/// edge, and missing it would leave a fully textured city invisible until the next
+/// time somebody happened to touch a checkbox. `MapBackstop` needs no trigger of
+/// its own: it is inserted in the same spawn as `StreamTile`. Neither component is
+/// ever *removed* (a tile that goes stale is despawned), so there is no third edge
+/// to watch for.
+///
+/// The `With`/`Without` sets are copied verbatim from the gated sweep and must stay
+/// that way: `Added<T>` contributes no archetype filter, so those clauses — not the
+/// `Added`s — are what prove the four `&mut Visibility` queries disjoint.
+pub fn apply_feature_toggles_to_new(
+    dl: Res<DataLayers>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    mut osm_meshes: Query<
+        &mut Visibility,
+        (
+            Or<(
+                With<crate::components::OsmBuildingMesh>,
+                With<crate::systems::osm_buildings::WindowGlow>,
+            )>,
+            Or<(
+                Added<crate::components::OsmBuildingMesh>,
+                Added<crate::systems::osm_buildings::WindowGlow>,
+            )>,
+            Without<crate::systems::lod22::Lod22Mesh>,
+        ),
+    >,
+    mut lod22_meshes: Query<
+        &mut Visibility,
+        (
+            Added<crate::systems::lod22::Lod22Mesh>,
+            With<crate::systems::lod22::Lod22Mesh>,
+            Without<crate::components::OsmBuildingMesh>,
+            Without<crate::systems::osm_buildings::WindowGlow>,
+        ),
+    >,
+    mut map: Query<
+        (
+            &mut Visibility,
+            Has<crate::components::StreamTileReady>,
+            Has<crate::components::MapBackstop>,
+        ),
+        (
+            With<crate::systems::map_stream::StreamTile>,
+            Or<(
+                Added<crate::systems::map_stream::StreamTile>,
+                Added<crate::components::StreamTileReady>,
+            )>,
+            Without<crate::components::RegionMesh>,
+            Without<crate::components::OsmBuildingMesh>,
+            Without<crate::systems::osm_buildings::WindowGlow>,
+            Without<crate::systems::lod22::Lod22Mesh>,
+        ),
+    >,
+    mut region_quads: Query<
+        (&crate::components::Region, &mut Visibility),
+        (
+            Added<crate::components::RegionMesh>,
+            With<crate::components::RegionMesh>,
+            Without<crate::systems::map_stream::StreamTile>,
+            Without<crate::components::OsmBuildingMesh>,
+            Without<crate::systems::osm_buildings::WindowGlow>,
+            Without<crate::systems::lod22::Lod22Mesh>,
+        ),
+    >,
+    map_anchor: Res<crate::resources::MapAnchor>,
+) {
+    let want = ToggleWants::of(
+        &dl,
+        camera_in_space(&globe, camera.single().ok()),
+        &map_anchor,
+    );
+    for mut vis in osm_meshes.iter_mut() {
+        if *vis != want.osm {
+            *vis = want.osm;
         }
     }
-
-    // The legacy region quad is a single tile-sized textured slab pinned to the
-    // world origin, and unlike everything else it does NOT follow a re-anchor
-    // (ADR-025). Re-anchored elsewhere it becomes a lone patch of the *old*
-    // city's imagery sitting exactly where the camera lands — the one
-    // recognisable thing in an otherwise empty view, which reads as "streaming
-    // is broken" rather than "you are somewhere else". Hide it once the map
-    // anchor has left its tile; the streamed tiles cover that ground now.
-    let anchor_tile = map_anchor.geo.map(|(clat, clng, z)| {
-        let (ax, ay) = viberfox_core::world::lat_lng_to_tile(clat, clng, z);
-        (ax, ay, z as i64)
-    });
+    for mut vis in lod22_meshes.iter_mut() {
+        if *vis != want.lod22 {
+            *vis = want.lod22;
+        }
+    }
+    for (mut vis, ready, backstop) in map.iter_mut() {
+        let tile_vis = map_tile_want(&want, ready, backstop);
+        if *vis != tile_vis {
+            *vis = tile_vis;
+        }
+    }
     for (region, mut vis) in region_quads.iter_mut() {
-        let stale = anchor_tile.is_some_and(|t| t != (region.tile_x, region.tile_y, region.tile_z));
-        let want = if stale { Visibility::Hidden } else { want };
-        if *vis != want {
-            *vis = want;
+        let region_vis = region_want(&want, region);
+        if *vis != region_vis {
+            *vis = region_vis;
         }
     }
 }
@@ -1575,17 +1951,50 @@ pub fn apply_feature_toggles(
 /// Pulse the ground rings: every ring expands from its POI and fades out over
 /// one period, all in phase (one transform write per ring, one alpha write per
 /// category material).
+///
+/// The animation runs on a **quantised clock**, not on `elapsed_secs` directly —
+/// see [`PHASE_STEPS`].
 pub fn animate_stop_rings(
     time: Res<Time>,
     dl: Res<DataLayers>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut rings: Query<&mut Transform, With<StopRing>>,
+    mut last_step: Local<Option<u32>>,
 ) {
+    /// One pulse, in seconds.
+    const PERIOD: f32 = 3.0;
+    /// Outer radius the ring reaches at the end of a pulse, in metres.
+    const MAX_RADIUS: f32 = 4.5;
+    /// How many discrete phases one pulse is played in — i.e. the animation
+    /// updates at `PHASE_STEPS / PERIOD` = **20 Hz**, a 50 ms quantum.
+    ///
+    /// The write below is not cheap and it is not optional-per-entity: one
+    /// `Transform` per ring, and a transit layer at full radius is thousands of
+    /// them, each tripping change detection into `GlobalTransform` propagation and
+    /// a render-world re-extraction — plus one `Modified` asset event per category
+    /// material, which re-uploads its uniform. Done per frame that is a fixed tax
+    /// on every frame the layer is on, and it buys nothing: the thing being
+    /// animated is a slow, translucent, low-contrast annulus with a three-second
+    /// ramp.
+    ///
+    /// 20 Hz is chosen from both ends. Above: it is comfortably past the ~16 Hz
+    /// where apparent motion of a large soft-edged shape stops reading as
+    /// continuous, and one step advances the ring by 1/60th of its total travel
+    /// (~7 cm of a 4.5 m radius) while its alpha moves by under 1% — smaller than
+    /// the step the 8-bit blend can resolve for most of the pulse. Below: it has
+    /// to sit under the frame rate on the platforms we ship or it saves nothing,
+    /// and 20 Hz is under 30 as well as under 60, so the phone — the reason any of
+    /// this is being tuned — drops at least a third of the writes and a desktop
+    /// drops two thirds.
+    ///
+    /// The visible cost of quantising is that a ring spawning mid-step keeps its
+    /// spawn scale (0.4) until the next boundary. That was already true for up to
+    /// one frame; it is now true for up to 50 ms.
+    const PHASE_STEPS: u32 = 60;
+
     // Toggling a layer off only hides its entities (`apply_feature_toggles`), so
-    // without this gate a disabled transit layer still costs one `Transform` write
-    // per ring — thousands of them — each tripping change detection into
-    // `GlobalTransform` propagation and render-world re-extraction, plus a
-    // `Modified` event per ring material. Nothing is visible to animate.
+    // without this gate a disabled transit layer still pays the whole cost above
+    // for something nothing can see.
     if !dl
         .layers
         .iter()
@@ -1594,9 +2003,17 @@ pub fn animate_stop_rings(
     {
         return;
     }
-    const PERIOD: f32 = 3.0;
-    const MAX_RADIUS: f32 = 4.5;
-    let phase = (time.elapsed_secs() % PERIOD) / PERIOD;
+    // Quantise the phase, then skip the frame entirely when it has not moved. The
+    // step, not the time, is what the pose is derived from — deriving the pose
+    // from the raw clock and merely *comparing* it would put the rings back on a
+    // continuum where two adjacent frames are almost never equal.
+    let step = ((time.elapsed_secs() % PERIOD) / PERIOD * PHASE_STEPS as f32) as u32 % PHASE_STEPS;
+    if *last_step == Some(step) {
+        return;
+    }
+    *last_step = Some(step);
+
+    let phase = step as f32 / PHASE_STEPS as f32;
     let scale = 0.4 + phase * (MAX_RADIUS - 0.4);
     for mut tf in rings.iter_mut() {
         tf.scale = Vec3::splat(scale);
@@ -1662,6 +2079,7 @@ pub fn render_data_layers_panel(
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
     let mut close = false;
+    let mut about = false;
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     crate::systems::egui_manager::responsive_right_panel(
@@ -1673,112 +2091,134 @@ pub fn render_data_layers_panel(
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = crate::resources::RightPanel::Layers;
         close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
-        for (i, def) in LAYER_DEFS.iter().enumerate() {
-            ui.add_space(4.0);
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.layers[i].enabled,
-                egui::RichText::new(def.name).size(14.0),
-            );
-            ui.indent(def.key, |ui| {
-                for (label, style) in def.categories {
-                    let c = egui::Color32::from_rgb(
-                        (style.color[0] * 255.0) as u8,
-                        (style.color[1] * 255.0) as u8,
-                        (style.color[2] * 255.0) as u8,
+        // The body is ~35 rows and ~900 pt tall against a 609 pt phone viewport
+        // (411 dp at `ui_scale` 1.5), and a `Panel` does not scroll on its own —
+        // it simply clips. Everything from "Height" down, including the only
+        // switch that brings the street names back, was unreachable. The header
+        // stays outside so the close button cannot scroll away with the content.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (i, def) in LAYER_DEFS.iter().enumerate() {
+                    ui.add_space(4.0);
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.layers[i].enabled,
+                        egui::RichText::new(def.name).size(14.0),
                     );
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("●").size(12.0).color(c));
-                        ui.label(egui::RichText::new(*label).size(13.0));
+                    ui.indent(def.key, |ui| {
+                        for (label, style) in def.categories {
+                            let c = egui::Color32::from_rgb(
+                                (style.color[0] * 255.0) as u8,
+                                (style.color[1] * 255.0) as u8,
+                                (style.color[2] * 255.0) as u8,
+                            );
+                            ui.horizontal(|ui| {
+                                // `◎`, not `●` — U+25CF is tofu in the bundled
+                                // stack, so the legend's colour dot was a box.
+                                ui.label(egui::RichText::new("◎").size(theme::SIZE_CHIP).color(c));
+                                ui.label(egui::RichText::new(*label).size(13.0));
+                            });
+                        }
+                        // Live moving vehicles ride on the transit layer (ADR-026).
+                        if i == TRANSIT_LAYER {
+                            ui.add_space(2.0);
+                            crate::systems::theme::checkbox(
+                                ui,
+                                &mut dl.vehicles_enabled,
+                                egui::RichText::new("Live vehicles").size(13.0),
+                            );
+                        }
                     });
+                    ui.add_space(4.0);
+                    ui.separator();
                 }
-                // Live moving vehicles ride on the transit layer (ADR-026).
-                if i == TRANSIT_LAYER {
+                ui.add_space(4.0);
+                let tdbag_resp = buildings_section(
+                    ui,
+                    &mut dl,
+                    crate::systems::osm_buildings::tdbag_attribution().is_some(),
+                );
+                // One line per click, so a live session can tell "the click never
+                // reached the widget" from "it toggled and something reverted it"
+                // without a debugger (#12 reported the checkbox stuck).
+                if tdbag_resp.is_some_and(|r| r.clicked()) {
+                    tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
+                }
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.map_enabled,
+                    egui::RichText::new("Map").size(14.0),
+                );
+                ui.indent("map", |ui| {
+                    ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
                     ui.add_space(2.0);
                     crate::systems::theme::checkbox(
                         ui,
-                        &mut dl.vehicles_enabled,
-                        egui::RichText::new("Live vehicles").size(13.0),
+                        &mut dl.trees_enabled,
+                        egui::RichText::new("Trees").size(13.0),
                     );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.furniture_enabled,
+                        egui::RichText::new("Street furniture").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.roads_textured,
+                        egui::RichText::new("Road textures").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.water_shading,
+                        egui::RichText::new("Water shading").size(13.0),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.street_labels,
+                        egui::RichText::new("Street labels").size(13.0),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                crate::systems::theme::checkbox(
+                    ui,
+                    &mut dl.height_enabled,
+                    egui::RichText::new("Height").size(14.0),
+                );
+                ui.indent("height", |ui| {
+                    // Say where it works, in the panel rather than in a doc comment: a
+                    // toggle that silently does nothing over Berlin is a bug report.
+                    ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                // In the flow, not `bottom_up`: a bottom-anchored layout inside a scroll
+                // area asks for the scroll viewport's height and pins the credits to the
+                // wrong end of an unbounded canvas. The short form stays here because it
+                // is the layer list's own source note; the full notices — and the ones
+                // this panel never mentioned at all (VersaTiles, AHN, Quaternius, the
+                // font) — are in About, which is where a licence looks for them.
+                ui.add_space(6.0);
+                if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
+                    ui.small(credit);
+                }
+                ui.small(
+                    "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
+                );
+                ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
+                if ui.small_button("Full credits and licences…").clicked() {
+                    about = true;
                 }
             });
-            ui.add_space(4.0);
-            ui.separator();
-        }
-        ui.add_space(4.0);
-        let tdbag_resp = buildings_section(
-            ui,
-            &mut dl,
-            crate::systems::osm_buildings::tdbag_attribution().is_some(),
-        );
-        // One line per click, so a live session can tell "the click never
-        // reached the widget" from "it toggled and something reverted it"
-        // without a debugger (#12 reported the checkbox stuck).
-        if tdbag_resp.is_some_and(|r| r.clicked()) {
-            tracing::info!(tdbag = dl.tdbag_enabled, "3DBAG checkbox clicked");
-        }
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-        crate::systems::theme::checkbox(
-            ui,
-            &mut dl.map_enabled,
-            egui::RichText::new("Map").size(14.0),
-        );
-        ui.indent("map", |ui| {
-            ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
-            ui.add_space(2.0);
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.trees_enabled,
-                egui::RichText::new("Trees").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.furniture_enabled,
-                egui::RichText::new("Street furniture").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.roads_textured,
-                egui::RichText::new("Road textures").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.water_shading,
-                egui::RichText::new("Water shading").size(13.0),
-            );
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dl.street_labels,
-                egui::RichText::new("Street labels").size(13.0),
-            );
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-        crate::systems::theme::checkbox(
-            ui,
-            &mut dl.height_enabled,
-            egui::RichText::new("Height").size(14.0),
-        );
-        ui.indent("height", |ui| {
-            // Say where it works, in the panel rather than in a doc comment: a
-            // toggle that silently does nothing over Berlin is a bug report.
-            ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.add_space(6.0);
-            if let Some(credit) = crate::systems::osm_buildings::tdbag_attribution() {
-                ui.small(credit);
-            }
-            ui.small("Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API");
-            ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
-        });
     });
-    if close || (open_before && !open) {
+    if about {
+        *right_panel = crate::resources::RightPanel::About;
+    } else if close || (open_before && !open) {
         *right_panel = crate::resources::RightPanel::None;
     }
 }
