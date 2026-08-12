@@ -945,6 +945,36 @@ pub fn run() {
         // Space background: the atmosphere skybox covers this everywhere in the local
         // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
         .insert_resource(ClearColor(Color::BLACK))
+        // A render error stops the renderer; it does not end the app.
+        //
+        // Bevy's default handler writes `AppExit::error()` on any `RenderError`, and
+        // its own comment calls that overzealous. It cost this project a day: the
+        // first phone the client ever ran on lacked `FLOAT32_FILTERABLE`, four
+        // atmosphere LUT bind groups failed validation, and the client *vanished*
+        // three seconds in — aborting inside libc on the way out, so there was no
+        // Rust panic, no exit message, and a crash report that could only say "the
+        // process was killed". Every diagnosis after that started from nothing.
+        //
+        // `StopRendering` keeps the process alive, which is the whole point: the log
+        // keeps flowing, the crash reporter records a *clean* run instead of a kill,
+        // and the failure reads as a frozen view rather than an app that isn't there.
+        // On a platform where each iteration is a CI build and a manual install, that
+        // is the difference between one round trip and one per error.
+        //
+        // Deliberately **not** `Ignore`, which would resume rendering and surface any
+        // errors hiding behind the first. An unaddressed error recurs every frame, and
+        // bevy's own warning on that variant is rapid flashing — not a risk worth
+        // taking on a handheld screen for a diagnostic convenience.
+        .insert_resource(bevy::render::error_handler::RenderErrorHandler(
+            |error, _main_world, _render_world| {
+                tracing::error!(
+                    kind = ?error.ty,
+                    description = %error.description,
+                    "render error — halting the renderer, keeping the app alive"
+                );
+                bevy::render::error_handler::RenderErrorPolicy::StopRendering
+            },
+        ))
         // 2048 rather than 4096: with sun + moon each casting 4 cascades, a night
         // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
         // memory versus 4096² for a barely-perceptible near-shadow softness at this

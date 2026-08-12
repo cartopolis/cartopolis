@@ -381,6 +381,52 @@ from the report as it stood**, which is what the same-day follow-up fixed:
   OOM kill, announced by the system UID. Evidence for the LMK is therefore
   negative: our log stops with no `signal` line.
 
-Still unknown, in the order a device answers them: whether wgpu gets an adapter at
-all, whether the surface survives the first resume, and whether the asset load
-fits in memory. Nothing below the renderer is in doubt any more.
+## The crash, named: `FLOAT32_FILTERABLE`
+
+The follow-up log answered it in one round trip, and the answer was none of the
+three suspects above:
+
+```
+In Device::create_bind_group, label = 'transmittance_lut_bind_group'
+  Texture binding 5 expects sample type Float { filterable: true },
+  but was given a view with format Rgba32Float (sample type Float { filterable: false })
+… and the same for multiscattering_lut, sky_view_lut, render_sky
+ERROR bevy_render::error_handler: Quitting the application due to Validation RenderError
+F libc: FORTIFY: pthread_mutex_lock called on a destroyed mutex
+```
+
+bevy_pbr's atmosphere keeps its four LUTs in `Rgba32Float` and samples them with a
+filtering sampler. wgpu allows that only when the adapter offers
+**`FLOAT32_FILTERABLE`**, and the Adreno 619 does not — as many mobile GPUs do
+not. Every LUT bind group fails validation, and Bevy's default error handler
+answers a validation error by writing `AppExit::error()`. The app was therefore
+*quitting itself*, correctly, three seconds in.
+
+Three things are worth keeping from this:
+
+**The gate is on the adapter, not on Android** (`free_camera::setup_camera`).
+Whether this device can filter a 32-bit float texture is a property of the device
+this run found, not of a class of machine — the same argument the MSAA clamp a few
+lines below already makes, and the same trap this note's platform-seams section
+describes. A Mali that supports the feature keeps its sky; a desktop GPU that
+lacks one still starts.
+
+**A render error no longer ends the app.** The default handler is why the failure
+presented as a kill: the process aborted inside libc on the way out, leaving no
+Rust panic, no exit message, and a crash report that could only say the process
+died. `RenderErrorPolicy::StopRendering` keeps it alive, so the log keeps flowing
+and the next unknown error costs a look rather than another CI build and install.
+Not `Ignore` — that resumes rendering into an error that recurs every frame, and
+bevy's own warning on it is rapid flashing.
+
+**The instrument paid for itself immediately.** The logcat tail in the crash
+report is what produced the block above; without it this was three indistinguishable
+suspects and a 30-minute loop to tell them apart. Note also what nearly hid the
+answer: the Android log filter had inherited the desktop's `bevy_render=error`,
+which would have suppressed the `AdapterInfo` line — and it was `bevy_render` at
+ERROR that carried the validation failure, so that one lane was doing both jobs.
+
+Still unknown, in the order a device answers them: whether the surface survives the
+first resume, whether the asset load fits in memory, and what the sky looks like on
+a phone that has no atmosphere to draw. Nothing below the renderer is in doubt any
+more.
