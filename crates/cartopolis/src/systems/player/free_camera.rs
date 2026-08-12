@@ -485,6 +485,7 @@ pub fn setup_camera(
     mut materials: ResMut<Assets<StandardMaterial>>,
     dev: Res<crate::resources::DevPanelState>,
     adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
+    render_device: Res<bevy::render::renderer::RenderDevice>,
 ) {
     camera_state.mode = CameraMode::Avatar;
     camera_state.distance = AVATAR_CAM_DEFAULT;
@@ -524,7 +525,37 @@ pub fn setup_camera(
     // env map is the half that does not survive: it re-bakes a cubemap and its
     // mip chain every frame, and `dev.envmap_enabled` is already seeded from the
     // budget, so this needs no tier test of its own.
-    let want_atmosphere = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
+    // …and one thing the run must be *asked*, not assumed. bevy_pbr's atmosphere
+    // keeps its four LUTs (transmittance, multiscattering, sky-view, render-sky) in
+    // `Rgba32Float` and samples them with a filtering sampler, which wgpu permits
+    // only when the adapter offers `FLOAT32_FILTERABLE`. Desktop GPUs and lavapipe
+    // do; a great many mobile ones do not, and the first phone this app ever ran on
+    // (Adreno 619, 2026-08-12) is one of them.
+    //
+    // The consequence is not a missing sky, it is **no app**: each LUT bind group
+    // fails validation, and Bevy's default error handler answers a validation error
+    // by quitting. So the whole client died three seconds in, having rendered
+    // nothing, with no Rust panic — the process aborted in libc on the way out
+    // (`FORTIFY: pthread_mutex_lock called on a destroyed mutex`) which is
+    // indistinguishable from an OOM kill unless you have the log.
+    //
+    // Gated on the **adapter**, not on `cfg!(target_os = "android")`, for the reason
+    // the MSAA comment below gives at greater length: this is a property of the
+    // device this run found, not of a class of machine. A phone with a Mali that
+    // supports the feature keeps its sky, a desktop GPU that somehow lacks one
+    // still starts, and nobody has to discover the rule again on the next platform.
+    let float32_filterable = render_device
+        .features()
+        .contains(bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE);
+    if !float32_filterable {
+        tracing::warn!(
+            adapter = %adapter.name,
+            "no FLOAT32_FILTERABLE on this adapter — disabling the atmosphere, whose \
+             LUTs would fail bind-group validation and take the whole app down with them"
+        );
+    }
+    let want_atmosphere =
+        dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE") && float32_filterable;
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
 
     commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
