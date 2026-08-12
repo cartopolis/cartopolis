@@ -412,6 +412,47 @@ fn share_text_inner(
     })
 }
 
+/// The number of trailing log lines [`own_logcat`] asks for.
+///
+/// Sized against the *consumer*, not the producer: the result is carried to the
+/// share sheet in an `Intent` extra, and an intent crosses a binder transaction
+/// with a hard limit around a megabyte. 600 lines of logcat is well inside that
+/// and comfortably spans a launch that dies before its first frame.
+const LOGCAT_TAIL_LINES: &str = "600";
+
+/// The previous process's own log lines, read back out of the kernel log buffer.
+///
+/// This is the answer to the failure mode the crash reporter cannot otherwise
+/// describe: a run that is *killed* rather than panicking leaves a breadcrumb
+/// saying so and nothing else, because no Rust code runs at a `SIGSEGV` or an OOM
+/// kill. But logd's ring buffer outlives the process, so the next launch can go
+/// and read what the dead one said on its way out.
+///
+/// **An app may read its own log without `READ_LOGS`** — logd filters by UID, and
+/// has since Android 4.1. So this returns our own lines and nothing else, which is
+/// both the privacy story (nothing here belongs to another app) and the limit: a
+/// low-memory kill is announced by `lowmemorykiller`/`ActivityManager` under the
+/// *system* UID and is therefore invisible from in here. The evidence for one is
+/// negative — our log simply stops, with no tombstone. A native crash is the
+/// opposite: `crash_dump` reports under the crashing process's own UID, so the
+/// `signal 11 (SIGSEGV)` block and its backtrace should be visible. *Needs a
+/// device*: that second claim is the one to check against a real tombstone.
+///
+/// Failure is silent and returns `None`, which is correct for a diagnostic: it
+/// runs on the startup path of an app that has already crashed once, and the
+/// report it enriches is worth sending with or without it. Absolute path because a
+/// NativeActivity process inherits the zygote's `PATH`, and the exec is plain
+/// `fork`/`exec` rather than JNI — `logcat` is an ordinary binary in `/system/bin`
+/// and needs no window, no VM attach and no permission.
+pub fn own_logcat() -> Option<String> {
+    let output = std::process::Command::new("/system/bin/logcat")
+        .args(["-d", "-b", "main,crash", "-t", LOGCAT_TAIL_LINES])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 // ---------------------------------------------------------------------------
 // 1. Location
 // ---------------------------------------------------------------------------

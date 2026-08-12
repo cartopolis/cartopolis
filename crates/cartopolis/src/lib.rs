@@ -394,6 +394,38 @@ fn crash_report_path() -> std::path::PathBuf {
     utils::cache::app_data_root().join("last-crash.txt")
 }
 
+/// How much of the log excerpt a crash report may carry.
+///
+/// The report travels as an `Intent` extra, i.e. through a binder transaction with
+/// a hard ceiling near a megabyte — but the binding constraint is softer and lower
+/// than that: the *receiving* app has to accept it, and a mail composer or a note
+/// app handed half a megabyte of text is a poor bet. 64 KB is several hundred lines
+/// of logcat, which is more than a launch that dies before its first frame can
+/// produce.
+#[cfg(target_os = "android")]
+const CRASH_LOG_MAX_BYTES: usize = 64 * 1024;
+
+/// The last `max` bytes of `text`, starting at a line boundary.
+///
+/// The *tail*, because a crash is explained by what happened last. Trimming to the
+/// next `\n` costs at most one line and means the excerpt never opens mid-token —
+/// a half-line at the top reads as corruption and invites a reply about the wrong
+/// thing.
+#[cfg(target_os = "android")]
+fn tail_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    match text[start..].find('\n') {
+        Some(nl) => &text[start + nl + 1..],
+        None => &text[start..],
+    }
+}
+
 /// If the previous run left a panic report, hand it to the share sheet and delete
 /// it.
 ///
@@ -424,8 +456,10 @@ fn offer_last_crash() {
             "cartopolis {} ({})\nabi: {}\nThe previous run ended without a Rust panic and \
              without being suspended — the process was killed. That points at the \
              graphics driver, the Vulkan surface, or the OOM killer rather than at \
-             our own code. A full `adb logcat` or an Android bug report is what \
-             names it.\n",
+             our own code. The log excerpt below is what separates them: a `signal` \
+             line with a backtrace is a native crash, while our log simply stopping \
+             is the low-memory killer, whose own announcement belongs to the system \
+             UID and cannot be read from in here.\n",
             env!("CARGO_PKG_VERSION"),
             option_env!("CARTO_BUILD_SHA").unwrap_or("unknown build"),
             std::env::consts::ARCH,
@@ -435,7 +469,18 @@ fn offer_last_crash() {
     if report.trim().is_empty() {
         return;
     }
-    tracing::error!(%report, "the previous run ended in a panic");
+    // Read the log buffer *before* anything below adds to it, so the excerpt is
+    // the dead run's last words and not this one's first.
+    let report = match platform::android::own_logcat() {
+        Some(log) => format!(
+            "{report}\n--- our own logcat, last lines (newest at the bottom) ---\n{}\n",
+            tail_bytes(&log, CRASH_LOG_MAX_BYTES)
+        ),
+        None => format!(
+            "{report}\n(no logcat available — the buffer was empty or the exec was refused)\n"
+        ),
+    };
+    tracing::error!(%report, "the previous run ended badly");
     match platform::android::share_text("Cartopolis crash report", &report) {
         Ok(()) => tracing::info!("offered the previous crash report to the share sheet"),
         Err(e) => tracing::warn!(error = %e, "could not offer the crash report"),
@@ -566,17 +611,27 @@ pub fn run() {
     // through at INFO, which buries the app's own lines under Bevy's startup and
     // asset chatter on a device where the log is the only instrument there is.
     //
-    // The per-target directives are the desktop set, and for the same reasons — in
-    // particular `bevy_render=error`, without which a run that dies for a render
-    // reason dies silently. `level` is the *global* default that bevy prepends, and
-    // it is WARN rather than the desktop's `off` deliberately: this build has never
-    // run on hardware, so a warning from a crate nobody thought to name is exactly
-    // the thing worth reading. Tighten it to `off` once the phone is boring.
+    // The per-target directives started as the desktop set, and two of them have
+    // since been loosened, because the desktop set is tuned for a platform where
+    // the log is a convenience and this is the one where it is the only instrument.
+    //
+    // `bevy_render` and `bevy_winit` run at INFO rather than the desktop's `error`.
+    // That is not chatter: between them they log the adapter and backend actually
+    // chosen and the surface's creation and lifecycle, which is precisely the
+    // ground a launch that dies before its first frame dies on. Carrying
+    // `bevy_render=error` from the desktop meant the first hardware run in this
+    // repo's history (2026-08-12, a process killed before any frame) produced a
+    // crash report that could not say whether wgpu had ever obtained a device.
+    // `level` is the *global* default that bevy prepends, and it is WARN rather
+    // than the desktop's `off` for the same reason: a warning from a crate nobody
+    // thought to name is exactly the thing worth reading here. Tighten all three
+    // once the phone is boring — and note `offer_last_crash` mails this log to
+    // whoever is holding the device, so the filter is the report's contents too.
     #[cfg(target_os = "android")]
     let plugins = plugins.set(LogPlugin {
-        filter:
-            "cartopolis=info,bevy_render=error,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn"
-                .into(),
+        filter: "cartopolis=info,bevy_render=info,bevy_winit=info,wgpu=warn,wgpu_core=warn,\
+                 wgpu_hal=warn,naga=warn"
+            .into(),
         level: bevy::log::Level::WARN,
         ..default()
     });
