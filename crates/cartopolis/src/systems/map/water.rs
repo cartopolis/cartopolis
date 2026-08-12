@@ -128,6 +128,18 @@ pub struct WaterSeaState {
     /// build. Deep water with no bank is a far better failure than a shoreline in
     /// the wrong place.
     open_water: Handle<Image>,
+    /// Mirror of `DataLayers::water_shading`, for the same reason
+    /// `VegetationLod::enabled` exists — so the per-cell worker can read the
+    /// toggle without `update_map_surfaces` taking another system parameter (it is
+    /// at Bevy's ceiling of 16).
+    ///
+    /// What it gates is not the shader but the **shore field**: a 1024² rasterise
+    /// plus an exact distance transform per water cell, ~30 ms on a workstation and
+    /// ~9 MiB of texture across a ring. With shading off there are no waves to
+    /// shelter and no crest foam to place, so the field buys only a shallow tint,
+    /// and `WaterSeaState::material` already has a documented fallback for a cell
+    /// that has no field at all.
+    pub shading: bool,
 }
 
 impl FromWorld for WaterSeaState {
@@ -142,6 +154,11 @@ impl FromWorld for WaterSeaState {
             surface: s.1,
             wind: s.2,
             open_water,
+            // Matches `DataLayers::water_shading`'s own default, which is the
+            // tier's `detail_layers`. `update_water_waves` corrects it on the first
+            // frame either way; starting from the tier means a phone does not
+            // build one ring of shore fields before that happens.
+            shading: crate::quality::budget().detail_layers,
         }
     }
 }
@@ -288,6 +305,9 @@ pub fn update_water_waves(
     state.wave = wave;
     state.surface = surface;
     state.wind = wind;
+    // Read by `map_geometry`'s per-cell worker to decide whether to build a shore
+    // field at all; `MapSurfaces` retears the ring when it changes.
+    state.shading = shading;
 
     let ids: Vec<_> = materials.ids().collect();
     for id in ids {
