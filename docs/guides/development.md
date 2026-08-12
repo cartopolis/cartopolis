@@ -218,26 +218,46 @@ rustc --print sysroot                     # must NOT say /usr
 
 ## CI
 
-[`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on every push, as
-two jobs in parallel (runner capacity is 2):
+[`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on **pull
+requests and pushes to `main`** — not on branch pushes. A branch with a PR open
+would otherwise be compiled from the same commit twice, once per ref, and then a
+third time as the merge commit; `concurrency` cannot collapse those, because a
+branch ref and a PR ref are different strings. Open the PR, which is where a
+verdict gets read.
 
-- **`check`** — `cargo fmt --check` over the owned crates, then
-  `cargo check --workspace --all-targets`; the fast lane, failing within ~1 min on a
-  formatting slip or an obvious compile error. It then cross-checks the two targets
-  the workspace build cannot see: **wasm32**, and **aarch64-linux-android** (whose
-  crate is *empty* off Android, its dependencies being target-gated, so the
-  workspace check says nothing about it at all). The Android lane downloads and
-  caches an NDK, because a build script's `cc` runs at check time — see the
-  comments in the workflow.
-- **`build-test`** — the suites in cost order (`cartopolis_geo` first: no Bevy in its
-  graph, so a geodata regression fails in seconds rather than after the client's full
-  codegen), then `cartopolis`, then `big_space --lib`. It ends with a **headless scene
-  smoke**: an orbit `--shot` asserting `settled==true` and `globe_rendered>0`, which
-  catches the failure class that type-checks perfectly and ships a black screen. On
-  failure it dumps the metrics that explain it.
+What runs where:
+
+- **`test`** — every PR and every `main` push, and on a PR the only job. The
+  suites in cost order (`cartopolis_geo` first: no Bevy in its graph, so a geodata
+  regression fails in seconds rather than after the client's full codegen), then
+  `cartopolis_core`, `cartopolis_simulator`, `cartopolis`, `big_space --lib`, and
+  `cargo fmt --check` over the owned crates last. There is no separate
+  `cargo check --workspace --all-targets` — the tests compile every crate that has
+  code, this workspace has no benches or examples, and `cargo check`'s
+  metadata-only output is not reusable by the tests' codegen, so it was a second
+  cold Bevy build for nothing.
+- **the headless scene smoke** — a step of `test`, `main` only. An orbit `--shot`
+  asserting `settled==true` and `globe_rendered>0`, which catches the failure class
+  that type-checks perfectly and ships a black screen. It is the one real *build*
+  in the file (`cargo run` links the client), so it is also the one thing a PR does
+  not pay for. On failure it dumps the metrics that explain it.
+- **`targets`** — `main` only. The two targets a host build cannot see: **wasm32**,
+  and **aarch64-linux-android** (whose crate is *empty* off Android, its
+  dependencies being target-gated). The Android lane downloads and caches an NDK,
+  because a build script's `cc` runs at check time — see the comments in the
+  workflow.
+
+Gating the cross-target lanes on `main` is a deliberate weakening, and the reason
+it is affordable is that **nothing here gates a merge on CI**: `main` is allowed to
+be red, so a PR lane informs whoever merges rather than stopping them. Rot is
+caught within one merge instead of at the next deploy. If a change is knowingly
+wasm- or Android-shaped, run that lane locally first —
+[`container-android-toolchain.md`](../notes/container-android-toolchain.md) has the
+two environment variables.
 
 Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` — add
-that to any new job. `deploy-web.yml` and `release.yml` are separate workflows.
+that to any new job. `deploy-web.yml`, `deploy-android.yml` (both
+`workflow_dispatch` only) and `release.yml` are separate workflows.
 
 **A step may only use a tool the image already has.** The image is built by hand on
 the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t
