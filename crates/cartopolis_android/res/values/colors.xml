@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The brand palette, and it is a *copy* — the originals live in
+  `crates/cartopolis/src/systems/gui/theme.rs` (the app's own chrome) and in
+  `crates/cartopolis/index.html` (the web loader, drawn before any Rust exists).
+  There is no way to share a constant with an Android resource, so the rule is the
+  one those two already follow: these three values are read off the logo and they
+  change together or not at all.
+
+  Alpha first (#AARRGGBB), because a windowBackground with an implicit alpha is a
+  transparent window and a transparent window on a NativeActivity is a black one.
+-->
+<resources>
+    <!-- The dark slate blue the whole app sits on. This is the colour a cold start
+         shows for as long as it takes Bevy to acquire a surface, which is the
+         entire point of the file. -->
+    <color name="brand_surface">#FF1B2830</color>
+    <!-- The lighter end of the logo's gradient; used for the splash icon's
+         backdrop so the fox does not sit on a flat plate. -->
+    <color name="brand_surface_light">#FF2e424e</color>
+    <!-- Accent orange. Not used by the launcher icon (whose background must stay
+         calm under every launcher mask) but kept here so the palette is one
+         table rather than three. -->
+    <color name="brand_orange">#FFFD6012</color>
+</resources>

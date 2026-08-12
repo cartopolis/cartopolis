@@ -128,5 +128,5 @@ surprising.
 Every other panel is a boolean a scripted run can set. This one is unfolded by a
 click, and a headless run has no pointer — so `--ui search` seeds a query through
 `GeoNavState::seed_search` instead, which both unfolds the bar (the field takes
-focus) and fills the dropdown. `VIBE_SEARCH_QUERY` overrides the demo query. A
+focus) and fills the dropdown. `CARTO_SEARCH_QUERY` overrides the demo query. A
 capture of an empty field would document nothing.

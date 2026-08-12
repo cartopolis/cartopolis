@@ -29,7 +29,7 @@
 Fetch buildings from the **Overpass API**, parse the JSON, and **extrude each footprint** client-side into a placed mesh.
 
 **Approach** (`systems/osm_buildings.rs`):
-- **Fetch**: `way["building"](bbox); out geom;` on a **background thread** (Overpass takes seconds; the window must not block). Camera-following, one coarse cell at a time, **disk-cached** per cell; default endpoint is the self-hosted `overpass.garage44.eu`, with a 3DBAG cell source tried first for NL coverage (ADR-027).
+- **Fetch**: `way["building"](bbox); out geom;` on a **background thread** (Overpass takes seconds; the window must not block). Camera-following, one coarse cell at a time, **disk-cached** per cell; default endpoint is the self-hosted `overpass.cartopolis.org`, with a 3DBAG cell source tried first for NL coverage (ADR-027).
 - **Height**: `height` tag → else `building:levels × 3 m` → else 6 m default; tolerant of `"12 m"` strings.
 - **Placement**: vertices via the same Web Mercator math as the tiles, in the floating-origin frame (ADR-019).
 - **Extrusion**: triangulated top cap (via **`earcutr`**, a pure-Rust ear-clipper — handles non-convex footprints) + vertical walls; wall normals oriented outward from the centroid (OSM ring winding is not guaranteed).

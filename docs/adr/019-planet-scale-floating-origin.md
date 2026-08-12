@@ -41,7 +41,7 @@ Adopt a **floating-origin (camera-relative) coordinate model**: store each entit
 ## Rationale
 
 **Primary Reasoning**:
-1. **Measured, not assumed**: a throwaway spike (`--spike-floating-origin`, module `crates/viberfox/src/systems/floating_origin.rs`, 2026-06-19) directly measured the f32 ULP at planet scale and the floating-origin remedy. The result (below) closes the precision risk that gates the whole planet-scale direction.
+1. **Measured, not assumed**: a throwaway spike (`--spike-floating-origin`, module `crates/cartopolis/src/systems/floating_origin.rs`, 2026-06-19) directly measured the f32 ULP at planet scale and the floating-origin remedy. The result (below) closes the precision risk that gates the whole planet-scale direction.
 2. **Minimal blast radius**: rebasing keeps the existing f32 render/ECS/picking path; only placement and a per-frame sync are added. The spike confirmed the existing free camera cooperated.
 3. **Honest scale**: pairing a global frame with per-region ENU tangent frames keeps physics in real meters despite Mercator distortion (the unresolved tension in ADR-006).
 

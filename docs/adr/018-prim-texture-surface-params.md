@@ -28,7 +28,7 @@ per meter, and offset.
 
 ## Decision
 
-Add a single shared `PrimSurface` value type (`vibe_core`) carrying `alpha`, `glow`,
+Add a single shared `PrimSurface` value type (`cartopolis_core`) carrying `alpha`, `glow`,
 `full_bright`, `repeat_u/v`, `flip_u/v`, `rotation`, `offset_u/v`, threaded through the
 `Prim` component, `PrimDto`, the `UpdatePrim` message, both SQLite schemas, and the
 edit dialog.

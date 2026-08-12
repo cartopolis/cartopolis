@@ -2207,6 +2207,115 @@ dependencies = [
 ]
 
 [[package]]
+name = "cartopolis"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "bevy",
+ "bevy_image",
+ "big_space",
+ "bytes",
+ "cartopolis_core",
+ "cartopolis_geo",
+ "cartopolis_simulator",
+ "clap",
+ "cpal",
+ "dotenvy",
+ "earcutr",
+ "egui",
+ "egui-wgpu",
+ "ehttp",
+ "fontdue",
+ "futures-channel",
+ "futures-lite",
+ "futures-util",
+ "getrandom 0.2.16",
+ "gribberish",
+ "image",
+ "jiff",
+ "jni",
+ "js-sys",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tiff",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "tzf-rs",
+ "ureq",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm_thread",
+ "web-sys",
+ "web-time",
+ "winit",
+ "winresource",
+]
+
+[[package]]
+name = "cartopolis_android"
+version = "1.0.0"
+dependencies = [
+ "bevy",
+ "cartopolis",
+]
+
+[[package]]
+name = "cartopolis_core"
+version = "1.0.0"
+dependencies = [
+ "approx",
+ "glam",
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "cartopolis_geo"
+version = "1.0.0"
+dependencies = [
+ "bytes",
+ "cartopolis_core",
+ "earcutr",
+ "geo-types",
+ "image",
+ "mvt-reader",
+ "tiny-skia 0.12.0",
+ "tracing",
+]
+
+[[package]]
+name = "cartopolis_simulator"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "bytes",
+ "cartopolis_core",
+ "clap",
+ "figment",
+ "futures-util",
+ "glam",
+ "mlua",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7086,115 +7195,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "viberfox"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "arboard",
- "bevy",
- "bevy_image",
- "big_space",
- "bytes",
- "clap",
- "cpal",
- "dotenvy",
- "earcutr",
- "egui",
- "egui-wgpu",
- "ehttp",
- "fontdue",
- "futures-channel",
- "futures-lite",
- "futures-util",
- "getrandom 0.2.16",
- "gribberish",
- "image",
- "jiff",
- "jni",
- "js-sys",
- "postcard",
- "serde",
- "serde_json",
- "tiff",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "tzf-rs",
- "ureq",
- "uuid",
- "viberfox_core",
- "viberfox_geo",
- "viberfox_simulator",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm_thread",
- "web-sys",
- "web-time",
- "winit",
- "winresource",
-]
-
-[[package]]
-name = "viberfox_android"
-version = "1.0.0"
-dependencies = [
- "bevy",
- "viberfox",
-]
-
-[[package]]
-name = "viberfox_core"
-version = "1.0.0"
-dependencies = [
- "approx",
- "glam",
- "postcard",
- "serde",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "viberfox_geo"
-version = "1.0.0"
-dependencies = [
- "bytes",
- "earcutr",
- "geo-types",
- "image",
- "mvt-reader",
- "tiny-skia 0.12.0",
- "tracing",
- "viberfox_core",
-]
-
-[[package]]
-name = "viberfox_simulator"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "argon2",
- "bytes",
- "clap",
- "figment",
- "futures-util",
- "glam",
- "mlua",
- "refinery",
- "rusqlite",
- "serde",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "viberfox_core",
-]
 
 [[package]]
 name = "walkdir"

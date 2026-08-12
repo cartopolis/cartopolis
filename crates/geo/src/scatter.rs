@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(u.indices.len(), 32 * 3);
     }
 
-    /// What a real cell actually costs. `cargo test -p viberfox_geo
+    /// What a real cell actually costs. `cargo test -p cartopolis_geo
     /// dump_vegetation_cost -- --ignored --nocapture`.
     #[test]
     #[ignore]

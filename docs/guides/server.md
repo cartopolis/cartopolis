@@ -6,11 +6,11 @@ local [Overpass API](https://dev.overpass-api.de/) and
 OSM extract, behind a [Caddy](https://caddyserver.com/) reverse proxy with
 automatic TLS.
 
-The viberfox client streams building footprints and POI layers from Overpass
-(`overpass_query` in `crates/viberfox/src/systems/map/osm_buildings.rs`). The public
+The cartopolis client streams building footprints and POI layers from Overpass
+(`overpass_query` in `crates/cartopolis/src/systems/map/osm_buildings.rs`). The public
 `overpass-api.de` endpoint rate-limits (429/504) under the client's streaming
 load, so we run our own instance and point the client at it with
-`VIBE_OVERPASS_URL`. Nominatim provides geocoding / reverse-geocoding for the
+`CARTO_OVERPASS_URL`. Nominatim provides geocoding / reverse-geocoding for the
 same region.
 
 > **Why Docker.** The upstream images (`wiktorn/overpass-api`,
@@ -446,18 +446,18 @@ curl 'http://127.0.0.1:8080/reverse?lat=52.373&lon=4.892&format=jsonv2'
 
 ## 7. Point the client at it
 
-The client (`overpass_query` in `crates/viberfox/src/systems/map/osm_buildings.rs`)
+The client (`overpass_query` in `crates/cartopolis/src/systems/map/osm_buildings.rs`)
 **defaults** to the self-hosted endpoint (`DEFAULT_OVERPASS_URL`), so a plain run
 already uses it:
 
 ```bash
-cargo run -p viberfox
+cargo run -p cartopolis
 ```
 
-Override with `VIBE_OVERPASS_URL` to point elsewhere — e.g. back to the public API:
+Override with `CARTO_OVERPASS_URL` to point elsewhere — e.g. back to the public API:
 
 ```bash
-VIBE_OVERPASS_URL=https://overpass-api.de/api/interpreter cargo run -p viberfox
+CARTO_OVERPASS_URL=https://overpass-api.de/api/interpreter cargo run -p cartopolis
 ```
 
 Against a dedicated instance you can also lower `OVERPASS_THROTTLE`
@@ -465,7 +465,7 @@ Against a dedicated instance you can also lower `OVERPASS_THROTTLE`
 
 **Nominatim** is wired the same way: geo-search (`geo_nav.rs`) and bookmark
 reverse-geocoding (`bookmarks.rs`) both use `nominatim_base_url()`, which defaults
-to `DEFAULT_NOMINATIM_URL` and is overridable with `VIBE_NOMINATIM_URL` (e.g.
+to `DEFAULT_NOMINATIM_URL` and is overridable with `CARTO_NOMINATIM_URL` (e.g.
 `https://nominatim.openstreetmap.org`).
 
 ## 8. 3DBAG buildings (self-hosted static tiles)
@@ -534,7 +534,7 @@ buildings / 112 cells.
 and the `Caddyfile` has:
 
 ```caddy
-3dbag.garage44.eu {
+3dbag.cartopolis.org {
 	root * /srv/3dbag
 	encode gzip
 	file_server {
@@ -550,16 +550,16 @@ Adding the bind mount needs a **recreate** (not reload):
 `docker compose up -d --force-recreate caddy`. A DNS record
 `3dbag` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist (Let's Encrypt).
 
-Smoke test: `curl --compressed https://3dbag.garage44.eu/coverage.json`.
+Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 
 **Client wiring:** the client fetches covered z14 cells from
-`VIBE_3DBAG_URL` (default `https://3dbag.garage44.eu`) and falls back to Overpass
+`CARTO_3DBAG_URL` (default `https://3dbag.cartopolis.org`) and falls back to Overpass
 (OSM) on a 404 — see `osm_buildings.rs`. Attribution
 (`coverage.json.attribution`, CC BY 4.0) is shown in the client.
 
 ## 9. VersaTiles vector basemap (self-hosted)
 
-The client's **default basemap** (`DEFAULT_TILE_URL_TEMPLATE`, and the `VIBE_TILE_URL`
+The client's **default basemap** (`DEFAULT_TILE_URL_TEMPLATE`, and the `CARTO_TILE_URL`
 the CI scene smoke pins) is a self-hosted mirror of the VersaTiles planet build —
 Shortbread-schema MVT, every zoom, worldwide. Routing needs a *vector* source, so
 this is not just a cosmetic basemap: against a raster template the planner refuses
@@ -603,7 +603,7 @@ tile path. No published ports — it is reachable only through Caddy on `geonet`
 and a long `Cache-Control` itself:
 
 ```caddy
-tiles.garage44.eu {
+tiles.cartopolis.org {
 	reverse_proxy tiles:8080
 }
 ```
@@ -613,11 +613,11 @@ A DNS record `tiles` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist for Let's Encrypt.
 Smoke test — a tile is a gzipped protobuf, so check the status and size, not the body:
 
 ```bash
-curl -sI https://tiles.garage44.eu/tiles/osm/14/8490/5319 | head -3
+curl -sI https://tiles.cartopolis.org/tiles/osm/14/8490/5319 | head -3
 ```
 
-**Client wiring:** `https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}` is the default;
-`VIBE_TILE_URL` overrides it and `VIBE_TILE_FORMAT` forces `vector|raster` when a
+**Client wiring:** `https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}` is the default;
+`CARTO_TILE_URL` overrides it and `CARTO_TILE_FORMAT` forces `vector|raster` when a
 template's kind can't be inferred. A scripted run (`--shot` / `cargo shots`) never
 sees the server handshake that would supply one, which is why `docs/shots.toml` pins
 `tile_url` — the built-in fallback is the *raster* basemap.
@@ -637,7 +637,7 @@ the globe's cloud cover needs:
 handle_path /up/ahn/* {
 	reverse_proxy https://service.pdok.nl {
 		header_up Host service.pdok.nl
-		header_up User-Agent "viberfox/0.2 (https://code.garage44.eu/jeroen/viberfox; jvanveen@protonmail.com)"
+		header_up User-Agent "cartopolis/0.2 (https://code.garage44.eu/jeroen/cartopolis; jvanveen@protonmail.com)"
 	}
 }
 ```
@@ -682,7 +682,7 @@ docker logs --since 5m nominatim | grep -i replication   # expect: replicationpi
 ```
 
 **What you give up.** Incremental updates, permanently, without re-importing.
-Geocoding results are a snapshot of the extract's import date. For viberfox that
+Geocoding results are a snapshot of the extract's import date. For cartopolis that
 is acceptable: place names and addresses move slowly, and the client's failure
 mode is a missing search result, not incorrect data.
 
@@ -760,7 +760,7 @@ Isolate the layer:
 - Overpass is currently an **open** endpoint. For a country extract that's low
   risk, but to prevent abuse add a Caddy `basic_auth` or an IP allowlist to the
   `overpass.example.com` block (the client would then send credentials via
-  `VIBE_OVERPASS_URL`).
+  `CARTO_OVERPASS_URL`).
 - No host firewall is enabled. If you add `ufw`, allow `22/80/443` **before**
   `ufw enable` to avoid locking yourself out; OVH's edge anti-DDoS is separate.
 - `.env` holds the Nominatim DB password — keep it `chmod 600` and out of git.

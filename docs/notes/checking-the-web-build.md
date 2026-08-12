@@ -17,7 +17,7 @@ RUSTUP_TOOLCHAIN=nightly \
 CARGO_UNSTABLE_BUILD_STD=std,panic_abort \
 CARGO_TARGET_DIR=/home/agent/cargo-target/wasmcheck \
 RUSTFLAGS="--cfg=web_sys_unstable_apis -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128" \
-cargo check -p viberfox --target wasm32-unknown-unknown --no-default-features
+cargo check -p cartopolis --target wasm32-unknown-unknown --no-default-features
 ```
 
 Add `--features audio` to reach `platform::audio`'s web arm, which the shipped
@@ -26,10 +26,10 @@ build does not compile (below).
 ## Why each part is load-bearing
 
 - **`--no-default-features`.** The default `solo` feature pulls
-  `viberfox_simulator` → `rusqlite` → `libsqlite3-sys`, whose bundled C cannot
+  `cartopolis_simulator` → `rusqlite` → `libsqlite3-sys`, whose bundled C cannot
   find `stdio.h` for wasm. The error is a fatal C-preprocessor error inside
   sqlite, which reads like a broken toolchain and is really a feature flag.
-  `crates/viberfox/index.html` passes `data-cargo-no-default-features` for this
+  `crates/cartopolis/index.html` passes `data-cargo-no-default-features` for this
   reason — the web client is Phase-1 Viewer with no sim (ADR-031/033).
 - **Nightly.** `wasm_thread` opens with
   `#![cfg_attr(target_arch = "wasm32", feature(stdarch_wasm_atomic_wait))]`, so
@@ -54,7 +54,7 @@ exports) is only needed to *link*; `cargo check` does not need it.
 running container (`/usr/local/rustup` is root-owned and there is no in-container
 sudo — the permission failure is reported as "cleaning up cached downloads: No
 such file or directory", which looks like a corrupt cache and is not). It is lost
-whenever `viberfox-agent` is recreated from its image. The durable fix is a line
+whenever `cartopolis-agent` is recreated from its image. The durable fix is a line
 in that image's Dockerfile, which lives in another repo — the same situation
 [android-build.md](android-build.md) describes for the NDK.
 

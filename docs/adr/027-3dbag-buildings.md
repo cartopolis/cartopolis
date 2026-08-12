@@ -35,7 +35,7 @@ is slow, and downloading + parsing 3D CityJSON on the client is heavy.
 
 **Preprocess 3DBAG server-side, self-host it as static per-cell files, and route
 covered cells to it — OSM elsewhere.** Two tiers, both keyed on the client's
-`CACHE_ZOOM`=14 cells and served from `https://3dbag.garage44.eu/`:
+`CACHE_ZOOM`=14 cells and served from `https://3dbag.cartopolis.org/`:
 
 - **LoD2.2 real meshes** (primary for covered cells): the actual triangulated BAG
   roof geometry — sloped/hipped/complex roofs, not a guess.
@@ -61,7 +61,7 @@ covered cells to it — OSM elsewhere.** Two tiers, both keyed on the client's
     meshes are the only buildings there (no z-fight with extrusions).
   - **LoD1.2** (`osm_buildings.rs`): `fetch_cell` routes a covered z14 cell to
     `/buildings/14/{x}/{y}.json`, falling back to Overpass on any miss.
-  - Coverage manifests load once (`VIBE_3DBAG_URL`, default the host above); cells
+  - Coverage manifests load once (`CARTO_3DBAG_URL`, default the host above); cells
     disk-cached per source (`cache/buildings/{3dbag,lod22}/…`).
 
 ## Rationale
@@ -94,7 +94,7 @@ covered cells to it — OSM elsewhere.** Two tiers, both keyed on the client's
   everywhere else.
 - Adding a city is a bbox + re-run of the extract script; no client change and no
   Caddy change.
-- `VIBE_3DBAG_URL=""` (or an unreachable host) transparently reverts to OSM.
+- `CARTO_3DBAG_URL=""` (or an unreachable host) transparently reverts to OSM.
 
 **Negative / risks**:
 - **Coverage seam**: at the bbox edge, cells inside use 3DBAG and just-outside use

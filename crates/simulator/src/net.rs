@@ -2,6 +2,10 @@ use crate::config::SimConfig;
 use crate::state::SimWorld;
 use crate::textures;
 use bytes::Bytes;
+use cartopolis_core::{
+    decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, ProtocolError,
+    PROTOCOL_VERSION,
+};
 use futures_util::{SinkExt, StreamExt};
 use glam::Vec3;
 use std::sync::{Arc, Mutex};
@@ -9,10 +13,6 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use viberfox_core::{
-    decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, ProtocolError,
-    PROTOCOL_VERSION,
-};
 
 /// Chat channel keys and limits (ADR-028).
 const GLOBAL_CHANNEL: &str = "geo:";
@@ -45,7 +45,7 @@ const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
 /// conversation they did not ask for.
 fn room_channel(room: &str) -> Option<String> {
     let room = room.trim();
-    if room.is_empty() || room.chars().count() > viberfox_core::MAX_ROOM_LEN {
+    if room.is_empty() || room.chars().count() > cartopolis_core::MAX_ROOM_LEN {
         return None;
     }
     Some(format!("room:{room}"))
@@ -698,7 +698,7 @@ pub async fn handle_connection(
                                         // which limit was hit.
                                         let frame = encode_app_frame(&NetMessage::ScriptOutput {
                                             prim_id,
-                                            level: viberfox_core::ScriptLevel::Error,
+                                            level: cartopolis_core::ScriptLevel::Error,
                                             text: e.clone(),
                                             at_ms: now_millis(),
                                         })?;
@@ -1078,16 +1078,16 @@ mod tests {
         assert_eq!(room_channel(""), None, "an empty room is not a room");
         assert_eq!(room_channel("   "), None);
 
-        let long = "x".repeat(viberfox_core::MAX_ROOM_LEN + 1);
+        let long = "x".repeat(cartopolis_core::MAX_ROOM_LEN + 1);
         assert_eq!(room_channel(&long), None, "an over-long name is refused");
-        let at_limit = "x".repeat(viberfox_core::MAX_ROOM_LEN);
+        let at_limit = "x".repeat(cartopolis_core::MAX_ROOM_LEN);
         assert!(
             room_channel(&at_limit).is_some(),
             "the limit itself is allowed"
         );
         // Counted in characters, not bytes, so a name in a non-Latin script gets
         // the same length as one in ASCII.
-        let multibyte = "ま".repeat(viberfox_core::MAX_ROOM_LEN);
+        let multibyte = "ま".repeat(cartopolis_core::MAX_ROOM_LEN);
         assert!(room_channel(&multibyte).is_some());
     }
 
@@ -1134,7 +1134,7 @@ mod tests {
                 region_id,
                 Vec3::new(10.0, 5.0, 20.0),
                 "box",
-                viberfox_core::GeoAnchor {
+                cartopolis_core::GeoAnchor {
                     latitude: 0.0,
                     longitude: 0.0,
                 },
@@ -1175,7 +1175,7 @@ mod tests {
                     region_id,
                     Vec3::ZERO,
                     "sphere",
-                    viberfox_core::GeoAnchor {
+                    cartopolis_core::GeoAnchor {
                         latitude: 0.0,
                         longitude: 0.0,
                     },
@@ -1195,9 +1195,9 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 Some("brick".to_string()),
                 "Updated Prim",
-                viberfox_core::PrimSurface::default(),
-                viberfox_core::PrimGeometry::default(),
-                viberfox_core::GeoAnchor {
+                cartopolis_core::PrimSurface::default(),
+                cartopolis_core::PrimGeometry::default(),
+                cartopolis_core::GeoAnchor {
                     latitude: 0.0,
                     longitude: 0.0,
                 },
@@ -1234,7 +1234,7 @@ mod tests {
                     region_id,
                     Vec3::ZERO,
                     "cube",
-                    viberfox_core::GeoAnchor {
+                    cartopolis_core::GeoAnchor {
                         latitude: 0.0,
                         longitude: 0.0,
                     },

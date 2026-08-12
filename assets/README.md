@@ -1,6 +1,6 @@
 # Client runtime assets
 
-`viberfox` loads these from the **workspace root** `assets/` directory (see `AssetPlugin` in `crates/viberfox/src/main.rs`).
+`cartopolis` loads these from the **workspace root** `assets/` directory (see `AssetPlugin` in `crates/cartopolis/src/main.rs`).
 
 ## Everything binary lives in Git LFS
 

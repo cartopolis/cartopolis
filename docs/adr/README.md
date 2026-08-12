@@ -6,7 +6,7 @@
 > These files are kept for history: read them, don't add to them, and don't
 > re-propose the form. Everything below describes the retired process.
 
-This directory contains Architecture Decision Records for Viberfox, documenting architectural decisions and technology choices. ADRs help maintain consistency and provide context for future development.
+This directory contains Architecture Decision Records for Cartopolis, documenting architectural decisions and technology choices. ADRs help maintain consistency and provide context for future development.
 
 The **abstract layer** (`docs/abstract/`) defines **goals (`G-*`)**, **principles (`P-*`)**, **[roadmap tiers](../abstract/roadmap.md)**, and **[documentation resolution](../abstract/adr-resolution.md)**. New ADRs should set **Aligns with** in metadata (see `template.md`). Optional: **Roadmap tier** and **Doc resolution** when the ADR is tied to a roadmap row.
 

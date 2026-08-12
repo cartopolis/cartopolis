@@ -20,7 +20,7 @@
 **Problem**: The client is a **multi-faceted viewer** whose facets have different access
 requirements, but today the boot model offers only three all-or-nothing modes (`--connect`,
 default `solo`, `--offline` — `main.rs:302`) and **login is effectively mandatory**: even to
-browse the map in the default mode you spin up a full `vibe_sim` and authenticate. There is no
+browse the map in the default mode you spin up a full `cartopolis_simulator` and authenticate. There is no
 first-class **anonymous viewer** that just looks things up, routes, and browses public layers;
 and no articulated path for **login** to *add* the simulation, nor for **per-user ACLs** to
 add restricted layers later.
@@ -56,7 +56,7 @@ tier**: they require a logged-in session.
 The Authorized tier has its **first concrete case**: the **AI assistant is admin-only**. It holds
 a server-side secret (the Anthropic API key) and spends real money per request, so it is gated on
 an `ai` capability granted only to admin users — not merely on being logged in. See ADR-034,
-which routes it through `vibe_sim` over `NetMessage` rather than the anonymous data relay.
+which routes it through `cartopolis_simulator` over `NetMessage` rather than the anonymous data relay.
 
 **Access tiers** (a layer declares exactly one):
 
@@ -77,7 +77,7 @@ tiers into ADR-030's platform `Capabilities`. One answers "can this build render
 "is this user allowed it."
 
 **Enforcement rule (load-bearing).** For Authenticated/Authorized tiers the **server is the
-gate**: `vibe_sim` withholds layer data and rejects mutating intents for sessions lacking the
+gate**: `cartopolis_simulator` withholds layer data and rejects mutating intents for sessions lacking the
 entitlement (P-01, P-04). Client-side layer toggles are **UX only** (show/hide, grey-out an
 unavailable action) and carry no security weight. Public-tier layers are external services
 (tiles, Nominatim, routing) the client calls directly and need no entitlement.
@@ -92,7 +92,7 @@ maps onto the existing sim connection path (ADR-016 auth is what flips it on).
 ## Rationale
 
 **Primary Reasoning**:
-1. **Matches the product's real shape.** viberfox is a place-lookup/routing/map viewer *and* a
+1. **Matches the product's real shape.** cartopolis is a place-lookup/routing/map viewer *and* a
    virtual world; the tiered stack lets the anonymous viewer be genuinely useful (G-04) while
    login unlocks the world (G-02) and ACLs unlock more (G-05) — one model, three depths.
 2. **Web-native default.** "Anonymous, public layers only" is precisely the wasm build's base
@@ -117,7 +117,7 @@ maps onto the existing sim connection path (ADR-016 auth is what flips it on).
 **Positive**:
 - A useful anonymous viewer (lookup/routing/public layers); login and ACLs are additive depth.
 - Web and native share one session flow (start anonymous, upgrade at runtime).
-- Restricted layers are enforced where authority lives (`vibe_sim`).
+- Restricted layers are enforced where authority lives (`cartopolis_simulator`).
 - New layers pick a tier declaratively; no bespoke gating per feature.
 
 **Negative**:

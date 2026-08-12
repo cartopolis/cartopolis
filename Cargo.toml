@@ -4,11 +4,11 @@ members = [
     "crates/core",
     "crates/geo",
     "crates/simulator",
-    "crates/viberfox",
-    "crates/viberfox_android",
+    "crates/cartopolis",
+    "crates/cartopolis_android",
     "crates/big_space",
 ]
-default-members = ["crates/viberfox"]
+default-members = ["crates/cartopolis"]
 
 [workspace.package]
 version = "1.0.0"
@@ -21,7 +21,7 @@ edition = "2021"
 #
 # Declaring it here does not apply it: a crate only picks it up by writing
 # `license.workspace = true` in its own `[package]`, the way each already does
-# for `version`. `viberfox_android` does; the other five still need the line.
+# for `version`. `cartopolis_android` does; the other five still need the line.
 license = "MIT OR Apache-2.0"
 
 # Warnings are a signal only while there are none standing. The wasm lane carried
@@ -90,7 +90,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "std",
     "tonemapping_luts",
     # NOTE: the Linux-only `wayland` windowing feature is added per-target in
-    # crates/viberfox/Cargo.toml so macOS/Windows never resolve the wayland stack.
+    # crates/cartopolis/Cargo.toml so macOS/Windows never resolve the wayland stack.
 ] }
 # bevy_atmosphere removed in the 0.19 migration — replaced by Bevy's built-in
 # bevy_pbr atmosphere (Atmosphere/AtmosphereSettings on the camera).
@@ -113,7 +113,7 @@ tiff = "0.10"
 # Both are pure Rust with no C deps, so they survive the wasm32 target (ADR-033).
 mvt-reader = "2.4"
 tiny-skia = "0.12"
-# In-world scripting (`viberfox_simulator::scripting`). **Luau**, not standard Lua:
+# In-world scripting (`cartopolis_simulator::scripting`). **Luau**, not standard Lua:
 # only Luau gives `Lua::sandbox()`, and only Luau's `set_interrupt` can return
 # `VmState::Yield` — standard Lua's `set_hook` can raise an error but cannot
 # suspend, which would leave "abort the script" as the sole answer to an
@@ -183,9 +183,9 @@ codegen-units = 256
 # backtraces keep symbol names without it.
 debug = false
 
-# `package."*"` catches path dependencies too, and viberfox_core is small, pure and
+# `package."*"` catches path dependencies too, and cartopolis_core is small, pure and
 # rebuilt constantly — O3 on it buys nothing and costs every edit.
-[profile.dev.package.viberfox_core]
+[profile.dev.package.cartopolis_core]
 opt-level = 0
 
 # Shipped builds: trade compile time for runtime frame times (per the Bevy
@@ -223,7 +223,7 @@ panic = "abort"
 # get back for a single build, without editing this file or invalidating anyone
 # else's cache:
 #
-#     CARGO_PROFILE_WEB_RELEASE_STRIP=none ./crates/viberfox/serve-threads.sh
+#     CARGO_PROFILE_WEB_RELEASE_STRIP=none ./crates/cartopolis/serve-threads.sh
 [profile.web-release]
 inherits = "release"
 lto = "thin"
@@ -235,7 +235,7 @@ strip = "symbols"
 # **`release` cannot link this target here.** Fat LTO over one codegen unit means
 # one rustc process holding the bitcode for the whole Bevy stack at once, and on a
 # 22 GB build box that process was killed by the OOM killer (signal 9, during the
-# `viberfox_android` cdylib) after an hour of compiling everything below it. Thin
+# `cartopolis_android` cdylib) after an hour of compiling everything below it. Thin
 # LTO over 16 units is the same trade `web-release` above already documents —
 # near-identical frame times for a fraction of the link — and it fits in memory.
 #

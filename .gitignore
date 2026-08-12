@@ -4,7 +4,7 @@ data
 
 # Local OSM tile/building cache. Unanchored (no leading slash) so it matches at
 # any depth — the cache path is cwd-relative (`PathBuf::from("cache")`), so running
-# the client from a crate dir writes `crates/viberfox/cache/`, not just repo-root.
+# the client from a crate dir writes `crates/cartopolis/cache/`, not just repo-root.
 cache/
 
 # ADR-016 solo/dev credentials (never commit)
@@ -17,7 +17,7 @@ assets/models/avatar/outfits/
 assets/models/avatar/anims/
 assets/models/avatar/License_Standard.txt
 
-# Trunk output for the web build (`crates/viberfox/serve-threads.sh`). Build
+# Trunk output for the web build (`crates/cartopolis/serve-threads.sh`). Build
 # artifact, and a large one — the wasm module alone is >100 MB unoptimised.
 dist/
 

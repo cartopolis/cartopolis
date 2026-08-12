@@ -18,7 +18,7 @@
 ## Context
 
 **Problem**: The client renders the map from raster tiles fetched straight from
-`tile.openstreetmap.org` (the `osm_tile_url_template` default in `vibe_sim/src/config.rs:42`),
+`tile.openstreetmap.org` (the `osm_tile_url_template` default in `cartopolis_simulator/src/config.rs:42`),
 consumed by `tile_loader`, `map_stream` and the globe. Three things make that untenable for the
 web target (ADR-033) and increasingly untenable generally:
 
@@ -45,7 +45,7 @@ garage44 Caddy, so this follows an established pattern rather than starting one.
 renders the map as geometry; styling happens client-side.
 
 > **Implementation (2026-07-24) — how the server was actually built.** The mechanism below
-> (planetiler → PMTiles → a `vibe_relay` handler) was the *plan*; the shipped server takes a
+> (planetiler → PMTiles → a `cartopolis_relay` handler) was the *plan*; the shipped server takes a
 > simpler path that reaches the same end. The client's whole vector path — `vector_tiles.rs`,
 > `routing.rs`, the styling — is written against the **Shortbread** schema, which is what
 > `tiles.versatiles.org` serves and what this ADR's default already pointed at. Rather than run
@@ -58,17 +58,17 @@ renders the map as geometry; styling happens client-side.
 > - **Serving**: the Rust `versatiles` server (`ghcr.io/versatiles-org/versatiles`) as a `tiles`
 >   service in the existing `geo` Docker Compose stack, exposing `/tiles/osm/{z}/{x}/{y}`. It
 >   already emits `Access-Control-Allow-Origin: *` and a 28-day `Cache-Control`, so no relay logic
->   is needed — this replaces the "small `pmtiles` handler in `vibe_relay`" design.
-> - **Origin**: Caddy fronts it at **`tiles.garage44.eu`** (its own subdomain, the overpass /
+>   is needed — this replaces the "small `pmtiles` handler in `cartopolis_relay`" design.
+> - **Origin**: Caddy fronts it at **`tiles.cartopolis.org`** (its own subdomain, the overpass /
 >   nominatim / 3dbag pattern), not the same-origin `/tiles/*` path ADR-034 sketched. The
 >   single-origin relay of ADR-033/034 (for the wasm build) can still front this upstream later.
 > - **Client**: a pure origin swap. `DEFAULT_TILE_URL_TEMPLATE` moved from
->   `tiles.versatiles.org` to `tiles.garage44.eu` — same schema, same URL shape, no decode/render
->   change. `VIBE_TILE_URL` still overrides.
+>   `tiles.versatiles.org` to `tiles.cartopolis.org` — same schema, same URL shape, no decode/render
+>   change. `CARTO_TILE_URL` still overrides.
 >
 > The rest of this ADR (why vector, coverage, client work, downstream consolidation) stands as
 > written; only the generation-and-serving mechanism changed. Planetiler → PMTiles remains the path
-> to a *custom* viberfox-styled or non-Shortbread tileset if we ever outgrow the mirror.
+> to a *custom* cartopolis-styled or non-Shortbread tileset if we ever outgrow the mirror.
 
 The original plan — kept for the record and as the fallback for a custom tileset — was to serve at
 `/tiles/{z}/{x}/{y}.mvt`, generated offline with **planetiler** and stored as **PMTiles**:
@@ -78,7 +78,7 @@ The original plan — kept for the record and as the fallback for a custom tiles
 Raster was the conservative choice because it preserved the existing PNG → texture path. Vector
 wins on the axes that matter most for *this* project:
 
-- **Styling is client-side and dynamic.** viberfox has a live day/night cycle, atmosphere and
+- **Styling is client-side and dynamic.** cartopolis has a live day/night cycle, atmosphere and
   weather (ADR-005, ADR-032). A raster basemap is a photograph — it cannot respond to any of it, and
   a night city lit by a midday basemap looks wrong. Vector geometry can be styled, lit and shaded by
   the systems already running.
@@ -108,7 +108,7 @@ to be confirmed by the implementation workstream.)*
 ### Serving
 
 A **PMTiles archive** (single file, HTTP range reads) rather than millions of small files. A small
-Rust handler (`pmtiles` crate) reads `z/x/y` out of the archive; this lives in `vibe_relay`
+Rust handler (`pmtiles` crate) reads `z/x/y` out of the archive; this lives in `cartopolis_relay`
 (ADR-034) as a first-class route rather than an `UPSTREAMS` adapter — it has no upstream, it reads
 local data. Caddy fronts it at `/tiles/*` with long-lived `Cache-Control`; the native client keeps
 an on-disk cache.
@@ -134,14 +134,14 @@ The tile URL template becomes **configuration** (ADR-014 layering) rather than s
 sim supplies, so the anonymous Viewer (ADR-031) has a base map with no session. `ServerHelloAck`
 may still override it, letting a deployment point clients at its own tile source.
 
-The **default is now the vector source**: `vibe_core::world::DEFAULT_TILE_URL_TEMPLATE`
+The **default is now the vector source**: `cartopolis_core::world::DEFAULT_TILE_URL_TEMPLATE`
 (`https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}`), shared by the sim's advertised default
-(`vibe_sim/src/config.rs`) and the client's offline/`--shot` fallback (`tile_loader`) so the two
+(`cartopolis_simulator/src/config.rs`) and the client's offline/`--shot` fallback (`tile_loader`) so the two
 cannot drift. This replaces the original raster `tile.openstreetmap.org/{z}/{x}/{y}.png` default:
 with the tessellated-and-lit client path real, leaving raster as the out-of-the-box source meant
 solo mode silently rendered the old pre-baked tiles (labels, dashed carto, static lighting) instead
 of the vector map this ADR exists to deliver. A raster template still works — `tile_source_kind`
-classifies by the tail after `{y}`, and `VIBE_TILE_URL` / `VIBE_TILE_FORMAT` override per run — it
+classifies by the tail after `{y}`, and `CARTO_TILE_URL` / `CARTO_TILE_FORMAT` override per run — it
 is just no longer the default.
 
 ### Downstream consolidation (noted, not decided)
@@ -193,7 +193,7 @@ filtering that MVT schemas flatten away. Revisit once the vector client path is 
   working PNG→texture pipeline (mitigation: separate workstream; `earcutr` and the streaming/LOD
   structure are reused).
 - **We now own map styling**, which is real design work and will not resemble
-  `tile.openstreetmap.org` (mitigation: eventually desirable — a viberfox style — but it is work
+  `tile.openstreetmap.org` (mitigation: eventually desirable — a cartopolis style — but it is work
   that raster would not have required).
 - **A generation pipeline to run and refresh** (mitigation: planetiler is a single tool with no
   PostGIS/render-daemon stack; refresh cadence can be weeks).

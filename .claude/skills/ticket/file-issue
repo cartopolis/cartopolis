@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Bind this worktree to a viberfox ticket.
+# Bind this worktree to a cartopolis ticket.
 #
 #   ./file-issue --title "..." [--branch feat/slug] [--label driven] < body.md
 #   ./file-issue --bind 23
 #
-# The binding is a marker at $(git rev-parse --git-dir)/viberfox-ticket:
+# The binding is a marker at $(git rev-parse --git-dir)/cartopolis-ticket:
 # per-worktree, never committed, and what the Stop and SessionStart hooks key
 # on. It holds the branch name in full, because those hooks are pure git with no
 # credentials and cannot resolve an issue number into a slug.
@@ -15,12 +15,12 @@
 
 set -euo pipefail
 
-env_file="${VIBERFOX_FORGEJO_ENV:-$HOME/.config/viberfox/forgejo.env}"
+env_file="${CARTO_FORGEJO_ENV:-$HOME/.config/cartopolis/forgejo.env}"
 [ -f "$env_file" ] || { echo "missing $env_file — see docs/workflow.md" >&2; exit 1; }
 set -a; . "$env_file"; set +a
 : "${FORGEJO_TOKEN:?not set in $env_file}"
 API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
-REPO="${FORGEJO_REPO:-jeroen/viberfox}"
+REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
 
 title=""; branch=""; labels="driven"; bind=""
 while [ $# -gt 0 ]; do
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
 done
 
 git_dir=$(git rev-parse --git-dir)
-marker="$git_dir/viberfox-ticket"
+marker="$git_dir/cartopolis-ticket"
 common=$(git rev-parse --git-common-dir)
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json" "$@"; }
@@ -51,7 +51,7 @@ print({l["name"]: l["id"] for l in json.load(sys.stdin)}.get(os.environ["LBL"], 
 # beats catching it at push time, after the work.
 claimed_elsewhere() {
     _n="$1"
-    for _m in "$common"/worktrees/*/viberfox-ticket; do
+    for _m in "$common"/worktrees/*/cartopolis-ticket; do
         [ -f "$_m" ] || continue
         [ "$_m" = "$marker" ] && continue
         if [ "$(sed -n 's/^issue=//p' "$_m" | head -1)" = "$_n" ]; then

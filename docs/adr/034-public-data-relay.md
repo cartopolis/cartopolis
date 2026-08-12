@@ -35,8 +35,8 @@ collapses this duplication.
 
 An earlier framing of this work said we needed to emit CORS headers. That was wrong. If the wasm
 app and everything it calls are served from **one origin**, those requests are same-origin and
-CORS never applies. Our own services are currently on *sub*domains (`nominatim.garage44.eu`,
-`3dbag.garage44.eu`), and a subdomain is a different origin — so the fix is to **path-mount them
+CORS never applies. Our own services are currently on *sub*domains (`nominatim.cartopolis.org`,
+`3dbag.cartopolis.org`), and a subdomain is a different origin — so the fix is to **path-mount them
 under the app's origin** in the existing Caddy, not to sprinkle CORS headers.
 
 CORS survives in exactly two places: consuming a *third party's* headers if we ever call one
@@ -74,20 +74,20 @@ Auditing all eleven upstreams surfaced three constraints that matter more than C
 
 ## Decision
 
-Add a **`vibe_relay`** crate: a small, stateless, **unauthenticated** HTTP service that fronts
+Add a **`cartopolis_relay`** crate: a small, stateless, **unauthenticated** HTTP service that fronts
 Public-tier upstreams through a **registry of upstream adapters**, served from the **same origin**
 as the app.
 
 ### Single-origin layout (one Caddy site block)
 
 ```
-https://viberfox.garage44.eu/            → wasm app + assets
-https://viberfox.garage44.eu/tiles/*     → self-hosted vector tiles, PMTiles (ADR-035)
-https://viberfox.garage44.eu/nominatim/* → nominatim
-https://viberfox.garage44.eu/overpass/*  → overpass
-https://viberfox.garage44.eu/3dbag/*     → 3dbag
-https://viberfox.garage44.eu/v1/*        → vibe_relay (L2 adapters)
-wss://viberfox.garage44.eu/ws            → vibe_sim (ADR-033 Phase 2)
+https://cartopolis.org/            → wasm app + assets
+https://cartopolis.org/tiles/*     → self-hosted vector tiles, PMTiles (ADR-035)
+https://cartopolis.org/nominatim/* → nominatim
+https://cartopolis.org/overpass/*  → overpass
+https://cartopolis.org/3dbag/*     → 3dbag
+https://cartopolis.org/v1/*        → cartopolis_relay (L2 adapters)
+wss://cartopolis.org/ws            → cartopolis_simulator (ADR-033 Phase 2)
 ```
 
 Same Caddy that already reverse-proxies these, on one hostname instead of several.
@@ -135,10 +135,10 @@ pub const UPSTREAMS: &[UpstreamDef] = &[ /* one entry per upstream */ ];
 | # | Source | Endpoint | Approach | Why |
 |---|---|---|---|---|
 | 1 | OSM vector tiles (MVT) | *(self-hosted — **ADR-035**)* | **L1** `/tiles/*` | OSM discourages proxying their CDN; we serve our own vector tiles from a PMTiles archive (ADR-035). Highest byte volume |
-| 2 | Nominatim search | `nominatim.garage44.eu` | **L1** `/nominatim/*` | ours |
+| 2 | Nominatim search | `nominatim.cartopolis.org` | **L1** `/nominatim/*` | ours |
 | 3 | Nominatim reverse | same, `/reverse` | **L1** `/nominatim/*` | ours |
-| 4 | Overpass | `overpass.garage44.eu/api/interpreter` | **L1** `/overpass/*` | ours (client-side throttle can later move to an L2 adapter) |
-| 5 | 3DBAG LoD2.2 | `3dbag.garage44.eu/lod22/{z}/{x}/{y}.json` | **L1** `/3dbag/*` | ours; large payloads suit plain HTTP caching |
+| 4 | Overpass | `overpass.cartopolis.org/api/interpreter` | **L1** `/overpass/*` | ours (client-side throttle can later move to an L2 adapter) |
+| 5 | 3DBAG LoD2.2 | `3dbag.cartopolis.org/lod22/{z}/{x}/{y}.json` | **L1** `/3dbag/*` | ours; large payloads suit plain HTTP caching |
 | 6 | met.no forecast | `api.met.no/weatherapi/locationforecast/2.0/complete` | **L2** `met-forecast` | UA identification required by ToS; shared cache honours their caching guidance |
 | 7 | NOAA GFS (GRIB2) | `nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl` | **L2** `gfs-tcdc` | transform (GRIB → 360×181 grid) + cycle clock + cache; no CORS |
 | 8 | OVapi departures | `http://v0.ovapi.nl/tpc/{codes}` | **L2** `ovapi-departures` | **mixed content** — unreachable otherwise; + UA |
@@ -149,7 +149,7 @@ pub const UPSTREAMS: &[UpstreamDef] = &[ /* one entry per upstream */ ];
 ### What the relay does *not* serve
 
 The relay stays **Public-tier and unauthenticated**. Anything needing a session or an ACL goes
-through `vibe_sim` over `NetMessage`, per the transport rule (Public/cacheable → HTTP;
+through `cartopolis_simulator` over `NetMessage`, per the transport rule (Public/cacheable → HTTP;
 session-bound/authoritative → WebSocket).
 
 The **AI assistant is the first such case**: the Anthropic key is a server secret, and access is
@@ -159,8 +159,8 @@ its own key. It is not an upstream adapter, and `AiConfig.api_key` leaves the cl
 
 ### Where it runs
 
-`vibe_relay` is **lib + thin bin**, the shape ADR-015 already established for `vibe_sim` ("exposes
-both a lib and a thin bin, so the server can run standalone *or* embedded"). `vibe_sim` embeds it
+`cartopolis_relay` is **lib + thin bin**, the shape ADR-015 already established for `cartopolis_simulator` ("exposes
+both a lib and a thin bin, so the server can run standalone *or* embedded"). `cartopolis_simulator` embeds it
 behind a default-on **`relay` feature**, so the normal deployment is still **one process**;
 splitting it out later is a flag, not a refactor.
 
@@ -171,7 +171,7 @@ surface by default (P-04).
 
 ### Client side
 
-The client keeps a configurable base URL (same shape as the existing `VIBE_NOMINATIM_URL` env
+The client keeps a configurable base URL (same shape as the existing `CARTO_NOMINATIM_URL` env
 override, ADR-014) and targets `/tiles/…`, `/nominatim/…`, `/overpass/…`, `/3dbag/…` or
 `/v1/{key}`. This is URL construction, not a new abstraction — it composes with ADR-033's
 `HttpFetch` provider. **Both targets use the relay**, so there is one code path (the ADR-033
@@ -200,7 +200,7 @@ principle) and native gains the shared cache and politeness too.
 | Alternative | Pros | Cons | Rejected Because |
 |------------|------|------|------------------|
 | Emit CORS headers everywhere, keep subdomains | No Caddy restructure | Preflights, more config, still cross-origin | Single origin makes CORS moot entirely |
-| Module inside `vibe_sim`, no crate | Fewest moving parts | Public tier then requires running the world sim; public unauth surface on the authority process | Breaks ADR-031/033 Phase-1 independence |
+| Module inside `cartopolis_simulator`, no crate | Fewest moving parts | Public tier then requires running the world sim; public unauth surface on the authority process | Breaks ADR-031/033 Phase-1 independence |
 | Caddy proxy config only | No Rust code | Can't transform (GRIB→grid), can't single-flight or stale-if-error | Covers L1 only; L2 needs code |
 | Relay grows authenticated adapters (for Anthropic) | One service | Muddies the stateless/anonymous invariant; duplicates sim authz | Session-bound work belongs in the sim |
 | Proxy OSM's tile CDN | No tile infrastructure | OSM discourages proxying; still can't set UA | ADR-035 self-hosts vector tiles instead |
@@ -240,5 +240,5 @@ approach, only the reasoning recorded per row.
 - [ADR-031](./031-layered-access-model.md): The relay serves the Public tier; the AI assistant is the first `Authorized(cap)` (admin-only) case.
 - [ADR-032](./032-global-cloud-cover-data.md): `gribberish` moves from the client to the `gfs-tcdc` adapter.
 - [ADR-023](./023-data-layers.md): `UPSTREAMS` mirrors `LAYER_DEFS`; a layer names the upstream it needs.
-- [ADR-015](./015-workspace-module-boundaries.md): `vibe_relay` follows the established lib + thin bin, embeddable shape.
+- [ADR-015](./015-workspace-module-boundaries.md): `cartopolis_relay` follows the established lib + thin bin, embeddable shape.
 - [ADR-014](./014-runtime-configuration-and-operations.md): Base URLs and per-adapter config follow the existing env/CLI layering.

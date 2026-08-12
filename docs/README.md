@@ -13,7 +13,7 @@
 ## Guides
 
 - [Development](guides/development.md) — start here as a new contributor
-- [Self-hosted geo services (Overpass + Nominatim + 3DBAG)](guides/server.md) — run local Overpass/Nominatim instances seeded with the Netherlands extract, serve the 3DBAG building tiers as static tiles, and point the client at them via `VIBE_OVERPASS_URL` / `VIBE_NOMINATIM_URL`
+- [Self-hosted geo services (Overpass + Nominatim + 3DBAG)](guides/server.md) — run local Overpass/Nominatim instances seeded with the Netherlands extract, serve the 3DBAG building tiers as static tiles, and point the client at them via `CARTO_OVERPASS_URL` / `CARTO_NOMINATIM_URL`
 
 ## Where a fact belongs
 

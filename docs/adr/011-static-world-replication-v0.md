@@ -26,10 +26,10 @@
 
 Replicate **static world** as **DTOs** (`RegionDto` + `PrimDto`) over ADR-009: an initial `WorldSnapshot { tick, regions, prims, avatars }`, then **small delta** messages as edits occur.
 
-**As built** (`crates/vibe_core/src/protocol.rs`):
+**As built** (`crates/cartopolis_core/src/protocol.rs`):
 - **Deltas**: `PrimUpsert { prim: PrimDto }` (whole-prim replace after create/update) and `PrimRemoved { id: i64 }` (delete-by-id) — no field-level bitfields.
 - **Ids**: `i64`, stable in the DB and server-assigned; the server never trusts client-proposed ids for new objects.
-- **Serialization**: `serde` DTOs in `vibe_core`, postcard-encoded (same codec as ADR-009).
+- **Serialization**: `serde` DTOs in `cartopolis_core`, postcard-encoded (same codec as ADR-009).
 - **Evolution**: per-client dirty masks / fine-grained component sync are out of scope here.
 
 ## Rationale

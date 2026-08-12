@@ -48,7 +48,7 @@ Number client inputs, have the sim echo the last one it applied, and reconcile b
 
 **Approach**:
 
-1. **Wire (`vibe_core`)** — a new revision appended to `PROTOCOL_HISTORY`
+1. **Wire (`cartopolis_core`)** — a new revision appended to `PROTOCOL_HISTORY`
    (**v12**; the number is derived from that log, never written by hand):
    - `ClientIntent` gains `sequence: u32` — monotonic per connection, and
      `dt_ms: u16`, the client frame duration the intent covers.
@@ -57,14 +57,14 @@ Number client inputs, have the sim echo the last one it applied, and reconcile b
    The ADR-009 envelope is unchanged: no new message kinds, two added postcard
    fields, both `#[serde(default)]`.
 
-2. **Sim (`vibe_sim`)** — `SimWorld` records the highest `sequence` applied per
+2. **Sim (`cartopolis_simulator`)** — `SimWorld` records the highest `sequence` applied per
    avatar and integrates each intent over its own `dt_ms` (clamped to a sane
    ceiling so a lying client can't buy speed), instead of holding one velocity
    until the next tick. `net.rs` stamps `last_input_sequence` per connection when
    encoding the snapshot — so the broadcast becomes a per-connection encode for
    avatars, or the field is carried in the local-avatar `AvatarStateDto`.
 
-3. **Client (`viberfox`)** — a ring buffer of `(sequence, velocity, dt)` for
+3. **Client (`cartopolis`)** — a ring buffer of `(sequence, velocity, dt)` for
    inputs sent and not yet acknowledged. On snapshot: drop everything at or below
    `last_input_sequence`, reset the predicted position to the authoritative one,
    then re-integrate the remaining tail. The result is the position the sim
@@ -117,7 +117,7 @@ Number client inputs, have the sim echo the last one it applied, and reconcile b
   per-client field, or carry the ack in a small separate message.
 - The client must keep the replay integration byte-for-byte in step with
   `SimWorld::apply_intent`/`step`. Mitigation: move the scaling constants into
-  `vibe_core` so both sides read one definition — they are duplicated today
+  `cartopolis_core` so both sides read one definition — they are duplicated today
   (`network::SIM_WALK_SPEED` mirrors `state::WALK_SPEED` by comment only).
 
 ## Related

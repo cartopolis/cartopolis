@@ -77,7 +77,7 @@ you have to look at.
 
 ### ② claude.ai/code — driven, remote
 
-Remote Control into the `viberfox-agent` container, reachable from a browser or
+Remote Control into the `cartopolis-agent` container, reachable from a browser or
 the phone app. **Same lane as Zed, not a variant of the watcher** — a person is
 steering it turn by turn, so it is a full design/spec session that happens not
 to be at your desk. `/ticket`, the `driven` label, the `Stop` hook and the
@@ -89,7 +89,7 @@ ticket is written before ③ builds it.
 
 ### ③ Issue watcher — autonomous, remote
 
-Headless `claude -p` in the `viberfox-issue-watcher` container, triggered by an
+Headless `claude -p` in the `cartopolis-issue-watcher` container, triggered by an
 issue or a label rather than by you. Nobody sees the intermediate turns, which
 is why it [refines before it builds](#refinement) and why refinement is required
 to cite the code rather than assume.
@@ -313,11 +313,11 @@ The card appears in **Backlog** within 30 s. Neither driven context places it
 itself; the watcher does, so the bot's board password stays in one place instead
 of being copied to a laptop and a container.
 
-Credentials are `~/.config/viberfox/forgejo.env` (`0600`, scope `write:issue`) in
+Credentials are `~/.config/cartopolis/forgejo.env` (`0600`, scope `write:issue`) in
 whichever context you are in — the workstation and the container each hold their
 own token. Both author issues as **you**, not as the bot: a person is driving,
 and it keeps the `@agent` comment path working, since the watcher ignores
-comments authored by `viberfox-agent` as a loop-breaker.
+comments authored by `cartopolis-agent` as a loop-breaker.
 
 **You never name a branch, and never notice one being named.** Filing a ticket
 puts you on the right branch:
@@ -365,7 +365,7 @@ on the ref, which is why they are read oldest-first.
 
 The hook is scoped by **remote URL**, not by where it is installed: it lives in
 the global settings and exits silently in any repo whose `origin` is not
-viberfox. Without that guard it would publish chat digests into every other
+cartopolis. Without that guard it would publish chat digests into every other
 project on the workstation.
 
 **The same script runs in both driven contexts** — `~/.claude/hooks/` on the
@@ -419,18 +419,18 @@ unclear signal must not start a build.
 
 A worktree on the issue's branch, cut from `origin/main` unless it is a
 [takeover](#handover). Verify with `cargo check -p <crate>` and
-`cargo test -p viberfox_geo && cargo test -p viberfox`, commit in Conventional
+`cargo test -p cartopolis_geo && cargo test -p cartopolis`, commit in Conventional
 Commits style, push the branch. `main` is protected: direct pushes are whitelisted
 to `jeroen`, so the bot cannot push to it. It *can* open and merge a PR through
 the API — the protection sets no merge whitelist, no required approvals and no
 status checks — but that is a thing to do when asked, not a lane the bot drives
 itself into.
 
-> **Not `--bin viberfox`.** That was the command here until 2026-08-06, and since
+> **Not `--bin cartopolis`.** That was the command here until 2026-08-06, and since
 > the lib+shim split ([client-build-cost.md](notes/client-build-cost.md)) it runs
-> **0 of viberfox's 207 tests** — `main.rs` is a nine-line shim with none in it —
+> **0 of cartopolis's 207 tests** — `main.rs` is a nine-line shim with none in it —
 > and exits 0. The autonomous lane's only test gate was passing unconditionally.
-> `viberfox_geo` goes first because it fails in ~2 s on a geodata regression,
+> `cartopolis_geo` goes first because it fails in ~2 s on a geodata regression,
 > before the client's codegen.
 
 `agent:done` means **a branch is waiting for review**, not shipped.
@@ -454,7 +454,7 @@ Three properties are deliberate, and the first is what makes this safe to give a
 agent at all:
 
 - **`main` stays protected, and the token cannot unprotect it.** The
-  `viberfox-agent` account reports `protected: true`, `user_can_push: false`,
+  `cartopolis-agent` account reports `protected: true`, `user_can_push: false`,
   `user_can_merge: true` on `main`, and its token carries `write:repository`
   with no admin scope. So an accidental `git push origin main` from any session
   still bounces, and this path cannot widen its own permissions. The merge goes
@@ -465,7 +465,7 @@ agent at all:
   kanban API.
 - **Two tokens, two scopes.** `forgejo.env` stays `write:issue` only, exactly as
   its own comment claims; the repository-write token lives beside it in
-  `forgejo-merge.env` (mode 600). Revoke it in Forgejo ▸ `viberfox-agent` ▸
+  `forgejo-merge.env` (mode 600). Revoke it in Forgejo ▸ `cartopolis-agent` ▸
   Settings ▸ Applications ▸ delete "agent-merge", and this path stops working
   while everything else keeps running.
 
@@ -545,7 +545,7 @@ earliest usually holds the design decision and the later ones only execute it.
 If no digest exists, the agent is told to say so rather than invent intent.
 
 > **The digests live in a separate, private repo** —
-> `jeroen/viberfox-agent-context`, not in viberfox, which is public. Measured:
+> `jeroen/cartopolis-agent-context`, not in cartopolis, which is public. Measured:
 > an anonymous clone plus an explicit `+refs/agent-context/*` refspec retrieved
 > every digest from a public repo, no account needed. A namespace outside
 > `refs/heads/*` keeps transcripts out of a routine clone; it was never an
@@ -665,7 +665,7 @@ so nothing is kept in sync by hand:
 | Forgejo issue | `#23` | the source |
 | Remote branch | `feat/23-warn-driving-speed-limit`, **origin only** | number + slug |
 | Context dir | `feat-23-warn-driving-speed-limit/` | remote branch, `/`→`-` |
-| Session binding | `.git/viberfox-ticket` containing `23` | written by `/ticket` |
+| Session binding | `.git/cartopolis-ticket` containing `23` | written by `/ticket` |
 
 The Stop hook keys on the **marker file**, not the branch name. That closes the
 silent hole hit three times (`main`, `worktree-*`, detached HEAD): a ticketed
@@ -688,7 +688,7 @@ You never create, name, switch or push a branch — the hook does, invisibly.
 
 ### Context repo: plain files on `main`
 
-`viberfox-agent-context` loses the ref namespace (invisible in Forgejo, needs a
+`cartopolis-agent-context` loses the ref namespace (invisible in Forgejo, needs a
 fetch incantation, existed only to be deletable — digests are kept now):
 
 ```
@@ -782,18 +782,18 @@ directory". No second mechanism.
 |---|---|
 | `Stop` hook + jq filter | `~/.claude/hooks/agent-context-push`, `agent-context.jq` |
 | Hook registration | `~/.claude/settings.json` → `hooks.Stop` |
-| Forgejo token (`write:issue`) | `~/.config/viberfox/forgejo.env`, `0600` |
-| Digest destination | `jeroen/viberfox-agent-context` (private), over SSH. Override with `VIBERFOX_AGENT_CONTEXT_REMOTE` |
+| Forgejo token (`write:issue`) | `~/.config/cartopolis/forgejo.env`, `0600` |
+| Digest destination | `jeroen/cartopolis-agent-context` (private), over SSH. Override with `CARTO_AGENT_CONTEXT_REMOTE` |
 
-**② claude.ai/code — the `viberfox-agent` container**
+**② claude.ai/code — the `cartopolis-agent` container**
 
 | What | Where |
 |---|---|
 | Same `Stop` hook + jq filter | `/home/agent/.claude/hooks/` on the `agent_claude` volume |
 | Hook registration | `/home/agent/.claude/settings.json` → `hooks.Stop` |
-| Forgejo token (`write:issue`) | `/home/agent/.config/viberfox/forgejo.env`, `0600` |
+| Forgejo token (`write:issue`) | `/home/agent/.config/cartopolis/forgejo.env`, `0600` |
 
-**③ Issue watcher — the `viberfox-issue-watcher` container** (`/data/agent/`, docs in `README.md` there)
+**③ Issue watcher — the `cartopolis-issue-watcher` container** (`/data/agent/`, docs in `README.md` there)
 
 | What | Where |
 |---|---|
@@ -817,7 +817,7 @@ it publishes nothing, because the watcher already reports on the issue itself.
 ## When it goes wrong
 
 **A card is in the wrong column.** Cosmetic. Check the labels — they are the
-truth. `docker logs viberfox-issue-watcher` will have a `[board]` line saying
+truth. `docker logs cartopolis-issue-watcher` will have a `[board]` line saying
 what failed.
 
 **Cards stopped moving entirely.** The bot's session or password. The watcher

@@ -43,7 +43,7 @@ The shortcut couples these two ideas together, so improving one breaks the other
 - Browse a continuous map at multiple zoom levels.
 - Keep game regions a fixed real-world size everywhere on Earth (not stretched by where they are on the map).
 - Be able to drop OSM 3D buildings onto the map later without redesigning this.
-- Keep the simulation server (`vibe_sim`) as the authority over game regions.
+- Keep the simulation server (`cartopolis_simulator`) as the authority over game regions.
 
 ## Decision
 
@@ -83,7 +83,7 @@ The map tier is the backdrop; the sim tier sits on top of it. They are **not** t
 - A browsable, multi-zoom map, and a clear path to 3D buildings on it.
 - Game regions are a consistent real-world size anywhere on Earth, with crisp boundaries and a normal local coordinate frame.
 - Map work and simulation work stay independent and can progress in parallel.
-- Server authority over regions (`vibe_sim`) is unchanged in spirit.
+- Server authority over regions (`cartopolis_simulator`) is unchanged in spirit.
 
 **Negative**:
 - **More moving parts** than one square: a streaming map system plus a region-placement system (mitigation: build the map tier in stages — static first, streaming later).

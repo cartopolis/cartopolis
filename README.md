@@ -1,14 +1,19 @@
-# Viberfox
+# Cartopolis
 
-A networked 3D virtual world built with Rust and Bevy, anchored in the real planet. Walk a street of buildings imported from [OpenStreetMap](https://www.openstreetmap.org/), then keep flying up — through the atmosphere, past the planet turning below you, into space — and drop back down anywhere on Earth. Build in place, and share the world with others in real time.
+**A digital twin of the real world that you can walk around in.**
 
-- **The real world, streamed** — live map data for the ground; move the anchor and the world re-streams around you.
-- **Street to orbit, seamlessly** — one continuous space from the pavement to a full planetary globe, with no loading screens.
-- **3D from the map** — buildings raised from OSM footprints, measured terrain relief, toggleable data layers, routing and live transit boards.
-- **Build in place** — create, texture, and reshape objects with a gizmo and edit dialog.
-- **A sky that moves** — physically-based atmosphere with a day/night cycle, sun, moon, stars and weather.
-- **Shared, in real time** — an authoritative headless sim keeps avatars and world state in sync across clients.
-- **An AI copilot** — an in-client panel for LLM-assisted world building.
+Cartopolis assembles a living 3D city out of open data. The streets, the buildings, the ground relief and the trees are real, imported from [OpenStreetMap](https://www.openstreetmap.org/) and public geodata registries. So is the weather, the position of the sun, and the tram that is genuinely due in four minutes. Stand on a pavement in a real place and keep going up — through the atmosphere, past the planet turning below you, into orbit — then drop back down anywhere on Earth. No loading screens, and no invented geography.
+
+It is written in Rust on the [Bevy](https://bevy.org/) engine, runs in a browser, on the desktop and on Android, and is free and open source.
+
+- **Real places, streamed** — the world loads around you as you move, anywhere on the planet.
+- **Pavement to orbit** — one continuous space, from a doorway to the whole globe.
+- **Raised from the map** — buildings from real footprints, measured terrain, routing, street names and points of interest.
+- **A sky that behaves** — physically-based atmosphere, day and night, sun, moon, stars and real forecast weather.
+- **Live city data** — departure boards and vehicle positions from the actual transit feed.
+- **Shared and editable** — an authoritative server keeps people, avatars and edits in sync; objects can be placed and reshaped in the world, with an AI panel to help.
+
+The map, the sky and the weather work anywhere on Earth. Three things do not, because they come from national open-data registries rather than a global one: **measured ground relief, high-detail (LoD2.2) buildings and live transit are the Netherlands only.** Everywhere else those degrade rather than break — the ground goes flat, buildings are extruded from their OpenStreetMap footprints, and the departure boards stay empty.
 
 ## Screenshots
 
@@ -19,28 +24,28 @@ A networked 3D virtual world built with Rust and Bevy, anchored in the real plan
 
 _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](docs/shots.toml) — headless, no window, same framing every time._
 
-## Three builds
+## Try it
 
-The same client ships three ways, from one codebase:
+One codebase, three builds:
 
-- **Web (WebAssembly)** — play in a browser at **[viberfox.garage44.eu](https://viberfox.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
-- **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/viberfox/releases), or build from source. macOS builds from source too; Linux is the primary development target. The published binaries need a CPU with **AVX2 and FMA** (Haswell/Excavator or newer) — they are compiled for the `x86-64-v3` baseline, and on anything older they stop with an illegal instruction; build from source there.
-- **Android** — an installable APK at **[viberfox.garage44.eu/apk](https://viberfox.garage44.eu/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/viberfox_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
+- **Browser** — open **[cartopolis.org](https://cartopolis.org)**. Nothing to install; needs a WebGPU-capable browser.
+- **Desktop** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/cartopolis/releases), or build from source (macOS included). This is the fastest and most capable of the three. The published binaries need a CPU with **AVX2 and FMA** — roughly 2013 or newer; on anything older, build from source.
+- **Android** — an APK at **[cartopolis.org/apk](https://cartopolis.org/apk/)** (arm64, Android 9+); the page walks through the dialogs Android shows for an app that did not come from the Play Store. Early days: it is the map viewer only, and the least-tested of the three. [What that means](docs/notes/android-build.md).
 
-Native is the faster and more capable of the three — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
+Where the platforms differ, one API hides it (`platform/`).
 
 ## Running from source
 
 ```bash
-cargo run -p viberfox
+cargo run -p cartopolis
 ```
 
 Starts in **solo mode**: an in-process sim runs on loopback and the client connects over the same authenticated path an external server uses. Your world is persisted to `data/world.db`.
 
 ```bash
-cargo run -p viberfox -- --connect <host:port>   # split mode: connect to a live sim
-cargo run -p viberfox -- --offline               # no sim: single user, no auth or persistence
-cargo run -p viberfox_simulator                  # the sim server, standalone
+cargo run -p cartopolis -- --connect <host:port>   # split mode: connect to a live sim
+cargo run -p cartopolis -- --offline               # no sim: single user, no auth or persistence
+cargo run -p cartopolis_simulator                  # the sim server, standalone
 ```
 
 You need a Rust toolchain, a C compiler and a working GPU driver — details, release builds and the web build are in the [development guide](docs/guides/development.md). **Run `git lfs install` before cloning**: binary assets live in Git LFS and several are compiled into the binary, so a pointer file fails at runtime rather than at build time.
@@ -57,15 +62,15 @@ You need a Rust toolchain, a C compiler and a working GPU driver — details, re
 
 | Crate | Role |
 |-------|------|
-| `viberfox_core` | Shared protocol types and tile/coordinate math |
-| `viberfox_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
-| `viberfox_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
-| `viberfox` | Bevy game client — rendering, ECS systems, UI |
+| `cartopolis_core` | Shared protocol types and tile/coordinate math |
+| `cartopolis_geo` | Bevy-free map geodata: MVT decode, road classes, tree scatter, the routing graph |
+| `cartopolis_simulator` | Headless TCP simulation server (Tokio + SQLite), no Bevy |
+| `cartopolis` | Bevy game client — rendering, ECS systems, UI |
 | `big_space` | Vendored floating-origin fork, for planet-scale coordinates |
 
 ## Licence
 
-Viberfox is dual-licensed under **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)**, at your option — the Rust ecosystem's default pair, and the licence of the vendored `big_space` fork, so the two sets of notice obligations line up. [`LICENSE`](LICENSE) has the detail.
+Cartopolis is dual-licensed under **[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)**, at your option — the Rust ecosystem's default pair, and the licence of the vendored `big_space` fork, so the two sets of notice obligations line up. [`LICENSE`](LICENSE) has the detail.
 
 That covers the source. The map data, the geodata services, the avatars and the font each carry their own terms, and several of them — the ODbL, CC BY 4.0, the OFL — require their notice to travel with anything built from the work. **[`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) is that notice, and it is the canonical list**: it ships in the release tarball, in the Windows zip and inside the APK, and the in-app About panel renders it. The Credits below are the same list written for a reader; add a source to the file, not only here.
 

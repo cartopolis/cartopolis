@@ -1,6 +1,6 @@
 name: Deploy Android
 
-# Build the arm64 APK and publish it to https://viberfox.garage44.eu/apk/, so a
+# Build the arm64 APK and publish it to https://cartopolis.org/apk/, so a
 # phone can install it by tapping a link.
 #
 # Separate from ci.yml for the reason deploy-web.yml is: this is a *link*, thin
@@ -38,7 +38,7 @@ jobs:
     name: build apk & publish
     runs-on: ubuntu-latest
     container:
-      image: viberfox-ci:latest
+      image: cartopolis-ci:latest
       # Two mounts, both listed in the runner's `valid_volumes`:
       #   /publish — the same web root deploy-web.yml writes, so serving the APK
       #              needs no Caddy site, no DNS record and no second file_server.
@@ -48,7 +48,7 @@ jobs:
       #              Android keys an installed app to its certificate, so a key
       #              that changed per build would mean uninstalling the app before
       #              every install. Read-only: this job needs to sign, not rotate.
-      options: --volume /data/viberfox/site:/publish --volume /data/viberfox/android-key:/signing:ro
+      options: --volume /data/cartopolis/site:/publish --volume /data/cartopolis/android-key:/signing:ro
 
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +106,7 @@ jobs:
           test -f /opt/android-sdk/platforms/android-34/android.jar
 
       # `apksigner` is a shell script that runs `java`, and `zip` is how the .so
-      # gets its `lib/<abi>/` entry. Neither is in viberfox-ci:latest, which has no
+      # gets its `lib/<abi>/` entry. Neither is in cartopolis-ci:latest, which has no
       # other reason to carry a JVM. A JRE is enough — nothing here compiles Java
       # (that is what `hasCode="false"` buys) and the key comes from the mount, so
       # `keytool` is never called. Baking these into the image is the better end
@@ -140,13 +140,13 @@ jobs:
           ANDROID_NDK_HOME: /opt/android-ndk
           ANDROID_SDK_HOME: /opt/android-sdk
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-          ANDROID_KEY: /signing/viberfox.pk8
-          ANDROID_CERT: /signing/viberfox.x509.pem
+          ANDROID_KEY: /signing/cartopolis.pk8
+          ANDROID_CERT: /signing/cartopolis.x509.pem
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           rustup target add aarch64-linux-android
           export VERSION_CODE=$(( 10000 + RUN_NUMBER ))
-          crates/viberfox_android/build-apk.sh
+          crates/cartopolis_android/build-apk.sh
 
       # `apksigner verify` runs inside the script. These are the three that catch
       # a *packaging* regression, and all three are cheap:
@@ -169,8 +169,8 @@ jobs:
       - name: Verify the archive
         run: |
           set -euo pipefail
-          apk="${CARGO_TARGET_DIR:-target}/android/viberfox-arm64-v8a.apk"
-          unzip -p "$apk" lib/arm64-v8a/libviberfox_android.so > /tmp/lib.so
+          apk="${CARGO_TARGET_DIR:-target}/android/cartopolis-arm64-v8a.apk"
+          unzip -p "$apk" lib/arm64-v8a/libcartopolis_android.so > /tmp/lib.so
           ndk_bin=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin
           # Each check reads its tool's output into a variable and matches with
           # `case`, rather than piping into `grep -q`.
@@ -226,7 +226,7 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          src="${CARGO_TARGET_DIR:-target}/android/viberfox-arm64-v8a.apk"
+          src="${CARGO_TARGET_DIR:-target}/android/cartopolis-arm64-v8a.apk"
           size=$(du -h "$src" | cut -f1)
           sha=$(sha256sum "$src" | cut -d' ' -f1)
           short=${COMMIT:0:8}
@@ -250,9 +250,9 @@ jobs:
           echo "packaged $vname (code $vcode)"
 
           mkdir -p /publish/apk
-          cp "$src" /publish/apk/.viberfox.apk.tmp
-          mv -f /publish/apk/.viberfox.apk.tmp /publish/apk/viberfox.apk
-          echo "$sha  viberfox.apk" > /publish/apk/viberfox.apk.sha256
+          cp "$src" /publish/apk/.cartopolis.apk.tmp
+          mv -f /publish/apk/.cartopolis.apk.tmp /publish/apk/cartopolis.apk
+          echo "$sha  cartopolis.apk" > /publish/apk/cartopolis.apk.sha256
 
           # A landing page, because the install path on a phone is "open a link",
           # and a bare .apk URL gives no way to tell which build is being
@@ -278,35 +278,43 @@ jobs:
           <!doctype html>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Viberfox for Android</title>
+          <title>Cartopolis for Android</title>
           <style>
-            body { background:#0C2A33; color:#F2EFEA; font:16px/1.6 system-ui, sans-serif;
+            body { background:#1B2830; color:#F2EFEA; font:16px/1.6 system-ui, sans-serif;
                    margin:0; padding:2rem 1.25rem; }
             main { max-width:32rem; margin:0 auto; }
             h1 { color:#FD9212; font-size:1.5rem; margin:0 0 0.5rem; }
             h2 { color:#FD9212; font-size:1.05rem; margin:2rem 0 0.5rem; }
             .lede { margin:0; }
-            a.dl { display:block; background:#FD6012; color:#0C2A33; font-weight:700;
+            a.dl { display:block; background:#FD6012; color:#1B2830; font-weight:700;
                    text-align:center; text-decoration:none; padding:0.9rem; border-radius:0.5rem;
                    margin:1.5rem 0; }
             a { color:#FD9212; }
             dl { display:grid; grid-template-columns:auto 1fr; gap:0.25rem 1rem; font-size:0.9rem; }
             dt { color:#FD9212; } dd { margin:0; }
             ol { padding-left:1.2rem; } li { margin:0.6rem 0; }
-            b.tap { color:#F2EFEA; background:#164652; border-radius:0.25rem; padding:0 0.35rem; }
+            b.tap { color:#F2EFEA; background:#2e424e; border-radius:0.25rem; padding:0 0.35rem; }
             q { color:#F2EFEA; opacity:0.95; }
             p { font-size:0.9rem; opacity:0.85; }
-            hr { border:0; border-top:1px solid #164652; margin:2rem 0; }
+            hr { border:0; border-top:1px solid #2e424e; margin:2rem 0; }
           </style>
           <main>
-            <h1>Viberfox for Android</h1>
+            <h1>Cartopolis for Android</h1>
             <p class="lede">A 3D map of the real world you can walk around in and fly out
             of, built from OpenStreetMap. This is the phone build: the map viewer, free,
             no account, no ads, nothing collected. It comes from us rather than from the
             Play Store, so Android will question it twice on the way in — both dialogs
             are below, with what to tap.</p>
 
-            <a class="dl" href="viberfox.apk">Download the APK ($size)</a>
+            <a class="dl" href="cartopolis.apk">Download the APK ($size)</a>
+
+            <p><b>Upgrading from Viberfox?</b> This release renames the app, and
+            Android identifies an app by a hidden id rather than by its name — so
+            this installs <em>beside</em> the old one instead of replacing it, and
+            the old one will never update again. Uninstall <b class="tap">Viberfox</b>
+            by hand once you have this running. Nothing is carried over
+            automatically; the map viewer keeps no account and no world data, so
+            there is nothing to migrate.</p>
 
             <dl>
               <dt>version</dt><dd>$vname (code $vcode)</dd>
@@ -353,9 +361,9 @@ jobs:
             <p>It is early software: the phone build is the map viewer, typing goes
             through the app's own on-screen keyboard rather than your usual one, and it
             wants a reasonably recent phone. There is also a browser version at
-            <a href="/">viberfox.garage44.eu</a>.</p>
+            <a href="/">cartopolis.org</a>.</p>
           </main>
           HTML
 
-          echo "published $size to https://viberfox.garage44.eu/apk/ ($vname, code $vcode, commit $short)"
+          echo "published $size to https://cartopolis.org/apk/ ($vname, code $vcode, commit $short)"
           ls -la /publish/apk

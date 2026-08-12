@@ -30,7 +30,7 @@
 
 The **simulation** integrates **movement intent** each tick and **broadcasts** authoritative avatar state in the `WorldSnapshot`. Clients **never** set final pose for networked avatars without server confirmation.
 
-**As built** (`crates/vibe_core/src/protocol.rs`, `crates/vibe_sim/src/state.rs`):
+**As built** (`crates/cartopolis_core/src/protocol.rs`, `crates/cartopolis_simulator/src/state.rs`):
 - **Intent**: `NetMessage::ClientIntent { request_id, move_x, move_z, display_yaw, fly_up, fly_down }` — a movement vector plus the replicated facing yaw and fly flags. `SimWorld::apply_intent` integrates it; rate-limited server-side to one per **50 ms** (`net.rs` `MIN_INTENT_INTERVAL`).
 - **Replicated pose**: `AvatarStateDto { id: u64, position: Vec3, yaw: f32 }` (`glam::Vec3` with serde, aligned with Bevy 0.19), sent inside `WorldSnapshot.avatars`.
 - **Tick rate**: fixed sim step, default **20 Hz** (`tick_hz`, config ADR-014).

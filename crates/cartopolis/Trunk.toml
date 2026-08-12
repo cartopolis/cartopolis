@@ -1,0 +1,31 @@
+# Cross-origin isolation so the browser hands out `SharedArrayBuffer`, which
+# WebAssembly threads (shared linear memory) require. Needed for the atomics build
+# (see `serve-threads.sh`). Harmless for the single-threaded build.
+[serve]
+headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "require-corp" }
+
+# Public-tier upstreams, mounted under the app's own origin (ADR-034).
+#
+# These mirror in dev what production path-mounts in Caddy, and `http::upstream_url`
+# builds `/up/<name>/…` on the web so both are reached the same way. The point is
+# not convenience: a third party that sends no `Access-Control-Allow-Origin` cannot
+# be fetched from a browser at all, and NOAA's NOMADS is exactly that — the globe's
+# cloud cover never loaded on the web build. Same-origin requests are not subject to
+# CORS in the first place, which is why ADR-034 calls one origin the fix and header
+# sprinkling the wrong one.
+#
+# Only genuine third parties need an entry. Our own services already answer `*`
+# (verified on tiles/overpass/3dbag/nominatim under cartopolis.org), so they are left
+# to go direct rather than pay an extra hop.
+#
+# `insecure = false`; COEP `require-corp` above means proxied responses must also be
+# loadable cross-origin, and same-origin ones trivially are.
+[[proxy]]
+rewrite = "/up/nomads/"
+backend = "https://nomads.ncep.noaa.gov/"
+
+# PDOK's AHN height rasters (`systems::height`). A public national service, and a
+# third party to us in exactly the way NOMADS is.
+[[proxy]]
+rewrite = "/up/ahn/"
+backend = "https://service.pdok.nl/"

@@ -6,8 +6,8 @@ updated: 2026-08-10
 
 # The agent container cannot check the Android target out of the box
 
-`cargo check -p viberfox_android --target aarch64-linux-android` is the CI gate
-(`docs/notes/android-build.md`), and in `viberfox-agent` it fails twice before it
+`cargo check -p cartopolis_android --target aarch64-linux-android` is the CI gate
+(`docs/notes/android-build.md`), and in `cartopolis-agent` it fails twice before it
 ever compiles anything. Both failures read as configuration mistakes and neither
 is; they cost an afternoon on 2026-08-10 and will cost it again, because the
 container is rebuilt from an image that has neither piece.
@@ -53,22 +53,22 @@ export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
 ```
 
 **`28` is the API level and must equal `minSdkVersion`** in
-`crates/viberfox_android/AndroidManifest.xml`. It is not a version to bump for
+`crates/cartopolis_android/AndroidManifest.xml`. It is not a version to bump for
 convenience — see `android-build.md`.
 
 ## What this costs, and the two things not to do about it
 
 ~3.7 GB of container disk for a lane that produces no artifact. That is the price
-of the gate, and it is worth paying, because `viberfox_android`'s dependencies are
+of the gate, and it is worth paying, because `cartopolis_android`'s dependencies are
 target-gated: in a plain `cargo check --workspace` the crate is *empty* and proves
 nothing about itself.
 
 Do **not** reach for blake3's `no_neon` feature to skip the NDK. It removes the C
 compiler requirement and also turns off SIMD in the shipped app, which is the
-exact trade `crates/viberfox/src/simd_baseline.rs` exists to refuse.
+exact trade `crates/cartopolis/src/simd_baseline.rs` exists to refuse.
 
 Do **not** write either path into `.cargo/config.toml` or a committed script.
 They are facts about one container, not about the repo; CI resolves its own NDK
 at `/opt/android-ndk` and does its own `rustup target add` as root. Baking the
-NDK into `viberfox-ci:latest` is the real fix and is only undone because that
+NDK into `cartopolis-ci:latest` is the real fix and is only undone because that
 image lives in another repo.

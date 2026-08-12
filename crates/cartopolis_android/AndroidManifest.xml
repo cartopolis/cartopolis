@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The whole Android app definition. There is no Gradle project and no Java source
+  behind this file — see docs/notes/android-build.md.
+
+  `android:hasCode="false"` is the load-bearing line: it tells the framework there
+  is no `classes.dex` in this APK, which is only true because the activity class
+  is `android.app.NativeActivity` out of the framework itself rather than the
+  GameActivity one that would arrive in an AAR. Drop that attribute and the
+  installer rejects the package; add a Java class and it has to come back.
+
+  `android.app.lib_name` is how NativeActivity finds us: it `System.loadLibrary`s
+  that name out of `lib/<abi>/`, so it must track the cdylib's crate name
+  (`libcartopolis_android.so` → `cartopolis_android`).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="eu.garage44.cartopolis"
+    android:versionCode="1"
+    android:versionName="1.0.0-local">
+
+    <!-- The two version attributes above are **fallbacks that a real build never
+         uses**: `build-apk.sh` passes its own version-code and version-name
+         flags to `aapt2 link`, which overwrites these in the compiled manifest.
+         (Those flag names are spelled without their leading dashes here on
+         purpose: a double hyphen is illegal *inside* an XML comment, and
+         writing them out cost this project one 16-minute build that compiled
+         the entire Bevy stack before aapt2 read the file.) They are
+         kept so that hand-running aapt2 against this file still produces a
+         package that installs.
+
+         They were also, for the whole of this app's history, the only values
+         there were — every APK ever published claimed to be version 1, so
+         nothing on the device could say which build it was and Android had no
+         reason to treat any of them as an update to another. See the version
+         block in `build-apk.sh` for where the real numbers come from and why
+         a CI code is deliberately larger than a local one. -->
+
+    <!-- API 28 because that is where Android's Vulkan support becomes something
+         wgpu can rely on; below it the GLES fallback would be the only backend and
+         this client has never been run on one. 34 as the target keeps the modern
+         windowing behaviour (edge-to-edge, gesture nav) rather than the
+         compatibility shims older targets opt into. -->
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
+
+    <!-- Advisory, not enforced: it keeps the Play listing (and `adb install`'s
+         warnings) honest about needing a Vulkan device, without hard-failing an
+         install on a device whose driver reports oddly. -->
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:version="0x400003"
+        android:required="false" />
+
+    <!-- The entire map — OSM tiles, 3DBAG buildings, AHN heights, GFS clouds — is
+         streamed. Without this the app starts and renders an empty globe. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Location. These were deliberately absent until the JNI provider existed,
+         on the rule that a permission the app cannot act on is a prompt that buys
+         the user nothing: `platform::location` had only a web arm, and
+         `LocationWatch::available()` said so rather than inventing a fix. That
+         changed with `platform::android` — driver mode now follows the device on
+         the phone instead of the avatar.
+
+         Both are listed, and FINE is not a superset of COARSE at the manifest
+         level: since API 31 the permission dialog offers the user a Precise /
+         Approximate choice and will only offer Approximate if COARSE is declared
+         too. Requesting FINE alone means a user who wants to share a rough
+         position has to refuse outright. The provider accepts either grant and
+         reports the resulting accuracy honestly (`GpsFix::accuracy_m`).
+
+         These are *dangerous* permissions, so from API 23 the manifest entry only
+         makes them requestable — the app must also ask at runtime, which
+         `platform::android::request_permission` does. There is no background
+         location here and there must not be: the fix is only read while driver
+         mode is on and the app is on screen, so ACCESS_BACKGROUND_LOCATION would
+         be a Play-review conversation in exchange for nothing. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Advisory: the app is fully usable without GNSS (it is a map viewer first),
+         so a device with no location hardware must still be able to install. -->
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
+    <application
+        android:label="Cartopolis"
+        android:icon="@mipmap/icon"
+        android:hasCode="false"
+        android:extractNativeLibs="true"
+        android:allowBackup="false">
+
+        <!-- Every entry in `configChanges` below is a configuration change that
+             would otherwise destroy and recreate the activity — which for a
+             NativeActivity means tearing the process's window down and running
+             `android_main` again, i.e. the app restarting when you rotate the phone
+             or the system flips to dark mode. Handling them ourselves hands winit a
+             resize instead. -->
+        <!-- `android:theme` below is ours, not the stock fullscreen theme it used
+             to be — and the difference is the first thing anyone installing this
+             sees. A NativeActivity paints nothing until the surface exists and
+             Bevy has started, so the theme's `windowBackground` *is* the app for
+             the first several seconds. See res/values/styles.xml.
+
+             The comment lives here, above the tag, and not among the attributes
+             where it was first written: a comment is a node, and a node cannot
+             sit inside another element's attribute list. XML has no diagnostic
+             kinder than "not well-formed" for it. -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="user"
+            android:theme="@style/Theme.Cartopolis"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|locale|fontScale">
+
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="cartopolis_android" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

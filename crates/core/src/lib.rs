@@ -1,4 +1,4 @@
-//! Shared types for the Viberfox sim and client (ADR-006, ADR-009, ADR-015).
+//! Shared types for the Cartopolis sim and client (ADR-006, ADR-009, ADR-015).
 
 pub mod error;
 pub mod geo;

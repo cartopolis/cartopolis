@@ -1,5 +1,5 @@
 //! Point-of-interest extraction from the vector tile — the pure half of the data
-//! layers (`viberfox`'s `systems::data_layers` owns the ECS half).
+//! layers (`cartopolis`'s `systems::data_layers` owns the ECS half).
 //!
 //! The transit and shop markers were streamed from the **Overpass API**: one live
 //! bbox query per z14 cell, 49 cells per layer per anchor, against a service that
@@ -44,7 +44,7 @@ use mvt_reader::feature::Value;
 use crate::vector_tiles::TileData;
 
 /// One decoded MVT feature. Re-exported because a classifier is written *by the
-/// client* (`systems::data_layers::LAYER_DEFS`) and takes one — and `viberfox`
+/// client* (`systems::data_layers::LAYER_DEFS`) and takes one — and `cartopolis`
 /// itself does not depend on `mvt_reader`. Keeping it that way is the point of
 /// this crate: the tile decoder is a detail of the geodata layer, not something
 /// every consumer links against.
@@ -146,7 +146,7 @@ pub fn tag_str<'a>(feature: &'a Feature, key: &str) -> Option<&'a str> {
 /// A point feature with the given string properties, at the origin.
 ///
 /// A test fixture that has to live in production code: the classifiers are
-/// written in `viberfox` (`systems::data_layers::LAYER_DEFS`), which depends on
+/// written in `cartopolis` (`systems::data_layers::LAYER_DEFS`), which depends on
 /// neither `mvt_reader` nor `geo_types` and should not start doing so to build
 /// one of these by hand. Exporting a constructor is cheaper than exporting
 /// `Value` and `Geometry` and cheaper than leaving those classifiers untested.

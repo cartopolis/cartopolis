@@ -11,7 +11,7 @@ here is the measured answer rather than a fresh investigation each time.
 
 ## What is present
 
-Measured 2026-08-10 in `viberfox-agent`:
+Measured 2026-08-10 in `cartopolis-agent`:
 
 - `libasound.so.2` **and** `/usr/include/alsa/asoundlib.h`, with
   `pkg-config alsa` reporting 1.2.11. So `cpal`/`alsa-sys` compile here with **no

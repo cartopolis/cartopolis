@@ -1,6 +1,6 @@
-# Viberfox — third-party notices
+# Cartopolis — third-party notices
 
-Viberfox's own source is `MIT OR Apache-2.0` (see `LICENSE`). This file is the
+Cartopolis's own source is `MIT OR Apache-2.0` (see `LICENSE`). This file is the
 **canonical list of everything else it is built from**, and several entries are
 not optional courtesies: the ODbL, CC BY 4.0 and the SIL Open Font License all
 require the notice to travel with anything distributed from the work. So this

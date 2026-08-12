@@ -44,10 +44,10 @@ use std::collections::{BinaryHeap, HashMap};
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
 
-use viberfox_core::world::tile_to_meters;
+use cartopolis_core::world::tile_to_meters;
 
 use crate::vector_tiles::{TileData, MAX_SOURCE_ZOOM, TILE_BUFFER_FRAC};
-use viberfox_core::lat_lng_to_tile_frac;
+use cartopolis_core::lat_lng_to_tile_frac;
 
 /// Zoom the graph is built at. Shortbread carries the complete street network at
 /// its top zoom and nothing finer exists, so this is both the best and the only

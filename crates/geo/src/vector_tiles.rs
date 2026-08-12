@@ -2618,7 +2618,7 @@ mod tests {
     use super::*;
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
-    /// (now self-hosted at tiles.garage44.eu; the archive is identical).
+    /// (now self-hosted at tiles.cartopolis.org; the archive is identical).
     const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/groningen_z14.mvt"
@@ -2708,7 +2708,7 @@ mod tests {
     /// This is the regression the capacity guard caused and the reason it was
     /// reverted: z10 geometry is one huge multi-part coastline, which the walker
     /// scored as a bomb, so the coarse basemap came up with holes in it and
-    /// `refusing the tile` in the log. Real bytes from `tiles.garage44.eu`, kept
+    /// `refusing the tile` in the log. Real bytes from `tiles.cartopolis.org`, kept
     /// as fixtures so a future guard has to pass them before it ships.
     #[test]
     fn low_zoom_tiles_decode() {
@@ -2994,7 +2994,7 @@ mod tests {
     }
 
     /// Not a test — a measurement hatch for the overzoom cull, since its whole
-    /// justification is a number. `cargo test -p viberfox_geo bench_overzoom_cull
+    /// justification is a number. `cargo test -p cartopolis_geo bench_overzoom_cull
     /// -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -3020,7 +3020,7 @@ mod tests {
         }
     }
 
-    /// Not a test — an eyeball hatch. `cargo test -p viberfox_geo
+    /// Not a test — an eyeball hatch. `cargo test -p cartopolis_geo
     /// dump_png -- --ignored --nocapture` writes the fixture at z14 and at an
     /// overzoomed z17 so the styling can actually be looked at.
     #[test]
@@ -3056,7 +3056,7 @@ mod tests {
     #[test]
     #[ignore]
     fn dump_layers() {
-        let owned = std::env::var("VIBE_DUMP_MVT")
+        let owned = std::env::var("CARTO_DUMP_MVT")
             .ok()
             .map(|p| std::fs::read(p).expect("read tile"));
         let tile: &[u8] = owned.as_deref().unwrap_or(GRONINGEN_Z14);
@@ -3426,25 +3426,25 @@ mod tests {
     /// top-down and colour each pixel by how many ribbons cover it, so stubs,
     /// gaps and overlaps are visible without a GPU.
     ///
-    /// `cargo test -p viberfox_geo dump_road_ribbons -- --ignored
-    /// --nocapture`; `VIBE_DUMP_WIN="x,z,size"` (tile metres) zooms to a junction.
+    /// `cargo test -p cartopolis_geo dump_road_ribbons -- --ignored
+    /// --nocapture`; `CARTO_DUMP_WIN="x,z,size"` (tile metres) zooms to a junction.
     #[test]
     #[ignore]
     fn dump_road_ribbons() {
         const PX: usize = 1200;
         let tile_m = 1000.0f32;
-        let (wx, wz, ws) = match std::env::var("VIBE_DUMP_WIN") {
+        let (wx, wz, ws) = match std::env::var("CARTO_DUMP_WIN") {
             Ok(s) => {
                 let v: Vec<f32> = s.split(',').map(|p| p.trim().parse().unwrap()).collect();
                 (v[0], v[1], v[2])
             }
             Err(_) => (0.0, 0.0, tile_m),
         };
-        // `VIBE_DUMP_MVT=/tmp/some.mvt` looks at a tile fetched from the live
+        // `CARTO_DUMP_MVT=/tmp/some.mvt` looks at a tile fetched from the live
         // source instead of the fixture — which is how you answer "is this street
         // missing because of the styling or because of the data?" for a place you
         // are actually looking at.
-        let owned = std::env::var("VIBE_DUMP_MVT")
+        let owned = std::env::var("CARTO_DUMP_MVT")
             .ok()
             .map(|p| std::fs::read(p).expect("read tile"));
         let tile: &[u8] = owned.as_deref().unwrap_or(GRONINGEN_Z14);

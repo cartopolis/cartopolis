@@ -2,7 +2,7 @@
 
 ## Mission
 
-Viberfox is a **networked 3D place** where people **author, share, and visit** spatial environments—**grounded in real geography** (e.g. map tiles / OSM-backed context)—so that proposing and experiencing **layouts at civic or public scale** feels **social and immediate**, not like a solo modelling tool.
+Cartopolis is a **networked 3D place** where people **author, share, and visit** spatial environments—**grounded in real geography** (e.g. map tiles / OSM-backed context)—so that proposing and experiencing **layouts at civic or public scale** feels **social and immediate**, not like a solo modelling tool.
 
 We want to **shorten the authoring loop**: 3D work is traditionally slow; we use **modern tooling (Rust, Bevy, the current crate ecosystem)** and **LLM-assisted development** to move faster, and over time **embed LLM capability in the product** so **world building** can keep pace with ideas—without abandoning **permissions, safety, and reproducibility**.
 

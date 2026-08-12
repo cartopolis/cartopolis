@@ -5,7 +5,7 @@ Downloads the HYG v4.1 catalog (https://github.com/astronexus/HYG-Database,
 CC BY-SA 4.0, based on the public-domain Yale Bright Star / Hipparcos data),
 keeps every naked-eye star (visual magnitude <= 6.5), and writes a compact
 little-endian binary the client embeds at compile time (see setup_stars in
-crates/viberfox/src/main.rs):
+crates/cartopolis/src/main.rs):
 
     per star: f32 ra_rad, f32 dec_rad, f32 magnitude, f32 color_index (B-V)
 

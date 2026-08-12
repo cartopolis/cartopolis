@@ -2,7 +2,7 @@
 //!
 //! No Bevy: this turns a tile's point features into [`FurnitureInstance`]s and
 //! then into meshes. The ECS half — the distance LOD and the materials — is
-//! `viberfox`'s `systems::street_furniture`.
+//! `cartopolis`'s `systems::street_furniture`.
 //!
 //! Street furniture — benches, bins, shelters, picnic tables — read out of the
 //! vector tile the map is already made of.

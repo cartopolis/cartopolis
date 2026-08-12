@@ -9,7 +9,7 @@
 # failing check when CI fails, so the caller can fix and re-run.
 #
 # Why a PR and not a push: `main` is protected server-side and stays that way.
-# The `viberfox-agent` token this uses reports `user_can_push: false` and
+# The `cartopolis-agent` token this uses reports `user_can_push: false` and
 # `user_can_merge: true` on main, and carries no admin scope — so it cannot
 # relax the protection it is working within, and an accidental `git push origin
 # main` from any agent still bounces. The PR also leaves the review record and
@@ -33,15 +33,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-for f in "$HOME/.config/viberfox/forgejo.env" "$HOME/.config/viberfox/forgejo-merge.env"; do
+for f in "$HOME/.config/cartopolis/forgejo.env" "$HOME/.config/cartopolis/forgejo-merge.env"; do
     [ -f "$f" ] || { echo "missing $f — see docs/workflow.md" >&2; exit 1; }
     set -a; . "$f"; set +a
 done
 : "${FORGEJO_TOKEN:?not set}"; : "${FORGEJO_MERGE_TOKEN:?not set}"
 API="${FORGEJO_API:-https://code.garage44.eu/api/v1}"
-REPO="${FORGEJO_REPO:-jeroen/viberfox}"
+REPO="${FORGEJO_REPO:-jeroen/cartopolis}"
 
-marker="$(git rev-parse --git-dir)/viberfox-ticket"
+marker="$(git rev-parse --git-dir)/cartopolis-ticket"
 [ -f "$marker" ] || { echo "this worktree is not bound to a ticket — run /ticket" >&2; exit 1; }
 issue=$(sed -n 's/^issue=//p' "$marker" | head -1)
 branch=$(sed -n 's/^branch=//p' "$marker" | head -1)

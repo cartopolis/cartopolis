@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `Copy`, not just `Clone`: it is 20 bytes of plain data, and the client's tile
 /// streamers rebuild whole desired-sets of it every frame — the z10–z17 clipmap
-/// alone is ~850 keys per pass (`viberfox::systems::map_stream`). As `Clone`-only
+/// alone is ~850 keys per pass (`cartopolis::systems::map_stream`). As `Clone`-only
 /// every one of those was an explicit `.clone()` in a hot loop that reads as if it
 /// meant something.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,16 +41,16 @@ pub const REGION_SIZE_METERS: f64 = 256.0;
 /// garage44 mirror of `download.versatiles.org`'s planet archive (z0–14), served by
 /// the `versatiles` server behind Caddy — same schema and URL shape as the public
 /// `tiles.versatiles.org`, so it is a drop-in origin swap off their hosting.
-/// Shared so the sim's advertised default (`viberfox_simulator::config`) and the client's
-/// offline/`--shot` fallback (`viberfox::systems::tile_loader`) cannot drift apart —
+/// Shared so the sim's advertised default (`cartopolis_simulator::config`) and the client's
+/// offline/`--shot` fallback (`cartopolis::systems::tile_loader`) cannot drift apart —
 /// a mismatch there is how solo mode silently renders the old raster tiles instead
 /// of the vector map.
 ///
 /// A `{z}/{x}/{y}` template with **no extension**, which `tile_source_kind`
-/// classifies as vector. Override per-run with `VIBE_TILE_URL` (client) or the
+/// classifies as vector. Override per-run with `CARTO_TILE_URL` (client) or the
 /// sim's `osm_tile_url_template` config; a raster template (e.g. one ending
 /// `.png`) still works and falls back to the pre-rendered path.
-pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}";
+pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}";
 
 /// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
 /// ([`DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template
@@ -70,7 +70,7 @@ pub fn format_osm_tile_url(template: &str, key: &TileKey) -> String {
 }
 
 /// What a tile endpoint serves. Raster payloads are decoded by the `image` crate;
-/// vector payloads are drawn by `viberfox_geo::vector_tiles`.
+/// vector payloads are drawn by `cartopolis_geo::vector_tiles`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileSourceKind {
     Raster,
@@ -79,7 +79,7 @@ pub enum TileSourceKind {
 
 /// Classify a URL template by the tail after its `{y}` placeholder: `.png`/`.webp`
 /// → raster, nothing at all → vector (VersaTiles serves `/tiles/osm/{z}/{x}/{y}`
-/// with no extension). `VIBE_TILE_FORMAT=vector|raster` overrides.
+/// with no extension). `CARTO_TILE_FORMAT=vector|raster` overrides.
 ///
 /// This has to be decided *before* the fetch rather than sniffed from the bytes,
 /// because a vector source caps out at `MAX_SOURCE_ZOOM` and the deeper tiles the
@@ -89,7 +89,7 @@ pub enum TileSourceKind {
 /// a decode failure.
 #[must_use]
 pub fn tile_source_kind(template: &str) -> TileSourceKind {
-    if let Ok(v) = std::env::var("VIBE_TILE_FORMAT") {
+    if let Ok(v) = std::env::var("CARTO_TILE_FORMAT") {
         match v.to_ascii_lowercase().as_str() {
             "vector" | "mvt" | "pbf" => return TileSourceKind::Vector,
             "raster" | "png" | "webp" | "jpeg" => return TileSourceKind::Raster,

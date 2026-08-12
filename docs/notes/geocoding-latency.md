@@ -72,7 +72,7 @@ Two structural things mattered more than the constants:
 
 What was *not* deliberate: `ureq::get()` builds a fresh `Agent`, and therefore an
 empty connection pool, on every call. Each lookup paid a full TCP + TLS handshake —
-`conn=0.041 tls=0.094 ttfb=0.162` against `nominatim.garage44.eu`, i.e. **~90 ms of
+`conn=0.041 tls=0.094 ttfb=0.162` against `nominatim.cartopolis.org`, i.e. **~90 ms of
 a ~160 ms request**. `platform::http` now holds one process-wide pooled agent.
 Verified with a standalone `ureq` 2.12 binary using the same `AgentBuilder`: five
 rapid requests then five spaced by up to 125 s idle, all reusing the connection

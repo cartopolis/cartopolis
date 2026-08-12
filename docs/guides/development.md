@@ -1,6 +1,6 @@
 # Development
 
-Onboarding for new contributors. The [README](../../README.md) says what Viberfox
+Onboarding for new contributors. The [README](../../README.md) says what Cartopolis
 is and how to start it; this is what comes after it.
 
 ## Before anything else: Git LFS
@@ -33,12 +33,12 @@ Rust toolchain; Linux is the primary development target.
 
 | Task | Command |
 |------|---------|
-| Type-check what you touched | `cargo check -p viberfox_core \| simulator \| viberfox` |
-| Play it (already playable — `dev` builds deps at opt-level 3) | `cargo run -p viberfox` |
-| Fast incremental links (local only) | `cargo run -p viberfox --features fast-dev` |
-| Client tests | `cargo test -p viberfox` |
-| Geodata tests (no Bevy — ~2 s) | `cargo test -p viberfox_geo` |
-| Server tests | `cargo test -p viberfox_simulator` |
+| Type-check what you touched | `cargo check -p cartopolis_core \| simulator \| cartopolis` |
+| Play it (already playable — `dev` builds deps at opt-level 3) | `cargo run -p cartopolis` |
+| Fast incremental links (local only) | `cargo run -p cartopolis --features fast-dev` |
+| Client tests | `cargo test -p cartopolis` |
+| Geodata tests (no Bevy — ~2 s) | `cargo test -p cartopolis_geo` |
+| Server tests | `cargo test -p cartopolis_simulator` |
 | Floating-origin tests | `cargo test -p big_space --lib` |
 | Regenerate README images | `cargo shots` |
 
@@ -48,7 +48,7 @@ parsing.
 
 `#[ignore]`-d tests are diagnostics, not tests — they dump a PNG, print a tile's
 layers, time a cell, or solve a real route against the network. Run one by name:
-`cargo test -p viberfox dump_png -- --ignored --nocapture`.
+`cargo test -p cartopolis dump_png -- --ignored --nocapture`.
 
 Verify a visual change **headless** rather than by flying the camera there:
 `cargo shots --only globe` for a README preset, or `--shot` for an arbitrary
@@ -59,10 +59,10 @@ viewpoint, sweep or CSV of the ramp scalars. Full flag list in
 
 | Path | Contents |
 |------|----------|
-| `crates/core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) — the `viberfox_core` crate |
-| `crates/geo/` | Bevy-free map geodata (`viberfox_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
+| `crates/core/` | Wire protocol (`protocol.rs`), tile/coordinate math (`world.rs`, `geo.rs`) — the `cartopolis_core` crate |
+| `crates/geo/` | Bevy-free map geodata (`cartopolis_geo`): `vector_tiles`, `road_texture`, `routing`, `scatter`. Must never depend on `bevy` |
 | `crates/simulator/` | Authoritative server: `net.rs` (tick loop), `state.rs` (world), `db.rs`, `auth.rs`, `config.rs` |
-| `crates/viberfox/` | Bevy client — everything below |
+| `crates/cartopolis/` | Bevy client — everything below |
 | `crates/big_space/` | Vendored floating-origin fork; re-sync `bevy_compat.rs` on every Bevy bump |
 
 Inside the client, `components.rs` / `resources.rs` hold the ECS types and
@@ -115,36 +115,36 @@ Client env vars (also read from `.env`):
 
 | Variable | Effect |
 |----------|--------|
-| `VIBE_TILE_URL` / `VIBE_TILE_FORMAT` | Basemap template; `vector\|raster` override for the source kind. Routing needs a vector source |
-| `VIBE_OVERPASS_URL` / `VIBE_NOMINATIM_URL` | Point at your own geo services ([server guide](server.md)) |
-| `VIBE_CACHE_DIR` | Tile/asset cache root (defaults to the workspace root) |
-| `VIBE_USER` / `VIBE_PASSWORD` | Handshake credentials; `--login` and a login file take precedence |
-| `VIBERFOX_PLACE` | Start at `lat,lng,alt,pitch,yaw` — the value the HUD's ⧉ button copies |
-| `VIBERFOX_NO_ATMOSPHERE\|_HAZE\|_ENVMAP\|_OCEAN\|_CLOUDS\|_RAIN\|_SHADOWS\|_SPACE` | Bisect a render problem by removing one layer |
+| `CARTO_TILE_URL` / `CARTO_TILE_FORMAT` | Basemap template; `vector\|raster` override for the source kind. Routing needs a vector source |
+| `CARTO_OVERPASS_URL` / `CARTO_NOMINATIM_URL` | Point at your own geo services ([server guide](server.md)) |
+| `CARTO_CACHE_DIR` | Tile/asset cache root (defaults to the workspace root) |
+| `CARTO_USER` / `CARTO_PASSWORD` | Handshake credentials; `--login` and a login file take precedence |
+| `CARTO_PLACE` | Start at `lat,lng,alt,pitch,yaw` — the value the HUD's ⧉ button copies |
+| `CARTO_NO_ATMOSPHERE\|_HAZE\|_ENVMAP\|_OCEAN\|_CLOUDS\|_RAIN\|_SHADOWS\|_SPACE` | Bisect a render problem by removing one layer |
 | `ANTHROPIC_KEY` | AI assistant panel — copy `.env.example` to `.env` |
 
-The server takes `vibe.toml` → `VIBE_*` env → CLI flags, in that order.
+The server takes `cartopolis.toml` → `CARTO_*` env → CLI flags, in that order.
 
 ## Shipping: three builds from one codebase
 
-**Desktop (native).** `cargo build -p viberfox --release` → `target/release/viberfox`
+**Desktop (native).** `cargo build -p cartopolis --release` → `target/release/cartopolis`
 (fat LTO: slow to compile, fastest at runtime). `release.yml` builds the Linux
 x86_64 tarball and cross-compiles the Windows x86_64 zip in one job, publishing
 both to a Forgejo release — a versioned one on a `v*` tag, or the rolling
 `continuous` prerelease on demand.
 
-**Web (WebAssembly).** `crates/viberfox/serve-threads.sh` builds and serves the wasm
+**Web (WebAssembly).** `crates/cartopolis/serve-threads.sh` builds and serves the wasm
 client with real threads (shared memory + `-Z build-std` + COOP/COEP headers — the
 script's header comment explains what breaks if one of the three is missing).
 `deploy-web.yml` does the same with LTO and publishes to
-[viberfox.garage44.eu](https://viberfox.garage44.eu) on every push to `main`; it is a
+[cartopolis.org](https://cartopolis.org) on every push to `main`; it is a
 separate workflow because rebuilding std and linking ~70 MB would block the test
 lanes. The web target runs against WebGL2 (no storage buffers — hence the CPU
 fallbacks the `dev` profile's opt-level-3 dependencies exist to make bearable) and
 proxies genuinely third-party upstreams under its own origin (`Trunk.toml`).
 Performance background: [`docs/notes/wasm-performance.md`](../notes/wasm-performance.md).
 
-**Android.** `crates/viberfox_android/build-apk.sh` → a signed debug APK. There is
+**Android.** `crates/cartopolis_android/build-apk.sh` → a signed debug APK. There is
 no Gradle project and no Java source: the app is `AndroidManifest.xml`, a `cdylib`
 holding `android_main`, and `assets/`, assembled with `cargo ndk` → `aapt2` →
 `zipalign` → `apksigner`. It needs an NDK, an SDK (build-tools + one platform) and
@@ -170,7 +170,7 @@ seconds once warm, and it is what CI's `cargo check` job runs:
 ```bash
 rustup target add wasm32-unknown-unknown --toolchain nightly     # once
 RUSTUP_TOOLCHAIN=nightly \
-  cargo check -p viberfox --no-default-features --target wasm32-unknown-unknown
+  cargo check -p cartopolis --no-default-features --target wasm32-unknown-unknown
 ```
 
 **Nightly is required even for the check**, and this is not the `-Z build-std` the
@@ -185,9 +185,9 @@ what rots is `cfg(target_arch = "wasm32")` code that no other lane ever compiles
 **2. Run it in a browser:**
 
 ```bash
-crates/viberfox/serve-threads.sh                  # → http://127.0.0.1:8195
-crates/viberfox/serve-threads.sh build            # build only, no server
-PROFILE=web-release crates/viberfox/serve-threads.sh build   # what CI ships
+crates/cartopolis/serve-threads.sh                  # → http://127.0.0.1:8195
+crates/cartopolis/serve-threads.sh build            # build only, no server
+PROFILE=web-release crates/cartopolis/serve-threads.sh build   # what CI ships
 ```
 
 The script sets everything up itself — nightly, `-Z build-std`, the shared-memory
@@ -229,23 +229,23 @@ two jobs in parallel (runner capacity is 2):
   workspace check says nothing about it at all). The Android lane downloads and
   caches an NDK, because a build script's `cc` runs at check time — see the
   comments in the workflow.
-- **`build-test`** — the suites in cost order (`viberfox_geo` first: no Bevy in its
+- **`build-test`** — the suites in cost order (`cartopolis_geo` first: no Bevy in its
   graph, so a geodata regression fails in seconds rather than after the client's full
-  codegen), then `viberfox`, then `big_space --lib`. It ends with a **headless scene
+  codegen), then `cartopolis`, then `big_space --lib`. It ends with a **headless scene
   smoke**: an orbit `--shot` asserting `settled==true` and `globe_rendered>0`, which
   catches the failure class that type-checks perfectly and ships a black screen. On
   failure it dumps the metrics that explain it.
 
-Both jobs use the prebuilt `viberfox-ci` image and check out with `lfs: true` — add
+Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` — add
 that to any new job. `deploy-web.yml` and `release.yml` are separate workflows.
 
 **A step may only use a tool the image already has.** The image is built by hand on
-the VPS (`~/build/viberfox-ci-image/Dockerfile`, then `docker build -t
-viberfox-ci:latest .`) and the runner never pulls it, so a new tool in a workflow is
+the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t
+cartopolis-ci:latest .`) and the runner never pulls it, so a new tool in a workflow is
 an image change — nothing in this repo will tell you it is missing. The `cargo fmt`
 gate landed against a toolchain installed `--profile minimal`, which omits rustfmt,
 and every run since died on `'cargo-fmt' is not installed for the toolchain`. Rebuild
-`viberfox-agent:latest` after the CI image: it is `FROM viberfox-ci:latest`, so the
+`cartopolis-agent:latest` after the CI image: it is `FROM cartopolis-ci:latest`, so the
 autonomous agent otherwise still can't run what CI demands.
 
 That image carries Mesa **lavapipe** (a CPU Vulkan driver) and `WGPU_BACKEND=vulkan`,

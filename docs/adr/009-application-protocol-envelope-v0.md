@@ -26,8 +26,8 @@
 
 Every TCP frame body (ADR-008 length-delimited) is an **app frame**: an 8-byte header + postcard payload.
 
-**Header** (`crates/vibe_core/src/protocol.rs`, all little-endian):
-- `protocol_version: u16` — `PROTOCOL_VERSION`, derived from the `PROTOCOL_HISTORY` changelog in `crates/vibe_core/src/protocol.rs` (**the** record of what each revision changed — this doc deliberately does not repeat the number); `decode_app_frame` rejects mismatches (`ProtocolError::UnsupportedVersion`).
+**Header** (`crates/cartopolis_core/src/protocol.rs`, all little-endian):
+- `protocol_version: u16` — `PROTOCOL_VERSION`, derived from the `PROTOCOL_HISTORY` changelog in `crates/cartopolis_core/src/protocol.rs` (**the** record of what each revision changed — this doc deliberately does not repeat the number); `decode_app_frame` rejects mismatches (`ProtocolError::UnsupportedVersion`).
 - `message_kind: u16` — discriminant of the `MessageKind` enum (`#[repr(u16)]`, `ClientHello`…); mismatch vs the decoded body is rejected.
 - `request_id: u32` — correlation id (echoed in `ServerError`); 0 when unused.
 
@@ -58,7 +58,7 @@ Every TCP frame body (ADR-008 length-delimited) is an **app frame**: an 8-byte h
 
 **Negative**:
 - Every new kind needs versioning discipline (mitigation: append a `ProtocolRevision` to `PROTOCOL_HISTORY`, which *is* the version bump — a test enforces the run stays gapless)
-- Wire schema lives in one `vibe_core` module; roundtrip tests per kind guard it
+- Wire schema lives in one `cartopolis_core` module; roundtrip tests per kind guard it
 
 ## Related
 

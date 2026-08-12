@@ -26,7 +26,7 @@
 
 Use SQLite via rusqlite (`bundled`) for region and prim storage.
 
-**Approach**: Single file `data/world.db`, **owned exclusively by `vibe_sim`** and versioned with `refinery` SQL migrations (`crates/vibe_sim/migrations/`, applied on startup). It holds prims (geo-anchored, ADR-029), accounts (ADR-016), chat scrollback (ADR-028), and textures. The **client keeps no local SQLite**: the anonymous Viewer tier (ADR-031) is a streamed map viewer, and all authored state is online and server-authoritative. (Solo/dev mode runs the same `vibe_sim` in-process against `data/world.db` — ADR-016.)
+**Approach**: Single file `data/world.db`, **owned exclusively by `cartopolis_simulator`** and versioned with `refinery` SQL migrations (`crates/cartopolis_simulator/migrations/`, applied on startup). It holds prims (geo-anchored, ADR-029), accounts (ADR-016), chat scrollback (ADR-028), and textures. The **client keeps no local SQLite**: the anonymous Viewer tier (ADR-031) is a streamed map viewer, and all authored state is online and server-authoritative. (Solo/dev mode runs the same `cartopolis_simulator` in-process against `data/world.db` — ADR-016.)
 
 ## Rationale
 
@@ -58,5 +58,5 @@ Use SQLite via rusqlite (`bundled`) for region and prim storage.
 
 ## Related
 
-- Client schema: `crates/viberfox/src/db/schema.rs`; load system: `crates/viberfox/src/systems/database.rs`
-- Server: `crates/vibe_sim/src/db.rs`, `crates/vibe_sim/migrations/`
+- Client schema: `crates/cartopolis/src/db/schema.rs`; load system: `crates/cartopolis/src/systems/database.rs`
+- Server: `crates/cartopolis_simulator/src/db.rs`, `crates/cartopolis_simulator/migrations/`

@@ -24,9 +24,9 @@
 
 ## Decision
 
-Use Bevy as the game engine for viberfox.
+Use Bevy as the game engine for cartopolis.
 
-**Approach**: Bevy 0.19 with a slimmed, explicit feature set (`default-features = false`, see `crates/viberfox/Cargo.toml`) — only the plugins used: `bevy_pbr`, `bevy_render`, `bevy_core_pipeline`, `bevy_post_process` (bloom), `bevy_gltf`, `bevy_animation`, `bevy_scene`, `bevy_winit`, `reflect_auto_register`, etc.
+**Approach**: Bevy 0.19 with a slimmed, explicit feature set (`default-features = false`, see `crates/cartopolis/Cargo.toml`) — only the plugins used: `bevy_pbr`, `bevy_render`, `bevy_core_pipeline`, `bevy_post_process` (bloom), `bevy_gltf`, `bevy_animation`, `bevy_scene`, `bevy_winit`, `reflect_auto_register`, etc.
 
 ## Rationale
 

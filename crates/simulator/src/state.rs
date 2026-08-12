@@ -1,14 +1,14 @@
-use glam::Vec3;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use viberfox_core::{
+use cartopolis_core::{
     snap_yaw_continuation, AvatarStateDto, Emote, EmoteState, GeoAnchor, NetMessage, PrimDto,
     PrimGeometry, PrimSurface, RegionDto, EMOTE_REPLICATE_SECS,
 };
+use glam::Vec3;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use crate::db::RegionCaps;
 use crate::scripting::{PrimView, ScriptCommand};
-use viberfox_core::motion;
+use cartopolis_core::motion;
 
 struct AvatarSim {
     position: Vec3,

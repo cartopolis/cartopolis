@@ -1,4 +1,4 @@
-Viberfox is dual-licensed under **either** of
+Cartopolis is dual-licensed under **either** of
 
   * Apache License, Version 2.0 — LICENSE-APACHE
     (also at http://www.apache.org/licenses/LICENSE-2.0)
@@ -8,7 +8,7 @@ Viberfox is dual-licensed under **either** of
 at your option. In SPDX terms: `MIT OR Apache-2.0`.
 
 Why both, rather than one of them: this is the Rust ecosystem's default pair, so
-a downstream project can take Viberfox under whichever half already matches its
+a downstream project can take Cartopolis under whichever half already matches its
 own licence file without a second conversation. It is also the licence of the
 vendored `big_space` fork under `crates/big_space/`, which means the notice
 obligations for the largest piece of third-party source in this tree line up

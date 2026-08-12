@@ -27,7 +27,7 @@
 Use OpenStreetMap tiles fetched over HTTP (`ureq`) on a background worker thread, with a `TileCache` resource.
 
 **Approach**:
-- `TileKey(x, y, z)` for lookup; regions anchored at `REGION_ZOOM_LEVEL = 17` (`vibe_core/world.rs`)
+- `TileKey(x, y, z)` for lookup; regions anchored at `REGION_ZOOM_LEVEL = 17` (`cartopolis_core/world.rs`)
 - `TileCache` holds image handles + in-flight state; fetches run on a worker thread and post results back over an mpsc channel (non-blocking)
 - `RegionTile` component on region entities; `load_region_tiles` drains results, `update_region_materials` (in `rendering.rs`) applies them
 - On-disk tile cache (`tile_cache_path`) and a self-hosted OSM template via `OsmTileUrlTemplate`; `map_stream.rs` streams tiles for the globe/map view
@@ -63,4 +63,4 @@ Use OpenStreetMap tiles fetched over HTTP (`ureq`) on a background worker thread
 
 - [ADR-001](./001-bevy-game-engine.md): Bevy provides rendering
 - [ADR-003](./003-ecs-architecture.md): Tile loading as a system
-- Systems: `crates/viberfox/src/systems/tile_loader.rs`, `map_stream.rs`, `rendering.rs`
+- Systems: `crates/cartopolis/src/systems/tile_loader.rs`, `map_stream.rs`, `rendering.rs`

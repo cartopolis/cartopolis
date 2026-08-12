@@ -520,7 +520,7 @@ fn reload_replaces_the_instance() {
 
 /// The editor's reference and the installed API must be the same set.
 ///
-/// `viberfox_core::SCRIPT_API` is what an author reads in the panel; this is what
+/// `cartopolis_core::SCRIPT_API` is what an author reads in the panel; this is what
 /// they can actually call. A name in one and not the other is either a function
 /// nobody can find or a documented call that errors when used — and both are the
 /// kind of thing that survives review because each half looks right on its own.
@@ -536,7 +536,7 @@ fn the_catalogue_matches_the_installed_api() {
         .map(|(k, _)| k)
         .filter(|k| k.starts_with("vf"))
         .collect();
-    let catalogued: BTreeSet<String> = viberfox_core::SCRIPT_API
+    let catalogued: BTreeSet<String> = cartopolis_core::SCRIPT_API
         .iter()
         .map(|f| f.name.to_string())
         .collect();

@@ -1,7 +1,7 @@
 //! The script API's *catalogue* — one row per callable, shared by the server that
 //! implements them and the editor that documents them.
 //!
-//! It lives in `viberfox_core` for the same reason `PROTOCOL_HISTORY` does: two
+//! It lives in `cartopolis_core` for the same reason `PROTOCOL_HISTORY` does: two
 //! crates have to agree, and the way they stay in agreement is that there is only
 //! one list. The simulator has a test
 //! (`scripting::tests::the_catalogue_matches_the_installed_api`) asserting that a

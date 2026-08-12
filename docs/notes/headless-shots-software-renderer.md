@@ -6,7 +6,7 @@ updated: 2026-08-10
 
 # `--shot` on a software renderer
 
-Measured 2026-08-04 in the `viberfox-agent` container (Ubuntu 24.04, no
+Measured 2026-08-04 in the `cartopolis-agent` container (Ubuntu 24.04, no
 `/dev/dri`, no `DISPLAY`) against Mesa 25.2.8 **lavapipe** — the CPU Vulkan
 driver. Nothing here is about a GPU workstation, where `cargo shots` behaves as
 it always did.
@@ -14,8 +14,8 @@ it always did.
 ## It is in the image now
 
 `libvulkan1` + `mesa-vulkan-drivers` + `vulkan-tools` are installed in
-**`viberfox-ci:latest`** (`~/build/viberfox-ci-image/Dockerfile` on the VPS), which
-`viberfox-agent` is built `FROM` — so every CI job and every agent container has a
+**`cartopolis-ci:latest`** (`~/build/cartopolis-ci-image/Dockerfile` on the VPS), which
+`cartopolis-agent` is built `FROM` — so every CI job and every agent container has a
 Vulkan adapter with no setup at all. `WGPU_BACKEND=vulkan` is set in the image; the
 build asserts `vulkaninfo --summary | grep -q llvmpipe`, so a broken driver stack
 fails the image build instead of showing up later as a job that renders nothing.

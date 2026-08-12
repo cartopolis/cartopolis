@@ -16,7 +16,7 @@ An agent's work is judged at three levels, and they are not interchangeable:
 
 | Level | Answers | Reachable by the agent |
 |---|---|---|
-| `cargo test -p viberfox_geo`, `-p viberfox` | do the units hold | it writes them |
+| `cargo test -p cartopolis_geo`, `-p cartopolis` | do the units hold | it writes them |
 | `--expect` on a `--shot` run | did a world appear on screen | it chooses the flags |
 | CI's verdict on the pushed head | both of the above, reproducibly | **no** |
 
@@ -31,7 +31,7 @@ judged picks the invocation.
 ## Corollary 1 — a check written as prompt text is advice, not a gate
 
 Advice drifts and nothing reports it. The autonomous lane's verification step was
-`cargo test -p viberfox --bin viberfox` in three prompts and two docs. After the
+`cargo test -p cartopolis --bin cartopolis` in three prompts and two docs. After the
 lib+shim split that command selects a nine-line binary with no tests in it: it
 ran **0 of 207 tests and exited 0**, for as long as the shim has existed.
 

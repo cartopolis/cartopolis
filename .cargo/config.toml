@@ -13,7 +13,7 @@ linker = "clang"
 # lld: `pacman -S lld clang`. For faster links on large binaries, try mold instead of lld (`pacman -S mold`).
 rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=x86-64-v3"]
 
-# Cross-compile to Windows from Linux (CI: the `viberfox-ci` image carries the
+# Cross-compile to Windows from Linux (CI: the `cartopolis-ci` image carries the
 # mingw-w64 toolchain + `rustup target add x86_64-pc-windows-gnu`). Link with the
 # mingw gcc; `build.rs` embeds the .exe icon via winresource, which uses the
 # matching `x86_64-w64-mingw32-windres` from the same package.
@@ -59,4 +59,4 @@ incremental = true
 # `docs/shots.toml` — headless, one launch, no window. Extra flags pass through:
 #   cargo shots --only globe,route
 #   cargo shots --size 2560x1440 --csv /tmp/shots.csv
-shots = ["run", "-p", "viberfox", "--", "--shots"]
+shots = ["run", "-p", "cartopolis", "--", "--shots"]
