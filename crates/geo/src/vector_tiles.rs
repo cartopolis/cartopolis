@@ -803,6 +803,12 @@ fn line_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
 
 fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &Transform) {
     if let Some(path) = area_path(geom) {
+        // The one place a *filled* path reaches the rasteriser, so the one place
+        // worth counting. Scan conversion barely allocates, so an allocation
+        // budget is blind to it; the geometry submitted is what its cost scales
+        // with. See `perf::paths`.
+        #[cfg(test)]
+        crate::perf::paths::record(path.points().len());
         pixmap.fill_path(&path, paint, FillRule::EvenOdd, *t, None);
     }
 }
@@ -824,6 +830,11 @@ fn stroke_geometry(
             line_join: LineJoin::Round,
             ..Stroke::default()
         };
+        // Counted for the same reason as the fill, and it matters more here:
+        // tiny-skia builds the complete stroke outline before rasterising
+        // anything, and stroke widths scale with the overzoom factor.
+        #[cfg(test)]
+        crate::perf::paths::record(path.points().len());
         pixmap.stroke_path(&path, paint, &stroke, *t, None);
     }
 }
