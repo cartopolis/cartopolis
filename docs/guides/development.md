@@ -216,6 +216,32 @@ export PATH="$HOME/.cargo/bin:$PATH"      # what serve-threads.sh already does
 rustc --print sysroot                     # must NOT say /usr
 ```
 
+## Dependencies
+
+`Cargo.lock` is committed and **every cargo invocation in `.forgejo/workflows/`
+passes `--locked`**. Taking a newer version of anything — including a patch
+release — is therefore a deliberate act:
+
+```bash
+cargo update -p <crate>     # one crate
+cargo update                # everything, within the semver ranges in Cargo.toml
+```
+
+and the resulting `Cargo.lock` is reviewed like any other diff. Nothing updates
+dependencies automatically: there is no Renovate or Dependabot configured here.
+
+The lockfile alone was not enough to guarantee this. Without `--locked`, a
+`Cargo.toml` edit committed without its lockfile update does not fail CI — cargo
+re-resolves to whatever is newest at that moment, builds *that*, and throws the
+modified lockfile away, so the artifact does not correspond to the lockfile and
+nothing reports it. With `--locked` the same situation is a one-line error naming
+the crate.
+
+The one thing still unpinned is the **toolchain**: there is no
+`rust-toolchain.toml`, and `cartopolis-ci:latest` installs whatever `stable` was
+current when the image was last built. A toolchain bump also invalidates the CI
+cache, since rust-cache keys on the rustc version.
+
 ## CI
 
 [`.forgejo/workflows/ci.yml`](../../.forgejo/workflows/ci.yml) runs on **pull

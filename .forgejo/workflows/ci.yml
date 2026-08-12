@@ -49,13 +49,24 @@ env:
   # apiece leaves two cores for the services and, because the contention was
   # costing more than the parallelism bought, does not obviously slow a job down.
   CARGO_BUILD_JOBS: "3"
-  # sccache, reading and writing the bind-mounted host directory above.
+  # sccache, reading and writing the bind-mounted host directory above. It is the
+  # **second** layer, underneath `Swatinem/rust-cache`, and the distinction is
+  # worth stating because getting it wrong nearly cost this repo its CI cache.
   #
-  # It replaces `Swatinem/rust-cache`, which was saving ~1 GB per run and restoring
-  # nothing — see the note where the step used to be. The likeliest reason is the
-  # one thing a key-based Actions cache does that a directory cannot: caches are
-  # scoped per branch, so a cache written by a PR run is invisible to every other
-  # ref and is thrown away with the branch. sccache has no key and no scope.
+  # rust-cache is the fast path and it works: measured across two consecutive
+  # `main` runs, warm restores took the test job from 2058 s to ~320 s. What it
+  # cannot do is survive a key change, and it has two that bite here. Its cache
+  # *version* hashes the workspace path, so the `viberfox` → `cartopolis` rename
+  # invalidated every entry in the store at a stroke (32.8 GB of them, later
+  # deleted by hand). And caches carry a `writeIsolationKey` of the ref that wrote
+  # them, so one written by a PR run is invisible to every other branch.
+  #
+  # Both of those are exactly the case sccache covers: it is keyed on the compiler
+  # invocation and its inputs, with no ref scope and no workspace path in the key,
+  # so a fresh branch — or the whole repo the day after a rename — still gets its
+  # objects back instead of recompiling Bevy from nothing. The two compose: on a
+  # rust-cache hit sccache is nearly idle, and on a miss it is the difference
+  # between a 5-minute run and a 35-minute one.
   #
   # `CARGO_INCREMENTAL: "0"` above is not merely a CI tuning any more — it is a
   # requirement. sccache cannot cache an incremental compilation and silently
@@ -136,15 +147,12 @@ jobs:
           # this job compiles 130-byte LFS pointers into the binary and only
           # finds out at runtime. See `.gitattributes`.
           lfs: true
-      # No `Swatinem/rust-cache` here any more, and its absence is the measurement
-      # this file's history most needed. It was *saving* a ~1 GB archive on every
-      # run and restoring nothing: the restore step took 1 second, and testing
-      # `cartopolis_geo` — a crate with no Bevy anywhere in its graph — took 161
-      # seconds, which is a cold build and not a warm one. So it cost a gigabyte of
-      # writes per run and bought nothing. sccache replaces it (see the env below):
-      # a host directory, no cache key to miss and no per-branch cache scope to
-      # fall out of, which is the likeliest reason the restores never matched.
-      #
+      # The fast path, and it is worth 6× on a warm run: 2058 s cold versus ~320 s
+      # restored, measured on consecutive `main` runs 302 and 304. It very nearly
+      # got deleted from this file on the evidence of run 302 alone, which was cold
+      # for a reason that had nothing to do with the cache — see the env block.
+      # Never conclude a cache is broken from a single run; compare two.
+      - uses: https://github.com/Swatinem/rust-cache@v2
       # ALSA headers and the `aarch64-linux-android` std used to be installed here
       # per run and are baked into `cartopolis-ci:latest` now.
       #
@@ -188,7 +196,16 @@ jobs:
       # message kinds were added), `cartopolis`, and `big_space`, whose
       # floating-origin correctness tests are the reason a change there can be
       # trusted at all.
-      - run: cargo test --workspace --exclude cartopolis_android
+      #
+      # `--locked` on every cargo invocation in this repo's workflows, because
+      # `Cargo.lock` being committed is only half of a policy. Without it, a
+      # `Cargo.toml` edit that arrives without its lockfile update does not fail —
+      # cargo quietly re-resolves to whatever is newest that afternoon, builds
+      # *that*, and discards the result, so the artifact does not match the
+      # lockfile and nothing anywhere says so. With it, the same situation is a
+      # one-line error naming the crate, and picking up a new version stays what it
+      # should be: a deliberate `cargo update` in a commit someone reviewed.
+      - run: cargo test --locked --workspace --exclude cartopolis_android
 
       # The only check anywhere that renders anything. Everything above proves the
       # code compiles and its units behave; this one launches the app, streams a
@@ -224,7 +241,7 @@ jobs:
         env:
           CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run -p cartopolis -- \
+          cargo run --locked -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -308,10 +325,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
-      # No rust-cache and no ALSA step here either, for the reasons the `test` job
-      # gives. Neither `rustup target add` is needed any more: the image carries
-      # wasm32 for the nightly toolchain and aarch64-linux-android for the default
-      # one, which is the toolchain each of the two lanes below actually uses.
+      - uses: https://github.com/Swatinem/rust-cache@v2
+      # No ALSA step here any more, and neither `rustup target add` is needed: the
+      # image carries wasm32 for the nightly toolchain and aarch64-linux-android
+      # for the default one, which is the toolchain each of the two lanes below
+      # actually uses.
       #
       # Deliberately a *check*: no `-Z build-std`, no atomics, no LTO, no link
       # step, no wasm-bindgen. That skips the expensive half of the web build and
@@ -330,7 +348,7 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p cartopolis --no-default-features --target wasm32-unknown-unknown
+          cargo check --locked -p cartopolis --no-default-features --target wasm32-unknown-unknown
 
       # A check, not the APK: no link, no aapt2, no signing. That is the cheap half
       # and it catches what rots — a renamed item behind an android cfg, a
@@ -388,7 +406,7 @@ jobs:
           rustup target add aarch64-linux-android
           export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          cargo check -p cartopolis_android --target aarch64-linux-android
+          cargo check --locked -p cartopolis_android --target aarch64-linux-android
       # What the cache actually did, in the job that used it. Without this the only
       # way to know whether sccache is working is to compare wall-clock against a
       # run from another day — which is how `Swatinem/rust-cache` sat here for
