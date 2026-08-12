@@ -659,21 +659,36 @@ pub fn setup_camera(
             Exposure {
                 ev100: ATMOSPHERE_EXPOSURE_EV100,
             },
-            // Bloom: the glare that makes an HDR scene read as bright. The
-            // sun disk is the case that needs it — a physically-sized disc
-            // is a few pixels across, and without glare around it the sky's
-            // brightest object looks like a sticker. It also gives the night
-            // city's window lights and the sunlit limb from orbit their
-            // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
-            // scenes) so the daytime basemap doesn't smear.
-            Bloom {
-                intensity: bloom_intensity(0.0),
-                ..Bloom::NATURAL
-            },
             AmbientLight::default(),
             FreeCamera,
             FloatingOrigin,
         ));
+        // Bloom: the glare that makes an HDR scene read as bright. The sun disk is
+        // the case that needs it — a physically-sized disc is a few pixels across,
+        // and without glare around it the sky's brightest object looks like a
+        // sticker. It also gives the night city's window lights and the sunlit limb
+        // from orbit their halo. Kept low (Bevy's default 0.15 is tuned for
+        // emissive-heavy scenes) so the daytime basemap doesn't smear.
+        //
+        // Omitted entirely on a tier that does not want it, rather than kept at
+        // `intensity == 0.0`. A zero intensity does skip the thirteen
+        // downsample/upsample passes — `bloom_intensity` documents that, and it is
+        // true — but `Bloom` carries `#[require(Hdr)]`, so the component's mere
+        // presence keeps the main texture at `Rgba16Float` whether or not the node
+        // does any work. Skipping the passes while still paying 8 B/px for the
+        // target is the worst of both.
+        //
+        // The reason it used to stay is real and is now handled at the query
+        // instead: `apply_day_night_cycle` and `shot_harness` both name `&Bloom`
+        // inside a tuple, and a camera missing it would silently drop out of the
+        // day/night cycle and out of `ShotMetrics` — a lighting bug, not a
+        // rendering one. Both read `Option<&Bloom>` now.
+        if budget.bloom {
+            cam.insert(Bloom {
+                intensity: bloom_intensity(0.0),
+                ..Bloom::NATURAL
+            });
+        }
         // Atmospheric distance fog: distant buildings fade into haze, sun-side
         // glow, driven by the dev panel (apply_distance_fog). It is one more
         // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
@@ -696,14 +711,27 @@ pub fn setup_camera(
         // the desktop tier restates exactly what `AtmosphereSettings::default()`
         // gave it. The reason the sizes are worth touching at all is that all four
         // LUTs are recomputed *every frame* — see `quality::AtmosphereLuts`.
-        let luts = budget.atmosphere_luts;
-        cam.insert(AtmosphereSettings {
-            transmittance_lut_size: luts.transmittance,
-            multiscattering_lut_size: luts.multiscattering,
-            sky_view_lut_size: luts.sky_view,
-            aerial_view_lut_size: luts.aerial_view,
-            ..default()
-        });
+        //
+        // Gated on `want_atmosphere`, and the gate is about **bandwidth, not the
+        // LUTs**. `AtmosphereSettings` carries `#[require(Hdr)]`, so its mere
+        // presence makes the main texture `Rgba16Float` — 8 B/px of colour instead
+        // of 4. On a tiled mobile GPU that is not a memory cost but a *binning*
+        // one: 8 B colour plus depth overruns the on-chip tile budget, and the
+        // driver answers by splitting the pass into more bins and replaying the
+        // whole draw list for each. An adapter without `FLOAT32_FILTERABLE` (the
+        // Adreno 619 in a Fairphone 4 is the first one we found) already renders
+        // no sky at all, so before this gate it paid the doubled bandwidth *and*
+        // the extra bins for an atmosphere that was switched off above.
+        if want_atmosphere {
+            let luts = budget.atmosphere_luts;
+            cam.insert(AtmosphereSettings {
+                transmittance_lut_size: luts.transmittance,
+                multiscattering_lut_size: luts.multiscattering,
+                sky_view_lut_size: luts.sky_view,
+                aerial_view_lut_size: luts.aerial_view,
+                ..default()
+            });
+        }
         if want_envmap {
             // Sky-driven image-based lighting: surfaces are lit by and reflect
             // the actual atmosphere. 256² IBL cubemap instead of the 512²

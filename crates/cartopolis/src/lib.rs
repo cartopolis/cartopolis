@@ -2815,7 +2815,14 @@ fn apply_day_night_cycle(
             &GridCell,
             &Transform,
             &mut Exposure,
-            &mut bevy::post_process::bloom::Bloom,
+            // `Option`, because a tier that does not want glare omits `Bloom`
+            // rather than zeroing it (`free_camera::setup_camera` says why: the
+            // component carries `#[require(Hdr)]`, so keeping it costs 8 B/px of
+            // main texture even at zero intensity). Naming it bare here would take
+            // the camera out of *this whole query* on such a tier — no exposure
+            // adaptation, no day/night cycle at all — which is a lighting failure
+            // that looks nothing like a missing bloom.
+            Option<&mut bevy::post_process::bloom::Bloom>,
         ),
         (
             With<crate::components::FreeCamera>,
@@ -2859,7 +2866,7 @@ fn apply_day_night_cycle(
         // A small lift so an overcast scene reads dim-but-legible rather than
         // being crushed once the direct sun is pulled down.
         - OVERCAST_EXPOSURE_LIFT * overcast;
-    if let Ok((_, _, mut exp, mut bloom)) = camera.single_mut() {
+    if let Ok((_, _, mut exp, bloom)) = camera.single_mut() {
         // The globe's map imagery is bright (near-white paper); from orbit the
         // sunlit hemisphere blows out, so stop the camera down as you climb. This
         // rides `space_factor`, so at the tier boundary it's exactly the ground
@@ -2875,7 +2882,9 @@ fn apply_day_night_cycle(
         // the limb is a few pixels of arc, and glare is most of what makes it
         // read as an atmosphere rather than a drawn outline. Near the ground
         // that much bloom just smears the map.
-        bloom.intensity = systems::free_camera::bloom_intensity(space);
+        if let Some(mut bloom) = bloom {
+            bloom.intensity = systems::free_camera::bloom_intensity(space);
+        }
     }
 
     // Above the atmosphere the sun is unfiltered: no air mass to redden or dim

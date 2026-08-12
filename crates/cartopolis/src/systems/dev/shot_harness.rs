@@ -1196,7 +1196,21 @@ pub fn drive_capture(
         Res<crate::systems::lod22::Lod22Buildings>,
         Res<bevy::render::renderer::RenderAdapterInfo>,
     ),
-    camera: Query<(&GridCell, &Transform, &Projection, &Exposure, &Bloom), With<FreeCamera>>,
+    // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
+    // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
+    // the camera out of this whole query — every metric below it, not just
+    // `bloom`, would silently report its default. A metric that goes quiet is
+    // worse than one that reads 0.
+    camera: Query<
+        (
+            &GridCell,
+            &Transform,
+            &Projection,
+            &Exposure,
+            Option<&Bloom>,
+        ),
+        With<FreeCamera>,
+    >,
     globe_meshes: Query<(&bevy::camera::visibility::ViewVisibility, &Visibility), With<GlobeMesh>>,
     route_meshes: Query<
         &bevy::camera::visibility::ViewVisibility,
@@ -1406,7 +1420,10 @@ pub fn drive_capture(
             near_m: near as i64,
             far_m: far as i64,
             exposure_ev100: exposure.ev100,
-            bloom: bloom.intensity,
+            // A tier with no glare has no `Bloom` component at all, and 0.0 is the
+            // honest reading for it — the same number the component would have
+            // carried, since `bloom_intensity` returns exactly 0.0 on that tier.
+            bloom: bloom.map_or(0.0, |b| b.intensity),
             globe_albedo: readouts.0 .0,
             veg_factor: readouts.1.factor,
             furniture_factor: readouts.4.factor,
