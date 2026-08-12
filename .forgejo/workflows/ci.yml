@@ -42,10 +42,50 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: "3"
-  # As in deploy-android.yml: a failure here is nearly always a test or a lint,
-  # long after the dependencies compiled. Throwing that away makes the next run
-  # pay for it again.
-  CACHE_ON_FAILURE: "true"
+  # The runner has capacity 2 and the host has 8 cores it does **not** own: the
+  # public nominatim and overpass services live on the same box. Two jobs each
+  # letting cargo default to one rustc per core is 16 compilers on 8 shared cores,
+  # and the load average sat between 8.5 and 11.8 during a normal CI run. Three
+  # apiece leaves two cores for the services and, because the contention was
+  # costing more than the parallelism bought, does not obviously slow a job down.
+  CARGO_BUILD_JOBS: "3"
+  # sccache, reading and writing the bind-mounted host directory above. It is the
+  # **second** layer, underneath `Swatinem/rust-cache`, and the distinction is
+  # worth stating because getting it wrong nearly cost this repo its CI cache.
+  #
+  # rust-cache is the fast path and it works: measured across two consecutive
+  # `main` runs, warm restores took the test job from 2058 s to ~320 s. What it
+  # cannot do is survive a key change, and it has two that bite here. Its cache
+  # *version* hashes the workspace path, so the `viberfox` → `cartopolis` rename
+  # invalidated every entry in the store at a stroke (32.8 GB of them, later
+  # deleted by hand). And caches carry a `writeIsolationKey` of the ref that wrote
+  # them, so one written by a PR run is invisible to every other branch.
+  #
+  # Both of those are exactly the case sccache covers: it is keyed on the compiler
+  # invocation and its inputs, with no ref scope and no workspace path in the key,
+  # so a fresh branch — or the whole repo the day after a rename — still gets its
+  # objects back instead of recompiling Bevy from nothing. The two compose: on a
+  # rust-cache hit sccache is nearly idle, and on a miss it is the difference
+  # between a 5-minute run and a 35-minute one.
+  #
+  # `CARGO_INCREMENTAL: "0"` above is not merely a CI tuning any more — it is a
+  # requirement. sccache cannot cache an incremental compilation and silently
+  # declines to, so leaving incremental on would turn this off without saying so.
+  #
+  # The 20 GB ceiling is sccache's own LRU eviction, chosen against the host: the
+  # disk is 193 GB and was at 87% before this work.
+  #
+  # One caveat, written down because it is invisible until it matters: the two
+  # jobs run in separate containers, so each starts its *own* sccache server
+  # against the same directory. Entries are content-addressed and written by
+  # atomic rename, so a build cannot be corrupted by this — but each server keeps
+  # its own in-memory LRU index, so the two can evict each other's entries and the
+  # 20 GB ceiling is enforced per-server rather than in total. The failure mode is
+  # a cache miss and a directory somewhat larger than the cap, neither of which is
+  # worth a second cache directory and the halved hit rate that would come with it.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_DIR: /sccache
+  SCCACHE_CACHE_SIZE: 20G
 
 jobs:
   # The default lane, and on a pull request the *only* lane. Compiles the
@@ -65,6 +105,40 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
+      # A host directory, not the Actions cache. `/data/ci-cache` is in the
+      # runner's `valid_volumes` (mount anything else and the job is refused), and
+      # the runner is a single self-hosted machine, so a plain bind mount is both
+      # available and strictly better than an archive that has to be uploaded and
+      # downloaded: there is no key, so there is nothing to miss.
+      volumes:
+        - /data/ci-cache/sccache:/sccache
+        # The registry, for the half of the problem sccache does not solve: it
+        # caches *compilation*, so without this every run still re-downloads and
+        # re-extracts the whole dependency tree from crates.io before it can get a
+        # cache hit on any of it. `/root/.cargo/registry` is this image's cargo
+        # home. There are no git dependencies in the workspace (`big_space` is
+        # vendored as a path dep), so the registry is the whole of it — add
+        # `/root/.cargo/git` here the day that stops being true.
+        #
+        # Safe to share between the two concurrent jobs: cargo takes a file lock on
+        # the registry and the loser waits, which is a pause measured in seconds
+        # against a download measured in minutes.
+        - /data/ci-cache/cargo-registry:/root/.cargo/registry
+    env:
+      # mold instead of lld, which `.cargo/config.toml` has invited in a comment
+      # since it was written. Set here rather than there because it is only true
+      # of this container: mold is baked into `cartopolis-ci:latest`, and a
+      # workstation that has not installed it would fail to link.
+      #
+      # `RUSTFLAGS` *replaces* `[target.x86_64-unknown-linux-gnu].rustflags`
+      # wholesale rather than adding to it, so `target-cpu=x86-64-v3` has to be
+      # repeated here or this job would silently drop the SIMD baseline that the
+      # step below asserts the runner can execute. It does not replace `linker`,
+      # so clang still drives the link and merely hands off to mold.
+      #
+      # Job-scoped, not workflow-scoped: the `targets` job cross-compiles to wasm32
+      # and aarch64-linux-android, and both of these flags are nonsense there.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold -C target-cpu=x86-64-v3"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,19 +147,15 @@ jobs:
           # this job compiles 130-byte LFS pointers into the binary and only
           # finds out at runtime. See `.gitattributes`.
           lfs: true
+      # The fast path, and it is worth 6× on a warm run: 2058 s cold versus ~320 s
+      # restored, measured on consecutive `main` runs 302 and 304. It very nearly
+      # got deleted from this file on the evidence of run 302 alone, which was cold
+      # for a reason that had nothing to do with the cache — see the env block.
+      # Never conclude a cache is broken from a single run; compare two.
       - uses: https://github.com/Swatinem/rust-cache@v2
-      # ALSA headers, for the `audio` feature — which is on by default, so this is
-      # needed by any `cargo check`/`cargo test` of `cartopolis` that does not pass
-      # `--no-default-features`. `bevy_audio` pulls `alsa-sys`, whose build script
-      # is a `pkg-config` call that hard-fails without `alsa.pc`.
+      # ALSA headers and the `aarch64-linux-android` std used to be installed here
+      # per run and are baked into `cartopolis-ci:latest` now.
       #
-      # Belongs in `cartopolis-ci:latest` rather than here; it is a step only because
-      # that image lives in another repo. `deploy-android.yml` installs its JRE the
-      # same way and for the same reason.
-      - name: ALSA headers for the audio feature
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends libasound2-dev >/dev/null
       # `.cargo/config.toml` builds x86_64 at `target-cpu=x86-64-v3` (AVX2+FMA)
       # to light up the SIMD already present in tiny-skia and the pixel loops.
       # Cross-compiling to it is always fine, but this job *runs* what it builds,
@@ -98,21 +168,44 @@ jobs:
             echo "Either move the runner to newer hardware or drop the target-cpu flag."
             exit 1
           }
-      # `cargo test` compiles the crate and runs its tests in one pass.
-      # Cheap and first: no Bevy in this crate's graph, so it fails in seconds on a
-      # geodata regression instead of after the client's full codegen.
-      - run: cargo test -p cartopolis_geo
-      # The wire and the server. Neither was run here until 2026-08-10, which is
-      # how `message_kind_wire_is_a_bijection` sat red after six message kinds were
-      # added — a green pipeline said nothing about either crate. `cartopolis_core`
-      # is seconds; `cartopolis_simulator` carries the scripting suite (sandbox
-      # escapes, the memory ceiling, the end-to-end wire tests) and needs no GPU.
-      - run: cargo test -p cartopolis_core
-      - run: cargo test -p cartopolis_simulator
-      - run: cargo test -p cartopolis
-      # The vendored fork carries the floating-origin correctness tests; they are
-      # the reason a `big_space` change can be trusted at all.
-      - run: cargo test -p big_space --lib
+      # **One invocation, not five**, and that is worth about a third of this job.
+      #
+      # These used to be five `cargo test -p …` steps, ordered cheapest-first so a
+      # geodata regression failed in seconds rather than after the client's full
+      # codegen. The ordering was real but the price was not visible until the steps
+      # were timed: with resolver v2 each invocation unifies features over only the
+      # packages *it* selects, so five invocations meant five different feature sets
+      # for the shared Bevy dependencies and five rebuilds of them. `big_space` — a
+      # small vendored crate, run immediately after a step that had just compiled
+      # the entire Bevy stack — took 439 seconds. That is not its own code.
+      #
+      # What one invocation costs is the fail-fast ordering: a `cartopolis_geo`
+      # break now surfaces after the whole workspace compiles. Accepted knowingly.
+      #
+      # `--workspace` rather than the old package list, having checked what that
+      # changes: `cartopolis_geo` and `cartopolis_simulator` carry `tests/`
+      # directories that a `--lib` would have dropped, and `big_space`'s only doc
+      # fences are ```ignore, so the `--lib` it used to be given was conservatism
+      # rather than a needed exclusion. `cartopolis_android` is excluded because it
+      # is empty off Android — the `targets` job below is what covers it.
+      #
+      # The suites, for the record, since the step names no longer list them:
+      # `cartopolis_geo` (the geodata regressions), `cartopolis_core` and
+      # `cartopolis_simulator` (the wire and the server — neither was run here until
+      # 2026-08-10, which is how `message_kind_wire_is_a_bijection` sat red after six
+      # message kinds were added), `cartopolis`, and `big_space`, whose
+      # floating-origin correctness tests are the reason a change there can be
+      # trusted at all.
+      #
+      # `--locked` on every cargo invocation in this repo's workflows, because
+      # `Cargo.lock` being committed is only half of a policy. Without it, a
+      # `Cargo.toml` edit that arrives without its lockfile update does not fail —
+      # cargo quietly re-resolves to whatever is newest that afternoon, builds
+      # *that*, and discards the result, so the artifact does not match the
+      # lockfile and nothing anywhere says so. With it, the same situation is a
+      # one-line error naming the crate, and picking up a new version stays what it
+      # should be: a deliberate `cargo update` in a commit someone reviewed.
+      - run: cargo test --locked --workspace --exclude cartopolis_android
 
       # The only check anywhere that renders anything. Everything above proves the
       # code compiles and its units behave; this one launches the app, streams a
@@ -148,7 +241,7 @@ jobs:
         env:
           CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run -p cartopolis -- \
+          cargo run --locked -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -171,6 +264,17 @@ jobs:
       # every single push, and the fast red X read as "someone forgot rustfmt".
       # Whatever gates last cannot hide anything.
       - run: cargo fmt -p cartopolis -p cartopolis_geo -p cartopolis_core -p cartopolis_simulator -p cartopolis_android --check
+      # What the cache actually did, in the job that used it. Without this the only
+      # way to know whether sccache is working is to compare wall-clock against a
+      # run from another day — which is how `Swatinem/rust-cache` sat here for
+      # weeks saving a gigabyte a run and restoring nothing. A hit rate is one line
+      # and it is never ambiguous.
+      #
+      # `if: always()` so a failing build still reports it: a run that fails slowly
+      # is exactly when you want to know the cache was cold.
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   # The cross-target rot gates: two more full dependency graphs, for two platforms
   # this runner cannot execute.
@@ -198,15 +302,35 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
+      # A host directory, not the Actions cache. `/data/ci-cache` is in the
+      # runner's `valid_volumes` (mount anything else and the job is refused), and
+      # the runner is a single self-hosted machine, so a plain bind mount is both
+      # available and strictly better than an archive that has to be uploaded and
+      # downloaded: there is no key, so there is nothing to miss.
+      volumes:
+        - /data/ci-cache/sccache:/sccache
+        # The registry, for the half of the problem sccache does not solve: it
+        # caches *compilation*, so without this every run still re-downloads and
+        # re-extracts the whole dependency tree from crates.io before it can get a
+        # cache hit on any of it. `/root/.cargo/registry` is this image's cargo
+        # home. There are no git dependencies in the workspace (`big_space` is
+        # vendored as a path dep), so the registry is the whole of it — add
+        # `/root/.cargo/git` here the day that stops being true.
+        #
+        # Safe to share between the two concurrent jobs: cargo takes a file lock on
+        # the registry and the loser waits, which is a pause measured in seconds
+        # against a download measured in minutes.
+        - /data/ci-cache/cargo-registry:/root/.cargo/registry
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
       - uses: https://github.com/Swatinem/rust-cache@v2
-      - name: ALSA headers for the audio feature
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends libasound2-dev >/dev/null
+      # No ALSA step here any more, and neither `rustup target add` is needed: the
+      # image carries wasm32 for the nightly toolchain and aarch64-linux-android
+      # for the default one, which is the toolchain each of the two lanes below
+      # actually uses.
+      #
       # Deliberately a *check*: no `-Z build-std`, no atomics, no LTO, no link
       # step, no wasm-bindgen. That skips the expensive half of the web build and
       # still catches what actually rots — missing web-sys features, `!Send` types
@@ -224,7 +348,7 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p cartopolis --no-default-features --target wasm32-unknown-unknown
+          cargo check --locked -p cartopolis --no-default-features --target wasm32-unknown-unknown
 
       # A check, not the APK: no link, no aapt2, no signing. That is the cheap half
       # and it catches what rots — a renamed item behind an android cfg, a
@@ -282,4 +406,15 @@ jobs:
           rustup target add aarch64-linux-android
           export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          cargo check -p cartopolis_android --target aarch64-linux-android
+          cargo check --locked -p cartopolis_android --target aarch64-linux-android
+      # What the cache actually did, in the job that used it. Without this the only
+      # way to know whether sccache is working is to compare wall-clock against a
+      # run from another day — which is how `Swatinem/rust-cache` sat here for
+      # weeks saving a gigabyte a run and restoring nothing. A hit rate is one line
+      # and it is never ambiguous.
+      #
+      # `if: always()` so a failing build still reports it: a run that fails slowly
+      # is exactly when you want to know the cache was cold.
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats

@@ -52,11 +52,11 @@ jobs:
             exit 1
           }
       # The same list ci.yml's build-test job runs, in the same order.
-      - run: cargo test -p cartopolis_geo
-      - run: cargo test -p cartopolis_core
-      - run: cargo test -p cartopolis_simulator
-      - run: cargo test -p cartopolis
-      - run: cargo test -p big_space --lib
+      - run: cargo test --locked -p cartopolis_geo
+      - run: cargo test --locked -p cartopolis_core
+      - run: cargo test --locked -p cartopolis_simulator
+      - run: cargo test --locked -p cartopolis
+      - run: cargo test --locked -p big_space --lib
       # And the one check that renders: everything above proves the code compiles
       # and its units behave, this proves the frame had a planet in it. Shipping a
       # binary that type-checks and draws black is precisely what a release must
@@ -67,7 +67,7 @@ jobs:
         env:
           CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run -p cartopolis -- \
+          cargo run --locked -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -100,10 +100,10 @@ jobs:
           key: release
 
       - name: Build release binary (Linux x86_64)
-        run: cargo build -p cartopolis --release
+        run: cargo build --locked -p cartopolis --release
 
       - name: Build release binary (Windows x86_64, cross)
-        run: cargo build -p cartopolis --release --target x86_64-pc-windows-gnu
+        run: cargo build --locked -p cartopolis --release --target x86_64-pc-windows-gnu
 
       # Both packages carry the same paperwork, and one of the four files is not
       # optional: LICENSE-THIRD-PARTY.md is the ODbL / CC BY 4.0 / OFL notice that
