@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
-updated: 2026-08-10
+updated: 2026-08-12
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -293,7 +293,7 @@ against 124 MB living on the runner host indefinitely. The NDK *is* cached, unde
 the same key the check lane uses, so on `main` it is a restore rather than a
 second download.
 
-## Verification status, 2026-08-10
+## Verification status, 2026-08-10 (superseded — see the hardware section below)
 
 Built and packaged in the headless container; **never run on a device or an
 emulator**. The container has no GPU, no KVM and no Android runtime.
@@ -340,3 +340,47 @@ compiled and unit-tested and **none of them has run on hardware**. Do not read
 "it checks" as more than it is; this note's whole point is that the gap between
 compiling for `aarch64-linux-android` and running on a phone is where all the
 remaining risk lives.
+
+## First hardware run, 2026-08-12: it installs, it starts, it is killed
+
+Build `1.0.0+6e80d5dc` (the CI APK off `main`) was installed on a real phone and
+**died before drawing a frame**. That is a worse outcome than "it works" and a much
+better one than the previous state of this note, because of what it settles.
+
+The evidence is the crash reporter's own, and reading it is the point of this
+section. The next launch produced the *breadcrumb* message — no panic report — so:
+
+- **Everything up to `run()` works on hardware.** The breadcrumb is written at
+  `lib.rs`'s `run()`, after the panic hook and after `offer_last_crash`. Finding
+  it means the APK installed, `System.loadLibrary` found the stripped `.so`,
+  `android_main` resolved, `ANDROID_APP` was set and
+  `internal_data_path()` was writable. Every packaging and load-time risk this
+  note spends its length on is now *measured*, not argued.
+- **The crash reporter itself works**, including the JNI share sheet from a
+  process with no window — the one part of the 2026-08-10 batch that had to work
+  before any of the rest could be diagnosed. It is worth keeping that dependency
+  in mind: it is the instrument, so a change that breaks it blinds everything.
+- **Nothing in our Rust panicked.** The hook is global and the profile aborts, so
+  a panic on any thread would have left the file. The process was killed.
+- **It was not a clean background**, or `WillSuspend` would have removed the
+  breadcrumb. It died on screen.
+
+What that leaves is the renderer bring-up: the wgpu adapter, the Vulkan surface, or
+the low-memory killer during the 63 MB of glTF. **Those three are indistinguishable
+from the report as it stood**, which is what the same-day follow-up fixed:
+
+- The Android `LogPlugin` filter carried the desktop's `bevy_render=error`, so the
+  adapter and backend the app actually chose were never logged — on the one
+  platform where nobody can attach a debugger. `bevy_render` and `bevy_winit` run
+  at INFO here now. **The filter is the crash report's contents**, not just a
+  console preference.
+- `platform::android::own_logcat` reads the ring buffer back on the next launch
+  and the report carries the tail. logd filters by UID, so this needs no
+  `READ_LOGS` and returns only our own lines — which also means it can show a
+  native tombstone (`crash_dump` reports under the crashing UID) but **never** an
+  OOM kill, announced by the system UID. Evidence for the LMK is therefore
+  negative: our log stops with no `signal` line.
+
+Still unknown, in the order a device answers them: whether wgpu gets an adapter at
+all, whether the surface survives the first resume, and whether the asset load
+fits in memory. Nothing below the renderer is in doubt any more.
