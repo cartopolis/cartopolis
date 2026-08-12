@@ -151,7 +151,7 @@ keeping so it is not re-proposed.
   `Agent`'s 16 idle connections per host, and the handshake is amortised by that
   same pool (the ~90 ms measurement in `platform::http`'s doc comment).
 * **The remaining time is bytes, not round trips.** Measured against
-  `tiles.garage44.eu` from inside the VPS (so RTT ≈ 0 — a floor, not a client
+  `tiles.cartopolis.org` from inside the VPS (so RTT ≈ 0 — a floor, not a client
   figure): TLS handshake ~47 ms, server ~13 ms, body ~70 KB. A 245-tile fill is
   ~17 MB. On a consumer link that is bandwidth, and no protocol makes a link
   faster.

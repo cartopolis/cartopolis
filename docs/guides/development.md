@@ -137,7 +137,7 @@ both to a Forgejo release — a versioned one on a `v*` tag, or the rolling
 client with real threads (shared memory + `-Z build-std` + COOP/COEP headers — the
 script's header comment explains what breaks if one of the three is missing).
 `deploy-web.yml` does the same with LTO and publishes to
-[cartopolis.garage44.eu](https://cartopolis.garage44.eu) on every push to `main`; it is a
+[cartopolis.org](https://cartopolis.org) on every push to `main`; it is a
 separate workflow because rebuilding std and linking ~70 MB would block the test
 lanes. The web target runs against WebGL2 (no storage buffers — hence the CPU
 fallbacks the `dev` profile's opt-level-3 dependencies exist to make bearable) and

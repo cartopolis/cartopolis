@@ -34,7 +34,7 @@ Capabilities that already have decision records list **ADR** ids. Others say **w
 | Runtime config & ops | 014 | Extend as needed |
 | **Platform portability & web target** | 030, 033 | Both **proposed** while the wasm32 build lands. Accept once the browser path is real; add child ADRs per capability that needs a substitutable provider |
 | **Layered access (Viewer → login → ACL)** | 031 | **Proposed.** Promote to accepted when the server enforces the tier split; the ACL layer is the **R2** authorization ADR above |
-| **Map tile hosting & data relay** | 034, 035 | 035 accepted (tiles live at `tiles.garage44.eu`); **034 proposed** — accept when `cartopolis_relay` exists, or fold into 014 if it stays a config concern |
+| **Map tile hosting & data relay** | 034, 035 | 035 accepted (tiles live at `tiles.cartopolis.org`); **034 proposed** — accept when `cartopolis_relay` exists, or fold into 014 if it stays a config concern |
 | **Buildings & data layers** | 022, 023, 024, 026, 027 | Extend at **R1**; promote to **R2** if the import/refresh path or an upstream dependency becomes load-bearing |
 | **Routing & navigation** | 037 | Extend as the on-tile router grows; **R2** already |
 | **Terrain elevation** | 038 | **Proposed.** Touches geometry *and* collision — accept before building on top of a flat ground plane |

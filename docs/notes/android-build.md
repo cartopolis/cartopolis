@@ -243,7 +243,7 @@ result to `/data/cartopolis/site/apk/`, i.e. **inside the wasm client's web root
 which is what buys the whole serving story for free: Caddy already has that
 directory mounted and `file_server`'d, so there is no second site block, no DNS
 record and no compose edit. The phone install path is
-`https://cartopolis.garage44.eu/apk/`. The cost is a coupling that is invisible from
+`https://cartopolis.org/apk/`. The cost is a coupling that is invisible from
 either file alone — `deploy-web.yml`'s `rsync --delete` would remove `apk/` on the
 next web deploy, so it carries an `--exclude '/apk/'`.
 
@@ -299,7 +299,7 @@ Built and packaged in the headless container; **never run on a device or an
 emulator**. The container has no GPU, no KVM and no Android runtime.
 
 **The APK has never once published.** `deploy-android.yml` failed on every push
-to `main` from the day it landed, and `https://cartopolis.garage44.eu/apk/` was a
+to `main` from the day it landed, and `https://cartopolis.org/apk/` was a
 404 for the whole of that period — for the CI-ordering reason above, with a real
 compile break behind it. `cargo check -p cartopolis_android --target
 aarch64-linux-android` passed for the first time in this repo's history on

@@ -54,7 +54,7 @@ const OVERPASS_SELF_CONCURRENCY: usize = 4;
 /// Overpass endpoint. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract, so it doesn't rate-limit under the client's streaming
 /// load — see `docs/guides/server.md`). Override with `CARTO_OVERPASS_URL`.
-const DEFAULT_OVERPASS_URL: &str = "https://overpass.garage44.eu/api/interpreter";
+const DEFAULT_OVERPASS_URL: &str = "https://overpass.cartopolis.org/api/interpreter";
 
 /// Public Overpass instance, tried only after the primary endpoint has exhausted
 /// its retries. Our own instance being down (or not yet seeded for the area you
@@ -75,7 +75,7 @@ fn overpass_url() -> String {
 ///
 /// The 1-in-flight / 800 ms budget is citizenship toward a **public** Overpass
 /// instance — its rate limits and fairness rules. The default endpoint is our
-/// own (`overpass.garage44.eu`), which has no such budget, and pacing it
+/// own (`overpass.cartopolis.org`), which has no such budget, and pacing it
 /// politely made the far building ring and the POI layers stream several times
 /// slower than the server requires. Localhost counts as ours too; any *other*
 /// override is assumed public and keeps the polite pace automatically.
@@ -140,7 +140,7 @@ fn pace_fallback() {
 /// `/buildings/{CACHE_ZOOM}/{x}/{y}.json` plus a `/coverage.json` manifest, so
 /// covered cells parse through the same `parse_buildings` path as Overpass — only
 /// the source differs. Override with `CARTO_3DBAG_URL`; empty disables 3DBAG.
-const DEFAULT_3DBAG_URL: &str = "https://3dbag.garage44.eu";
+const DEFAULT_3DBAG_URL: &str = "https://3dbag.cartopolis.org";
 
 /// Resolve the 3DBAG host from `CARTO_3DBAG_URL` (empty string disables 3DBAG,
 /// falling back to OSM buildings everywhere).

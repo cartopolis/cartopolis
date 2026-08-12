@@ -272,7 +272,7 @@ jobs:
       - name: Headless scene smoke (orbit)
         timeout-minutes: 15
         env:
-          CARTO_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+          CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
           cargo run -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \

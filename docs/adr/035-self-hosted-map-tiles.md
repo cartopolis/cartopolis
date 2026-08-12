@@ -59,11 +59,11 @@ renders the map as geometry; styling happens client-side.
 >   service in the existing `geo` Docker Compose stack, exposing `/tiles/osm/{z}/{x}/{y}`. It
 >   already emits `Access-Control-Allow-Origin: *` and a 28-day `Cache-Control`, so no relay logic
 >   is needed — this replaces the "small `pmtiles` handler in `cartopolis_relay`" design.
-> - **Origin**: Caddy fronts it at **`tiles.garage44.eu`** (its own subdomain, the overpass /
+> - **Origin**: Caddy fronts it at **`tiles.cartopolis.org`** (its own subdomain, the overpass /
 >   nominatim / 3dbag pattern), not the same-origin `/tiles/*` path ADR-034 sketched. The
 >   single-origin relay of ADR-033/034 (for the wasm build) can still front this upstream later.
 > - **Client**: a pure origin swap. `DEFAULT_TILE_URL_TEMPLATE` moved from
->   `tiles.versatiles.org` to `tiles.garage44.eu` — same schema, same URL shape, no decode/render
+>   `tiles.versatiles.org` to `tiles.cartopolis.org` — same schema, same URL shape, no decode/render
 >   change. `CARTO_TILE_URL` still overrides.
 >
 > The rest of this ADR (why vector, coverage, client work, downstream consolidation) stands as

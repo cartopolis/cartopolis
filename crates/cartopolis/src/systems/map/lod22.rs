@@ -3,7 +3,7 @@
 //! Where the OSM/LoD1.2 path (`osm_buildings.rs`) extrudes footprints and *guesses*
 //! roofs, this streams the actual triangulated BAG roof geometry (sloped, hipped,
 //! complex roofs) preprocessed server-side into per-cell meshes
-//! (`tools/3dbag_lod22.py` → `https://3dbag.garage44.eu/lod22/…`). Each cell file is
+//! (`tools/3dbag_lod22.py` → `https://3dbag.cartopolis.org/lod22/…`). Each cell file is
 //! `{"elements":[{id, p:[[lat,lng,h],…], t:[[i,j,k,roof],…]}]}` — deduped vertices
 //! and triangles tagged roof/wall.
 //!

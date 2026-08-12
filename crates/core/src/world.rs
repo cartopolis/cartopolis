@@ -50,7 +50,7 @@ pub const REGION_SIZE_METERS: f64 = 256.0;
 /// classifies as vector. Override per-run with `CARTO_TILE_URL` (client) or the
 /// sim's `osm_tile_url_template` config; a raster template (e.g. one ending
 /// `.png`) still works and falls back to the pre-rendered path.
-pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}";
+pub const DEFAULT_TILE_URL_TEMPLATE: &str = "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}";
 
 /// Build tile URL from template (`{z}`, `{x}`, `{y}`) or the default vector source
 /// ([`DEFAULT_TILE_URL_TEMPLATE`], ADR-035). An empty template

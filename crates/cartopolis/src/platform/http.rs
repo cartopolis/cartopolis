@@ -37,7 +37,7 @@ const MAX_BODY: u64 = 64 * 1024 * 1024;
 /// plain `fetch` to one that says nothing fails outright — NOAA's NOMADS sends no
 /// `Access-Control-Allow-Origin`, so the globe's cloud cover simply never arrived
 /// on the web build. Our own services are not the problem (`tiles`, `overpass`,
-/// `3dbag` and `nominatim` under `garage44.eu` all answer `*`); third parties are.
+/// `3dbag` and `nominatim` under `cartopolis.org` all answer `*`); third parties are.
 ///
 /// Rather than ask each one for permission we stop being a third party to them:
 /// the browser build requests `/up/<name>/…` on its **own** origin, where CORS
@@ -174,7 +174,7 @@ mod imp {
     ///
     /// The free functions (`ureq::get`) build a fresh `Agent` — and therefore a
     /// fresh, empty connection pool — on every call, so each fetch paid a full
-    /// TCP + TLS handshake. Measured against `nominatim.garage44.eu` that was
+    /// TCP + TLS handshake. Measured against `nominatim.cartopolis.org` that was
     /// ~90 ms of a ~160 ms request: more than half the latency of a geocoding
     /// keystroke, spent re-negotiating a connection we had just closed. Keeping
     /// idle connections per host makes the second and later requests to the same

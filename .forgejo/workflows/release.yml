@@ -65,7 +65,7 @@ jobs:
       - name: Headless scene smoke (orbit)
         timeout-minutes: 15
         env:
-          CARTO_TILE_URL: https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+          CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
           cargo run -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
@@ -273,9 +273,9 @@ jobs:
 
           - \`cartopolis-linux-x86_64.tar.gz\` — unpack and run \`./run.sh\`
           - \`cartopolis-windows-x86_64.zip\` — unpack and run \`cartopolis.exe\`
-          - **Android:** https://cartopolis.garage44.eu/apk/ (not an asset here — it is
+          - **Android:** https://cartopolis.org/apk/ (not an asset here — it is
             signed and served separately, with install instructions on that page)
-          - **Browser:** https://cartopolis.garage44.eu
+          - **Browser:** https://cartopolis.org
 
           Each archive has a \`.sha256\` beside it.
 

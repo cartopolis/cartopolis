@@ -15,7 +15,7 @@ headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder
 # sprinkling the wrong one.
 #
 # Only genuine third parties need an entry. Our own services already answer `*`
-# (verified on tiles/overpass/3dbag/nominatim under garage44.eu), so they are left
+# (verified on tiles/overpass/3dbag/nominatim under cartopolis.org), so they are left
 # to go direct rather than pay an extra hop.
 #
 # `insecure = false`; COEP `require-corp` above means proxied responses must also be

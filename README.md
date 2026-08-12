@@ -23,9 +23,9 @@ _Generated with `cargo shots` from the camera positions in [`docs/shots.toml`](d
 
 The same client ships three ways, from one codebase:
 
-- **Web (WebAssembly)** — play in a browser at **[cartopolis.garage44.eu](https://cartopolis.garage44.eu)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
+- **Web (WebAssembly)** — play in a browser at **[cartopolis.org](https://cartopolis.org)**. Built for wasm with real threads and SIMD, published on every push to `main`. Needs WebGPU.
 - **Desktop (native)** — Linux and Windows binaries on the [releases page](https://code.garage44.eu/jeroen/cartopolis/releases), or build from source. macOS builds from source too; Linux is the primary development target. The published binaries need a CPU with **AVX2 and FMA** (Haswell/Excavator or newer) — they are compiled for the `x86-64-v3` baseline, and on anything older they stop with an illegal instruction; build from source there.
-- **Android** — an installable APK at **[cartopolis.garage44.eu/apk](https://cartopolis.garage44.eu/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/cartopolis_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
+- **Android** — an installable APK at **[cartopolis.org/apk](https://cartopolis.org/apk/)** (arm64, Android 9+), rebuilt on every push to `main`; that page walks through the two dialogs Android puts in front of an app it did not get from the Play Store. Or build it yourself with `crates/cartopolis_android/build-apk.sh`. Early: it is the offline map viewer, typing goes through the app's own on-screen keyboard, and it is the least-tested of the three. [What that means](docs/notes/android-build.md).
 
 Native is the faster and more capable of the three — the web build runs against WebGL2 and a browser's threading rules. Where the platforms differ, one API hides it (`platform/`).
 

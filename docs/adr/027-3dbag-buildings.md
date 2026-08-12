@@ -35,7 +35,7 @@ is slow, and downloading + parsing 3D CityJSON on the client is heavy.
 
 **Preprocess 3DBAG server-side, self-host it as static per-cell files, and route
 covered cells to it — OSM elsewhere.** Two tiers, both keyed on the client's
-`CACHE_ZOOM`=14 cells and served from `https://3dbag.garage44.eu/`:
+`CACHE_ZOOM`=14 cells and served from `https://3dbag.cartopolis.org/`:
 
 - **LoD2.2 real meshes** (primary for covered cells): the actual triangulated BAG
   roof geometry — sloped/hipped/complex roofs, not a guess.

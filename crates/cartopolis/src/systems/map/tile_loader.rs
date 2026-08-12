@@ -643,7 +643,7 @@ mod tests {
         // Vector: nothing after {y}, query string or not.
         for t in [
             "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}",
-            "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}?v=1",
+            "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}?v=1",
         ] {
             assert_eq!(tile_source_kind(t), TileSourceKind::Vector, "{t}");
         }
@@ -657,7 +657,7 @@ mod tests {
         let key = TileKey::new(8490, 5319, 14);
         assert_eq!(
             cartopolis_core::format_osm_tile_url("", &key),
-            "https://tiles.garage44.eu/tiles/osm/14/8490/5319",
+            "https://tiles.cartopolis.org/tiles/osm/14/8490/5319",
             "an empty template must fall back to the default vector source, not raster OSM"
         );
     }

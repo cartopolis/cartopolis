@@ -1,6 +1,6 @@
 name: Deploy Android
 
-# Build the arm64 APK and publish it to https://cartopolis.garage44.eu/apk/, so a
+# Build the arm64 APK and publish it to https://cartopolis.org/apk/, so a
 # phone can install it by tapping a link.
 #
 # Separate from ci.yml for the reason deploy-web.yml is: this is a *link*, thin
@@ -361,9 +361,9 @@ jobs:
             <p>It is early software: the phone build is the map viewer, typing goes
             through the app's own on-screen keyboard rather than your usual one, and it
             wants a reasonably recent phone. There is also a browser version at
-            <a href="/">cartopolis.garage44.eu</a>.</p>
+            <a href="/">cartopolis.org</a>.</p>
           </main>
           HTML
 
-          echo "published $size to https://cartopolis.garage44.eu/apk/ ($vname, code $vcode, commit $short)"
+          echo "published $size to https://cartopolis.org/apk/ ($vname, code $vcode, commit $short)"
           ls -la /publish/apk

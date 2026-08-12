@@ -35,8 +35,8 @@ collapses this duplication.
 
 An earlier framing of this work said we needed to emit CORS headers. That was wrong. If the wasm
 app and everything it calls are served from **one origin**, those requests are same-origin and
-CORS never applies. Our own services are currently on *sub*domains (`nominatim.garage44.eu`,
-`3dbag.garage44.eu`), and a subdomain is a different origin — so the fix is to **path-mount them
+CORS never applies. Our own services are currently on *sub*domains (`nominatim.cartopolis.org`,
+`3dbag.cartopolis.org`), and a subdomain is a different origin — so the fix is to **path-mount them
 under the app's origin** in the existing Caddy, not to sprinkle CORS headers.
 
 CORS survives in exactly two places: consuming a *third party's* headers if we ever call one
@@ -81,13 +81,13 @@ as the app.
 ### Single-origin layout (one Caddy site block)
 
 ```
-https://cartopolis.garage44.eu/            → wasm app + assets
-https://cartopolis.garage44.eu/tiles/*     → self-hosted vector tiles, PMTiles (ADR-035)
-https://cartopolis.garage44.eu/nominatim/* → nominatim
-https://cartopolis.garage44.eu/overpass/*  → overpass
-https://cartopolis.garage44.eu/3dbag/*     → 3dbag
-https://cartopolis.garage44.eu/v1/*        → cartopolis_relay (L2 adapters)
-wss://cartopolis.garage44.eu/ws            → cartopolis_simulator (ADR-033 Phase 2)
+https://cartopolis.org/            → wasm app + assets
+https://cartopolis.org/tiles/*     → self-hosted vector tiles, PMTiles (ADR-035)
+https://cartopolis.org/nominatim/* → nominatim
+https://cartopolis.org/overpass/*  → overpass
+https://cartopolis.org/3dbag/*     → 3dbag
+https://cartopolis.org/v1/*        → cartopolis_relay (L2 adapters)
+wss://cartopolis.org/ws            → cartopolis_simulator (ADR-033 Phase 2)
 ```
 
 Same Caddy that already reverse-proxies these, on one hostname instead of several.
@@ -135,10 +135,10 @@ pub const UPSTREAMS: &[UpstreamDef] = &[ /* one entry per upstream */ ];
 | # | Source | Endpoint | Approach | Why |
 |---|---|---|---|---|
 | 1 | OSM vector tiles (MVT) | *(self-hosted — **ADR-035**)* | **L1** `/tiles/*` | OSM discourages proxying their CDN; we serve our own vector tiles from a PMTiles archive (ADR-035). Highest byte volume |
-| 2 | Nominatim search | `nominatim.garage44.eu` | **L1** `/nominatim/*` | ours |
+| 2 | Nominatim search | `nominatim.cartopolis.org` | **L1** `/nominatim/*` | ours |
 | 3 | Nominatim reverse | same, `/reverse` | **L1** `/nominatim/*` | ours |
-| 4 | Overpass | `overpass.garage44.eu/api/interpreter` | **L1** `/overpass/*` | ours (client-side throttle can later move to an L2 adapter) |
-| 5 | 3DBAG LoD2.2 | `3dbag.garage44.eu/lod22/{z}/{x}/{y}.json` | **L1** `/3dbag/*` | ours; large payloads suit plain HTTP caching |
+| 4 | Overpass | `overpass.cartopolis.org/api/interpreter` | **L1** `/overpass/*` | ours (client-side throttle can later move to an L2 adapter) |
+| 5 | 3DBAG LoD2.2 | `3dbag.cartopolis.org/lod22/{z}/{x}/{y}.json` | **L1** `/3dbag/*` | ours; large payloads suit plain HTTP caching |
 | 6 | met.no forecast | `api.met.no/weatherapi/locationforecast/2.0/complete` | **L2** `met-forecast` | UA identification required by ToS; shared cache honours their caching guidance |
 | 7 | NOAA GFS (GRIB2) | `nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl` | **L2** `gfs-tcdc` | transform (GRIB → 360×181 grid) + cycle clock + cache; no CORS |
 | 8 | OVapi departures | `http://v0.ovapi.nl/tpc/{codes}` | **L2** `ovapi-departures` | **mixed content** — unreachable otherwise; + UA |

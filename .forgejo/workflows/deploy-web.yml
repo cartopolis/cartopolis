@@ -1,6 +1,6 @@
 name: Deploy web
 
-# Build the wasm client and publish it to https://cartopolis.garage44.eu.
+# Build the wasm client and publish it to https://cartopolis.org.
 #
 # Separate from ci.yml on purpose. This job rebuilds std (`-Z build-std`, needed
 # for atomics) and links ~70 MB with LTO, so it is tens of minutes cold against a

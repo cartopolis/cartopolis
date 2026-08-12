@@ -534,7 +534,7 @@ buildings / 112 cells.
 and the `Caddyfile` has:
 
 ```caddy
-3dbag.garage44.eu {
+3dbag.cartopolis.org {
 	root * /srv/3dbag
 	encode gzip
 	file_server {
@@ -550,10 +550,10 @@ Adding the bind mount needs a **recreate** (not reload):
 `docker compose up -d --force-recreate caddy`. A DNS record
 `3dbag` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist (Let's Encrypt).
 
-Smoke test: `curl --compressed https://3dbag.garage44.eu/coverage.json`.
+Smoke test: `curl --compressed https://3dbag.cartopolis.org/coverage.json`.
 
 **Client wiring:** the client fetches covered z14 cells from
-`CARTO_3DBAG_URL` (default `https://3dbag.garage44.eu`) and falls back to Overpass
+`CARTO_3DBAG_URL` (default `https://3dbag.cartopolis.org`) and falls back to Overpass
 (OSM) on a 404 — see `osm_buildings.rs`. Attribution
 (`coverage.json.attribution`, CC BY 4.0) is shown in the client.
 
@@ -603,7 +603,7 @@ tile path. No published ports — it is reachable only through Caddy on `geonet`
 and a long `Cache-Control` itself:
 
 ```caddy
-tiles.garage44.eu {
+tiles.cartopolis.org {
 	reverse_proxy tiles:8080
 }
 ```
@@ -613,10 +613,10 @@ A DNS record `tiles` → `<VPS_IPV4>`/`<VPS_IPV6>` must exist for Let's Encrypt.
 Smoke test — a tile is a gzipped protobuf, so check the status and size, not the body:
 
 ```bash
-curl -sI https://tiles.garage44.eu/tiles/osm/14/8490/5319 | head -3
+curl -sI https://tiles.cartopolis.org/tiles/osm/14/8490/5319 | head -3
 ```
 
-**Client wiring:** `https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}` is the default;
+**Client wiring:** `https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}` is the default;
 `CARTO_TILE_URL` overrides it and `CARTO_TILE_FORMAT` forces `vector|raster` when a
 template's kind can't be inferred. A scripted run (`--shot` / `cargo shots`) never
 sees the server handshake that would supply one, which is why `docs/shots.toml` pins

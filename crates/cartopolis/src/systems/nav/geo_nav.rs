@@ -38,7 +38,7 @@ use cartopolis_core::world::tile_to_meters;
 /// Nominatim base URL. Defaults to the project's self-hosted instance (seeded with
 /// the Netherlands extract — see `docs/guides/server.md`). Override with
 /// `CARTO_NOMINATIM_URL`, e.g. the public `https://nominatim.openstreetmap.org`.
-const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.garage44.eu";
+const DEFAULT_NOMINATIM_URL: &str = "https://nominatim.cartopolis.org";
 
 /// Resolve the Nominatim base URL (no trailing slash) from `CARTO_NOMINATIM_URL`,
 /// falling back to the self-hosted default. Callers append `/search`, `/reverse`, …

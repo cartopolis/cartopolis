@@ -23,7 +23,7 @@ Themes connect **vision goals** to **ADRs**. Rows **without** ADRs are **intenti
 | Workspace boundaries | P-05 | P0 | R2 | partial | 015 | |
 | Platform portability & web target | G-09, G-02, P-05 | P1 | R2 | proposed | 030, 033 | 030 = provider/plugin pattern; 033 = standalone + wasm32 targets, phased (Viewer first, no server change) |
 | Public data relay & upstream policy | G-04, P-03, P-05 | P1 | R2 | proposed | 034 | `cartopolis_relay` upstream registry (L0 direct / L1 path-mount / L2 adapter); single origin, shared cache, one UA |
-| Map tile hosting | G-04, P-03 | P1 | R2 | partial | 035 | Self-hosted **vector** tiles (Shortbread MVT); **server live** at `tiles.garage44.eu` (mirror of VersaTiles' 62 GB planet, `versatiles` server in the geo compose stack); client-side styling responds to day/night + weather; overzoom past ~z14 |
+| Map tile hosting | G-04, P-03 | P1 | R2 | partial | 035 | Self-hosted **vector** tiles (Shortbread MVT); **server live** at `tiles.cartopolis.org` (mirror of VersaTiles' 62 GB planet, `versatiles` server in the geo compose stack); client-side styling responds to day/night + weather; overzoom past ~z14 |
 | Layered access & entitlements | G-09, G-05, G-02, P-04 | P1 | R2 | proposed | 031 | Two tiers: **Viewer** (no login) / **Simulation** (login: avatars, prims, editing, chat); + future ACL; server-enforced |
 | Buildings from map data | G-04, P-03 | P1 | R1 | partial | 022, 027 | Overpass extruded footprints; 3DBAG LoD2.2 where covered |
 | Data layers & live feeds | G-04, P-03 | P1 | R1 | partial | 023, 024, 026 | Togglable POI overlays; OVapi departure boards and GTFS-RT vehicles |

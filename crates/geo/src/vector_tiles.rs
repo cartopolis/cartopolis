@@ -2618,7 +2618,7 @@ mod tests {
     use super::*;
 
     /// A real z14 tile over Groningen, from the VersaTiles Shortbread source
-    /// (now self-hosted at tiles.garage44.eu; the archive is identical).
+    /// (now self-hosted at tiles.cartopolis.org; the archive is identical).
     const GRONINGEN_Z14: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/groningen_z14.mvt"
@@ -2708,7 +2708,7 @@ mod tests {
     /// This is the regression the capacity guard caused and the reason it was
     /// reverted: z10 geometry is one huge multi-part coastline, which the walker
     /// scored as a bomb, so the coarse basemap came up with holes in it and
-    /// `refusing the tile` in the log. Real bytes from `tiles.garage44.eu`, kept
+    /// `refusing the tile` in the log. Real bytes from `tiles.cartopolis.org`, kept
     /// as fixtures so a future guard has to pass them before it ships.
     #[test]
     fn low_zoom_tiles_decode() {

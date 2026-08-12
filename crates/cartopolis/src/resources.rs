@@ -966,7 +966,7 @@ impl Default for OsmTileUrlTemplate {
 /// source, e.g. our self-hosted VersaTiles vector basemap (the default already):
 ///
 /// ```text
-/// CARTO_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}
+/// CARTO_TILE_URL=https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
 /// ```
 ///
 /// Vector vs raster is inferred from the template — see `cartopolis_core::tile_source_kind`.

@@ -1882,14 +1882,14 @@ mod tests {
     /// `dump_png` is the manual check for the styling.
     ///
     /// ```text
-    /// CARTO_TILE_URL=https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y} \
+    /// CARTO_TILE_URL=https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y} \
     ///   cargo test -p cartopolis solves_a_real_route -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]
     fn solves_a_real_route() {
         let template = std::env::var("CARTO_TILE_URL")
-            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
+            .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
         // Two points ~1 km apart in the fixture city, by coordinate.
         let from = (53.2194, 6.5665);
         let to = (53.2109, 6.5642);
@@ -1948,7 +1948,7 @@ mod tests {
     #[ignore]
     fn cost_model_bench() {
         let template = std::env::var("CARTO_TILE_URL")
-            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
+            .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
         // Groningen: across the centre, centre→ring road, and a long haul out to
         // the motorway — a residential-grid case, a mixed case and a case that
         // should end up on the trunk network.
@@ -2038,7 +2038,7 @@ mod tests {
     #[ignore]
     fn coarse_zoom_probe() {
         let template = std::env::var("CARTO_TILE_URL")
-            .unwrap_or_else(|_| "https://tiles.garage44.eu/tiles/osm/{z}/{x}/{y}".to_string());
+            .unwrap_or_else(|_| "https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}".to_string());
         let cases: [(&str, (f64, f64), (f64, f64)); 3] = [
             (
                 "Groningen → Assen (26 km)",
