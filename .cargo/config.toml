@@ -51,8 +51,27 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]
 
-[build]
-incremental = true
+# There is deliberately no `[build] incremental` key here.
+#
+# There was one (`incremental = true`, added 2025-12-05), and it was quietly
+# overriding three profiles that ask for the opposite. Cargo resolves a profile's
+# `incremental` setting against `build.incremental` and `CARGO_INCREMENTAL`, and
+# the config value **wins over the manifest** — so `[profile.release] incremental
+# = false`, inherited by `web-release` and `android-release`, was not in force for
+# anything built from this checkout.
+#
+# Two consequences, one per lane. `ci.yml` sets `CARGO_INCREMENTAL: "0"` in its
+# env and was unaffected — and its own comment explains why it must: "sccache
+# cannot cache an incremental compilation and silently declines to". The three
+# workflows that ship artifacts (`release.yml`, `deploy-web.yml`,
+# `deploy-android.yml`) set neither, so every shipped binary, wasm module and APK
+# was built incrementally on top of thin LTO: slower, more fragmented, and
+# uncacheable by any sccache added later.
+#
+# `[profile.dev] incremental = true` in the root Cargo.toml already covers the one
+# case that wants it, which is the edit loop, and it is measured there
+# (docs/notes/client-build-cost.md). Setting it here as well only reaches the
+# profiles that had said no.
 
 [alias]
 # Regenerate the documentation images from the remembered camera positions in
