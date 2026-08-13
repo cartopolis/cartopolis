@@ -628,10 +628,25 @@ pub fn update_map_surfaces(
         // One water material per cell — it carries that cell's shore field, so it
         // cannot be shared the way the flat-colour group materials are. Built once
         // per cell, not per mesh, and dropped with the cell's entities.
-        let water_material = surface_meshes
-            .iter()
-            .any(|m| m.group == SurfaceGroup::Water)
-            .then(|| {
+        //
+        // Only while water shading is *on*. With it off the extension was still
+        // bound and still ran: `update_water_waves` zeroes steepness and foam, but
+        // `waves_at` has no early-out, so every water fragment paid the full
+        // five-octave loop — two `sin`, a `cos` and two `pow` with a non-constant
+        // exponent per octave — and the result was multiplied by zero at the end.
+        // Water is a large share of screen area over a Dutch city, and this is the
+        // most expensive per-pixel shader in the tree.
+        //
+        // Falling through to `None` is all that is needed: the branch below already
+        // hands any group without a bespoke material to the shared flat-colour one,
+        // and `SurfaceGroup::Water` has a palette entry, roughness and depth bias
+        // there like every other group. `palette::WATER` is documented as matched
+        // to the shaded tone precisely so the two can meet without a step.
+        let water_material = (wants.shore
+            && surface_meshes
+                .iter()
+                .any(|m| m.group == SurfaceGroup::Water))
+        .then(|| {
                 let field = shore.map(|f| images.add(water::shore_field_image(&f)));
                 water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
             });
