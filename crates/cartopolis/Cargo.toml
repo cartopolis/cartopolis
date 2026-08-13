@@ -136,6 +136,42 @@ bevy = { workspace = true, features = ["wayland"] }
 tokio.workspace = true
 tokio-util.workspace = true
 ureq.workspace = true
+# TLS to a remote simulator. The desktop and Android clients speak the same
+# `wss://` the browser does, so a password never crosses a network in the clear on
+# any build (`network::Target`).
+#
+# **rustls, deliberately not native-tls.** native-tls means OpenSSL on Linux and
+# Android, and cross-compiling OpenSSL for `aarch64-linux-android` is its own
+# afternoon — the CI target lane runs `cargo check` with nothing but the NDK's
+# clang, and a vendored OpenSSL build script would break it. rustls is pure Rust
+# and needs neither.
+#
+# `webpki-roots` (a compiled-in copy of Mozilla's trust store) rather than
+# `rustls-native-certs`: Android has no `/etc/ssl/certs` to read, and reaching the
+# system store there is a JNI call through `KeyStore` that this tree has no seam
+# for. The cost is that a corporate MITM root or a private CA is not trusted, and
+# the fix for that is an explicit `ws://` address, which is why that escape hatch
+# exists.
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
+# Named directly only to pin the crypto provider, and it has to be pinned.
+#
+# rustls 0.23 has no built-in default: it resolves a process-wide `CryptoProvider`
+# from its own features, and if that is ambiguous — zero providers enabled, or
+# both — it **panics at the first connection** with "Could not automatically
+# determine the process-level CryptoProvider". `tokio-tungstenite`'s
+# `rustls-tls-webpki-roots` does not select one, so this compiles perfectly and
+# then dies the first time anyone signs in. Nothing but running it finds that;
+# it was caught here by connecting to the real deployment, not by CI.
+#
+# `ring` and not `aws-lc-rs`: aws-lc-rs needs cmake and a C toolchain, and the CI
+# target lane checks `aarch64-linux-android` with nothing but the NDK's clang.
+# `network::install_crypto_provider` installs it explicitly anyway, so a future
+# dependency that switches this on cannot silently make it ambiguous again.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # The desktop clipboard. Deliberately *not* under `cfg(not(wasm32))` with the rest:
 # Android is a native target too, and arboard is X11/Wayland/AppKit/Win32 only — it

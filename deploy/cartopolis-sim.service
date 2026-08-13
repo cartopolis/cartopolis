@@ -7,22 +7,33 @@
 # image to and no image to build. Caddy reaches it across the docker0 gateway
 # exactly as it reaches Forgejo (`reverse_proxy 172.17.0.1:3000`).
 #
-# Two listeners, and the split is deliberate:
+# **Nothing here listens on a public interface, and that is the point.** Every
+# client — desktop, Android and browser alike — arrives over `wss://` through
+# Caddy, so a password and a session token are never on a network in the clear.
 #
-#   --listen 0.0.0.0:4747      the desktop and Android clients' TCP wire. Public,
-#                              and plaintext — see the note below.
+#   --listen 127.0.0.1:4747    the TCP wire, loopback only. Kept for the local
+#                              tools that speak it (`--connect 127.0.0.1:4747`
+#                              against a sim on this box) and because solo mode
+#                              uses the same code path. Unreachable from off the
+#                              machine, so its plaintext costs nothing.
 #   --http-listen 172.17.0.1:4748
-#                              the browser's WebSocket carrier (/ws) and the
-#                              account admin API. Bound to the docker0 gateway,
-#                              so it is reachable from Caddy and from nothing
-#                              else; the TLS in front of it is Caddy's.
+#                              the WebSocket carrier (/ws) and the account admin
+#                              API, on the docker0 gateway: reachable from Caddy
+#                              and from nothing else. The TLS in front of it is
+#                              Caddy's, which is also what terminates it for the
+#                              browser — one certificate, one terminator, one
+#                              code path on the server.
 #
-# The plaintext TCP port is a real limitation and is written down rather than
-# hidden: a `--connect` session's password and session token cross the network in
-# the clear. The browser path does not (wss:// through Caddy). Closing it means
-# either TLS in the simulator or pointing desktop clients at the same `wss://`
-# endpoint — the client's `ws_url` already accepts one, so the second is mostly a
-# matter of making it the documented address.
+# This used to be `--listen 0.0.0.0:4747`, published so desktop clients could
+# reach it, with a comment admitting the credentials crossed the network in the
+# clear. The client speaks `wss://` on every target now (`network::resolve_target`
+# resolves a bare hostname to TLS), so the plaintext port had no remaining user
+# and is closed. The address to hand people is `cartopolis.org` — no port, no
+# scheme; the client adds `wss://` and `/ws` itself.
+#
+# If you ever reopen it: the reason not to is that a bare `--connect host:4747`
+# is the *easy* thing to type, so an open port is not an option people weigh, it
+# is the one they take by accident.
 [Unit]
 Description=Cartopolis simulator
 Documentation=https://code.garage44.eu/jeroen/cartopolis
@@ -35,7 +46,7 @@ User=cartosim
 Group=cartosim
 WorkingDirectory=/data/cartopolis/sim
 ExecStart=/data/cartopolis/sim/simulator \
-    --listen 0.0.0.0:4747 \
+    --listen 127.0.0.1:4747 \
     --http-listen 172.17.0.1:4748 \
     --database-path /data/cartopolis/sim/data/world.db
 Restart=always

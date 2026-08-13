@@ -12,9 +12,14 @@ and each has a different audience:
 
 | Address | Who | What |
 |---|---|---|
-| `cartopolis.org:4747` | desktop / Android clients | the TCP wire (ADR-008/009), plaintext |
-| `wss://cartopolis.org/ws` | the browser client | the same wire, one binary WS message per frame |
+| `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
 | `https://web.cartopolis.org` | operators | the account admin GUI (`web/`) |
+
+**There is no plaintext port.** The simulator's TCP listener is bound to
+`127.0.0.1` and its HTTP listener to the docker0 gateway, so nothing it serves is
+reachable from off the machine except through Caddy. The address to give a person
+is `cartopolis.org` — no scheme, no port; `network::resolve_target` turns a bare
+hostname into `wss://cartopolis.org/ws`.
 
 ## One connection loop, two carriers
 
@@ -122,11 +127,6 @@ same reason (ADR-034 calls one origin the fix).
   verified 2026-08-13, `sim.` and a random subdomain both NXDOMAIN — and DNS for
   this zone is not self-serve from this container. Until the record exists, Caddy
   retries the certificate with backoff and the rest of the file is unaffected.
-- **The TCP port is plaintext.** A `--connect` session's password and session
-  token cross the network in the clear; the browser path does not. The client's
-  `ws_url` already accepts an explicit `wss://…` address, so the cheapest fix is
-  to make that the documented address for desktop clients too and stop publishing
-  4747.
 
 ## The CI registry cache could not be shared, and said so in three voices
 
@@ -153,3 +153,37 @@ change — which is exactly when a dependency error reads as "something I just d
 
 **Check the cache before the code.** `ls /data/ci-cache/cargo-registry/src/*/ | wc -l`
 and look for a crate directory without a `.cargo-ok`.
+
+## Every build uses TLS, and opting out takes a scheme
+
+The first cut of this had desktop and Android clients on a public plaintext TCP
+port, with the wire's own auth handshake — a password, and then a session token —
+crossing the network unencrypted. That is now closed: `network::resolve_target`
+maps a bare hostname to `wss://host/ws`, so **the easy thing to type is the
+encrypted one**, and the client reuses the same carrier and the same Caddy
+certificate the browser build already used.
+
+Three rules, and the shape of them matters more than the list:
+
+- a bare host, or an `https://` one → `wss://…/ws`
+- `127.0.0.1` / `localhost` / `::1` / `127.*` → plain TCP
+- `tcp://…` or `ws://…` → exactly that, unencrypted, because you said so
+
+Loopback is exempt on purpose. Solo mode's sim is a listener on this machine that
+this process just started; TLS to it would mean a self-signed certificate and a
+verifier turned off to accept it, which is the *appearance* of security over
+traffic that anything able to read could equally read out of this process's own
+memory. Encryption there would make the code harder to audit and no safer.
+
+The escape hatches exist because two real cases need them — a private CA
+(`webpki-roots` is a compiled-in Mozilla trust store, so a corporate MITM root is
+not in it) and a plaintext dev sim on a LAN. Both require typing a scheme. Nobody
+reaches either by entering a hostname, which is the property
+`a_remote_address_is_always_encrypted` exists to pin.
+
+**rustls, not native-tls.** native-tls is OpenSSL on Linux and Android, and the
+CI target lane checks `aarch64-linux-android` with nothing but the NDK's clang —
+a vendored OpenSSL build script would break the gate that exists to catch exactly
+this kind of dependency. `webpki-roots` over `rustls-native-certs` for the
+matching reason: Android has no `/etc/ssl/certs`, and its trust store is a JNI
+call this tree has no seam for.
