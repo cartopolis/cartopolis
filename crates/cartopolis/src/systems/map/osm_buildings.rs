@@ -539,6 +539,15 @@ const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
 /// `lod22`'s cap because these meshes are the simplified tier and far cheaper.
 const MAX_FAR_DESPAWNS_PER_FRAME: usize = 6;
 
+/// Far cells *built* per frame — the other half of the guard above, which the
+/// despawn side has had all along and the build side did not.
+///
+/// Two rather than `lod22`'s one, for the same reason the despawn cap is six:
+/// these are the simplified tier, one merged extrusion plus a few window meshes,
+/// where a LoD2.2 cell is a full triangle soup. `Budget::per_frame` halves it to
+/// one on the phone.
+const MAX_FAR_BUILDS_PER_FRAME: usize = 2;
+
 /// An emissive window mesh; the value is its brightness multiplier (0 = never lit),
 /// scaled by the night factor in `update_window_glow`.
 #[derive(Component)]
@@ -1034,14 +1043,34 @@ pub fn update_buildings(
                 .detach();
         }
 
-        // Apply completed cells.
-        let done: Vec<(bool, ((i64, i64), Result<Option<FarCellBuild>, String>))> = osm
+        // Apply completed cells, at most `MAX_FAR_BUILDS_PER_FRAME` of them.
+        //
+        // This drain was uncapped, and it is the one hole left in the guard every
+        // other streamer in this tree has. Both lanes run four in flight, so a
+        // ring filling after a re-anchor could land **eight merged building meshes
+        // plus their window meshes in a single frame** — which is precisely the
+        // burst shape the module doc blames for `VK_ERROR_DEVICE_LOST` on a weak
+        // iGPU, and the reason `lod22`, `map_stream`, `map_geometry` and `globe`
+        // each have a cap already.
+        let mut done: Vec<(bool, ((i64, i64), Result<Option<FarCellBuild>, String>))> = osm
             .far
             .take_results()
             .into_iter()
             .map(|r| (false, r))
             .chain(osm.far_tdbag.take_results().into_iter().map(|r| (true, r)))
             .collect();
+        let cap = crate::quality::budget().per_frame(MAX_FAR_BUILDS_PER_FRAME);
+        let deferred = done.split_off(done.len().min(cap));
+        // Each deferred result goes back to the lane it came from — they are two
+        // independent `CellStream`s, and a result returned to the wrong one would
+        // release a concurrency slot that was never taken while holding one that
+        // was, which drifts both lanes' in-flight counts apart for the run.
+        let (tdbag_deferred, osm_deferred): (Vec<_>, Vec<_>) =
+            deferred.into_iter().partition(|(tdbag, _)| *tdbag);
+        osm.far
+            .defer(osm_deferred.into_iter().map(|(_, r)| r).collect());
+        osm.far_tdbag
+            .defer(tdbag_deferred.into_iter().map(|(_, r)| r).collect());
         for (tdbag, (cell, built)) in done {
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
