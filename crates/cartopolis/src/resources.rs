@@ -216,19 +216,23 @@ pub enum QualityPreset {
     /// `quality::Budget::phone` — everything that costs fill or main-thread time,
     /// off or halved.
     Low,
+    /// `quality::Budget::balanced` — the scene's shape kept, its per-pixel and
+    /// per-frame overhead given up.
+    Medium,
     /// `quality::Budget::desktop` — the settings the rest of the client is tuned
     /// against.
     High,
 }
 
 impl QualityPreset {
-    pub const ALL: [Self; 3] = [Self::Auto, Self::Low, Self::High];
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Low, Self::Medium, Self::High];
 
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Auto => "Automatic",
             Self::Low => "Battery saver",
+            Self::Medium => "Balanced",
             Self::High => "Full detail",
         }
     }
@@ -242,6 +246,7 @@ impl QualityPreset {
         match self {
             Self::Auto => None,
             Self::Low => Some("phone"),
+            Self::Medium => Some("balanced"),
             Self::High => Some("desktop"),
         }
     }
@@ -1094,6 +1099,7 @@ mod tests {
     fn the_quality_preset_speaks_the_tier_vocabulary() {
         assert_eq!(QualityPreset::Auto.as_env_word(), None);
         assert_eq!(QualityPreset::Low.as_env_word(), Some("phone"));
+        assert_eq!(QualityPreset::Medium.as_env_word(), Some("balanced"));
         assert_eq!(QualityPreset::High.as_env_word(), Some("desktop"));
     }
 }

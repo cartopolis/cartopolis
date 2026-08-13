@@ -49,14 +49,28 @@ use bevy::math::{UVec2, UVec3};
 use bevy::render::view::Msaa;
 
 /// Which class of machine this run is being asked to render on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// **Ordered**, and the order is the point: `Phone < Balanced < Desktop`, so a
+/// tier can be compared rather than matched. Code that wants "at least this much
+/// machine" writes `budget().tier >= Tier::Balanced` and keeps working when a rung
+/// is added, where a `match` on two variants had to be revisited. Progressive
+/// enhancement needs a ladder, not a pair of special cases.
+///
+/// The rungs are deliberately few. Every one of them is a combination somebody has
+/// to be able to reason about — and, more to the point, a combination nobody can
+/// test on hardware they do not own.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Tier {
-    /// A workstation or laptop GPU: the settings the rest of this codebase was
-    /// tuned against.
-    Desktop,
     /// A handset. Assume a tiled mobile GPU behind a high-DPI screen and a single
     /// thread for everything the CPU does.
     Phone,
+    /// An integrated GPU, a thin laptop, or a handset good enough to want more
+    /// than the floor: the scene as designed, minus the things that cost fill
+    /// rather than shape.
+    Balanced,
+    /// A workstation or laptop GPU: the settings the rest of this codebase was
+    /// tuned against.
+    Desktop,
 }
 
 /// The render budget for this run. Every field is a thing that measurably costs
@@ -229,6 +243,44 @@ impl Budget {
         }
     }
 
+    /// The middle rung: keep the scene's *shape*, give up what costs fill.
+    ///
+    /// The split is deliberate and is the whole reason this tier is worth having
+    /// rather than being a second phone preset. What survives is everything that
+    /// decides what the world looks like — the detail layers (trees, furniture,
+    /// street labels, textured roads, water shading), the full streaming radii, the
+    /// undivided per-frame budgets and the full-resolution tile raster. What goes
+    /// is the per-pixel and per-frame overhead: MSAA on a target that is already
+    /// `Rgba16Float`, the every-frame sky IBL bake and its mip chain, the
+    /// full-size atmosphere LUTs, and the space tier's full-screen ray march.
+    ///
+    /// Shadows and bloom stay. They are the two things whose absence reads as a
+    /// different scene rather than a softer one — an unshadowed city looks flat and
+    /// wrong, not cheaper — and a machine that cannot afford them belongs on
+    /// [`Self::phone`], which is one step down and says so.
+    pub(crate) const fn balanced() -> Self {
+        Self {
+            tier: Tier::Balanced,
+            shadows: true,
+            bloom: true,
+            // The one bake that happens *every frame*, plus its mip chain. Its
+            // contribution is low-frequency ambient light, which is the least
+            // missed thing on this list.
+            sky_ibl: false,
+            detail_layers: true,
+            radius_bias: 0,
+            per_frame_divisor: 1,
+            worker_cap: None,
+            // Not `Sample2`: see the field's own comment. Only 1 and 4 are
+            // portable, and 4 on an HDR target is precisely the cost this tier
+            // exists to avoid — so this rung is the one that gives up edges.
+            msaa: Msaa::Off,
+            atmosphere_luts: AtmosphereLuts::halved(),
+            space_raymarch: false,
+            tile_px: crate::systems::vector_tiles::TILE_PX,
+        }
+    }
+
     /// Everything that costs fill or main-thread time, off or halved.
     ///
     /// This is not a gentle preset and is not meant to be one: the brief it was
@@ -349,6 +401,7 @@ fn detect(preferred: Option<&str>) -> Budget {
 fn parse(value: &str) -> Option<Budget> {
     match value.trim().to_ascii_lowercase().as_str() {
         "phone" | "low" | "mobile" => Some(Budget::phone()),
+        "balanced" | "medium" => Some(Budget::balanced()),
         "desktop" | "high" => Some(Budget::desktop()),
         _ => None,
     }
@@ -363,6 +416,7 @@ fn auto() -> Budget {
     // changes nothing.
     match html_quality_attr().as_deref() {
         Some("phone") => Budget::phone(),
+        Some("balanced") => Budget::balanced(),
         _ => Budget::desktop(),
     }
 }
@@ -422,13 +476,75 @@ mod tests {
         for word in ["phone", "low", "mobile", "PHONE", " Low "] {
             assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Phone), "{word}");
         }
+        for word in ["balanced", "medium", "Balanced", "MEDIUM", " medium "] {
+            assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Balanced), "{word}");
+        }
         for word in ["desktop", "high", "Desktop", "HIGH"] {
             assert_eq!(parse(word).map(|b| b.tier), Some(Tier::Desktop), "{word}");
         }
         // Unrecognised is `None`, not a silent tier: `detect` warns and falls
         // through to auto-detection rather than pretending a typo meant one.
-        for word in ["", "phones", "medium", "1"] {
+        for word in ["", "phones", "mid", "1"] {
             assert!(parse(word).is_none(), "{word} should not name a tier");
+        }
+    }
+
+    /// The ladder has to be a ladder: each rung at least as cheap as the one above
+    /// it, on every field where "cheaper" is even defined.
+    ///
+    /// Without this, a tier is just a struct literal somebody typed, and a middle
+    /// rung that accidentally asked for *more* than Desktop on one field would be
+    /// found by a user on the hardware least able to afford it. The ordering on
+    /// [`Tier`] is what lets this be written as a loop instead of a pile of pairs.
+    #[test]
+    fn every_rung_costs_no_more_than_the_one_above_it() {
+        let rungs = [Budget::phone(), Budget::balanced(), Budget::desktop()];
+        for pair in rungs.windows(2) {
+            let (lower, upper) = (pair[0], pair[1]);
+            assert!(
+                lower.tier < upper.tier,
+                "{:?} must sort below {:?}",
+                lower.tier,
+                upper.tier
+            );
+            let name = format!("{:?} vs {:?}", lower.tier, upper.tier);
+            assert!(!lower.shadows || upper.shadows, "shadows: {name}");
+            assert!(!lower.bloom || upper.bloom, "bloom: {name}");
+            assert!(!lower.sky_ibl || upper.sky_ibl, "sky_ibl: {name}");
+            assert!(
+                !lower.detail_layers || upper.detail_layers,
+                "detail_layers: {name}"
+            );
+            assert!(!lower.space_raymarch || upper.space_raymarch, "raymarch: {name}");
+            assert!(lower.tile_px <= upper.tile_px, "tile_px: {name}");
+            assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
+            // A bigger bias is a *smaller* ring, and a bigger divisor a smaller
+            // per-frame budget — both invert.
+            assert!(lower.radius_bias >= upper.radius_bias, "radius: {name}");
+            assert!(
+                lower.per_frame_divisor >= upper.per_frame_divisor,
+                "per_frame: {name}"
+            );
+            assert!(
+                lower.atmosphere_luts.sky_view.cmple(upper.atmosphere_luts.sky_view).all(),
+                "atmosphere LUTs: {name}"
+            );
+        }
+    }
+
+    /// Only 1× and 4× are portable (see `Budget::msaa`), so **no** rung may ask for
+    /// anything else — not just the phone. A middle tier that quietly asked for 2×
+    /// would render nothing at all on an adapter that refuses it, and the only
+    /// console output would be `CommandQueue has un-applied commands`.
+    #[test]
+    fn no_rung_asks_for_an_unportable_sample_count() {
+        for budget in [Budget::phone(), Budget::balanced()] {
+            assert!(
+                matches!(budget.msaa, Msaa::Off | Msaa::Sample4),
+                "{:?} asks for {}× MSAA; only 1 and 4 are guaranteed",
+                budget.tier,
+                budget.msaa.samples()
+            );
         }
     }
 
