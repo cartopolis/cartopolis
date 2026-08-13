@@ -664,6 +664,14 @@ enum Permission {
 /// the GameActivity/Gradle move the note already names as the trigger for taking on
 /// Java at all. There is no third option that stays dex-free.
 fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
+    // Breadcrumbs, one per stage, and they earn their place: this worker is
+    // reached by tapping *Drive*, which is also the first thing in the app's life
+    // that raises a system dialog — and a phone that freezes at that moment
+    // offers no other way to tell "the JNI call threw", "the user is still
+    // looking at the dialog", "no provider is on" and "we never came back from
+    // being backgrounded" apart. There is no cable and no debugger; the log
+    // excerpt the crash reporter shares on the next launch is the instrument.
+    tracing::info!("location worker starting");
     let java_vm = vm()?;
     // Attached for the thread's whole life and detached by dropping this guard on
     // the way out. Per-call attach/detach would be the dominant cost of a 1 Hz
@@ -779,6 +787,17 @@ fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
             let age_ns = now.saturating_sub(reading.nanos).max(0) as u128;
             let fresh_enough = published || age_ns < FIRST_FIX_MAX_AGE.as_nanos();
             if reading.nanos > last_nanos && fresh_enough {
+                if !published {
+                    // The one line that separates "the receiver is still cold"
+                    // from "the cache our poll reads is per-client after all",
+                    // which is the load-bearing inference in this file's design
+                    // (see `run_location`) and the thing a device has to settle.
+                    tracing::info!(
+                        accuracy_m = reading.fix.accuracy_m,
+                        age_ms = (age_ns / 1_000_000) as u64,
+                        "first location fix"
+                    );
+                }
                 last_nanos = reading.nanos;
                 published = true;
                 report(slot, Ok(reading.fix));
@@ -821,8 +840,14 @@ fn settle_permission(
     cancel: &AtomicBool,
 ) -> Result<Permission, Fail> {
     if permission_granted(env, activity)? {
+        tracing::info!("location permission already granted");
         return Ok(Permission::Granted);
     }
+    // The dialog backgrounds the activity. That is expected and is why this line
+    // is here: a freeze that follows it is a *lifecycle* failure, not a location
+    // one, and the two are indistinguishable without knowing whether we ever
+    // asked (see `quiesce_while_backgrounded`, which logs the other half).
+    tracing::info!("asking for the location permission — the system dialog is about to appear");
     request_permission(env, activity)?;
     // **Polling, because the answer is unreachable.** The result arrives at
     // `Activity.onRequestPermissionsResult`, which is a Java method we would have
@@ -831,14 +856,22 @@ fn settle_permission(
     // gets the same information a callback would, a beat later. The user may sit on
     // the dialog, or wander into Settings, hence two minutes rather than seconds.
     let steps = PERMISSION_WAIT.as_millis() / 500;
-    for _ in 0..steps {
+    for step in 0..steps {
         if !nap(cancel, Duration::from_millis(500)) {
+            tracing::info!("location watch dropped while the permission dialog was up");
             return Ok(Permission::Cancelled);
         }
         if permission_granted(env, activity)? {
+            // `as u64`: `tracing`'s field values do not cover `u128`, which is
+            // what `Duration::as_millis` arithmetic produces.
+            tracing::info!(
+                waited_ms = ((step + 1) * 500) as u64,
+                "location permission granted"
+            );
             return Ok(Permission::Granted);
         }
     }
+    tracing::info!("location permission never granted — giving up");
     Ok(Permission::Denied)
 }
 

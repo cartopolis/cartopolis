@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -430,3 +430,48 @@ Still unknown, in the order a device answers them: whether the surface survives 
 first resume, whether the asset load fits in memory, and what the sky looks like on
 a phone that has no atmosphere to draw. Nothing below the renderer is in doubt any
 more.
+
+## The first freeze: it happens when driver mode asks for GPS (2026-08-13)
+
+Reported from the device: tapping **Drive** hangs the app, and the system's
+location indicator comes on. Unresolved — no log yet — but the shape of it is
+worth writing down, because the obvious reading and the likely one are different.
+
+The obvious reading is that the location code hangs. It is the one thing that is
+new on that tap, and it does the only two questionable things in this file: it
+runs `Activity.requestPermissions` from a thread the framework did not intend
+(see the note on that function), and it polls `getLastKnownLocation` at 1 Hz
+across JNI. Neither can block the render thread: the worker is a detached thread
+of our own, and everything it shares with Bevy is a `Mutex<Option<…>>` held for
+the length of a move.
+
+The likely reading is the one the section above already listed as the next
+unknown: **whether the surface survives the first resume.** A runtime permission
+dialog is another activity on top of ours — the activity pauses, the native
+window is destroyed and (on dismissal) recreated. Nothing in this app's life
+does that until the moment the user taps Drive, because it is the only runtime
+permission the client asks for. So "it freezes when GPS starts" and "it freezes
+the first time it is backgrounded" are the *same event* on this build, and they
+are indistinguishable from the outside.
+
+Two log lines now separate them, both `INFO`, both in the tail the crash reporter
+shares on the next launch:
+
+- `asking for the location permission — the system dialog is about to appear`
+  (`platform::android::settle_permission`), plus `location permission granted`
+  with the wait, `location worker starting`, the provider list, and `first
+  location fix` with its accuracy and age.
+- `app lifecycle` for every `AppLifecycle` Bevy emits (`quiesce_while_backgrounded`).
+
+The reading is then mechanical. `WillSuspend`/`Suspended` with no `WillResume`
+after it is a lifecycle failure and has nothing to do with location — take it to
+the surface-recreation path and reproduce it with the Home button, which needs no
+permission and no route. Lifecycle events that come back cleanly while the
+location lines stop, or never appear, points back here. And if the GPS indicator
+is on but no `first location fix` line ever lands, that is the per-provider cache
+inference in `run_location` failing, which is the fallback this file names.
+
+**Repro instructions for whoever has the device**: reproduce the hang, force-stop
+the app, then open it again — the previous run's report plus the log tail goes to
+the share sheet on launch (`offer_last_crash`). The Home-button test above is the
+cheaper half and worth doing first.

@@ -2642,6 +2642,14 @@ fn quiesce_while_backgrounded(
     #[cfg(not(target_os = "android"))]
     let _ = exits.read().next();
     for event in lifecycle.read() {
+        // Logged, and not only for tidiness: on the phone this is the one record
+        // of the app having left the screen and come back. Anything that puts a
+        // system dialog up — the runtime location permission is the first one
+        // this client ever asks for — backgrounds the activity and destroys its
+        // surface, so "did it suspend, and did it resume" is the first question
+        // to ask of a freeze that follows a permission prompt, and the answer
+        // is otherwise unrecoverable from a device with no cable attached.
+        tracing::info!(?event, "app lifecycle");
         match event {
             bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
                 platform::workers::set_paused(true);
