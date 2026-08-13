@@ -8,6 +8,15 @@ use std::path::Path;
 pub struct SimConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// HTTP listener for the browser transport (`/ws`) and the account admin API
+    /// (`/api/admin/*`), or `None` for none.
+    ///
+    /// Off by default, so solo mode and every existing test get exactly the TCP
+    /// listener they had. A deployment turns it on; the listener it wants is a
+    /// loopback or docker-gateway address, because it speaks plain HTTP and the
+    /// TLS in front of it is Caddy's.
+    #[serde(default)]
+    pub http_listen: Option<String>,
     #[serde(default = "default_db")]
     pub database_path: String,
     #[serde(default = "default_tick_hz")]
@@ -50,6 +59,7 @@ impl Default for SimConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
+            http_listen: None,
             database_path: default_db(),
             tick_hz: default_tick_hz(),
             aoi_radius: default_aoi(),
@@ -74,6 +84,9 @@ impl SimConfig {
     pub fn apply_cli(&mut self, cli: &super::cli::SimCli) {
         if let Some(ref v) = cli.listen {
             self.listen.clone_from(v);
+        }
+        if let Some(ref v) = cli.http_listen {
+            self.http_listen = Some(v.clone());
         }
         if let Some(ref v) = cli.database_path {
             self.database_path.clone_from(v);

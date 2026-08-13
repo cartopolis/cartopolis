@@ -102,6 +102,177 @@ pub fn lookup_account(conn: &Connection, username: &str) -> anyhow::Result<Optio
     Ok(row.and_then(|(id, hash)| Uuid::parse_str(&id).ok().map(|id| (id, hash))))
 }
 
+/// One account as the admin API reports it. Deliberately carries no `pw_hash`:
+/// this type crosses into JSON, and the one field that must never do that is the
+/// one a `SELECT *` would have brought along for free.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountRow {
+    pub id: String,
+    pub username: String,
+    pub disabled: bool,
+    pub admin: bool,
+    pub created_at: String,
+}
+
+/// Every account, oldest first. The store is a few hundred rows at most, so this
+/// is deliberately unpaginated — a page cursor here would be a guess at a problem
+/// nobody has.
+pub fn list_accounts(conn: &Connection) -> anyhow::Result<Vec<AccountRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, username, disabled, admin, created_at FROM accounts ORDER BY created_at, username",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(AccountRow {
+                id: r.get(0)?,
+                username: r.get(1)?,
+                disabled: r.get::<_, i64>(2)? != 0,
+                admin: r.get::<_, i64>(3)? != 0,
+                created_at: r.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// One account by principal id.
+pub fn get_account(conn: &Connection, id: &str) -> anyhow::Result<Option<AccountRow>> {
+    let row = conn
+        .query_row(
+            "SELECT id, username, disabled, admin, created_at FROM accounts WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(AccountRow {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    disabled: r.get::<_, i64>(2)? != 0,
+                    admin: r.get::<_, i64>(3)? != 0,
+                    created_at: r.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// Whether this principal may administer accounts.
+///
+/// Read per request rather than carried in the session, so revoking the flag (or
+/// disabling the account) takes effect on the admin's *next* call instead of
+/// whenever their token happens to expire. `disabled = 0` is part of the test for
+/// the same reason: a disabled admin is not an admin.
+pub fn is_admin(conn: &Connection, principal: Uuid) -> anyhow::Result<bool> {
+    let admin: Option<i64> = conn
+        .query_row(
+            "SELECT admin FROM accounts WHERE id = ?1 AND disabled = 0",
+            [principal.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(admin.unwrap_or(0) != 0)
+}
+
+/// Create an account, optionally as an admin. Fails if the username is taken.
+pub fn create_account_with_role(
+    conn: &Connection,
+    username: &str,
+    password: &str,
+    admin: bool,
+) -> anyhow::Result<Uuid> {
+    let id = Uuid::new_v4();
+    let hash = hash_password(password)?;
+    conn.execute(
+        "INSERT INTO accounts (id, username, pw_hash, admin) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id.to_string(), username, hash, i64::from(admin)],
+    )
+    .context("insert account")?;
+    Ok(id)
+}
+
+/// Replace an account's password.
+pub fn set_password(conn: &Connection, id: &str, password: &str) -> anyhow::Result<bool> {
+    let hash = hash_password(password)?;
+    let n = conn.execute(
+        "UPDATE accounts SET pw_hash = ?2 WHERE id = ?1",
+        rusqlite::params![id, hash],
+    )?;
+    Ok(n > 0)
+}
+
+/// Enable or disable an account. A disabled account cannot log in and cannot
+/// administer, but an already-connected session survives — sessions are held in
+/// memory and are not indexed by principal, so this is a gate on the *next*
+/// handshake. Kicking a live player is [`Sessions::revoke`]'s job and needs the
+/// token.
+pub fn set_disabled(conn: &Connection, id: &str, disabled: bool) -> anyhow::Result<bool> {
+    let n = conn.execute(
+        "UPDATE accounts SET disabled = ?2 WHERE id = ?1",
+        rusqlite::params![id, i64::from(disabled)],
+    )?;
+    Ok(n > 0)
+}
+
+/// Grant or revoke the admin flag.
+pub fn set_admin(conn: &Connection, id: &str, admin: bool) -> anyhow::Result<bool> {
+    let n = conn.execute(
+        "UPDATE accounts SET admin = ?2 WHERE id = ?1",
+        rusqlite::params![id, i64::from(admin)],
+    )?;
+    Ok(n > 0)
+}
+
+/// Delete an account outright.
+pub fn delete_account(conn: &Connection, id: &str) -> anyhow::Result<bool> {
+    let n = conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
+    Ok(n > 0)
+}
+
+/// How many enabled admins exist.
+///
+/// The guard behind every destructive admin operation: deleting, disabling or
+/// demoting the last one leaves a running server nobody can administer, and the
+/// only repair is shell access to the box. Refusing is recoverable; locking
+/// everyone out is not.
+pub fn enabled_admin_count(conn: &Connection) -> anyhow::Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM accounts WHERE admin = 1 AND disabled = 0",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Create the account if absent, then make it an admin and reset its password.
+///
+/// The bootstrap path (`simulator --create-admin`), and idempotent on purpose: a
+/// deploy script that runs it every time should converge rather than fail the
+/// second time, and an operator locked out by a forgotten password should be able
+/// to run the same command to get back in.
+pub fn ensure_admin_account(
+    conn: &Connection,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<Uuid> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM accounts WHERE username = ?1",
+            [username],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = match existing {
+        Some(raw) => {
+            let hash = hash_password(password)?;
+            conn.execute(
+                "UPDATE accounts SET pw_hash = ?2, admin = 1, disabled = 0 WHERE id = ?1",
+                rusqlite::params![raw, hash],
+            )?;
+            Uuid::parse_str(&raw).context("stored principal is not a uuid")?
+        }
+        None => create_account_with_role(conn, username, password, true)?,
+    };
+    Ok(id)
+}
+
 /// Concurrent argon2 verifies allowed across the process.
 ///
 /// Each one is ~19 MiB of scratch memory and a core's worth of work for tens of
@@ -292,10 +463,117 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, \
              pw_hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, \
-             created_at TEXT NOT NULL DEFAULT (datetime('now')));",
+             created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+             admin INTEGER NOT NULL DEFAULT 0);",
         )
         .unwrap();
         conn
+    }
+
+    /// The flag is off unless someone grants it, and reading it goes through the
+    /// database every time — which is what makes revoking take effect at once.
+    #[test]
+    fn admin_is_off_by_default_and_revocable() {
+        let conn = mem_db();
+        let id = ensure_account(&conn, "player", "secret").unwrap();
+        assert!(
+            !is_admin(&conn, id).unwrap(),
+            "a new account is not an admin"
+        );
+
+        set_admin(&conn, &id.to_string(), true).unwrap();
+        assert!(is_admin(&conn, id).unwrap());
+
+        set_admin(&conn, &id.to_string(), false).unwrap();
+        assert!(!is_admin(&conn, id).unwrap());
+    }
+
+    /// A disabled admin is not an admin. The API reads this on every request, so
+    /// disabling an account is also how you take its admin rights away *now*
+    /// rather than when its token expires.
+    #[test]
+    fn a_disabled_admin_cannot_administer() {
+        let conn = mem_db();
+        let id = ensure_admin_account(&conn, "root", "hunter22").unwrap();
+        assert!(is_admin(&conn, id).unwrap());
+        assert_eq!(enabled_admin_count(&conn).unwrap(), 1);
+
+        set_disabled(&conn, &id.to_string(), true).unwrap();
+        assert!(!is_admin(&conn, id).unwrap());
+        assert_eq!(
+            enabled_admin_count(&conn).unwrap(),
+            0,
+            "a disabled admin must not count towards the last-admin guard"
+        );
+    }
+
+    /// `--create-admin` is run by a deploy script, so running it twice must
+    /// converge rather than fail — and it doubles as the way back in after a
+    /// forgotten password.
+    #[test]
+    fn ensure_admin_is_idempotent_and_resets_the_password() {
+        let conn = mem_db();
+        let first = ensure_admin_account(&conn, "root", "firstpass").unwrap();
+        let again = ensure_admin_account(&conn, "root", "secondpass").unwrap();
+        assert_eq!(first, again, "the principal must be stable across repairs");
+
+        assert_eq!(
+            verify_credentials(&conn, "root", "secondpass").unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            verify_credentials(&conn, "root", "firstpass").unwrap(),
+            None
+        );
+    }
+
+    /// Promoting an existing, disabled player re-enables them — otherwise the
+    /// repair path hands back an admin who still cannot log in.
+    #[test]
+    fn ensure_admin_reenables_a_disabled_account() {
+        let conn = mem_db();
+        let id = ensure_account(&conn, "root", "somepass").unwrap();
+        set_disabled(&conn, &id.to_string(), true).unwrap();
+
+        let repaired = ensure_admin_account(&conn, "root", "newpass12").unwrap();
+        assert_eq!(repaired, id);
+        let row = get_account(&conn, &id.to_string()).unwrap().unwrap();
+        assert!(row.admin && !row.disabled);
+    }
+
+    /// The listing is what the GUI renders, and the one column it must never
+    /// carry is the hash.
+    #[test]
+    fn listing_accounts_reports_roles_and_no_secrets() {
+        let conn = mem_db();
+        ensure_admin_account(&conn, "root", "adminpass").unwrap();
+        let player = ensure_account(&conn, "player", "playerpw").unwrap();
+        set_disabled(&conn, &player.to_string(), true).unwrap();
+
+        let rows = list_accounts(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(
+            !json.contains("$argon2"),
+            "a password hash reached the API surface: {json}"
+        );
+
+        let root = rows.iter().find(|r| r.username == "root").unwrap();
+        assert!(root.admin && !root.disabled);
+        let player = rows.iter().find(|r| r.username == "player").unwrap();
+        assert!(!player.admin && player.disabled);
+    }
+
+    #[test]
+    fn deleting_an_account_removes_it() {
+        let conn = mem_db();
+        let id = ensure_account(&conn, "gone", "somepass").unwrap();
+        assert!(delete_account(&conn, &id.to_string()).unwrap());
+        assert!(get_account(&conn, &id.to_string()).unwrap().is_none());
+        assert!(
+            !delete_account(&conn, &id.to_string()).unwrap(),
+            "deleting a missing account should report that it did nothing"
+        );
     }
 
     #[test]

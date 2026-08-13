@@ -228,11 +228,19 @@ impl SessionState {
     }
 }
 
-/// True when this build can run a sim at all. The web build is the Phase-1 viewer
-/// (ADR-031/033) and an Android/lean build may be compiled without `solo`, so the
-/// sign-in screen asks before offering the choice rather than failing at the click.
+/// True when this build can reach a simulator at all.
+///
+/// Every build can, now. It was false on the web while that build had no
+/// transport (ADR-031/033) — the sign-in screen's "Connect to a server" row was
+/// greyed out with that as the reason. The browser has a WebSocket carrier since
+/// this became true (`systems::ws_transport`), so the row is live everywhere.
+///
+/// Kept as a function rather than deleted along with its call sites: what it
+/// answers is "can this build reach a sim", and the honest answer today is yes
+/// everywhere. If a target ever appears where that stops being true, this is
+/// where it says so — and the two call sites already read correctly.
 pub const fn can_simulate() -> bool {
-    !cfg!(target_arch = "wasm32")
+    true
 }
 
 pub const fn can_solo() -> bool {

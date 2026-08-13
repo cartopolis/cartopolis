@@ -1,0 +1,18 @@
+# Restart the simulator when CI publishes a new binary.
+#
+# Installed at /etc/systemd/system/cartopolis-sim-reload.path.
+#
+# The deploy job runs inside a container on the Forgejo runner and has no way to
+# call `systemctl` on the host — nor should it, since that would mean handing a CI
+# job the host's init system. So the job writes the binary and then touches
+# `restart.stamp`, and this watches for that. The privilege stays on the host and
+# the job's authority is exactly "may write these files", which it already had.
+[Unit]
+Description=Watch for a freshly published simulator binary
+
+[Path]
+PathModified=/data/cartopolis/sim/restart.stamp
+Unit=cartopolis-sim-reload.service
+
+[Install]
+WantedBy=multi-user.target

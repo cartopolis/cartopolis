@@ -1,0 +1,86 @@
+name: Deploy simulator
+
+# Build the headless simulator and publish it to the host that runs it.
+#
+# **Manual, unlike the admin site.** The simulator is a live service with people
+# connected to it, and publishing restarts it — every session drops and every
+# client falls back to offline (`session::teardown` is written for exactly this,
+# but a drop is still a drop). A README typo on `main` is not a reason for that.
+# The web client's own deploy job is manual for a related reason and says so.
+#
+#   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+#     -d '{"ref":"main"}' \
+#     "$FORGEJO_API/repos/$FORGEJO_REPO/actions/workflows/deploy-sim.yml/dispatches"
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+  CARGO_INCREMENTAL: "0"
+  # Same reasoning as ci.yml: capacity 2 on an 8-core box shared with nominatim
+  # and overpass.
+  CARGO_BUILD_JOBS: "3"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_DIR: /sccache
+  SCCACHE_CACHE_SIZE: 20G
+
+jobs:
+  deploy-sim:
+    name: build & publish the simulator
+    runs-on: ubuntu-latest
+    container:
+      image: cartopolis-ci:latest
+      # `/data/cartopolis/sim` is where the systemd unit reads the binary from,
+      # and it has to be in the runner's `valid_volumes` or this mount is refused.
+      options: >-
+        --volume /data/cartopolis/sim:/publish
+        --volume /data/ci-cache/sccache:/sccache
+        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+    steps:
+      # No `lfs: true`. Unlike every other job in this directory, the simulator
+      # embeds no assets at all — it holds no map data and never will — so the LFS
+      # objects are ~200 MB of fetch for a binary that does not reference one.
+      - uses: actions/checkout@v4
+
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          key: simulator-release
+
+      # Release rather than dev: this is a server that runs for weeks, and the
+      # workspace's `release` profile is fat LTO over one codegen unit. It fits
+      # here where it does not for the client (`android-release` exists because
+      # that link OOMs) — the simulator has no Bevy under it.
+      - name: Build
+        run: cargo build -p cartopolis_simulator --bin simulator --release
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      # Prove the binary runs *before* it replaces the one currently serving
+      # people. `--create-admin` against a throwaway database exercises the whole
+      # startup path — config, SQLite open, every migration including the new
+      # `admin` column — and exits. A binary that cannot migrate is the one
+      # failure that would otherwise take the service down and keep it down,
+      # because `Restart=always` would then restart it into the same error
+      # forever.
+      - name: Smoke-test the binary
+        run: |
+          CARTO_ADMIN_PASSWORD=smoke-test-not-a-real-password \
+            ./target/release/simulator \
+              --database-path /tmp/smoke/world.db \
+              --create-admin smoketest
+          echo "startup + migrations ok"
+
+      # Written to a temporary name and moved into place: a copy that is
+      # interrupted half-way leaves a truncated file, and `Restart=always` would
+      # then loop on it. `mv` within one filesystem is atomic.
+      - name: Publish
+        run: |
+          install -m 0755 target/release/simulator /publish/simulator.new
+          mv /publish/simulator.new /publish/simulator
+          # The signal that `cartopolis-sim-reload.path` is watching for. Last,
+          # so the restart can never race the copy.
+          date -u +%FT%TZ > /publish/restart.stamp
+          echo "published $(du -h /publish/simulator | cut -f1) — restart requested"

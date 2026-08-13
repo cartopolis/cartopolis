@@ -49,6 +49,10 @@ unused = "deny"
 [workspace.dependencies]
 anyhow = "1.0"
 approx = "0.5"
+# The simulator's HTTP surface: the browser transport (`/ws`) and the account
+# admin API, on one listener. Only `cartopolis_simulator` depends on it — the
+# client never does, so this costs the Bevy build nothing.
+axum = { version = "0.8", features = ["ws"] }
 # Password hashing for server-side auth (ADR-016). `std` enables OsRng via
 # password-hash/getrandom (salt + session-token generation).
 argon2 = { version = "0.5", features = ["std"] }

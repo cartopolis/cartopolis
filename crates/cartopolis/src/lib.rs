@@ -1047,12 +1047,15 @@ fn run_client() {
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
     let mut screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
-    // `can_simulate` is the web build (ADR-031/033): it is the Phase-1 viewer and
-    // has no transport to a sim at all, so its session is Offline and there is
-    // nothing to ask about. Without this a remembered solo session — which is the
-    // *default* — would try to start a sim that cannot exist there and greet every
-    // first-time web visitor with a failure card.
-    if !(cli.offline || scripted || !systems::session::can_simulate()) {
+    // The web build used to be excluded here outright — it was the Phase-1 viewer
+    // with no transport to a sim at all. It has one now (a WebSocket carrier), so
+    // it takes this path like any other build. What it still cannot do is *solo*:
+    // that needs an in-process sim and a bundled SQLite, so `can_solo()` is false
+    // there and on Android. The guard below is therefore about solo specifically
+    // rather than about simulating at all — without it, a first-time web visitor
+    // inherits the default remembered session (Solo, auto-enter) and is greeted by
+    // a failure card about a simulator that was never coming.
+    if !(cli.offline || scripted) {
         use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
         // `Ok` = enter this; `Err(true)` = ask; `Err(false)` = stay offline
@@ -1070,6 +1073,11 @@ fn run_client() {
             None if !session_prefs.auto_enter => Err(true),
             None => match session_prefs.kind {
                 SessionKind::Offline => Err(false),
+                // A remembered solo session on a build with no solo: stay offline
+                // silently. `Err(false)` and not `Err(true)` — the user did not
+                // choose this here, so opening the sign-in screen would be asking
+                // them about a decision they made on another machine.
+                SessionKind::Solo if !systems::session::can_solo() => Err(false),
                 SessionKind::Solo => Ok(SessionRequest::Solo { credential: None }),
                 // A remembered server with no address is not a session; ask.
                 SessionKind::Remote if session_prefs.server.is_empty() => Err(true),

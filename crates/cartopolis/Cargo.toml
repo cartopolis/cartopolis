@@ -293,6 +293,15 @@ web-sys = { version = "0.3", features = [
     # namespace under pressure, and Safari drops it after seven idle days — which
     # would read as the user's saved places vanishing on their own.
     "StorageManager",
+    # The sim transport (`systems::ws_transport`). `BinaryType` is not optional
+    # decoration: without setting it to `arraybuffer` a binary frame arrives as a
+    # `Blob`, and reading one is asynchronous — every frame of a 20 Hz snapshot
+    # stream would take a round trip through a promise.
+    "WebSocket",
+    "BinaryType",
+    "MessageEvent",
+    "CloseEvent",
+    "Event",
 ] }
 # `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
 # off a rejected permission promise. Already in the graph under web-sys; named

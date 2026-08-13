@@ -1,0 +1,10 @@
+# The action half of cartopolis-sim-reload.path.
+#
+# Installed at /etc/systemd/system/cartopolis-sim-reload.service. Never enabled
+# directly — the `.path` unit is what starts it.
+[Unit]
+Description=Restart the Cartopolis simulator after a deploy
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart cartopolis-sim.service

@@ -174,6 +174,15 @@ Startup switches for bisecting a render problem, each removing one layer:
 
 ## Architecture
 
+There is also **`web/`**, which is not a crate: the account-admin GUI, a Preact +
+deepsignal app built with Bun and deployed to `web.cartopolis.org` on every push
+to `main`. It talks to the simulator's `/api/admin` surface and nothing else. Its
+architecture is borrowed from
+[codebrew](https://code.garage44.eu/jeroen/codebrew) — one deepsignal store whose
+`persistentState` doubles as the localStorage whitelist, an `App.init` bootstrap,
+and `components/{pages,elements}` with one folder per component. `web/README.md`
+has the dev loop; `docs/notes/hosted-simulator.md` has the deployment.
+
 This is a **Cargo workspace** with six crates:
 
 | Crate | Role | Notable deps |
@@ -214,6 +223,8 @@ This is a **Cargo workspace** with six crates:
 
 **The mode is switched at runtime, not chosen at launch** (`systems/net/session.rs`, `systems/gui/login_screen.rs`, `docs/notes/session-modes.md`). Offline is *the absence of `OnlineSession`* — every online system was already `Option<Res<…>>`-guarded — so the sim is an extension of the offline viewer that can be entered and left while the app runs. `SessionState` holds the mode, a status and a `request` field the sign-in screen (☰ ▸ Sign in…) and startup both write; `session::drive_session` takes it, and `connect`/`teardown` are written as an exact pair — dropping `OnlineSession` closes the socket but leaves the server's regions, prims and remote avatars standing, which is a half-online client. Startup is just the first request: a flag wins (an instruction for this launch, never written back), otherwise the remembered session in `user.json` decides, and its default is solo-with-auto-enter, i.e. the behaviour this client always had. The local avatar entity is never despawned — its offline movement path takes over the frame the session goes.
 
+**The web build is no longer viewer-only.** It was, and `can_simulate()` returned `false` there to say so; it now has a WebSocket carrier and returns `true` everywhere. What the browser still cannot do is **solo** — that needs an in-process sim and a bundled SQLite — so `can_solo()` is the gate that matters, and it is false on wasm *and* Android. The startup path in `lib.rs` gates on `can_solo()` for that reason: a first-time web visitor inherits the default remembered session (Solo, auto-enter), and without the gate they are greeted by a failure card about a simulator that was never coming. In the Server field, an empty address means **this page's own origin** (`network::ws_url`), which is what the deployed client uses — that function is in `network.rs` rather than the wasm-only `ws_transport.rs` so it is compiled and unit-tested on the native lane.
+
 ### Server (`simulator`) — async Tokio
 
 - `config.rs` — layered config: `cartopolis.toml` → env (`CARTO_*`) → CLI flags
@@ -228,6 +239,10 @@ This is a **Cargo workspace** with six crates:
 - `yaw.rs` — angle helpers for avatar direction continuity
 
 **Wire format (ADR-008–009):** TCP length-delimited frames, little-endian `u32` length; frame body = an 8-byte header (`APP_HEADER_LEN`) of `protocol_version` (u16 LE) + `message_kind` (u16 LE) + `request_id` (u32 LE), then the postcard payload.
+
+**Two carriers, one wire.** A browser cannot open a TCP socket, so the same frame *body* also travels as one **binary WebSocket message** — `cartopolis_simulator::http` on the server, `systems::ws_transport` on the client. Only the framing differs, so a new carrier is **not** a protocol revision and `PROTOCOL_HISTORY` gains no row for one. `net::handle_connection` is generic over `net::FrameTransport` (a `Stream` of frames plus a `Sink` of them) precisely so there is one 700-line connection loop rather than two that must stay identical with nothing to say when they stop being. `tests/http_surface.rs` pins the consequence: a session token minted over WebSocket authenticates over TCP.
+
+**Account management is HTTP, not the wire** (`crates/simulator/src/http.rs`, `--http-listen`). Operator actions are deliberately off `NetMessage`: putting them there would run an authorisation decision through the same path as a movement intent and would move every client's protocol version whenever the *admin* surface changed. What the two surfaces share is the account table and the session map, which is the point — an admin signs in with an ordinary account. Two consequences worth knowing: **`disabled = 1` gates the next handshake, not the current session** (`Sessions` is keyed by token with no principal index), and the **last enabled admin cannot be demoted, disabled or deleted** — a running server with no admin is only repairable with shell access, via `simulator --create-admin <user>` and `CARTO_ADMIN_PASSWORD`.
 
 ## Documentation (notes + commit bodies)
 

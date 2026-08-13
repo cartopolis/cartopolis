@@ -1,4 +1,9 @@
-//! TCP client for `--connect` (ADR-008, ADR-009).
+//! Client half of the sim link (ADR-008, ADR-009).
+//!
+//! The TCP carrier — `--connect`, and solo's loopback — is here. The browser's
+//! WebSocket carrier is in the sibling `ws_transport`, and everything above
+//! [`start_link`] is shared: both fill the same mailbox, drive the same
+//! [`LinkStatus`], and speak the same frames.
 
 use crate::components::{
     Avatar, NeedsMeshRebuild, NeedsTextureRefresh, Prim, PrimGeo, PrimShape, Region, RemoteAvatar,
@@ -60,11 +65,10 @@ const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// show a spinner and then the *reason* a login failed, rather than the old
 /// behaviour of printing to a terminal nobody has open.
 ///
-/// All but `Failed` are dead on the web build, which has no transport to a sim
-/// and therefore never gets past `start_link`'s wasm arm — see
-/// `session::can_simulate`. Allowed rather than `cfg`-gated per variant: the
-/// alternative is a second shape of this state machine that no lane runs.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Every variant is live on every target now. It used to carry a
+/// `cfg_attr(wasm32, allow(dead_code))`, because the web build had no transport
+/// and never got past `start_link`'s wasm arm — that arm is a real WebSocket
+/// carrier since, and sets all five.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkState {
     /// Opening the socket.
@@ -94,10 +98,70 @@ impl LinkStatus {
             .unwrap_or(LinkState::Failed("link status poisoned".into()))
     }
 
-    fn set(&self, state: LinkState) {
+    /// `pub(crate)` rather than private: the wasm carrier lives in a sibling
+    /// module (`ws_transport`) and drives the same state machine the native
+    /// thread below does.
+    pub(crate) fn set(&self, state: LinkState) {
         if let Ok(mut s) = self.0.lock() {
             *s = state;
         }
+    }
+}
+
+/// Turn what the user typed into a WebSocket URL.
+///
+/// The sign-in field says "Server" and people put a host in it — sometimes with a
+/// scheme, sometimes with a port — and on the deployed site the right answer is
+/// "wherever this page came from". Four shapes are accepted:
+///
+/// - `wss://sim.example/ws` — used as given; an explicit URL is an instruction.
+/// - `https://sim.example` / `http://sim.example` — scheme mapped, `/ws` appended.
+/// - `sim.example:4747` — scheme inherited from the page, `/ws` appended.
+/// - empty — this page's own origin, which is what the deployed client wants.
+///
+/// Inheriting the scheme is the load-bearing case: a browser refuses a `ws://`
+/// socket from an `https://` page as mixed content, and refuses it the way it
+/// refuses everything else — as an opaque connection failure, not as a policy
+/// decision anyone can read.
+///
+/// Lives here, not in `ws_transport`, so it is compiled and tested on the native
+/// lane. That module is `cfg(wasm32)` and no CI lane runs a test there, so a unit
+/// test inside it would be a test nobody ever runs. `secure_page` and `host` are
+/// arguments for the same reason: they are the only two facts this needs from a
+/// browser, so passing them in is what makes the rest a pure function.
+///
+/// The allow is the price of that, and it is worth knowing why `cargo check`
+/// does not need it while `cargo test` does: a plain check builds this crate as a
+/// library, where a `pub` item is public API and reachable by definition. Under
+/// `--test` the lib is compiled as a test *binary*, "public API" stops meaning
+/// anything, and a function whose only non-test caller is behind
+/// `cfg(target_arch = "wasm32")` is dead — which `unused = "deny"` makes an
+/// error. Same shape as the `cargo check` blind spot CLAUDE.md warns about for
+/// egui and the building geometry: run the tests, not just a check.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn ws_url(addr: &str, secure_page: bool, page_host: &str) -> String {
+    let addr = addr.trim();
+    if addr.starts_with("ws://") || addr.starts_with("wss://") {
+        return addr.to_string();
+    }
+    let page_scheme = if secure_page { "wss" } else { "ws" };
+
+    let (scheme, host) = if let Some(rest) = addr.strip_prefix("https://") {
+        ("wss", rest)
+    } else if let Some(rest) = addr.strip_prefix("http://") {
+        ("ws", rest)
+    } else if addr.is_empty() {
+        (page_scheme, page_host)
+    } else {
+        (page_scheme, addr)
+    };
+
+    let host = host.trim_end_matches('/');
+    // A path the caller supplied is theirs; only a bare host gets `/ws`.
+    if host.contains('/') {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}/ws")
     }
 }
 
@@ -175,20 +239,20 @@ pub fn start_link(
             }
         });
     }
+    // The browser has no TCP socket, so it speaks the same wire over a WebSocket
+    // (`systems::ws_transport`, and `cartopolis_simulator::http` at the other
+    // end). No thread and no runtime here: `spawn_local` puts the loop on the one
+    // thread the page has.
     #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (
-            connect_to,
-            primary,
-            fallback,
-            out_tx,
-            intent_rx,
-            tile_template,
-        );
-        status.set(LinkState::Failed(
-            "the web build is a viewer — simulator mode needs the desktop app".into(),
-        ));
-    }
+    super::ws_transport::start(
+        connect_to,
+        primary,
+        fallback,
+        out_tx,
+        intent_rx,
+        tile_template,
+        status.clone(),
+    );
 
     Link {
         mailbox: NetworkMailbox {
@@ -1015,4 +1079,88 @@ pub fn send_observer_update(
     let _ = sess.intent_tx.unbounded_send(NetMessage::ObserverUpdate {
         position: avatar_state.position,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The four shapes a person can put in the sign-in screen's Server field.
+    ///
+    /// These run on the native lane, which is the whole reason [`ws_url`] lives in
+    /// this file rather than beside its only caller in the wasm-only
+    /// `ws_transport`: no CI lane runs a test compiled for wasm32, so a test there
+    /// is a test nobody ever runs.
+    #[test]
+    fn an_explicit_websocket_url_is_used_as_given() {
+        assert_eq!(
+            ws_url("wss://sim.example/ws", true, "page.example"),
+            "wss://sim.example/ws"
+        );
+        assert_eq!(
+            ws_url("ws://localhost:4748/ws", false, "page.example"),
+            "ws://localhost:4748/ws"
+        );
+        // Whitespace is what a paste out of a chat window looks like.
+        assert_eq!(
+            ws_url("  wss://sim.example/ws  ", true, "page.example"),
+            "wss://sim.example/ws"
+        );
+    }
+
+    #[test]
+    fn an_http_scheme_maps_to_its_websocket_one() {
+        assert_eq!(
+            ws_url("https://sim.example", false, "page.example"),
+            "wss://sim.example/ws"
+        );
+        assert_eq!(
+            ws_url("http://sim.example:4748", true, "page.example"),
+            "ws://sim.example:4748/ws"
+        );
+        // A trailing slash is a host, not a path.
+        assert_eq!(
+            ws_url("https://sim.example/", true, "page.example"),
+            "wss://sim.example/ws"
+        );
+    }
+
+    /// A bare host inherits the page's scheme. This is the load-bearing one: a
+    /// browser refuses a `ws://` socket opened from an `https://` page as mixed
+    /// content, and refuses it as an opaque connection failure.
+    #[test]
+    fn a_bare_host_inherits_the_pages_scheme() {
+        assert_eq!(
+            ws_url("sim.example:4747", true, "page.example"),
+            "wss://sim.example:4747/ws"
+        );
+        assert_eq!(
+            ws_url("sim.example:4747", false, "page.example"),
+            "ws://sim.example:4747/ws"
+        );
+    }
+
+    /// An empty address is this page's own origin — what the deployed client uses,
+    /// where Caddy proxies `/ws` on the same hostname that served the module.
+    #[test]
+    fn an_empty_address_is_the_pages_own_origin() {
+        assert_eq!(
+            ws_url("", true, "cartopolis.org"),
+            "wss://cartopolis.org/ws"
+        );
+        assert_eq!(
+            ws_url("   ", false, "localhost:8080"),
+            "ws://localhost:8080/ws"
+        );
+    }
+
+    /// A path the caller wrote is theirs — appending `/ws` to it would build a URL
+    /// nobody asked for.
+    #[test]
+    fn a_supplied_path_is_left_alone() {
+        assert_eq!(
+            ws_url("https://sim.example/carto/ws", true, "page.example"),
+            "wss://sim.example/carto/ws"
+        );
+    }
 }

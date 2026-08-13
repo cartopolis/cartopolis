@@ -1,0 +1,55 @@
+# The public Cartopolis simulator, as it runs on code.garage44.eu.
+#
+# Installed at /etc/systemd/system/cartopolis-sim.service. A native binary under
+# systemd rather than a container in /data/stack/docker-compose.yml, for the same
+# reason Forgejo is: the Forgejo *runner* and this host are the same machine, so
+# CI publishes the binary with a file copy and there is no registry to push an
+# image to and no image to build. Caddy reaches it across the docker0 gateway
+# exactly as it reaches Forgejo (`reverse_proxy 172.17.0.1:3000`).
+#
+# Two listeners, and the split is deliberate:
+#
+#   --listen 0.0.0.0:4747      the desktop and Android clients' TCP wire. Public,
+#                              and plaintext — see the note below.
+#   --http-listen 172.17.0.1:4748
+#                              the browser's WebSocket carrier (/ws) and the
+#                              account admin API. Bound to the docker0 gateway,
+#                              so it is reachable from Caddy and from nothing
+#                              else; the TLS in front of it is Caddy's.
+#
+# The plaintext TCP port is a real limitation and is written down rather than
+# hidden: a `--connect` session's password and session token cross the network in
+# the clear. The browser path does not (wss:// through Caddy). Closing it means
+# either TLS in the simulator or pointing desktop clients at the same `wss://`
+# endpoint — the client's `ws_url` already accepts one, so the second is mostly a
+# matter of making it the documented address.
+[Unit]
+Description=Cartopolis simulator
+Documentation=https://code.garage44.eu/jeroen/cartopolis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cartosim
+Group=cartosim
+WorkingDirectory=/data/cartopolis/sim
+ExecStart=/data/cartopolis/sim/simulator \
+    --listen 0.0.0.0:4747 \
+    --http-listen 172.17.0.1:4748 \
+    --database-path /data/cartopolis/sim/data/world.db
+Restart=always
+RestartSec=3s
+Environment=RUST_LOG=info
+
+# The world database is the only thing this service may write. `refinery`
+# migrations run on every start, so it needs write access to that directory and
+# to nothing else on the box.
+ReadWritePaths=/data/cartopolis/sim/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
