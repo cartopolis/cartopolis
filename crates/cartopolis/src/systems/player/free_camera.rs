@@ -176,15 +176,6 @@ const FREE_DECEL_TAU: f32 = 0.5;
 /// for the rest of the session.
 const FREE_REST_FRACTION: f32 = 0.005;
 
-/// Deadzones for the touch flight gestures (`CameraMode::Free`), in log-pinch
-/// and in points of two-finger drag respectively. Fly mode reads only the
-/// *sign* of each, so without a deadzone the noise of two fingers resting on
-/// glass is a full-speed press of whichever key the noise happens to favour
-/// this frame. Both are set above that noise floor and well below a deliberate
-/// gesture.
-const TOUCH_FLY_DEADZONE: f32 = 0.004;
-const TOUCH_FLY_DEADZONE_PTS: f32 = 1.5;
-
 /// Fly speed (m/s) at `altitude_m` above the surface, for a base speed of
 /// `base` — [`FREE_SPEED_ALT_REF`] and [`FREE_SPEED_MAX_FACTOR`] applied.
 fn fly_speed(base: f32, altitude_m: f32) -> f32 {
@@ -206,6 +197,26 @@ fn zoom_orbit_target(target: f64, factor: f64, space: bool, radius: f64, clamp: 
     } else {
         (target * factor).clamp(min_d, max_d)
     }
+}
+
+/// How much closer (or further) one frame of a *held* on-screen zoom button is
+/// worth: a multiplier on the distance, so the step is a fraction of where you
+/// already are, exactly as the wheel's is.
+///
+/// Exponential in the frame time rather than linear, because the button is held
+/// rather than clicked and the result must be the same journey whether the phone
+/// is rendering at 20 fps or 60. `wish` is `+1` for closer and `-1` for further
+/// ([`crate::systems::map_osd::OsdInput::zoom`]), so a returned factor below 1
+/// closes the distance.
+fn osd_zoom_factor(wish: f32, delta_time: f32) -> f32 {
+    /// e-folds per second of hold: ~1.6× per second, which crosses a zoom level
+    /// in a little under a second. Brisker than the wheel's per-notch step
+    /// because a finger holds this rather than ratcheting it.
+    const RATE: f32 = 0.5;
+    if wish == 0.0 {
+        return 1.0;
+    }
+    (-wish * RATE * delta_time).exp()
 }
 
 // ── Earth (orbit) mode tuning ───────────────────────────────────────────────
@@ -276,6 +287,45 @@ const ORBIT_PITCH_MAX: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
 /// Surface-orbit distance is raised well past the space-entry altitude so zooming
 /// out can actually cross into the space tier (ADR-025).
 const ORBIT_MAX_DISTANCE_SURFACE: f64 = 250_000.0;
+
+// ── The opening view ────────────────────────────────────────────────────────
+/// Boom length (m) of the view a fresh install opens on, and the tilt it opens
+/// at. Together they put the eye ~1.5 km over the map anchor — high enough that
+/// the whole city centre is in frame and the streaming has somewhere to go,
+/// low enough that buildings are still buildings rather than a texture.
+const START_ORBIT_DISTANCE: f64 = 1_800.0;
+const START_ORBIT_PITCH: f32 = 0.96; // ~55° above the horizon
+
+/// Seed Earth mode's pose so the first frame is already the opening view.
+///
+/// **Why the app opens in Earth mode at altitude at all.** It used to open in
+/// Follow, at eye level, behind an avatar — which is the right camera for the
+/// thing you do *second* and the wrong one for the thing every user does first,
+/// which is work out where they are. On a touchscreen it is worse than wrong:
+/// Follow's verbs are an orbit drag and a zoom, so the opening screen offered no
+/// way to travel and no horizon to travel by. Earth mode is the map camera (drag
+/// pans the ground, pinch zooms, twist turns) and the one every phone map app
+/// has trained the user's fingers on.
+///
+/// The focus is the world origin because that *is* the map anchor
+/// (`map_stream`'s bootstrap: Groningen's Grote Markt, or the last location a
+/// returning user was at — `user_store::restore_start_location` teleports there
+/// through the normal path and rewrites this pose on the way).
+fn seed_start_view(camera_state: &mut CameraState) {
+    camera_state.mode = CameraMode::Orbit;
+    camera_state.orbit_focus = DVec3::ZERO;
+    camera_state.orbit_distance = START_ORBIT_DISTANCE;
+    camera_state.orbit_distance_target = START_ORBIT_DISTANCE;
+    camera_state.orbit_yaw = 0.0;
+    camera_state.orbit_pitch = START_ORBIT_PITCH;
+    camera_state.orbit_space = false;
+    // Both flags, and they say different things: `initialized` stops
+    // `camera_controls` re-deriving the pose from the spawn transform (which
+    // would throw this away on frame one), `has_pose` is what `enter_mode`
+    // consults so returning to Earth mode later restores rather than re-seeds.
+    camera_state.orbit_initialized = true;
+    camera_state.orbit_has_pose = true;
+}
 
 // ── Space tier (ADR-025) ────────────────────────────────────────────────────
 /// Climb past this altitude (m) and the orbit pivots the Earth's centre. Kept
@@ -487,10 +537,12 @@ pub fn setup_camera(
     adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
     render_device: Res<bevy::render::renderer::RenderDevice>,
 ) {
-    camera_state.mode = CameraMode::Avatar;
+    // Follow's own parameters are still seeded — they are what Tab lands on —
+    // but the *opening* camera is Earth mode at altitude (see `seed_start_view`).
     camera_state.distance = AVATAR_CAM_DEFAULT;
     camera_state.azimuth = 0.0;
     camera_state.pitch = std::f32::consts::PI / 6.0;
+    seed_start_view(&mut camera_state);
 
     // A software adapter (Mesa lavapipe in a container or CI) has the *same*
     // 1-or-4 sample-count restriction as WebGPU, and fails the same silent way —
@@ -771,6 +823,10 @@ pub struct CameraInput<'w, 's> {
     /// one-finger drag and every tap arrive through `mouse_input` above, which
     /// `systems::touch` drives from the primary finger.
     touch: Res<'w, crate::systems::touch::TouchGestures>,
+    /// What the on-screen controls asked for (`systems::map_osd`) — the fly
+    /// stick, the climb pair and the zoom pair. A finger's stand-in for the keys
+    /// and the wheel, and the reason Fly mode no longer overloads the pinch.
+    osd: Res<'w, crate::systems::map_osd::OsdInput>,
 }
 
 /// The follow rig's own smoothed state. One `Local` rather than three because
@@ -839,6 +895,7 @@ pub fn camera_controls(
         mut cursor_moved_events,
         mut mouse_wheel_events,
         touch,
+        osd,
     } = input;
 
     if camera_query.is_empty() {
@@ -910,6 +967,9 @@ pub fn camera_controls(
                 if touch.pair() && !egui_manager.ctx.egui_wants_pointer_input() {
                     camera_state.distance /= touch.pinch;
                 }
+                // …and the on-screen pair is the wheel's *held* twin, for the
+                // hand that only has one thumb free (`systems::map_osd`).
+                camera_state.distance *= osd_zoom_factor(osd.zoom, delta_time);
                 camera_state.distance = camera_state.distance.clamp(AVATAR_CAM_MIN, AVATAR_CAM_MAX);
             }
 
@@ -1263,37 +1323,37 @@ pub fn camera_controls(
                 move_direction = Vec3::ZERO;
             }
 
-            // Touch flight: with no keyboard to hold, the two-finger gestures
-            // stand in for the movement keys. Pinch is W/S (spread flies
-            // forward, the same "get closer" the wheel means everywhere else)
-            // and the two-finger drag is A/D + E/Q. They join `move_direction`
-            // rather than nudging the translation, so the same accelerate/glide
-            // curve applies and a released gesture coasts to a stop instead of
-            // stopping dead. Their *magnitude* is discarded — the direction is
-            // all `move_direction` carries, and rate-scaling it would fight the
-            // velocity model — so a gesture is as fast as a held key, no more.
-            if touch_owns_pointer && touch.pair() {
-                let zoom = touch.pinch.ln();
-                if zoom.abs() > TOUCH_FLY_DEADZONE {
-                    move_direction += forward_horizontal * zoom.signum();
-                }
-                if touch.two_drag.x.abs() > TOUCH_FLY_DEADZONE_PTS {
-                    move_direction += right_horizontal * touch.two_drag.x.signum();
-                }
-                // Drag the fingers down and the world rises past you, i.e. the
-                // camera climbs — matching the pan gesture in every other mode.
-                if touch.two_drag.y.abs() > TOUCH_FLY_DEADZONE_PTS {
-                    move_direction += Vec3::Y * touch.two_drag.y.signum();
-                }
-            }
+            // Touch flight: the on-screen stick and climb pair
+            // (`systems::map_osd`), which stand in for WASD and E/Q. They join
+            // `move_direction` rather than nudging the translation, so the same
+            // accelerate/glide curve applies and a released control coasts to a
+            // stop instead of stopping dead.
+            //
+            // **This used to be the two-finger gestures, and they are gone on
+            // purpose.** Pinch was W/S and the two-finger drag was A/D + E/Q,
+            // with only the *sign* of each read — so the smallest deliberate
+            // spread was a full-speed press of W held for as long as the fingers
+            // stayed down, and the one gesture whose meaning is settled
+            // everywhere else in this client (pinch = zoom) meant something
+            // different in this one mode. The stick's magnitude is kept instead
+            // (below), which is the whole difference between steering and
+            // pointing.
+            move_direction += forward_horizontal * osd.fly.y + right_horizontal * osd.fly.x;
+            move_direction += Vec3::Y * osd.climb;
 
             // The keys steer a velocity, not the translation: it chases the wish on
             // an exponential approach (frame-rate independent), so a release glides
             // to a stop instead of the camera stopping dead mid-flight. Braking is
             // deliberately slower than accelerating — the glide is the point, and a
             // symmetric curve makes the start feel mushy to get it.
-            let wish = if move_direction.length() > 0.0 {
-                move_direction.normalize() * speed
+            //
+            // The throttle is what makes a half-pushed stick fly at half speed.
+            // A key contributes a unit vector, so a single key is throttle 1 and
+            // any combination of them saturates at 1 — i.e. the keyboard behaves
+            // exactly as it did before the stick existed.
+            let throttle = move_direction.length().min(1.0);
+            let wish = if throttle > 0.0 {
+                move_direction.normalize() * speed * throttle
             } else {
                 Vec3::ZERO
             };
@@ -1552,6 +1612,19 @@ pub fn camera_controls(
                 camera_state.orbit_distance_target = zoom_orbit_target(
                     camera_state.orbit_distance_target,
                     1.0 / touch.pinch as f64,
+                    space,
+                    radius,
+                    (min_d, max_d),
+                );
+            }
+            // The on-screen pair, for the hand that cannot spare a second finger
+            // (`systems::map_osd`). Through the same `zoom_orbit_target`, so it
+            // inherits the space tier's "a step is a fraction of the altitude"
+            // rule along with the wheel and the pinch.
+            if osd.zoom != 0.0 {
+                camera_state.orbit_distance_target = zoom_orbit_target(
+                    camera_state.orbit_distance_target,
+                    f64::from(osd_zoom_factor(osd.zoom, delta_time)),
                     space,
                     radius,
                     (min_d, max_d),
@@ -2058,5 +2131,44 @@ mod tests {
         // a shell that veils the horizon anyway is what the old formula did.
         let clear = distance_fog(0.0, 12.0, 0.0);
         assert_eq!(fog_factor_at(&clear.falloff, HORIZON_FOG_DISTANCE), 0.0);
+    }
+
+    /// The opening view: Earth mode, looking down at the map anchor from about a
+    /// kilometre and a half. The altitude is the number that matters — the boom
+    /// length on its own says nothing, since it is measured along a tilted line —
+    /// and it has to land in the band where the streamer has detail to show and
+    /// the whole centre is still in frame.
+    #[test]
+    fn the_app_opens_over_the_anchor_at_map_altitude() {
+        let mut cs = CameraState::default();
+        seed_start_view(&mut cs);
+        assert!(matches!(cs.mode, CameraMode::Orbit));
+        assert_eq!(
+            cs.orbit_focus,
+            DVec3::ZERO,
+            "the anchor is the world origin"
+        );
+        // `orbit_initialized` is what stops `camera_controls` re-deriving this
+        // pose from the spawn transform on the first frame and throwing it away.
+        assert!(cs.orbit_initialized && cs.orbit_has_pose);
+        let altitude = START_ORBIT_DISTANCE * f64::from(START_ORBIT_PITCH.sin());
+        assert!(
+            (1_200.0..2_000.0).contains(&altitude),
+            "opening altitude {altitude:.0} m is outside the city-in-frame band"
+        );
+        // Well below the space handoff, or the app would open on the globe.
+        assert!(altitude < SPACE_ENTER_ALT);
+    }
+
+    /// A held zoom button is a rate, so the same hold must be the same journey at
+    /// 20 fps and at 60 — and pressing "closer" must close the distance.
+    #[test]
+    fn a_held_zoom_is_frame_rate_independent() {
+        let slow = osd_zoom_factor(1.0, 1.0 / 20.0).powi(20);
+        let fast = osd_zoom_factor(1.0, 1.0 / 60.0).powi(60);
+        assert!((slow - fast).abs() < 1e-4, "{slow} vs {fast}");
+        assert!(slow < 1.0, "closer must shrink the distance");
+        assert!(osd_zoom_factor(-1.0, 1.0 / 60.0) > 1.0);
+        assert_eq!(osd_zoom_factor(0.0, 1.0 / 60.0), 1.0);
     }
 }

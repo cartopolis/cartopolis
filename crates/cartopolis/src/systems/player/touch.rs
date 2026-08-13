@@ -101,6 +101,20 @@ pub struct TouchGestures {
     press: Option<Press>,
     /// A `Left` release owed to the next frame — see [`emulate_mouse`].
     deferred_release: bool,
+    /// Has a finger touched the glass at all this session? A latch, never
+    /// cleared.
+    ///
+    /// It exists because the *device* question and the *layout* question have
+    /// different right answers. `quality::is_phone` (through
+    /// `theme::touch_layout`) decides the layout, and deliberately says no to a
+    /// large tablet and to a touchscreen laptop — both of which render at desktop
+    /// resolution and should not get finger-sized widgets. But a run that has
+    /// seen a finger genuinely has no keyboard verbs available to it, whatever
+    /// its resolution, so the on-screen controls (`systems::map_osd`) appear the
+    /// moment one is used. This is not a second detector answering the same
+    /// question: it answers "has this session been touched", which no media
+    /// query can.
+    ever_touched: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +141,7 @@ impl Default for TouchGestures {
             primary: None,
             press: None,
             deferred_release: false,
+            ever_touched: false,
         }
     }
 }
@@ -144,6 +159,11 @@ impl TouchGestures {
     /// gesture owns the frame and the one-finger verb must not also fire.
     pub fn pair(&self) -> bool {
         self.fingers == 2
+    }
+
+    /// Has this session ever been touched? See [`TouchGestures::ever_touched`].
+    pub fn ever(&self) -> bool {
+        self.ever_touched
     }
 }
 
@@ -172,6 +192,7 @@ pub fn recognize_touch_gestures(
     let read = recognize(&previous, &fingers);
 
     gestures.fingers = fingers.len();
+    gestures.ever_touched |= !fingers.is_empty();
     gestures.drag = read.drag;
     gestures.pinch = read.pinch;
     gestures.twist = read.twist;

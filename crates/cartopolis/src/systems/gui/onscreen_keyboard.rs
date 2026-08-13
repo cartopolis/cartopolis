@@ -229,6 +229,18 @@ enum Cap {
     Hide,
     Left,
     Right,
+    /// Select the whole field.
+    ///
+    /// **The one editing verb a finger cannot otherwise reach.** Selecting text
+    /// with a pointer is a press-drag-release across the glyphs, and on this
+    /// client that gesture is already spoken for twice over: the touch bridge
+    /// holds the emulated left button down for the whole gesture, and a finger
+    /// held still on a field for half a second is the long-press that opens the
+    /// world context menu (`systems::touch`). So "replace what is in this field"
+    /// — which on an address bar or a search box is *most* of the editing anyone
+    /// does — had no gesture at all, and the alternative was tapping backspace
+    /// once per character.
+    SelectAll,
 }
 
 /// One key: what it does and how many column units wide it is. A row is always
@@ -312,10 +324,15 @@ fn rows(layer: KeyLayer) -> Vec<Vec<Key>> {
     third.push(Key::new(Cap::Backspace, 1.5));
     out.push(third);
 
+    // Ten units exactly, like every other row. Select-all is paid for out of the
+    // space bar and the layer key rather than out of a new row: the slab already
+    // takes the bottom third of a phone screen, and the field being edited has to
+    // stay visible above it.
     out.push(vec![
-        Key::new(Cap::Layer, 1.5),
+        Key::new(Cap::Layer, 1.25),
+        Key::new(Cap::SelectAll, 1.0),
         Key::new(Cap::Left, 1.0),
-        Key::new(Cap::Space, 4.0),
+        Key::new(Cap::Space, 3.25),
         Key::new(Cap::Right, 1.0),
         Key::new(Cap::Enter, 1.5),
         Key::new(Cap::Hide, 1.0),
@@ -513,8 +530,21 @@ impl OnScreenKeyboard {
             Cap::Space => vec![egui::Event::Text(" ".to_owned())],
             Cap::Backspace => key_stroke(egui::Key::Backspace),
             Cap::Enter => key_stroke(egui::Key::Enter),
-            Cap::Left => key_stroke(egui::Key::ArrowLeft),
-            Cap::Right => key_stroke(egui::Key::ArrowRight),
+            // **Shift turns the arrows into a selection**, which is the same
+            // bargain a physical keyboard makes and the only one available here:
+            // egui extends the selection for an arrow carrying `shift` and moves
+            // the caret for one that does not (`text_selection::cursor_range`).
+            //
+            // Shift is deliberately *not* consumed by an arrow. It is a one-shot
+            // for characters because a sentence needs exactly one capital; a
+            // selection is grown one press at a time, and a shift that fell off
+            // after the first character would mean re-arming it for every letter
+            // of the word being selected.
+            Cap::Left => key_stroke_with(egui::Key::ArrowLeft, self.selection_modifiers()),
+            Cap::Right => key_stroke_with(egui::Key::ArrowRight, self.selection_modifiers()),
+            // egui's own select-all chord, so this is the same code path a
+            // desktop Ctrl+A takes rather than a second implementation.
+            Cap::SelectAll => key_stroke_with(egui::Key::A, egui::Modifiers::COMMAND),
             Cap::Shift => {
                 self.shift = self.shift.tapped();
                 Vec::new()
@@ -532,10 +562,25 @@ impl OnScreenKeyboard {
             }
         }
     }
+
+    /// What the cursor arrows carry: `SHIFT` while shift is armed (extend the
+    /// selection), nothing otherwise (move the caret).
+    fn selection_modifiers(&self) -> egui::Modifiers {
+        if self.shift.alt() {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        }
+    }
 }
 
 /// A press and its release, in one batch. See [`OnScreenKeyboard::press`].
 fn key_stroke(key: egui::Key) -> Vec<egui::Event> {
+    key_stroke_with(key, egui::Modifiers::NONE)
+}
+
+/// [`key_stroke`] with modifiers held down for it.
+fn key_stroke_with(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
     [true, false]
         .into_iter()
         .map(|pressed| egui::Event::Key {
@@ -546,7 +591,7 @@ fn key_stroke(key: egui::Key) -> Vec<egui::Event> {
             physical_key: None,
             pressed,
             repeat: false,
-            modifiers: egui::Modifiers::NONE,
+            modifiers,
         })
         .collect()
 }
@@ -852,6 +897,17 @@ fn paint_key(
             p.rect_filled(bar, egui::CornerRadius::same(1), ink);
             return;
         }
+        // Drawn, not lettered: "All" is a translation problem, `⌘A` names a key
+        // this device does not have, and the bundled font's symbol coverage is
+        // too thin to gamble a glyph on (`theme::first_drawable`). A selection
+        // band across a line of text is what the key *does*, at any size.
+        Cap::SelectAll => {
+            let band = rect.shrink2(egui::vec2(rect.width() * 0.22, rect.height() * 0.34));
+            p.rect_filled(band, egui::CornerRadius::same(2), theme::ACCENT_MUTED);
+            let line = band.shrink2(egui::vec2(band.width() * 0.12, band.height() * 0.36));
+            p.rect_filled(line, egui::CornerRadius::same(1), ink);
+            return;
+        }
         Cap::Backspace => glyphs.backspace.to_owned(),
         Cap::Enter => glyphs.enter.to_owned(),
         Cap::Shift => glyphs.shift.to_owned(),
@@ -1004,6 +1060,54 @@ mod tests {
                 .collect();
             assert_eq!(pressed, vec![true, false]);
         }
+    }
+
+    /// Select-all is egui's own chord (`Key::A` + command), which is what makes
+    /// it the same code path a desktop Ctrl+A takes instead of a second
+    /// implementation of "select everything".
+    #[test]
+    fn select_all_is_the_command_a_chord() {
+        let mut k = kb();
+        let evs = k.press(Cap::SelectAll);
+        assert_eq!(evs.len(), 2);
+        let egui::Event::Key { key, modifiers, .. } = evs[0] else {
+            panic!("expected a Key event, got {:?}", evs[0]);
+        };
+        assert_eq!(key, egui::Key::A);
+        assert!(
+            modifiers.command,
+            "egui selects all on `command`, not `ctrl`"
+        );
+        // It types nothing and disturbs nothing — a selection is a state of the
+        // field, not an edit of it.
+        assert_eq!(k.shift, ShiftState::Off);
+    }
+
+    /// Shift turns the arrows into a selection, and — unlike a character — an
+    /// arrow does **not** consume a one-shot shift. A selection is grown one
+    /// press at a time, so a shift that fell off after the first would have to be
+    /// re-armed for every letter of the word being selected.
+    #[test]
+    fn shift_makes_the_arrows_extend_a_selection_without_consuming_itself() {
+        let mut k = kb();
+        k.press(Cap::Shift);
+        for _ in 0..3 {
+            let evs = k.press(Cap::Right);
+            let egui::Event::Key { modifiers, .. } = evs[0] else {
+                panic!("expected a Key event");
+            };
+            assert!(modifiers.shift, "arrow did not carry shift");
+            assert_eq!(k.shift, ShiftState::Once, "shift fell off mid-selection");
+        }
+        // Cleared, the same arrow moves the caret instead — which is what egui
+        // distinguishes on (`text_selection::cursor_range::on_key_press`).
+        k.press(Cap::Shift);
+        k.press(Cap::Shift);
+        let evs = k.press(Cap::Right);
+        let egui::Event::Key { modifiers, .. } = evs[0] else {
+            panic!("expected a Key event");
+        };
+        assert!(!modifiers.shift);
     }
 
     /// Space is `Text(" ")` and **not** `Key::Space`: egui activates the focused

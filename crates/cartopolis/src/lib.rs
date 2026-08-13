@@ -853,6 +853,9 @@ pub fn run() {
         })
         .init_resource::<systems::settings::SettingsState>()
         .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
+        // What the on-screen navigation controls asked for this frame
+        // (`systems::map_osd`); read by `free_camera::camera_controls`.
+        .init_resource::<systems::map_osd::OsdInput>()
         // The user's own preferences — units, turn chimes, keep-screen-on, the
         // quality preset. Distinct from `DevPanelState` (a debugging surface) and
         // from `LayerPrefs` (what is drawn); this is what the Settings panel owns,
@@ -1601,6 +1604,21 @@ pub fn run() {
                 .after(systems::place_pins::render_place_pins)
                 .after(systems::login_screen::render_login_screen)
                 .after(systems::ui::render_edit_dialog),
+        )
+        // Phase 7e: the on-screen navigation controls (`systems::map_osd`) — the
+        // verbs a finger has no key for. Floating `Area`s, so like the dock, the
+        // HUD and the keyboard it is deliberately *not* in the Phase 7b chain.
+        //
+        // Both links are load-bearing. It runs **after the drive tick**, which is
+        // what decides whether driver mode owns the screen this frame, and
+        // **before the camera**, so a held control is acted on in the frame it
+        // was pushed — a frame of lag on a *held* control reads as the camera
+        // lagging the thumb, and at 20 fps on a phone that is visible.
+        .add_systems(
+            Update,
+            systems::map_osd::render_map_osd
+                .after(systems::driver::drive_driver_mode)
+                .before(systems::free_camera::camera_controls),
         )
         // Phase 8: Route planner (ADR-037). Its own `add_systems` call because the
         // Phase 7 tuple is already at Bevy's 20-system-per-tuple limit.
@@ -2642,6 +2660,14 @@ fn quiesce_while_backgrounded(
     #[cfg(not(target_os = "android"))]
     let _ = exits.read().next();
     for event in lifecycle.read() {
+        // Logged, and not only for tidiness: on the phone this is the one record
+        // of the app having left the screen and come back. Anything that puts a
+        // system dialog up — the runtime location permission is the first one
+        // this client ever asks for — backgrounds the activity and destroys its
+        // surface, so "did it suspend, and did it resume" is the first question
+        // to ask of a freeze that follows a permission prompt, and the answer
+        // is otherwise unrecoverable from a device with no cable attached.
+        tracing::info!(?event, "app lifecycle");
         match event {
             bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
                 platform::workers::set_paused(true);

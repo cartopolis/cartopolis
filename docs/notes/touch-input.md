@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "text_edit_focused"]
-updated: 2026-08-10
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused"]
+updated: 2026-08-13
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -118,9 +118,9 @@ Phone-map convention (Google Maps, Organic Maps), not the mouse's:
 | Gesture | Earth surface | Earth space | Follow | Fly |
 |---|---|---|---|---|
 | one finger | pan | spin the globe | orbit | look |
-| pinch | zoom | zoom | follow distance | forward/back |
+| pinch | zoom | zoom | follow distance | — |
 | twist | yaw | compass heading | azimuth | — |
-| two-finger vertical | tilt | — | — | rise/fall |
+| two-finger vertical | tilt | — | — | — |
 
 A twist is 1:1 in radians — turn the fingers 90° and the view turns 90°. Drags
 stay in points and keep the mouse's sensitivity constants, since `TouchInput`
@@ -129,6 +129,65 @@ and `CursorMoved` both report logical points.
 **Only the vertical component of the two-finger drag is read.** A twist that
 isn't perfectly centred moves the centroid sideways, so taking the horizontal
 component too would double-count every rotation as a pan.
+
+**Fly's column is empty on purpose, and it used to be full.** Pinch was W/S,
+the two-finger drag was A/D + E/Q, and only the **sign** of each was read — so
+the smallest deliberate spread was a full-speed press of W, held for as long as
+the fingers stayed down. It flew, in the sense that the camera moved; it was not
+steerable. Worse, it gave the one gesture whose meaning is settled across every
+map application there is (pinch = zoom) a different meaning in one mode. The
+verbs moved to on-screen controls instead (`systems::map_osd`, below) and the
+gesture arms were deleted rather than left as a second way to do it.
+
+## The on-screen controls, and why Earth is the touch camera
+
+`systems::map_osd` draws what a finger has no key for. Two clusters, chosen by
+camera mode:
+
+- **Fly** — a proportional thumbstick bottom-left (forward/back + strafe) and a
+  climb/descend pair on the right. Left thumb translates, right thumb changes
+  height, which is where the thumbs already are on a two-handed phone.
+- **Earth / Follow** — a zoom pair on the right. Redundant with the pinch by
+  design: one-handed is how a phone is held most of the time.
+
+The stick's *magnitude* is kept, which is the whole difference from the gestures
+it replaced: `camera_controls` derives a throttle from `move_direction.length()`
+(saturating at 1, so a key is exactly as fast as it always was) and a half-push
+is half the speed.
+
+Three things it inherits from elsewhere in this tree rather than inventing:
+it draws floating `Area`s and is therefore out of the Phase 7b chain, like the
+dock and the HUD; it hides itself while a right panel, the keyboard or driver
+mode owns the screen, because an `Area` that is merely invisible still eats taps
+(the dock's rule verbatim); and it reports a *wish* into a resource rather than
+moving the camera, because `camera_controls` already owns the accelerate/glide
+curve, the altitude-scaled speed and the ground clamp.
+
+**Earth mode is now what the app opens in** (`free_camera::seed_start_view`),
+about 1.5 km over the map anchor. Follow at eye level is the right camera for
+the thing you do second and the wrong one for the thing everyone does first,
+which is work out where they are — and on a touchscreen it was worse than wrong,
+because Follow's only verbs are an orbit drag and a zoom, so the opening screen
+offered no way to travel and no horizon to travel by.
+
+## Selecting text with no pointer
+
+Selecting text is a press-drag-release across the glyphs, and on this client
+that gesture is spoken for twice over: the touch bridge holds the emulated left
+button down for the whole gesture, and a finger held still on a field for half a
+second is the long press that opens the world context menu. So "replace what is
+in this field" — most of the editing anyone does in an address bar — had no
+gesture at all, and the alternative was one backspace per character.
+
+Two keys close it, both routed into egui's *own* handlers rather than a second
+implementation:
+
+- **Select-all** emits `Key::A` with `Modifiers::COMMAND`, which is the chord
+  `text_selection::cursor_range::on_key_press` already answers.
+- **Shift + an arrow** extends the selection, because egui distinguishes an
+  arrow carrying `shift` from one that does not. Shift is deliberately *not*
+  consumed by an arrow (it is by a character): a selection is grown one press at
+  a time, and a one-shot shift would have to be re-armed for every letter.
 
 ## The UI is sharp on a phone and still too small to hit
 
@@ -201,17 +260,21 @@ tablet to test on. If tablets start mattering, the fix is to publish pointer
 coarseness from `index.html` as its own attribute beside `data-quality` — not to
 re-add a media query here.
 
-## Open: the compact panel floor inverts on the web phone tier
+## The compact panel floor inverted on the web phone tier (fixed 2026-08-13)
 
-Not introduced by either change above, but made reachable by the render budget
-and worth fixing before someone reads it as a UI-scale bug.
-`responsive_right_panel` gives a compact panel `exact_size(viewport_w.max(240.0))`
-— a floor that exists so a narrow window cannot produce a degenerate sliver. On
-the web phone tier the viewport *is* narrower than the floor (214 pt through
-k ≈ 1.83 on a Fairphone 4), so the floor now docks a panel **26 pt wider than
-the screen it sits in**, which is the exact failure it was written to prevent.
-A `min(viewport_w)` alongside the `max` is the shape of the fix; it belongs with
-whoever owns the render budget, not here.
+`responsive_right_panel` used to give a compact panel
+`exact_size(viewport_w.max(240.0))` — a floor written so a very narrow window
+could not produce a degenerate sliver. On the web phone tier the viewport *is*
+narrower than the floor (214 pt through k ≈ 1.83 on a Fairphone 4), so the floor
+docked a panel **26 pt wider than the screen it sat in**: the exact failure it
+was added to prevent, on the one device class the compact layout exists for.
+
+The fix is `egui_manager::compact_panel_width`, and the reasoning is worth
+keeping because the instinct is to add a `min` beside the `max`: a compact panel
+*is* the viewport by definition, so there was nothing for a floor to protect. A
+100 pt window gets a 100 pt panel — useless but honest — and the only genuinely
+degenerate input is a viewport that is not a width at all (zero before the first
+surface arrives, or NaN), which is what the remaining fallback covers.
 
 ## The client draws its own keyboard, and focus is most of the work
 
