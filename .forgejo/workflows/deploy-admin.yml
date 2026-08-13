@@ -1,0 +1,78 @@
+name: Deploy admin site
+
+# Build the account-admin GUI (`web/`) and publish it to https://web.cartopolis.org.
+#
+# **On every push to `main`**, unlike the other two deploy jobs in this directory.
+# They are manual because publishing them is disruptive or expensive: the web
+# client is a ~70 MB wasm link that would compete with CI for a runner slot, and
+# the simulator's deploy drops every live session. This is neither. It is a Bun
+# build of ~35 KB of TypeScript, it takes seconds, and publishing it interrupts
+# nobody — so the site simply tracks `main`, which is what was asked for.
+on:
+  push:
+    branches: [main]
+    # Only when something it is built from moved. A commit that touches only
+    # Rust or docs has nothing to publish here.
+    paths:
+      - "web/**"
+      - ".forgejo/workflows/deploy-admin.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-admin
+  cancel-in-progress: true
+
+jobs:
+  deploy-admin:
+    name: build & publish the admin gui
+    runs-on: ubuntu-latest
+    container:
+      image: cartopolis-ci:latest
+      # Caddy serves this directory read-only as /srv/cartopolis-admin. It has to
+      # be in the runner's `valid_volumes` or the mount is refused.
+      options: >-
+        --volume /data/cartopolis/admin:/publish
+    steps:
+      # No `lfs: true`: nothing under `web/` is an LFS object, and this is the one
+      # job in the directory that genuinely does not need the fetch.
+      - uses: actions/checkout@v4
+
+      # The CI image carries Rust, not Bun. Installing it here rather than baking
+      # it in keeps this job's prerequisite next to its only user; if a second Bun
+      # job ever appears, that is the moment to move it into the image.
+      - name: Install Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        working-directory: web
+        # `--frozen-lockfile`: a deploy must build what was reviewed, and a
+        # resolver free to pick a newer minor is a deploy nobody tested.
+        run: bun install --frozen-lockfile
+
+      # Both gates run before the build, so a red one costs seconds rather than a
+      # published site nobody checked. `tsc` is the one that matters here: the
+      # account shapes in `src/types.ts` are a hand-written description of what
+      # `auth::AccountRow` serialises, and nothing else checks that they agree.
+      - name: Typecheck
+        working-directory: web
+        run: bunx tsc --noEmit
+
+      - name: Test
+        working-directory: web
+        run: bun test
+
+      - name: Build
+        working-directory: web
+        run: bun run build
+
+      # `--delete`, so a file dropped from the build does not linger on the live
+      # site. Nothing else lives under this root — unlike the web client's, which
+      # has to exclude the APK directory the Android job writes into.
+      - name: Publish
+        run: |
+          apt-get update -qq && apt-get install -y -qq rsync >/dev/null
+          rsync -a --delete web/dist/ /publish/
+          echo "published $(du -sh /publish | cut -f1) to /data/cartopolis/admin"
+          ls -la /publish
