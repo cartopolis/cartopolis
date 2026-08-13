@@ -178,6 +178,31 @@ fn resolve_ui_scale() -> f32 {
     }
 }
 
+/// What a compact right panel is exactly as wide as: **the screen**.
+///
+/// This used to read `viewport_w.max(240.0)` — a floor written so a very narrow
+/// window could not produce a degenerate sliver of a panel. On the web phone
+/// tier the floor inverted: the render budget's stage transform leaves a
+/// Fairphone 4 with ~215 pt of viewport, so the floor docked a panel **26 pt
+/// wider than the screen it sat in**, which is the exact failure it was added to
+/// prevent (`docs/notes/touch-input.md` recorded it as open). A compact panel
+/// *is* the viewport by definition, so there is nothing for a floor to protect:
+/// a 100 pt window gets a 100 pt panel, which is useless but honest, and the
+/// only genuinely degenerate input is a viewport that is not a width at all —
+/// zero before the first surface arrives, or NaN.
+#[must_use]
+pub fn compact_panel_width(viewport_w: f32) -> f32 {
+    /// Stand-in for a viewport we do not have yet. Any positive number does;
+    /// this one matches the old floor so a run that somehow reaches it looks the
+    /// way it always did.
+    const FALLBACK_PTS: f32 = 240.0;
+    if viewport_w.is_finite() && viewport_w > 1.0 {
+        viewport_w
+    } else {
+        FALLBACK_PTS
+    }
+}
+
 /// Build a right-docked [`egui::Panel`] that adapts to the viewport: on a wide
 /// screen it docks beside the map at `wide_width` pt and stays resizable; on a
 /// compact (phone-ish) screen it fills the viewport and is fixed, since a resize
@@ -197,7 +222,7 @@ pub fn responsive_right_panel(
             .resizable(false)
             // Fill the whole viewport — any inset leaves a strip of map peeking
             // down the left edge of the docked panel.
-            .exact_size(viewport_w.max(240.0))
+            .exact_size(compact_panel_width(viewport_w))
     } else {
         egui::Panel::right(id)
             .resizable(true)
@@ -1496,10 +1521,22 @@ mod tests {
         assert!(mgr.compact());
     }
 
+    /// A compact panel never exceeds the screen it docks in — which the old
+    /// `viewport_w.max(240.0)` floor did on every web phone tier viewport under
+    /// 240 pt, i.e. on the one device class the compact layout exists for.
+    #[test]
+    fn a_compact_panel_is_exactly_the_viewport() {
+        assert_eq!(compact_panel_width(214.0), 214.0);
+        assert_eq!(compact_panel_width(390.0), 390.0);
+        // Only a viewport that is not a width falls back.
+        assert_eq!(compact_panel_width(0.0), 240.0);
+        assert_eq!(compact_panel_width(f32::NAN), 240.0);
+    }
+
     /// Why [`phone_ui_scale`] is 1.0 on the web: the render budget's stage
     /// transform has already shrunk the surface Bevy sees, so magnifying again
-    /// takes the viewport under the 240 pt floor `responsive_right_panel` gives
-    /// a compact panel — i.e. docks a panel wider than the screen.
+    /// would halve an already-tight viewport (it was also, until the fix above,
+    /// how a docked panel came out wider than the screen).
     ///
     /// Same handset as above, but through the phone tier's k ≈ 1.83: winit
     /// measures the *untransformed* box, so Bevy's surface is 1080/1.83 px.
