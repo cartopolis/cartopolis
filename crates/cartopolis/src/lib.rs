@@ -823,6 +823,12 @@ pub fn run() {
         // creates GlobalClusterSettings) — see the plugin's doc comment.
         .add_plugins(ForceCpuClusteringPlugin)
         .add_plugins(EguiPlugin)
+        // Renders the 3D world below the screen's resolution on a tier that asks
+        // for it, and no-ops entirely on the tiers that do not. Must come after
+        // `EguiPlugin`, which is what puts `egui_pass` after `upscaling` — the
+        // ordering that keeps the interface at full resolution while the world
+        // scales.
+        .add_plugins(systems::render_scale::RenderScalePlugin)
         // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
         // PbrPlugin); it's attached as a component to the camera in setup_camera.
         .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())

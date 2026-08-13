@@ -8,6 +8,7 @@ pub mod lod22;
 pub mod map_geometry;
 pub mod map_stream;
 pub mod osm_buildings;
+pub mod render_scale;
 pub mod rendering;
 pub mod street_furniture;
 pub mod street_labels;

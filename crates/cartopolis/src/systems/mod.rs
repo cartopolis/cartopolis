@@ -42,8 +42,8 @@ pub use gui::{
 };
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
-    rendering, street_furniture, street_labels, terrain, tile_loader, tile_source, vegetation,
-    water, weather, world_places,
+    render_scale, rendering, street_furniture, street_labels, terrain, tile_loader, tile_source,
+    vegetation, water, weather, world_places,
 };
 pub use nav::{driver, geo_nav, navigation, route_ahead, transit_live, transit_vehicles};
 pub use net::{network, session, user_store};

@@ -170,6 +170,26 @@ pub struct Budget {
     /// the backdrop between the polygons. It would not be acceptable on a tier
     /// where the imagery is the map.
     pub tile_px: u32,
+    /// Linear scale for the 3D main pass, as a fraction of the render target.
+    ///
+    /// **The one knob the phone tier was missing entirely.** `index.html` caps the
+    /// web build at 1.5 DPR / 1.3 Mpx by sizing the canvas backing store — a page
+    /// layout decision, so it cannot exist off the web — and native Android had no
+    /// equivalent at all. A Fairphone 4 therefore rendered at its full 1080×2340 =
+    /// **2.53 Mpx**, against the ~1.3 Mpx the same budget calls a phone's share, on
+    /// a target that is `Rgba16Float` whenever the atmosphere is up.
+    ///
+    /// Applied as `bevy_camera::MainPassResolutionOverride`, which every 3D pass
+    /// node honours and which the existing `upscaling` node blits back up. Two
+    /// consequences worth knowing. The **UI is unaffected** — `egui_pass` runs
+    /// after `upscaling`, onto the full-size output — so the chrome and the text
+    /// stay crisp while the world gets cheaper, which is the right way round on a
+    /// 5.7" screen. And it is *fill* this saves, not memory: the render target is
+    /// still allocated at full size.
+    ///
+    /// 1.0 means "insert nothing", so every tier above the phone is bit-identical
+    /// to before and `cargo shots` output does not move.
+    pub render_scale: f32,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -240,6 +260,7 @@ impl Budget {
             atmosphere_luts: AtmosphereLuts::bevy_defaults(),
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            render_scale: 1.0,
         }
     }
 
@@ -278,6 +299,9 @@ impl Budget {
             atmosphere_luts: AtmosphereLuts::halved(),
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
+            // Native resolution: an integrated GPU is bandwidth-limited, not
+            // resolution-limited, and this rung's brief is to keep the picture.
+            render_scale: 1.0,
         }
     }
 
@@ -305,6 +329,12 @@ impl Budget {
             // the flat map's raster size later does not silently raise the
             // phone's with it.
             tile_px: 256,
+            // 0.7 linear = ~49% of the fragments: 2.53 Mpx becomes ~1.24 Mpx,
+            // which lands almost exactly on the 1.3 Mpx ceiling `index.html`
+            // already enforces for the web phone tier. Chosen to match that number
+            // rather than picked for feel, so the two platforms' phone budgets
+            // mean the same thing.
+            render_scale: 0.7,
         }
     }
 
