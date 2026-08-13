@@ -1033,8 +1033,7 @@ fn suggestion_row_inner(
                     // than guessed, because the bundled font has neither 🧭 nor an
                     // arrow and a guess draws as an empty box (`theme::first_drawable`).
                     let flag = theme::first_drawable(ui.ctx(), RightPanel::Route.icons());
-                    routed = ui
-                        .small_button(flag)
+                    routed = theme::action_button(ui, flag)
                         .on_hover_text("Route here — make this the destination")
                         .clicked();
                 }

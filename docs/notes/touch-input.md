@@ -170,6 +170,38 @@ which is work out where they are — and on a touchscreen it was worse than wron
 because Follow's only verbs are an orbit drag and a zoom, so the opening screen
 offered no way to travel and no horizon to travel by.
 
+## `Button::small()` is not a smaller button
+
+It **zeroes the vertical padding** and drops to the `Small` text style, so the
+widget's height becomes the glyph's — about 21 dp on either touch platform,
+against the 48 dp the rest of the theme is built to. The theme's touch tier
+cannot save a call site from it, because `small()` opts out of exactly the
+padding the tier raises.
+
+That mattered on the controls least able to afford it: the route panel's *pick
+this point on the map*, *use my position* and *clear*, the address bar's flag, a
+bookmark's rename and delete, and the long-press context menu's *route from
+here* — i.e. the shortcuts that exist so you do not have to type an address on a
+phone. `theme::action_button` / `action_enabled` is the replacement: `small()`
+under a mouse, a full row under a finger. The predicate is
+`theme::actions_are_small`, and the arithmetic that justifies it is asserted in
+`touch_sizes_clear_the_minimum_target`.
+
+**The height is the guideline; the width is a negotiation.** A bookmark row
+carries four of these beside a name that still has to be readable, and at the
+theme's full 11 pt padding they take two-thirds of a phone's panel. A fingertip
+contact patch is taller than it is wide, so `ACTION_PAD_X` trades horizontal
+padding for the row height — the same bargain the on-screen keyboard makes when
+ten key columns will not fit in 393 dp.
+
+A related shape, same panel: **a fixed field width in a row with trailing
+actions pushes the actions off the edge.** The endpoint field was a flat 180 pt,
+which on a compact panel (a phone's whole viewport, ~240 pt inside the margins)
+left ~40 pt for three buttons that need a hundred. `waypoint_field_width`
+derives it from what is left of the row instead — the same idiom the chat
+composer already used, and whose comment there ("a fixed input width either
+overflows the narrow layout or leaves a gap in the wide one") is the rule.
+
 ## Selecting text with no pointer
 
 Selecting text is a press-drag-release across the glyphs, and on this client

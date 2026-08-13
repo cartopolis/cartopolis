@@ -2211,7 +2211,7 @@ pub fn render_data_layers_panel(
                     "Data © OpenStreetMap contributors (ODbL), via vector tiles + Overpass API",
                 );
                 ui.small("Live departures & vehicles: OVapi (v0 / gtfs.ovapi.nl)");
-                if ui.small_button("Full credits and licences…").clicked() {
+                if theme::action_button(ui, "Full credits and licences…").clicked() {
                     about = true;
                 }
             });
