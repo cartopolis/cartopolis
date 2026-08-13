@@ -1694,7 +1694,21 @@ pub fn run() {
                 systems::gizmo::handle_gizmo_interaction,
             ),
         )
-        .add_systems(Update, (frame_time_watchdog, log_render_cost, frame_stats))
+        .add_systems(
+            Update,
+            (
+                frame_time_watchdog,
+                // Gated at registration, not inside the body. The body's own
+                // `is_phone()` return came *after* the system was in the schedule
+                // with a seven-component unfiltered `Query<&Mesh3d, …>`, which Bevy
+                // re-matches against every new archetype — and archetypes are
+                // created continuously here as tiles, buildings and surfaces
+                // stream. A system that runs is a system that pays for its query;
+                // the cheapest diagnostic is one the phone never registers.
+                log_render_cost.run_if(|| !quality::is_phone()),
+                frame_stats,
+            ),
+        )
         // Drawn over everything until the first tiles are up. Mirrors the
         // splash in index.html, which covers the wasm load this cannot.
         .init_resource::<systems::splash::BootSplash>()
@@ -2748,9 +2762,11 @@ fn log_render_cost(
     // a phone's log while holding the phone. Desktop keeps it — it is how the tile
     // and building budgets get watched — but the handset does not pay for a
     // diagnostic with no reader.
-    if quality::is_phone() {
-        return;
-    }
+    //
+    // The phone gate is a `run_if` at registration (see `lib.rs`'s `add_systems`)
+    // rather than a return here, because an early return does not save the query:
+    // Bevy still matches this system's seven-component `Query` against every
+    // archetype the streamers create.
 
     let tris = |h: &Handle<Mesh>| -> usize {
         meshes.get(h).map_or(0, |m| {
@@ -2969,6 +2985,10 @@ fn apply_distance_fog(
         (&GridCell, &Transform, &mut DistanceFog),
         With<crate::components::FreeCamera>,
     >,
+    // The (density, time, declination) this last wrote. `DistanceFog` is not
+    // `PartialEq`, so the inputs are what gets compared — the same shape
+    // `water::update_water_waves` uses for the sea state.
+    mut applied: Local<Option<(f32, f32, f32)>>,
 ) {
     let Ok((cell, tf, mut fog)) = camera.single_mut() else {
         return;
@@ -2979,6 +2999,26 @@ fn apply_distance_fog(
     // (see update_horizon_haze), veiling the whole dome as density rises.
     let altitude = globe.altitude_m(cell, tf) as f32;
     let density = dev.fog_density * systems::free_camera::fog_altitude_factor(altitude);
+
+    // Assigning through the `Mut` marks `DistanceFog` changed, which re-extracts
+    // and re-uploads the camera's fog uniform. This ran unconditionally, so that
+    // happened on every frame of the run for three inputs that move slowly at
+    // most: the dev panel's density, the clock, and the sun's declination. Only
+    // `density` moves continuously, and only while the camera is changing
+    // altitude — so on a still frame this now writes nothing at all.
+    let next = (density, dev.time_of_day, dev.sun_declination_rad);
+    // Epsilons rather than exact equality: `density` is a product of a float
+    // altitude factor, so it dithers in its last bits while hovering, and an exact
+    // test would call that a change every frame and buy nothing.
+    const FOG_EPS: f32 = 1e-4;
+    if applied.is_some_and(|(d, t, s)| {
+        (d - next.0).abs() < FOG_EPS
+            && (t - next.1).abs() < FOG_EPS
+            && (s - next.2).abs() < FOG_EPS
+    }) {
+        return;
+    }
+    *applied = Some(next);
     *fog = systems::free_camera::distance_fog(density, dev.time_of_day, dev.sun_declination_rad);
 }
 
