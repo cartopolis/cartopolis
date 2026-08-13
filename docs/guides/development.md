@@ -125,7 +125,7 @@ Client env vars (also read from `.env`):
 
 The server takes `cartopolis.toml` → `CARTO_*` env → CLI flags, in that order.
 
-## Shipping: three builds from one codebase
+## Shipping: three builds from one codebase, plus two services
 
 **Desktop (native).** `cargo build -p cartopolis --release` → `target/release/cartopolis`
 (fat LTO: slow to compile, fastest at runtime). `release.yml` builds the Linux
@@ -152,6 +152,20 @@ a JDK; the script's header lists the environment variables. Nothing is published
 and nothing has run on a device yet — read
 [`docs/notes/android-build.md`](../notes/android-build.md) before touching it,
 particularly the part about NativeActivity costing the soft keyboard.
+
+**The hosted simulator.** `deploy-sim.yml` builds `cartopolis_simulator` in
+release and publishes the binary to the VPS, where a systemd unit runs it. It
+serves the TCP wire on `cartopolis.org:4747`, the browser's WebSocket carrier at
+`wss://cartopolis.org/ws`, and the account admin API — all three of which are one
+process and one account store.
+[`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
+the two things still open.
+
+**The admin GUI.** `web/` is a Preact + deepsignal app (Bun, no Rust) for managing
+accounts on that simulator; it deploys to
+[web.cartopolis.org](https://web.cartopolis.org). `bun run dev` in that directory
+proxies to a local simulator, so it runs against the real API rather than a mock —
+`web/README.md` has the two commands.
 
 Platform differences live behind one API in `platform/` — native and wasm
 implementations of `http`, `storage`, `location`, `stream`, `work`, `workers`.
@@ -282,8 +296,16 @@ wasm- or Android-shaped, run that lane locally first —
 two environment variables.
 
 Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` — add
-that to any new job. `deploy-web.yml`, `deploy-android.yml` (both
-`workflow_dispatch` only) and `release.yml` are separate workflows.
+that to any new job. `deploy-web.yml`, `deploy-android.yml` and `deploy-sim.yml`
+(all three `workflow_dispatch` only) and `release.yml` are separate workflows.
+
+`deploy-admin.yml` is the exception to both rules above, and deliberately: it runs
+on **every push to `main`** that touches `web/`, and it checks out **without**
+LFS. It is a Bun build of ~35 KB of TypeScript — seconds, not minutes — it
+references no LFS object, and publishing it interrupts nobody. The other three are
+manual because publishing them is either expensive (a ~70 MB wasm link competing
+for a runner slot) or disruptive (`deploy-sim.yml` restarts the live simulator,
+dropping every connected session).
 
 **A step may only use a tool the image already has.** The image is built by hand on
 the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t
