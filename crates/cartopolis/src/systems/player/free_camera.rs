@@ -467,23 +467,43 @@ fn spherical_offset(yaw: f32, pitch: f32, distance: f64) -> DVec3 {
 
 /// Set the camera near/far only when they actually change (avoids per-frame
 /// change-detection churn on the projection).
-fn set_projection(projection: &mut Projection, near: f32, far: f32) {
-    if let Projection::Perspective(p) = projection {
-        if p.near != near || p.far != far {
-            p.near = near;
-            p.far = far;
-        }
+fn set_projection(projection: &mut Mut<Projection>, near: f32, far: f32) {
+    // Read through `Deref`, write through `DerefMut`, and never the other way
+    // round. The guard below is old; what it did not do is stop the *tick* being
+    // stamped, because the caller holds a `Mut<Projection>` and `&mut **projection`
+    // marks the component changed the moment it is formed — before this `if` runs.
+    // So the projection was `Changed` on every frame of the run, re-triggering
+    // frustum recomputation and the camera's view-uniform extraction, and quietly
+    // negating the stationary-frame optimisation the caller works hard for a dozen
+    // lines above.
+    let stale = matches!(
+        &**projection,
+        Projection::Perspective(p) if p.near != near || p.far != far
+    );
+    if !stale {
+        return;
+    }
+    if let Projection::Perspective(p) = &mut **projection {
+        p.near = near;
+        p.far = far;
     }
 }
 
 /// Set the camera's vertical field of view, only when it actually changes — same
 /// reason [`set_projection`] guards its write: the projection is change-detected,
 /// and the follow camera would otherwise mark it dirty on every frame it moves.
-fn set_fov(projection: &mut Projection, fov: f32) {
-    if let Projection::Perspective(p) = projection {
-        if (p.fov - fov).abs() > 1e-5 {
-            p.fov = fov;
-        }
+fn set_fov(projection: &mut Mut<Projection>, fov: f32) {
+    // Same shape, same reason as [`set_projection`] — and this one mattered more,
+    // because the Follow arm calls it every frame with a speed-eased FOV.
+    let stale = matches!(
+        &**projection,
+        Projection::Perspective(p) if (p.fov - fov).abs() > 1e-5
+    );
+    if !stale {
+        return;
+    }
+    if let Projection::Perspective(p) = &mut **projection {
+        p.fov = fov;
     }
 }
 
@@ -1960,6 +1980,78 @@ mod tests {
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
     const NORTH: DVec3 = DVec3::Y;
+
+    /// Writing the *same* projection back must not mark the component changed.
+    ///
+    /// This is a change-detection test, so it needs a real `World`: the defect it
+    /// guards was invisible to the value-level guard inside `set_projection`,
+    /// because `&mut **projection` on a `Mut<T>` stamps the tick when the reference
+    /// is *formed*, not when a field is assigned. `camera_controls` calls both
+    /// setters unconditionally every frame, so the projection was permanently
+    /// `Changed` — re-running frustum culling setup and the camera view-uniform
+    /// extraction on frames where nothing had moved.
+    #[test]
+    fn rewriting_an_unchanged_projection_leaves_it_unchanged() {
+        let mut world = World::new();
+        let e = world
+            .spawn(Projection::Perspective(PerspectiveProjection {
+                near: DEFAULT_NEAR,
+                far: DEFAULT_FAR,
+                ..default()
+            }))
+            .id();
+        // A freshly spawned component is always `Changed`; start from a clean slate
+        // so what the test observes is this frame's writes only.
+        world.clear_trackers();
+
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR);
+        set_fov(&mut projection, FOLLOW_FOV_BASE);
+        drop(projection);
+        assert!(
+            !world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "re-applying identical near/far (and an unchanged FOV) must not dirty              the projection -- camera_controls does exactly this on every still frame"
+        );
+
+        // …and a real change must still register, or the guard has gone too far and
+        // the space tier's near/far override would never reach the renderer.
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR * 4.0);
+        drop(projection);
+        assert!(
+            world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "a genuine near/far change must still mark the projection changed"
+        );
+
+        // The mechanism itself, pinned: forming `&mut **` on a `Mut<T>` marks the
+        // component changed **even when nothing is assigned through it**. This is
+        // the whole reason the setters above read through `Deref` first, and it is
+        // what made the old value-guard ineffective. If a Bevy upgrade ever made
+        // this false, the contortion in those setters could be dropped — and this
+        // is the assertion that would say so.
+        world.clear_trackers();
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        let _formed_but_unused = &mut *projection;
+        drop(projection);
+        assert!(
+            world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "forming a mutable deref of Mut<T> is what stamps the change tick; if \
+             this no longer holds, set_projection/set_fov can go back to a plain \
+             `&mut Projection`"
+        );
+    }
 
     #[test]
     fn the_ground_clamp_reads_altitude_across_cells_not_within_one() {
