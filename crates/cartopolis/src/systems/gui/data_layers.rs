@@ -1772,6 +1772,10 @@ pub fn apply_feature_toggles(
     // `BuildingColliders` changed on every frame of the run for any reader that
     // ever wants to watch it.
     crate::systems::osm_buildings::set_tdbag_enabled(dl.tdbag_enabled);
+    // The master toggle, by the same route and for the same reason — it used to
+    // reach only `ToggleWants::of` below, i.e. visibility, so "off" hid the
+    // buildings without stopping a single fetch, triangulation or upload.
+    crate::systems::osm_buildings::set_buildings_enabled(dl.buildings_enabled);
     // And both source toggles into the collision index, so a hidden source's
     // footprints stop acting as invisible walls (collision matches what's drawn).
     colliders.set_sources(dl.osm_buildings_enabled, dl.tdbag_enabled);

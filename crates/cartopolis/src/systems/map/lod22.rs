@@ -216,7 +216,11 @@ pub fn update_lod22(
     // take the cells over), orphan any in-flight results, and forget `requested`
     // so re-checking re-queues every covered cell. While off, `lod22_covers()`
     // reports no coverage, so the queue loop below stays empty on its own.
-    let enabled = crate::systems::osm_buildings::tdbag_user_enabled();
+    // Both toggles, not just the 3DBAG one: the master Buildings switch reached
+    // only visibility until now, so unticking it left this streamer fetching and
+    // meshing every covered cell to draw nothing.
+    let enabled = crate::systems::osm_buildings::buildings_user_enabled()
+        && crate::systems::osm_buildings::tdbag_user_enabled();
     if lod.enabled_was && !enabled {
         let retired: Vec<Entity> = lod.cells.drain().map(|(_, e)| e).collect();
         lod.stream.retire_all(retired);
@@ -225,6 +229,12 @@ pub fn update_lod22(
         lod.stream.reset();
     }
     lod.enabled_was = enabled;
+    if !enabled {
+        // Nothing below this point may run: the queue loop would re-request every
+        // covered cell. The despawn drain above has already happened, so a ring
+        // retired by the edge case just above still clears at its per-frame cap.
+        return;
+    }
 
     // Establish the anchor.
     if lod.anchor.is_none() {

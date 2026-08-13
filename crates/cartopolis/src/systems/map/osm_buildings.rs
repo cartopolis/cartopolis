@@ -179,6 +179,32 @@ pub(crate) fn tdbag_user_enabled() -> bool {
     TDBAG_USER_ENABLED.load(Ordering::Relaxed)
 }
 
+/// The Layers-panel **master** Buildings toggle, mirrored the same way and for the
+/// same reason as [`TDBAG_USER_ENABLED`] above: both building streamers are at
+/// Bevy's 16-parameter ceiling and cannot take `Res<DataLayers>`.
+///
+/// Until this existed the master toggle reached only `ToggleWants::of`, which
+/// writes `Visibility::Hidden` — so unticking Buildings hid the meshes and changed
+/// nothing else. The client went on fetching 49 OSM cells and 9 3DBAG cells,
+/// decoding and triangulating them on the *same* `AsyncComputeTaskPool` the vector
+/// tile rasterise runs on (which CLAUDE.md documents as starvable by exactly this
+/// kind of long blocking job), uploading a merged mesh plus four window meshes per
+/// cell, spawning a few hundred entities and publishing their collider polygons.
+///
+/// So the most expensive layer in the client was the one whose "off" did the least,
+/// on the device with the least headroom.
+static BUILDINGS_USER_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Mirror the Layers-panel master Buildings toggle out of `DataLayers`.
+pub(crate) fn set_buildings_enabled(on: bool) {
+    BUILDINGS_USER_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Current state of the Layers-panel master Buildings toggle.
+pub(crate) fn buildings_user_enabled() -> bool {
+    BUILDINGS_USER_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Fetch a 3DBAG coverage manifest via the http seam. A missing/unreachable host
 /// (or an empty tile URL) yields empty coverage, so the client silently uses OSM
 /// buildings everywhere.
@@ -361,6 +387,10 @@ pub struct OsmBuildings {
     anchor: Option<(i64, i64, u32, f64)>,
     /// Terrain-field revision the live buildings stand on; a change rebuilds them.
     terrain_revision: u32,
+    /// Last-seen master Buildings toggle, so its off-edge can tear the patch down
+    /// once instead of every frame it stays off. Mirrors `Lod22Buildings::
+    /// enabled_was`, which does the same job for the 3DBAG sub-toggle.
+    enabled_was: bool,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
     /// Last-seen (3DBAG toggle, coverage resolved) pair. A patch bakes its
@@ -456,6 +486,9 @@ impl Default for OsmBuildings {
     fn default() -> Self {
         Self {
             anchor: None,
+            // True, matching `BUILDINGS_USER_ENABLED`'s own initial value, so a run
+            // that never touches the toggle sees no edge and tears nothing down.
+            enabled_was: true,
             last_center: None,
             tdbag_was: None,
             last_fetch: None,
@@ -663,8 +696,17 @@ pub fn update_buildings(
     // buildings are always extruded onto the flat plane; rebuilding them is the
     // same teardown a re-anchor does. `sync` runs unconditionally so it adopts the
     // new generation either way.
+    // The Layers panel's master Buildings toggle. Its off-edge is a teardown of
+    // exactly the same shape as a re-anchor — retire the far cells and the detail
+    // patch through the shared despawn queue, drop their colliders, orphan both
+    // in-flight sinks — so it joins the condition below rather than repeating it.
+    // `anchor = None` there is what makes switching back on re-establish cleanly.
+    let enabled = buildings_user_enabled();
+    let turned_off = osm.enabled_was && !enabled;
+    osm.enabled_was = enabled;
+
     let reanchored = osm.far.sync(stream.anchor_generation);
-    if reanchored || osm.terrain_revision != terrain.revision {
+    if reanchored || turned_off || osm.terrain_revision != terrain.revision {
         osm.terrain_revision = terrain.revision;
         for e in osm.detail_entities.drain(..) {
             commands.entity(e).despawn();
@@ -680,6 +722,13 @@ pub fn update_buildings(
         osm.far.reset();
         osm.far_tdbag.reset();
         osm.anchor = None;
+    }
+
+    if !enabled {
+        // Everything past here establishes an anchor and streams cells. The
+        // despawn drain above still runs each frame, so a ring retired by the
+        // off-edge clears at its per-frame cap rather than in one command buffer.
+        return;
     }
 
     // Establish the anchor (from the map origin). Far cells then stream one
@@ -2579,6 +2628,25 @@ mod tests {
             r.reverse();
         }
         r
+    }
+
+    /// A fresh run must see **no** toggle edge.
+    ///
+    /// `OsmBuildings::enabled_was` and `BUILDINGS_USER_ENABLED` are two copies of
+    /// one fact, and the off-edge they drive tears down the whole patch. If they
+    /// disagreed at startup, the first frame would retire a ring it had not built
+    /// and clear colliders nobody published -- harmless once, but it would fire on
+    /// every cold start and mask a real toggle edge in the noise.
+    #[test]
+    fn the_buildings_toggle_and_its_edge_state_agree_at_startup() {
+        assert!(
+            buildings_user_enabled(),
+            "the master Buildings toggle starts on, matching DataLayers::default"
+        );
+        assert!(
+            OsmBuildings::default().enabled_was,
+            "the streamer must start believing the toggle is on, or frame one is a teardown"
+        );
     }
 
     #[test]
