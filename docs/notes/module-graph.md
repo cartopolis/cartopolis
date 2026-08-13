@@ -12,6 +12,19 @@ list, then computing in-degree and mutual pairs.
 
 ## The shape
 
+> **Correction, 2026-08-13.** Re-derived over 57 modules: **18** mutual pairs, not
+> 17 — but the pair count is the wrong metric and always was. The blocker is that
+> **31 of the 57 modules form a single strongly-connected component**, so no member
+> of it can be extracted at any granularity, and unpicking "17 pairs" would not
+> have touched it. New mutual edges since 2026-08-06 include `avatar↔user_store`,
+> `data_layers↔user_store`, `session↔user_store`, `collision↔data_layers`,
+> `driver↔navigation`, `geo_nav↔navigation`, `globe↔osm_buildings` and
+> `globe↔tile_loader`. The hubs moved too: `free_camera` fell from in-degree 25 to
+> 4 (the `FreeCamera` marker move worked), and the top two are now `egui_manager`
+> (21) and `theme` (20) — **both outside every cycle**. So the graph's centre of
+> gravity is egui, not Bevy, which is the same conclusion
+> `client-build-cost.md` reaches from the compile side.
+
 **26 mutual dependency cycles** existed between modules when this was written.
 2026-08-06 took it to 17: the `geo` extraction removed four, fixing the tile
 pipeline's layering removed two more (see below), and moving the 23 marker
