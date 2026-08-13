@@ -125,20 +125,19 @@ impl LinkStatus {
 /// decision anyone can read.
 ///
 /// Lives here, not in `ws_transport`, so it is compiled and tested on the native
-/// lane. That module is `cfg(wasm32)` and no CI lane runs a test there, so a unit
-/// test inside it would be a test nobody ever runs. `secure_page` and `host` are
-/// arguments for the same reason: they are the only two facts this needs from a
-/// browser, so passing them in is what makes the rest a pure function.
+/// lane — that module is `cfg(wasm32)` and no CI lane runs a test there, so a
+/// unit test inside it would be a test nobody ever runs. `secure_page` and
+/// `page_host` are arguments for the same reason: they are the only two facts
+/// this needs from a browser, so passing them in is what makes the rest pure.
 ///
-/// The allow is the price of that, and it is worth knowing why `cargo check`
-/// does not need it while `cargo test` does: a plain check builds this crate as a
-/// library, where a `pub` item is public API and reachable by definition. Under
-/// `--test` the lib is compiled as a test *binary*, "public API" stops meaning
-/// anything, and a function whose only non-test caller is behind
-/// `cfg(target_arch = "wasm32")` is dead — which `unused = "deny"` makes an
-/// error. Same shape as the `cargo check` blind spot CLAUDE.md warns about for
-/// egui and the building geometry: run the tests, not just a check.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// It carried a `cfg_attr(not(wasm32), allow(dead_code))` while the browser was
+/// its only caller. [`resolve_target`] calls it on native now, so the allow is
+/// gone — and note *why* it was needed, because the trap recurs: under `--test`
+/// the lib is compiled as a test **binary**, where "public API" stops meaning
+/// anything, so a `pub` item whose only real caller sits behind a `cfg` is dead
+/// code and `unused = "deny"` makes that an error. `cargo check` passes and
+/// `cargo test` does not. Same blind spot CLAUDE.md flags for egui and the
+/// building geometry: run the tests, not just a check.
 pub fn ws_url(addr: &str, secure_page: bool, page_host: &str) -> String {
     let addr = addr.trim();
     if addr.starts_with("ws://") || addr.starts_with("wss://") {
@@ -163,6 +162,77 @@ pub fn ws_url(addr: &str, secure_page: bool, page_host: &str) -> String {
     } else {
         format!("{scheme}://{host}/ws")
     }
+}
+
+/// How a native client should reach the address it was given.
+///
+/// The rule is **encrypted unless the traffic cannot leave the machine**. A
+/// password and a session token cross this link, so plaintext over a network is
+/// not a default anyone should be able to get by accident.
+///
+/// Native-only, along with [`resolve_target`] and `is_loopback`: the browser has
+/// exactly one carrier and no choice to make, so on wasm these are not merely
+/// unused, they are meaningless. `cfg` rather than `allow(dead_code)` — an item
+/// that should not exist on a target is better absent than excused.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// Length-delimited TCP straight to a socket. Loopback only by default: this
+    /// is solo mode's in-process sim, where "unencrypted" means the bytes go from
+    /// one end of a socket on this machine to the other. TLS there would mean a
+    /// self-signed certificate and a disabled verifier, which is worse than
+    /// nothing — it looks like security and is not — for traffic that anything
+    /// able to read it could equally read out of this process's own memory.
+    Tcp(String),
+    /// The same wire inside WebSocket frames, over TLS unless the caller went out
+    /// of their way. Identical to what the browser build speaks, so the server
+    /// needs no third code path and Caddy terminates the TLS for both.
+    WebSocket(String),
+}
+
+/// Decide how to reach `addr`, and say so in a way that can be unit-tested.
+///
+/// - `wss://…` / `ws://…` — used as given; an explicit URL is an instruction, and
+///   `ws://` is the escape hatch for a private CA or a plaintext dev sim.
+/// - `tcp://host:port` — plain TCP on purpose, for a LAN sim with no certificate.
+/// - `127.0.0.1:x`, `localhost:x`, `[::1]:x` — TCP. Solo mode's own address.
+/// - anything else — `wss://host/ws`. **Bare hosts get TLS**, which is the whole
+///   point: the address a person types is the address that ends up encrypted.
+///
+/// A bare host keeps whatever port it was given (`sim.example:8443` →
+/// `wss://sim.example:8443/ws`), because a non-default port is a fact about the
+/// deployment and dropping it would silently connect somewhere else.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn resolve_target(addr: &str) -> Target {
+    let addr = addr.trim();
+    if addr.starts_with("ws://") || addr.starts_with("wss://") {
+        return Target::WebSocket(addr.to_string());
+    }
+    if let Some(rest) = addr.strip_prefix("tcp://") {
+        return Target::Tcp(rest.to_string());
+    }
+    if is_loopback(addr) {
+        return Target::Tcp(addr.to_string());
+    }
+    // `ws_url` with `secure_page = true`: on native there is no page to inherit a
+    // scheme from, and the answer we want for a bare host is the secure one.
+    Target::WebSocket(ws_url(addr, true, ""))
+}
+
+/// Whether this `host:port` names this machine.
+///
+/// Text, not a DNS resolution: this runs before connecting and must not block,
+/// and a name that *resolves* to loopback but was typed as a public host is a
+/// case where the person's intent was the network. Solo mode supplies a literal
+/// `127.0.0.1:port` from its own bound listener, which is what this recognises.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_loopback(addr: &str) -> bool {
+    let host = match addr.rsplit_once(':') {
+        // `[::1]:4747` — strip the brackets IPv6 needs when a port follows.
+        Some((h, _)) => h.trim_start_matches('[').trim_end_matches(']'),
+        None => addr,
+    };
+    host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
 /// Everything one connection attempt produces. The caller inserts these as
@@ -278,6 +348,119 @@ fn friendly_error(e: &anyhow::Error) -> String {
     e.to_string()
 }
 
+/// One open connection to a simulator, whichever way it was reached.
+///
+/// An enum rather than a boxed trait object because there are exactly two
+/// carriers and the loop below both *opens* and drives them — the same reason
+/// the server states its transport as a trait and this states it as a sum. The
+/// wire inside is identical, so everything past `connect` is written once.
+#[cfg(not(target_arch = "wasm32"))]
+enum Wire {
+    Tcp(Framed<TcpStream, LengthDelimitedCodec>),
+    /// `MaybeTls` because a `ws://` escape hatch reuses this arm unencrypted; the
+    /// scheme in the URL is what decides, and tungstenite does the deciding.
+    WebSocket(
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ),
+}
+
+/// Select rustls' crypto provider, exactly once, before the first TLS handshake.
+///
+/// rustls 0.23 ships no default. It derives a process-wide provider from its own
+/// features and **panics** when that is ambiguous — none enabled, or both `ring`
+/// and `aws-lc-rs`. The panic happens at the first connection, not at startup and
+/// not at compile time, so the failure mode is a client that builds, runs, draws
+/// a map, and then dies the moment somebody signs in.
+///
+/// Doing it explicitly rather than relying on the feature being unambiguous: this
+/// is a workspace, feature unification is not local, and a dependency added years
+/// from now could turn one clean answer into two. `install_default` returns `Err`
+/// if a provider is already installed, which is not a problem — somebody got there
+/// first and any provider will serve — so the result is deliberately dropped.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Wire {
+    async fn connect(target: &Target) -> anyhow::Result<Self> {
+        match target {
+            Target::Tcp(addr) => {
+                let stream = TcpStream::connect(addr).await?;
+                Ok(Self::Tcp(Framed::new(
+                    stream,
+                    LengthDelimitedCodec::builder()
+                        .max_frame_length(MAX_FRAME)
+                        .little_endian()
+                        .new_codec(),
+                )))
+            }
+            Target::WebSocket(url) => {
+                // Before any TLS: see the function's note. A `ws://` URL does not
+                // need it, but calling it unconditionally is one branch fewer to
+                // get wrong and it costs a `Once` check.
+                install_crypto_provider();
+                // The same ceiling the TCP codec enforces, so neither carrier is
+                // the more permissive one.
+                let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                    .max_message_size(Some(MAX_FRAME))
+                    .max_frame_size(Some(MAX_FRAME));
+                let (socket, _) =
+                    tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false)
+                        .await?;
+                Ok(Self::WebSocket(socket))
+            }
+        }
+    }
+
+    async fn send(&mut self, frame: Vec<u8>) -> anyhow::Result<()> {
+        match self {
+            Self::Tcp(framed) => framed.send(Bytes::from(frame)).await?,
+            Self::WebSocket(socket) => {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Binary(
+                        frame.into(),
+                    ))
+                    .await?
+            }
+        }
+        Ok(())
+    }
+
+    /// The next app frame, or `None` when the peer hung up.
+    ///
+    /// Cancel-safe, which is load-bearing: the main loop polls this in a
+    /// `select!` arm alongside the intent channel, and a lost frame would be a
+    /// lost snapshot. Both inner `next()`s are cancel-safe and this adds no state
+    /// around the await.
+    async fn next(&mut self) -> Option<anyhow::Result<Vec<u8>>> {
+        use tokio_tungstenite::tungstenite::Message;
+        match self {
+            Self::Tcp(framed) => framed
+                .next()
+                .await
+                .map(|r| r.map(|b| b.to_vec()).map_err(anyhow::Error::from)),
+            Self::WebSocket(socket) => loop {
+                return match socket.next().await {
+                    None => None,
+                    Some(Err(e)) => Some(Err(e.into())),
+                    Some(Ok(Message::Binary(bytes))) => Some(Ok(bytes.to_vec())),
+                    Some(Ok(Message::Close(_))) => None,
+                    // Ping/Pong/Text are not ours. A proxy's keepalive must not
+                    // be decoded as postcard and reported as a wire error.
+                    Some(Ok(_)) => continue,
+                };
+            },
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn client_loop(
     addr: String,
@@ -288,29 +471,28 @@ async fn client_loop(
     tile_template: Arc<Mutex<String>>,
     status: LinkStatus,
 ) -> anyhow::Result<()> {
+    let target = resolve_target(&addr);
+    match &target {
+        Target::WebSocket(url) => tracing::info!(%url, "sim link (tls terminated by the server)"),
+        Target::Tcp(a) => tracing::info!(addr = %a, "sim link (plain tcp — loopback or explicit)"),
+    }
+
     // Try the primary credential, then the fallback (a stale persisted token
     // gets a fresh password login rather than locking the user out). Each attempt
     // needs its own connection — the server closes on auth failure.
     let attempts: Vec<AuthCredential> = std::iter::once(primary).chain(fallback).collect();
-    let mut authed: Option<(Framed<TcpStream, LengthDelimitedCodec>, NetMessage)> = None;
+    let mut authed: Option<(Wire, NetMessage)> = None;
     // The last rejection, so "wrong password" reaches the sign-in screen instead
     // of the generic "authentication failed" the retry loop ends on.
     let mut rejection: Option<String> = None;
     for (i, credential) in attempts.into_iter().enumerate() {
         status.set(LinkState::Connecting);
-        let stream = TcpStream::connect(&addr).await?;
-        let mut framed = Framed::new(
-            stream,
-            LengthDelimitedCodec::builder()
-                .max_frame_length(MAX_FRAME)
-                .little_endian()
-                .new_codec(),
-        );
+        let mut framed = Wire::connect(&target).await?;
         let hello = encode_app_frame(&NetMessage::ClientHello {
             protocol_version: PROTOCOL_VERSION,
             auth: credential,
         })?;
-        framed.send(Bytes::from(hello)).await?;
+        framed.send(hello).await?;
         status.set(LinkState::Authenticating);
 
         let ack_bytes = framed
@@ -354,7 +536,7 @@ async fn client_loop(
 
     // Request the texture catalog immediately after handshake.
     let cat_req = encode_app_frame(&NetMessage::TextureCatalogRequest)?;
-    framed.send(Bytes::from(cat_req)).await?;
+    framed.send(cat_req).await?;
 
     loop {
         tokio::select! {
@@ -363,7 +545,7 @@ async fn client_loop(
                 match msg {
                     Some(m) => {
                         let b = encode_app_frame(&m)?;
-                        framed.send(Bytes::from(b)).await?;
+                        framed.send(b).await?;
                     }
                     None => break,
                 }
@@ -371,7 +553,7 @@ async fn client_loop(
             frame = framed.next() => {
                 match frame {
                     None => break,
-                    Some(Err(e)) => return Err(e.into()),
+                    Some(Err(e)) => return Err(e),
                     Some(Ok(bytes)) => {
                         let m = decode_app_frame(&bytes)?;
                         if out_tx.send(m).is_err() {
@@ -1151,6 +1333,81 @@ mod tests {
         assert_eq!(
             ws_url("   ", false, "localhost:8080"),
             "ws://localhost:8080/ws"
+        );
+    }
+
+    /// **The security property, as a test.** Anything that could leave this
+    /// machine is encrypted, and it takes a deliberate act to opt out. If this
+    /// test ever needs relaxing, that is the moment to think hard.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_remote_address_is_always_encrypted() {
+        for addr in [
+            "cartopolis.org",
+            "sim.example.org",
+            "sim.example.org:8443",
+            "192.0.2.10:4747",
+            "https://sim.example.org",
+        ] {
+            match resolve_target(addr) {
+                Target::WebSocket(url) => assert!(
+                    url.starts_with("wss://"),
+                    "{addr} resolved to an unencrypted {url}"
+                ),
+                Target::Tcp(a) => panic!("{addr} resolved to plaintext tcp {a}"),
+            }
+        }
+    }
+
+    /// Loopback stays plain TCP: that is solo mode's in-process sim, and TLS to
+    /// yourself means a self-signed certificate and a disabled verifier — the
+    /// appearance of security over traffic that never touches a network.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn loopback_stays_plain_tcp() {
+        for addr in [
+            "127.0.0.1:4747",
+            "localhost:4747",
+            "[::1]:4747",
+            "127.0.0.53:9999",
+        ] {
+            assert_eq!(
+                resolve_target(addr),
+                Target::Tcp(addr.to_string()),
+                "{addr} should be reached directly"
+            );
+        }
+    }
+
+    /// Two escape hatches, both explicit, because a private CA and a plaintext
+    /// dev sim are real and neither should require editing this file. Nobody
+    /// reaches either by typing a hostname.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn opting_out_of_tls_takes_a_scheme() {
+        assert_eq!(
+            resolve_target("tcp://sim.lan:4747"),
+            Target::Tcp("sim.lan:4747".to_string())
+        );
+        assert_eq!(
+            resolve_target("ws://sim.lan:4748/ws"),
+            Target::WebSocket("ws://sim.lan:4748/ws".to_string())
+        );
+        // And an explicit wss URL is passed through untouched.
+        assert_eq!(
+            resolve_target("wss://sim.example/ws"),
+            Target::WebSocket("wss://sim.example/ws".to_string())
+        );
+    }
+
+    /// A non-default port is a fact about the deployment; dropping it would
+    /// quietly connect somewhere else.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_port_survives_the_upgrade_to_tls() {
+        assert_eq!(
+            resolve_target("sim.example:8443"),
+            Target::WebSocket("wss://sim.example:8443/ws".to_string())
         );
     }
 

@@ -155,11 +155,14 @@ particularly the part about NativeActivity costing the soft keyboard.
 
 **The hosted simulator.** `deploy-sim.yml` builds `cartopolis_simulator` in
 release and publishes the binary to the VPS, where a systemd unit runs it. It
-serves the TCP wire on `cartopolis.org:4747`, the browser's WebSocket carrier at
-`wss://cartopolis.org/ws`, and the account admin API — all three of which are one
-process and one account store.
+serves the wire and the account admin API from one process and one account store,
+both behind Caddy's TLS: `--connect cartopolis.org` from any build — desktop,
+Android or browser — resolves to `wss://cartopolis.org/ws`. **Give it a hostname,
+not a host:port**; `network::resolve_target` supplies the scheme and the path, and
+that is what keeps credentials off the wire in the clear. Its TCP listener is
+loopback-only, so there is nothing plaintext to reach.
 [`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
-the two things still open.
+what is still open.
 
 **The admin GUI.** `web/` is a Preact + deepsignal app (Bun, no Rust) for managing
 accounts on that simulator; it deploys to
