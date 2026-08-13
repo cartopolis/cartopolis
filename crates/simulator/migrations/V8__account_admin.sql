@@ -1,0 +1,11 @@
+-- Who may administer accounts. One flag on the existing account store rather than
+-- a second credential somewhere else: the admin GUI signs in with an ordinary
+-- game account, so there is one password to rotate and one place to disable a
+-- person outright.
+--
+-- Defaults to 0, so every existing row stays a plain player and a database that
+-- has never met this migration grants nobody anything. The first admin is made
+-- out of band, by `simulator --create-admin <username>` on the server itself —
+-- there is deliberately no self-service path to the flag over the wire or the
+-- API, because the API's own authorisation is what it would be granting.
+ALTER TABLE accounts ADD COLUMN admin INTEGER NOT NULL DEFAULT 0;
