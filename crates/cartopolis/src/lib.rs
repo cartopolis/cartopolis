@@ -2500,10 +2500,21 @@ fn frame_limiter(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let period = *period.get_or_insert_with(|| {
+            // The tier's answer, with `CARTO_FPS_CAP` still overriding it — a
+            // debugging knob has to win over a default to be useful, and lifting
+            // the cap is how headroom gets measured at all.
+            //
+            // The tier answers `None` on the phone, which is not "uncapped" so much
+            // as "already paced": Android runs `PresentMode::AutoVsync`, and a
+            // sleep-based limiter layered on FIFO is two pacers timing from
+            // different points in the pipeline, which beats against itself. It also
+            // made the main thread look idle to the Linux scheduler on a
+            // 2-big-6-little SoC whose tile workers look busy — the wrong signal
+            // for deciding which of them gets a fast core.
             let fps: f64 = std::env::var("CARTO_FPS_CAP")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(60.0);
+                .unwrap_or_else(|| quality::budget().fps_cap.unwrap_or(0.0));
             if fps <= 0.0 {
                 Duration::ZERO
             } else {

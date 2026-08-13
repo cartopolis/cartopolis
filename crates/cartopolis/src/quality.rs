@@ -190,6 +190,27 @@ pub struct Budget {
     /// 1.0 means "insert nothing", so every tier above the phone is bit-identical
     /// to before and `cargo shots` output does not move.
     pub render_scale: f32,
+    /// Frame-rate ceiling for the sleep-based limiter, or `None` to leave pacing
+    /// entirely to the presentation mode.
+    ///
+    /// `None` on Android, and that is a fix rather than a preference. The limiter
+    /// sleeps the main thread to a 60 fps deadline in `Last`, while Android also
+    /// runs `PresentMode::AutoVsync` — FIFO, which already blocks on acquire. Two
+    /// pacers measuring from different points in the pipeline is the classic recipe
+    /// for beat-frequency judder (alternating 60/30) even with GPU headroom to
+    /// spare, and the limiter's own doc block was written for the `AutoNoVsync`
+    /// desktop case and never revisited when the Android arm was added.
+    ///
+    /// It also decays the render thread's scheduler utilisation: a main thread that
+    /// sleeps every frame looks idle to Linux EAS, which is exactly the wrong
+    /// signal on a 2-big-6-little SoC where the tile workers are running 150 ms
+    /// blocking jobs and look busy.
+    ///
+    /// The value is a `Budget` field for the reason this module's header gives:
+    /// `CARTO_FPS_CAP` is an environment variable, and **Android has no
+    /// environment** — so on the one platform whose pacing this decides, the
+    /// existing knob is unreachable rather than merely inconvenient.
+    pub fps_cap: Option<f64>,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -261,6 +282,7 @@ impl Budget {
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
             render_scale: 1.0,
+            fps_cap: Some(60.0),
         }
     }
 
@@ -302,6 +324,7 @@ impl Budget {
             // Native resolution: an integrated GPU is bandwidth-limited, not
             // resolution-limited, and this rung's brief is to keep the picture.
             render_scale: 1.0,
+            fps_cap: Some(60.0),
         }
     }
 
@@ -335,6 +358,10 @@ impl Budget {
             // rather than picked for feel, so the two platforms' phone budgets
             // mean the same thing.
             render_scale: 0.7,
+            // Leave pacing to FIFO. See the field's own comment: a sleep-based
+            // limiter layered on vsync is a judder source, not a saving, and the
+            // handset is the platform that runs `AutoVsync`.
+            fps_cap: None,
         }
     }
 
@@ -560,6 +587,19 @@ mod tests {
                 "atmosphere LUTs: {name}"
             );
         }
+    }
+
+    /// The phone leaves pacing to the presentation mode; the others cap.
+    ///
+    /// Not a taste question. Android runs `PresentMode::AutoVsync` (FIFO, which
+    /// blocks on acquire), so a sleep-based limiter on top is a second pacer
+    /// timing from a different point in the pipeline — the standard way to get
+    /// alternating 60/30 judder on a device with headroom to spare.
+    #[test]
+    fn the_phone_leaves_frame_pacing_to_vsync() {
+        assert_eq!(Budget::phone().fps_cap, None);
+        assert!(Budget::balanced().fps_cap.is_some());
+        assert!(Budget::desktop().fps_cap.is_some());
     }
 
     /// Only 1× and 4× are portable (see `Budget::msaa`), so **no** rung may ask for
