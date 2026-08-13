@@ -314,6 +314,134 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
     clicked
 }
 
+// ─── Scale bar ────────────────────────────────────────────────────────────────
+
+/// The widest the bar may draw, in points. A scale bar is read by comparing it
+/// with something on the map, so it wants to be long; it must also not become a
+/// rule across the bottom of a phone.
+const SCALE_MAX_PTS: f32 = 110.0;
+/// Steepest the view may be for the bar to mean anything: below this depression
+/// angle the centre ray runs most of the way to the horizon, where "one number
+/// of metres per point" stops being true within the bar's own length.
+const SCALE_MIN_DEPRESSION: f32 = 0.20; // ~11.5° below horizontal
+
+/// Ground metres per screen point at the point the camera is looking at.
+///
+/// The bar answers "how big is what I am looking at", so it is measured where
+/// the view centre meets the ground rather than under the camera: those are the
+/// same thing looking straight down and an order of magnitude apart at a shallow
+/// tilt. `depression` is the sine of the angle the view makes below the
+/// horizontal, which is `-forward.y` for a normalised forward vector.
+///
+/// `None` when the view is too shallow to have a single scale ([`SCALE_MIN_DEPRESSION`]),
+/// which is also every view that includes the horizon — the honest answer there
+/// is no bar rather than a bar that is right for one row of pixels.
+#[must_use]
+pub fn ground_metres_per_point(
+    altitude_m: f32,
+    depression: f32,
+    fov_y: f32,
+    viewport_h_pts: f32,
+) -> Option<f32> {
+    if !(altitude_m.is_finite() && altitude_m > 0.0) || viewport_h_pts < 1.0 {
+        return None;
+    }
+    if !(depression > SCALE_MIN_DEPRESSION) {
+        return None;
+    }
+    // Distance along the view ray to the ground under the screen centre.
+    let distance = altitude_m / depression;
+    // The view plane's height at that distance, spread over the viewport. The
+    // *horizontal* ground scale works out to the same number: the horizontal
+    // extent is this times the aspect ratio, over that many more points.
+    let extent = 2.0 * distance * (fov_y * 0.5).tan();
+    let per_point = extent / viewport_h_pts;
+    per_point.is_finite().then_some(per_point)
+}
+
+/// Pick the bar: the longest 1/2/5×10ⁿ metres that fits in `max_pts`, and how
+/// many points it is.
+///
+/// 1-2-5 rather than "whatever fits" because a scale bar is read as a *number* —
+/// 200 m can be held in the head and compared with the next view; 183 m is
+/// noise wearing the same clothes.
+#[must_use]
+pub fn nice_scale_bar(metres_per_point: f32, max_pts: f32) -> Option<(f32, f32)> {
+    if !(metres_per_point.is_finite() && metres_per_point > 0.0) || max_pts < 10.0 {
+        return None;
+    }
+    let longest = metres_per_point * max_pts;
+    // Walk the mantissa down from the decade above, so the first hit is the
+    // largest of the three that fits.
+    let decade = 10_f32.powf(longest.log10().floor());
+    let metres = [5.0, 2.0, 1.0]
+        .into_iter()
+        .map(|m| m * decade)
+        .find(|m| *m <= longest)?;
+    let pts = metres / metres_per_point;
+    (pts >= 10.0).then_some((metres, pts))
+}
+
+/// "500 m" / "2 km" — whole numbers only, which the 1-2-5 ladder guarantees.
+#[must_use]
+pub fn format_scale(metres: f32) -> String {
+    if metres >= 1000.0 {
+        format!("{} km", (metres / 1000.0).round() as i64)
+    } else {
+        format!("{} m", metres.round() as i64)
+    }
+}
+
+/// Draw the bar in the bottom-right corner: a bracket and its length.
+///
+/// Bottom-**right** because the other three corners are taken (the address bar
+/// and compass column top-left, the status readout top-right, the dock and the
+/// fly stick along the bottom-left), and because it is where every phone map
+/// puts it.
+fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32) {
+    egui::Area::new(egui::Id::new("scale_bar"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-12.0, -(crate::systems::dock::reserved_bottom() + 6.0)),
+        )
+        // `Sense::hover` only: a scale bar is a readout, and an `Area` that
+        // senses clicks over the map would eat taps meant for the world.
+        .interactable(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(pts, theme::SIZE_TINY + 10.0),
+                egui::Sense::hover(),
+            );
+            let p = ui.painter();
+            let base = rect.bottom();
+            let ink = theme::CREAM;
+            // A halo under the rule, not a filled box: the bar has to be legible
+            // over both dark water and white paper, and a plate this small reads
+            // as a piece of chrome that has come loose.
+            let halo = egui::Stroke::new(3.0, theme::OVERLAY);
+            let rule = egui::Stroke::new(1.5, ink);
+            for stroke in [halo, rule] {
+                p.line_segment(
+                    [
+                        egui::pos2(rect.left(), base),
+                        egui::pos2(rect.right(), base),
+                    ],
+                    stroke,
+                );
+                for x in [rect.left(), rect.right()] {
+                    p.line_segment([egui::pos2(x, base), egui::pos2(x, base - 5.0)], stroke);
+                }
+            }
+            p.text(
+                egui::pos2(rect.right(), base - 6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format_scale(metres),
+                egui::FontId::proportional(theme::SIZE_TINY),
+                ink,
+            );
+        });
+}
+
 /// The left-hand map controls: the compass rose, and the GPS/locate button under
 /// it.
 ///
@@ -328,7 +456,7 @@ pub fn render_map_controls(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
     right_panel: Res<crate::resources::RightPanel>,
-    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
@@ -349,12 +477,13 @@ pub fn render_map_controls(
     if !right_panel.is(crate::resources::RightPanel::None) && !driver.active {
         return;
     }
-    let Ok((cell, tf)) = camera.single() else {
+    let Ok((cell, tf, projection)) = camera.single() else {
         return;
     };
+    let in_space = globe.in_space(cell, tf);
     // Over the globe the bearing is measured against the spin axis, not the local
     // flat frame (see `space_view_heading`).
-    let heading = if globe.in_space(cell, tf) {
+    let heading = if in_space {
         space_view_heading(tf, globe.north_axis_local())
     } else {
         view_heading(tf)
@@ -362,6 +491,34 @@ pub fn render_map_controls(
     let Some(heading) = heading else {
         return;
     };
+
+    // The scale bar, whenever the view has a single ground scale to state.
+    // Skipped in the space tier on purpose: up there the local flat frame is not
+    // the ground, the visible arc is a fraction of a sphere, and a straight bar
+    // of metres would be wrong by however much of the limb is in shot.
+    if !in_space && !driver.active {
+        let fov_y = match projection {
+            Projection::Perspective(p) => Some(p.fov),
+            _ => None,
+        };
+        let viewport_h = egui.viewport_pts().y;
+        // `-forward.y` is the sine of the view's depression below horizontal —
+        // 1 looking straight down, 0 at the horizon.
+        let depression = -(tf.rotation * Vec3::NEG_Z).normalize().y;
+        if let Some((metres, pts)) = fov_y
+            .and_then(|fov| {
+                ground_metres_per_point(
+                    globe.altitude_m(cell, tf) as f32,
+                    depression,
+                    fov,
+                    viewport_h,
+                )
+            })
+            .and_then(|per_pt| nice_scale_bar(per_pt, SCALE_MAX_PTS))
+        {
+            scale_bar_overlay(egui.ctx_mut(), metres, pts);
+        }
+    }
 
     if driver.active {
         // Driving: the rose steps through Organic Maps' navigation orientations,
@@ -800,6 +957,71 @@ pub fn render_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Straight down from 1 km with a 45° lens: the view is 2·1000·tan(22.5°)
+    /// ≈ 828 m tall, so an 800 pt viewport is a hair over a metre per point.
+    #[test]
+    fn the_ground_scale_is_the_view_extent_over_the_viewport() {
+        let per_pt = ground_metres_per_point(1000.0, 1.0, std::f32::consts::FRAC_PI_4, 800.0)
+            .expect("straight down has a scale");
+        assert!((per_pt - 0.828 / 0.8).abs() < 0.01, "{per_pt}");
+        // Tilt halves the depression and the ground point doubles its distance,
+        // so everything there is half as big on screen.
+        let tilted = ground_metres_per_point(1000.0, 0.5, std::f32::consts::FRAC_PI_4, 800.0)
+            .expect("a 30° view still has one");
+        assert!((tilted / per_pt - 2.0).abs() < 1e-3, "{tilted} vs {per_pt}");
+    }
+
+    /// A view that includes the horizon has no single scale — the far end of the
+    /// bar would be kilometres out of step with the near end — so it draws none
+    /// rather than one that is right for a single row of pixels.
+    #[test]
+    fn a_horizon_view_has_no_scale() {
+        assert_eq!(
+            ground_metres_per_point(1000.0, 0.02, std::f32::consts::FRAC_PI_4, 800.0),
+            None
+        );
+        // …and neither does a camera underground, or a viewport of nothing.
+        assert_eq!(
+            ground_metres_per_point(0.0, 1.0, std::f32::consts::FRAC_PI_4, 800.0),
+            None
+        );
+        assert_eq!(
+            ground_metres_per_point(1000.0, 1.0, std::f32::consts::FRAC_PI_4, 0.0),
+            None
+        );
+    }
+
+    /// 1-2-5 and nothing else: the bar is read as a number to carry to the next
+    /// view, and 183 m is noise wearing the same clothes as 200 m.
+    #[test]
+    fn the_bar_is_the_longest_one_two_or_five_that_fits() {
+        // 110 pt at 1 m/pt holds 110 m → 100 m.
+        let (metres, pts) = nice_scale_bar(1.0, 110.0).unwrap();
+        assert_eq!(metres, 100.0);
+        assert!((pts - 100.0).abs() < 1e-3);
+        // 110 pt at 2 m/pt holds 220 m → 200 m.
+        assert_eq!(nice_scale_bar(2.0, 110.0).unwrap().0, 200.0);
+        // …and at 5 m/pt, 550 m → 500 m, not 1 km.
+        assert_eq!(nice_scale_bar(5.0, 110.0).unwrap().0, 500.0);
+        for scale in [0.05_f32, 0.3, 1.0, 7.0, 40.0, 900.0, 12_000.0] {
+            let (metres, pts) = nice_scale_bar(scale, 110.0).expect("every scale gets a bar");
+            let mantissa = metres / 10_f32.powf(metres.log10().floor());
+            assert!(
+                [1.0, 2.0, 5.0].iter().any(|m| (m - mantissa).abs() < 1e-3),
+                "{metres} m is not a 1-2-5 number"
+            );
+            assert!(pts <= 110.0 + 1e-3, "{pts} pt overruns the bar");
+        }
+    }
+
+    #[test]
+    fn the_label_is_metres_below_a_kilometre_and_kilometres_above() {
+        assert_eq!(format_scale(200.0), "200 m");
+        assert_eq!(format_scale(500.0), "500 m");
+        assert_eq!(format_scale(1000.0), "1 km");
+        assert_eq!(format_scale(20_000.0), "20 km");
+    }
 
     /// The copy button's string is only useful if it parses back — this is the
     /// contract between the ⧉ button, the search bar, and the `?place=` URL.
