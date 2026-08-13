@@ -58,6 +58,29 @@ jobs:
       options: >-
         --volume /data/ci-cache/sccache:/sccache
         --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+    env:
+      # Byte-identical to ci.yml's build-test job, and that is the requirement
+      # rather than a tidiness preference: RUSTFLAGS is part of the sccache key,
+      # so any difference makes every rustc invocation in this job miss against
+      # the entries ci.yml wrote minutes earlier for the same crates, the same
+      # target and the same profile.
+      #
+      # The difference was one flag. This job set nothing and so inherited
+      # `.cargo/config.toml`'s `-C link-arg=-fuse-ld=lld -C target-cpu=x86-64-v3`,
+      # while ci.yml overrides the linker to mold. Same compiler, same code, same
+      # output — different command line, therefore a different key and a 100% miss
+      # rate. mold is baked into `cartopolis-ci:latest`, so this job can ask for it.
+      #
+      # `target-cpu=x86-64-v3` is repeated because RUSTFLAGS *replaces*
+      # `[target.x86_64-unknown-linux-gnu].rustflags` wholesale rather than adding
+      # to it; without it this job would silently drop the SIMD baseline the step
+      # below asserts the runner can execute. It does not replace `linker`, so
+      # clang still drives the link and hands off to mold.
+      #
+      # Job-scoped, exactly as ci.yml scopes its own: the `release` job below
+      # cross-compiles to x86_64-pc-windows-gnu, where `-fuse-ld=mold` is wrong and
+      # would break the link.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold -C target-cpu=x86-64-v3"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,22 +89,40 @@ jobs:
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:
           key: release-test
-      # This job *runs* what it builds, and `.cargo/config.toml` builds x86_64 at
-      # `target-cpu=x86-64-v3`. Same guard, same reason, as ci.yml's build-test:
-      # on an older runner the failure would otherwise be an illegal instruction
-      # deep inside a test.
+      # This job *runs* what it builds, at `target-cpu=x86-64-v3`. Same guard, same
+      # reason, as ci.yml's build-test: on an older runner the failure would
+      # otherwise be an illegal instruction deep inside a test.
+      #
+      # The baseline now comes from this job's own RUSTFLAGS rather than from
+      # `.cargo/config.toml` — RUSTFLAGS replaces that file's per-target rustflags
+      # wholesale — which is exactly why the flag is repeated up there. If it is
+      # ever dropped from the env block, this guard keeps passing while the build
+      # quietly stops using the baseline, so keep the two together.
       - name: Runner supports the x86-64-v3 baseline
         run: |
           grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo || {
-            echo "::error::Runner CPU lacks AVX2/FMA, but .cargo/config.toml builds for x86-64-v3."
+            echo "::error::Runner CPU lacks AVX2/FMA, but this job builds for x86-64-v3."
             exit 1
           }
-      # The same list ci.yml's build-test job runs, in the same order.
-      - run: cargo test --locked -p cartopolis_geo
-      - run: cargo test --locked -p cartopolis_core
-      - run: cargo test --locked -p cartopolis_simulator
-      - run: cargo test --locked -p cartopolis
-      - run: cargo test --locked -p big_space --lib
+      # The same invocation ci.yml's build-test job runs, which is the whole point
+      # of this step: identical target, profile, feature unification and rustflags
+      # mean identical rustc command lines, so sccache serves this job from the
+      # entries that job just wrote.
+      #
+      # It was five `cargo test -p …` steps until now, and the comment above them
+      # claimed to match ci.yml — which stopped being true when ci.yml collapsed
+      # its own five into one and measured why. Under resolver v2 each invocation
+      # unifies features over only the packages it selects, so five invocations are
+      # five feature sets for the shared Bevy dependencies and five rebuilds of
+      # them: `big_space`, a small vendored crate running straight after a step
+      # that had just compiled all of Bevy, took 439 seconds there. None of that is
+      # its own code.
+      #
+      # The cost is fail-fast ordering — a `cartopolis_geo` break now surfaces after
+      # the whole workspace compiles rather than in seconds. Accepted here for the
+      # same reason ci.yml accepted it, and it matters less on a tag build than on
+      # a push.
+      - run: cargo test --locked --workspace --exclude cartopolis_android
       # And the one check that renders: everything above proves the code compiles
       # and its units behave, this proves the frame had a planet in it. Shipping a
       # binary that type-checks and draws black is precisely what a release must
