@@ -614,6 +614,21 @@ const FAR_WINDOWS: WindowGrid = WindowGrid {
 /// (windows, roof shapes).
 const BUILDING_PATCH_RADIUS: i64 = 3;
 
+/// [`BUILDING_PATCH_RADIUS`] with the render budget applied — 2 (5×5) on the phone
+/// tier instead of 3 (7×7), i.e. roughly half the area.
+///
+/// A function rather than a tier-adjusted constant, for the reason
+/// [`lod22::lod22_radius`] gives at greater length: the radii in this module are
+/// read against each other, and two separately-adjusted constants can drift where
+/// a shared call cannot.
+///
+/// This is the patch that carries real window grids on real floor spacing
+/// ([`DETAIL_WINDOWS`]), so its area is close to linear in triangle count — it is
+/// the most expensive ring in the client per tile.
+fn building_patch_radius() -> i64 {
+    crate::quality::budget().radius(BUILDING_PATCH_RADIUS)
+}
+
 /// Concurrent far-cell fetches against the 3DBAG host (see
 /// `OsmBuildings::far_dispatch_tdbag`). Same reasoning as `LOD22_CONCURRENCY`:
 /// our own host, so this is a throughput cap, not a throttle.
@@ -625,6 +640,18 @@ const TDBAG_FAR_CONCURRENCY: usize = 4;
 /// re-fetched and rebuilt wholesale. Covers the detail area too, as a
 /// flicker-free fallback while a detail refresh is in flight.
 const FAR_CELL_RADIUS: i64 = 3;
+
+/// [`FAR_CELL_RADIUS`] with the render budget applied — 2 (5×5 = 25 cells) on the
+/// phone tier instead of 3 (7×7 = 49).
+///
+/// Must stay at or beyond `lod22::lod22_radius() + 1`, which is where the real
+/// LoD2.2 meshes hand over to these simplified extrusions. Below that there would
+/// be a ring of covered cells that neither streamer owns — buildings simply
+/// missing, at a distance that changes with the tier. `the_far_ring_meets_the_lod22_
+/// handover` pins it on both tiers.
+fn far_cell_radius() -> i64 {
+    crate::quality::budget().radius(FAR_CELL_RADIUS)
+}
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
 /// patch trailing the camera a bit further before refreshing.
@@ -823,7 +850,7 @@ pub fn update_buildings(
 
         // Detail bounding box; the fetch assembles it from fixed CACHE_ZOOM
         // cells shared with the far-cell worker's disk cache.
-        let rd = BUILDING_PATCH_RADIUS;
+        let rd = building_patch_radius();
         let (d_north, d_west) = tile_to_lat_lng(center.0 - rd, center.1 - rd, z);
         let (d_south, d_east) = tile_to_lat_lng(center.0 + rd + 1, center.1 + rd + 1, z);
 
@@ -930,11 +957,12 @@ pub fn update_buildings(
         // real meshes arrive (see `coverage_resolved`).
         let mut to_request: Vec<(i64, i64)> = Vec::new();
         let queue_open = coverage_resolved();
-        for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+        let far_r = far_cell_radius();
+        for dy in -far_r..=far_r {
             if !queue_open {
                 break;
             }
-            for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+            for dx in -far_r..=far_r {
                 let cell = (ccx + dx, ccy + dy);
                 // Distance LOD: within the LoD2.2 KEEP ring (its request radius
                 // plus its one cell of despawn hysteresis) the real meshes
@@ -1111,7 +1139,7 @@ pub fn update_buildings(
             .keys()
             .filter(|(cx2, cy2)| {
                 let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
-                d > FAR_CELL_RADIUS + 1
+                d > far_cell_radius() + 1
                     || (d <= crate::systems::lod22::lod22_radius() + 1 && lod22_covers(*cx2, *cy2))
             })
             .copied()
@@ -2628,6 +2656,29 @@ mod tests {
             r.reverse();
         }
         r
+    }
+
+    /// The far ring must reach the LoD2.2 handover, on every tier.
+    ///
+    /// `lod22` draws real meshes out to `lod22_radius()`; from `lod22_radius() + 1`
+    /// outward these simplified extrusions take over. If the far ring were the
+    /// shorter of the two, the cells in between would be owned by neither streamer
+    /// and their buildings would simply be absent — at a distance that moves with
+    /// the tier, which is the kind of gap that gets reported as "buildings missing
+    /// on the phone" and reproduces nowhere else.
+    ///
+    /// Both radii take the same `radius_bias`, so this holds by construction today;
+    /// the test is here because the two are adjusted independently and nothing else
+    /// would notice them diverging.
+    #[test]
+    fn the_far_ring_meets_the_lod22_handover() {
+        let handover = crate::systems::lod22::lod22_radius() + 1;
+        assert!(
+            far_cell_radius() >= handover,
+            "far cells reach {} but LoD2.2 hands over at {handover}: the ring \
+             between them would have no buildings at all",
+            far_cell_radius(),
+        );
     }
 
     /// A fresh run must see **no** toggle edge.

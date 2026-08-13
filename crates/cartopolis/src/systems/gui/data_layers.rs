@@ -101,6 +101,20 @@ const LAYER_ZOOM: u32 = 14;
 const SURFACE_LAYER_MAX_ALT: f64 = 20_000.0;
 /// LAYER_ZOOM cells out from the camera kept loaded per enabled layer.
 const LAYER_CELL_RADIUS: i64 = 3;
+
+/// [`LAYER_CELL_RADIUS`] with the render budget applied — 2 (5×5 = 25 cells) on
+/// the phone tier instead of 3 (7×7 = 49).
+///
+/// A function rather than a tier-adjusted constant, matching
+/// `lod22::lod22_radius` and `osm_buildings::far_cell_radius`: the retirement
+/// hysteresis below reads this against itself (`+ 1`), and a second adjusted
+/// constant is how those two drift apart.
+///
+/// Note what this ring costs even with every marker layer switched off: the
+/// stream is pumped for each cell of it, per layer definition, on every frame.
+fn layer_cell_radius() -> i64 {
+    crate::quality::budget().radius(LAYER_CELL_RADIUS)
+}
 /// LAYER_ZOOM cells out from the camera the Overpass **detail** pass covers.
 ///
 /// One, against the markers' three: 7×7 = 49 cells per layer became 3×3 = 9, an
@@ -789,7 +803,7 @@ fn ring_offsets(radius: i64) -> Vec<(i64, i64)> {
 /// The marker ring ([`LAYER_CELL_RADIUS`]), built once.
 fn marker_ring() -> &'static [(i64, i64)] {
     static RING: OnceLock<Vec<(i64, i64)>> = OnceLock::new();
-    RING.get_or_init(|| ring_offsets(LAYER_CELL_RADIUS))
+    RING.get_or_init(|| ring_offsets(layer_cell_radius()))
 }
 
 /// The Overpass detail ring ([`DETAIL_CELL_RADIUS`]), built once.
@@ -1168,7 +1182,7 @@ pub fn update_data_layers(
         let stale: Vec<(i64, i64)> = dl.layers[li]
             .cells
             .keys()
-            .filter(|(cx, cy)| (cx - ccx).abs().max((cy - ccy).abs()) > LAYER_CELL_RADIUS + 1)
+            .filter(|(cx, cy)| (cx - ccx).abs().max((cy - ccy).abs()) > layer_cell_radius() + 1)
             .copied()
             .collect();
         for c in stale {
