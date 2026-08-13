@@ -39,6 +39,18 @@ const ENTRIES: [RightPanel; 4] = [
     RightPanel::Places,
 ];
 
+/// How much of the bottom edge the dock claims, in points.
+///
+/// Exported so that anything else anchored down there can sit *above* it rather
+/// than guess. The discs are centred, so on a desktop window a corner-anchored
+/// control misses them — and on a phone, where the row is most of the width, it
+/// does not. `map_osd`'s thumbstick is the first caller; a second copy of this
+/// arithmetic is how the two would drift when the dock grows a fifth entry.
+#[must_use]
+pub fn reserved_bottom() -> f32 {
+    BOTTOM_MARGIN + theme::ROUND_BUTTON_SIZE
+}
+
 /// Draw the dock and route clicks into the (mutually exclusive) panel slot.
 pub fn render_dock(
     mut egui: ResMut<EguiManager>,

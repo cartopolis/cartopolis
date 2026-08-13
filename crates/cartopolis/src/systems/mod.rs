@@ -37,7 +37,7 @@ pub use dev::{debug, desktop_integration, shot_harness, shot_presets, window_ico
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.
 pub use gui::{
-    ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, login_screen,
+    ai_assistant, bookmarks, chat, data_layers, dock, egui_manager, hud, login_screen, map_osd,
     onscreen_keyboard, place_pins, script_editor, settings, splash, theme, ui,
 };
 pub use map::{
