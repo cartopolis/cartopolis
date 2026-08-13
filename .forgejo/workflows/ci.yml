@@ -120,9 +120,9 @@ jobs:
         # vendored as a path dep), so the registry is the whole of it — add
         # `/root/.cargo/git` here the day that stops being true.
         #
-        # Safe to share between the two concurrent jobs: cargo takes a file lock on
-        # the registry and the loser waits, which is a pause measured in seconds
-        # against a download measured in minutes.
+        # The `test` job's own copy. **Not** shared with `targets`, which mounts
+        # `cargo-registry-targets` — its volume list has the race that cost this
+        # one, and why a bind mount of `registry/` cannot be shared at all.
         - /data/ci-cache/cargo-registry:/root/.cargo/registry
     env:
       # mold instead of lld, which `.cargo/config.toml` has invited in a comment
@@ -317,10 +317,51 @@ jobs:
         # vendored as a path dep), so the registry is the whole of it — add
         # `/root/.cargo/git` here the day that stops being true.
         #
-        # Safe to share between the two concurrent jobs: cargo takes a file lock on
-        # the registry and the loser waits, which is a pause measured in seconds
-        # against a download measured in minutes.
-        - /data/ci-cache/cargo-registry:/root/.cargo/registry
+        # **Its own copy, not the `test` job's**, and this is the one line in this
+        # file that was actively wrong. It used to mount the same
+        # `/data/ci-cache/cargo-registry` that `test` does, under a comment
+        # asserting that was "safe to share between the two concurrent jobs:
+        # cargo takes a file lock on the registry and the loser waits".
+        #
+        # It does not. Cargo's lock is `$CARGO_HOME/.package-cache` — a file
+        # directly under the cargo home, which is `/root/.cargo`. The mount is
+        # `/root/.cargo/registry`, one level *below* it. So the bind mount shared
+        # exactly the data that needs protecting and excluded the lock that
+        # protects it: each container took its own private `.package-cache` and
+        # neither could see the other's, leaving two concurrent jobs writing one
+        # registry with nothing serialising them.
+        #
+        # The damage is a half-extracted crate, and it does not look like a cache
+        # problem — it looks like your code, or like a broken dependency. Three
+        # signatures seen on `main` on 2026-08-13, all from this one cause:
+        #
+        #   error: failed to unpack package `libc v0.2.178`
+        #     failed to open …/libc-0.2.178/.cargo-ok: File exists (os error 17)
+        #   error[E0583]: file not found for module `float`   (in glam's own source)
+        #   error: could not compile `uuid`
+        #     could not execute process `sccache …` (never executed)
+        #
+        # `.cargo-ok` is written *last*, so an interrupted extract leaves a
+        # directory cargo can neither use nor replace, and a reader mid-extract
+        # sees a crate whose source is genuinely incomplete. It is intermittent by
+        # nature — it needs a crate that is not yet extracted, so it bites hardest
+        # right after a lockfile change, which is exactly when you are least
+        # inclined to suspect the cache.
+        #
+        # Two copies rather than one shared cargo home because the home cannot be
+        # shared: `/root/.cargo/bin` holds cargo and rustc themselves in this
+        # image, so mounting over it would hide the toolchain. The cost is ~310 MB
+        # of disk and a registry that warms twice; the two are independent, so
+        # they cannot race whatever order the runner starts them in.
+        #
+        # Not fixed, and worth knowing: the three `deploy-*.yml` lanes still mount
+        # the `test` job's registry, so a manual dispatch during a `main` run can
+        # still lose this way — the runner has capacity 2, so any two jobs can be
+        # concurrent. They are rare and manual, and four registries to keep warm
+        # is a worse trade than an occasional re-run; but if one of them ever
+        # fails with a crate that "cannot compile its own source", this is why,
+        # and the fix is another copy.
+        - /data/ci-cache/cargo-registry-targets:/root/.cargo/registry
     steps:
       - uses: actions/checkout@v4
         with:
