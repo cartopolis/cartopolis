@@ -1251,8 +1251,7 @@ pub fn render_context_menu(
                     *right_panel = RightPanel::Route;
                     context_menu.visible = false;
                 }
-                if ui
-                    .small_button("Route from here")
+                if theme::action_button(ui, "Route from here")
                     .on_hover_text("Set this point as the starting point")
                     .clicked()
                 {

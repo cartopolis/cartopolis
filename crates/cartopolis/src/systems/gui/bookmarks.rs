@@ -563,15 +563,14 @@ fn folder_row(
             // is left, so a long folder name truncates instead of running under
             // them.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .small_button("🗑")
+                if theme::action_button(ui, "🗑")
                     .on_hover_text("Delete the folder (its places move up a level)")
                     .clicked()
                 {
                     act.delete_folder = Some(id);
                 }
-                if ui
-                    .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+                let rename_icon = theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]);
+                if theme::action_button(ui, rename_icon)
                     .on_hover_text("Rename")
                     .clicked()
                 {
@@ -651,11 +650,14 @@ fn place_row(
                 .color(egui_color(color)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("🗑").on_hover_text("Delete").clicked() {
+            if theme::action_button(ui, "🗑")
+                .on_hover_text("Delete")
+                .clicked()
+            {
                 act.delete_place = Some(id);
             }
-            if ui
-                .small_button(theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]))
+            let rename_icon = theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]);
+            if theme::action_button(ui, rename_icon)
                 .on_hover_text("Rename")
                 .clicked()
             {
@@ -665,11 +667,8 @@ fn place_row(
                     focus: true,
                 });
             }
-            if ui
-                .add_enabled(
-                    can_update,
-                    egui::Button::new(theme::first_drawable(ui.ctx(), &["🔄", "↻", "·"])).small(),
-                )
+            let update_icon = theme::first_drawable(ui.ctx(), &["🔄", "↻", "·"]);
+            if theme::action_enabled(ui, can_update, update_icon)
                 .on_hover_text("Update to current position and view")
                 .clicked()
             {
@@ -683,8 +682,7 @@ fn place_row(
             // opens read as one thing. Sitting next to the name rather than at the
             // right edge keeps 🗑 where the hand already expects it.
             let flag = theme::first_drawable(ui.ctx(), crate::resources::RightPanel::Route.icons());
-            if ui
-                .small_button(flag)
+            if theme::action_button(ui, flag)
                 .on_hover_text("Route here — make this the destination")
                 .clicked()
             {

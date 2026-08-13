@@ -762,6 +762,61 @@ fn header_height() -> f32 {
     38.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
 }
 
+/// Should an icon action beside a field be drawn `small()`?
+///
+/// The answer is "only for a pointer", and the reason is that
+/// `egui::Button::small()` is not merely a smaller button: it **zeroes the
+/// vertical padding** and drops to the `Small` text style, so the widget's
+/// height collapses to the glyph's. On the touch tier that is a ~21 dp target
+/// against a 48 dp guideline — a third of the area of the row it sits in, on
+/// controls that are anything but incidental (pick this point on the map, use my
+/// position, clear the field, rename this place).
+///
+/// Split out as a predicate so the policy is testable without a `Context`.
+#[must_use]
+pub fn actions_are_small() -> bool {
+    !touch_layout()
+}
+
+/// Horizontal padding for a finger-sized icon action, against the style's own
+/// 11 pt.
+///
+/// **The height is the guideline; the width is a negotiation.** A bookmark row
+/// carries four of these (route here, update, rename, delete) beside a name that
+/// has to stay readable, and at full padding they take two-thirds of a phone's
+/// panel. A fingertip contact patch is taller than it is wide, so trading width
+/// for the row's *height* is the same bargain `onscreen_keyboard` makes when ten
+/// key columns will not fit in 393 dp — and it is the one that keeps the target
+/// hittable while leaving the row legible.
+const ACTION_PAD_X: f32 = 6.0;
+
+/// An icon action that sits *beside* something — the route panel's pick /
+/// use-my-position / clear, the address bar's flag, a bookmark's rename and
+/// delete. Compact under a mouse, finger-sized under a finger.
+pub fn action_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Response {
+    action_enabled(ui, true, label)
+}
+
+/// [`action_button`], for the ones that are conditionally live — "use my
+/// position" without a fix, "update to here" on a place already at the camera.
+pub fn action_enabled(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    if actions_are_small() {
+        return ui.add_enabled(enabled, egui::Button::new(label).small());
+    }
+    // A scope so the padding change cannot leak into the rest of the row; it
+    // inherits the enclosing layout, so a single widget inside it lands exactly
+    // where the widget alone would have.
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding.x = ACTION_PAD_X;
+        ui.add_enabled(enabled, egui::Button::new(label))
+    })
+    .inner
+}
+
 /// The ✕ every panel closes with — **painted, not typed.**
 ///
 /// `✕` is not in the bundled font (see [`first_drawable`]), so every panel that
@@ -1447,6 +1502,17 @@ mod tests {
             );
             // And the conversion the keyboard needs agrees with the row.
             assert!(min_touch_target_pts(dp_per_pt) <= TOUCH_ROW_PTS + 0.01);
+            // …and why [`action`] refuses `small()` under a finger. egui's small
+            // button zeroes the vertical padding and drops to the `Small` text
+            // style, so its height *is* the glyph — a third of the row it sits
+            // in, on the controls that exist to save you typing an address on a
+            // phone.
+            let small_dp = style_for(true).text_styles[&TextStyle::Small].size * dp_per_pt;
+            assert!(
+                small_dp < MIN_TOUCH_TARGET_DP,
+                "{name}: a small button is {small_dp:.0} dp, so `actions_are_small` \
+                 has nothing left to protect against"
+            );
         }
         // The pointer tier is deliberately *not* held to it — a mouse is not a
         // finger, and 24 pt rows are what makes a panel of layer toggles readable.

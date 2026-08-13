@@ -1519,15 +1519,16 @@ fn start_row(
         endpoint_row(ui, route, Endpoint::From, here, icons, actions);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            if ui
-                .small_button(icons.swap)
+            if theme::action_button(ui, icons.swap)
                 .on_hover_text("Swap start and destination")
                 .clicked()
             {
                 actions.swap = true;
             }
             if route.from.coord.is_some()
-                && ui.small_button("Done").on_hover_text("Collapse").clicked()
+                && theme::action_button(ui, "Done")
+                    .on_hover_text("Collapse")
+                    .clicked()
             {
                 actions.collapse_start = true;
             }
@@ -1561,15 +1562,13 @@ fn start_row(
             actions.edit_start = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button(icons.swap)
+            if theme::action_button(ui, icons.swap)
                 .on_hover_text("Swap start and destination")
                 .clicked()
             {
                 actions.swap = true;
             }
-            if ui
-                .add_enabled(has_here, egui::Button::new(icons.here).small())
+            if theme::action_enabled(ui, has_here, icons.here)
                 .on_hover_text("Start from my current position")
                 .clicked()
             {
@@ -1577,6 +1576,33 @@ fn start_row(
             }
         });
     });
+}
+
+/// Points the endpoint row keeps clear to the right of the field, for the
+/// actions that live there: clear, pick-on-map and use-my-position, plus the
+/// spacing between them. Sized for the touch tier's buttons, which is the tier
+/// that cannot afford to be wrong — a pointer simply gets a slightly shorter
+/// field than it strictly needs.
+const WAYPOINT_ACTIONS_PTS: f32 = 108.0;
+/// Longest the field is allowed to get. Past this a wide window is spending
+/// screen on a place name that is almost always short, and the row stops
+/// reading as one control with its shortcuts beside it.
+const WAYPOINT_FIELD_MAX_PTS: f32 = 180.0;
+
+/// How wide the "Where to?" field may be, given what is left of the row.
+///
+/// It used to be a flat 180 pt, which on a compact panel (a phone's whole
+/// viewport, ~240 pt inside the margins) left about 40 pt for three buttons that
+/// need a hundred — so the actions that let you *avoid typing an address on a
+/// phone keyboard* were the first things off the edge, on the one device where
+/// they matter most.
+///
+/// The floor is what keeps this honest on an absurdly narrow window: the field
+/// stops shrinking and the row overflows, which is visible, rather than the
+/// field collapsing to nothing while everything still fits.
+#[must_use]
+fn waypoint_field_width(available: f32) -> f32 {
+    (available - WAYPOINT_ACTIONS_PTS).clamp(72.0, WAYPOINT_FIELD_MAX_PTS)
 }
 
 /// One endpoint: the icon, the text field with its suggestion popup, and the two
@@ -1612,7 +1638,7 @@ fn endpoint_row(
         ui.label(egui::RichText::new(glyph).size(13.0).color(colour));
         let field = ui.add(
             egui::TextEdit::singleline(&mut wp.label)
-                .desired_width(180.0)
+                .desired_width(waypoint_field_width(ui.available_width()))
                 .hint_text(hint),
         );
         field_rect = field.rect;
@@ -1625,18 +1651,16 @@ fn endpoint_row(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !wp.label.is_empty() && ui.small_button(icons.clear).clicked() {
+            if !wp.label.is_empty() && theme::action_button(ui, icons.clear).clicked() {
                 actions.cleared = Some(end);
             }
-            if ui
-                .small_button(icons.pick)
+            if theme::action_button(ui, icons.pick)
                 .on_hover_text("Pick this point on the map")
                 .clicked()
             {
                 actions.pick = Some(end);
             }
-            if ui
-                .add_enabled(has_here, egui::Button::new(icons.here).small())
+            if theme::action_enabled(ui, has_here, icons.here)
                 .on_hover_text("Use my current position")
                 .clicked()
             {
@@ -1785,6 +1809,29 @@ fn frame_route(route: &RouteState) -> Option<Teleport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The endpoint field yields to the actions beside it rather than pushing
+    /// them off the edge. On a phone's whole viewport (~240 pt inside the panel
+    /// margins) the flat 180 pt this replaced left about 40 pt for three buttons
+    /// that need a hundred — so on the one device where "pick it on the map" and
+    /// "use my position" matter most, they were the first things to go.
+    #[test]
+    fn the_endpoint_field_leaves_room_for_its_actions() {
+        for row in [200.0_f32, 240.0, 260.0] {
+            let field = waypoint_field_width(row);
+            assert!(
+                row - field >= WAYPOINT_ACTIONS_PTS - 0.01,
+                "a {row} pt row left only {} pt for the actions",
+                row - field
+            );
+        }
+        // A wide window stops growing the field: past this the row stops reading
+        // as one control with its shortcuts beside it.
+        assert_eq!(waypoint_field_width(2000.0), WAYPOINT_FIELD_MAX_PTS);
+        // And an absurdly narrow one overflows visibly instead of collapsing the
+        // field to nothing.
+        assert!(waypoint_field_width(40.0) >= 72.0);
+    }
 
     /// The ribbon must be a proper triangle mesh whose width matches the request —
     /// the route is unusable if the line is inverted, degenerate, or hairline.
