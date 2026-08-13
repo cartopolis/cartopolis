@@ -1,14 +1,23 @@
-//! Persistent per-user data: last location/camera and bookmarks, stored as
-//! JSON at `user.json` under [`crate::utils::cache::app_data_root`]. The start of
-//! the user-information store that will later grow OpenSim-style inventory —
-//! deliberately simple for now.
+//! Persistent per-user data: last location/camera and bookmarks, stored as JSON
+//! under the key `user.json` in the Data namespace of
+//! [`crate::platform::storage`]. The start of the user-information store that will
+//! later grow OpenSim-style inventory — deliberately simple for now.
 //!
-//! **The path is resolved, not literal, and that is load-bearing.** It used to be a
-//! cwd-relative `data/user.json`, which on Android meant the file was never written
-//! at all (a NativeActivity process starts in `/`; every autosave failed into a
-//! `warn!`) and on desktop meant the profile you got depended on the directory you
-//! launched from. `app_data_root` keeps an existing checkout `data/` so nothing
-//! moves under a dev box, and answers with a real per-user directory everywhere else.
+//! **It is a storage key, not a path, and that is what makes the web build
+//! persistent.** Natively the key resolves to a file under
+//! [`crate::utils::cache::app_data_root`], exactly where it has always been; on the
+//! web it is an IndexedDB record, where until 2026-08 there was nothing at all —
+//! every `std::fs` call failed and the app silently ran on defaults every reload.
+//! The synchronous read below works on both because the web build pulls this key
+//! into memory before the `App` is built (`platform::storage::preload`).
+//!
+//! **The location is resolved, not literal, and that is load-bearing.** It used to
+//! be a cwd-relative `data/user.json`, which on Android meant the file was never
+//! written at all (a NativeActivity process starts in `/`; every autosave failed
+//! into a `warn!`) and on desktop meant the profile you got depended on the
+//! directory you launched from. `app_data_root` keeps an existing checkout `data/`
+//! so nothing moves under a dev box, and answers with a real per-user directory
+//! everywhere else.
 //!
 //! **Two rules keep a bad file from being an unrecoverable one**, because this store
 //! is the only copy of the user's bookmarks:
@@ -34,7 +43,6 @@
 //! location is fed through the normal teleport path.
 
 use crate::resources::MapAnchor;
-use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
@@ -412,58 +420,54 @@ pub const FOLDER_PALETTE: [[f32; 3]; 8] = [
 pub struct UserStore {
     pub data: UserData,
     pub dirty: bool,
-    path: PathBuf,
-    /// Last JSON written, to skip no-op disk writes.
+    /// Last JSON written, to skip no-op writes.
     last_written: String,
 }
 
-/// Where `user.json` lives this run.
-///
-/// `utils::cache` is compiled out on wasm (`utils/mod.rs` — there is no filesystem
-/// to resolve a directory on), and the web build's store has always been a no-op:
-/// every `std::fs` call in here fails and the app runs on defaults. The literal path
-/// on that arm is therefore a placeholder that is never opened, not a location.
-fn user_data_path() -> PathBuf {
+/// Storage key of the document, in the Data namespace of
+/// [`crate::platform::storage`] — a file under the app data root natively, an
+/// IndexedDB record on the web.
+pub const USER_KEY: &str = "user.json";
+
+/// Where the store lives, for a human reading a log line: the resolved path
+/// natively, the storage key on the web (where IndexedDB has no path to print).
+fn user_data_location() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::utils::cache::app_data_root().join("user.json")
+        crate::utils::cache::app_data_root()
+            .join(USER_KEY)
+            .display()
+            .to_string()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        PathBuf::from("data").join("user.json")
+        format!("IndexedDB cartopolis/data/{USER_KEY}")
     }
 }
 
-/// Durable write of the store, on the one arm that has a filesystem. See
-/// [`crate::utils::cache::write_atomic`] for why it is a rename and why the flush
-/// before it matters.
-fn write_user_json(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::utils::cache::write_atomic(path, bytes)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        std::fs::write(path, bytes)
-    }
-}
-
-/// Rename an unparseable `user.json` to `user.json.corrupt-<unix seconds>` and
-/// return where it went, so the log can name a file someone can actually recover
-/// bookmarks out of by hand. `None` if even the rename failed.
+/// Set an unparseable document aside as `user.json.corrupt-<unix seconds>` and
+/// return the key it was kept under, so the log can name something a person can
+/// actually recover bookmarks out of by hand.
 ///
-/// Timestamped rather than a single `.corrupt` sibling: a machine that produces one
-/// bad file usually produces another, and the second must not overwrite the first
-/// copy — which may be the only intact one.
-fn quarantine(path: &Path) -> Option<PathBuf> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+/// Timestamped rather than a single `.corrupt` sibling: a machine that produces
+/// one bad file usually produces another, and the second must not overwrite the
+/// first copy — which may be the only intact one.
+///
+/// Written from the bytes already in hand rather than renaming the original,
+/// because the store is a key-value seam now and the web half has no rename. The
+/// copy therefore lands *before* the fresh store can overwrite the original,
+/// which is the property that matters (see the module note).
+fn quarantine(bytes: &[u8]) -> Option<String> {
+    // `web_time`, not `std::time`: `SystemTime::now()` panics on
+    // wasm32-unknown-unknown, and this path runs on the web too now.
+    let stamp = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut kept = path.to_path_buf().into_os_string();
-    kept.push(format!(".corrupt-{stamp}"));
-    let kept = PathBuf::from(kept);
-    std::fs::rename(path, &kept).ok().map(|()| kept)
+    let kept = format!("{USER_KEY}.corrupt-{stamp}");
+    crate::platform::storage::write_now(crate::platform::storage::Namespace::Data, &kept, bytes)
+        .ok()
+        .map(|()| kept)
 }
 
 /// A store for someone who has none yet — stamped with the current schema so the
@@ -506,55 +510,59 @@ impl UserStore {
     /// load a moment later is what reports it.
     #[must_use]
     pub fn preferred_quality() -> Option<&'static str> {
-        let text = std::fs::read_to_string(user_data_path()).ok()?;
-        let data: UserData = serde_json::from_str(&text).ok()?;
+        let bytes =
+            crate::platform::storage::read_now(crate::platform::storage::Namespace::Data, USER_KEY)
+                .ready()?;
+        let data: UserData = serde_json::from_slice(&bytes).ok()?;
         data.settings.quality.as_env_word()
     }
 
     pub fn load() -> Self {
-        let path = user_data_path();
-        let (data, last_written) = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<UserData>(&text) {
+        use crate::platform::storage::{self, Namespace};
+
+        let stored = storage::read_now(Namespace::Data, USER_KEY).ready();
+        let (data, last_written) = match stored {
+            Some(bytes) => match serde_json::from_slice::<UserData>(&bytes) {
                 Ok(mut data) => {
                     migrate(&mut data);
-                    (data, text)
+                    (data, String::from_utf8(bytes).unwrap_or_default())
                 }
                 Err(e) => {
-                    // Move the unparseable file aside *before* handing back an empty
-                    // store. The store is the only copy of the user's bookmarks and
-                    // the autosave's first deadline is time zero, so without this the
-                    // original is gone within a frame of the app starting — and the
-                    // one situation in which that happens is the one where something
-                    // is already wrong and the bytes are worth keeping.
-                    match quarantine(&path) {
+                    // Set the unparseable document aside *before* handing back an
+                    // empty store. The store is the only copy of the user's
+                    // bookmarks and the autosave's first deadline is time zero, so
+                    // without this the original is gone within a frame of the app
+                    // starting — and the one situation in which that happens is the
+                    // one where something is already wrong and the bytes are worth
+                    // keeping.
+                    match quarantine(&bytes) {
                         Some(kept) => tracing::warn!(
                             error = %e,
-                            kept = %kept.display(),
+                            %kept,
                             "user.json did not parse; kept a copy and started fresh"
                         ),
                         None => tracing::warn!(
                             error = %e,
-                            path = %path.display(),
+                            location = %user_data_location(),
                             "user.json did not parse and could not be set aside; starting fresh"
                         ),
                     }
                     (fresh_data(), String::new())
                 }
             },
-            // No file: a first run, or a directory we cannot read. Either way there
-            // is nothing to preserve, so this is the only path that starts blank
-            // without saying anything.
-            Err(_) => (fresh_data(), String::new()),
+            // Nothing stored: a first run, or a location we cannot read. Either way
+            // there is nothing to preserve, so this is the only path that starts
+            // blank without saying anything.
+            None => (fresh_data(), String::new()),
         };
         Self {
             data,
             dirty: false,
-            path,
             last_written,
         }
     }
 
-    /// Write to disk if the serialized form changed.
+    /// Write the store out if the serialized form changed.
     pub fn save(&mut self) {
         let Ok(json) = serde_json::to_string_pretty(&self.data) else {
             return;
@@ -563,22 +571,26 @@ impl UserStore {
             self.dirty = false;
             return;
         }
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        // Temp file + rename, never a truncating write: this runs every five
-        // seconds and on exit, and the exit case is exactly when the process is
-        // most likely to be killed part-way through (Android kills backgrounded
-        // apps as a matter of routine). A half-written `user.json` is an
-        // unparseable one, which used to be indistinguishable from having no
-        // bookmarks at all.
-        match write_user_json(&self.path, json.as_bytes()) {
+        // Durable by the time this returns natively — a temp file and a rename,
+        // never a truncating write: this runs every five seconds and on exit, and
+        // the exit case is exactly when the process is most likely to be killed
+        // part-way through (Android kills backgrounded apps as a matter of
+        // routine). A half-written `user.json` is an unparseable one, which used to
+        // be indistinguishable from having no bookmarks at all. On the web the
+        // IndexedDB write is queued instead, because nothing can block on one; the
+        // in-memory view is updated first either way, so a reload that beats the
+        // write is the only way to lose it.
+        match crate::platform::storage::write_now(
+            crate::platform::storage::Namespace::Data,
+            USER_KEY,
+            json.as_bytes(),
+        ) {
             Ok(()) => {
                 self.last_written = json;
                 self.dirty = false;
             }
             Err(e) => {
-                tracing::warn!(error = %e, path = %self.path.display(), "user.json write failed")
+                tracing::warn!(error = %e, location = %user_data_location(), "user.json write failed")
             }
         }
     }
@@ -1095,7 +1107,6 @@ mod tests {
         UserStore {
             data: UserData::default(),
             dirty: false,
-            path: PathBuf::from("/tmp/cartopolis-test-user.json"),
             last_written: String::new(),
         }
     }

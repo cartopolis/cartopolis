@@ -277,6 +277,22 @@ web-sys = { version = "0.3", features = [
     "FileList",
     "FileReader",
     "Blob",
+    # IndexedDB — the web half of `platform::storage`, i.e. every byte this client
+    # keeps: the tile/building/POI cache, `user.json` and the photos on saved
+    # places. `DomStringList` is what `IDBDatabase.objectStoreNames` answers with,
+    # and the upgrade path reads it to decide which stores to create.
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "DomStringList",
+    # `navigator.storage.persist()`: without it a browser may evict the Data
+    # namespace under pressure, and Safari drops it after seven idle days — which
+    # would read as the user's saved places vanishing on their own.
+    "StorageManager",
 ] }
 # `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
 # off a rejected permission promise. Already in the graph under web-sys; named

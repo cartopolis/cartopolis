@@ -257,7 +257,7 @@ async fn fetch_uncached(
     template: String,
 ) -> Result<Vec<u8>, String> {
     let cache_key = tile_cache_key(&key, kind);
-    if let Some(bytes) = storage::get(&cache_key).await {
+    if let Some(bytes) = storage::get(storage::Namespace::Cache, &cache_key).await {
         if !bytes.is_empty() {
             return Ok(bytes);
         }
@@ -266,7 +266,7 @@ async fn fetch_uncached(
     let url = format_osm_tile_url(&template, &key);
     let bytes = http::fetch(http::Request::get(url)).await?;
     // Best-effort write-through to the on-disk cache.
-    storage::put(&cache_key, &bytes).await;
+    storage::put(storage::Namespace::Cache, &cache_key, &bytes).await;
     Ok(bytes)
 }
 

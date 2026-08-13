@@ -1,6 +1,6 @@
 ---
 topic: place-photos
-triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu"]
+triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched"]
 updated: 2026-08-13
 ---
 
@@ -39,23 +39,23 @@ Consequences worth knowing before touching it:
 - `WRITE_EXTERNAL_STORAGE` is declared with `maxSdkVersion="28"`: `RELATIVE_PATH`
   (scoped storage) only exists from API 29, and minSdk here is 28.
 
-**None of this has run on a device.** The container has no Android runtime, and
-the aarch64 target is not installable here (only CI checks it compiles). Every
-claim above is read off the API contract.
+**It compiles for aarch64 and has never run.** The container has no Android
+runtime — see `docs/notes/container-android-toolchain.md` for the local target
+check, which catches type errors but says nothing about behaviour. Every claim
+above is read off the API contract.
 
-## The web build can capture photos it cannot keep
+## The web build captures photos, and now keeps them
 
 `<input type="file" accept="image/*" capture="environment">` is the whole mobile
 web story — a phone browser answers it with the rear camera, a desktop browser
-with a file picker, from the same element. It works today.
+with a file picker, from the same element.
 
-What does *not* work is persistence, and that is not a gap this feature opened:
-`user_store::user_data_path` has no filesystem on wasm, every write fails, and
-the app has always run on defaults there. A photo therefore behaves exactly like
-the place it is attached to — session-lived, gone on reload. `utils::photo_store`
-holds the bytes in memory on that arm to keep that true rather than pretending
-the write happened. When the wasm half of `platform::storage` grows its IndexedDB
-implementation, that module is the single place that has to learn about it.
+Photos persist there like everything else: both sizes go into the Data namespace
+of `platform::storage`, which is IndexedDB on the web (`docs/notes/web-persistence.md`).
+Thumbnails are preloaded into the synchronous view before the app is built, because
+a row draws one inside an egui pass; the full-size photo is fetched when someone
+opens the viewer, which is why `read_full` answers `Cached::Loading` and the viewer
+has a spinner state distinct from its "could not be opened" one.
 
 One constraint the web arm cannot violate: `input.click()` needs **transient user
 activation**, which a browser grants for about five seconds after a real gesture.
@@ -92,9 +92,11 @@ clickable widget needs the same guard.
 
 ## Storage shape
 
-Two files per photo under `photos/` in the app **data** root (not the cache root
-— clearing tile cache must not take the user's pictures), named `<stem>.jpg` and
-`<stem>.thumb.jpg`; `user.json` stores only the stem.
+Two entries per photo in the **Data** namespace of `platform::storage` (not the
+Cache one — clearing tile cache must not take the user's pictures), keyed
+`photos/<stem>.jpg` and `photos/<stem>.thumb.jpg`; `user.json` stores only the
+stem. That is a file under the app data root natively and an IndexedDB record on
+the web, from one code path.
 
 - **Bytes are never in `user.json`.** `UserStore::save` re-serialises the whole
   document on every autosave tick and compares it to the last one; a base64 photo
@@ -104,7 +106,9 @@ Two files per photo under `photos/` in the app **data** root (not the cache root
   the old picture in the row until the app restarted.
 - **A stem is validated on the way out of the store.** `user.json` is a plain
   file anything can edit, so a stem is input; `../..` in one would otherwise aim
-  the reader — and the `remove` on delete — outside the photo directory.
+  the reader — and the `remove` on delete — outside the photo namespace (a path
+  escape natively; merely a strange key on the web, but the two platforms have no
+  reason to disagree about what a stem is).
 - **EXIF orientation is baked into the pixels**, once, at capture. Phone cameras
   write the sensor's landscape frame plus a rotation tag; carrying the tag would
   make every later consumer honour it independently.

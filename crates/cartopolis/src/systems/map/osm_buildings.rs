@@ -2228,7 +2228,7 @@ fn cell_cache_key_3dbag(cx: i64, cy: i64) -> String {
 /// letting the caller fall back to Overpass.
 async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key_3dbag(cx, cy);
-    if let Some(cached) = storage::get_string(&key).await {
+    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
     let url = format!(
@@ -2244,7 +2244,7 @@ async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
     // host with no 200-status error channel to guard against, and a truncated
     // cache entry is caught when the worker fails to parse it (the caller then
     // evicts the key). Parsing on this thread is the cost being removed.
-    storage::put(&key, text.as_bytes()).await;
+    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
     Ok(text)
 }
 
@@ -2252,7 +2252,7 @@ async fn fetch_cell_3dbag_text(cx: i64, cy: i64) -> Result<String, String> {
 /// Cache hits skip the network (and the throttle) entirely.
 async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String, String> {
     let key = cell_cache_key(cx, cy, zoom);
-    if let Some(cached) = storage::get_string(&key).await {
+    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         // A stale `remark`/error body cached before validate-on-write existed is
         // still worth catching, and costs nothing to check. A truncated write is
         // not caught here any more — the worker's parse fails and the caller
@@ -2261,7 +2261,7 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
             None => return Ok(cached),
             Some(remark) => {
                 tracing::warn!(key, %remark, "re-fetching cached Overpass error body");
-                storage::remove(&key).await;
+                storage::remove(storage::Namespace::Cache, &key).await;
             }
         }
     }
@@ -2289,7 +2289,7 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
     if let Some(remark) = overpass_remark(&fetched) {
         return Err(format!("Overpass remark: {}", remark.trim()));
     }
-    storage::put(&key, fetched.as_bytes()).await;
+    storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
     Ok(fetched)
 }
 

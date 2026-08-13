@@ -121,9 +121,13 @@ struct PhotoView {
     /// Photo stem, so the viewer closes itself if the photo is replaced or
     /// deleted underneath it.
     stem: String,
-    /// Decoded and uploaded on the first frame it is drawn; `None` while the read
-    /// is still to happen, `Some(None)` once it has failed.
-    texture: Option<Option<egui::TextureHandle>>,
+    /// Uploaded once the bytes are in hand.
+    texture: Option<egui::TextureHandle>,
+    /// Set when there is nothing left to wait for: no such photo, or one the
+    /// decoder cannot read. Distinct from `texture: None`, which on the web means
+    /// "the read has not come back yet" — collapsing the two is how a photo that
+    /// is merely slow ends up reported as broken.
+    unavailable: bool,
 }
 
 impl BookmarksState {
@@ -1165,6 +1169,7 @@ fn apply_photo_actions(bookmarks: &mut BookmarksState, store: &mut UserStore, ac
             name: name.clone(),
             stem: stem.clone(),
             texture: None,
+            unavailable: false,
         });
     }
 }
@@ -1259,11 +1264,25 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
     let Some(view) = bookmarks.viewing.as_mut() else {
         return;
     };
-    // Read and upload once, on the first frame the viewer is drawn — the panel
-    // has the thumbnail already, so this is the only place the big file is
-    // touched, and it must not happen for a photo nobody opened.
-    if view.texture.is_none() {
-        view.texture = Some(load_photo_texture(ctx, &view.stem));
+    // Asked for each frame until it resolves, rather than read once on open. The
+    // row already had the thumbnail in hand, but the full photo is the one thing
+    // the web build does *not* preload — it is megabytes and only wanted when
+    // someone opens it — so the first ask starts an IndexedDB read and answers
+    // `Loading`. Natively the first ask is the file read and this settles on the
+    // opening frame.
+    if view.texture.is_none() && !view.unavailable {
+        match crate::utils::photo_store::read_full(&view.stem) {
+            crate::platform::storage::Cached::Ready(bytes) => {
+                match photo_texture(ctx, &view.stem, &bytes) {
+                    Some(texture) => view.texture = Some(texture),
+                    None => view.unavailable = true,
+                }
+            }
+            crate::platform::storage::Cached::Loading => {}
+            // Nothing under that key: the photo was there when the row drew a
+            // thumbnail from it and is not now.
+            crate::platform::storage::Cached::Missing => view.unavailable = true,
+        }
     }
 
     let mut open = true;
@@ -1275,28 +1294,34 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
         .max_size(viewport * 0.9)
         .default_size(viewport * 0.8)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            match view.texture.as_ref().and_then(|t| t.as_ref()) {
-                Some(texture) => {
-                    ui.add(
-                        egui::Image::new(egui::load::SizedTexture::new(
-                            texture.id(),
-                            texture.size_vec2(),
-                        ))
-                        .max_size(ui.available_size())
-                        .maintain_aspect_ratio(true)
-                        .corner_radius(4.0),
-                    );
-                }
-                // The file was there when the row drew a thumbnail from it and is not
-                // now, or it is one the decoder cannot read.
-                None => {
+        .show(ctx, |ui| match (&view.texture, view.unavailable) {
+            (Some(texture), _) => {
+                ui.add(
+                    egui::Image::new(egui::load::SizedTexture::new(
+                        texture.id(),
+                        texture.size_vec2(),
+                    ))
+                    .max_size(ui.available_size())
+                    .maintain_aspect_ratio(true)
+                    .corner_radius(4.0),
+                );
+            }
+            (None, false) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
                     ui.label(
-                        egui::RichText::new("This photo could not be opened.")
+                        egui::RichText::new("Loading the photo…")
                             .size(13.0)
-                            .color(theme::WARN),
+                            .color(theme::TEXT_DIM),
                     );
-                }
+                });
+            }
+            (None, true) => {
+                ui.label(
+                    egui::RichText::new("This photo could not be opened.")
+                        .size(13.0)
+                        .color(theme::WARN),
+                );
             }
         });
     if !open {
@@ -1304,10 +1329,9 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
     }
 }
 
-/// Read a stored photo and upload it as a texture.
-fn load_photo_texture(ctx: &egui::Context, stem: &str) -> Option<egui::TextureHandle> {
-    let bytes = crate::utils::photo_store::read_full(stem)?;
-    let (pixels, size) = crate::utils::photo::decode_rgba(&bytes)
+/// Decode stored photo bytes and upload them as a texture.
+fn photo_texture(ctx: &egui::Context, stem: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let (pixels, size) = crate::utils::photo::decode_rgba(bytes)
         .map_err(|e| tracing::warn!(stem, error = %e, "a place's photo did not decode"))
         .ok()?;
     let image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);

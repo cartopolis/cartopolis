@@ -631,21 +631,21 @@ async fn fetch_feed_bytes() -> Result<Vec<u8>, String> {
 /// buses. The `serde_json` parse of it happens on a worker, not here.
 async fn load_line_body() -> Option<String> {
     let key = LINES_CACHE.join("/");
-    let fresh = storage::age_secs(&key)
+    let fresh = storage::age_secs(storage::Namespace::Cache, &key)
         .await
         .is_some_and(|age| age < LINES_TTL.as_secs_f64());
     let body = if fresh {
-        storage::get_string(&key).await
+        storage::get_string(storage::Namespace::Cache, &key).await
     } else {
         match fetch_line_list().await {
             Ok(text) => {
-                storage::put(&key, text.as_bytes()).await;
+                storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
                 Some(text)
             }
             // On a fetch error, fall back to a stale cache if we have one.
             Err(e) => {
                 tracing::warn!(error = %e, "OVapi line list fetch failed");
-                storage::get_string(&key).await
+                storage::get_string(storage::Namespace::Cache, &key).await
             }
         }
     };

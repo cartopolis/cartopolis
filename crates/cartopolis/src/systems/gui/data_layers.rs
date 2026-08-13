@@ -2490,7 +2490,7 @@ async fn fetch_cell_tile(cx: i64, cy: i64, template: &str) -> Result<Arc<Vec<u8>
 /// drawing the frame, and `serde_json` was ~46% of its non-idle time).
 async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key(def.key, cx, cy);
-    if let Some(cached) = storage::get_string(&key).await {
+    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
 
@@ -2498,7 +2498,7 @@ async fn fetch_cell_text(def: &LayerDef, cx: i64, cy: i64) -> Result<String, Str
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, LAYER_ZOOM);
     let bbox = format!("{south},{west},{north},{east}");
     let fetched = overpass_query(&def.query.replace("{bbox}", &bbox)).await?;
-    storage::put(&key, fetched.as_bytes()).await;
+    storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
     Ok(fetched)
 }
 

@@ -380,7 +380,7 @@ pub fn update_lod22(
                 // isn't there.
                 let key = cell_cache_key(c.0, c.1);
                 IoTaskPool::get()
-                    .spawn(async move { storage::remove(&key).await })
+                    .spawn(async move { storage::remove(storage::Namespace::Cache, &key).await })
                     .detach();
                 lod.stream.failed(&c, now); // allows a bounded re-queue later
             }
@@ -546,13 +546,13 @@ fn cell_cache_key(cx: i64, cy: i64) -> String {
 /// exactly what [`build_lod22_from_text`] exists to avoid.
 async fn fetch_lod22_text(cx: i64, cy: i64) -> Result<String, String> {
     let key = cell_cache_key(cx, cy);
-    if let Some(cached) = storage::get_string(&key).await {
+    if let Some(cached) = storage::get_string(storage::Namespace::Cache, &key).await {
         return Ok(cached);
     }
     let url = format!("{}/lod22/{}/{}/{}.json", tdbag_url(), LOD22_ZOOM, cx, cy);
     let bytes = http::fetch(http::Request::get(url)).await?;
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    storage::put(&key, text.as_bytes()).await;
+    storage::put(storage::Namespace::Cache, &key, text.as_bytes()).await;
     Ok(text)
 }
 

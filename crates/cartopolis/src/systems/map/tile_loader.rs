@@ -143,7 +143,10 @@ fn evict_cached_tile(key: TileKey, template: &str) {
     };
     let cache_key = crate::systems::tile_source::tile_cache_key(&source, kind);
     IoTaskPool::get()
-        .spawn(async move { crate::platform::storage::remove(&cache_key).await })
+        .spawn(async move {
+            crate::platform::storage::remove(crate::platform::storage::Namespace::Cache, &cache_key)
+                .await
+        })
         .detach();
 }
 
