@@ -127,3 +127,29 @@ same reason (ADR-034 calls one origin the fix).
   `ws_url` already accepts an explicit `wss://…` address, so the cheapest fix is
   to make that the documented address for desktop clients too and stop publishing
   4747.
+
+## The CI registry cache could not be shared, and said so in three voices
+
+Unrelated to the simulator, found while landing it, and recorded here because the
+next person to see it will also be looking at a red lane and their own diff.
+
+`ci.yml`'s two jobs both bind-mounted `/data/ci-cache/cargo-registry` onto
+`/root/.cargo/registry`, under a comment claiming cargo's file lock made that safe
+between concurrent jobs. It does not: the lock is `$CARGO_HOME/.package-cache`, a
+file one level *above* the mount, so each container took a private lock over
+shared data. Fixed 2026-08-13 by giving `targets` its own copy.
+
+The reason it costs a day rather than a minute is that it never looks like a cache
+problem. Three failures on `main` that day, all this one cause:
+
+- `failed to unpack package libc v0.2.178 … .cargo-ok: File exists (os error 17)`
+- `error[E0583]: file not found for module 'float'` — **inside glam's own source**
+- `could not compile uuid … could not execute process 'sccache …' (never executed)`
+
+`.cargo-ok` is written last, so an interrupted extract leaves a directory cargo can
+neither use nor replace, and a concurrent reader sees a crate whose source really is
+incomplete. It is intermittent, and it bites hardest immediately after a lockfile
+change — which is exactly when a dependency error reads as "something I just did".
+
+**Check the cache before the code.** `ls /data/ci-cache/cargo-registry/src/*/ | wc -l`
+and look for a crate directory without a `.cargo-ok`.
