@@ -6,7 +6,7 @@ use cartopolis_core::{
     decode_app_frame, encode_app_frame, AuthCredential, ChatScope, NetMessage, ProtocolError,
     PROTOCOL_VERSION,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use glam::Vec3;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -97,7 +97,9 @@ async fn authenticate(
     }
 }
 
-const MAX_FRAME: usize = 32 * 1024 * 1024;
+/// Also the WebSocket carrier's ceiling (`http::ws_handler`), so neither
+/// transport is the more permissive of the two.
+pub(crate) const MAX_FRAME: usize = 32 * 1024 * 1024;
 /// ADR-012: simple per-connection rate limits (token-bucket style, fixed interval).
 /// Intents are *dropped* over this rate, not queued — and they carry absolute
 /// state, so a dropped one loses a key edge outright. At the old 50 ms (one full
@@ -158,8 +160,46 @@ fn capacity_message(usage: &crate::state::CapacityUsage) -> NetMessage {
     }
 }
 
-pub async fn handle_connection(
-    stream: TcpStream,
+/// One client's byte transport, already framed at message boundaries.
+///
+/// Two carriers speak the same wire (ADR-008/009): a length-delimited TCP stream,
+/// and — since the browser cannot open a TCP socket — one WebSocket **binary**
+/// message per frame. Only the framing differs; the frame *body* is the same
+/// 8-byte app header plus postcard payload, so `PROTOCOL_VERSION` does not move
+/// for a new carrier and a client of either kind is the same client to everything
+/// below this line.
+///
+/// [`handle_connection`] is therefore written against the boundary rather than
+/// against the socket. The alternative was a second copy of a 700-line select
+/// loop with its own rate limiters, chat replay and avatar teardown — two loops
+/// that must stay identical and have no test that says when they stop being so.
+pub trait FrameTransport:
+    Stream<Item = std::io::Result<bytes::BytesMut>> + Sink<Bytes, Error = std::io::Error> + Unpin + Send
+{
+}
+
+impl<T> FrameTransport for T where
+    T: Stream<Item = std::io::Result<bytes::BytesMut>>
+        + Sink<Bytes, Error = std::io::Error>
+        + Unpin
+        + Send
+{
+}
+
+/// Wrap an accepted TCP socket in the length-delimited codec (ADR-009): a
+/// little-endian `u32` length, then the frame body.
+pub fn tcp_frames(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
+    Framed::new(
+        stream,
+        LengthDelimitedCodec::builder()
+            .max_frame_length(MAX_FRAME)
+            .little_endian()
+            .new_codec(),
+    )
+}
+
+pub async fn handle_connection<T: FrameTransport>(
+    mut framed: T,
     world: Arc<RwLock<SimWorld>>,
     config: Arc<SimConfig>,
     mut snap_rx: broadcast::Receiver<Vec<u8>>,
@@ -169,14 +209,6 @@ pub async fn handle_connection(
     chat: Arc<crate::chat::ChatHub>,
     scripts: crate::scripting::ScriptHandle,
 ) -> anyhow::Result<()> {
-    let mut framed = Framed::new(
-        stream,
-        LengthDelimitedCodec::builder()
-            .max_frame_length(MAX_FRAME)
-            .little_endian()
-            .new_codec(),
-    );
-
     let first = framed
         .next()
         .await

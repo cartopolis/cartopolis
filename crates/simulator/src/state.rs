@@ -164,6 +164,12 @@ impl SimWorld {
         self.avatars.get(&id).map(|a| a.position)
     }
 
+    /// How many avatars are in the world — one per connected client, so this is
+    /// the population reported by `/api/health`.
+    pub fn avatar_count(&self) -> usize {
+        self.avatars.len()
+    }
+
     pub fn set_observer(&mut self, p: Vec3) {
         self.observer = p;
     }
