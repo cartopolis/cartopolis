@@ -129,6 +129,16 @@ impl LinkStatus {
 /// test inside it would be a test nobody ever runs. `secure_page` and `host` are
 /// arguments for the same reason: they are the only two facts this needs from a
 /// browser, so passing them in is what makes the rest a pure function.
+///
+/// The allow is the price of that, and it is worth knowing why `cargo check`
+/// does not need it while `cargo test` does: a plain check builds this crate as a
+/// library, where a `pub` item is public API and reachable by definition. Under
+/// `--test` the lib is compiled as a test *binary*, "public API" stops meaning
+/// anything, and a function whose only non-test caller is behind
+/// `cfg(target_arch = "wasm32")` is dead — which `unused = "deny"` makes an
+/// error. Same shape as the `cargo check` blind spot CLAUDE.md warns about for
+/// egui and the building geometry: run the tests, not just a check.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn ws_url(addr: &str, secure_page: bool, page_host: &str) -> String {
     let addr = addr.trim();
     if addr.starts_with("ws://") || addr.starts_with("wss://") {
