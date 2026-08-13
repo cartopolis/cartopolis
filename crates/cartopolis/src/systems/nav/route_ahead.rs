@@ -963,6 +963,7 @@ mod tests {
                 altitude: 0.0,
                 pose: default(),
                 folder: None,
+                photo: None,
             },
             crate::systems::user_store::Bookmark {
                 id: 2,
@@ -972,6 +973,7 @@ mod tests {
                 altitude: 0.0,
                 pose: default(),
                 folder: None,
+                photo: None,
             },
         ];
         let items = local_items(&g, &store, "Grote Markt");

@@ -86,6 +86,15 @@ pub struct UserData {
     /// one is simply at the top level.
     #[serde(default)]
     pub folders: Vec<PlaceFolder>,
+    /// Serial number for photo file names, only ever increasing.
+    ///
+    /// A photo's files could be named after the place alone, but then replacing
+    /// one would write new bytes to a name egui has already uploaded as a texture
+    /// — and a texture is cached by name, so the row would keep showing the old
+    /// photo until the app restarted. A fresh stem per capture makes the cache
+    /// key change with the picture, which is the property that matters.
+    #[serde(default)]
+    pub photo_seq: u64,
     /// ADR-016: session tokens keyed by server address, so an external sim only
     /// asks for a password once. Not stored for solo mode (ephemeral port).
     #[serde(default)]
@@ -345,6 +354,15 @@ pub struct Bookmark {
     /// colour its map pin is drawn in. `#[serde(default)]` for pre-folder files.
     #[serde(default)]
     pub folder: Option<u64>,
+    /// The photo attached to this place, as the *stem* of its two files in
+    /// [`crate::utils::photo_store`] — never the bytes, and never a full path.
+    ///
+    /// A stem rather than a file name because the store owns both the extension
+    /// and the thumbnail's spelling; not the bytes because this struct is
+    /// serialised in full on every autosave tick. `None` is the ordinary case: a
+    /// place has no photo until someone takes one.
+    #[serde(default)]
+    pub photo: Option<String>,
 }
 
 /// A directory in the Places tree. Folders nest (`parent`), hold bookmarks
@@ -614,9 +632,75 @@ impl UserStore {
             altitude,
             pose,
             folder: None,
+            photo: None,
         });
         self.dirty = true;
         id
+    }
+
+    /// Delete a place, and the photo attached to it.
+    ///
+    /// The photo has to go with the place: nothing else refers to those two files
+    /// ever again, and a photo directory that only grows is a phone filling up
+    /// with pictures of places its owner deleted.
+    pub fn remove_bookmark(&mut self, id: u64) {
+        if let Some(stem) = self
+            .data
+            .bookmarks
+            .iter()
+            .find(|b| b.id == id)
+            .and_then(|b| b.photo.clone())
+        {
+            crate::utils::photo_store::remove(&stem);
+        }
+        self.data.bookmarks.retain(|b| b.id != id);
+        self.dirty = true;
+    }
+
+    /// Attach a photo to a place, replacing any it already had.
+    ///
+    /// The store writes the files *before* it takes the new stem, so a failed
+    /// write leaves the place pointing at the photo it had rather than at a name
+    /// with nothing behind it.
+    pub fn set_bookmark_photo(
+        &mut self,
+        id: u64,
+        prepared: &crate::utils::photo::Prepared,
+    ) -> Result<(), String> {
+        if !self.data.bookmarks.iter().any(|b| b.id == id) {
+            return Err("that place is gone".to_string());
+        }
+        let seq = self.data.photo_seq.wrapping_add(1);
+        let stem = format!("place-{id}-{seq}");
+        crate::utils::photo_store::write(&stem, prepared)?;
+
+        self.data.photo_seq = seq;
+        let previous = self
+            .data
+            .bookmarks
+            .iter_mut()
+            .find(|b| b.id == id)
+            .and_then(|b| b.photo.replace(stem));
+        if let Some(previous) = previous {
+            crate::utils::photo_store::remove(&previous);
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Detach a place's photo and delete its files.
+    pub fn clear_bookmark_photo(&mut self, id: u64) {
+        let Some(stem) = self
+            .data
+            .bookmarks
+            .iter_mut()
+            .find(|b| b.id == id)
+            .and_then(|b| b.photo.take())
+        else {
+            return;
+        };
+        crate::utils::photo_store::remove(&stem);
+        self.dirty = true;
     }
 
     /// Create a folder under `parent` and return its id. Its colour is the next

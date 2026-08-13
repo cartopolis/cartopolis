@@ -1265,7 +1265,17 @@ pub fn run() {
                 .before(systems::free_camera::camera_controls),
             systems::user_store::autosave_user_store
                 .run_if(not(systems::shot_harness::harness_active)),
-            systems::bookmarks::poll_bookmark_addresses,
+            // Nested to stay under the per-tuple system limit.
+            (
+                systems::bookmarks::poll_bookmark_addresses,
+                // Not one of the ordered panel systems, and not gated on the
+                // panel being open: a photo is captured while the user is in
+                // another app entirely, and it has to land whatever the panel is
+                // doing when they come back. (Spelled without naming the panel
+                // chain's own phase marker — `every_root_ui_panel_is_in_the_chain`
+                // finds that block by the first mention of it in this file.)
+                systems::bookmarks::poll_place_photos,
+            ),
             // Nested to stay under the per-tuple system limit.
             (
                 systems::map_stream::apply_stream_textures
