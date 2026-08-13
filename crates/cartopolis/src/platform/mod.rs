@@ -25,6 +25,7 @@ pub mod android;
 pub mod audio;
 pub mod http;
 pub mod location;
+pub mod photo;
 pub mod storage;
 pub mod stream;
 pub mod work;

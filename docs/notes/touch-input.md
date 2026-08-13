@@ -1,6 +1,6 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused"]
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "context_menu", "long_touched"]
 updated: 2026-08-13
 ---
 
@@ -110,6 +110,20 @@ reaches Rust to explain the inertness. `overscroll-behavior: none` on
 `html, body` is the same story for pull-to-refresh, and
 `-webkit-touch-callout: none` stops the selection callout from covering the map
 on the long press that is our context menu.
+
+## A long press inside egui is egui's, and it also fires `clicked()`
+
+`touch.rs`'s long press → `MouseButton::Right` is the *world* context menu. Inside
+a panel the equivalent is egui's own press-and-hold, which needs nothing from us
+because `egui_manager::pointer_events` already forwards real `Event::Touch`es —
+`InputState::any_touches` gates the whole path, and `Response::secondary_clicked`
+(hence `Response::context_menu`) is true for a long touch.
+
+The trap: egui synthesises a **`clicked()` alongside it**, so that a widget with
+no menu still responds to the hold. A clickable widget that grows a context menu
+must therefore guard its click with `!response.long_touched()`, or the press that
+opens the menu also does whatever the widget does. First hit in the Places panel —
+`docs/notes/place-photos.md`.
 
 ## Gesture vocabulary, and where it came from
 

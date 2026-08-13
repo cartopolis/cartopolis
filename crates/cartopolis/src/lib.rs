@@ -487,7 +487,39 @@ fn offer_last_crash() {
     }
 }
 
+/// Start the client.
+///
+/// On the web this is deliberately *not* the whole of startup: the persistent
+/// store is IndexedDB, which has no synchronous read, and `UserStore::load` runs
+/// while the `App` is being built. So the keys that must be readable
+/// synchronously are pulled into memory first and the app is built inside the
+/// completion — a few milliseconds behind a page that is already showing its
+/// loader, in exchange for every startup path downstream (the quality preset, the
+/// layer and sky restores, the remembered location, the session decision) working
+/// exactly as it does natively instead of on a hydration event.
+///
+/// `spawn_local` and not a `block_on`: there is no blocking on a browser's main
+/// thread, and Bevy's winit backend hands control to the event loop rather than
+/// looping here, so starting it from inside a promise callback is ordinary.
 pub fn run() {
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async {
+        use crate::platform::storage;
+        storage::preload(systems::user_store::USER_KEY, "").await;
+        // Thumbnails only — a row draws them inside an egui pass and cannot wait.
+        // The full-size photos beside them are fetched when someone opens one.
+        storage::preload(
+            utils::photo_store::PHOTO_PREFIX,
+            utils::photo_store::THUMB_SUFFIX,
+        )
+        .await;
+        run_client();
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    run_client();
+}
+
+fn run_client() {
     dotenvy::dotenv().ok();
 
     #[cfg(target_os = "android")]
@@ -1265,7 +1297,17 @@ pub fn run() {
                 .before(systems::free_camera::camera_controls),
             systems::user_store::autosave_user_store
                 .run_if(not(systems::shot_harness::harness_active)),
-            systems::bookmarks::poll_bookmark_addresses,
+            // Nested to stay under the per-tuple system limit.
+            (
+                systems::bookmarks::poll_bookmark_addresses,
+                // Not one of the ordered panel systems, and not gated on the
+                // panel being open: a photo is captured while the user is in
+                // another app entirely, and it has to land whatever the panel is
+                // doing when they come back. (Spelled without naming the panel
+                // chain's own phase marker — `every_root_ui_panel_is_in_the_chain`
+                // finds that block by the first mention of it in this file.)
+                systems::bookmarks::poll_place_photos,
+            ),
             // Nested to stay under the per-tuple system limit.
             (
                 systems::map_stream::apply_stream_textures

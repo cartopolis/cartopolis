@@ -1160,3 +1160,461 @@ fn read_provider(
         }))
     })
 }
+
+// ---------------------------------------------------------------------------
+// 4. The camera, for a saved place's photo
+// ---------------------------------------------------------------------------
+
+/// How often [`CameraCapture::poll`] is allowed to touch the framework. It runs
+/// from a Bevy system, i.e. sixty times a second, and each poll is a `query` into
+/// another process; once a second is far faster than a human can take a photo.
+const CAMERA_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+/// `Intent.FLAG_GRANT_READ_URI_PERMISSION` | `FLAG_GRANT_WRITE_URI_PERMISSION`.
+const FLAG_GRANT_READ_WRITE_URI: i32 = 0x0000_0003;
+
+/// Refuse to read a file larger than this. A camera frame is single-digit
+/// megabytes; anything at this size is a video the user picked in a gallery that
+/// answered the intent, and decoding it would be a kill by the low-memory killer
+/// rather than an error.
+const MAX_PHOTO_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Serial number for the file name, so two photos taken in the same second do not
+/// collide in the MediaStore.
+static NEXT_PHOTO: AtomicI32 = AtomicI32::new(0);
+
+/// A camera capture in flight: the `MediaStore` row we asked the camera app to
+/// write into, and enough state to tell "not written yet" from "written".
+///
+/// **This is the design the no-dex rule forces, and it is worth understanding
+/// before changing it.** The ordinary way to take a photo is
+/// `startActivityForResult(ACTION_IMAGE_CAPTURE)` and read the answer in
+/// `onActivityResult` — but `android-activity` 0.6 surfaces no activity result,
+/// and delivering one would mean a Java class, hence a `classes.dex`, hence
+/// Gradle (see the module note). So the intent is started fire-and-forget with an
+/// `EXTRA_OUTPUT` pointing at a row this app inserted, and the completion signal
+/// is the row filling up. The camera app never has to tell us anything.
+///
+/// *Guaranteed by contract:* `ACTION_IMAGE_CAPTURE` with `EXTRA_OUTPUT` is
+/// documented to write the full-size image to that URI, and a URI permission
+/// granted on the intent reaches the app that handles it. *Needs a device:* every
+/// timing question below — whether the size settles before the file is closed on a
+/// given OEM's camera, and whether a cancelled capture really does leave the row
+/// empty rather than deleting it.
+pub struct CameraCapture {
+    /// The `content://` row the camera app writes into.
+    uri: GlobalRef,
+    /// Set once a result has been handed out, so a `poll` after that is inert.
+    done: bool,
+    /// When the last framework query happened (see [`CAMERA_POLL_INTERVAL`]).
+    last_poll: Option<std::time::Instant>,
+    /// Byte count seen on the previous poll, and how many polls have agreed on it.
+    ///
+    /// The completion test is "non-zero and unchanged since the last look" rather
+    /// than "non-zero", because a poll can land in the middle of the camera app's
+    /// write. The cost of being wrong is not a corrupt file — `utils::photo`
+    /// would reject a truncated JPEG — but an error message for a photo that was
+    /// taken perfectly well, which is worse than waiting another 750 ms.
+    last_size: i64,
+    stable_polls: u8,
+}
+
+/// Ask the camera app for a photo.
+///
+/// Note what is *not* here: `android.permission.CAMERA` is deliberately absent
+/// from the manifest, and adding it would break this. `ACTION_IMAGE_CAPTURE`
+/// needs no permission from the app that sends it — but Android's contract says
+/// that an app which *declares* the CAMERA permission must also hold it before
+/// the intent will be honoured. Declaring it would therefore cost a runtime
+/// prompt to do the same thing we can already do without one.
+pub fn start_camera_capture() -> Result<CameraCapture, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    match start_camera_capture_inner(&mut env, &activity) {
+        Ok(uri) => {
+            tracing::info!("camera intent started; waiting on the MediaStore row");
+            Ok(CameraCapture {
+                uri,
+                done: false,
+                last_poll: None,
+                last_size: -1,
+                stable_polls: 0,
+            })
+        }
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
+fn start_camera_capture_inner(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail> {
+    let uri = insert_photo_row(env, activity)?;
+    match launch_camera(env, activity, &uri) {
+        Ok(()) => Ok(uri),
+        Err(e) => {
+            // The row was inserted before the camera app was known to exist, so a
+            // device with no camera would otherwise leave an empty file in the
+            // user's gallery for every attempt.
+            clear_pending(env);
+            delete_row(env, activity, &uri);
+            Err(e)
+        }
+    }
+}
+
+/// Insert an empty image row and return its `content://` URI.
+fn insert_photo_row(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail> {
+    env.with_local_frame_returning_local(16, |env| {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        // `MediaStore.Images.Media.EXTERNAL_CONTENT_URI`. The nested class spells
+        // as `MediaStore$Images$Media` in JNI's binary-name form.
+        let collection = env
+            .get_static_field(
+                "android/provider/MediaStore$Images$Media",
+                "EXTERNAL_CONTENT_URI",
+                "Landroid/net/Uri;",
+            )?
+            .l()?;
+
+        let values = env.new_object("android/content/ContentValues", "()V", &[])?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let serial = NEXT_PHOTO.fetch_add(1, Ordering::Relaxed);
+        put_string(
+            env,
+            &values,
+            "_display_name",
+            &format!("cartopolis-{stamp}-{serial}.jpg"),
+        )?;
+        put_string(env, &values, "mime_type", "image/jpeg")?;
+        // `RELATIVE_PATH` arrived with scoped storage in API 29. Below that the
+        // column does not exist and inserting it throws, so API 28 gets the
+        // gallery's default location instead — which is also why the manifest
+        // carries WRITE_EXTERNAL_STORAGE with `maxSdkVersion="28"`.
+        if sdk_int(env)? >= 29 {
+            put_string(env, &values, "relative_path", "Pictures/Cartopolis")?;
+        }
+        // Deliberately *not* setting `IS_PENDING`: it restricts the row to the
+        // owning app, and the app that has to write here is the camera.
+
+        let uri = env
+            .call_method(
+                &resolver,
+                "insert",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+                &[JValue::Object(&collection), JValue::Object(&values)],
+            )?
+            .l()?;
+        if uri.is_null() {
+            return Err(Fail(
+                "the MediaStore refused a new image row (no storage permission?)".to_string(),
+            ));
+        }
+        Ok(uri)
+    })
+    .and_then(|uri| Ok(env.new_global_ref(&uri)?))
+}
+
+/// `ContentValues.put(String, String)`.
+fn put_string(env: &mut JNIEnv, values: &JObject, key: &str, value: &str) -> Result<(), Fail> {
+    let key: JObject = env.new_string(key)?.into();
+    let value: JObject = env.new_string(value)?.into();
+    env.call_method(
+        values,
+        "put",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[JValue::Object(&key), JValue::Object(&value)],
+    )?;
+    Ok(())
+}
+
+/// `Build.VERSION.SDK_INT`.
+fn sdk_int(env: &mut JNIEnv) -> Result<i32, Fail> {
+    Ok(env
+        .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
+        .i()?)
+}
+
+/// Start `ACTION_IMAGE_CAPTURE` pointed at `uri`.
+///
+/// Started on the **activity**, not the application context, and without
+/// `FLAG_ACTIVITY_NEW_TASK` — unlike [`open_url`], which hands a link to another
+/// app and does not care where it lands. A camera launched into our own task
+/// returns here when the user is done, which is the behaviour that makes the
+/// photo appear in the panel they left.
+fn launch_camera(env: &mut JNIEnv, activity: &JObject, uri: &GlobalRef) -> Result<(), Fail> {
+    env.with_local_frame(12, |env| {
+        let action: JObject = env.new_string("android.media.action.IMAGE_CAPTURE")?.into();
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        // `MediaStore.EXTRA_OUTPUT` is the literal "output"; a Uri is Parcelable,
+        // so this is the Parcelable overload rather than the String one.
+        let extra: JObject = env.new_string("output")?.into();
+        env.call_method(
+            &intent,
+            "putExtra",
+            "(Ljava/lang/String;Landroid/os/Parcelable;)Landroid/content/Intent;",
+            &[JValue::Object(&extra), JValue::Object(uri.as_obj())],
+        )?;
+        // Without the grant the camera app cannot open our row for writing, and
+        // the capture silently produces nothing at all.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(FLAG_GRANT_READ_WRITE_URI)],
+        )?;
+        // Throws ActivityNotFoundException on a device with no camera app, which
+        // the caller turns into a message rather than a crash.
+        env.call_method(
+            activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    })
+}
+
+impl CameraCapture {
+    /// Look at the row. `None` while it is still empty (or too soon since the last
+    /// look), `Some` exactly once when the photo has landed or the read failed.
+    pub fn poll(&mut self) -> Option<Result<Vec<u8>, String>> {
+        if self.done {
+            return None;
+        }
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_poll {
+            if now.duration_since(last) < CAMERA_POLL_INTERVAL {
+                return None;
+            }
+        }
+        self.last_poll = Some(now);
+
+        let java_vm = match vm() {
+            Ok(vm) => vm,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(e));
+            }
+        };
+        let mut env = match java_vm.attach_current_thread() {
+            Ok(env) => env,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(format!("could not attach to the JVM: {e}")));
+            }
+        };
+        let activity = activity();
+
+        let size = match row_size(&mut env, &activity, &self.uri) {
+            Ok(size) => size,
+            Err(Fail(msg)) => {
+                clear_pending(&env);
+                self.done = true;
+                return Some(Err(msg));
+            }
+        };
+        if size <= 0 {
+            self.stable_polls = 0;
+            self.last_size = size;
+            return None;
+        }
+        if size > MAX_PHOTO_BYTES {
+            self.done = true;
+            return Some(Err("that photo is too large to attach".to_string()));
+        }
+        if size != self.last_size {
+            self.last_size = size;
+            self.stable_polls = 0;
+            return None;
+        }
+        self.stable_polls = self.stable_polls.saturating_add(1);
+        if self.stable_polls < 1 {
+            return None;
+        }
+
+        self.done = true;
+        match read_uri(&mut env, &activity, &self.uri) {
+            Ok(bytes) => Some(Ok(bytes)),
+            Err(Fail(msg)) => {
+                clear_pending(&env);
+                Some(Err(msg))
+            }
+        }
+    }
+
+    /// Drop the row the camera app was given.
+    ///
+    /// Only for a capture the user abandoned. A *successful* one deliberately
+    /// leaves the row in place: the photo is in their gallery, where a photo they
+    /// took with their camera belongs, and deleting it behind their back would be
+    /// the surprising choice. That is why this is an explicit call and not a
+    /// `Drop` impl.
+    pub fn discard(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        let Ok(java_vm) = vm() else { return };
+        let Ok(env) = java_vm.attach_current_thread() else {
+            return;
+        };
+        let mut env = env;
+        let activity = activity();
+        delete_row(&mut env, &activity, &self.uri);
+    }
+}
+
+/// The `_size` column of the row, or 0 when it is null (the state a freshly
+/// inserted row is in until the camera app writes).
+fn row_size(env: &mut JNIEnv, activity: &JObject, uri: &GlobalRef) -> Result<i64, Fail> {
+    env.with_local_frame(16, |env| {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        let null = JObject::null();
+        let projection = env.new_object_array(1, "java/lang/String", &null)?;
+        let column: JObject = env.new_string("_size")?.into();
+        env.set_object_array_element(&projection, 0, &column)?;
+        let projection: JObject = projection.into();
+        let cursor = env
+            .call_method(
+                &resolver,
+                "query",
+                "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;\
+                  [Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+                &[
+                    JValue::Object(uri.as_obj()),
+                    JValue::Object(&projection),
+                    JValue::Object(&null),
+                    JValue::Object(&null),
+                    JValue::Object(&null),
+                ],
+            )?
+            .l()?;
+        if cursor.is_null() {
+            // The row is gone — the user deleted it from the gallery, or the
+            // provider dropped it. Nothing to wait for any more.
+            return Err(Fail("the photo was removed before it arrived".to_string()));
+        }
+        let size = if env.call_method(&cursor, "moveToFirst", "()Z", &[])?.z()? {
+            if env
+                .call_method(&cursor, "isNull", "(I)Z", &[JValue::Int(0)])?
+                .z()?
+            {
+                0
+            } else {
+                env.call_method(&cursor, "getLong", "(I)J", &[JValue::Int(0)])?
+                    .j()?
+            }
+        } else {
+            0
+        };
+        // A Cursor holds a binder-side window; leaving it to the finalizer would
+        // log a warning on every poll.
+        env.call_method(&cursor, "close", "()V", &[])?;
+        Ok(size)
+    })
+}
+
+/// Read the whole row through `ContentResolver.openInputStream`.
+fn read_uri(env: &mut JNIEnv, activity: &JObject, uri: &GlobalRef) -> Result<Vec<u8>, Fail> {
+    env.with_local_frame(16, |env| {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        let stream = env
+            .call_method(
+                &resolver,
+                "openInputStream",
+                "(Landroid/net/Uri;)Ljava/io/InputStream;",
+                &[JValue::Object(uri.as_obj())],
+            )?
+            .l()?;
+        if stream.is_null() {
+            return Err(Fail("the photo could not be opened".to_string()));
+        }
+
+        const CHUNK: i32 = 64 * 1024;
+        let buffer = env.new_byte_array(CHUNK)?;
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let read = env
+                .call_method(
+                    &stream,
+                    "read",
+                    "([BII)I",
+                    &[JValue::Object(&buffer), JValue::Int(0), JValue::Int(CHUNK)],
+                )?
+                .i()?;
+            if read <= 0 {
+                break;
+            }
+            let mut chunk = vec![0i8; read as usize];
+            env.get_byte_array_region(&buffer, 0, &mut chunk)?;
+            // Java bytes are signed; the reinterpretation is exact.
+            out.extend(chunk.into_iter().map(|b| b as u8));
+            if out.len() as i64 > MAX_PHOTO_BYTES {
+                return Err(Fail("that photo is too large to attach".to_string()));
+            }
+        }
+        env.call_method(&stream, "close", "()V", &[])?;
+        Ok(out)
+    })
+}
+
+/// `ContentResolver.delete(uri, null, null)`, best-effort.
+fn delete_row(env: &mut JNIEnv, activity: &JObject, uri: &GlobalRef) {
+    let result: Result<(), Fail> = env.with_local_frame(8, |env| {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        let null = JObject::null();
+        env.call_method(
+            &resolver,
+            "delete",
+            "(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I",
+            &[
+                JValue::Object(uri.as_obj()),
+                JValue::Object(&null),
+                JValue::Object(&null),
+            ],
+        )?;
+        Ok(())
+    });
+    if result.is_err() {
+        clear_pending(env);
+    }
+}

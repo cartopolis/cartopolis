@@ -148,6 +148,22 @@ arboard.workspace = true
 # Version-matched to the cpal rodio already resolves, so Cargo unifies to one
 # copy rather than compiling two ALSA backends.
 cpal = { version = "0.17", optional = true }
+# The file dialog behind `platform::photo` on the desktop — the arm that answers
+# "attach a photo to this place" where there is no camera to point at one.
+#
+# Sits with arboard rather than under plain `not(wasm32)` for the same reason: it
+# is a *desktop* dialog. Android has no xdg portal and no GTK, and its photo arm
+# is a camera intent instead.
+#
+# `default-features = false` is load-bearing. rfd's default backend on Linux is
+# GTK3, which needs `libgtk-3-dev` at build time — a new system prerequisite for
+# every Linux build of this client, including the agent container and CI, neither
+# of which has it (the same trap `bevy_audio`/alsa-sys documents above). The
+# `xdg-portal` backend talks to `org.freedesktop.portal.FileChooser` over DBus
+# instead: pure Rust, no headers, and it is what a sandboxed desktop wants anyway.
+# macOS and Windows are unaffected — their backends are cfg-selected, not
+# feature-selected.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 # Android (`docs/notes/android-build.md`). `android-native-activity` picks the
 # `android-activity` backend, and without one of the two that crate is a bare
@@ -247,6 +263,36 @@ web-sys = { version = "0.3", features = [
     "AudioBuffer",
     "AudioProcessingEvent",
     "ScriptProcessorNode",
+    # A place's photo (`platform::photo`): a hidden `<input type="file"
+    # accept="image/*" capture="environment">`, which a phone browser answers with
+    # the camera and a desktop one with an ordinary file picker. `HtmlElement` and
+    # `CssStyleDeclaration` are only there to hide the element, `FileReader` reads
+    # the picked `File` into bytes, and `EventTarget` is what `set_onchange` is
+    # declared on.
+    "HtmlInputElement",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "EventTarget",
+    "File",
+    "FileList",
+    "FileReader",
+    "Blob",
+    # IndexedDB — the web half of `platform::storage`, i.e. every byte this client
+    # keeps: the tile/building/POI cache, `user.json` and the photos on saved
+    # places. `DomStringList` is what `IDBDatabase.objectStoreNames` answers with,
+    # and the upgrade path reads it to decide which stores to create.
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "DomStringList",
+    # `navigator.storage.persist()`: without it a browser may evict the Data
+    # namespace under pressure, and Safari drops it after seven idle days — which
+    # would read as the user's saved places vanishing on their own.
+    "StorageManager",
 ] }
 # `Object`/`Reflect` build the `getUserMedia` audio constraints, and read `name`
 # off a rejected permission promise. Already in the graph under web-sys; named

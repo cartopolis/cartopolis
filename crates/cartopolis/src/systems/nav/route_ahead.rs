@@ -442,7 +442,7 @@ async fn fetch_corridor(
     }
     let query = corridor_query(corridor);
     let key = corridor_cache_key(&query);
-    let text = match storage::get_string(&key).await {
+    let text = match storage::get_string(storage::Namespace::Cache, &key).await {
         Some(cached) => cached,
         None => {
             let fetched = overpass_query(&query).await?;
@@ -452,7 +452,7 @@ async fn fetch_corridor(
             if let Some(remark) = remark_of(&fetched) {
                 return Err(format!("Overpass remark: {remark}"));
             }
-            storage::put(&key, fetched.as_bytes()).await;
+            storage::put(storage::Namespace::Cache, &key, fetched.as_bytes()).await;
             fetched
         }
     };
@@ -963,6 +963,7 @@ mod tests {
                 altitude: 0.0,
                 pose: default(),
                 folder: None,
+                photo: None,
             },
             crate::systems::user_store::Bookmark {
                 id: 2,
@@ -972,6 +973,7 @@ mod tests {
                 altitude: 0.0,
                 pose: default(),
                 folder: None,
+                photo: None,
             },
         ];
         let items = local_items(&g, &store, "Grote Markt");

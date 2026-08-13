@@ -210,6 +210,15 @@ pub struct Budget {
     /// `CARTO_FPS_CAP` is an environment variable, and **Android has no
     /// environment** — so on the one platform whose pacing this decides, the
     /// existing knob is unreachable rather than merely inconvenient.
+    ///
+    /// `allow` on wasm: the only reader is the frame limiter in `run`, which is
+    /// `cfg(not(target_arch = "wasm32"))` because the browser paces the loop
+    /// itself — a `requestAnimationFrame` callback is already once per display
+    /// refresh, and a sleep-based limiter inside one is the same double-pacing
+    /// this field exists to avoid on Android. The field stays unconditional so
+    /// the `Budget` tiers read the same on every target (and the tests above
+    /// assert it on all of them).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fps_cap: Option<f64>,
 }
 

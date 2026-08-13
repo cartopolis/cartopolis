@@ -81,6 +81,27 @@
          so a device with no location hardware must still be able to install. -->
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- A photo on a saved place (`platform::photo`, docs/notes/place-photos.md).
+         Capped at API 28 on purpose: from 29 scoped storage lets an app insert its
+         own row into the MediaStore with no permission at all, and that insert is
+         how the camera app is given somewhere to write. Below 29 there is no
+         RELATIVE_PATH column and the same insert needs this, so it is requested at
+         runtime on those devices only.
+
+         Note what is deliberately **absent**: android.permission.CAMERA.
+         ACTION_IMAGE_CAPTURE needs no permission from the app that sends it — but
+         Android's contract says an app that *declares* CAMERA must also hold it
+         before the intent is honoured. Declaring it would buy a runtime prompt in
+         exchange for something already permitted. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- Advisory for the same reason as the GNSS entry above: a tablet with no
+         camera must still install; the menu entry simply fails with "no camera
+         app" when the intent finds no handler. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:label="Cartopolis"
         android:icon="@mipmap/icon"
