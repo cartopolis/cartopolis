@@ -13,10 +13,11 @@
 //! twice; they do **not** catch a rasteriser that got slower per pixel.
 //!
 //! **The budgets are measured, not chosen.** Each was read off
-//! `print_tile_pipeline_cost` below and then rounded up by roughly a tenth, so an
-//! unrelated commit that shifts a `HashMap` growth threshold does not turn the
-//! suite red while a real regression still does. Re-run that hatch after any
-//! deliberate change:
+//! `print_tile_pipeline_cost` below and then given ~2% of headroom — enough to
+//! absorb an unrelated commit shifting a `HashMap` growth threshold, and no more,
+//! because these counts are reproducible to the unit. A tenth was tried first and
+//! rejected on evidence: it let an injected regression through. See the note beside
+//! the constants. Re-run that hatch after any deliberate change:
 //!
 //! ```text
 //! cargo test -p cartopolis_geo print_tile_pipeline_cost -- --ignored --nocapture
@@ -272,15 +273,17 @@ fn print_tile_pipeline_cost() {
         println!("{}", reread.line(&format!("  re-read buildings ({label})")));
 
         for px in [256_u32, 512] {
-            let (_, cost) = Cost::measure(|| {
-                crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, px)
-            });
+            let (_, cost) =
+                Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, px));
             println!("{}", cost.line(&format!("  render {px}² ({label})")));
         }
 
         let (_, cost) =
             Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256));
-        println!("{}", cost.line(&format!("  render 256² 1/64 sub ({label})")));
+        println!(
+            "{}",
+            cost.line(&format!("  render 256² 1/64 sub ({label})"))
+        );
     }
 
     println!("\n== rasteriser input (paths / points) ==");

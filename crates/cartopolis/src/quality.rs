@@ -572,7 +572,10 @@ mod tests {
                 !lower.detail_layers || upper.detail_layers,
                 "detail_layers: {name}"
             );
-            assert!(!lower.space_raymarch || upper.space_raymarch, "raymarch: {name}");
+            assert!(
+                !lower.space_raymarch || upper.space_raymarch,
+                "raymarch: {name}"
+            );
             assert!(lower.tile_px <= upper.tile_px, "tile_px: {name}");
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
             // A bigger bias is a *smaller* ring, and a bigger divisor a smaller
@@ -583,7 +586,11 @@ mod tests {
                 "per_frame: {name}"
             );
             assert!(
-                lower.atmosphere_luts.sky_view.cmple(upper.atmosphere_luts.sky_view).all(),
+                lower
+                    .atmosphere_luts
+                    .sky_view
+                    .cmple(upper.atmosphere_luts.sky_view)
+                    .all(),
                 "atmosphere LUTs: {name}"
             );
         }

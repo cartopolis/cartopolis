@@ -647,9 +647,9 @@ pub fn update_map_surfaces(
                 .iter()
                 .any(|m| m.group == SurfaceGroup::Water))
         .then(|| {
-                let field = shore.map(|f| images.add(water::shore_field_image(&f)));
-                water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
-            });
+            let field = shore.map(|f| images.add(water::shore_field_image(&f)));
+            water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
+        });
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
@@ -1317,7 +1317,13 @@ mod tests {
         let dl = crate::systems::data_layers::DataLayers::default();
         let tier = crate::quality::budget().detail_layers;
         assert_eq!(dl.trees_enabled, tier, "Trees must start at the tier");
-        assert_eq!(dl.furniture_enabled, tier, "Furniture must start at the tier");
-        assert_eq!(dl.water_shading, tier, "Water shading must start at the tier");
+        assert_eq!(
+            dl.furniture_enabled, tier,
+            "Furniture must start at the tier"
+        );
+        assert_eq!(
+            dl.water_shading, tier,
+            "Water shading must start at the tier"
+        );
     }
 }

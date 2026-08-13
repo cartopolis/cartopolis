@@ -3029,9 +3029,7 @@ fn apply_distance_fog(
     // test would call that a change every frame and buy nothing.
     const FOG_EPS: f32 = 1e-4;
     if applied.is_some_and(|(d, t, s)| {
-        (d - next.0).abs() < FOG_EPS
-            && (t - next.1).abs() < FOG_EPS
-            && (s - next.2).abs() < FOG_EPS
+        (d - next.0).abs() < FOG_EPS && (t - next.1).abs() < FOG_EPS && (s - next.2).abs() < FOG_EPS
     }) {
         return;
     }
