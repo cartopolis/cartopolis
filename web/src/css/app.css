@@ -1,0 +1,401 @@
+/*
+ * The palette is the client's, not a new one: every value below is a constant in
+ * `crates/cartopolis/src/systems/gui/theme.rs`, which is the only place UI colour
+ * lives in this project. A fresh hex here is how the chrome drifts — the loader
+ * CSS in `crates/cartopolis/index.html` is kept in step with the same table for
+ * the same reason.
+ *
+ * The contrast ratios in that file's module note carry over unchanged, since the
+ * pairings do: --text on --surface is 11.9:1, --text-dim 6.9:1, --accent-text
+ * 6.9:1, and --ink on an --accent fill is 5.9:1.
+ */
+:root {
+    --ink: #10181e;
+    --surface: #1b2830;
+    --surface-raised: #26383f;
+    --surface-hover: #324855;
+    --line: #3c5564;
+    --accent: #fd6012;
+    --accent-bright: #ff843c;
+    --accent-text: #ff9457;
+    --accent-muted: #96441c;
+    --amber: #fd9212;
+    --cream: #f2efea;
+    --text: #dfe5e7;
+    --text-dim: #a8b1ba;
+    --warn: #d8c07a;
+    --error: #e88b7d;
+
+    --radius: 6px;
+    --gap: 12px;
+    --font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--text);
+    font: var(--font);
+    /* The phone is the primary viewport for this project's operator — see the
+       container notes. Nothing below assumes a mouse. */
+    -webkit-text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3 {
+    color: var(--cream);
+    font-weight: 600;
+    margin: 0;
+}
+
+a {
+    color: var(--accent-text);
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+
+.app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.app-header {
+    align-items: center;
+    background: var(--ink);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    gap: var(--gap);
+    padding: 14px 18px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.app-header .wordmark {
+    color: var(--cream);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.app-header .wordmark b {
+    color: var(--accent-text);
+    font-weight: 600;
+}
+
+.app-header .spacer {
+    flex: 1;
+}
+
+.app-header .who {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+}
+
+.view {
+    flex: 1;
+    margin: 0 auto;
+    max-width: 60rem;
+    padding: 22px 18px 60px;
+    width: 100%;
+}
+
+.section-head {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap);
+    margin-bottom: 14px;
+}
+
+.section-head .count {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+}
+
+.hint {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin: 6px 0 0;
+}
+
+.empty {
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    padding: 28px 18px;
+    text-align: center;
+}
+
+/* ── Cards, forms, controls ──────────────────────────────────────────────── */
+
+.card {
+    background: var(--surface-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px;
+}
+
+.field {
+    display: block;
+    margin-bottom: var(--gap);
+}
+
+.field > span {
+    color: var(--text-dim);
+    display: block;
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="search"] {
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--text);
+    font: var(--font);
+    padding: 9px 11px;
+    width: 100%;
+}
+
+input:focus-visible,
+button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.check {
+    align-items: center;
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    gap: 8px;
+    /* A checkbox is the smallest thing on this page and the one most often
+       pressed with a thumb; the row is the target, not the box. */
+    min-height: 34px;
+}
+
+.check input {
+    accent-color: var(--accent);
+    height: 17px;
+    width: 17px;
+}
+
+button {
+    background: var(--surface-hover);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--text);
+    cursor: pointer;
+    font: var(--font);
+    font-weight: 500;
+    /* 38px, not the 30-odd a desktop would take: this is a touch target. */
+    min-height: 38px;
+    padding: 8px 14px;
+}
+
+button:hover:not(:disabled) {
+    background: var(--line);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+button.primary {
+    background: var(--accent);
+    border-color: var(--accent-bright);
+    /* Not --cream: that is 3.1:1 on this fill. --ink is 5.9:1. */
+    color: var(--ink);
+}
+
+button.primary:hover:not(:disabled) {
+    background: var(--accent-bright);
+}
+
+button.danger {
+    border-color: var(--accent-muted);
+    color: var(--error);
+}
+
+button.ghost {
+    background: none;
+    border-color: transparent;
+    color: var(--text-dim);
+}
+
+button.ghost:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* ── Account list ────────────────────────────────────────────────────────── */
+
+.account-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.account {
+    background: var(--surface-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+}
+
+.account.is-disabled {
+    /* Dimmed, but never hidden: a disabled account is the one an operator is
+       most likely to be looking for. */
+    opacity: 0.62;
+}
+
+.account-main {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.account-name {
+    color: var(--cream);
+    font-weight: 600;
+    /* Usernames are user input and can be 64 characters of anything. */
+    overflow-wrap: anywhere;
+}
+
+.account-meta {
+    color: var(--text-dim);
+    flex-basis: 100%;
+    font-size: 0.8rem;
+}
+
+.tag {
+    border: 1px solid currentcolor;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    text-transform: uppercase;
+}
+
+.tag.admin {
+    color: var(--accent-text);
+}
+
+.tag.disabled {
+    color: var(--warn);
+}
+
+.tag.you {
+    color: var(--text-dim);
+}
+
+.account-edit {
+    border-top: 1px solid var(--line);
+    margin-top: 12px;
+    padding-top: 12px;
+}
+
+/* ── Sign-in ─────────────────────────────────────────────────────────────── */
+
+.signin {
+    margin: 8vh auto 0;
+    max-width: 24rem;
+}
+
+.signin h1 {
+    margin-bottom: 6px;
+}
+
+.signin .hint {
+    margin-bottom: 18px;
+}
+
+.signin button {
+    width: 100%;
+}
+
+.splash {
+    color: var(--text-dim);
+    padding: 20vh 0;
+    text-align: center;
+}
+
+/* ── Notifications ───────────────────────────────────────────────────────── */
+
+.notifications {
+    bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    left: 14px;
+    position: fixed;
+    right: 14px;
+    z-index: 20;
+}
+
+@media (min-width: 40rem) {
+    .notifications {
+        left: auto;
+        max-width: 26rem;
+    }
+}
+
+.notification {
+    align-items: flex-start;
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+    display: flex;
+    gap: 10px;
+    padding: 11px 13px;
+}
+
+.notification.success {
+    border-left-color: var(--amber);
+}
+
+.notification.error {
+    border-left-color: var(--error);
+}
+
+.notification.info {
+    border-left-color: var(--line);
+}
+
+.notification p {
+    flex: 1;
+    margin: 0;
+}
+
+.notification button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    min-height: 0;
+    padding: 0 4px;
+}

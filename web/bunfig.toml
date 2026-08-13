@@ -1,0 +1,5 @@
+[test]
+# `localStorage` is a browser API and Bun's test runner has none, so the Store
+# tests — which exist precisely to pin what does and does not survive a reload —
+# would fail on the environment rather than on the code.
+preload = ["./test-setup.ts"]
