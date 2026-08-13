@@ -32,6 +32,26 @@ env:
   CACHE_ON_FAILURE: "true"
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: "3"
+  # sccache, the same second cache layer ci.yml has had since it was written, and
+  # for the reason that file states at length: `rust-cache` has exactly one key, so
+  # a key change or a failed run leaves nothing behind, while sccache is keyed on
+  # the compiler invocation and its inputs and therefore cannot miss for a reason
+  # unrelated to the code. This lane is the one with the worst cache history in the
+  # repo -- see CACHE_ON_FAILURE above -- so it is the one that needed a floor
+  # under it most, and it was the only one without.
+  #
+  # This shares a cache *directory* with ci.yml but not its entries: a different
+  # target triple and a different profile mean a different compiler invocation and
+  # so a different key. What it warms from is its own history, which is the point.
+  #
+  # `[profile.release] incremental = false` (inherited by android-release) is what
+  # makes this work at all -- sccache silently declines to cache an incremental
+  # compilation. That setting was overridden by a `[build] incremental = true` in
+  # .cargo/config.toml until it was removed; without that fix this block would
+  # have been decoration.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_DIR: /sccache
+  SCCACHE_CACHE_SIZE: 20G
 
 jobs:
   deploy-android:
@@ -39,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
-      # Two mounts, both listed in the runner's `valid_volumes`:
+      # Four mounts, all listed in the runner's `valid_volumes`:
       #   /publish — the same web root deploy-web.yml writes, so serving the APK
       #              needs no Caddy site, no DNS record and no second file_server.
       #              That job's `rsync --delete` excludes `/apk/`; without the
@@ -48,7 +68,14 @@ jobs:
       #              Android keys an installed app to its certificate, so a key
       #              that changed per build would mean uninstalling the app before
       #              every install. Read-only: this job needs to sign, not rotate.
-      options: --volume /data/cartopolis/site:/publish --volume /data/cartopolis/android-key:/signing:ro
+      #   /sccache, /root/.cargo/registry — the compilation and download caches,
+      #              the same host directories ci.yml mounts. Both are in the
+      #              runner's `valid_volumes`.
+      options: >-
+        --volume /data/cartopolis/site:/publish
+        --volume /data/cartopolis/android-key:/signing:ro
+        --volume /data/ci-cache/sccache:/sccache
+        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
 
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +193,14 @@ jobs:
       #     refuses to load on every 16 KB-page device: Pixel 8 and later, and
       #     whatever ships next. That is invisible from this container, which has
       #     no device to try it on, so it has to be an assertion on the bytes.
+      # ci.yml's own rule for this cache: print the stats unconditionally, so the
+      # next person can tell whether it worked instead of inferring it from a
+      # duration. `if: always()` because a failed build is exactly when you want
+      # to know whether the cache was cold.
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
       - name: Verify the archive
         run: |
           set -euo pipefail

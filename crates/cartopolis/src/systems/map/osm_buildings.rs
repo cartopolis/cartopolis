@@ -179,6 +179,32 @@ pub(crate) fn tdbag_user_enabled() -> bool {
     TDBAG_USER_ENABLED.load(Ordering::Relaxed)
 }
 
+/// The Layers-panel **master** Buildings toggle, mirrored the same way and for the
+/// same reason as [`TDBAG_USER_ENABLED`] above: both building streamers are at
+/// Bevy's 16-parameter ceiling and cannot take `Res<DataLayers>`.
+///
+/// Until this existed the master toggle reached only `ToggleWants::of`, which
+/// writes `Visibility::Hidden` — so unticking Buildings hid the meshes and changed
+/// nothing else. The client went on fetching 49 OSM cells and 9 3DBAG cells,
+/// decoding and triangulating them on the *same* `AsyncComputeTaskPool` the vector
+/// tile rasterise runs on (which CLAUDE.md documents as starvable by exactly this
+/// kind of long blocking job), uploading a merged mesh plus four window meshes per
+/// cell, spawning a few hundred entities and publishing their collider polygons.
+///
+/// So the most expensive layer in the client was the one whose "off" did the least,
+/// on the device with the least headroom.
+static BUILDINGS_USER_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Mirror the Layers-panel master Buildings toggle out of `DataLayers`.
+pub(crate) fn set_buildings_enabled(on: bool) {
+    BUILDINGS_USER_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Current state of the Layers-panel master Buildings toggle.
+pub(crate) fn buildings_user_enabled() -> bool {
+    BUILDINGS_USER_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Fetch a 3DBAG coverage manifest via the http seam. A missing/unreachable host
 /// (or an empty tile URL) yields empty coverage, so the client silently uses OSM
 /// buildings everywhere.
@@ -361,6 +387,10 @@ pub struct OsmBuildings {
     anchor: Option<(i64, i64, u32, f64)>,
     /// Terrain-field revision the live buildings stand on; a change rebuilds them.
     terrain_revision: u32,
+    /// Last-seen master Buildings toggle, so its off-edge can tear the patch down
+    /// once instead of every frame it stays off. Mirrors `Lod22Buildings::
+    /// enabled_was`, which does the same job for the 3DBAG sub-toggle.
+    enabled_was: bool,
     /// Centre tile of the last fetch (re-fetch when the camera moves away).
     last_center: Option<(i64, i64)>,
     /// Last-seen (3DBAG toggle, coverage resolved) pair. A patch bakes its
@@ -456,6 +486,9 @@ impl Default for OsmBuildings {
     fn default() -> Self {
         Self {
             anchor: None,
+            // True, matching `BUILDINGS_USER_ENABLED`'s own initial value, so a run
+            // that never touches the toggle sees no edge and tears nothing down.
+            enabled_was: true,
             last_center: None,
             tdbag_was: None,
             last_fetch: None,
@@ -505,6 +538,15 @@ const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
 /// 49` of them at once — the documented `VK_ERROR_DEVICE_LOST` burst. Higher than
 /// `lod22`'s cap because these meshes are the simplified tier and far cheaper.
 const MAX_FAR_DESPAWNS_PER_FRAME: usize = 6;
+
+/// Far cells *built* per frame — the other half of the guard above, which the
+/// despawn side has had all along and the build side did not.
+///
+/// Two rather than `lod22`'s one, for the same reason the despawn cap is six:
+/// these are the simplified tier, one merged extrusion plus a few window meshes,
+/// where a LoD2.2 cell is a full triangle soup. `Budget::per_frame` halves it to
+/// one on the phone.
+const MAX_FAR_BUILDS_PER_FRAME: usize = 2;
 
 /// An emissive window mesh; the value is its brightness multiplier (0 = never lit),
 /// scaled by the night factor in `update_window_glow`.
@@ -581,6 +623,21 @@ const FAR_WINDOWS: WindowGrid = WindowGrid {
 /// (windows, roof shapes).
 const BUILDING_PATCH_RADIUS: i64 = 3;
 
+/// [`BUILDING_PATCH_RADIUS`] with the render budget applied — 2 (5×5) on the phone
+/// tier instead of 3 (7×7), i.e. roughly half the area.
+///
+/// A function rather than a tier-adjusted constant, for the reason
+/// [`lod22::lod22_radius`] gives at greater length: the radii in this module are
+/// read against each other, and two separately-adjusted constants can drift where
+/// a shared call cannot.
+///
+/// This is the patch that carries real window grids on real floor spacing
+/// ([`DETAIL_WINDOWS`]), so its area is close to linear in triangle count — it is
+/// the most expensive ring in the client per tile.
+fn building_patch_radius() -> i64 {
+    crate::quality::budget().radius(BUILDING_PATCH_RADIUS)
+}
+
 /// Concurrent far-cell fetches against the 3DBAG host (see
 /// `OsmBuildings::far_dispatch_tdbag`). Same reasoning as `LOD22_CONCURRENCY`:
 /// our own host, so this is a throughput cap, not a throttle.
@@ -592,6 +649,18 @@ const TDBAG_FAR_CONCURRENCY: usize = 4;
 /// re-fetched and rebuilt wholesale. Covers the detail area too, as a
 /// flicker-free fallback while a detail refresh is in flight.
 const FAR_CELL_RADIUS: i64 = 3;
+
+/// [`FAR_CELL_RADIUS`] with the render budget applied — 2 (5×5 = 25 cells) on the
+/// phone tier instead of 3 (7×7 = 49).
+///
+/// Must stay at or beyond `lod22::lod22_radius() + 1`, which is where the real
+/// LoD2.2 meshes hand over to these simplified extrusions. Below that there would
+/// be a ring of covered cells that neither streamer owns — buildings simply
+/// missing, at a distance that changes with the tier. `the_far_ring_meets_the_lod22_
+/// handover` pins it on both tiers.
+fn far_cell_radius() -> i64 {
+    crate::quality::budget().radius(FAR_CELL_RADIUS)
+}
 /// Re-fetch the patch once the camera has moved this many tiles from the last centre.
 /// Larger = fewer Overpass calls (avoids 429/504 rate limits) at the cost of the
 /// patch trailing the camera a bit further before refreshing.
@@ -663,8 +732,17 @@ pub fn update_buildings(
     // buildings are always extruded onto the flat plane; rebuilding them is the
     // same teardown a re-anchor does. `sync` runs unconditionally so it adopts the
     // new generation either way.
+    // The Layers panel's master Buildings toggle. Its off-edge is a teardown of
+    // exactly the same shape as a re-anchor — retire the far cells and the detail
+    // patch through the shared despawn queue, drop their colliders, orphan both
+    // in-flight sinks — so it joins the condition below rather than repeating it.
+    // `anchor = None` there is what makes switching back on re-establish cleanly.
+    let enabled = buildings_user_enabled();
+    let turned_off = osm.enabled_was && !enabled;
+    osm.enabled_was = enabled;
+
     let reanchored = osm.far.sync(stream.anchor_generation);
-    if reanchored || osm.terrain_revision != terrain.revision {
+    if reanchored || turned_off || osm.terrain_revision != terrain.revision {
         osm.terrain_revision = terrain.revision;
         for e in osm.detail_entities.drain(..) {
             commands.entity(e).despawn();
@@ -680,6 +758,13 @@ pub fn update_buildings(
         osm.far.reset();
         osm.far_tdbag.reset();
         osm.anchor = None;
+    }
+
+    if !enabled {
+        // Everything past here establishes an anchor and streams cells. The
+        // despawn drain above still runs each frame, so a ring retired by the
+        // off-edge clears at its per-frame cap rather than in one command buffer.
+        return;
     }
 
     // Establish the anchor (from the map origin). Far cells then stream one
@@ -774,7 +859,7 @@ pub fn update_buildings(
 
         // Detail bounding box; the fetch assembles it from fixed CACHE_ZOOM
         // cells shared with the far-cell worker's disk cache.
-        let rd = BUILDING_PATCH_RADIUS;
+        let rd = building_patch_radius();
         let (d_north, d_west) = tile_to_lat_lng(center.0 - rd, center.1 - rd, z);
         let (d_south, d_east) = tile_to_lat_lng(center.0 + rd + 1, center.1 + rd + 1, z);
 
@@ -881,11 +966,12 @@ pub fn update_buildings(
         // real meshes arrive (see `coverage_resolved`).
         let mut to_request: Vec<(i64, i64)> = Vec::new();
         let queue_open = coverage_resolved();
-        for dy in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+        let far_r = far_cell_radius();
+        for dy in -far_r..=far_r {
             if !queue_open {
                 break;
             }
-            for dx in -FAR_CELL_RADIUS..=FAR_CELL_RADIUS {
+            for dx in -far_r..=far_r {
                 let cell = (ccx + dx, ccy + dy);
                 // Distance LOD: within the LoD2.2 KEEP ring (its request radius
                 // plus its one cell of despawn hysteresis) the real meshes
@@ -957,14 +1043,34 @@ pub fn update_buildings(
                 .detach();
         }
 
-        // Apply completed cells.
-        let done: Vec<(bool, ((i64, i64), Result<Option<FarCellBuild>, String>))> = osm
+        // Apply completed cells, at most `MAX_FAR_BUILDS_PER_FRAME` of them.
+        //
+        // This drain was uncapped, and it is the one hole left in the guard every
+        // other streamer in this tree has. Both lanes run four in flight, so a
+        // ring filling after a re-anchor could land **eight merged building meshes
+        // plus their window meshes in a single frame** — which is precisely the
+        // burst shape the module doc blames for `VK_ERROR_DEVICE_LOST` on a weak
+        // iGPU, and the reason `lod22`, `map_stream`, `map_geometry` and `globe`
+        // each have a cap already.
+        let mut done: Vec<(bool, ((i64, i64), Result<Option<FarCellBuild>, String>))> = osm
             .far
             .take_results()
             .into_iter()
             .map(|r| (false, r))
             .chain(osm.far_tdbag.take_results().into_iter().map(|r| (true, r)))
             .collect();
+        let cap = crate::quality::budget().per_frame(MAX_FAR_BUILDS_PER_FRAME);
+        let deferred = done.split_off(done.len().min(cap));
+        // Each deferred result goes back to the lane it came from — they are two
+        // independent `CellStream`s, and a result returned to the wrong one would
+        // release a concurrency slot that was never taken while holding one that
+        // was, which drifts both lanes' in-flight counts apart for the run.
+        let (tdbag_deferred, osm_deferred): (Vec<_>, Vec<_>) =
+            deferred.into_iter().partition(|(tdbag, _)| *tdbag);
+        osm.far
+            .defer(osm_deferred.into_iter().map(|(_, r)| r).collect());
+        osm.far_tdbag
+            .defer(tdbag_deferred.into_iter().map(|(_, r)| r).collect());
         for (tdbag, (cell, built)) in done {
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
@@ -1062,7 +1168,7 @@ pub fn update_buildings(
             .keys()
             .filter(|(cx2, cy2)| {
                 let d = (cx2 - ccx).abs().max((cy2 - ccy).abs());
-                d > FAR_CELL_RADIUS + 1
+                d > far_cell_radius() + 1
                     || (d <= crate::systems::lod22::lod22_radius() + 1 && lod22_covers(*cx2, *cy2))
             })
             .copied()
@@ -2579,6 +2685,48 @@ mod tests {
             r.reverse();
         }
         r
+    }
+
+    /// The far ring must reach the LoD2.2 handover, on every tier.
+    ///
+    /// `lod22` draws real meshes out to `lod22_radius()`; from `lod22_radius() + 1`
+    /// outward these simplified extrusions take over. If the far ring were the
+    /// shorter of the two, the cells in between would be owned by neither streamer
+    /// and their buildings would simply be absent — at a distance that moves with
+    /// the tier, which is the kind of gap that gets reported as "buildings missing
+    /// on the phone" and reproduces nowhere else.
+    ///
+    /// Both radii take the same `radius_bias`, so this holds by construction today;
+    /// the test is here because the two are adjusted independently and nothing else
+    /// would notice them diverging.
+    #[test]
+    fn the_far_ring_meets_the_lod22_handover() {
+        let handover = crate::systems::lod22::lod22_radius() + 1;
+        assert!(
+            far_cell_radius() >= handover,
+            "far cells reach {} but LoD2.2 hands over at {handover}: the ring \
+             between them would have no buildings at all",
+            far_cell_radius(),
+        );
+    }
+
+    /// A fresh run must see **no** toggle edge.
+    ///
+    /// `OsmBuildings::enabled_was` and `BUILDINGS_USER_ENABLED` are two copies of
+    /// one fact, and the off-edge they drive tears down the whole patch. If they
+    /// disagreed at startup, the first frame would retire a ring it had not built
+    /// and clear colliders nobody published -- harmless once, but it would fire on
+    /// every cold start and mask a real toggle edge in the noise.
+    #[test]
+    fn the_buildings_toggle_and_its_edge_state_agree_at_startup() {
+        assert!(
+            buildings_user_enabled(),
+            "the master Buildings toggle starts on, matching DataLayers::default"
+        );
+        assert!(
+            OsmBuildings::default().enabled_was,
+            "the streamer must start believing the toggle is on, or frame one is a teardown"
+        );
     }
 
     #[test]

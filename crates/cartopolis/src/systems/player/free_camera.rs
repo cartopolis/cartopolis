@@ -467,23 +467,43 @@ fn spherical_offset(yaw: f32, pitch: f32, distance: f64) -> DVec3 {
 
 /// Set the camera near/far only when they actually change (avoids per-frame
 /// change-detection churn on the projection).
-fn set_projection(projection: &mut Projection, near: f32, far: f32) {
-    if let Projection::Perspective(p) = projection {
-        if p.near != near || p.far != far {
-            p.near = near;
-            p.far = far;
-        }
+fn set_projection(projection: &mut Mut<Projection>, near: f32, far: f32) {
+    // Read through `Deref`, write through `DerefMut`, and never the other way
+    // round. The guard below is old; what it did not do is stop the *tick* being
+    // stamped, because the caller holds a `Mut<Projection>` and `&mut **projection`
+    // marks the component changed the moment it is formed — before this `if` runs.
+    // So the projection was `Changed` on every frame of the run, re-triggering
+    // frustum recomputation and the camera's view-uniform extraction, and quietly
+    // negating the stationary-frame optimisation the caller works hard for a dozen
+    // lines above.
+    let stale = matches!(
+        &**projection,
+        Projection::Perspective(p) if p.near != near || p.far != far
+    );
+    if !stale {
+        return;
+    }
+    if let Projection::Perspective(p) = &mut **projection {
+        p.near = near;
+        p.far = far;
     }
 }
 
 /// Set the camera's vertical field of view, only when it actually changes — same
 /// reason [`set_projection`] guards its write: the projection is change-detected,
 /// and the follow camera would otherwise mark it dirty on every frame it moves.
-fn set_fov(projection: &mut Projection, fov: f32) {
-    if let Projection::Perspective(p) = projection {
-        if (p.fov - fov).abs() > 1e-5 {
-            p.fov = fov;
-        }
+fn set_fov(projection: &mut Mut<Projection>, fov: f32) {
+    // Same shape, same reason as [`set_projection`] — and this one mattered more,
+    // because the Follow arm calls it every frame with a speed-eased FOV.
+    let stale = matches!(
+        &**projection,
+        Projection::Perspective(p) if (p.fov - fov).abs() > 1e-5
+    );
+    if !stale {
+        return;
+    }
+    if let Projection::Perspective(p) = &mut **projection {
+        p.fov = fov;
     }
 }
 
@@ -659,21 +679,36 @@ pub fn setup_camera(
             Exposure {
                 ev100: ATMOSPHERE_EXPOSURE_EV100,
             },
-            // Bloom: the glare that makes an HDR scene read as bright. The
-            // sun disk is the case that needs it — a physically-sized disc
-            // is a few pixels across, and without glare around it the sky's
-            // brightest object looks like a sticker. It also gives the night
-            // city's window lights and the sunlit limb from orbit their
-            // halo. Kept low (Bevy's default 0.15 is tuned for emissive-heavy
-            // scenes) so the daytime basemap doesn't smear.
-            Bloom {
-                intensity: bloom_intensity(0.0),
-                ..Bloom::NATURAL
-            },
             AmbientLight::default(),
             FreeCamera,
             FloatingOrigin,
         ));
+        // Bloom: the glare that makes an HDR scene read as bright. The sun disk is
+        // the case that needs it — a physically-sized disc is a few pixels across,
+        // and without glare around it the sky's brightest object looks like a
+        // sticker. It also gives the night city's window lights and the sunlit limb
+        // from orbit their halo. Kept low (Bevy's default 0.15 is tuned for
+        // emissive-heavy scenes) so the daytime basemap doesn't smear.
+        //
+        // Omitted entirely on a tier that does not want it, rather than kept at
+        // `intensity == 0.0`. A zero intensity does skip the thirteen
+        // downsample/upsample passes — `bloom_intensity` documents that, and it is
+        // true — but `Bloom` carries `#[require(Hdr)]`, so the component's mere
+        // presence keeps the main texture at `Rgba16Float` whether or not the node
+        // does any work. Skipping the passes while still paying 8 B/px for the
+        // target is the worst of both.
+        //
+        // The reason it used to stay is real and is now handled at the query
+        // instead: `apply_day_night_cycle` and `shot_harness` both name `&Bloom`
+        // inside a tuple, and a camera missing it would silently drop out of the
+        // day/night cycle and out of `ShotMetrics` — a lighting bug, not a
+        // rendering one. Both read `Option<&Bloom>` now.
+        if budget.bloom {
+            cam.insert(Bloom {
+                intensity: bloom_intensity(0.0),
+                ..Bloom::NATURAL
+            });
+        }
         // Atmospheric distance fog: distant buildings fade into haze, sun-side
         // glow, driven by the dev panel (apply_distance_fog). It is one more
         // fragment uniform in the mesh view, which overflowed WebGL2's cap of 14
@@ -696,14 +731,27 @@ pub fn setup_camera(
         // the desktop tier restates exactly what `AtmosphereSettings::default()`
         // gave it. The reason the sizes are worth touching at all is that all four
         // LUTs are recomputed *every frame* — see `quality::AtmosphereLuts`.
-        let luts = budget.atmosphere_luts;
-        cam.insert(AtmosphereSettings {
-            transmittance_lut_size: luts.transmittance,
-            multiscattering_lut_size: luts.multiscattering,
-            sky_view_lut_size: luts.sky_view,
-            aerial_view_lut_size: luts.aerial_view,
-            ..default()
-        });
+        //
+        // Gated on `want_atmosphere`, and the gate is about **bandwidth, not the
+        // LUTs**. `AtmosphereSettings` carries `#[require(Hdr)]`, so its mere
+        // presence makes the main texture `Rgba16Float` — 8 B/px of colour instead
+        // of 4. On a tiled mobile GPU that is not a memory cost but a *binning*
+        // one: 8 B colour plus depth overruns the on-chip tile budget, and the
+        // driver answers by splitting the pass into more bins and replaying the
+        // whole draw list for each. An adapter without `FLOAT32_FILTERABLE` (the
+        // Adreno 619 in a Fairphone 4 is the first one we found) already renders
+        // no sky at all, so before this gate it paid the doubled bandwidth *and*
+        // the extra bins for an atmosphere that was switched off above.
+        if want_atmosphere {
+            let luts = budget.atmosphere_luts;
+            cam.insert(AtmosphereSettings {
+                transmittance_lut_size: luts.transmittance,
+                multiscattering_lut_size: luts.multiscattering,
+                sky_view_lut_size: luts.sky_view,
+                aerial_view_lut_size: luts.aerial_view,
+                ..default()
+            });
+        }
         if want_envmap {
             // Sky-driven image-based lighting: surfaces are lit by and reflect
             // the actual atmosphere. 256² IBL cubemap instead of the 512²
@@ -1932,6 +1980,78 @@ mod tests {
     /// Bevy-local north for these tests: the anchor frame's +Y (see
     /// `GlobeState::north_axis_local`, which returns the real thing in-app).
     const NORTH: DVec3 = DVec3::Y;
+
+    /// Writing the *same* projection back must not mark the component changed.
+    ///
+    /// This is a change-detection test, so it needs a real `World`: the defect it
+    /// guards was invisible to the value-level guard inside `set_projection`,
+    /// because `&mut **projection` on a `Mut<T>` stamps the tick when the reference
+    /// is *formed*, not when a field is assigned. `camera_controls` calls both
+    /// setters unconditionally every frame, so the projection was permanently
+    /// `Changed` — re-running frustum culling setup and the camera view-uniform
+    /// extraction on frames where nothing had moved.
+    #[test]
+    fn rewriting_an_unchanged_projection_leaves_it_unchanged() {
+        let mut world = World::new();
+        let e = world
+            .spawn(Projection::Perspective(PerspectiveProjection {
+                near: DEFAULT_NEAR,
+                far: DEFAULT_FAR,
+                ..default()
+            }))
+            .id();
+        // A freshly spawned component is always `Changed`; start from a clean slate
+        // so what the test observes is this frame's writes only.
+        world.clear_trackers();
+
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR);
+        set_fov(&mut projection, FOLLOW_FOV_BASE);
+        drop(projection);
+        assert!(
+            !world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "re-applying identical near/far (and an unchanged FOV) must not dirty              the projection -- camera_controls does exactly this on every still frame"
+        );
+
+        // …and a real change must still register, or the guard has gone too far and
+        // the space tier's near/far override would never reach the renderer.
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        set_projection(&mut projection, DEFAULT_NEAR, DEFAULT_FAR * 4.0);
+        drop(projection);
+        assert!(
+            world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "a genuine near/far change must still mark the projection changed"
+        );
+
+        // The mechanism itself, pinned: forming `&mut **` on a `Mut<T>` marks the
+        // component changed **even when nothing is assigned through it**. This is
+        // the whole reason the setters above read through `Deref` first, and it is
+        // what made the old value-guard ineffective. If a Bevy upgrade ever made
+        // this false, the contortion in those setters could be dropped — and this
+        // is the assertion that would say so.
+        world.clear_trackers();
+        let mut projection = world.get_mut::<Projection>(e).expect("spawned above");
+        let _formed_but_unused = &mut *projection;
+        drop(projection);
+        assert!(
+            world
+                .entity(e)
+                .get_ref::<Projection>()
+                .expect("spawned above")
+                .is_changed(),
+            "forming a mutable deref of Mut<T> is what stamps the change tick; if \
+             this no longer holds, set_projection/set_fov can go back to a plain \
+             `&mut Projection`"
+        );
+    }
 
     #[test]
     fn the_ground_clamp_reads_altitude_across_cells_not_within_one() {

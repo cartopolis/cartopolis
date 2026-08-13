@@ -180,11 +180,24 @@
           forced = "";
         }
 
-        var phone;
+        // Three rungs now, matching `quality::Tier`. The page only needs to know
+        // which of them renders at reduced resolution — that is the phone rung
+        // alone — but it must still *recognise* every word, or `?quality=medium`
+        // would fall through to the auto branch here while `quality.rs` parsed it
+        // as a real tier, and the canvas resolution and the renderer's settings
+        // would be in different tiers with nothing to say so.
+        var forcedTier = null;
         if (forced === "phone" || forced === "low" || forced === "mobile") {
-          phone = true;
+          forcedTier = "phone";
+        } else if (forced === "balanced" || forced === "medium") {
+          forcedTier = "balanced";
         } else if (forced === "desktop" || forced === "high") {
-          phone = false;
+          forcedTier = "desktop";
+        }
+
+        var phone;
+        if (forcedTier) {
+          phone = forcedTier === "phone";
         } else {
           // Coarse pointer *and* a small viewport. Either alone is wrong: a
           // touchscreen laptop has the first, a narrow desktop window the
@@ -198,7 +211,8 @@
         // itself cannot be laid out yet — it is in `<body>`, which this script
         // precedes — so the second half of the job runs down there, off this
         // decision.
-        document.documentElement.dataset.quality = phone ? "phone" : "desktop";
+        document.documentElement.dataset.quality =
+          forcedTier || (phone ? "phone" : "desktop");
         window.__phone = phone;
       })();
     </script>

@@ -184,6 +184,10 @@ pub struct MapSurfaces {
     /// here rather than built flat and corrected, so a viaduct never visibly jumps
     /// off the ground once its answer lands.
     pending_decks: HashMap<Cell, PendingDecks>,
+    /// Which optional detail the live cells were built with, so flipping a layer
+    /// retears them ([`DetailWants`]). `None` until the first pass, which is what
+    /// makes the very first frame a build rather than a rebuild.
+    detail_wants: Option<DetailWants>,
 }
 
 impl Default for MapSurfaces {
@@ -205,6 +209,7 @@ impl Default for MapSurfaces {
             materials: HashMap::new(),
             terrain_revision: 0,
             pending_decks: HashMap::new(),
+            detail_wants: None,
         }
     }
 }
@@ -222,10 +227,54 @@ struct PendingDecks {
 /// cache with the texture path — same bytes serve both), tessellate areas + roads +
 /// trees + the water shore field off the main thread, and hand the finished buffers
 /// back for the render loop to upload. Replaces one worker of the old pool.
+/// Which of the optional per-cell products this worker should actually build.
+///
+/// The layers these gate were *displayed* conditionally and **built
+/// unconditionally**: a phone with Trees, Furniture and Water shading all off —
+/// the tier's own defaults — still scattered up to 6,000 canopies per cell,
+/// extracted the street furniture, and rasterised a 1024² distance field per water
+/// cell, then uploaded the meshes and spawned them `Visibility::Hidden`. Bevy
+/// prepares a `Mesh` per *asset*, not per visible entity, so hiding the entity
+/// saved the draw call and nothing else — not the scatter, not the upload, not the
+/// vertex buffer. Turning a layer off was very nearly free of benefit, which is
+/// most of why "only the vector map layer on" was not a cheaper configuration than
+/// everything on.
+///
+/// Each flag comes from a resource `update_map_surfaces` *already* holds
+/// (`VegetationLod::enabled`, `FurnitureLod::enabled`, `WaterSeaState::shading`),
+/// every one of which is a documented mirror of its `DataLayers` toggle. That is
+/// deliberate: the system sits at Bevy's 16-parameter ceiling, so reading
+/// `DataLayers` directly is not available, and the mirrors already exist precisely
+/// so spawn-time code can see a toggle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DetailWants {
+    /// Scatter and mesh tree canopies and trunks.
+    trees: bool,
+    /// Extract street furniture — and with it the furniture *instances*, which are
+    /// what make benches solid and what the interaction prompt aims at. So this
+    /// flag follows the same rule collision already follows for buildings: what is
+    /// not drawn is not collided with.
+    furniture: bool,
+    /// Build the per-cell shore distance field. See `WaterSeaState::shading`.
+    shore: bool,
+}
+
+impl DetailWants {
+    /// Everything on — what a desktop tier asks for, and what the tessellation
+    /// tests expect.
+    #[cfg(test)]
+    const ALL: Self = Self {
+        trees: true,
+        furniture: true,
+        shore: true,
+    };
+}
+
 fn spawn_geometry_task(
     cell: Cell,
     tile_m: f32,
     template: String,
+    wants: DetailWants,
     results: Arc<Mutex<Vec<(Cell, Tessellated)>>>,
 ) {
     // Fetch on the task pool, tessellate on the worker pool (ADR-033). The
@@ -276,33 +325,37 @@ fn spawn_geometry_task(
                             // merging thousands of canopies is pure CPU work, so
                             // it belongs on this worker and not on the frame that
                             // uploads the result.
-                            match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
-                                Ok(trees) => {
-                                    meshes.extend(scatter::build_vegetation_meshes(&trees));
-                                }
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");
+                            if wants.trees {
+                                match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
+                                    Ok(trees) => {
+                                        meshes.extend(scatter::build_vegetation_meshes(&trees));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");
+                                    }
                                 }
                             }
                             // Benches, bins and shelters likewise ride this fetch:
                             // Shortbread's `pois` layer is already in these bytes
                             // and was being decoded and dropped
                             // (`systems::street_furniture`).
-                            match furniture::extract_furniture(
-                                &tile,
-                                tile_m,
-                                veg_seed(cell),
-                            ) {
-                                Ok(items) => {
-                                    meshes.extend(furniture::build_furniture_meshes(&items));
-                                    // Keep the instances, not just their meshes:
-                                    // they are where the props stand, which is
-                                    // what makes them solid and what the
-                                    // interaction prompt aims at.
-                                    cell_places.furniture = items;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");
+                            if wants.furniture {
+                                match furniture::extract_furniture(
+                                    &tile,
+                                    tile_m,
+                                    veg_seed(cell),
+                                ) {
+                                    Ok(items) => {
+                                        meshes.extend(furniture::build_furniture_meshes(&items));
+                                        // Keep the instances, not just their meshes:
+                                        // they are where the props stand, which is
+                                        // what makes them solid and what the
+                                        // interaction prompt aims at.
+                                        cell_places.furniture = items;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(cell = ?cell, error = %e, "street furniture extraction failed");
+                                    }
                                 }
                             }
                             // …and so do the two layers this tile was decoding
@@ -333,7 +386,9 @@ fn spawn_geometry_task(
                             // is (earcut only ever emits boundary vertices), so
                             // the shader gets it as a rasterised distance field —
                             // built here, on the worker, for the same reason.
-                            if meshes.iter().any(|m| m.group == SurfaceGroup::Water) {
+                            if wants.shore
+                                && meshes.iter().any(|m| m.group == SurfaceGroup::Water)
+                            {
                                 match vector_tiles::water_shore_field(&tile, tile_m) {
                                     Ok(field) => shore = field,
                                     Err(e) => {
@@ -462,6 +517,28 @@ pub fn update_map_surfaces(
         stores.labels.clear();
     }
 
+    // The cells hold whatever detail was wanted when their worker ran, so turning
+    // a layer **on** has to retear the ring — otherwise the toggle does nothing
+    // until the camera happens to move to fresh cells, which reads as a dead
+    // switch. Same shape as the terrain revision above, and for the same reason:
+    // correcting the meshes in place would mean keeping every cell's CPU-side
+    // geometry alive for the life of the cell.
+    //
+    // Turning one *off* retears too. That is a frame of work to avoid holding
+    // meshes the user just said they did not want, on a device where that memory
+    // is the constraint.
+    let wants = DetailWants {
+        trees: veg_lod.enabled,
+        furniture: furniture_lod.enabled,
+        shore: sea_state.shading,
+    };
+    if surfaces.detail_wants != Some(wants) {
+        surfaces.detail_wants = Some(wants);
+        surfaces.clear();
+        stores.places.clear();
+        stores.labels.clear();
+    }
+
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
     // there anyway, and roaming in space would fetch cells for nonsense coords.
     if globe.altitude_m(cell, tf) as f32 > crate::systems::globe::GLOBE_SHOW_ALT {
@@ -507,7 +584,7 @@ pub fn update_map_surfaces(
     // starts on a later frame as slots free, so nothing is dropped.
     let sink = surfaces.stream.sink();
     while let Some(c) = surfaces.stream.next_job(now) {
-        spawn_geometry_task(c, tile_m, template.clone(), sink.clone());
+        spawn_geometry_task(c, tile_m, template.clone(), wants, sink.clone());
     }
 
     // 3. Upload finished tessellations, capped per frame; the rest go back into
@@ -551,13 +628,28 @@ pub fn update_map_surfaces(
         // One water material per cell — it carries that cell's shore field, so it
         // cannot be shared the way the flat-colour group materials are. Built once
         // per cell, not per mesh, and dropped with the cell's entities.
-        let water_material = surface_meshes
-            .iter()
-            .any(|m| m.group == SurfaceGroup::Water)
-            .then(|| {
-                let field = shore.map(|f| images.add(water::shore_field_image(&f)));
-                water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
-            });
+        //
+        // Only while water shading is *on*. With it off the extension was still
+        // bound and still ran: `update_water_waves` zeroes steepness and foam, but
+        // `waves_at` has no early-out, so every water fragment paid the full
+        // five-octave loop — two `sin`, a `cos` and two `pow` with a non-constant
+        // exponent per octave — and the result was multiplied by zero at the end.
+        // Water is a large share of screen area over a Dutch city, and this is the
+        // most expensive per-pixel shader in the tree.
+        //
+        // Falling through to `None` is all that is needed: the branch below already
+        // hands any group without a bespoke material to the shared flat-colour one,
+        // and `SurfaceGroup::Water` has a palette entry, roughness and depth bias
+        // there like every other group. `palette::WATER` is documented as matched
+        // to the shaded tone precisely so the two can meet without a step.
+        let water_material = (wants.shore
+            && surface_meshes
+                .iter()
+                .any(|m| m.group == SurfaceGroup::Water))
+        .then(|| {
+            let field = shore.map(|f| images.add(water::shore_field_image(&f)));
+            water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
+        });
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
         for sm in surface_meshes {
@@ -1156,4 +1248,82 @@ fn stand_on_terrain(
 /// it — a reshuffle shows up as a shimmer whenever the ring crosses a boundary.
 fn veg_seed(cell: Cell) -> u64 {
     (cell.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (cell.1 as u64).rotate_left(32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first pass must be a *build*, not a rebuild.
+    ///
+    /// `detail_wants` starts `None` rather than at some assumed default precisely
+    /// so the comparison in `update_map_surfaces` cannot match on frame one. If it
+    /// started at a concrete value, a tier whose real wants differed would clear a
+    /// ring it had not built yet — harmless, but it would make the retear fire on
+    /// every cold start and hide a real retear in the noise.
+    #[test]
+    fn a_fresh_surface_store_has_not_committed_to_any_detail_level() {
+        assert_eq!(MapSurfaces::default().detail_wants, None);
+    }
+
+    /// The retear is driven by equality on the whole struct, so *every* field has
+    /// to participate — a flag that stopped being compared would silently become a
+    /// dead toggle, which is the exact failure this mechanism exists to prevent.
+    #[test]
+    fn each_detail_flag_is_visible_to_the_retear_comparison() {
+        let all = DetailWants::ALL;
+        for (label, one_off) in [
+            (
+                "trees",
+                DetailWants {
+                    trees: false,
+                    ..all
+                },
+            ),
+            (
+                "furniture",
+                DetailWants {
+                    furniture: false,
+                    ..all
+                },
+            ),
+            (
+                "shore",
+                DetailWants {
+                    shore: false,
+                    ..all
+                },
+            ),
+        ] {
+            assert_ne!(
+                Some(all),
+                Some(one_off),
+                "flipping `{label}` alone must be visible to the retear check, or \
+                 turning that layer on leaves the live cells without it"
+            );
+        }
+    }
+
+    /// The three toggles these flags mirror must start where the tier says.
+    ///
+    /// This is the join that makes the gating work at all: `DetailWants` is read
+    /// from the `VegetationLod` / `FurnitureLod` / `WaterSeaState` mirrors, those
+    /// mirror `DataLayers`, and `DataLayers` starts from `Budget::detail_layers`.
+    /// If that last link ever broke, a phone would go back to scattering 6,000
+    /// canopies and rasterising a 1024² distance field per cell before the user
+    /// touched anything — and the only symptom would be the framerate.
+    #[test]
+    fn the_detail_toggles_start_where_the_tier_puts_them() {
+        let dl = crate::systems::data_layers::DataLayers::default();
+        let tier = crate::quality::budget().detail_layers;
+        assert_eq!(dl.trees_enabled, tier, "Trees must start at the tier");
+        assert_eq!(
+            dl.furniture_enabled, tier,
+            "Furniture must start at the tier"
+        );
+        assert_eq!(
+            dl.water_shading, tier,
+            "Water shading must start at the tier"
+        );
+    }
 }

@@ -28,6 +28,44 @@ any crate boundary could make it — incremental compilation is doing the work a
 crate split is usually credited with. Splitting crates to speed up a 4 s edit is
 a category error, and it was the first thing assumed here.
 
+**And splitting more of our code out will not move the 45 s tail either.** This
+was asked again on 2026-08-13 ("make the build cache more effective by separating
+our code from the Bevy path"), so here is the mechanism the numbers above imply
+but never state.
+
+A 7.5 s frontend against a 52.4 s full compile is a 6:1 codegen-to-typecheck
+ratio, and that ratio is the signature of **monomorphisation**, not of line count.
+rustc shares generic instantiations across crates at `opt-level` 0 and 1 and stops
+at 2 and 3 — and `[profile.dev.package."*"] opt-level = 3` (the Bevy recipe that
+makes a debug build playable) puts every dependency in the second group. So Bevy
+exports no shareable instantiations, and every `Query`, `Res`, `SystemParam`,
+`MaterialPlugin` and `IntoScheduleConfigs` our code names is monomorphised and
+LLVM'd **inside `cartopolis`**. That tail is Bevy's generics wearing our crate's
+name. Moving our own pure lines out does not move it; the ~277 ECS system
+signatures that instantiate them stay behind by definition.
+
+The evidence was already here and unread: `crates/geo` removed 7,313 lines, 11% of
+the client, and `cargo check -p cartopolis` went 7.1 s → 7.5 s. The extraction was
+worth doing — it took 60 geodata tests from "part of a 52.4 s binary compile" to
+2.2 s, which is what the table below measures — but it bought that on the *test*
+loop, not the compile.
+
+Estimated value of extracting every genuinely Bevy-free line still in the client
+(~2,650 lines, see the correction below): **1–2 s off a 52.4 s cold compile, ~0 off
+the 3.8 s edit loop.** It is a code-organisation change with a test-loop payoff.
+Budget it as that, not as a build-time fix.
+
+A crate split also *competes with* the mechanism that already makes the edit loop
+fast: `codegen-units = 256` parallelises codegen within one crate, and a split
+converts that into a serial two-crate dependency chain. On a many-core workstation
+a split can make the cold build marginally slower.
+
+**Where the build time actually is, if someone wants to spend a day on it:** the
+three unmeasured levers are `fast-dev` (Bevy dynamic linking — it collapses the
+link, and nothing in this tree has ever measured it against the 52.4 s figure),
+`mold` over `lld`, and `cargo build --timings` to split that 45 s into codegen
+versus link in the first place. Do the third one first.
+
 **The cost is codegen and linking, not type-checking.** 7.1 s of the 52.4 s is
 the frontend; the remaining ~45 s is LLVM and the link. So anything that
 *discards* the incremental cache pays full price: CI (`CARGO_INCREMENTAL=0`),
@@ -87,14 +125,21 @@ only `--all-targets` (or `cargo test`) catches.
 7,313 lines carrying **69 of the crate's 290 tests** imported no Bevy at all, yet
 were compiled and linked as part of a Bevy binary. They are now `crates/geo`:
 
-| Module | Lines | Tests |
-|---|---|---|
-| `systems/vector_tiles` | 3,496 | 32 |
-| `systems/routing` | 1,937 | 16 |
-| `systems/theme` | 714 | 4 (egui only, no Bevy) |
-| `systems/road_texture` | 617 | 9 |
-| `systems/shot_presets` | 282 | 5 |
-| `utils/sun` | 267 | 3 |
+| Module | Lines | Tests | Moved? |
+|---|---|---|---|
+| `systems/vector_tiles` | 3,496 | 32 | yes |
+| `systems/routing` | 1,937 | 16 | yes |
+| `systems/theme` | 714 | 4 (egui only, no Bevy) | **no — still in `cartopolis`** |
+| `systems/road_texture` | 617 | 9 | yes |
+| `systems/shot_presets` | 282 | 5 | **no — still in `cartopolis`** |
+| `utils/sun` | 267 | 3 | **no — still in `cartopolis`** |
+
+> **Correction, 2026-08-13.** This table read as a list of what moved, and three
+> rows of it never did. `crates/geo/src` holds `furniture`, `mip`, `places`,
+> `pois`, `road_texture`, `routing`, `scatter` and `vector_tiles` — `theme`,
+> `shot_presets` and `utils/sun` are still client files, so roughly 1,260 lines
+> and 12 tests of the claim above are outstanding. `theme` cannot go to `geo` as
+> it stands: it is egui-only, and `geo` has no egui and should not grow one.
 
 `vegetation` turned out to be the same story one level down: 1007 lines of which
 ~870 were pure scatter and meshing, with a 130-line ECS half on top. It split
