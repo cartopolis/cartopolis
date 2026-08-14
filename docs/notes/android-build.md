@@ -666,7 +666,9 @@ residual risk and said which constant to flip; it is flipped
 (`PENDING_INTENT_FLAG_MUTABLE`). This is the second time the shared logcat tail
 has converted an argument into a measurement in one round trip.
 
-**What is still unnamed is where the main loop stopped**, and the log physically
+**What is still unnamed is where the main loop stopped** *(answered one round
+later — it was the screen wakelock, third of the three below; see "The freeze,
+named" at the end of this note)*, and the log physically
 cannot say: the last line before the silence is whichever system logged most
 recently (`globe placed`), which is not where it stopped. Three things ran on that
 frame — driver mode's entry, the teleport's re-anchor with everything it makes
@@ -802,3 +804,74 @@ the cause is upstream of it — most likely a `textures_delta` produced by a
 main-world frame that the render world never applied, since `end_egui_frame`
 *replaces* the delta rather than accumulating it and egui announces a texture
 exactly once. Not fixed blind.
+
+## The freeze, named: `AndroidApp::set_window_flags` deadlocks against the frame it is called in (2026-08-14, third run)
+
+Build `1.0.0+e37999e5` closed it, and the instrument from the previous round is
+what closed it. The log carries
+
+```
+19:33:22.648  driver mode on gps=true
+19:33:22.696  keep-screen-on: asking on=true      ← thread 7719, a Compute Task Pool worker
+              … no `keep-screen-on: done`, and no further line from any pool thread …
+19:33:25.640  MAIN LOOP STALLED — no frame for 2966 ms
+              ANR: Input dispatching timed out … Waited 5000ms for MotionEvent
+```
+
+`asking` without `done` was the whole point of the bracket: **the call never
+returned.** The system's own thread dump says where — the task-pool thread is
+parked on a futex with every frame inside `libcartopolis_android.so` and **no
+`libandroid.so` frame at all**, so it never reached the NDK. It is blocked in a
+Rust lock, before the syscall.
+
+**The lock is android-activity's, and it is a write lock taken under a read lock
+held by the same frame.** `AndroidApp` is an `Arc<RwLock<AndroidAppInner>>`.
+`set_window_flags` is one of exactly three methods that take `inner.write()` (the
+others are `enable_motion_axis` / `disable_motion_axis`, which nothing here
+calls). And `AndroidApp::poll_events` takes `inner.read()` **for the duration of
+its callback** — which on this stack is winit's `single_iteration`, which invokes
+the Bevy handler, which is `App::update()`, which is the entire schedule:
+
+```
+android_main ──read()──▶ poll_events ──▶ winit ──▶ App::update ──┐
+       ▲                                                         │
+       └─ cannot return, so the read guard cannot drop            ▼
+                       task-pool thread ──write()──▶ set_window_flags (blocks forever)
+```
+
+`apply_screen_wakelock` is an ordinary Bevy system, so it runs *inside* that read
+guard on whichever thread the parallel executor picked. It waits for a writer's
+turn that arrives only when the frame ends, and the frame ends only when it
+returns. The schedule stops, input is never drained, and five seconds later the
+system posts an ANR. That is the freeze, and it was never about GPS — driver mode
+merely happens to be what turns the wakelock on. The same tap with
+`keep_screen_on` off would not have frozen, and any *other* system calling this
+would freeze without GPS anywhere near it.
+
+**The generalisation, which is the reason this is a note and not a commit
+message: never call an android-activity method that takes `inner.write()` from a
+Bevy system.** There are three of them and they are not marked; the crate's docs
+discuss thread-safety in terms of the *NDK* calls underneath, which really are
+callable from any thread. `ANativeActivity_setWindowFlags` writes a work item to
+the activity's main-work pipe and the UI thread's looper performs it — thread-safe
+by construction, exactly as this note claimed. The wrapper adds a lock the wrapped
+call never needed, and inherits none of its safety.
+
+The fix is a dedicated `carto winflags` thread fed by an `mpsc` channel: it is
+free to block until the frame that asked has ended, which is the one thing a
+system cannot do. Applied in queue order, so a fast off/on cannot land as on/off.
+Two prices, both small and both real: the flag lands a frame late (against a
+screen timeout measured in tens of seconds), and while a writer is queued
+`RwLock`'s writer preference blocks *readers* — `vm()` and `activity()` take
+`inner.read()` — so a JNI call on the location thread can wait out the rest of a
+frame. Bounded, and off the schedule.
+
+**Why not call the NDK function directly and skip the lock entirely:**
+android-activity 0.6 keeps `native_activity()` `pub(crate)` and exposes no raw
+`ANativeActivity*` — `activity_as_ptr()` is the Java `Activity` jobject, which is
+the wrong pointer. There is no way to reach the thread-safe call underneath.
+
+Three rounds of instrument earned this: the watchdog said the schedule stopped
+rather than the renderer, the ANR reader said which thread and that it was a futex
+in our own code, and the bracketed pair said which call. None of the three could
+have named it alone.
