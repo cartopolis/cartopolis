@@ -359,10 +359,11 @@ pub fn render_main_menu(
                 .interact_pos()
                 .is_some_and(|p| !area.response.rect.contains(p))
     });
-    if close
-        || (clicked_out && !dismissed_by_disc)
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-    {
+    // Escape is not read here. It closed nothing from this site anyway — the key
+    // reached egui only while a text field had focus, and this card contains no
+    // field — and now that it does reach egui, one handler per surface would
+    // close two things per press. `systems::dismiss` owns the whole ladder.
+    if close || (clicked_out && !dismissed_by_disc) {
         menu.open = false;
     }
 }

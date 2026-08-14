@@ -401,6 +401,11 @@ impl EguiManager {
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
             || keyboard.pressed(KeyCode::ControlRight)
+            // Super for the same reason Control is: on macOS the accelerator is
+            // Cmd, so a held Cmd has to suppress the game keys or `Cmd+W` walks
+            // the avatar forward on its way to closing the window.
+            || keyboard.pressed(KeyCode::SuperLeft)
+            || keyboard.pressed(KeyCode::SuperRight)
     }
 }
 
@@ -837,17 +842,35 @@ pub fn begin_egui_frame(
     let forward_keys = egui_manager.ctx.text_edit_focused();
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    // macOS puts the accelerator on Super, not Control. Without this, `Cmd+C` in
+    // a text field did nothing while `Ctrl+C` did — the wrong key on that
+    // platform — and a held Cmd did not suppress avatar movement the way a held
+    // Ctrl does.
+    let cmd = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    let mac = cfg!(target_os = "macos");
+    let accel = if mac { cmd } else { ctrl };
     let modifiers = egui::Modifiers {
         ctrl,
         shift,
-        command: ctrl,
-        ..Default::default()
+        alt,
+        mac_cmd: mac && cmd,
+        command: accel,
     };
     for ev in keyboard_input.read() {
-        if !forward_keys {
+        // **Escape and Tab are dismissal and navigation, not activation.** The
+        // gate above is right for keys that *fire* the focused widget — that is
+        // what stopped Space collapsing a panel from across the map — and it was
+        // applied to every key, which made every `Key::Escape` handler in the
+        // client unreachable code and stranded Tab focus on the first widget it
+        // reached. These two go through whether or not a field has focus;
+        // everything else still waits its turn. See `systems::dismiss` for what
+        // Escape then does with it.
+        let always = matches!(ev.key_code, KeyCode::Escape | KeyCode::Tab);
+        if !forward_keys && !always {
             continue;
         }
-        if ev.state == ButtonState::Pressed && ctrl {
+        if ev.state == ButtonState::Pressed && accel {
             match ev.key_code {
                 KeyCode::KeyC => {
                     events.push(egui::Event::Copy);
@@ -866,7 +889,7 @@ pub fn begin_egui_frame(
                 _ => {}
             }
         }
-        if ev.state == ButtonState::Pressed && !ctrl {
+        if ev.state == ButtonState::Pressed && !accel {
             if let Some(ref text) = ev.text {
                 let s = text.as_str();
                 if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
@@ -952,6 +975,16 @@ fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
         KeyCode::End => egui::Key::End,
         KeyCode::PageUp => egui::Key::PageUp,
         KeyCode::PageDown => egui::Key::PageDown,
+        // The three letters egui's text editor binds to an accelerator. They
+        // reach it only as a `Key` event — the `Event::Text` path above is
+        // skipped while the accelerator is held — so without them `Ctrl+A`,
+        // `Ctrl+Z` and `Ctrl+Y` were dead in every text field on the desktop,
+        // while the on-screen keyboard, which injects `Key::A + COMMAND`
+        // directly, could select-all on a phone. Nothing else in the client
+        // wants a bare letter from egui, which is why the map stops here.
+        KeyCode::KeyA => egui::Key::A,
+        KeyCode::KeyZ => egui::Key::Z,
+        KeyCode::KeyY => egui::Key::Y,
         _ => return None,
     })
 }

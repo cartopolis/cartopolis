@@ -123,6 +123,17 @@ impl Default for LoginScreen {
 }
 
 impl LoginScreen {
+    /// Is a request this card issued still in flight?
+    ///
+    /// Exposed for `systems::dismiss`: the card's own close button is disabled
+    /// while it is waiting, and Escape must not be a way around that — an
+    /// unbounded modal you can dismiss halfway through a handshake leaves the
+    /// session in a state nothing on screen describes.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.awaiting
+    }
+
     /// Seed the fields from the remembered session (called once at startup, before
     /// the first frame).
     pub fn from_prefs(prefs: &SessionPrefs) -> Self {
@@ -375,15 +386,15 @@ pub fn render_login_screen(
     ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
 
     // ── Keyboard ─────────────────────────────────────────────────────────────
-    let (escape, enter) = ctx.input(|i| {
-        (
-            i.key_pressed(egui::Key::Escape),
-            i.key_pressed(egui::Key::Enter),
-        )
-    });
-    close |= escape;
+    // Escape is `systems::dismiss`'s, not this card's: it is one rung of a
+    // ladder that has to close exactly one thing per press, and four files
+    // reading the same key independently is how one press would close two.
+    //
     // Enter submits from anywhere on the card — including out of the password
-    // field, which is where a keyboard-driven sign-in ends.
+    // field, which is where a keyboard-driven sign-in ends. Note the comment
+    // that used to say so was only true with a field focused, since that was
+    // the condition for the key arriving at all; it is true now.
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     submit |= enter && !session.status.is_busy();
 
     if sign_out {

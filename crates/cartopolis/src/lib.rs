@@ -1825,6 +1825,10 @@ fn run_client() {
             (
                 quiesce_while_backgrounded,
                 handle_back_gesture,
+                // Escape's single dismissal ladder. It reads state every panel
+                // has already written this frame, so it runs after the Phase 7b
+                // chain — which this tuple does, being registered after it.
+                systems::dismiss::handle_escape,
                 apply_screen_wakelock,
                 sync_guidance_pref,
                 systems::render_scale::apply_preferred_render_scale,
@@ -3164,9 +3168,8 @@ fn quiesce_while_backgrounded(
 /// that quits on the first back press while a panel is open would be unusable.
 fn handle_back_gesture(
     keys: Res<ButtonInput<KeyCode>>,
-    mut keyboard: ResMut<systems::onscreen_keyboard::OnScreenKeyboard>,
-    mut right_panel: ResMut<resources::RightPanel>,
-    mut driver: ResMut<systems::driver::DriverState>,
+    egui: Res<systems::egui_manager::EguiManager>,
+    mut dismissable: systems::dismiss::Dismissable,
     mut exit: MessageWriter<AppExit>,
 ) {
     // `BrowserBack` is what winit maps Android's back key to. Desktop keyboards
@@ -3174,18 +3177,16 @@ fn handle_back_gesture(
     if !keys.just_pressed(KeyCode::BrowserBack) {
         return;
     }
-    // The keyboard is the innermost rung, because that is where the system IME
-    // sits on every other Android app: Back puts the keyboard away first and only
-    // then starts closing the thing you were typing into. Getting this order
-    // wrong is worse than it sounds — it would have made Back leave driver mode
-    // out from under someone who was only trying to dismiss the keys.
-    if keyboard.is_open() {
-        keyboard.dismiss();
-    } else if driver.active {
-        driver.exit();
-    } else if *right_panel != resources::RightPanel::None {
-        *right_panel = resources::RightPanel::None;
-    } else {
+    // **Back is Escape plus one rung.** This used to walk its own three-step
+    // ladder — keyboard, driver, panel — while Escape walked a different and
+    // mostly broken one, so the app's two dismissal gestures disagreed about
+    // what dismissing meant: Back unwound panels and Escape could not, Escape
+    // left driver mode from under an open dialog and Back would not. There is
+    // one ladder now (`systems::dismiss`), and the *only* difference between the
+    // two gestures is this last rung, which is why it is the only thing written
+    // here.
+    let text_focused = egui.ctx.text_edit_focused();
+    if dismissable.dismiss_innermost(text_focused).is_none() {
         exit.write(AppExit::Success);
     }
 }
