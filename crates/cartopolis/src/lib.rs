@@ -900,7 +900,43 @@ fn run_client() {
                     // map arrive sooner, it makes the frame that draws the map late.
                     max_threads: quality::budget().worker_cap.unwrap_or(12),
                     percent: 0.45,
-                    on_thread_spawn: None,
+                    // Run the tile workers *below* the render and main threads on
+                    // Android, because otherwise the scheduler ranks them above it.
+                    //
+                    // All ten threads this process ends up with — main, the
+                    // pipelined render thread, 2 io, 3 async_compute, plus Bevy's
+                    // own compute pool — run at nice 0, and Linux EAS places
+                    // long-running CPU-hungry threads on the big cores. Ours are
+                    // 120 ms blocking rasterises with no yield point, so they look
+                    // permanently busy; the render thread blocks in FIFO acquire, so
+                    // it looks idle. On a 2-big/6-little SoC that is the classic
+                    // inversion, and it matches the symptom exactly — sluggish
+                    // *while the map fills*.
+                    //
+                    // `PRIO_PROCESS` with `who == 0` is the calling thread on Linux,
+                    // not the process. Be honest about the ceiling: this is a CFS
+                    // weight only. Java's `Process.setThreadPriority` would *also*
+                    // move the thread into the background cpuset, and that half is
+                    // not reachable from libc — nor from us at all, since it needs a
+                    // `Runnable` and therefore a `classes.dex`
+                    // (`docs/notes/android-build.md`). Pinning to the little cluster
+                    // with `sched_setaffinity` is the stronger libc-only version and
+                    // is deliberately not done here: the cluster would have to be
+                    // derived by reading `cpuinfo_max_freq` rather than hardcoding a
+                    // core layout, and starving the streamers outright is a worse
+                    // failure than deprioritising them.
+                    on_thread_spawn: cfg!(target_os = "android").then(|| {
+                        std::sync::Arc::new(|| {
+                            #[cfg(target_os = "android")]
+                            // SAFETY: `setpriority` is always safe to call; the
+                            // arguments are constants and it cannot fail in a way
+                            // that matters here (a denied nice is simply not applied,
+                            // and lowering priority never requires privilege).
+                            unsafe {
+                                libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                            }
+                        }) as std::sync::Arc<dyn Fn() + Send + Sync>
+                    }),
                     on_thread_destroy: None,
                 },
                 ..default()
