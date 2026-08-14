@@ -85,14 +85,31 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_window",
     "bevy_winit",
     "custom_cursor",
-    "default_font",
-    "hdr",
     "jpeg",
     "multi_threaded",
     "png",
-    "smaa_luts",
     "std",
+    # Keeps TonyMcMapface's LUT, which the camera's tonemapper needs. Note it is
+    # also what pulls `ktx2` + `bevy_image/zstd` into the graph — the pair are not
+    # separately requested anywhere and removing this would take them too.
     "tonemapping_luts",
+    #
+    # Three features were removed here on 2026-08-14 after checking what each
+    # actually resolves to. Recorded so nobody adds them back by pattern-matching
+    # on a Bevy example:
+    #
+    # * `hdr` is `bevy_image/hdr` — the **Radiance `.hdr` image decoder**, not HDR
+    #   rendering. HDR rendering is the `Hdr` component and is not feature-gated at
+    #   all. `find assets -iname '*.hdr'` returns nothing, so this was decoding a
+    #   format the tree does not contain. This is the only one of the three that
+    #   was costing anything.
+    # * `smaa_luts` is `bevy_anti_alias?/smaa_luts` + `ktx2` + `bevy_image/zstd`.
+    #   `bevy_anti_alias` is not enabled, so the weak dependency never fired, and
+    #   `tonemapping_luts` above already pulls the other two. Nothing in
+    #   `crates/cartopolis` mentions `Smaa`, `Fxaa` or `Taa`.
+    # * `default_font` is `bevy_text?/default_font`, and `bevy_text` is not enabled
+    #   either — the UI is egui, which carries its own font (`systems::theme`). A
+    #   pure no-op.
     # NOTE: the Linux-only `wayland` windowing feature is added per-target in
     # crates/cartopolis/Cargo.toml so macOS/Windows never resolve the wayland stack.
 ] }

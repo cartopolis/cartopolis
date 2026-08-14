@@ -198,6 +198,204 @@ pub fn system_property(name: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// ADPF — telling the scheduler what we are actually trying to do
+// ---------------------------------------------------------------------------
+
+/// Android Dynamic Performance Framework: report each frame's real duration
+/// against the one we are aiming for, so the governor clocks for the work rather
+/// than guessing from thread busy-ness.
+///
+/// **Why this is worth reaching for.** Without it the kernel's EAS governor sees a
+/// render thread that blocks in FIFO acquire (so it looks idle) and tile workers
+/// that saturate a core for 120 ms at a stretch (so they look essential). That is
+/// exactly backwards, and `nice` — which `platform::workers` also applies — only
+/// adjusts the *relative* weight of two threads. It cannot tell the SoC that the
+/// whole process has a 16.7 ms deadline it is missing, which is the thing that
+/// actually raises clocks on a thermally-constrained 2-big/6-little part.
+///
+/// **Why it is reachable at all.** `APerformanceHint_*` are plain C functions in
+/// `libandroid.so`. No Java interface, no callback, therefore no `Runnable` and no
+/// `classes.dex` — the constraint that rules out `Window.setSustainedPerformanceMode`
+/// (see this module's header) does not apply. This is the dex-free substitute for
+/// it, and the better tool anyway.
+///
+/// **Why `dlsym` rather than linking.** The API is level 33; `build-apk.sh` builds
+/// against the **platform-28** sysroot, whose `libandroid.so` stub does not export
+/// these symbols, so a direct `extern "C"` reference fails at *link* time — on
+/// every build, including devices that would have supported it. `ndk-sys` declares
+/// them (`ffi_aarch64.rs`) but declaring is not linking. Resolving at run time
+/// keeps `minSdkVersion 28` intact and degrades to nothing on an older handset.
+///
+/// A Fairphone 4 on Android 13 is API 33 exactly, i.e. the first version that has
+/// this.
+///
+/// **Unverified on hardware**, like everything else in this file. The failure mode
+/// is deliberately silent-and-inert (a null manager, a missing symbol and an
+/// unsupported device all end at "do nothing"), so [`start_perf_hint`] logs which
+/// way it went — without that line there is no way to tell "ADPF is helping" from
+/// "ADPF was never running".
+mod perf_hint {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+
+    /// The live session, as an address rather than a pointer, so the static needs
+    /// no `unsafe impl Send`. Zero means "no session".
+    ///
+    /// Behind a `Mutex` because `APerformanceHintSession` is not safe for
+    /// concurrent use and the reporting system is not pinned to a thread — Bevy's
+    /// executor may run it anywhere. The lock is uncontended in practice (one
+    /// caller, once a frame) and the alternative, a `NonSend` resource, would force
+    /// the system onto the main thread for no benefit.
+    static SESSION: Mutex<usize> = Mutex::new(0);
+
+    type GetManager = unsafe extern "C" fn() -> *mut c_void;
+    type CreateSession =
+        unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
+    type ReportActual = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+    type UpdateTarget = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+
+    struct Api {
+        report: ReportActual,
+        update_target: UpdateTarget,
+    }
+
+    static API: Mutex<Option<&'static Api>> = Mutex::new(None);
+
+    /// `dlsym` one symbol out of `libandroid.so`.
+    ///
+    /// Via an explicit `dlopen` handle rather than `RTLD_DEFAULT`, because
+    /// `RTLD_DEFAULT` is **not portable across our own ABIs**: bionic defines it as
+    /// `(void*)0` on LP64 and `(void*)-1` on 32-bit, and `build-apk.sh` accepts
+    /// `armeabi-v7a` as well as `arm64-v8a`. A null handle would silently resolve
+    /// nothing on the 32-bit build — the one failure this whole module is shaped to
+    /// avoid, since "no ADPF" and "ADPF misprobed" look identical from outside.
+    ///
+    /// `libandroid.so` is already loaded (the process links it for `ANativeWindow`
+    /// and `AAssetManager`), so this bumps a refcount and hands back the existing
+    /// handle. It is deliberately never `dlclose`d: the function pointers outlive
+    /// the call and the library is wanted for the life of the process anyway.
+    unsafe fn symbol(handle: *mut c_void, name: &[u8]) -> Option<*mut c_void> {
+        let ptr = libc::dlsym(handle, name.as_ptr().cast());
+        (!ptr.is_null()).then_some(ptr)
+    }
+
+    /// Open a session for `tid`, aiming at `target_nanos` per frame.
+    ///
+    /// Returns whether ADPF is now running, which the caller logs — this is the
+    /// only externally visible difference between "supported and active" and
+    /// "silently absent".
+    pub fn start(tid: i32, target_nanos: i64) -> bool {
+        let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if *session != 0 {
+            return true;
+        }
+        // SAFETY: each `dlsym` is checked for null before being transmuted, and the
+        // signatures are transcribed from `ndk-sys`' own declarations for these
+        // exact symbols. A wrong signature here would be UB, so they are not
+        // guessed — see `ffi_aarch64.rs`.
+        unsafe {
+            let handle = libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW);
+            if handle.is_null() {
+                return false;
+            }
+            // All four or none: a device that has the manager but is missing one of
+            // the calls would leave a session nothing could report to.
+            let (Some(get_manager), Some(create), Some(report), Some(update_target)) = (
+                symbol(handle, b"APerformanceHint_getManager\0"),
+                symbol(handle, b"APerformanceHint_createSession\0"),
+                symbol(handle, b"APerformanceHint_reportActualWorkDuration\0"),
+                symbol(handle, b"APerformanceHint_updateTargetWorkDuration\0"),
+            ) else {
+                return false;
+            };
+            let get_manager: GetManager = std::mem::transmute(get_manager);
+            let create: CreateSession = std::mem::transmute(create);
+            let report: ReportActual = std::mem::transmute(report);
+            let update_target: UpdateTarget = std::mem::transmute(update_target);
+
+            let manager = get_manager();
+            if manager.is_null() {
+                return false;
+            }
+            let threads = [tid];
+            let handle = create(manager, threads.as_ptr(), threads.len(), target_nanos);
+            if handle.is_null() {
+                return false;
+            }
+            *session = handle as usize;
+            *API.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Box::leak(Box::new(Api {
+                    report,
+                    update_target,
+                })));
+        }
+        true
+    }
+
+    /// Report the frame that just finished. No-op when there is no session.
+    pub fn report(actual_nanos: i64) {
+        // The guard is held **across** the FFI call, not just long enough to copy
+        // the handle out. `APerformanceHintSession` is not safe for concurrent use
+        // and Bevy's executor may run the reporting system on any thread, so
+        // releasing the lock before calling would leave exactly the race the mutex
+        // is here to prevent. (It was written that way first.)
+        let session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if *session == 0 {
+            return;
+        }
+        let api = *API.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(api) = api else { return };
+        // SAFETY: `*session` is a live handle from `createSession`, never closed —
+        // the process owns it for its lifetime — and the guard above serialises the
+        // calls the session is not itself safe for. `max(1)` because ADPF rejects a
+        // non-positive duration, and a zero-length frame is what a paused clock
+        // reports.
+        unsafe {
+            (api.report)(*session as *mut c_void, actual_nanos.max(1));
+        }
+    }
+
+    /// Change the deadline we are aiming at — a display refresh change, or the
+    /// frame cap moving.
+    #[allow(dead_code)]
+    pub fn set_target(target_nanos: i64) {
+        let session = *SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if session == 0 {
+            return;
+        }
+        let api = *API.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(api) = api else { return };
+        // SAFETY: as `report`.
+        unsafe {
+            (api.update_target)(session as *mut c_void, target_nanos.max(1));
+        }
+    }
+}
+
+/// Open the ADPF session for the calling thread. See [`perf_hint`].
+pub fn start_perf_hint(target_nanos: i64) {
+    // SAFETY: `gettid` takes no arguments and cannot fail.
+    let tid = unsafe { libc::gettid() };
+    if perf_hint::start(tid, target_nanos) {
+        tracing::info!(
+            tid,
+            target_ms = target_nanos as f64 / 1.0e6,
+            "ADPF performance hint session open"
+        );
+    } else {
+        // Not a warning: an API-32 handset is not misconfigured, it simply predates
+        // this. But it must be visible, or there is no way to tell an inactive
+        // session from an ineffective one.
+        tracing::info!("no ADPF on this device — frame hints are not available");
+    }
+}
+
+/// Report the duration of the frame that just finished.
+pub fn report_frame(actual_nanos: i64) {
+    perf_hint::report(actual_nanos);
+}
+
+// ---------------------------------------------------------------------------
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------
 

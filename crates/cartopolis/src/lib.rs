@@ -1964,13 +1964,23 @@ fn run_client() {
             PostUpdate,
             systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
         )
-        // `Last`, and after the frame limiter rather than before it: the heartbeat
-        // has to mean "a whole frame completed", so anything that can wedge the
-        // schedule — a system, a render extract, the limiter's own sleep — is
-        // inside the interval the watchdog measures. Beating in `First` would say
-        // the loop is alive at the moment it enters the frame it is about to hang
-        // in, which is the one frame that matters.
-        .add_systems(Last, (frame_limiter, watchdog_beat).chain());
+        // Three systems, one chain, and each position is load-bearing.
+        //
+        // `report_frame_to_scheduler` runs **before** the limiter: it tells ADPF how
+        // long the frame took, and the limiter *sleeps* to hit a deadline, so
+        // measuring after it would report the sleep as work and describe a process
+        // that is always exactly on time however slow it really is.
+        //
+        // `watchdog_beat` runs **after** it, for the mirror-image reason: the
+        // heartbeat has to mean "a whole frame completed", so anything that can
+        // wedge the schedule — a system, a render extract, the limiter's own sleep
+        // — is inside the interval the watchdog measures. Beating in `First` would
+        // say the loop is alive at the moment it enters the frame it is about to
+        // hang in, which is the one frame that matters.
+        .add_systems(
+            Last,
+            (report_frame_to_scheduler, frame_limiter, watchdog_beat).chain(),
+        );
 
     // The run's verdict has to become the process's. `app.run()` returns an
     // `AppExit` and dropping it made every failure look like a success: a `--shot`
@@ -2834,6 +2844,47 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 ///
 /// Sleeping — not spinning: the point is to leave the GPU idle, so burning a core
 /// for sub-millisecond deadline precision would defeat it.
+/// Tell Android's performance governor how long the frame actually took.
+///
+/// Ordered **before** `frame_limiter`, and that is the whole subtlety: the limiter
+/// sleeps to hit a deadline, so measuring after it would report the sleep as work
+/// and describe a process that is always exactly on time no matter how slow it is.
+/// `Time<Real>::delta` at this point is the previous frame's wall clock, which is
+/// what ADPF wants — it compares it against the target and moves the clocks.
+///
+/// `Time<Real>`, not `Time`: the virtual clock is clamped (and `--shot` runs it at
+/// a fixed step), so it measures intent rather than elapsed time.
+///
+/// A no-op off Android, where the session never opens. See
+/// `platform::android::start_perf_hint` for why this is reachable without a
+/// `classes.dex` and why it is `dlsym`ed rather than linked.
+// Off Android the body below is `cfg`-ed away entirely, so both parameters become
+// unused and `mut` becomes needless — which the workspace's `unused = "deny"` turns
+// into two errors. The signature has to stay identical on every target regardless,
+// because it is a Bevy system and the registration is not `cfg`-ed: a second
+// registration arm would be one more thing to keep in step for a system that does
+// nothing off the handset.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(unused_variables, unused_mut, clippy::needless_pass_by_value)
+)]
+fn report_frame_to_scheduler(time: Res<Time<Real>>, mut started: Local<bool>) {
+    #[cfg(target_os = "android")]
+    {
+        if !*started {
+            *started = true;
+            // The deadline to aim at. The phone tier leaves pacing to FIFO
+            // (`fps_cap: None`), so the target is the display's own period rather
+            // than a cap of ours — 60 Hz, which is what a Fairphone 4 has.
+            let target = quality::budget()
+                .fps_cap
+                .map_or(1.0e9 / 60.0, |fps| 1.0e9 / fps);
+            platform::android::start_perf_hint(target as i64);
+        }
+        platform::android::report_frame(time.delta().as_nanos() as i64);
+    }
+}
+
 fn frame_limiter(
     mut deadline: Local<Option<std::time::Instant>>,
     mut period: Local<Option<Duration>>,
