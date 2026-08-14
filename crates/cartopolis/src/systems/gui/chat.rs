@@ -148,7 +148,8 @@ pub fn render_chat_panel(
     let viewport_w = egui.viewport_pts().x;
 
     // --- Chat history as an animated right panel (mutually exclusive slot). ---
-    let mut chat_open = right_panel.is(RightPanel::Chat);
+    let chat_open_before = right_panel.is(RightPanel::Chat);
+    let mut chat_open = chat_open_before;
     crate::systems::egui_manager::responsive_right_panel("chat_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut chat_open, |ui| {
             let panel = RightPanel::Chat;
@@ -229,7 +230,11 @@ pub fn render_chat_panel(
                 });
         });
 
-    if close_history {
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request. (`data_layers` and About were already written this way.)
+    if close_history || (chat_open_before && !chat_open) {
         *right_panel = RightPanel::None;
     }
 

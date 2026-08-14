@@ -226,7 +226,14 @@ pub fn render_interaction_prompt(
     mut avatar_state: ResMut<AvatarState>,
     mut nav: ResMut<GeoNavState>,
     map_anchor: Res<MapAnchor>,
+    driver: Res<crate::systems::driver::DriverState>,
 ) {
+    // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
+    // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
+    // bottom-centre, in the speed pill's band, while driving past one.
+    if driver.active {
+        return;
+    }
     if camera_state.mode != CameraMode::Avatar {
         return;
     }

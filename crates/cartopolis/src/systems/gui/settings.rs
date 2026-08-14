@@ -137,7 +137,8 @@ pub fn render_settings_panel(
             w.resolution.physical_height(),
         )
     });
-    let mut open = right_panel.is(RightPanel::Settings);
+    let open_before = right_panel.is(RightPanel::Settings);
+    let mut open = open_before;
     let mut close = false;
     let mut play_tone = false;
 
@@ -187,7 +188,11 @@ pub fn render_settings_panel(
     if sun_mode != dev.sun_mode {
         dev.sun_mode = sun_mode;
     }
-    if close {
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request. (`data_layers` and About were already written this way.)
+    if close || (open_before && !open) {
         *right_panel = RightPanel::None;
     }
     // Closing the panel must release the microphone: leaving it open behind a
@@ -337,7 +342,7 @@ fn render_scale_row(ui: &mut egui::Ui, prefs: &mut AppPrefs, target: Option<UVec
 
     ui.horizontal(|ui| {
         ui.label("Render scale");
-        if !auto && ui.small_button("Automatic").clicked() {
+        if !auto && theme::action_button(ui, "Automatic").clicked() {
             prefs.render_scale = None;
         }
     });

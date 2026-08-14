@@ -1455,39 +1455,43 @@ pub fn render_route_panel(
             if let Some(r) = &route.route {
                 ui.add_space(6.0);
                 ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, step) in r.steps.iter().enumerate() {
-                        let resp = ui
-                            .horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(theme::first_drawable(
-                                        ui.ctx(),
-                                        step.maneuver.icon_candidates(),
-                                    ))
-                                    .size(theme::SIZE_VALUE)
-                                    .color(theme::ACCENT_TEXT),
-                                );
-                                ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (i, step) in r.steps.iter().enumerate() {
+                            let resp = ui
+                                .horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new(step.instruction())
-                                            .size(theme::SIZE_SUB),
+                                        egui::RichText::new(theme::first_drawable(
+                                            ui.ctx(),
+                                            step.maneuver.icon_candidates(),
+                                        ))
+                                        .size(theme::SIZE_VALUE)
+                                        .color(theme::ACCENT_TEXT),
                                     );
-                                    if step.distance_m >= 1.0 {
+                                    ui.vertical(|ui| {
                                         ui.label(
-                                            egui::RichText::new(format_distance(step.distance_m))
+                                            egui::RichText::new(step.instruction())
+                                                .size(theme::SIZE_SUB),
+                                        );
+                                        if step.distance_m >= 1.0 {
+                                            ui.label(
+                                                egui::RichText::new(format_distance(
+                                                    step.distance_m,
+                                                ))
                                                 .size(theme::SIZE_CHIP)
                                                 .color(theme::TEXT_DIM),
-                                        );
-                                    }
-                                });
-                            })
-                            .response;
-                        if resp.interact(egui::Sense::click()).clicked() {
-                            actions.goto_step = Some(i);
+                                            );
+                                        }
+                                    });
+                                })
+                                .response;
+                            if resp.interact(egui::Sense::click()).clicked() {
+                                actions.goto_step = Some(i);
+                            }
+                            ui.add_space(3.0);
                         }
-                        ui.add_space(3.0);
-                    }
-                });
+                    });
             }
         });
 

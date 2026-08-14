@@ -704,7 +704,8 @@ pub fn render_avatar_chooser(
 ) {
     use crate::systems::avatar::{accessory_styles_for, styles_for};
     use crate::systems::user_store::AvatarSex;
-    let mut is_open = right_panel.is(RightPanel::Appearance);
+    let open_before = right_panel.is(RightPanel::Appearance);
+    let mut is_open = open_before;
     // Seed the draft from the saved appearance the first time the panel opens.
     if is_open && !chooser.seeded {
         chooser.draft = store.data.appearance.clone();
@@ -808,7 +809,11 @@ pub fn render_avatar_chooser(
         store.data.appearance = chooser.draft.clone();
         store.dirty = true;
     }
-    if close {
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request. (`data_layers` and About were already written this way.)
+    if close || (open_before && !is_open) {
         *right_panel = RightPanel::None;
         chooser.seeded = false;
     }
@@ -1880,6 +1885,7 @@ pub fn render_edit_dialog(
                 }
                 egui::ScrollArea::vertical()
                     .max_height(400.0)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let cols = 4usize;
                         egui::Grid::new("tex_grid")

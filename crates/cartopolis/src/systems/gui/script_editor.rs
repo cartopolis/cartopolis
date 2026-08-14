@@ -374,7 +374,7 @@ pub fn render_script_panel(
                             .small(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        clear_console = ui.small_button("Clear").clicked();
+                        clear_console = theme::action_button(ui, "Clear").clicked();
                     });
                 });
                 egui::ScrollArea::vertical()

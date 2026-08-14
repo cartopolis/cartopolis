@@ -1482,7 +1482,8 @@ pub fn render_search_panel(
     if nav.focus_search {
         *right_panel = RightPanel::Search;
     }
-    let mut open = right_panel.is(RightPanel::Search);
+    let open_before = right_panel.is(RightPanel::Search);
+    let mut open = open_before;
     if !open {
         // No field on screen → it can hold no focus, and nothing is listening for
         // the Enter that submits it.
@@ -1511,7 +1512,11 @@ pub fn render_search_panel(
         close = theme::panel_header(ui, panel.icons(), panel.label());
         search_ui(ui, &mut nav, viewer);
     });
-    if close {
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request. (`data_layers` and About were already written this way.)
+    if close || (open_before && !open) {
         *right_panel = RightPanel::None;
         nav.search_has_focus = false;
         nav.close_suggestions();
