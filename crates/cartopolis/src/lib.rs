@@ -1032,6 +1032,11 @@ fn run_client() {
             _ => OsmTileUrlTemplate::default(),
         })
         .init_resource::<systems::settings::SettingsState>()
+        // The dock's mark disc and the card it opens (`systems::ui`), and whether
+        // the status readout is showing (`systems::hud`, off until the ⓘ disc
+        // under the compass is pressed).
+        .init_resource::<systems::ui::MainMenu>()
+        .init_resource::<systems::hud::StatusHud>()
         .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
         // What the on-screen navigation controls asked for this frame
         // (`systems::map_osd`); read by `free_camera::camera_controls`.
@@ -1611,11 +1616,13 @@ fn run_client() {
         .add_systems(
             Update,
             (
-                // The bottom dock — a floating `Area` of round panel toggles, so it
-                // reserves no root-`Ui` space and stays out of the panel chain (Phase
-                // 7b). After the address bar only so input order is deterministic
-                // within a frame.
-                systems::dock::render_dock.after(systems::ui::render_menu_bar),
+                // The bottom dock and the top-left layers disc — floating `Area`s of
+                // round panel toggles, so they reserve no root-`Ui` space and stay
+                // out of the panel chain (Phase 7b). **Before the main menu**, which
+                // is not a preference: the dock owns the mark disc that toggles the
+                // menu, and a menu drawn before its own switch would open a frame
+                // late and dismiss itself on the click that opened it.
+                systems::dock::render_dock.before(systems::ui::render_main_menu),
                 systems::ui::toggle_ai_panel_shortcut,
                 systems::ui::toggle_dev_panel_shortcut,
                 // Nested to stay under the per-tuple system limit: the driver runs after
@@ -1624,16 +1631,16 @@ fn run_client() {
                     systems::ui::render_dev_panel,
                     systems::ui::drive_screenshots.after(systems::ui::render_dev_panel),
                 ),
-                systems::ui::render_stats_overlay.after(systems::ui::render_menu_bar),
+                systems::ui::render_stats_overlay.after(systems::ui::render_main_menu),
                 // The right-hand panel chain lives in Phase 7b, declared once with
                 // `.chain()`. A panel added here rather than there is NOT in it.
                 (
-                    systems::hud::render_hud.after(systems::ui::render_menu_bar),
+                    systems::hud::render_hud.after(systems::ui::render_main_menu),
                     // Draws a root-`Ui` panel as well as the bottom bar's `Area`, so it
                     // belongs in the chain below — last, after the route panel.
                 ),
                 systems::data_layers::render_poi_popup
-                    .after(systems::ui::render_menu_bar)
+                    .after(systems::ui::render_main_menu)
                     .after(systems::free_camera::camera_controls),
                 // Transit in-world rendering, nested to stay under the per-tuple
                 // system limit. Both run after the camera has moved this frame:
@@ -1699,7 +1706,8 @@ fn run_client() {
         .add_systems(
             Update,
             (
-                systems::ui::render_menu_bar,
+                systems::ui::render_main_menu,
+                systems::geo_nav::render_search_panel,
                 systems::ai_assistant::render_ai_panel,
                 systems::data_layers::render_data_layers_panel,
                 systems::bookmarks::render_bookmarks_panel,
@@ -1722,9 +1730,9 @@ fn run_client() {
         // changes it (`systems::session`, `systems::login_screen`).
         //
         // The screen draws into its own floating `Area` (a modal must sit above the
-        // address-bar card, which is itself a `Foreground` area), so it is deliberately
+        // main menu, which is itself a `Foreground` area), so it is deliberately
         // *not* in the panel chain above — it never touches the shared root `Ui`. It
-        // still runs after the menu bar, which is where it is opened from.
+        // still runs after the main menu, which is where it is opened from.
         //
         // The driver runs last of the two so a mode picked this frame is applied this
         // frame: a sign-in that visibly waits a frame for its own spinner reads as a
@@ -1732,7 +1740,7 @@ fn run_client() {
         .add_systems(
             Update,
             (
-                systems::login_screen::render_login_screen.after(systems::ui::render_menu_bar),
+                systems::login_screen::render_login_screen.after(systems::ui::render_main_menu),
                 systems::session::drive_session.after(systems::login_screen::render_login_screen),
             ),
         )
@@ -1769,8 +1777,8 @@ fn run_client() {
         // `read_response` only sees widgets already drawn this pass.
         //
         // Three anchors, because the fields are spread over three phases: the
-        // panel chain (address bar, geo search, chat, assistant, bookmark rename,
-        // route), the sign-in card, and the prim edit dialog.
+        // panel chain (geo search, chat, assistant, bookmark rename, route), the
+        // sign-in card, and the prim edit dialog.
         .add_systems(
             Update,
             systems::onscreen_keyboard::render_onscreen_keyboard
@@ -1850,11 +1858,11 @@ fn run_client() {
                 // the chrome that reads it.
                 systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
                 systems::driver::render_driver_hud
-                    .after(systems::ui::render_menu_bar)
+                    .after(systems::ui::render_main_menu)
                     .after(systems::route_ahead::drive_route_ahead),
                 // The compass/locate column, which driver mode repurposes.
                 systems::hud::render_map_controls
-                    .after(systems::ui::render_menu_bar)
+                    .after(systems::ui::render_main_menu)
                     .after(systems::driver::drive_driver_mode),
             ),
         )

@@ -1,9 +1,15 @@
-//! Bottom-right status overlay: wall-clock time, the camera's geographic
-//! position and altitude, a compass, and two location actions — a copy button
-//! takes the current place ("lat, lng, altitude, pitch°, yaw°" — see
-//! [`format_place`]; pasteable into the search bar, or into a `?place=` URL on
-//! the web) and ☆ bookmarks it (named by reverse-geocoded address; see
-//! `bookmarks`).
+//! Top-right status overlay: wall-clock time, the camera's geographic position
+//! and altitude, the sun and weather switchers — and, in the opposite corner, the
+//! compass, the locate button and the ⓘ disc that shows this readout.
+//!
+//! **It is off by default** ([`StatusHud`]). It is an instrument panel — six rows
+//! of numbers and chips over the top-right of a map — and the two *verbs* it used
+//! to carry have gone where a reader will find them without it: ☆ bookmark into
+//! the Places panel (which is where the place then appears), and Set Home and
+//! Copy location into the main menu. What is left is a readout, and a readout
+//! that is up whether or not anyone is reading it is just chrome over the map.
+//! The ⓘ disc under the compass is how it comes back; it stays up until it is
+//! switched off again.
 //!
 //! The clock shows real local time once [`WorldClock`] has learned the
 //! region's UTC offset (from the transit feed), and UTC until then.
@@ -17,19 +23,16 @@
 //! bounds every inner row and keeps the box a fixed size.
 
 use crate::resources::MapAnchor;
-use web_time::Instant;
 
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
 use crate::components::FreeCamera;
 use crate::resources::CameraState;
-use crate::systems::bookmarks::{BookmarksState, PLACEHOLDER_NAME};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::geo_nav::{camera_geo, CameraPose};
+use crate::systems::geo_nav::camera_geo;
 use crate::systems::theme;
 use crate::systems::transit_live::WorldClock;
-use crate::systems::user_store::UserStore;
 
 /// Fixed content width of the overlay (see the module note on why it must be
 /// fixed rather than sized to content).
@@ -52,11 +55,6 @@ pub struct HudData {
     pub weather_info: Option<(String, String)>,
     pub geo: Option<(f64, f64)>,
     pub altitude: Option<f64>,
-    /// Show the copy button's "just copied" ✔ state. (`✔` is in the bundled
-    /// font — see `theme::first_drawable`'s inventory — so it is safe to type.)
-    pub copied: bool,
-    /// Show the Set Home button's "just set" ✔ state.
-    pub home_set: bool,
     /// Authenticated username, if online (ADR-016). Drives the profile chip;
     /// grows into a chat/presence affordance later.
     pub user: Option<String>,
@@ -79,12 +77,12 @@ pub fn format_place(lat: f64, lng: f64, alt: f64, look: Option<(f32, f32)>) -> S
 }
 
 /// What the user clicked in the overlay this frame.
+///
+/// The location *actions* that used to be here — copy, bookmark, Set Home — are
+/// gone: see the module note. What is left is the three switchers, which are
+/// controls for the readout itself.
 #[derive(Default)]
 pub struct HudActions {
-    pub copy: bool,
-    pub bookmark: bool,
-    /// User clicked Set Home (save the current spot + view as Home).
-    pub set_home: bool,
     /// User clicked the Local/UTC clock toggle.
     pub toggle_utc: bool,
     /// User picked a new sun mode from the Auto/Day/Night switcher.
@@ -256,7 +254,7 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
             egui::Align2::LEFT_TOP,
             egui::vec2(
                 12.0 + (COMPASS_SIZE - LOCATE_SIZE) * 0.5,
-                crate::systems::ui::MAP_CONTROLS_TOP + COMPASS_SIZE + 8.0,
+                crate::systems::dock::reserved_top() + COMPASS_SIZE + 8.0,
             ),
         )
         .show(ctx, |ui| {
@@ -308,6 +306,66 @@ fn locate_overlay(ctx: &egui::Context, state: LocateState) -> bool {
                 LocateState::Off => "Center on my location",
                 LocateState::Follow => "Following — click to rotate with heading",
                 LocateState::FollowRotate => "Follow & rotate — click to stop rotating",
+            });
+            clicked = resp.clicked();
+        });
+    clicked
+}
+
+/// Diameter (points) of the ⓘ disc that shows the status readout. Smaller than
+/// the controls above it on purpose: it switches a panel of numbers on, which is
+/// not an action anyone takes while moving, and at the same size it would read as
+/// a third navigation control.
+const INFO_SIZE: f32 = 28.0;
+
+/// Whether the status readout is on screen. Off by default — see the module note.
+#[derive(Resource, Default)]
+pub struct StatusHud {
+    pub open: bool,
+}
+
+/// Draws the ⓘ disc under the left-hand column and returns true when clicked.
+/// `top` is where the column has got to, since the locate button above it only
+/// exists when there is an avatar to locate.
+///
+/// Painted from primitives like the compass and the locate arrow, and for the
+/// same reason: `ⓘ` is not in the bundled font subset (`theme::first_drawable`'s
+/// inventory says so), so a glyph here would be an empty box. A dot over a stem
+/// is two shapes, and two shapes cannot be tofu.
+fn info_overlay(ctx: &egui::Context, top: f32, open: bool) -> bool {
+    let mut clicked = false;
+    egui::Area::new(egui::Id::new("info_overlay"))
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(12.0 + (COMPASS_SIZE - INFO_SIZE) * 0.5, top),
+        )
+        .show(ctx, |ui| {
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(INFO_SIZE, INFO_SIZE), egui::Sense::click());
+            let hovered = resp.hovered();
+            let p = ui.painter();
+            let c = rect.center();
+            let r = INFO_SIZE * 0.5 - 2.0;
+            p.circle_filled(c, r, theme::OVERLAY);
+            let (ring, ink) = match (open, hovered) {
+                (true, _) => (theme::ACCENT, theme::ACCENT),
+                (false, true) => (theme::ACCENT, theme::CREAM),
+                (false, false) => (theme::OVERLAY_LINE, theme::TEXT_DIM),
+            };
+            p.circle_stroke(c, r, egui::Stroke::new(if open { 2.0 } else { 1.5 }, ring));
+            // The "i": a dot and a stem.
+            p.circle_filled(egui::pos2(c.x, c.y - r * 0.42), r * 0.13, ink);
+            p.line_segment(
+                [
+                    egui::pos2(c.x, c.y - r * 0.10),
+                    egui::pos2(c.x, c.y + r * 0.48),
+                ],
+                egui::Stroke::new(2.0, ink),
+            );
+            resp.clone().on_hover_text(if open {
+                "Hide the status readout"
+            } else {
+                "Show the status readout (time, position, sun, weather)"
             });
             clicked = resp.clicked();
         });
@@ -394,9 +452,9 @@ pub fn format_scale(metres: f32) -> String {
 
 /// Draw the bar in the bottom-right corner: a bracket and its length.
 ///
-/// Bottom-**right** because the other three corners are taken (the address bar
-/// and compass column top-left, the status readout top-right, the dock and the
-/// fly stick along the bottom-left), and because it is where every phone map
+/// Bottom-**right** because the other three corners are taken (the layers disc
+/// and the compass column top-left, the status readout top-right, the dock and
+/// the fly stick along the bottom-left), and because it is where every phone map
 /// puts it.
 fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32) {
     egui::Area::new(egui::Id::new("scale_bar"))
@@ -456,6 +514,7 @@ pub fn render_map_controls(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
     right_panel: Res<crate::resources::RightPanel>,
+    mut status: ResMut<StatusHud>,
     camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
@@ -544,9 +603,9 @@ pub fn render_map_controls(
     let cfg = Compass {
         interactive: orbit,
         locked,
-        // Below the address bar's logo card, which owns this corner permanently
-        // now (`ui::MAP_CONTROLS_TOP`) — the mark used to sit on the compass.
-        top: crate::systems::ui::MAP_CONTROLS_TOP,
+        // Below the layers disc, which owns the very top of this column
+        // (`dock::reserved_top`) — the address bar's mark used to sit there.
+        top: crate::systems::dock::reserved_top(),
         caption: None,
         hover: if locked {
             "North-up locked — click to release"
@@ -565,6 +624,7 @@ pub fn render_map_controls(
     // the viewer that owns a local avatar — Follow doesn't exist otherwise. Not
     // drawn while driving: the arrow is already centred and the camera is held, so
     // there is nothing left for it to do.
+    let mut column = crate::systems::dock::reserved_top() + COMPASS_SIZE + 8.0;
     if !avatars.is_empty() {
         use crate::resources::CameraMode;
         let state = match (camera_state.mode, camera_state.follow_rotate) {
@@ -584,6 +644,14 @@ pub fn render_map_controls(
                 LocateState::FollowRotate => camera_state.follow_rotate = false,
             }
         }
+        column += LOCATE_SIZE + 8.0;
+    }
+
+    // …and the readout switch at the foot of the column. The stack is measured
+    // rather than pinned because the locate button above it is conditional, and a
+    // fixed offset would leave a hole in the column in `--offline`.
+    if info_overlay(egui.ctx_mut(), column, status.open) {
+        status.open = !status.open;
     }
 }
 
@@ -745,50 +813,9 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         };
                         mono(ui, text, theme::SIZE_CHIP, theme::TEXT_DIM);
                     }
-                    // Heading now lives in the top-right compass overlay.
-                    // Location actions.
-                    if data.geo.is_some() && data.altitude.is_some() {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(egui::Button::new(if data.home_set {
-                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "Set"])
-                                } else {
-                                    theme::first_drawable(ui.ctx(), &["🏠", "⌂", "Home"])
-                                }))
-                                .on_hover_text("Set Home (the nav bar's Home button returns here)")
-                                .clicked()
-                            {
-                                actions.set_home = true;
-                            }
-                            // `⧉` (U+29C9) stood here and is in **none** of the
-                            // four fonts in the Proportional stack, so the copy
-                            // button has been an empty box since it was added —
-                            // exactly what `first_drawable` exists to prevent,
-                            // bypassed by typing the glyph straight in.
-                            let copy_icon = if data.copied {
-                                theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"])
-                            } else {
-                                theme::first_drawable(ui.ctx(), &["📋", "⎘", "Copy"])
-                            };
-                            if ui
-                                .add(egui::Button::new(copy_icon))
-                                .on_hover_text(
-                                    "Copy place — position and view (paste in the \
-                                         search bar to return)",
-                                )
-                                .clicked()
-                            {
-                                actions.copy = true;
-                            }
-                            if ui
-                                .add(egui::Button::new("☆"))
-                                .on_hover_text("Bookmark this location")
-                                .clicked()
-                            {
-                                actions.bookmark = true;
-                            }
-                        });
-                    }
+                    // Heading is the compass's, in the opposite corner; the
+                    // location actions are the main menu's and the Places panel's
+                    // (see the module note).
                 });
             });
         });
@@ -839,21 +866,19 @@ pub fn render_hud(
     mut clock: ResMut<WorldClock>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
-    camera_state: Res<CameraState>,
     globe: Res<crate::systems::globe::GlobeState>,
-    mut store: ResMut<UserStore>,
-    // Immutable now that the `panel_open` latch is gone: `request_address` takes
-    // `&self` and queues through interior mutability.
-    bookmarks: ResMut<BookmarksState>,
     identity: Res<crate::resources::AuthIdentity>,
     driver: Res<crate::systems::driver::DriverState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
-    mut right_panel: ResMut<crate::resources::RightPanel>,
-    // (copy "✔", set-home "✔") flash timers, bundled into one `Local` to stay
-    // within Bevy's 16-system-param limit.
-    mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
+    right_panel: Res<crate::resources::RightPanel>,
+    status: Res<StatusHud>,
     map_anchor: Res<MapAnchor>,
 ) {
+    // Off unless the ⓘ disc has been pressed (see the module note). Before the
+    // panel gate and the data below, both of which cost work every frame.
+    if !status.open {
+        return;
+    }
     // The status HUD lives in the top-right corner (see `hud_area`), which any
     // right-docked panel covers — and while driving the map has to stay clear for
     // the navigation chrome. So drop the HUD whenever a right panel is open, at any
@@ -901,48 +926,11 @@ pub fn render_hud(
         altitude,
         // The heading is not here: it is the compass's, and the compass is
         // `render_map_controls`, which reads the camera itself.
-        copied: flash_at.0.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
-        home_set: flash_at.1.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5),
         user: identity.username.clone(),
     };
 
     let actions = hud_area(egui.ctx_mut(), &data);
 
-    if actions.copy {
-        if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
-            // Copy the view, not just the spot: the look angles come off the
-            // live camera transform (as `ui.rs`'s preset copy does), so they are
-            // right in any camera mode, and pasting the string back — into the
-            // search bar or a `?place=` URL — reproduces this exact framing.
-            let look = cam.map(|(_, tf)| {
-                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
-                (pitch.to_degrees(), yaw.to_degrees())
-            });
-            crate::utils::clipboard::set_text(&format_place(lat, lng, alt, look));
-            flash_at.0 = Some(Instant::now());
-        }
-    }
-    if actions.bookmark {
-        if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
-            // Capture the current view so the bookmark returns to it exactly.
-            let pose = CameraPose::capture(&camera_state);
-            let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
-            bookmarks.request_address(id, lat, lng);
-            // Show the new place straight away — it lands at the top level and is
-            // usually dragged into a folder next. `RightPanel` is the only state
-            // that opens it; the `bookmarks.panel_open` that used to be set here as
-            // well was a one-way latch nobody ever cleared, and setting it was what
-            // made one ☆ press take the HUD and the compass away permanently.
-            *right_panel = crate::resources::RightPanel::Places;
-        }
-    }
-    if actions.set_home {
-        if let (Some((lat, lng)), Some(alt)) = (data.geo, data.altitude) {
-            // Capture the current view so Home returns to it exactly.
-            store.set_home(lat, lng, alt, CameraPose::capture(&camera_state));
-            flash_at.1 = Some(Instant::now());
-        }
-    }
     if actions.toggle_utc {
         clock.show_utc = !clock.show_utc;
     }
@@ -1105,8 +1093,6 @@ mod tests {
             )),
             geo: Some((53.21952, 6.58220)),
             altitude: Some(17.0),
-            copied: false,
-            home_set: false,
             user: Some("dev".to_string()),
         };
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1323.0, 819.0));

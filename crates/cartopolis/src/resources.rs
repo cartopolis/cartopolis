@@ -83,6 +83,11 @@ pub struct AvatarChooserState {
 pub enum RightPanel {
     #[default]
     None,
+    /// Geo search — place names and pasted coordinates. It was a field in an
+    /// address-bar card in the top-left corner until the chrome moved to the
+    /// dock; a panel is what a phone can actually type into, since the on-screen
+    /// keyboard takes the bottom half of the screen a floating card sat in.
+    Search,
     Layers,
     Places,
     Route,
@@ -120,6 +125,7 @@ impl RightPanel {
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "",
+            Self::Search => "Search",
             Self::Layers => "Map layers",
             Self::Places => "Saved places",
             Self::Route => "Route",
@@ -151,6 +157,7 @@ impl RightPanel {
     pub fn icons(self) -> &'static [&'static str] {
         match self {
             Self::None => &[" "],
+            Self::Search => &["🔍", "⌕", "S"],
             Self::Layers => &["🗺", "▤", "◈", "L"],
             Self::Places => &["★", "☆", "•", "P"],
             // A destination flag, not a compass rose: `🧭` is not in the font, and

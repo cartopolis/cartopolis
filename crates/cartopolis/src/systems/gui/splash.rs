@@ -21,10 +21,10 @@
 //!
 //! Painted with egui rather than `bevy_ui` for a plain reason: egui is already
 //! wired up (`systems::egui_manager`) and ships its own fonts, while `bevy_ui`
-//! text would need a font asset the repo does not have. The logo is
-//! `include_bytes!`-ed rather than loaded through the asset server so it is
-//! available on the very first frame — an asset fetch would arrive after the
-//! moment it is needed, and on the web would be an HTTP round trip.
+//! text would need a font asset the repo does not have. The mark is
+//! [`theme::paint_mark`] — a drawing, not an asset — so it is on screen on the
+//! very first frame with no decode, no texture upload and no HTTP round trip on
+//! the web, and no dependency on the icon PNG having survived Git LFS.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -32,12 +32,6 @@ use bevy::window::PrimaryWindow;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
-
-/// Baked in at compile time; see the module note on why this is not an asset.
-const LOGO_PNG: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/icon/cartopolis.png"
-));
 
 /// The line under the wordmark. Named because `index.html` carries the same
 /// words: the two splashes are one screen handed over mid-load, and a motto that
@@ -74,7 +68,6 @@ const FADE_S: f32 = 0.6;
 
 #[derive(Resource, Default)]
 pub struct BootSplash {
-    texture: Option<egui::TextureHandle>,
     elapsed: f32,
     /// Counts down through [`FADE_S`] once dismissal begins; `None` until then.
     fading: Option<f32>,
@@ -119,7 +112,6 @@ pub fn boot_splash(
             splash.fading = Some(left);
             if left <= 0.0 {
                 splash.finished = true;
-                splash.texture = None; // release the GPU texture with it
                 return;
             }
             left / FADE_S
@@ -133,15 +125,6 @@ pub fn boot_splash(
     // relative to its centre, the wordmark walks off the bottom-right corner.
     let viewport = egui.viewport_pts();
     let ctx = egui.ctx_mut();
-    if splash.texture.is_none() {
-        if let Ok(img) = image::load_from_memory(LOGO_PNG) {
-            let img = img.to_rgba8();
-            let size = [img.width() as usize, img.height() as usize];
-            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-            splash.texture =
-                Some(ctx.load_texture("boot_logo", color, egui::TextureOptions::LINEAR));
-        }
-    }
 
     // A foreground layer painted directly, rather than a window or a panel: this
     // covers everything, takes no input, and needs no layout.
@@ -167,25 +150,18 @@ pub fn boot_splash(
     painter.rect_filled(rect, 0.0, fade(theme::SURFACE, 1.0));
 
     let c = rect.center();
-    if let Some(tex) = &splash.texture {
-        let s = 168.0;
-        let logo = egui::Rect::from_center_size(egui::pos2(c.x, c.y - 104.0), egui::vec2(s, s));
-        painter.image(
-            tex.id(),
-            logo,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, a(1.0)),
-        );
-    }
-    painter.text(
+    // 84 pt of radius — the 168 pt square the logo image used to occupy.
+    theme::paint_mark(&painter, egui::pos2(c.x, c.y - 104.0), 84.0, alpha);
+    // Cream `carto`, accent `polis` — the account GUI's split (see
+    // `theme::WORDMARK_HEAD`). The brand family is bound because
+    // `EguiManager::default` installed the theme before this context's first
+    // pass, so there is no unbound-family frame to fall back for
+    // (`theme::install` documents why that ordering holds).
+    theme::paint_wordmark(
+        &painter,
         egui::pos2(c.x, c.y + 24.0),
-        egui::Align2::CENTER_CENTER,
-        "Cartopolis",
-        // Bound since `EguiManager::default` installed the theme, i.e. before
-        // this context's first pass — so there is no unbound-family frame to
-        // fall back for (`theme::install` documents why that ordering holds).
-        egui::FontId::new(theme::SPLASH_WORDMARK, theme::brand_family()),
-        fade(theme::CREAM, 1.0),
+        theme::SPLASH_WORDMARK,
+        alpha,
     );
     painter.text(
         egui::pos2(c.x, c.y + 66.0),

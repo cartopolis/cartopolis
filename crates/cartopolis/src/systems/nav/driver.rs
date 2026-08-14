@@ -67,7 +67,7 @@
 //! always drawn. Stop was on the trip strip, and the strip stands down behind any
 //! docked panel — on a phone, which has no Escape key, that could leave a drive
 //! with no exit at all. Route reopens the planner without leaving the mode, which
-//! is otherwise unreachable mid-drive: the dock, the address bar and the planner
+//! is otherwise unreachable mid-drive: the dock, the main menu and the planner
 //! are all suppressed, so there was no way to change the destination, read the turn
 //! list or switch travel mode short of ending the trip.
 //!
@@ -2076,7 +2076,7 @@ pub fn render_driver_hud(
                     //
                     // Stop, because a touch device has no Escape and the strip that
                     // used to carry it can be covered. Route, because mid-drive
-                    // every other way back is suppressed — the dock, the address bar
+                    // every other way back is suppressed — the dock, the main menu
                     // and the planner itself — so there was no way to change the
                     // destination, read the turn list or switch travel mode without
                     // first ending the trip.

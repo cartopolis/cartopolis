@@ -83,7 +83,7 @@ Unrelated to speed, and worth knowing before "the search is broken" gets filed:
 **Nominatim does no prefix matching at all, and it is not an autocomplete engine.**
 The ICU tokenizer stores complete word tokens in the `word` table and the query
 analyzer looks them up by exact equality, so a half-typed name matches no rows and
-the endpoint returns `[]` — which the address bar renders, correctly, as
+the endpoint returns `[]` — which the Search panel renders, correctly, as
 "No results". `Leeuward`, `Groning` and `Utrech` all return nothing; the full names
 return 2, 3 and 3 hits.
 

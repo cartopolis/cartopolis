@@ -1,4 +1,5 @@
-//! Geo navigation: a browser-style search bar in the top bar.
+//! Geo navigation: a browser-style search, in a panel of its own
+//! ([`render_search_panel`], the dock's leftmost disc or `Ctrl+L`).
 //!
 //! Type a place name ("Groningen") to get OpenStreetMap Nominatim suggestions
 //! and click one to teleport the avatar/camera there; or paste raw
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::Avatar;
 use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState, RightPanel};
+use crate::systems::egui_manager::EguiManager;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::navigation::{Endpoint, RouteState};
 use crate::systems::theme;
@@ -92,7 +94,7 @@ const MAX_SUGGESTIONS: usize = 8;
 /// a comfortable typing interval, so the message only appears once typing has
 /// actually stopped. See `docs/notes/geocoding-latency.md`.
 const NO_RESULTS_GRACE: Duration = Duration::from_millis(600);
-/// How many previously visited places the empty address bar offers.
+/// How many previously visited places the empty Search panel offers.
 const RECENT_SUGGESTIONS: usize = 6;
 /// Avatar rest height after a teleport. The humanoid models are authored
 /// origin-at-feet, so this is the ground/tile surface (`avatar::GROUND_HEIGHT`);
@@ -111,7 +113,7 @@ const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
 /// So the hit is split at parse time into what it *is* ([`name`](Self::name)), what
 /// disambiguates it ([`context`](Self::context)) and what kind of thing it is
 /// ([`kind`](Self::kind)); `label` stays the full line, because that is what goes
-/// back into the address bar when the hit is picked.
+/// back into the search field when the hit is picked.
 #[derive(Clone)]
 pub struct GeoSuggestion {
     /// The full `display_name` — the text a picked suggestion leaves in the field.
@@ -203,8 +205,8 @@ struct GeocodeReply {
 /// way to navigate to something you had *found* was to fly there and long-press
 /// the map. The three sources queue this instead, because none of them owns the
 /// planner: the Places panel and the interaction prompt are drawn by systems that
-/// do not take `RouteState`, and the address bar is drawn from inside
-/// `ui::render_menu_bar`, whose signature is the top bar's. They all hold
+/// do not take `RouteState`, and the Search panel is one panel arguing with
+/// another about which of them owns the route. They all hold
 /// [`GeoNavState`], which is already the client's "where do you want to go"
 /// resource, so it carries the request and `apply_route_request` spends it.
 pub struct RouteRequest {
@@ -261,13 +263,14 @@ pub struct GeoNavState {
     /// The pending teleport is a Back/Forward move — `apply_teleport` must not
     /// re-record it as a new visit.
     from_history: bool,
-    /// The address bar should grab keyboard focus next frame (set by the top
-    /// bar's Ctrl+L shortcut and by [`seed_search`](Self::seed_search), consumed
-    /// in `nav_bar_ui`); also unfolds the bar, since a field that is not drawn
-    /// cannot take focus.
+    /// The search field should grab keyboard focus next frame (set by `Ctrl+L`
+    /// and by [`seed_search`](Self::seed_search), consumed in [`search_ui`]);
+    /// also *opens* the Search panel, since a field that is not drawn cannot take
+    /// focus.
     pub focus_search: bool,
-    /// The address bar currently holds keyboard focus — read by `ui_owns_keyboard`
-    /// so typing a search doesn't also walk the avatar (set in `nav_bar_ui`).
+    /// The search field currently holds keyboard focus — read by
+    /// `ui_owns_keyboard` so typing a search doesn't also walk the avatar (set in
+    /// [`search_ui`]).
     pub search_has_focus: bool,
 }
 
@@ -380,19 +383,21 @@ impl GeoNavState {
             .take(RECENT_SUGGESTIONS)
     }
 
-    /// Drop the suggestion list. Called when the address bar folds away — the
-    /// dropdown is an `Area` of its own and would otherwise hang under a bar that
-    /// is no longer drawn.
+    /// Drop the suggestion list, and any pending "fly to the top hit" with it.
+    /// Called when the Search panel is closed: the list is the answer to a
+    /// question the user has stopped asking, and a `teleport_on_result` still
+    /// armed would fly the camera somewhere on a reply that lands afterwards.
     pub fn close_suggestions(&mut self) {
         self.show_suggestions = false;
         self.teleport_on_result = false;
     }
 
-    /// Put a query in the address bar and open its dropdown, as if it had been
-    /// typed. The debounce and the "has the text changed" gate both live behind
-    /// private fields, so a scripted run (`--ui search`) cannot reach the search
-    /// path without this — and the address bar is otherwise uncapturable, since
-    /// revealing it needs a pointer at the top edge.
+    /// Put a query in the Search panel and open its result list, as if it had
+    /// been typed. The debounce and the "has the text changed" gate both live
+    /// behind private fields, so a scripted run (`--ui search`) cannot reach the
+    /// search path without this — and it has no pointer to click the dock's disc
+    /// with either, so asking for focus is also what opens the panel
+    /// (`render_search_panel`).
     pub fn seed_search(&mut self, query: impl Into<String>) {
         self.query = query.into();
         self.focus_search = true;
@@ -965,7 +970,7 @@ impl SuggestionPick {
     }
 }
 
-/// One suggestion row, shared by the address bar's dropdown and the route panel's
+/// One suggestion row, shared by the Search panel and the route planner's
 /// endpoint fields so the two lists cannot drift apart.
 ///
 /// Two lines: the name (plus what kind of place it is) leads, and the address
@@ -1215,25 +1220,26 @@ pub fn drive_geocode(
     }
 }
 
-// ─── Search bar UI (rendered inside the top menu bar) ────────────────────────
+// ─── The Search panel ────────────────────────────────────────────────────────
 
-/// Width of the address field. Narrower than it was: the bar is a floating card
-/// sized to its content now, not a full-width strip, so every point here is a
-/// point of map it covers. Long place names still fit — the *dropdown* is what
-/// has to be readable, and it is wider than the field on purpose.
-const SEARCH_FIELD_WIDTH: f32 = 215.0;
-/// Widest the suggestion dropdown gets. Wider than the field — the rows carry an
-/// address line the field never has to show.
-const SUGGESTION_POPUP_WIDTH: f32 = 380.0;
-
-/// Draw the address bar and its dropdown. `viewer` is where the camera is on
+/// Draw the search field and its results. `viewer` is where the camera is on
 /// Earth, used to say how far away each hit is; `None` before the world anchor
 /// exists, and the rows simply omit the distance.
-pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
+///
+/// **This was a floating card in the top-left corner and is a panel now**
+/// (`RightPanel::Search`, opened from the dock's 🔍 disc), which changes two
+/// things in the body below. The field takes the panel's width instead of a
+/// fixed 215 pt, and the hits are laid out *inline* rather than in an
+/// `Area` hung under the field: a dropdown over the map has to disappear the
+/// moment focus leaves it or it covers the thing you are navigating, and a panel
+/// has no such duty — the list stays until you pick from it, retype, or close the
+/// panel. That matters most on the phone, where the on-screen keyboard docks over
+/// the bottom half of the screen and a dropdown anchored to a corner card had
+/// nowhere left to be.
+pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
     let field = ui.add(
         egui::TextEdit::singleline(&mut nav.query)
-            .desired_width(SEARCH_FIELD_WIDTH)
-            // Vertical padding so the field matches the taller menu bar.
+            .desired_width(ui.available_width())
             .margin(egui::Margin::symmetric(8, 6))
             .hint_text("Search place, or paste \"lat, lng\"…"),
     );
@@ -1322,10 +1328,12 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         }
         s
     });
-    // With nothing typed, the bar offers where you have already been. That list
+    // With nothing typed, the panel offers where you have already been. That list
     // needs no keyboard, which is the whole point of it on a phone: Back walks the
-    // history one step at a time and is the only other way to reach it.
-    let recents: Vec<(usize, GeoSuggestion)> = if nav.query.trim().is_empty() && field.has_focus() {
+    // history one step at a time and is the only other way to reach it. It no
+    // longer waits for the field to hold focus — a panel opened and not typed into
+    // is exactly when the recents are the whole of what it has to offer.
+    let recents: Vec<(usize, GeoSuggestion)> = if nav.query.trim().is_empty() {
         nav.recent_entries()
             .map(|(i, e)| {
                 let mut s = GeoSuggestion::plain(e.title(), e.lat, e.lng);
@@ -1342,66 +1350,59 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         || !nav.suggestions.is_empty()
         || !recents.is_empty()
         || status.is_some();
-    let show_popup = (nav.show_suggestions
-        || (field.has_focus() && (coord_entry.is_some() || !recents.is_empty())))
-        && has_content;
-    if !show_popup {
+    // Shown while the field has something to answer, and whenever it is empty (a
+    // panel just opened offers the recents). Picking a hit puts the place's name
+    // in the field and clears `show_suggestions`, which is what takes the list
+    // down — there is no focus rule doing it any more.
+    if !has_content || !(nav.show_suggestions || nav.query.trim().is_empty()) {
         return;
     }
 
     let mut picked: Option<GeoSuggestion> = None;
     let mut routed: Option<GeoSuggestion> = None;
     let mut picked_recent: Option<usize> = None;
-    let mut popup_hovered = false;
-    egui::Area::new(egui::Id::new("geo_nav_suggestions"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(field.rect.left_bottom() + egui::vec2(0.0, 4.0))
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let width = field
-                    .rect
-                    .width()
-                    .max(SUGGESTION_POPUP_WIDTH)
-                    .min(ui.ctx().viewport_rect().width() - 32.0);
-                ui.set_min_width(width);
-                ui.set_max_width(width);
-                let entries: Vec<&GeoSuggestion> =
-                    coord_entry.iter().chain(nav.suggestions.iter()).collect();
-                for (i, s) in entries.iter().enumerate() {
-                    if i > 0 {
+    ui.add_space(6.0);
+    // The rows can outrun a phone's viewport, and a `Panel` clips rather than
+    // scrolls — the same reason every other panel in this app wraps its body.
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            let entries: Vec<&GeoSuggestion> =
+                coord_entry.iter().chain(nav.suggestions.iter()).collect();
+            for (i, s) in entries.iter().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                // The coordinate entry is never stale — it is derived from what
+                // is in the field this instant, not from an answer.
+                let dim = stale && !(i == 0 && coord_entry.is_some());
+                let row = destination_row(ui, s, viewer, width, dim);
+                if row.clicked() {
+                    picked = Some((*s).clone());
+                }
+                if row.routed() {
+                    routed = Some((*s).clone());
+                }
+            }
+            if !recents.is_empty() {
+                ui.label(egui::RichText::new("Recent").small().weak());
+                for (n, (idx, s)) in recents.iter().enumerate() {
+                    if n > 0 {
                         ui.separator();
                     }
-                    // The coordinate entry is never stale — it is derived from what
-                    // is in the field this instant, not from an answer.
-                    let dim = stale && !(i == 0 && coord_entry.is_some());
-                    let row = destination_row(ui, s, viewer, width, dim);
+                    let row = destination_row(ui, s, viewer, width, false);
                     if row.clicked() {
-                        picked = Some((*s).clone());
+                        picked_recent = Some(*idx);
                     }
                     if row.routed() {
-                        routed = Some((*s).clone());
+                        routed = Some(s.clone());
                     }
                 }
-                if !recents.is_empty() {
-                    ui.label(egui::RichText::new("Recent").small().weak());
-                    for (n, (idx, s)) in recents.iter().enumerate() {
-                        if n > 0 {
-                            ui.separator();
-                        }
-                        let row = destination_row(ui, s, viewer, width, false);
-                        if row.clicked() {
-                            picked_recent = Some(*idx);
-                        }
-                        if row.routed() {
-                            routed = Some(s.clone());
-                        }
-                    }
-                }
-                if let Some(msg) = &status {
-                    ui.weak(msg.as_str());
-                }
-                popup_hovered = ui.ui_contains_pointer();
-            });
+            }
+            if let Some(msg) = &status {
+                ui.weak(msg.as_str());
+            }
         });
 
     if let Some(s) = routed {
@@ -1444,8 +1445,76 @@ pub fn nav_bar_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64,
         }
         nav.show_suggestions = false;
         nav.teleport_on_result = false;
-    } else if field.lost_focus() && !submitted && !popup_hovered {
-        nav.show_suggestions = false;
+    }
+}
+
+/// The Search panel (dock ▸ 🔍, or `Ctrl+L`). Ordered in the Phase 7b `.chain()`
+/// like every other panel — see the note there; an unordered panel loses egui's
+/// hit test at random.
+///
+/// The shortcut is handled here rather than where the dock is drawn because it
+/// has to work with the panel *closed*, and this is the system that owns the
+/// panel: `Ctrl+L` is the browser's address-bar chord, and it both opens the
+/// panel and hands the field the keyboard on the next frame
+/// ([`GeoNavState::focus_search`], which is also how a scripted `--ui search` run
+/// asks for it).
+pub fn render_search_panel(
+    // Spelled plainly rather than through its module path on purpose: the guard
+    // that every root-`Ui` panel is in the Phase 7b chain
+    // (`egui_manager::every_root_ui_panel_is_in_the_chain`) recognises a panel
+    // system by the literal `ResMut<EguiManager>`, so a qualified path here would
+    // quietly opt this panel out of the one check that catches an unordered one.
+    mut egui: ResMut<EguiManager>,
+    mut right_panel: ResMut<RightPanel>,
+    mut nav: ResMut<GeoNavState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    globe: Res<crate::systems::globe::GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    map_anchor: Res<crate::resources::MapAnchor>,
+) {
+    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
+        *right_panel = RightPanel::Search;
+        nav.focus_search = true;
+    }
+    // A scripted run seeds the query and asks for focus without a pointer to
+    // click the disc with, so the request is enough to open the panel.
+    if nav.focus_search {
+        *right_panel = RightPanel::Search;
+    }
+    let mut open = right_panel.is(RightPanel::Search);
+    if !open {
+        // No field on screen → it can hold no focus, and nothing is listening for
+        // the Enter that submits it.
+        nav.search_has_focus = false;
+        return;
+    }
+
+    // Where the camera is on Earth, for the hits' "how far away is this" line.
+    let viewer = camera
+        .single()
+        .ok()
+        .zip(map_anchor.geo)
+        .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
+
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    let mut close = false;
+    crate::systems::egui_manager::responsive_right_panel(
+        "search_panel",
+        compact,
+        viewport_w,
+        320.0,
+    )
+    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
+        let panel = RightPanel::Search;
+        close = theme::panel_header(ui, panel.icons(), panel.label());
+        search_ui(ui, &mut nav, viewer);
+    });
+    if close {
+        *right_panel = RightPanel::None;
+        nav.search_has_focus = false;
+        nav.close_suggestions();
     }
 }
 
@@ -1699,7 +1768,7 @@ mod tests {
         assert_eq!(s.context, "Noord-Holland, Nederland");
         assert_eq!(s.kind.as_deref(), Some("city"));
         // The full line survives — it is what a picked suggestion leaves behind
-        // in the address bar.
+        // in the search field.
         assert_eq!(s.label, "Amsterdam, Noord-Holland, Nederland");
     }
 

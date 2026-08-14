@@ -491,42 +491,153 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_style_of(egui::Theme::Light, style);
 }
 
-// ─── Logo ─────────────────────────────────────────────────────────────────────
+// ─── The mark ─────────────────────────────────────────────────────────────────
 
-/// Side of the logo texture, in texels. Drawn at [`LOGO_SIZE`] points, so this is
-/// ~2× for a hidpi screen; egui has no mip chain, and the 256 px source scaled to
-/// 26 pt in the sampler shimmers as the window moves under it.
-const LOGO_TEXELS: u32 = 64;
-
-/// The address bar's logo button, in points.
-pub const LOGO_SIZE: f32 = 26.0;
-
-/// The app mark as an egui image, decoded from the same embedded PNG the OS
-/// window icon and the XDG desktop entry use — one asset, three surfaces.
+/// The app mark, **drawn rather than sampled**: a dark disc with four streets
+/// crossing it, one accent avenue on the diagonal, and an amber marker where the
+/// avenue meets a corner block. A city block seen from above, which is what this
+/// application is.
 ///
-/// Returns `None` only if that PNG fails to decode, which in practice means a
-/// clone without Git LFS (the pointer file is 130 bytes of text). The bar then
-/// falls back to a text mark rather than panicking, because a broken checkout
-/// should still boot far enough to say so.
-pub fn logo_image() -> Option<egui::ColorImage> {
-    let png = crate::systems::window_icon::ICON_PNG;
-    let img = match image::load_from_memory(png) {
-        Ok(img) => img,
-        Err(e) => {
-            tracing::warn!(error = %e, "logo: embedded icon PNG did not decode (Git LFS?)");
-            return None;
-        }
+/// It is a vector for the reason every other icon in this file is painted from
+/// primitives: it is wanted at 84 pt on the splash and 20 pt on the dock disc, and
+/// egui has no mip chain, so a 256 px PNG sampled down to a 20 pt button shimmers
+/// whenever the window moves under it. Drawing it also takes the mark out of Git
+/// LFS's silent-failure path — the icon PNG is still the OS window icon and the
+/// desktop entry (`systems::window_icon`), where a file is what the platform
+/// wants, but nothing *inside* the app depends on that file decoding any more.
+///
+/// The geometry is a table in fractions of the radius so the two sizes are one
+/// drawing rather than two, and `index.html`'s loader carries the same shape as
+/// an inline SVG — the web splash and this one are one screen handed over
+/// mid-load (see `systems::splash`), and a mark that changes at the handover is
+/// the tell that they are not.
+mod mark {
+    /// Inner radius the streets are clipped to, leaving the ring its band.
+    pub const INNER: f32 = 0.84;
+    /// Ring width, and the streets' and the avenue's, all of the radius.
+    pub const RING: f32 = 0.09;
+    pub const STREET: f32 = 0.10;
+    pub const AVENUE: f32 = 0.16;
+    /// Signed distance from the centre of each street, of the radius.
+    pub const VERTICALS: [f32; 2] = [-0.38, 0.30];
+    pub const HORIZONTALS: [f32; 2] = [-0.30, 0.38];
+    /// The avenue's direction (screen y is down, so this runs up to the right).
+    pub const AVENUE_DIR: [f32; 2] = [0.819, -0.574];
+    /// The marker: where the two streets meet in the upper-right block.
+    pub const DOT: [f32; 2] = [0.30, -0.30];
+    pub const DOT_R: f32 = 0.14;
+}
+
+/// Draw [the mark](mark) centred on `center`, out to `radius`, at `alpha`
+/// (1.0 = opaque; the splash fades the whole screen out through it).
+pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32) {
+    let a = |c: Color32| {
+        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
     };
-    let small = image::imageops::resize(
-        &img.into_rgba8(),
-        LOGO_TEXELS,
-        LOGO_TEXELS,
-        image::imageops::FilterType::Lanczos3,
+    // A stroke thinner than a pixel is a stroke nobody can see: at the dock's
+    // 20 pt radius the streets are 2 pt, and on the address-bar sizes this rule
+    // is what keeps them from fading out altogether.
+    let w = |frac: f32| (frac * radius).max(1.0);
+    let r = radius;
+
+    p.circle_filled(center, r, a(INK));
+    p.circle_stroke(
+        center,
+        r - w(mark::RING) * 0.5,
+        Stroke::new(w(mark::RING), a(ACCENT)),
     );
-    Some(egui::ColorImage::from_rgba_unmultiplied(
-        [LOGO_TEXELS as usize; 2],
-        small.as_raw(),
-    ))
+
+    // Streets, as chords of the inner circle: half of a chord at distance d from
+    // the centre is √(R² − d²), which is the whole of the clipping this needs.
+    let inner = mark::INNER * r;
+    let street = Stroke::new(w(mark::STREET), a(CREAM));
+    for d in mark::VERTICALS {
+        let x = d * r;
+        let half = (inner * inner - x * x).max(0.0).sqrt();
+        p.line_segment(
+            [
+                egui::pos2(center.x + x, center.y - half),
+                egui::pos2(center.x + x, center.y + half),
+            ],
+            street,
+        );
+    }
+    for d in mark::HORIZONTALS {
+        let y = d * r;
+        let half = (inner * inner - y * y).max(0.0).sqrt();
+        p.line_segment(
+            [
+                egui::pos2(center.x - half, center.y + y),
+                egui::pos2(center.x + half, center.y + y),
+            ],
+            street,
+        );
+    }
+
+    // The avenue runs through the centre, so it is a diameter and needs no chord.
+    let dir = egui::vec2(mark::AVENUE_DIR[0], mark::AVENUE_DIR[1]);
+    p.line_segment(
+        [center - dir * inner, center + dir * inner],
+        Stroke::new(w(mark::AVENUE), a(ACCENT)),
+    );
+    p.circle_filled(
+        center + egui::vec2(mark::DOT[0] * r, mark::DOT[1] * r),
+        (mark::DOT_R * r).max(1.5),
+        a(AMBER),
+    );
+}
+
+// ─── Wordmark ─────────────────────────────────────────────────────────────────
+
+/// The wordmark, in two tones: **cream `carto`, accent `polis`**, lower case.
+///
+/// Not a decoration — it is the account GUI's wordmark
+/// (`jeroen/cartopy`'s `.app-header .wordmark`, `carto<b>polis</b>`), and that
+/// app talks to this simulator's admin surface. Two products that share a palette
+/// and a backend should not write their own name two different ways, so the split
+/// and the colours are copied from there rather than re-invented, and
+/// `index.html`'s loader carries the same two spans.
+pub const WORDMARK_HEAD: &str = "carto";
+pub const WORDMARK_TAIL: &str = "polis";
+
+/// Paint the wordmark centred on `center` at `size` points, faded by `alpha`.
+///
+/// Laid out as two galleys and placed from their combined width, because
+/// `Align2::CENTER_CENTER` on each piece separately would centre each of them on
+/// the same point and stack the two words on top of each other.
+pub fn paint_wordmark(p: &egui::Painter, center: egui::Pos2, size: f32, alpha: f32) {
+    let a = |c: Color32| {
+        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
+    };
+    let font = FontId::new(size, brand_family());
+    let head = p.layout_no_wrap(WORDMARK_HEAD.to_owned(), font.clone(), a(CREAM));
+    let tail = p.layout_no_wrap(WORDMARK_TAIL.to_owned(), font, a(ACCENT_TEXT));
+    let total = head.size().x + tail.size().x;
+    let left = center.x - total * 0.5;
+    let top = center.y - head.size().y * 0.5;
+    let head_w = head.size().x;
+    p.galley(egui::pos2(left, top), head, a(CREAM));
+    p.galley(egui::pos2(left + head_w, top), tail, a(ACCENT_TEXT));
+}
+
+/// [`paint_wordmark`] for a laid-out row rather than a painter — the sign-in
+/// card's brand line. One writer for the two-tone split, so the card and the
+/// splash cannot drift.
+pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let font = FontId::new(size, brand_family());
+        ui.label(
+            egui::RichText::new(WORDMARK_HEAD)
+                .font(font.clone())
+                .color(CREAM),
+        );
+        ui.label(
+            egui::RichText::new(WORDMARK_TAIL)
+                .font(font)
+                .color(ACCENT_TEXT),
+        );
+    });
 }
 
 // ─── Glyphs ───────────────────────────────────────────────────────────────────
@@ -706,6 +817,25 @@ pub fn round_button(
             icon_size: 17.0,
         },
     );
+    resp.on_hover_text(tooltip)
+}
+
+/// The dock's main-menu disc: [the mark](paint_mark) at [`round_button`]'s size,
+/// so the app's own icon is a button in the same family as the panels beside it.
+///
+/// The mark carries its own accent ring, so the hover and open states are painted
+/// *over* it rather than as a second disc behind it — a button-shaped plate under
+/// a logo that is already a plate reads as two marks stacked.
+pub fn mark_button(ui: &mut egui::Ui, tooltip: &str, selected: bool) -> egui::Response {
+    let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let radius = ROUND_BUTTON_SIZE * 0.5 - 1.0;
+    paint_mark(ui.painter(), rect.center(), radius, 1.0);
+    if selected || resp.hovered() {
+        let ring = if selected { CREAM } else { ACCENT_BRIGHT };
+        ui.painter()
+            .circle_stroke(rect.center(), radius - 1.0, Stroke::new(2.0, ring));
+    }
     resp.on_hover_text(tooltip)
 }
 
@@ -1040,6 +1170,43 @@ mod tests {
         assert_eq!(v.strong_text_color(), CREAM);
     }
 
+    /// The wordmark is the app's name split in two, and nothing else. It is
+    /// written in three places — here, `index.html`'s loader and the account
+    /// GUI's header — so the halves are exactly where a typo would ship as a
+    /// misspelt product name that still looks deliberate.
+    #[test]
+    fn the_wordmark_halves_spell_the_app() {
+        assert_eq!(format!("{WORDMARK_HEAD}{WORDMARK_TAIL}"), "cartopolis");
+    }
+
+    /// The mark's geometry table has to stay *inside* the disc it is drawn in:
+    /// every street is a chord of the inner circle (which needs its distance from
+    /// the centre to be under that radius, or `√(R² − d²)` is the square root of a
+    /// negative and the chord collapses), and the marker dot has to clear the ring
+    /// or it reads as a bite taken out of the edge.
+    #[test]
+    fn the_marks_streets_and_marker_stay_inside_the_disc() {
+        for d in mark::VERTICALS.iter().chain(mark::HORIZONTALS.iter()) {
+            assert!(
+                d.abs() < mark::INNER,
+                "a street at {d} of the radius does not cross a disc of {}",
+                mark::INNER
+            );
+        }
+        let dot = (mark::DOT[0].powi(2) + mark::DOT[1].powi(2)).sqrt() + mark::DOT_R;
+        assert!(
+            dot <= mark::INNER,
+            "the marker reaches {dot}, past the ring"
+        );
+        // The avenue is drawn as a diameter, so its direction must be a unit
+        // vector or it stops short of the rim (or runs past it).
+        let len = (mark::AVENUE_DIR[0].powi(2) + mark::AVENUE_DIR[1].powi(2)).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-3,
+            "the avenue's direction is {len} long"
+        );
+    }
+
     /// The brand family must be bound before anything paints a heading —
     /// `install` exists to guarantee that, and an unbound family is a panic deep
     /// in epaint rather than a missing-font fallback.
@@ -1059,6 +1226,37 @@ mod tests {
         );
     }
 
+    /// The two brand primitives paint, on the first pass, into a bare context.
+    ///
+    /// Cheap, and it covers the one way this could fail at runtime rather than at
+    /// compile time: [`paint_wordmark`] lays its galleys out in
+    /// [`brand_family`], and an unbound family is a panic deep in epaint, not a
+    /// fallback. The splash paints on frame one — there is no second chance to
+    /// find that out.
+    #[test]
+    fn the_mark_and_the_wordmark_paint_on_the_first_pass() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ui| {
+                let p = ui.painter();
+                paint_mark(p, egui::pos2(200.0, 100.0), 60.0, 1.0);
+                paint_wordmark(p, egui::pos2(200.0, 220.0), SPLASH_WORDMARK, 1.0);
+            },
+        );
+        // Disc, ring, four streets, the avenue, the marker, and two galleys.
+        assert!(
+            out.shapes.len() >= 10,
+            "the brand painted only {} shapes",
+            out.shapes.len()
+        );
+    }
+
     /// Every `RightPanel`, walked by index rather than hand-listed.
     ///
     /// The list under the test used to be written out by hand, and `Script` was
@@ -1071,28 +1269,30 @@ mod tests {
         use crate::resources::RightPanel as P;
         let panel = match i {
             0 => P::None,
-            1 => P::Layers,
-            2 => P::Places,
-            3 => P::Route,
-            4 => P::Assistant,
-            5 => P::Chat,
-            6 => P::Appearance,
-            7 => P::Script,
-            8 => P::Settings,
-            9 => P::About,
+            1 => P::Search,
+            2 => P::Layers,
+            3 => P::Places,
+            4 => P::Route,
+            5 => P::Assistant,
+            6 => P::Chat,
+            7 => P::Appearance,
+            8 => P::Script,
+            9 => P::Settings,
+            10 => P::About,
             _ => return None,
         };
         let back = match panel {
             P::None => 0,
-            P::Layers => 1,
-            P::Places => 2,
-            P::Route => 3,
-            P::Assistant => 4,
-            P::Chat => 5,
-            P::Appearance => 6,
-            P::Script => 7,
-            P::Settings => 8,
-            P::About => 9,
+            P::Search => 1,
+            P::Layers => 2,
+            P::Places => 3,
+            P::Route => 4,
+            P::Assistant => 5,
+            P::Chat => 6,
+            P::Appearance => 7,
+            P::Script => 8,
+            P::Settings => 9,
+            P::About => 10,
         };
         assert_eq!(back, i, "panel_at's two tables disagree at {i}");
         Some(panel)
