@@ -710,6 +710,12 @@ fn run_client() {
     // where the first run is entirely diagnosis. Bevy's `LogPlugin` has an
     // `android_log-sys` layer that writes to logcat properly, so it stays enabled
     // there and this does not run. See `docs/notes/android-build.md`.
+    //
+    // What *was* wrong here until 2026-08-14 is the unstated half: "this does not
+    // run" was read as "nothing else writes to stderr on Android", and `LogPlugin`
+    // was quietly adding its own formatted layer on top of the Android one — see
+    // the `fmt_layer` note where that plugin is configured below. The device log
+    // showed every line twice.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -801,12 +807,35 @@ fn run_client() {
     // thought to name is exactly the thing worth reading here. Tighten all three
     // once the phone is boring — and note `offer_last_crash` mails this log to
     // whoever is holding the device, so the filter is the report's contents too.
+    //
+    // **And every line was going to logcat twice.** `LogPlugin` adds bevy's
+    // `AndroidLayer` *in addition to* a `tracing_subscriber::fmt` layer writing to
+    // stderr — `fmt_layer`'s default is `|_| None`, and `None` means "use the
+    // stderr one", not "use none". Android captures a NativeActivity's stderr into
+    // logcat under `RustStdoutStderr`, so the 2026-08-14 device log carried each
+    // event as a clean `event` line *and* as an ANSI-escaped duplicate: twice the
+    // logcat traffic, twice the formatting, and a crash report interleaved with
+    // `[2m[31m` for a reader with no terminal to interpret it.
+    //
+    // It is also a hazard and not only waste. That stderr is a pipe with a fixed
+    // kernel buffer, drained by a pump thread; a writer that outruns the pump
+    // **blocks in `write`**, and the writer here is whichever thread logged —
+    // usually the one running the schedule. A burst is exactly what a re-anchor
+    // produces. Sinking the formatted layer removes the duplicate, the escape
+    // codes and the pipe together; `AndroidLayer` is the one that reaches logcat
+    // properly, and it is the one `own_logcat` reads back.
     #[cfg(target_os = "android")]
     let plugins = plugins.set(LogPlugin {
         filter: "cartopolis=info,bevy_render=info,bevy_winit=info,wgpu=warn,wgpu_core=warn,\
                  wgpu_hal=warn,naga=warn"
             .into(),
         level: bevy::log::Level::WARN,
+        // Not `|_| None` — see above; that is the default and it selects stderr.
+        fmt_layer: |_| {
+            Some(Box::new(
+                tracing_subscriber::fmt::Layer::default().with_writer(std::io::sink),
+            ))
+        },
         ..default()
     });
     let default_plugins = plugins

@@ -684,3 +684,56 @@ first in an ANR dump, which is why the trace is capped from the head.
 `platform::watchdog` stays. It reports a stall *live*, before the kill, and it
 works on a stall the system never escalates to an ANR — but where the two overlap,
 the system's own dump is strictly better evidence than a `/proc` state column.
+
+## Every log line was going to logcat twice, and the second copy went through a pipe
+
+Found by reading the 2026-08-14 log rather than by adding anything to it, which is
+the lesson as much as the fix. Each event appears in that log as a clean `event`
+line **and** as an ANSI-escaped `RustStdoutStderr` duplicate:
+
+```
+E event …/bevy_winit-0.19.0/src/system.could not set cursor position: …
+I RustStdoutStderr: [2m2026-08-14T14:07:18.665011Z[0m [31mERROR[0m …
+```
+
+`LogPlugin` adds bevy's `AndroidLayer` *in addition to* a
+`tracing_subscriber::fmt` layer writing to stderr. The trap is the field: the
+default is `fmt_layer: |_| None`, and `None` means "use the stderr one", not "use
+none" (`bevy_log`'s `unwrap_or_else` supplies it). Android captures a
+NativeActivity's standard streams into logcat, so the second copy reappears
+under `RustStdoutStderr`, wearing the terminal colour codes that a share sheet
+has no way to interpret. This note's own claim that our `tracing_subscriber`
+"does not run" on Android was true and was read as "nothing writes to stderr
+here", which was not.
+
+Three costs, and the third is the one that matters:
+
+- **Twice the logcat traffic and twice the formatting**, on the device with the
+  least of both to spare.
+- **A crash report interleaved with `[2m[31m`**, for a reader holding a phone.
+- **A pipe.** stderr here is a kernel pipe with a fixed buffer, drained by a pump
+  thread. A writer that outruns the pump does not drop — it **blocks in `write`**,
+  and the writer is whichever thread logged, which is usually the one running the
+  schedule. A burst is exactly what a re-anchor produces, and a blocked schedule
+  for five seconds is an ANR. This is not proof that it is *the* freeze — nothing
+  here is proof without the thread dump — but it is a mechanism that fits the
+  evidence exactly: total silence from every thread at once, starting on a burst,
+  ending in `SIGQUIT`.
+
+Fixed by giving `fmt_layer` a layer that writes to `std::io::sink`. `AndroidLayer`
+is the one that reaches logcat properly and the one `own_logcat` reads back, so
+nothing is lost.
+
+**What is deliberately *not* fixed**: `bevy_winit::system`'s
+`could not set cursor position`, which is an `error!` per touch-move frame and
+cannot be filtered by level. Turning that module off would also lose
+`Creating new window`, which is the line that says the surface came back on
+resume — a diagnostic this note has been waiting on for three rounds. It stays
+noisy in the log and is dropped from the *report* (`LOG_NOISE`), which is the
+right place for that trade. `egui_wgpu`'s `Missing texture: Managed(2)` is
+likewise still open: the delta ordering in `egui_manager::egui_pass` is correct
+(set → upload → render → free, all gated on the generation actually changing), so
+the cause is upstream of it — most likely a `textures_delta` produced by a
+main-world frame that the render world never applied, since `end_egui_frame`
+*replaces* the delta rather than accumulating it and egui announces a texture
+exactly once. Not fixed blind.
