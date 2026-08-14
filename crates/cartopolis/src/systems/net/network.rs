@@ -1083,6 +1083,7 @@ pub fn send_network_intent(
     colliders: Res<crate::systems::collision::BuildingColliders>,
     layers: Res<crate::systems::data_layers::DataLayers>,
     time: Res<Time>,
+    osd: Res<crate::systems::map_osd::OsdInput>,
     mut last_sent: Local<Option<SentIntent>>,
     mut since_send: Local<f32>,
 ) {
@@ -1109,8 +1110,13 @@ pub fn send_network_intent(
     // R up, Q down — the Fly camera's keys (see `avatar::handle_avatar_movement`,
     // which must stay in step: it drives the same avatar in `--offline`). E moved
     // to "interact" when the world gained things to interact with.
-    let fly_up = !blocked && keyboard_input.pressed(KeyCode::KeyR);
-    let fly_down = !blocked && keyboard_input.pressed(KeyCode::KeyQ);
+    // …and the on-screen climb pair beside them, so a phone can fly a
+    // server-authoritative avatar the same way a keyboard does
+    // (`systems::map_osd`). `handle_avatar_movement` reads the identical pair for
+    // the offline path; the two must stay in step or flight behaves differently
+    // depending on how the client was launched.
+    let fly_up = !blocked && (keyboard_input.pressed(KeyCode::KeyR) || osd.climb > 0.0);
+    let fly_down = !blocked && (keyboard_input.pressed(KeyCode::KeyQ) || osd.climb < 0.0);
 
     // The edges. Both are set by other systems (`handle_avatar_movement` for the
     // jump, the interaction/emote UI for the emote) and consumed here, so they

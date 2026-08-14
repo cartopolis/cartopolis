@@ -25,7 +25,8 @@
 //!   - **Fly** — a thumbstick bottom-left (forward/back + strafe, *proportional*
 //!     so a small push is a slow drift) and a climb/descend pair on the right.
 //!   - **Follow** — the same thumbstick, walking the *avatar* rather than the
-//!     camera, and a zoom pair on the right. Until this existed the avatar was
+//!     camera; a zoom pair on the right that becomes a climb pair in flight; and
+//!     a jump/fly pair bottom-right, opposite the stick. Until this existed the avatar was
 //!     the one thing on a phone that could not be moved at all: its whole
 //!     vocabulary was WASD, which is six keys a touchscreen does not have and
 //!     no gesture ever stood in for (`docs/notes/android-build.md` recorded it
@@ -94,6 +95,15 @@ pub struct OsdInput {
     pub fly: Vec2,
     /// Fly vertical wish: `+1` climbing, `-1` descending.
     pub climb: f32,
+    /// Follow-mode edges: a jump this frame, and a request to toggle flight.
+    ///
+    /// **Edges, not held states**, and the distinction is the same one the wire
+    /// makes (`ClientIntent::jump`, protocol 13): a dropped movement frame is
+    /// corrected by the next one, while a dropped jump simply did not happen. So
+    /// these are true for exactly the frame the button was released on, and the
+    /// consumer must act on them rather than sample them.
+    pub jump: bool,
+    pub fly_toggle: bool,
     /// Follow-mode travel wish, in the same camera-horizontal frame as [`fly`]
     /// and read by `avatar::handle_avatar_movement` (which then owns it in every
     /// run mode — the online path consumes the same ramp through
@@ -194,6 +204,7 @@ pub fn render_map_osd(
     right_panel: Res<RightPanel>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
+    avatar_state: Res<crate::resources::AvatarState>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -209,6 +220,7 @@ pub fn render_map_osd(
         keyboard.is_open(),
         theme::touch_layout() || touch.ever(),
     ) {
+        let flying = avatar_state.is_flying;
         let ctx = egui.ctx_mut();
         match cluster {
             Cluster::Fly => {
@@ -216,8 +228,20 @@ pub fn render_map_osd(
                 next.fly = thumbstick(ctx);
             }
             Cluster::Walk => {
-                next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
+                // The right-edge pair carries whichever vertical the avatar
+                // actually has: on foot there is none, so it zooms the camera;
+                // in flight it climbs and descends, which is the same control in
+                // the same place as Fly mode's — a phone should not have to learn
+                // two positions for one verb.
+                if flying {
+                    next.climb = vertical_pair(ctx, "osd_climb", Mark::Up, Mark::Down);
+                } else {
+                    next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
+                }
                 next.walk = thumbstick(ctx);
+                let (jump, fly_toggle) = action_pair(ctx, flying);
+                next.jump = jump;
+                next.fly_toggle = fly_toggle;
             }
             Cluster::Zoom => {
                 next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
@@ -225,6 +249,48 @@ pub fn render_map_osd(
         }
     }
     osd.set_if_neq(next);
+}
+
+/// Jump and the flight toggle, bottom-right — the verbs a phone had no key for.
+///
+/// Returns `(jump, fly_toggle)`, each true on the frame its button was
+/// *released*. These are the one part of this module that is not a rate: a jump
+/// is an event, and `avatar::handle_avatar_movement` consumes them as edges.
+/// `clicked()` rather than `is_pointer_button_down_on` for exactly that reason —
+/// the held test that suits a rate would fire a jump every frame of a press.
+///
+/// Bottom-**right**, opposite the stick, because that is where the other thumb
+/// is: the same left-translates / right-acts split the module opens with. The
+/// climb pair stays on the right *edge*, centred, so the three never overlap at
+/// any window size.
+///
+/// Flight is a toggle rather than a hold: holding a button for the duration of a
+/// flight is not a control, it is a punishment, and the keyboard's own `F` is a
+/// toggle too. The jump button disappears in flight — it would mean nothing
+/// there, and a control that is visibly present and does nothing is worse than
+/// one that is absent (the same argument this module's suppression rules make).
+fn action_pair(ctx: &egui::Context, flying: bool) -> (bool, bool) {
+    let (mut jump, mut fly_toggle) = (false, false);
+    egui::Area::new(egui::Id::new("osd_actions"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(
+                -STICK_MARGIN,
+                -(STICK_MARGIN + crate::systems::dock::reserved_bottom()),
+            ),
+        )
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = CONTROL_GAP;
+                if !flying && round_button(ui, Mark::Jump).clicked() {
+                    jump = true;
+                }
+                if round_button(ui, Mark::Wings).clicked() {
+                    fly_toggle = true;
+                }
+            });
+        });
+    (jump, fly_toggle)
 }
 
 /// The glyphs, painted rather than typed. `✕` taught this lesson once already
@@ -237,6 +303,12 @@ enum Mark {
     Minus,
     Up,
     Down,
+    /// Jump: a chevron with a bar under it — an arrow leaving the ground.
+    Jump,
+    /// Flight: a pair of swept strokes. Not a wing shape, which needs curves and
+    /// reads as a smear at 44 pt; two strokes rising from a point say "up and
+    /// away" at any size, which is the whole vocabulary the other marks use.
+    Wings,
 }
 
 /// Two round buttons stacked on the right edge, centred vertically. Returns
@@ -251,10 +323,10 @@ fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 
             ui.set_height(height);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = CONTROL_GAP;
-                if round_button(ui, top) {
+                if round_button(ui, top).is_pointer_button_down_on() {
                     wish += 1.0;
                 }
-                if round_button(ui, bottom) {
+                if round_button(ui, bottom).is_pointer_button_down_on() {
                     wish -= 1.0;
                 }
             });
@@ -263,15 +335,16 @@ fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 
 }
 
 /// One round control. Returns whether it is *being held*.
-fn round_button(ui: &mut egui::Ui, mark: Mark) -> bool {
+/// One round control. Returns its `Response`, so the caller picks the test that
+/// suits it: a rate wants `is_pointer_button_down_on` (a finger drifting a point
+/// or two while held produces a *drag*, and `clicked()` would drop the whole
+/// push — the same reason the on-screen keyboard dismisses on the pointer), while
+/// an edge like a jump wants `clicked()`, or it fires every frame of the press.
+fn round_button(ui: &mut egui::Ui, mark: Mark) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::Vec2::splat(CONTROL_SIZE),
         egui::Sense::click_and_drag(),
     );
-    // `is_pointer_button_down_on` rather than `clicked`: a finger that drifts a
-    // point or two while held produces a *drag*, and a `clicked()` test would
-    // drop the whole push — the same reason the on-screen keyboard dismisses on
-    // the pointer rather than on a click.
     let held = resp.is_pointer_button_down_on();
     let (fill, ring, ink) = if held {
         (theme::ACCENT_MUTED, theme::ACCENT_BRIGHT, theme::CREAM)
@@ -286,7 +359,7 @@ fn round_button(ui: &mut egui::Ui, mark: Mark) -> bool {
     p.circle_filled(c, r, fill);
     p.circle_stroke(c, r, egui::Stroke::new(1.5, ring));
     paint_mark(p, c, CONTROL_SIZE * 0.22, mark, ink);
-    held
+    resp
 }
 
 fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::Color32) {
@@ -298,6 +371,32 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
         }
         Mark::Minus => {
             p.line_segment([c - egui::vec2(s, 0.0), c + egui::vec2(s, 0.0)], stroke);
+        }
+        // A chevron over a baseline: the ground, and something leaving it.
+        Mark::Jump => {
+            let (dx, dy) = (s, s * 0.55);
+            p.line_segment(
+                [c + egui::vec2(-dx, 0.0), c + egui::vec2(0.0, -dy * 1.6)],
+                stroke,
+            );
+            p.line_segment(
+                [c + egui::vec2(0.0, -dy * 1.6), c + egui::vec2(dx, 0.0)],
+                stroke,
+            );
+            p.line_segment([c + egui::vec2(-dx, dy), c + egui::vec2(dx, dy)], stroke);
+        }
+        // Two swept strokes rising from a common point.
+        Mark::Wings => {
+            let (dx, dy) = (s, s * 0.7);
+            p.line_segment([c + egui::vec2(0.0, dy), c + egui::vec2(-dx, -dy)], stroke);
+            p.line_segment([c + egui::vec2(0.0, dy), c + egui::vec2(dx, -dy)], stroke);
+            p.line_segment(
+                [
+                    c + egui::vec2(-dx * 0.5, 0.0),
+                    c + egui::vec2(dx * 0.5, 0.0),
+                ],
+                stroke,
+            );
         }
         // Chevrons, not filled triangles: at 44 pt a solid arrowhead reads as a
         // blob, and the same two segments scale to any control size.
@@ -380,6 +479,19 @@ mod tests {
         assert_eq!(touch(CameraMode::Free), Some(Cluster::Fly));
         assert_eq!(touch(CameraMode::Avatar), Some(Cluster::Walk));
         assert_eq!(touch(CameraMode::Orbit), Some(Cluster::Zoom));
+    }
+
+    /// Flight swaps the right-edge pair rather than adding a third column: on
+    /// foot the avatar has no vertical, so that space zooms; in the air it is the
+    /// same climb control Fly mode puts in the same place.
+    #[test]
+    fn follow_swaps_zoom_for_climb_in_flight() {
+        // The cluster is the same either way — the swap is inside it, which is
+        // what keeps the stick and the action pair from moving when you take off.
+        assert_eq!(
+            cluster_for(CameraMode::Avatar, false, false, false, true),
+            Some(Cluster::Walk)
+        );
     }
 
     /// A mouse-driven run gets no on-screen controls at all: they would be
