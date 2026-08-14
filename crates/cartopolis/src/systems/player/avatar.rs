@@ -1328,8 +1328,11 @@ pub fn handle_avatar_movement(
     // hand, two meanings for the same key depending on the mode. E was the climb
     // key until the world gained things to interact with; E is the near-universal
     // "use" binding and a climb key is the cheaper of the two to move.
-    let fly_up = keyboard_input.pressed(KeyCode::KeyR);
-    let fly_down = keyboard_input.pressed(KeyCode::KeyQ);
+    // The on-screen climb pair stands in for R/Q, and only in flight — that is
+    // the only time Follow draws it (`map_osd`), and the only time the vertical
+    // keys do anything either.
+    let fly_up = keyboard_input.pressed(KeyCode::KeyR) || osd.climb > 0.0;
+    let fly_down = keyboard_input.pressed(KeyCode::KeyQ) || osd.climb < 0.0;
     // Gait modifiers. Shift sprints, Alt strolls, neither jogs — see
     // `systems::locomotion`. Shift is free in Follow (the camera's boost is a Fly
     // binding) and Alt is unused anywhere in this client.
@@ -1364,8 +1367,15 @@ pub fn handle_avatar_movement(
         *flight_armed = false;
         *space_held = 0.0;
     }
-    if keyboard_input.just_pressed(KeyCode::KeyF) {
+    if keyboard_input.just_pressed(KeyCode::KeyF) || osd.fly_toggle {
         avatar_state.is_flying = !avatar_state.is_flying;
+    }
+    // The on-screen jump, which the stick has no way to express. Grounded-only
+    // for the same reason `SimWorld::step` grants it that way — holding the bit
+    // must not climb — and taken as an edge, since `map_osd` sets it for the one
+    // frame the button was released on.
+    if osd.jump && avatar_state.grounded && !avatar_state.is_flying {
+        avatar_state.wants_jump = true;
     }
 
     let az = camera_state.azimuth;
