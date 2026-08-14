@@ -55,19 +55,22 @@
 //!
 //! It saves **fill and memory**: the main texture (both halves), the depth buffer
 //! and every screen-sized intermediate are allocated from the same reduced size,
-//! which at 0.7 is half the bytes. Post-processing scales with it too — tonemapping
-//! runs at the reduced size here, where `MainPassResolutionOverride` explicitly
-//! does not touch it.
+//! which at the phone tier's 1/2 is a quarter of the bytes. Post-processing scales
+//! with it too — tonemapping runs at the reduced size here, where
+//! `MainPassResolutionOverride` explicitly does not touch it.
 //!
-//! The upscale is **point-sampled**: Bevy's blit binds a `NonFiltering` sampler
-//! built from `SamplerDescriptor::default()`, so 0.7 → 1.0 duplicates roughly
-//! every third pixel column rather than interpolating. That is a fair description
-//! of what a cheap render scale looks like and it is the same picture the pass
-//! rendered, but it is *not* what the web build does (a CSS transform, which the
-//! browser's compositor filters). If the phone map reads as crunchy rather than
-//! soft, the knob is that sampler — swapping `BlitPipeline`'s layout and sampler
-//! for `Filtering`/`Linear` at `RenderStartup` is the whole fix — and not this
-//! module.
+//! The upscale is **point-sampled**, and that is what picks the scale rather than
+//! the other way round: Bevy's blit binds a `NonFiltering` sampler built from
+//! `SamplerDescriptor::default()`, so it cannot interpolate. At the tier's 1/2
+//! every rendered pixel becomes a clean 2×2 block; at a fractional scale like the
+//! 0.7 this shipped with first, the same sampler duplicates roughly every third
+//! row and column in a cadence unrelated to the picture, which crawls as the
+//! camera moves. So the two knobs are one knob — a non-integer scale is worth
+//! having only after `BlitPipeline`'s layout and sampler are swapped for
+//! `Filtering`/`Linear` at `RenderStartup`, which is a ~25-line change here and
+//! the thing to reach for if the phone map ever reads as crunchy rather than soft.
+//! The web build has no such constraint: its upscale is a CSS transform and the
+//! browser's compositor filters it for free.
 //!
 //! ## The one shader that had to change
 //!
@@ -199,17 +202,45 @@ mod tests {
         }
     }
 
-    /// The phone's scale must actually land near the ceiling the web build already
-    /// enforces, or the two platforms' "phone tier" mean different things.
+    /// The phone's scale must be the reciprocal of a whole number, because the
+    /// upscale that follows it is **point-sampled**.
+    ///
+    /// At 1/2 every rendered pixel becomes a clean 2×2 block. At 0.7 — which is
+    /// what this tier shipped first — the same sampler duplicates roughly every
+    /// third row and column, in a cadence that has no relation to anything in the
+    /// picture and that crawls across it as the camera moves. So a fractional scale
+    /// is a decision about `BlitPipeline`'s sampler before it is a decision about
+    /// the budget, and the two have to move in one commit. This test is the note
+    /// that says so.
     #[test]
-    fn the_phone_scale_lands_near_the_web_pixel_ceiling() {
+    fn the_phone_scale_is_a_whole_pixel_multiple() {
+        let scale = crate::quality::Budget::phone().render_scale;
+        let step = 1.0 / scale;
+        assert!(
+            (step - step.round()).abs() < 1.0e-6,
+            "phone tier renders at {scale}, i.e. one pixel every {step} — not a \
+             whole multiple, which Bevy's non-filtering upscale blit cannot \
+             resolve evenly. Give the blit a `Linear` sampler first."
+        );
+    }
+
+    /// …and it must not ask a handset for more pixels than the web build's phone
+    /// tier already refuses to draw.
+    ///
+    /// A ceiling, not a band: native is deliberately under it now (0.63 Mpx against
+    /// 1.3), because the web's upscale is a CSS transform the browser's compositor
+    /// filters for free while this one is a point blit we pay for. What must never
+    /// happen is native drifting *above* the number a single-threaded browser build
+    /// on the same handset was judged unable to afford.
+    #[test]
+    fn the_phone_stays_under_the_web_pixel_ceiling() {
         let scale = crate::quality::Budget::phone().render_scale;
         // A Fairphone 4's real panel, which is the device the tier is written for.
         let pixels = (1080.0 * scale) * (2340.0 * scale);
         assert!(
-            (1_100_000.0..=1_400_000.0).contains(&pixels),
+            pixels <= 1_300_000.0,
             "phone tier renders {pixels:.0} px; index.html caps the web build at \
-             1.3 Mpx and the two budgets should agree"
+             1.3 Mpx and native must not ask for more"
         );
     }
 
