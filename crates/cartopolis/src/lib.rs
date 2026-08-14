@@ -2031,8 +2031,30 @@ fn attach_avatar_to_bigspace(
 /// `?CARTO_NO_ATMOSPHERE=1`, or the tidier `?no_atmosphere` (the `CARTO_`
 /// prefix and the case are both optional in a URL, where there is no environment
 /// to collide with).
+///
+/// **Android has no environment either**, and its version of the problem is worse
+/// than the browser's: a NativeActivity is started by the zygote and inherits
+/// `app_process`'s environment, and there is no shell on the phone to add to it.
+/// So every switch here was silently dead on the one platform whose renderer is
+/// hardest to bisect — the platform where you cannot attach a debugger, cannot
+/// read stderr and get one build per CI run. There the source is a **system
+/// property**: `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`, set with
+/// `adb shell setprop` and read at startup. See
+/// [`platform::android::system_property`] for why `debug.` specifically, and for
+/// the rest of the recipe.
 pub fn env_flag(name: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        // Android has no environment either, and for a harder reason than the
+        // browser's: the zygote hands a NativeActivity `app_process`'s own
+        // environment and there is no shell on the device to add to it. So the
+        // same switches come from system properties instead — see
+        // `platform::android::system_property`, which is also where the
+        // `adb shell setprop` recipe lives.
+        return platform::android::system_property(name)
+            .is_some_and(|v| v != "0" && !v.is_empty());
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
     }
@@ -2061,13 +2083,91 @@ fn query_flag(name: &str) -> bool {
 /// naming rules, as [`env_flag`]. `CARTO_PLACE="53.2, 6.5, 120m"` on desktop,
 /// `?place=53.2,6.5,120m` in the browser.
 pub fn env_value(name: &str) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        // See `env_flag`: system properties stand in for the environment.
+        return platform::android::system_property(name).filter(|v| !v.is_empty());
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         std::env::var(name).ok().filter(|v| !v.is_empty())
     }
     #[cfg(target_arch = "wasm32")]
     {
         query_value(name).filter(|v| !v.is_empty())
+    }
+}
+
+/// `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`: the Android half of
+/// [`env_value`]'s name mapping.
+///
+/// **Deliberately not inside `platform::android`**, and not `cfg`-gated, although
+/// it is only ever *called* from there. That module is
+/// `cfg(target_os = "android")`; no CI lane builds Android tests, and `cargo
+/// check` — which is all the Android lane runs — does not compile `cfg(test)`
+/// code at all. A test next to the caller would therefore never execute on any
+/// machine, and this is precisely the function whose failure is silent: a name
+/// that maps to a property nobody sets reads as "unset" forever, so a typo here
+/// looks exactly like a switch that does not work. Here it is covered by the
+/// ordinary `cargo test -p cartopolis` run.
+///
+/// The `debug.` prefix is load-bearing rather than decorative — it is the one
+/// property namespace `adb shell setprop` may write on a **production** build
+/// without root, which is what makes this reachable on a user's own phone.
+// `allow(dead_code)` off Android, against the workspace's `unused = "deny"`: the
+// sole non-test caller is `platform::android`, which does not exist on this
+// target, so here the tests below are the only users — which is exactly the
+// arrangement this function was moved out of that module to get.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn android_property_name(name: &str) -> String {
+    let short = name.strip_prefix("CARTO_").unwrap_or(name);
+    format!("debug.carto.{}", short.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod android_property_tests {
+    use super::android_property_name;
+
+    #[test]
+    fn a_carto_variable_maps_to_a_debug_property() {
+        assert_eq!(
+            android_property_name("CARTO_NO_ATMOSPHERE"),
+            "debug.carto.no_atmosphere"
+        );
+        assert_eq!(android_property_name("CARTO_FPS_LOG"), "debug.carto.fps_log");
+        assert_eq!(android_property_name("CARTO_QUALITY"), "debug.carto.quality");
+    }
+
+    /// The prefix is optional, so a name that never carried it still lands in our
+    /// own namespace rather than loose in the platform's.
+    #[test]
+    fn an_unprefixed_name_is_still_namespaced() {
+        assert_eq!(android_property_name("QUALITY"), "debug.carto.quality");
+    }
+
+    /// A property *name* was capped at 31 bytes before Android 8. We target 28+,
+    /// where it is not — but the cap is the kind of thing that would truncate
+    /// silently on an older handset, and every switch this is called with fits it
+    /// anyway, so the cheap thing is to keep it that way.
+    #[test]
+    fn every_switch_fits_the_legacy_name_limit() {
+        for name in [
+            "CARTO_NO_ATMOSPHERE",
+            "CARTO_NO_HAZE",
+            "CARTO_NO_ENVMAP",
+            "CARTO_NO_OCEAN",
+            "CARTO_NO_SHADOWS",
+            "CARTO_NO_SPACE_RAYMARCH",
+            "CARTO_FPS_LOG",
+            "CARTO_FPS_CAP",
+            "CARTO_QUALITY",
+            "CARTO_RENDER_SCALE",
+            "CARTO_TILE_URL",
+            "CARTO_PLACE",
+        ] {
+            let mapped = android_property_name(name);
+            assert!(mapped.len() <= 31, "{mapped} is {} bytes", mapped.len());
+        }
     }
 }
 

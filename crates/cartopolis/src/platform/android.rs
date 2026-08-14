@@ -125,6 +125,79 @@ fn activity() -> JObject<'static> {
 }
 
 // ---------------------------------------------------------------------------
+// The environment Android does not have
+// ---------------------------------------------------------------------------
+
+/// The system-property stand-in for an environment variable.
+///
+/// **This is the one seam in this file that is not JNI**, and that is why it
+/// works: `__system_property_get` is bare libc, so it needs no framework class,
+/// no `Runnable` and therefore no `classes.dex`. It is the whole trick.
+///
+/// The problem it solves is that every debugging switch in this tree —
+/// `CARTO_NO_ATMOSPHERE`, `CARTO_FPS_LOG`, `CARTO_QUALITY`, `CARTO_NO_HAZE`,
+/// `CARTO_NO_ENVMAP`, `CARTO_NO_OCEAN` — reaches the process through
+/// [`crate::env_flag`] / [`crate::env_value`], i.e. `std::env::var_os`. A
+/// NativeActivity is started by the zygote and inherits `app_process`'s
+/// environment, which contains none of these and which nothing on the device can
+/// add to: there is no shell to export from. So on the single platform whose
+/// renderer most needs bisecting, every switch built for bisecting a renderer was
+/// silently dead. `quality.rs` already documents this for one field and solves it
+/// by moving the value into `Budget`; that does not generalise to a flag whose
+/// entire purpose is to be flipped between two runs.
+///
+/// The mapping is mechanical: `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`.
+/// The `debug.` prefix is load-bearing rather than decorative — it is the one
+/// property namespace `adb shell setprop` may write **on a production build**
+/// without root, which is what makes this reachable on the user's own phone
+/// rather than only on an eng build:
+///
+/// ```text
+/// adb shell setprop debug.carto.no_atmosphere 1
+/// adb shell am force-stop eu.garage44.cartopolis   # properties are read at startup
+/// ```
+///
+/// Two limits inherited from the platform, neither of which binds us today.
+/// A value is capped at `PROP_VALUE_MAX` = 92 bytes including the NUL, so the
+/// buffer below is exactly that and a longer value is truncated by the platform
+/// rather than by us. And a *name* was capped at 31 bytes before Android 8; we
+/// target 28+, where it is not, but the longest name this produces
+/// (`debug.carto.no_atmosphere`, 25) fits the old limit anyway.
+///
+/// Returns `None` for an unset property, matching `env::var`'s shape. An empty
+/// value is `Some("")` here and is filtered by the callers, exactly as the
+/// environment path filters an empty variable.
+pub fn system_property(name: &str) -> Option<String> {
+    // `PROP_VALUE_MAX`, from `<sys/system_properties.h>`. Not re-exported by the
+    // `libc` crate, so it is written out with its source rather than guessed.
+    const PROP_VALUE_MAX: usize = 92;
+
+    // The name mapping lives in `lib.rs`, not here, for one reason: it is the half
+    // that can be wrong *silently* — a name that maps to a property nobody sets
+    // reads as "off" forever — and a test beside it here would never run. This
+    // module is `cfg(target_os = "android")`, no CI lane builds Android tests, and
+    // `cargo check` does not compile `cfg(test)` at all (CLAUDE.md). So the pure
+    // half sits on the native lane where `cargo test -p cartopolis` reaches it.
+    let key = crate::android_property_name(name);
+    let key = std::ffi::CString::new(key).ok()?;
+    let mut buf = [0u8; PROP_VALUE_MAX];
+    // SAFETY: `key` is a NUL-terminated C string that outlives the call, and `buf`
+    // is `PROP_VALUE_MAX` bytes — the maximum the platform will write, including
+    // its NUL. The return is the value's length, or 0 when the property is unset.
+    let len = unsafe {
+        libc::__system_property_get(key.as_ptr(), buf.as_mut_ptr().cast::<libc::c_char>())
+    };
+    if len <= 0 {
+        return None;
+    }
+    // Trust the length rather than scanning for the NUL, but clamp it: a negative
+    // value is already handled above, and a length past the buffer would be a
+    // platform bug we should not turn into a panic.
+    let len = (len as usize).min(PROP_VALUE_MAX);
+    Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+// ---------------------------------------------------------------------------
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------
 
