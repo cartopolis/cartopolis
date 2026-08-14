@@ -384,9 +384,39 @@ jobs:
       # does not use: `wasm_thread` opens `feature(stdarch_wasm_atomic_wait)` under
       # `cfg_attr(target_arch = "wasm32")`, so on stable this dies with E0554 in a
       # dependency before reaching our code, and no flag disables it.
+      # `RUSTFLAGS` is not a detail here, it is *which web build this checks*.
+      #
+      # Without it, cargo falls back to `.cargo/config.toml`'s per-target entry
+      # (`+simd128` and the web-sys cfg, no threads) — and `deploy-web.yml` sets
+      # `RUSTFLAGS` explicitly, which **replaces** that entry rather than adding
+      # to it, with `+atomics,+bulk-memory,+mutable-globals`. So the two differed
+      # in the one dimension that changes which code exists: threads. This lane
+      # was compiling a single-threaded wasm nobody ships, and passing on it.
+      #
+      # That is not hypothetical. `platform::watchdog` landed with three
+      # native-only items that are live under threads and dead without them, so
+      # `-D unused` failed *here* while the shipped build was fine — a red gate
+      # accusing the wrong build, which is how a real failure gets fixed by
+      # silencing it. Matching the deploy is the fix in both directions: what
+      # this rejects is now something that would really break the site, and what
+      # it accepts is something that was really built.
+      #
+      # This is deliberately *not* full parity with the deploy, and the gap is
+      # the cheap half. `CARGO_UNSTABLE_BUILD_STD` and the eight `link-arg`s
+      # there are about linking a shared-memory module — and a `check` does not
+      # link, so they would buy this lane nothing but a from-source std build.
+      # What is copied is exactly the part that decides *which of our code
+      # exists*: `target-feature` reaches our crates as cfg, and that is the
+      # dimension the two lanes disagreed on.
+      #
+      # Keep these two in step. They are two copies of one configuration, and the
+      # only thing holding them together is this comment.
       - name: Check the web target compiles
         env:
           RUSTUP_TOOLCHAIN: nightly
+          RUSTFLAGS: >-
+            --cfg=web_sys_unstable_apis
+            -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --locked -p cartopolis --no-default-features --target wasm32-unknown-unknown

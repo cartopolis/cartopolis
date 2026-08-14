@@ -96,6 +96,31 @@
 //! in the graph the two fields are equal (`prepare_view_uniforms` copies one from
 //! the other), so it is correct either way, and it is the field that stays correct
 //! if an upscaler ever does arrive.
+//!
+//! ## Light clustering was checked, and is fine
+//!
+//! Worth writing down because the shape of it looks exactly like a bug and the
+//! obvious "fix" would be one. `clustered_forward.wgsl` bins a fragment with
+//! `floor((frag_coord - view.viewport.xy) * lights.cluster_factors.xy)`, and the
+//! cluster *grid* is sized in the main world from `Camera::physical_viewport_size`
+//! — which this module deliberately never touches. Two viewports, one scaled and
+//! one not, on either side of one calculation.
+//!
+//! It still lines up, because `cluster_factors` is not built from the main-world
+//! camera. `bevy_pbr::render::light` computes it as
+//! `clusters.dimensions / extracted_view.viewport`, in the **render** world, from
+//! the same `ExtractedView` this module rewrites — so the factor is normalised
+//! against the reduced framebuffer that `frag_coord` is in, and every fragment
+//! lands in the cluster it should. What the unscaled main-world size does affect
+//! is `dimensions_for_screen_size`, i.e. how many clusters get allocated: a grid
+//! chosen for the full-resolution screen, which is slightly finer than the
+//! reduced one needs. That is a rounding-scale cost, not a mapping error.
+//!
+//! So: do not "fix" this by scaling the main-world `Camera`. That would shrink
+//! the viewport `world_to_viewport`, egui layout and the touch mapping all read
+//! (the thing this module's whole design avoids), to correct an error that is not
+//! occurring. Verified against bevy_pbr 0.19; re-check it on a Bevy bump, since
+//! it rests on which world `cluster_factors` is computed in.
 
 use std::ops::RangeInclusive;
 

@@ -833,9 +833,19 @@ pub fn camera_mode_toggle(
     mut camera_state: ResMut<CameraState>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
-    // Follow (Avatar) is avatar-only — it exists only in the logged-in viewer that
-    // has a local avatar. In anonymous mode there is none, so never offer or remain
-    // in Follow; Fly and Earth stay available.
+    // Follow needs an avatar to follow, so it is dropped when there is none.
+    //
+    // In practice there always is: `main::spawn_avatar_entity` spawns it at
+    // `Startup` unconditionally and nothing despawns it, in any run mode —
+    // offline included, where the avatar is most of what there is
+    // (`session::SessionKind::Offline`: "The map, and you"). This comment used to
+    // say the opposite, that Follow "exists only in the logged-in viewer" and
+    // that "in anonymous mode there is none", which described an arrangement that
+    // predates the offline viewer and would send the next reader looking for a
+    // spawn condition that is not there.
+    //
+    // The guard stays: it costs an `is_empty` and it is the only thing standing
+    // between a future conditional spawn and a camera following nothing.
     let has_avatar = !avatars.is_empty();
     if !has_avatar && camera_state.mode == CameraMode::Avatar {
         camera_state.mode = CameraMode::Free;
