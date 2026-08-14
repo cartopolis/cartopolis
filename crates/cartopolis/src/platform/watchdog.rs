@@ -138,7 +138,10 @@ fn watch() {
 /// exit between the directory listing and the open, and a dump that panics on the
 /// race would take the app down at the one moment it is trying to explain
 /// something.
-#[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(target_os = "linux", target_os = "android")
+))]
 fn dump_threads() {
     let Ok(entries) = std::fs::read_dir("/proc/self/task") else {
         tracing::error!("no /proc/self/task — cannot say what the threads are doing");
@@ -174,7 +177,10 @@ fn dump_threads() {
     tracing::error!("no per-thread introspection on this platform");
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", target_os = "android")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(target_os = "linux", target_os = "android")
+))]
 fn read_trimmed(path: std::path::PathBuf) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
