@@ -470,7 +470,31 @@ impl Plugin for EguiPlugin {
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        render_app.init_resource::<EguiWgpuRenderer>();
+        {
+            use bevy::render::GpuResourceAppExt as _;
+            render_app.init_resource::<EguiWgpuRenderer>();
+            // …and again on **every** device, which is what makes the renderer
+            // survive `handle_render_error`'s `DeviceLost` recovery. `RenderStartup`
+            // re-runs each time a `RenderDevice` is acquired, and this drops the
+            // cached `egui_wgpu::Renderer` with it.
+            //
+            // Without this the recovery is worse than the loss. The cached renderer
+            // holds pipelines, bind groups and textures belonging to the dead
+            // device, and nothing in `egui_pass` would notice: `needs_recreate`
+            // compares the *format* and the sample count, both unchanged by a
+            // device loss, and `uploaded_gen` still matches the current output, so
+            // not even a re-upload is attempted. egui would then draw dead handles
+            // at the new device and raise `Validation` — which `handle_render_error`
+            // halts on, by design, because validation errors recur. So a transient,
+            // recoverable `DeviceLost` would be converted into the terminal halt the
+            // recovery exists to avoid. The `init_resource` above stays because the
+            // resource must exist before the first `RenderStartup` runs.
+            render_app.init_gpu_resource::<EguiWgpuRenderer>();
+        }
+        // The wasm arm is a non-send resource (WebGL handles are main-thread-only)
+        // and cannot go through `init_gpu_resource`, which requires `Resource`. It
+        // is also the one target where bevy's device-loss recovery does not apply:
+        // a lost WebGL context is delivered to the page, not to wgpu's callback.
         #[cfg(target_arch = "wasm32")]
         render_app.world_mut().init_non_send::<EguiWgpuRenderer>();
         render_app.add_systems(
