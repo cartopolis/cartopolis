@@ -1347,6 +1347,16 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
     egui::Window::new(&view.name)
         .id(egui::Id::new(("place_photo", view.place)))
         .open(&mut open)
+        // Above the place pins, which are `Order::Middle` `Area`s — the same layer
+        // an `egui::Window` defaults to, resolved *within* a layer by creation
+        // order. `render_place_pins` is ordered last in the frame (it has to be:
+        // it culls against the leftover map area, which is only correct after
+        // every panel has taken its width), so it is created after this window and
+        // was winning the hit test over it. A pin is small, so the symptom is not
+        // "the viewer is dead" but the worse kind — a photo that ignores taps in
+        // one spot, which happens to be the middle of the screen, which is where
+        // the pin of the place you just photographed sits.
+        .order(egui::Order::Foreground)
         .collapsible(false)
         .resizable(true)
         .max_size(viewport * 0.9)
