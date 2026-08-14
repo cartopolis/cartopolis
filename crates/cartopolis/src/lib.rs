@@ -30,6 +30,35 @@ mod solo;
 mod systems;
 mod utils;
 
+/// Where the asset store is, as `AssetPlugin::file_path` wants it — and the
+/// **only** place in this crate that gets to answer that question.
+///
+/// It is a constant rather than a local in `run()` because it was a local, and
+/// a second answer grew beside it: `avatar::avatar_asset_exists` probed a
+/// *relative* `assets/` to decide whether a character glTF was present. The two
+/// agreed only when the process happened to be started from the repo root, and
+/// the places they disagreed are the places the avatar was invisible — Android
+/// (a NativeActivity starts at `/`, and its assets are inside the APK, reachable
+/// only through the framework `AssetManager`), the web (no filesystem at all),
+/// and any native binary launched from another directory. Anything that needs
+/// to know where an asset lives asks here.
+///
+/// The value per platform:
+/// - **Desktop** — a repo-relative path resolved from the manifest dir.
+/// - **Wasm** — `CARGO_MANIFEST_DIR` is a build-machine absolute path and
+///   meaningless in a browser; Bevy fetches assets over HTTP relative to the
+///   served page, so a plain `assets` URL is right (ADR-033).
+/// - **Android** — `AssetSource::get_default_reader` returns
+///   `AndroidAssetReader`, which ignores this string entirely and reads every
+///   path straight out of the APK's `assets/`. So the value is unused — but a
+///   build-machine absolute path left here would still be *read* by anyone
+///   debugging where an asset came from, and point them at a directory that does
+///   not exist on the device. `assets` says the true thing.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+pub(crate) const ASSET_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(crate) const ASSET_ROOT: &str = "assets";
+
 use big_space::prelude::{BigSpace, GridCell};
 use components::Avatar;
 use resources::{
@@ -757,23 +786,7 @@ fn run_client() {
     if !scripted {
         systems::desktop_integration::ensure_desktop_integration();
     }
-    // Desktop: assets live at a repo-relative path resolved from the manifest dir.
-    // Wasm: `CARGO_MANIFEST_DIR` is a build-machine absolute path meaningless in a
-    // browser — Bevy fetches assets over HTTP relative to the served page, so use a
-    // plain `assets` URL (trunk copies `assets/` alongside the wasm). ADR-033.
-    // Android: `AssetSource::get_default_reader` returns `AndroidAssetReader`, which
-    // ignores this string entirely and reads every path straight out of the APK's
-    // `assets/` via the framework `AssetManager`. So the value is unused — but a
-    // build-machine absolute path left here would still be *read* by anyone
-    // debugging where an asset came from, and point them at a directory that does
-    // not exist on the device. `assets` says the true thing.
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    let asset_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets")
-        .display()
-        .to_string();
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-    let asset_dir = "assets".to_string();
+    let asset_dir = ASSET_ROOT.to_string();
     let plugins = DefaultPlugins.build();
     // Desktop uses the custom `tracing_subscriber` above, so drop Bevy's LogPlugin
     // there. On wasm keep it: it wires logs + panics to the browser console and does

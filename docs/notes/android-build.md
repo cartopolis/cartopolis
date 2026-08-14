@@ -64,9 +64,12 @@ What that leaves on the phone is a *map viewer*, and it is worth being concrete
 about the edges, because two of them are not Android's doing. The camera works
 fully — pan, pinch, twist, tilt are all `TouchGestures`, and taps reach picking,
 the gizmo and the pins through the emulated mouse (`docs/notes/touch-input.md`).
-**The avatar cannot walk**: movement is WASD and there is no touch equivalent
-anywhere in the tree, so this is the same gap the web build has on a phone rather
-than something the port introduced. **Typing works, but only through a keyboard
+**The avatar is visible** — it was not, on any Android build before 2026-08-14,
+and the cause was neither the port's nor the renderer's: see the `std::fs` entry
+under "Things that are not obvious" below. **The avatar cannot walk**: movement is
+WASD and there is no touch equivalent anywhere in the tree, so this is the same
+gap the web build has on a phone rather than something the port introduced.
+**Typing works, but only through a keyboard
 we draw ourselves** — the platform IME is unreachable under NativeActivity (the
 trade above), so `systems::onscreen_keyboard` stands in for it everywhere:
 address bar, geo search, bookmark rename, chat, the AI panel.
@@ -154,6 +157,42 @@ the `file_path` string is dead — kept honest (`"assets"`, not a build-machine
 absolute path) only so nobody debugging an asset load is sent to a directory that
 does not exist on the phone. There is also no `AssetWriter`: assets are read-only
 on the device, which is fine, since nothing writes them.
+
+**…and the corollary is why the avatar was invisible on every Android build ever
+made (found 2026-08-14).** Because the asset root is not a directory the process
+can stat, **any code that checks for an asset with `std::fs` is asking the wrong
+question**, and it does not get an error for its trouble — it gets `false`.
+`avatar::avatar_asset_exists` did exactly that, and worse, against a *relative*
+`"assets"` rather than the root `AssetPlugin` was given. The two agreed only when
+the binary was launched from the repo root. Where they did not, all twenty
+catalog styles read as absent, `resolve_avatar_holders` returned an empty vec,
+and `spawn_avatar` marked the avatar loaded and spawned no meshes: the entity was
+still there, so Follow mode was offered, the camera followed it and it walked —
+it was simply never drawn. That was the permanent state of **Android**, of the
+**web build** (`std::fs` on wasm32 is stubbed, so `is_file()` is always false),
+and of any desktop binary started from another directory. Three things to take
+from it:
+
+- The asset root now has exactly one answer, `cartopolis::ASSET_ROOT`, and the
+  probe returns `true` on both bundle platforms by construction. A missing file
+  there is the asset server's to report, and it names the file — which a boolean
+  never could.
+- **The failure was silent by design, at every layer.** An empty holder list is a
+  legal appearance, `AvatarModelLoaded` is inserted regardless so nothing retries,
+  and every user-visible consequence (Follow offered, camera follows, walking
+  works, collision blocks) is driven by the `Avatar` entity rather than by its
+  model. Nothing was ever going to log. It does now, at the one place that can
+  tell the two apart: `avatar: model requested` carries `holders`, and `holders=0`
+  is the bug.
+- **It was reachable from a unit test the whole time**, and the test now exists
+  (`the_default_appearance_resolves_to_a_model`). Cargo runs a test binary from
+  the *package* directory, so the old relative probe failed there too — the same
+  bug the phone had, on the machine that could see it, going unasserted.
+
+The general shape is the one this section opens with, and this is its sharpest
+instance: a seam written as *native vs wasm* where the real distinction is
+**filesystem vs bundle**, and Android is on the bundle side while answering
+"native" to every `cfg` in the tree.
 
 **The cache root has to be asked for.** A NativeActivity process starts with its
 working directory at `/`, and there is no checkout to walk up to, so both of

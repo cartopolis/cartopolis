@@ -253,11 +253,45 @@ fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
         .collect()
 }
 
-/// Whether an avatar glTF is present under the runtime `assets/` root. Lets the
-/// client skip a missing character (rather than spawning an invisible avatar) when the
-/// (large, gitignored) Quaternius packs haven't been fetched.
+/// Whether an avatar glTF is present under the runtime asset root.
+///
+/// **Only a filesystem can be asked this, and two platforms haven't got one.**
+/// This probe used to be `Path::new("assets").join(…).is_file()` — a *relative*
+/// path, i.e. one resolved against the process's working directory rather than
+/// against [`crate::ASSET_ROOT`], which is what actually feeds `AssetPlugin`.
+/// The two coincide only when the binary is launched from the repo root, and
+/// where they didn't the answer was `false` for every one of the twenty catalog
+/// entries: `style_file` returned `None` for each slot, `resolve_avatar_holders`
+/// returned an empty vec, and `spawn_avatar` inserted `AvatarModelLoaded` (so it
+/// never retried) and spawned no meshes at all. The avatar entity still existed,
+/// so Follow mode was offered, the camera followed it and it walked — it was
+/// simply not drawn. That was the state of **Android** (a NativeActivity process
+/// starts at `/`, and its assets live inside the APK where only the framework
+/// `AssetManager` can reach them) and of the **web build** (`std::fs` on wasm32
+/// is stubbed, so `is_file()` is unconditionally false), for as long as either
+/// has existed.
+///
+/// So on those two the answer is `true` by construction: the asset store is a
+/// bundle, its contents are fixed at package time, and a path in it is not a
+/// path a process can stat. If a file really is missing there, the asset server
+/// says so — which is the right instrument, because it names the file.
+///
+/// What this does **not** catch, despite reading as if it might: a clone without
+/// Git LFS. A pointer file is a file, so `is_file()` is happily true and the
+/// glTF parse is what fails. LFS is guarded by `.gitattributes` and by every
+/// workflow's `lfs: true`, not here.
 fn avatar_asset_exists(scene_rel: &str) -> bool {
-    std::path::Path::new("assets").join(scene_rel).is_file()
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        let _ = scene_rel;
+        true
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        std::path::Path::new(crate::ASSET_ROOT)
+            .join(scene_rel)
+            .is_file()
+    }
 }
 
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
@@ -507,6 +541,19 @@ pub fn spawn_avatar(
         if let Some(a) = entity_anims {
             commands.entity(entity).insert(a);
         }
+        // One line per avatar spawn, and it is an instrument rather than chatter:
+        // `holders = 0` is precisely the state this commit fixes, and it is
+        // otherwise indistinguishable from a healthy spawn — nothing downstream
+        // complains about an avatar with no meshes. The character glTFs are also
+        // the only thing this client loads through the asset server on Android,
+        // where the log is the only instrument there is
+        // (`docs/notes/android-build.md`).
+        tracing::info!(
+            local = is_local,
+            holders = holders.len(),
+            scenes = ?holders.iter().map(|h| h.scene).collect::<Vec<_>>(),
+            "avatar: model requested"
+        );
     }
 }
 
@@ -602,14 +649,22 @@ pub fn play_avatar_animation_when_ready(
     // gun. Unslotted meshes fall through and stay. `iter_descendants` walks the
     // whole subtree; hiding a node hides its mesh children too.
     let mask = masks.get(root).copied().unwrap_or(SlotMask::ALL);
+    let (mut nodes, mut hidden) = (0usize, 0usize);
     for child in children.iter_descendants(root) {
+        nodes += 1;
         let Ok(name) = names.get(child) else { continue };
         let hide = is_weapon_node(name.as_str())
             || classify_slot(name.as_str()).is_some_and(|s| !mask.shows(s));
         if hide {
+            hidden += 1;
             commands.entity(child).insert(Visibility::Hidden);
         }
     }
+    // The other half of the bracket opened in `spawn_avatar` — see its note. This
+    // one also carries the mask's own arithmetic, because "the scene loaded and
+    // every node in it was masked away" and "the scene never loaded" look
+    // identical from the outside and are nothing alike.
+    tracing::info!(nodes, hidden, "avatar: model ready");
 
     // Case 1 — the character glTF embeds its own clips, so Bevy already spawned an
     // `AnimationPlayer`. Play the idle clip on it directly.
@@ -1484,6 +1539,39 @@ mod tests {
                 let yaw = yaw_from_dir(wish).expect("a key is held");
                 assert_dir(facing(yaw), want);
             }
+        }
+    }
+
+    /// The default appearance resolves to a model that will actually be spawned.
+    ///
+    /// This is the test that was missing, and it fails against the old
+    /// `avatar_asset_exists` *in this very binary*: cargo runs a test from the
+    /// package directory, so the old relative `assets/` probe resolved to
+    /// `crates/cartopolis/assets`, found nothing, and every style read as absent
+    /// — exactly the state Android and the web build were in permanently. An
+    /// empty holder list is not a loud failure anywhere: `spawn_avatar` marks the
+    /// avatar loaded and spawns no meshes, so the entity is present, followable
+    /// and walkable, and invisible.
+    #[test]
+    fn the_default_appearance_resolves_to_a_model() {
+        let holders = resolve_avatar_holders(&AvatarAppearance::default());
+        assert!(
+            !holders.is_empty(),
+            "the default avatar resolved to no model at all — it would spawn invisible"
+        );
+    }
+
+    /// Every style in the chooser is backed by a file that resolves, so picking
+    /// one cannot silently leave the avatar with nothing to draw.
+    #[test]
+    fn every_catalog_style_resolves() {
+        for c in CHARACTER_STYLES {
+            assert!(
+                style_file(c.sex, c.label).is_some(),
+                "catalog style {:?} ({}) does not resolve — the chooser would offer an empty avatar",
+                c.label,
+                c.file
+            );
         }
     }
 
