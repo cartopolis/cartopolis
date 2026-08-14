@@ -1852,6 +1852,7 @@ fn run_client() {
                 handle_back_gesture,
                 apply_screen_wakelock,
                 sync_guidance_pref,
+                systems::render_scale::apply_preferred_render_scale,
             ),
         )
         // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
