@@ -155,19 +155,40 @@ gesture arms were deleted rather than left as a second way to do it.
 
 ## The on-screen controls, and why Earth is the touch camera
 
-`systems::map_osd` draws what a finger has no key for. Two clusters, chosen by
+`systems::map_osd` draws what a finger has no key for. Three clusters, chosen by
 camera mode:
 
 - **Fly** — a proportional thumbstick bottom-left (forward/back + strafe) and a
   climb/descend pair on the right. Left thumb translates, right thumb changes
   height, which is where the thumbs already are on a two-handed phone.
-- **Earth / Follow** — a zoom pair on the right. Redundant with the pinch by
+- **Follow** — the same stick, walking the *avatar*, plus the zoom pair.
+- **Earth** — a zoom pair on the right. Redundant with the pinch by
   design: one-handed is how a phone is held most of the time.
 
 The stick's *magnitude* is kept, which is the whole difference from the gestures
 it replaced: `camera_controls` derives a throttle from `move_direction.length()`
 (saturating at 1, so a key is exactly as fast as it always was) and a half-push
 is half the speed.
+
+**Follow's stick is a throttle over the gait ladder, and it has to be.** The
+keyboard picks a rung with a held modifier — Alt strolls, Shift sprints, neither
+jogs (`systems::locomotion`) — and a touchscreen has neither key, so a phone that
+mapped the stick onto one gait would have exactly one speed. The push carries the
+choice instead: `locomotion::speed_for_throttle` slides between the same
+`WALK_SPEED` and `SPRINT_SPEED` the keys reach, so neither input can ask for a
+speed the other cannot. Two consequences worth knowing. The stick's deadzone
+means the *slowest* push is already a brisk walk rather than a creep — that is
+the deadzone's cost, paid where it is visible rather than hidden in a curve. And
+the keys win outright when both are live (a desktop touchscreen has both), or a
+thumb resting inside the deadzone would quietly cap a sprint.
+
+The wish goes into `OsdInput::walk`, which `avatar::handle_avatar_movement`
+consumes — *not* `camera_controls`. That is what makes it work identically in
+every run mode: `handle_avatar_movement` owns the one speed ramp, and
+`network::send_network_intent` consumes its output rather than re-deriving one,
+so the phone's throttle reaches an authoritative sim through the same path a key
+does. It also means this is the one control read a frame late: `render_map_osd`
+runs after the driver tick, which runs after the avatar has moved.
 
 Three things it inherits from elsewhere in this tree rather than inventing:
 it draws floating `Area`s and is therefore out of the Phase 7b chain, like the
@@ -181,8 +202,11 @@ curve, the altitude-scaled speed and the ground clamp.
 about 1.5 km over the map anchor. Follow at eye level is the right camera for
 the thing you do second and the wrong one for the thing everyone does first,
 which is work out where they are — and on a touchscreen it was worse than wrong,
-because Follow's only verbs are an orbit drag and a zoom, so the opening screen
-offered no way to travel and no horizon to travel by.
+because Follow's only verbs were an orbit drag and a zoom, so the opening screen
+offered no way to travel and no horizon to travel by. Follow can be walked now,
+which removes half of that argument; the other half — that "where am I" is the
+first question and a chest-height camera cannot answer it — is untouched, so the
+opening view stays Earth.
 
 ## `Button::small()` is not a smaller button
 

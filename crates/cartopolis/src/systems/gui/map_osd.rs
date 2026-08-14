@@ -24,9 +24,17 @@
 //!
 //!   - **Fly** — a thumbstick bottom-left (forward/back + strafe, *proportional*
 //!     so a small push is a slow drift) and a climb/descend pair on the right.
-//!   - **Earth / Follow** — a zoom pair on the right. The pinch already zooms
-//!     these two; the buttons exist for the one-handed case, which is most of
-//!     the time a phone is held at all.
+//!   - **Follow** — the same thumbstick, walking the *avatar* rather than the
+//!     camera, and a zoom pair on the right. Until this existed the avatar was
+//!     the one thing on a phone that could not be moved at all: its whole
+//!     vocabulary was WASD, which is six keys a touchscreen does not have and
+//!     no gesture ever stood in for (`docs/notes/android-build.md` recorded it
+//!     as a standing gap). The push is the throttle — see
+//!     `locomotion::speed_for_throttle` — because there is no Shift or Alt to
+//!     hold, so the gait ladder the keyboard climbs in rungs is a slide here.
+//!   - **Earth** — a zoom pair on the right. The pinch already zooms it; the
+//!     buttons exist for the one-handed case, which is most of the time a phone
+//!     is held at all.
 //!
 //! ## Two rules it obeys, both learned elsewhere in this tree
 //!
@@ -86,6 +94,18 @@ pub struct OsdInput {
     pub fly: Vec2,
     /// Fly vertical wish: `+1` climbing, `-1` descending.
     pub climb: f32,
+    /// Follow-mode travel wish, in the same camera-horizontal frame as [`fly`]
+    /// and read by `avatar::handle_avatar_movement` (which then owns it in every
+    /// run mode — the online path consumes the same ramp through
+    /// `network::send_network_intent`).
+    ///
+    /// A separate field rather than a second meaning for `fly`: the two have
+    /// different consumers — one moves the camera, one moves a body the server
+    /// may be authoritative for — and one field with a mode-dependent meaning is
+    /// how a future edit gets to fly the camera by walking.
+    ///
+    /// [`fly`]: Self::fly
+    pub walk: Vec2,
 }
 
 /// Which cluster the current camera wants.
@@ -93,8 +113,10 @@ pub struct OsdInput {
 pub enum Cluster {
     /// Fly: the thumbstick and the climb/descend pair.
     Fly,
-    /// Earth and Follow: the zoom pair. Both already pinch-zoom; this is the
-    /// one-handed path to the same thing.
+    /// Follow: the thumbstick (walking the avatar) and the zoom pair.
+    Walk,
+    /// Earth: the zoom pair. It already pinch-zooms; this is the one-handed path
+    /// to the same thing.
     Zoom,
 }
 
@@ -124,7 +146,8 @@ pub fn cluster_for(
     }
     Some(match mode {
         CameraMode::Free => Cluster::Fly,
-        CameraMode::Orbit | CameraMode::Avatar => Cluster::Zoom,
+        CameraMode::Avatar => Cluster::Walk,
+        CameraMode::Orbit => Cluster::Zoom,
     })
 }
 
@@ -154,6 +177,15 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 /// on in the frame it was made rather than the next one — at 20 fps on a phone
 /// one frame of input lag on a *held* control is visible as the camera lagging
 /// the thumb.
+///
+/// [`OsdInput::walk`] is the exception, and structurally so: it is read by
+/// `avatar::handle_avatar_movement`, which this system transitively runs *after*
+/// (`drive_driver_mode` measures the drive after the avatar has moved, and this
+/// runs after that, because whether driver mode owns the screen decides whether
+/// anything is drawn at all). So the walk wish reaches the avatar on the
+/// following frame. That is a constant ~50 ms on a phone, not jitter, and it is
+/// the cheaper half of the trade: inverting either link would move the camera or
+/// the driver tick to answer a translation control that cannot feel it.
 pub fn render_map_osd(
     mut egui: ResMut<EguiManager>,
     mut osd: ResMut<OsdInput>,
@@ -182,6 +214,10 @@ pub fn render_map_osd(
             Cluster::Fly => {
                 next.climb = vertical_pair(ctx, "osd_climb", Mark::Up, Mark::Down);
                 next.fly = thumbstick(ctx);
+            }
+            Cluster::Walk => {
+                next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
+                next.walk = thumbstick(ctx);
             }
             Cluster::Zoom => {
                 next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
@@ -336,12 +372,14 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
 mod tests {
     use super::*;
 
+    /// The two modes that translate something get the stick; Earth, whose whole
+    /// vocabulary is drag/pinch/twist, gets the zoom pair alone.
     #[test]
-    fn fly_gets_the_stick_and_the_others_get_zoom() {
+    fn the_translating_modes_get_the_stick() {
         let touch = |mode| cluster_for(mode, false, false, false, true);
         assert_eq!(touch(CameraMode::Free), Some(Cluster::Fly));
+        assert_eq!(touch(CameraMode::Avatar), Some(Cluster::Walk));
         assert_eq!(touch(CameraMode::Orbit), Some(Cluster::Zoom));
-        assert_eq!(touch(CameraMode::Avatar), Some(Cluster::Zoom));
     }
 
     /// A mouse-driven run gets no on-screen controls at all: they would be

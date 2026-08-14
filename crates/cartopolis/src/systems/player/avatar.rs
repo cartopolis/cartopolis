@@ -393,6 +393,33 @@ pub(crate) fn wish_dir_camera_relative(
     }
 }
 
+/// The travel direction and the throttle it carries, from the keys and the
+/// on-screen thumbstick (`systems::map_osd`) together.
+///
+/// Returns a unit direction on XZ — or zero for "no input" — and a `0..=1`
+/// throttle. The keys are all-or-nothing and answer `1.0`; the stick is
+/// proportional and answers its own push, which is the whole difference between
+/// a stick and four keys (`locomotion::speed_for_throttle` turns it into a
+/// speed).
+///
+/// **Keys win when both are live**, and the tie is not hypothetical: a desktop
+/// touchscreen draws the stick *and* has a keyboard. Blending them would let a
+/// thumb resting inside the deadzone quietly cap a sprint — the same failure
+/// `Gait::from_modifiers` avoids by letting Sprint win its tie.
+pub(crate) fn travel_wish(azimuth: f32, keys: Vec3, stick: Vec2) -> (Vec3, f32) {
+    if keys.length_squared() > 1e-8 {
+        return (keys, 1.0);
+    }
+    let push = stick.length();
+    if push <= 1e-4 {
+        return (Vec3::ZERO, 0.0);
+    }
+    let unit = stick / push;
+    // Same frame as the keys: `y` is forward (up-screen), `x` strafes right.
+    let dir = camera_plane_forward(azimuth) * unit.y + camera_plane_right(azimuth) * unit.x;
+    (dir.normalize_or_zero(), push.min(1.0))
+}
+
 /// World yaw that turns the model's forward (+Z) onto `dir` on the XZ plane, or
 /// `None` for no input — an avatar standing still keeps the heading it has rather
 /// than spinning with the camera.
@@ -1241,6 +1268,11 @@ pub fn smooth_online_avatar_display(
 pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    // The on-screen thumbstick — a finger's WASD. Written by
+    // `map_osd::render_map_osd`, which runs *after* this system (see its doc), so
+    // this is last frame's push: a constant frame of latency on a held
+    // translation control, not jitter.
+    osd: Res<crate::systems::map_osd::OsdInput>,
     time: Res<Time>,
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -1337,8 +1369,20 @@ pub fn handle_avatar_movement(
     }
 
     let az = camera_state.azimuth;
-    let wish = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    // The keys and the on-screen stick are one input with two shapes: a
+    // direction, and how hard it is being asked for. The keyboard's throttle is
+    // always 1 and its *rung* comes from the modifiers; the stick has no
+    // modifiers to hold, so its push carries the choice instead
+    // (`locomotion::speed_for_throttle`).
+    let keys = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    let from_keys = keys.length_squared() > 1e-8;
+    let (wish, throttle) = travel_wish(az, keys, osd.walk);
     let has_input = wish.length_squared() > 1e-8;
+    let walk_speed = if from_keys {
+        avatar_state.gait.speed()
+    } else {
+        locomotion::speed_for_throttle(throttle)
+    };
     avatar_state.is_walking = has_input;
     // Face the way we're travelling, in both run modes. The wish direction — not
     // the camera — is the target, so A/D turn the avatar a quarter turn and S
@@ -1373,11 +1417,7 @@ pub fn handle_avatar_movement(
         )
     } else {
         (
-            if has_input {
-                avatar_state.gait.speed()
-            } else {
-                0.0
-            },
+            if has_input { walk_speed } else { 0.0 },
             locomotion::GROUND_ACCEL,
             locomotion::GROUND_DECEL,
         )
@@ -1573,6 +1613,53 @@ mod tests {
                 c.file
             );
         }
+    }
+
+    /// The stick steers in the same camera frame the keys do, at any azimuth:
+    /// pushing it up-screen is W, pushing it right is D. If these two ever
+    /// disagreed the avatar would walk one way on a desk and another on a phone.
+    #[test]
+    fn the_stick_steers_in_the_same_frame_as_the_keys() {
+        for &az in &[0.0, 0.7, 2.5, -1.9] {
+            let f = camera_plane_forward(az);
+            let r = camera_plane_right(az);
+            for (stick, want) in [
+                (Vec2::new(0.0, 1.0), f),
+                (Vec2::new(0.0, -1.0), -f),
+                (Vec2::new(1.0, 0.0), r),
+                (Vec2::new(-1.0, 0.0), -r),
+                (Vec2::new(1.0, 1.0).normalize(), (f + r).normalize()),
+            ] {
+                let (dir, _) = travel_wish(az, Vec3::ZERO, stick);
+                assert_dir(dir, want);
+                // …and the avatar turns onto it, exactly as a key makes it.
+                assert_dir(facing(yaw_from_dir(dir).expect("pushed")), want);
+            }
+        }
+    }
+
+    /// The push is a throttle, not a switch: the direction is unit whatever the
+    /// deflection, and the magnitude comes back beside it for the speed model.
+    #[test]
+    fn the_stick_reports_direction_and_push_separately() {
+        let (dir, push) = travel_wish(0.0, Vec3::ZERO, Vec2::new(0.0, 0.4));
+        assert!((dir.length() - 1.0).abs() < 1e-4, "unit direction: {dir:?}");
+        assert!((push - 0.4).abs() < 1e-5, "push carried through: {push}");
+        // Clamped to the disc even if a caller hands over a longer vector.
+        let (_, over) = travel_wish(0.0, Vec3::ZERO, Vec2::new(3.0, 4.0));
+        assert!((over - 1.0).abs() < 1e-5, "{over}");
+        // A resting thumb is no input at all — not a slow crawl.
+        assert_eq!(travel_wish(0.0, Vec3::ZERO, Vec2::ZERO), (Vec3::ZERO, 0.0));
+    }
+
+    /// Keys beat the stick, and at full throttle, so a thumb resting inside the
+    /// deadzone (or an OSD frame that arrived late) cannot cap a sprint.
+    #[test]
+    fn the_keys_win_the_tie_at_full_throttle() {
+        let keys = wish_dir_camera_relative(0.0, true, false, false, false);
+        let (dir, push) = travel_wish(0.0, keys, Vec2::new(0.9, -0.9));
+        assert_dir(dir, keys);
+        assert_eq!(push, 1.0);
     }
 
     /// The turn eases rather than snapping, but it always converges — and settles

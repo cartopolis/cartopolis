@@ -66,13 +66,15 @@ fully — pan, pinch, twist, tilt are all `TouchGestures`, and taps reach pickin
 the gizmo and the pins through the emulated mouse (`docs/notes/touch-input.md`).
 **The avatar is visible** — it was not, on any Android build before 2026-08-14,
 and the cause was neither the port's nor the renderer's: see the `std::fs` entry
-under "Things that are not obvious" below. **The avatar cannot walk**: movement is
-WASD and there is no touch equivalent anywhere in the tree, so this is the same
-gap the web build has on a phone rather than something the port introduced.
-**Typing works, but only through a keyboard
-we draw ourselves** — the platform IME is unreachable under NativeActivity (the
-trade above), so `systems::onscreen_keyboard` stands in for it everywhere:
-address bar, geo search, bookmark rename, chat, the AI panel.
+under "Things that are not obvious" below. **The avatar walks from the on-screen
+stick** (2026-08-14). Until then it could not be moved at all: movement was WASD
+and no gesture anywhere in the tree stood in for it, which was the same gap the
+web build had on a phone rather than something the port introduced — and it is
+fixed in the same place for both, in `systems::map_osd`'s Follow cluster.
+**Typing works, but only through a keyboard we draw ourselves** — the platform
+IME is unreachable under NativeActivity (the trade above), so
+`systems::onscreen_keyboard` stands in for it everywhere: address bar, geo
+search, bookmark rename, chat, the AI panel.
 
 `lib.rs`'s `parse_cli()` hands Android a fixed `--offline`. It cannot call
 `Cli::parse()`: a NativeActivity process is started by the zygote, so the `argv`
