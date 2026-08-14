@@ -2097,6 +2097,7 @@ pub fn render_data_layers_panel(
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
+    let mut reset_layers = false;
     let mut close = false;
     let mut about = false;
     let compact = egui.compact();
@@ -2109,7 +2110,21 @@ pub fn render_data_layers_panel(
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = crate::resources::RightPanel::Layers;
-        close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+        // **The one dead end in the client.** These ~13 toggles persist to
+        // `user.json`, so a map switched off by mistake — or by curiosity —
+        // stays off across restarts, and the only way back was to remember
+        // which of them had been on. Reset is a header action rather than a
+        // footer button because the footer is inside the scroll area, i.e. past
+        // the ~900 pt of rows that a blanked map gives you no reason to scroll
+        // through.
+        close = crate::systems::theme::panel_header_with(ui, panel.icons(), panel.label(), |ui| {
+            if crate::systems::theme::action_button(ui, "Reset")
+                .on_hover_text("Switch every layer back to how it ships")
+                .clicked()
+            {
+                reset_layers = true;
+            }
+        });
         // The body is ~35 rows and ~900 pt tall against a 609 pt phone viewport
         // (411 dp at `ui_scale` 1.5), and a `Panel` does not scroll on its own —
         // it simply clips. Everything from "Height" down, including the only
@@ -2238,6 +2253,28 @@ pub fn render_data_layers_panel(
                 }
             });
     });
+    if reset_layers {
+        // Field by field rather than `*dl = DataLayers::default()`: this resource
+        // also holds the live cell streams, the marker index and the open POI
+        // card, and replacing it wholesale would tear down streaming work that
+        // has nothing to do with which layers are ticked. The toggles are the
+        // only thing a reset is about.
+        let fresh = DataLayers::default();
+        for (layer, def) in dl.layers.iter_mut().zip(fresh.layers.iter()) {
+            layer.enabled = def.enabled;
+        }
+        dl.buildings_enabled = fresh.buildings_enabled;
+        dl.tdbag_enabled = fresh.tdbag_enabled;
+        dl.osm_buildings_enabled = fresh.osm_buildings_enabled;
+        dl.map_enabled = fresh.map_enabled;
+        dl.vehicles_enabled = fresh.vehicles_enabled;
+        dl.trees_enabled = fresh.trees_enabled;
+        dl.furniture_enabled = fresh.furniture_enabled;
+        dl.roads_textured = fresh.roads_textured;
+        dl.water_shading = fresh.water_shading;
+        dl.street_labels = fresh.street_labels;
+        dl.height_enabled = fresh.height_enabled;
+    }
     if about {
         *right_panel = crate::resources::RightPanel::About;
     } else if close || (open_before && !open) {

@@ -226,6 +226,91 @@ fn section(ui: &mut egui::Ui, title: &str) {
     theme::section(ui, title);
 }
 
+/// Every binding the client has, grouped by the mode it works in.
+///
+/// **There was no control legend anywhere in the application.** WASD, Space, F,
+/// E, Q/R, Shift, Alt, 1–6, Tab, Delete and three Ctrl chords existed only in
+/// `CLAUDE.md` and in commit bodies; the sole in-UI hint was the assistant's
+/// "(Ctrl+Enter)" and the `[E]` on the interact prompt. So a desktop user who
+/// never guessed a key saw an avatar they could not move, and the keys that are
+/// *silently* mode-dependent — Space and the emotes do nothing outside Follow, E
+/// means "interact" in Follow and "up" in Fly — had nothing to explain
+/// themselves.
+///
+/// It lives in About because About already exists, is already in the main menu,
+/// already scrolls, and ships on the phone — where the gesture half of this
+/// table is the part that matters. A new panel for it would be a new thing to
+/// discover, which is the problem rather than the fix.
+///
+/// Grouped **by mode** deliberately: a flat list would say `E` twice and be
+/// wrong both times.
+fn controls_section(ui: &mut egui::Ui) {
+    theme::section(ui, "Controls");
+    let row = |ui: &mut egui::Ui, keys: &str, what: &str| {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [86.0, ui.spacing().interact_size.y],
+                egui::Label::new(
+                    egui::RichText::new(keys)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::ACCENT_TEXT),
+                )
+                .wrap(),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(what)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT),
+                )
+                .wrap(),
+            );
+        });
+    };
+
+    theme::note(ui, "Walking (the default camera)");
+    row(
+        ui,
+        "W A S D",
+        "Walk — the avatar turns to face where it goes",
+    );
+    row(ui, "Shift / Alt", "Sprint / stroll");
+    row(ui, "Space", "Jump; hold to take off");
+    row(ui, "F", "Toggle flight");
+    row(ui, "R / Q", "Climb / descend, while flying");
+    row(ui, "E", "Interact with whatever is in front of you");
+    row(
+        ui,
+        "1 – 6",
+        "Emotes: wave, interact, roll, punch, kick, faint",
+    );
+
+    ui.add_space(4.0);
+    theme::note(ui, "Flying");
+    row(ui, "W A S D", "Move the camera");
+    row(ui, "E / Q", "Up / down");
+    row(ui, "Shift", "Move faster");
+
+    ui.add_space(4.0);
+    theme::note(ui, "Anywhere");
+    row(ui, "Tab", "Next camera: walk → fly → whole Earth");
+    row(ui, "Esc", "Close whatever is open, innermost first");
+    row(ui, "Ctrl+L", "Search");
+    row(ui, "Ctrl+Shift+A", "AI assistant");
+    row(ui, "Ctrl+Shift+D", "Developer tools");
+
+    ui.add_space(4.0);
+    theme::note(ui, "Touch");
+    row(ui, "Drag", "Turn the view");
+    row(ui, "Pinch", "Zoom");
+    row(
+        ui,
+        "Two fingers",
+        "Drag to pan, twist to rotate, up/down to tilt",
+    );
+    row(ui, "Long press", "The same menu a right-click opens");
+}
+
 /// A line under a control saying what it does *not* do yet. Deliberately plain
 /// text in the dim tone rather than a warning colour: it is a fact about the
 /// build, not something the user did wrong.
@@ -644,6 +729,8 @@ pub fn render_about_panel(
                         .color(theme::TEXT_DIM),
                     );
                     ui.add_space(6.0);
+                    ui.separator();
+                    controls_section(ui);
                     ui.separator();
 
                     for record in notices.iter() {
