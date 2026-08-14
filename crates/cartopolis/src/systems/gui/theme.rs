@@ -26,7 +26,7 @@
 //!     double the vertical rhythm and give buttons a real hit area.
 //!
 //! Contrast was checked against the surface each colour actually lands on:
-//! [`TEXT`] is 11.9:1 on [`SURFACE`], [`TEXT_DIM`] 6.9:1, [`ACCENT_TEXT`] 6.9:1.
+//! [`TEXT`] is 11.8:1 on [`SURFACE`], [`TEXT_DIM`] 8.2:1, [`ACCENT_TEXT`] 7.8:1.
 //! Plain [`ACCENT`] is 4.9:1 — comfortable for a fill, a rule or a focus ring, and
 //! it clears 4.5:1 for text too, but the lighter [`ACCENT_TEXT`] is kept for small
 //! type so links and values hold their margin as the accent moves. Anything
@@ -66,17 +66,43 @@ pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0x26, 0x38, 0x42);
 /// The ramp's top. Hover, and open menus over a panel.
 pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x32, 0x48, 0x55);
 /// Hairlines: separators, widget frames, indent guides.
-pub const LINE: Color32 = Color32::from_rgb(0x3C, 0x55, 0x64);
+///
+/// **Lightened from `#3C5564` on 2026-08-14, and the reason is WCAG 1.4.11.**
+/// A button at rest is [`SURFACE_RAISED`] on [`SURFACE`], which is 1.24:1 of
+/// fill difference — so the hairline is the *only* channel that says "this is a
+/// control", and at 1.92:1 it was not saying it. What had been carrying the UI
+/// is that a panel is dense enough for position to do the work; a control on its
+/// own had no boundary. `#647F8F` measures 3.57:1 on [`SURFACE`] and clears the
+/// 3:1 floor for a UI component boundary.
+pub const LINE: Color32 = Color32::from_rgb(0x64, 0x7F, 0x8F);
 
 /// The accent. Focus rings, hover outlines, sliders, the pressed state — the one
 /// saturated colour in the UI, so it always means "this is the live thing".
 /// Prefer [`ACCENT_TEXT`] for small type (this is 4.9:1 on [`SURFACE`]).
 pub const ACCENT: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
-/// The accent, lifted — the outline around an active widget's orange fill.
+/// The accent, lifted. The text cursor, and anything that needs the accent to
+/// read as *brighter* against a dark surface.
+///
+/// Not the ring around an accent fill — that is [`ACCENT_RING`], and the split
+/// exists because this colour measures only 2.74:1 against [`ACCENT_MUTED`].
 pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0x84, 0x3C);
-/// The accent as *text*, lightened to hold its margin on [`SURFACE`] (6.9:1).
+
+/// The ring around an *accent-filled* widget: the pressed button, the focused
+/// control, a dock disc whose panel is open, the panel header's medallion.
+///
+/// [`ACCENT_BRIGHT`] used to do this job and was 2.74:1 against the
+/// [`ACCENT_MUTED`] it encloses — under the 3:1 a UI boundary needs, and a 1 pt
+/// ring reads as a ring precisely by its *inner* edge. This is 4.20:1 there and
+/// still 9.47:1 against [`SURFACE`] outside it, so the ring separates from both
+/// sides. It is the same hue family, lifted and desaturated just far enough.
+pub const ACCENT_RING: Color32 = Color32::from_rgb(0xFF, 0xC0, 0x8F);
+/// The accent as *text*, lightened to hold its margin on [`SURFACE`] (7.8:1).
 /// Links, speaker names, emphasised values.
-pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xFF, 0x94, 0x57);
+///
+/// Lifted from `#FF9457` on 2026-08-14: that value was measured against
+/// [`SURFACE`] alone and fell to 4.39:1 on [`SURFACE_HOVER`] — which is where an
+/// *open* menu button sits **at rest**, not a state a mouse passes through.
+pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xFF, 0xA4, 0x70);
 /// The accent mixed roughly halfway into the panel: a selected row that still
 /// reads as orange while leaving [`CREAM`] on it at 5.8:1.
 pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0x96, 0x44, 0x1C);
@@ -89,18 +115,42 @@ pub const CREAM: Color32 = Color32::from_rgb(0xF2, 0xEF, 0xEA);
 /// Body text.
 pub const TEXT: Color32 = Color32::from_rgb(0xDF, 0xE5, 0xE7);
 /// Secondary text: units, coordinates, hints. Also `index.html`'s muted tone,
-/// so the pre-wasm splash and this one agree.
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xA8, 0xB1, 0xBA);
+/// so the pre-wasm splash and this one agree — **change it in both**.
+///
+/// Lifted from `#A8B1BA` on 2026-08-14. The old value was measured on
+/// [`SURFACE`] (6.9:1) and nowhere else, and this is the colour egui hands to
+/// `weak_text_color`, i.e. the one that lands on every surface in the ramp: it
+/// measured 4.40:1 on [`SURFACE_HOVER`] and 4.12:1 inside an [`OVERLAY`] box
+/// over bright map imagery. Both now clear 4.5.
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0xB8, 0xC0, 0xC7);
 /// Warnings — a desaturated gold that reads as caution without competing with
 /// [`AMBER`] or [`ACCENT`].
 pub const WARN: Color32 = Color32::from_rgb(0xD8, 0xC0, 0x7A);
 /// Errors. Warm rather than pure red so it belongs to the same palette.
-pub const ERROR: Color32 = Color32::from_rgb(0xE8, 0x8B, 0x7D);
+///
+/// Lifted from `#E88B7D` on 2026-08-14, for the reason [`TEXT_DIM`] was: an
+/// error is the one string that must be readable wherever it lands, and it
+/// measured 3.84:1 on [`SURFACE_HOVER`] and 3.59:1 in an [`OVERLAY`] box over a
+/// bright basemap.
+pub const ERROR: Color32 = Color32::from_rgb(0xF2, 0xA2, 0x96);
 
-/// [`SURFACE`] at ~84% — the fill of the boxes that float *over* the map
-/// (status HUD, stats, bottom bar). Translucent so the world still moves behind
-/// them; opaque enough that the text on top never has to fight a bright tile.
-pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x1B, 0x28, 0x30, 214);
+/// [`SURFACE`] at ~92% — the fill of the boxes that float *over* the map
+/// (status HUD, stats, driver chrome). Translucent so the world still moves
+/// behind them; opaque enough that the text on top never has to fight a bright
+/// tile.
+///
+/// **It was 84% (alpha 214), and "opaque enough" was not true at that value.**
+/// The failure is invisible from this file, because the background is not in it:
+/// the imagery is a map, not a satellite photo — "pale beige land on near-white
+/// paper" — so the composite an overlay actually lands on is `SURFACE` over
+/// *white*, three steps lighter than the panel these colours were picked
+/// against. At 214 that composite is `#404B51`, on which [`TEXT_DIM`] measured
+/// 4.12:1, [`ACCENT_TEXT`] 4.11:1 and [`ERROR`] 3.59:1 — i.e. the HUD's
+/// coordinates, every value in an overlay and the driver's failure text were all
+/// under 4.5 over ordinary daytime map. At 235 they are 5.5 / 5.4 / 4.8, and the
+/// box is still visibly translucent. The same alpha [`LABEL_CHIP`] already uses,
+/// for the same reason.
+pub const OVERLAY: Color32 = Color32::from_rgba_unmultiplied_const(0x1B, 0x28, 0x30, 235);
 /// The hairline around an [`OVERLAY`] box: enough to separate it from the map,
 /// not enough to draw a frame around the view.
 pub const OVERLAY_LINE: Color32 = Color32::from_rgba_unmultiplied_const(0x3C, 0x55, 0x64, 190);
@@ -339,7 +389,11 @@ fn widgets() -> Widgets {
         //   - `bg_fill` is the *graphical* fill (slider grab, checkbox box), so it
         //     gets the full fox;
         //   - `weak_bg_fill` is the button fill, which carries a label, so it gets
-        //     the muted one — [`CREAM`] is 5.7:1 on that and only 3.1:1 on [`ACCENT`].
+        //     the muted one — [`CREAM`] is 5.8:1 on that and only **2.7:1** on
+        //     [`ACCENT`]. (This comment used to say 3.1, which is *white*'s ratio
+        //     on the accent, not cream's; cream is not merely worse than the note
+        //     claimed, it is under the 3:1 floor the note argues from. Pinned now
+        //     by `the_documented_ratios_are_the_measured_ones`.)
         // `fg_stroke` must stay bright regardless: egui derives
         // `Visuals::strong_text_color` from it, so *every* `RichText::strong()` in
         // the app is this colour. Setting it to ink to suit an orange fill turned
@@ -347,7 +401,7 @@ fn widgets() -> Widgets {
         active: WidgetVisuals {
             weak_bg_fill: ACCENT_MUTED,
             expansion: 1.0,
-            ..visuals(ACCENT, ACCENT_BRIGHT, CREAM)
+            ..visuals(ACCENT, ACCENT_RING, CREAM)
         },
         // An open menu button keeps the hover surface but drops the orange ring —
         // the popup below it is the thing to look at now.
@@ -375,6 +429,13 @@ pub fn visuals() -> egui::Visuals {
     // Pin the weak/disabled tone instead of letting egui derive it by alpha —
     // this is the same grey-blue the two splashes use, and it is measured.
     v.weak_text_color = Some(TEXT_DIM);
+    // Disabled is the one tone egui still derived by alpha, and its default 0.5
+    // put a disabled label at 4.1:1 on the panel — *dimmer than `TEXT_DIM` hint
+    // text at 6.9:1*, so the sentence explaining why a control was unavailable
+    // was brighter than the control. It also took a button's frame to 1.1:1
+    // against the panel, i.e. gone. 0.65 keeps disabled clearly below the live
+    // state without making it a colour nobody can find.
+    v.disabled_alpha = 0.65;
 
     v.panel_fill = SURFACE;
     v.window_fill = SURFACE;
@@ -783,6 +844,40 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
 /// the touch tier, so it needs no finger-sized variant.
 pub const ROUND_BUTTON_SIZE: f32 = 40.0;
 
+/// Width of the ring that says "the keyboard is here".
+const FOCUS_RING: f32 = 2.0;
+
+/// Draw the keyboard-focus ring *outside* `rect`, if this widget has focus.
+///
+/// The four controls in this file that are painted rather than assembled from
+/// `Button` all branched on `hovered()` and `is_pointer_button_down_on()` only —
+/// and they allocate with `Sense::click()`, which is focusable, so Tab lands on
+/// them and nothing shows it. A keyboard user tabbing the dock had no way to
+/// know where they were.
+///
+/// [`CREAM`] rather than the accent, because this ring has to be visible on
+/// every surface these four can sit on: 13.2:1 on [`SURFACE`], 8.4:1 on
+/// [`SURFACE_HOVER`], 5.8:1 on the [`ACCENT_MUTED`] of a selected disc. An
+/// accent ring is the *pressed* state and would say the wrong thing anyway.
+fn paint_focus_ring(ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, round: bool) {
+    if !resp.has_focus() {
+        return;
+    }
+    let p = ui.painter();
+    let stroke = Stroke::new(FOCUS_RING, CREAM);
+    let ring = rect.expand(FOCUS_RING);
+    if round {
+        p.circle_stroke(ring.center(), ring.width() * 0.5, stroke);
+    } else {
+        p.rect_stroke(
+            ring,
+            CornerRadius::same(RADIUS_SM),
+            stroke,
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
 /// A round icon button that floats over the map: the dock along the bottom, and
 /// anything else that wants the compass's visual language.
 ///
@@ -801,7 +896,7 @@ pub fn round_button(
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = resp.hovered();
     let (fill, ring, ink) = match (selected, hovered) {
-        (true, _) => (ACCENT_MUTED, ACCENT_BRIGHT, CREAM),
+        (true, _) => (ACCENT_MUTED, ACCENT_RING, CREAM),
         (false, true) => (SURFACE_HOVER, ACCENT, CREAM),
         (false, false) => (OVERLAY, OVERLAY_LINE, TEXT),
     };
@@ -817,6 +912,7 @@ pub fn round_button(
             icon_size: 17.0,
         },
     );
+    paint_focus_ring(ui, &resp, rect, true);
     resp.on_hover_text(tooltip)
 }
 
@@ -836,6 +932,7 @@ pub fn mark_button(ui: &mut egui::Ui, tooltip: &str, selected: bool) -> egui::Re
         ui.painter()
             .circle_stroke(rect.center(), radius - 1.0, Stroke::new(2.0, ring));
     }
+    paint_focus_ring(ui, &resp, rect, true);
     resp.on_hover_text(tooltip)
 }
 
@@ -960,7 +1057,7 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (ACCENT_MUTED, ACCENT_BRIGHT, CREAM)
+        (ACCENT_MUTED, ACCENT_RING, CREAM)
     } else if resp.hovered() {
         (SURFACE_HOVER, ACCENT, CREAM)
     } else {
@@ -981,6 +1078,7 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let stroke = Stroke::new(1.6, ink);
     p.line_segment([x.left_top(), x.right_bottom()], stroke);
     p.line_segment([x.right_top(), x.left_bottom()], stroke);
+    paint_focus_ring(ui, &resp, rect, false);
     resp.on_hover_text("Close")
 }
 
@@ -1004,7 +1102,7 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     let side = close_button_size();
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (ACCENT_MUTED, ACCENT_BRIGHT, CREAM)
+        (ACCENT_MUTED, ACCENT_RING, CREAM)
     } else if resp.hovered() {
         (SURFACE_HOVER, ACCENT, CREAM)
     } else {
@@ -1026,7 +1124,11 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     for step in [-1.0, 0.0, 1.0] {
         p.circle_filled(rect.center() + egui::vec2(0.0, step * gap), radius, ink);
     }
-    resp
+    paint_focus_ring(ui, &resp, rect, false);
+    // Baked in rather than left to the caller for the reason `close_button`'s is:
+    // this control's whole job is to advertise that a row has actions, and its
+    // one caller supplying the words is not the same as the control carrying them.
+    resp.on_hover_text("Actions")
 }
 
 /// The header every right-hand panel opens with: a raised band carrying the
@@ -1104,7 +1206,7 @@ pub fn panel_header_with(
             HEADER_MEDALLION * 0.5 - 0.5,
             Disc {
                 fill: ACCENT_MUTED,
-                ring: ACCENT_BRIGHT,
+                ring: ACCENT_RING,
                 ink: CREAM,
                 icon,
                 icon_size: 13.0,
@@ -1199,6 +1301,215 @@ mod tests {
             let got = contrast(fg, bg);
             assert!(got >= min, "{name}: contrast {got:.2} < {min}");
         }
+    }
+
+    /// Composite a translucent [`Color32`] over an opaque one.
+    ///
+    /// `Color32` stores its channels **premultiplied** (`from_rgba_unmultiplied`
+    /// multiplies on construction), so the source term is already `rgb·a` and
+    /// this is plain `src + dst·(1 − a)`.
+    fn over(fg: Color32, bg: Color32) -> Color32 {
+        let inv = 1.0 - f32::from(fg.a()) / 255.0;
+        let ch = |f: u8, b: u8| (f32::from(f) + f32::from(b) * inv).round() as u8;
+        Color32::from_rgb(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
+    }
+
+    /// The basemap under every overlay box, at its brightest.
+    ///
+    /// Not an adversarial extreme — it is *the* case. The imagery is a map, not
+    /// a satellite photo: pale beige land on near-white paper, which is the same
+    /// fact `globe::GLOBE_DEEP_ALBEDO` exists to deal with. A translucent chrome
+    /// box tested only against the panel fill it borrows its colour from has
+    /// been tested against the one background it never has.
+    const BRIGHT_MAP: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    /// The same at the other end — a night city, a dark aerial, deep water.
+    const DARK_MAP: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
+
+    /// **Every surface a colour can land on, not just the panel fill.**
+    ///
+    /// [`text_colours_clear_their_backgrounds`] pins eleven pairs and almost
+    /// every one is against [`SURFACE`] or an accent fill. That is the easy half
+    /// of the palette: the ramp exists precisely so things *can* sit on
+    /// [`SURFACE_RAISED`] and [`SURFACE_HOVER`], and egui puts them there without
+    /// being asked — `weak_text_color` inside an `open` menu is [`TEXT_DIM`] on
+    /// [`SURFACE_HOVER`], which measured 4.40 and is the failure this test was
+    /// written for.
+    ///
+    /// [`OVERLAY`] is the other half, and it was worse, because its background is
+    /// not in this file at all.
+    #[test]
+    fn text_clears_every_surface_it_can_land_on() {
+        let over_bright = over(OVERLAY, BRIGHT_MAP);
+        let over_dark = over(OVERLAY, DARK_MAP);
+        let chip_bright = over(LABEL_CHIP, BRIGHT_MAP);
+        let halo_bright = over(LABEL_HALO, BRIGHT_MAP);
+        let halo_dark = over(LABEL_HALO, DARK_MAP);
+
+        for (name, fg, bg, min) in [
+            // The raised step: buttons at rest, striped rows, the header band.
+            ("dim on raised", TEXT_DIM, SURFACE_RAISED, 4.5),
+            ("heading on raised", CREAM, SURFACE_RAISED, 4.5),
+            ("link on raised", ACCENT_TEXT, SURFACE_RAISED, 4.5),
+            ("warning on raised", WARN, SURFACE_RAISED, 4.5),
+            ("error on raised", ERROR, SURFACE_RAISED, 4.5),
+            ("held-state amber on raised", AMBER, SURFACE_RAISED, 4.5),
+            // The hover step — and an *open* menu button sits here at rest, so
+            // this is not a transient a mouse merely passes through.
+            ("body on hover", TEXT, SURFACE_HOVER, 4.5),
+            ("dim on hover", TEXT_DIM, SURFACE_HOVER, 4.5),
+            ("heading on hover", CREAM, SURFACE_HOVER, 4.5),
+            ("link on hover", ACCENT_TEXT, SURFACE_HOVER, 4.5),
+            ("error on hover", ERROR, SURFACE_HOVER, 4.5),
+            // Text-edit wells and code blocks.
+            ("body on ink", TEXT, INK, 4.5),
+            ("dim on ink", TEXT_DIM, INK, 4.5),
+            ("link on ink", ACCENT_TEXT, INK, 4.5),
+            // The boxes over the map, against the map — both ends of it.
+            ("body on an overlay over bright map", TEXT, over_bright, 4.5),
+            (
+                "dim on an overlay over bright map",
+                TEXT_DIM,
+                over_bright,
+                4.5,
+            ),
+            (
+                "heading on an overlay over bright map",
+                CREAM,
+                over_bright,
+                4.5,
+            ),
+            (
+                "link on an overlay over bright map",
+                ACCENT_TEXT,
+                over_bright,
+                4.5,
+            ),
+            (
+                "warning on an overlay over bright map",
+                WARN,
+                over_bright,
+                4.5,
+            ),
+            (
+                "error on an overlay over bright map",
+                ERROR,
+                over_bright,
+                4.5,
+            ),
+            ("body on an overlay over dark map", TEXT, over_dark, 4.5),
+            ("dim on an overlay over dark map", TEXT_DIM, over_dark, 4.5),
+            // The chip has to hold over *anything*: a few words on an arbitrary
+            // tile with no panel anywhere near them.
+            ("chip label over bright map", CREAM, chip_bright, 4.5),
+            ("chip dim over bright map", TEXT_DIM, chip_bright, 4.5),
+            // And the halo, the same promise inverted: near-black ink on
+            // near-white, over tarmac at one end and open water at the other.
+            ("street name over bright map", INK, halo_bright, 4.5),
+            ("street name over dark map", INK, halo_dark, 4.5),
+        ] {
+            let got = contrast(fg, bg);
+            assert!(got >= min, "{name}: contrast {got:.2} < {min}");
+        }
+    }
+
+    /// **A control has to be findable before its label matters**, and WCAG puts
+    /// that boundary at 3:1 (1.4.11) — the same bar as a focus ring, for the same
+    /// reason: it is the only thing saying *here is a thing you can press*.
+    ///
+    /// This is the check the palette never had and was furthest from passing. A
+    /// button at rest is [`SURFACE_RAISED`] on [`SURFACE`], which is 1.24:1 of
+    /// fill difference, framed by a [`LINE`] hairline that used to measure
+    /// 1.92:1. Neither channel identified the control; what had been carrying it
+    /// is that panels are dense enough for position to do the work.
+    ///
+    /// Two pairs are deliberately *not* asserted, and saying so is the point of
+    /// writing them down: `SURFACE_HOVER` against `SURFACE_RAISED` (1.27) is a
+    /// *change* of state rather than the identification of a control, and the
+    /// accent ring arriving with it is what carries hover; and `LINE` against
+    /// `SURFACE_HOVER` only ever appears on an `open` menu button, where the
+    /// popup below it is the thing being looked at.
+    #[test]
+    fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
+        let v = visuals();
+        for (name, got) in [
+            (
+                "a button's border on a panel",
+                contrast(v.widgets.inactive.bg_stroke.color, SURFACE),
+            ),
+            (
+                "the hover ring against the fill it encloses",
+                contrast(v.widgets.hovered.bg_stroke.color, SURFACE_HOVER),
+            ),
+            (
+                "the pressed ring against the fill it encloses",
+                contrast(
+                    v.widgets.active.bg_stroke.color,
+                    v.widgets.active.weak_bg_fill,
+                ),
+            ),
+            (
+                "the pressed ring against the panel outside it",
+                contrast(v.widgets.active.bg_stroke.color, SURFACE),
+            ),
+            (
+                "the keyboard-focus ring on a selected disc",
+                contrast(CREAM, ACCENT_MUTED),
+            ),
+            (
+                "the keyboard-focus ring on an overlay disc",
+                contrast(CREAM, over(OVERLAY, BRIGHT_MAP)),
+            ),
+        ] {
+            assert!(got >= 3.0, "{name}: contrast {got:.2} < 3.0");
+        }
+    }
+
+    /// The palette's own prose is a *claim*, and prose does not recompute.
+    ///
+    /// Three numbers in this file were wrong when this was written, all about
+    /// the same pair and none checkable by reading: [`INK`] on [`ACCENT`] was
+    /// written as 5.9 in the module note and 6.0 further down, and the
+    /// alternative it is compared against — "only 3.1:1" — is
+    /// [`Color32::WHITE`]'s ratio, not [`CREAM`]'s. Cream on the full accent is
+    /// **2.67**, which is not merely worse than the note said, it is under the
+    /// 3:1 floor the note argues *from*. Pin the ratios the file commits to in
+    /// writing, so editing a colour and not the paragraph beside it is a failing
+    /// test rather than a stale comment.
+    #[test]
+    fn the_documented_ratios_are_the_measured_ones() {
+        for (claim, fg, bg, stated) in [
+            // 11.8461 — the module note said "11.9:1" from the day it was
+            // written, which is this rounded the wrong way. Nobody could have
+            // caught that by reading it; that is the point of the test.
+            ("TEXT on SURFACE", TEXT, SURFACE, 11.8),
+            ("INK on ACCENT", INK, ACCENT, 5.9),
+            ("CREAM on ACCENT_MUTED", CREAM, ACCENT_MUTED, 5.8),
+            (
+                "WHITE on ACCENT (the rejected pairing)",
+                Color32::WHITE,
+                ACCENT,
+                3.1,
+            ),
+        ] {
+            // Compare at the precision the prose actually claims: the docs say
+            // "11.9:1", so the test that keeps them honest is whether the
+            // measurement *rounds* to that, not whether it equals it. An
+            // absolute tolerance here would be a second, unstated claim.
+            let got = contrast(fg, bg);
+            assert!(
+                (got * 10.0).round() / 10.0 == stated,
+                "{claim}: the docs say {stated:.1}:1, the colours measure {got:.2}:1"
+            );
+        }
+        // …and the one the prose got wrong by naming the wrong colour. CREAM is
+        // not white, and on the full accent the difference is the whole argument
+        // for `active.weak_bg_fill` being ACCENT_MUTED.
+        let cream_on_accent = contrast(CREAM, ACCENT);
+        assert!(
+            cream_on_accent < 3.0,
+            "CREAM on ACCENT measures {cream_on_accent:.2} — if that is now over 3.0 the \
+             note by `active` about why buttons take ACCENT_MUTED needs rewriting"
+        );
     }
 
     /// egui derives three app-wide text colours from the widget table rather
@@ -1560,7 +1871,29 @@ mod tests {
     /// **Currently empty, and that is the goal state.** All five entries it was
     /// created with were fixed the same day it was written; the const stays so the
     /// next one has an obvious place to be recorded rather than silenced.
-    const KNOWN_TOFU: &[(&str, char, &str)] = &[];
+    const KNOWN_TOFU: &[(&str, char, &str)] = &[
+        // `TravelMode::icon`'s three codepoints are the right *intent* for a
+        // car, a bike and a walker, and none of them is in the font egui
+        // installs. They are kept in the table against a future font stack and
+        // are drawn nowhere: the Route panel's tabs render `label()` alone,
+        // because "□ Car" is worse than "Car". Excused, not fixed — if a caller
+        // ever appears, this entry is the argument it has to answer.
+        (
+            "routing.rs",
+            '🚗',
+            "TravelMode::icon — retained intent, no call site",
+        ),
+        (
+            "routing.rs",
+            '🚲',
+            "TravelMode::icon — retained intent, no call site",
+        ),
+        (
+            "routing.rs",
+            '🚶',
+            "TravelMode::icon — retained intent, no call site",
+        ),
+    ];
 
     /// Walk every `.rs` file under the crate and collect them.
     fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -1593,14 +1926,25 @@ mod tests {
     /// a guess anyone is making.
     #[test]
     fn no_painted_glyph_is_tofu() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // **Both crates that put a glyph on screen, not just this one.**
+        // `cartopolis_geo` owns two hard-coded icon tables — `PoiCategory::glyph`
+        // and `TravelMode::icon` — whose output is painted straight into the
+        // interact prompt and the route panel. Scanning only this crate's `src`
+        // let `🛍` (Shop) and `🛏` (Lodging) ship as empty boxes for as long as
+        // they existed: the rule was right and its reach stopped at a crate
+        // boundary. `cartopolis_geo` cannot depend on Bevy or egui, so it cannot
+        // host this test — which is exactly why the test has to come to it.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [manifest.join("src"), manifest.join("../geo/src")];
         let mut files = Vec::new();
-        source_files(&root, &mut files);
+        for root in &roots {
+            source_files(root, &mut files);
+        }
         assert!(
             files.len() > 20,
-            "found only {} source files under {} — the walk is broken, not the tree",
+            "found only {} source files under {:?} — the walk is broken, not the tree",
             files.len(),
-            root.display()
+            roots
         );
 
         let mut literals = Vec::new();
