@@ -87,6 +87,32 @@ impl Gait {
     }
 }
 
+/// Target ground speed for an analogue push — the on-screen thumbstick
+/// (`systems::map_osd`), where `0` is at rest and `1` is full deflection.
+///
+/// **The same ladder as [`Gait`], climbed continuously instead of in rungs.** A
+/// touchscreen has no Shift and no Alt to hold, so a phone that mapped the stick
+/// onto a single gait would have exactly one speed; the push carries the choice
+/// instead, which is what a proportional stick is *for* and the reason
+/// `map_osd`'s reading is a magnitude rather than a direction. The ends are the
+/// keyboard's own ends, so neither input can reach a speed the other cannot.
+///
+/// Note the bottom of the range is not reachable: the stick's deadzone
+/// (`map_osd::STICK_DEADZONE`, which keeps a resting thumb from walking the
+/// avatar across town) means the smallest real push already asks for a brisk
+/// walk rather than a creep. That is the deadzone's cost and it is paid here
+/// rather than hidden — a stick that started at 0.1 m/s would spend its first
+/// millimetre of travel on speeds nobody wants.
+#[must_use]
+pub fn speed_for_throttle(throttle: f32) -> f32 {
+    let t = throttle.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        0.0
+    } else {
+        WALK_SPEED + (SPRINT_SPEED - WALK_SPEED) * t
+    }
+}
+
 /// Step a speed (m/s) toward `target` for one frame at a fixed rate, using the
 /// acceleration rate when speeding up and the deceleration rate when slowing.
 /// Never overshoots, and settles exactly on the target so a cruising avatar
@@ -267,6 +293,27 @@ mod tests {
             let r = clip_speed_for(s, RUN_CLIP_SPEED);
             assert!((CLIP_SPEED_MIN..=CLIP_SPEED_MAX).contains(&r), "{s} → {r}");
         }
+    }
+
+    /// The stick spans the keyboard's own range and nothing beyond it: a phone
+    /// can reach every speed a desk can, and no speed a desk cannot.
+    #[test]
+    fn the_throttle_spans_the_gait_ladder() {
+        assert_eq!(speed_for_throttle(0.0), 0.0, "a resting thumb stands still");
+        assert!((speed_for_throttle(1.0) - SPRINT_SPEED).abs() < 1e-6);
+        // The lightest push past the deadzone is a walk, not a creep.
+        assert!(speed_for_throttle(0.001) >= WALK_SPEED);
+        // Monotone, so the avatar never slows down as the thumb pushes further.
+        let mut prev = 0.0;
+        for i in 0..=20 {
+            let s = speed_for_throttle(i as f32 / 20.0);
+            assert!(s >= prev, "push {i}/20 slowed down: {prev} → {s}");
+            prev = s;
+        }
+        // Out-of-band pushes clamp rather than outrunning the sim's cap.
+        assert_eq!(speed_for_throttle(4.0), SPRINT_SPEED);
+        assert_eq!(speed_for_throttle(-1.0), 0.0);
+        assert!(speed_for_throttle(1.0) <= MAX_SPEED);
     }
 
     /// Both modifiers held is a sprint, so a stuck Alt cannot quietly cap one.

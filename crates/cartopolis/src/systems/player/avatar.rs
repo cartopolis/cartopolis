@@ -253,11 +253,45 @@ fn resolve_avatar_holders(a: &AvatarAppearance) -> Vec<Holder> {
         .collect()
 }
 
-/// Whether an avatar glTF is present under the runtime `assets/` root. Lets the
-/// client skip a missing character (rather than spawning an invisible avatar) when the
-/// (large, gitignored) Quaternius packs haven't been fetched.
+/// Whether an avatar glTF is present under the runtime asset root.
+///
+/// **Only a filesystem can be asked this, and two platforms haven't got one.**
+/// This probe used to be `Path::new("assets").join(…).is_file()` — a *relative*
+/// path, i.e. one resolved against the process's working directory rather than
+/// against [`crate::ASSET_ROOT`], which is what actually feeds `AssetPlugin`.
+/// The two coincide only when the binary is launched from the repo root, and
+/// where they didn't the answer was `false` for every one of the twenty catalog
+/// entries: `style_file` returned `None` for each slot, `resolve_avatar_holders`
+/// returned an empty vec, and `spawn_avatar` inserted `AvatarModelLoaded` (so it
+/// never retried) and spawned no meshes at all. The avatar entity still existed,
+/// so Follow mode was offered, the camera followed it and it walked — it was
+/// simply not drawn. That was the state of **Android** (a NativeActivity process
+/// starts at `/`, and its assets live inside the APK where only the framework
+/// `AssetManager` can reach them) and of the **web build** (`std::fs` on wasm32
+/// is stubbed, so `is_file()` is unconditionally false), for as long as either
+/// has existed.
+///
+/// So on those two the answer is `true` by construction: the asset store is a
+/// bundle, its contents are fixed at package time, and a path in it is not a
+/// path a process can stat. If a file really is missing there, the asset server
+/// says so — which is the right instrument, because it names the file.
+///
+/// What this does **not** catch, despite reading as if it might: a clone without
+/// Git LFS. A pointer file is a file, so `is_file()` is happily true and the
+/// glTF parse is what fails. LFS is guarded by `.gitattributes` and by every
+/// workflow's `lfs: true`, not here.
 fn avatar_asset_exists(scene_rel: &str) -> bool {
-    std::path::Path::new("assets").join(scene_rel).is_file()
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        let _ = scene_rel;
+        true
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        std::path::Path::new(crate::ASSET_ROOT)
+            .join(scene_rel)
+            .is_file()
+    }
 }
 
 /// Online: blend visual toward authoritative sim position (see `smooth_online_avatar_display`).
@@ -357,6 +391,33 @@ pub(crate) fn wish_dir_camera_relative(
     } else {
         Vec3::ZERO
     }
+}
+
+/// The travel direction and the throttle it carries, from the keys and the
+/// on-screen thumbstick (`systems::map_osd`) together.
+///
+/// Returns a unit direction on XZ — or zero for "no input" — and a `0..=1`
+/// throttle. The keys are all-or-nothing and answer `1.0`; the stick is
+/// proportional and answers its own push, which is the whole difference between
+/// a stick and four keys (`locomotion::speed_for_throttle` turns it into a
+/// speed).
+///
+/// **Keys win when both are live**, and the tie is not hypothetical: a desktop
+/// touchscreen draws the stick *and* has a keyboard. Blending them would let a
+/// thumb resting inside the deadzone quietly cap a sprint — the same failure
+/// `Gait::from_modifiers` avoids by letting Sprint win its tie.
+pub(crate) fn travel_wish(azimuth: f32, keys: Vec3, stick: Vec2) -> (Vec3, f32) {
+    if keys.length_squared() > 1e-8 {
+        return (keys, 1.0);
+    }
+    let push = stick.length();
+    if push <= 1e-4 {
+        return (Vec3::ZERO, 0.0);
+    }
+    let unit = stick / push;
+    // Same frame as the keys: `y` is forward (up-screen), `x` strafes right.
+    let dir = camera_plane_forward(azimuth) * unit.y + camera_plane_right(azimuth) * unit.x;
+    (dir.normalize_or_zero(), push.min(1.0))
 }
 
 /// World yaw that turns the model's forward (+Z) onto `dir` on the XZ plane, or
@@ -507,6 +568,19 @@ pub fn spawn_avatar(
         if let Some(a) = entity_anims {
             commands.entity(entity).insert(a);
         }
+        // One line per avatar spawn, and it is an instrument rather than chatter:
+        // `holders = 0` is precisely the state this commit fixes, and it is
+        // otherwise indistinguishable from a healthy spawn — nothing downstream
+        // complains about an avatar with no meshes. The character glTFs are also
+        // the only thing this client loads through the asset server on Android,
+        // where the log is the only instrument there is
+        // (`docs/notes/android-build.md`).
+        tracing::info!(
+            local = is_local,
+            holders = holders.len(),
+            scenes = ?holders.iter().map(|h| h.scene).collect::<Vec<_>>(),
+            "avatar: model requested"
+        );
     }
 }
 
@@ -602,14 +676,22 @@ pub fn play_avatar_animation_when_ready(
     // gun. Unslotted meshes fall through and stay. `iter_descendants` walks the
     // whole subtree; hiding a node hides its mesh children too.
     let mask = masks.get(root).copied().unwrap_or(SlotMask::ALL);
+    let (mut nodes, mut hidden) = (0usize, 0usize);
     for child in children.iter_descendants(root) {
+        nodes += 1;
         let Ok(name) = names.get(child) else { continue };
         let hide = is_weapon_node(name.as_str())
             || classify_slot(name.as_str()).is_some_and(|s| !mask.shows(s));
         if hide {
+            hidden += 1;
             commands.entity(child).insert(Visibility::Hidden);
         }
     }
+    // The other half of the bracket opened in `spawn_avatar` — see its note. This
+    // one also carries the mask's own arithmetic, because "the scene loaded and
+    // every node in it was masked away" and "the scene never loaded" look
+    // identical from the outside and are nothing alike.
+    tracing::info!(nodes, hidden, "avatar: model ready");
 
     // Case 1 — the character glTF embeds its own clips, so Bevy already spawned an
     // `AnimationPlayer`. Play the idle clip on it directly.
@@ -1186,6 +1268,11 @@ pub fn smooth_online_avatar_display(
 pub fn handle_avatar_movement(
     online: Option<Res<crate::resources::OnlineSession>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    // The on-screen thumbstick — a finger's WASD. Written by
+    // `map_osd::render_map_osd`, which runs *after* this system (see its doc), so
+    // this is last frame's push: a constant frame of latency on a held
+    // translation control, not jitter.
+    osd: Res<crate::systems::map_osd::OsdInput>,
     time: Res<Time>,
     mut avatar_query: Query<(&mut Transform, &big_space::prelude::GridCell), With<Avatar>>,
     mut avatar_state: ResMut<AvatarState>,
@@ -1282,8 +1369,20 @@ pub fn handle_avatar_movement(
     }
 
     let az = camera_state.azimuth;
-    let wish = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    // The keys and the on-screen stick are one input with two shapes: a
+    // direction, and how hard it is being asked for. The keyboard's throttle is
+    // always 1 and its *rung* comes from the modifiers; the stick has no
+    // modifiers to hold, so its push carries the choice instead
+    // (`locomotion::speed_for_throttle`).
+    let keys = wish_dir_camera_relative(az, move_forward, move_backward, move_left, move_right);
+    let from_keys = keys.length_squared() > 1e-8;
+    let (wish, throttle) = travel_wish(az, keys, osd.walk);
     let has_input = wish.length_squared() > 1e-8;
+    let walk_speed = if from_keys {
+        avatar_state.gait.speed()
+    } else {
+        locomotion::speed_for_throttle(throttle)
+    };
     avatar_state.is_walking = has_input;
     // Face the way we're travelling, in both run modes. The wish direction — not
     // the camera — is the target, so A/D turn the avatar a quarter turn and S
@@ -1318,11 +1417,7 @@ pub fn handle_avatar_movement(
         )
     } else {
         (
-            if has_input {
-                avatar_state.gait.speed()
-            } else {
-                0.0
-            },
+            if has_input { walk_speed } else { 0.0 },
             locomotion::GROUND_ACCEL,
             locomotion::GROUND_DECEL,
         )
@@ -1485,6 +1580,86 @@ mod tests {
                 assert_dir(facing(yaw), want);
             }
         }
+    }
+
+    /// The default appearance resolves to a model that will actually be spawned.
+    ///
+    /// This is the test that was missing, and it fails against the old
+    /// `avatar_asset_exists` *in this very binary*: cargo runs a test from the
+    /// package directory, so the old relative `assets/` probe resolved to
+    /// `crates/cartopolis/assets`, found nothing, and every style read as absent
+    /// — exactly the state Android and the web build were in permanently. An
+    /// empty holder list is not a loud failure anywhere: `spawn_avatar` marks the
+    /// avatar loaded and spawns no meshes, so the entity is present, followable
+    /// and walkable, and invisible.
+    #[test]
+    fn the_default_appearance_resolves_to_a_model() {
+        let holders = resolve_avatar_holders(&AvatarAppearance::default());
+        assert!(
+            !holders.is_empty(),
+            "the default avatar resolved to no model at all — it would spawn invisible"
+        );
+    }
+
+    /// Every style in the chooser is backed by a file that resolves, so picking
+    /// one cannot silently leave the avatar with nothing to draw.
+    #[test]
+    fn every_catalog_style_resolves() {
+        for c in CHARACTER_STYLES {
+            assert!(
+                style_file(c.sex, c.label).is_some(),
+                "catalog style {:?} ({}) does not resolve — the chooser would offer an empty avatar",
+                c.label,
+                c.file
+            );
+        }
+    }
+
+    /// The stick steers in the same camera frame the keys do, at any azimuth:
+    /// pushing it up-screen is W, pushing it right is D. If these two ever
+    /// disagreed the avatar would walk one way on a desk and another on a phone.
+    #[test]
+    fn the_stick_steers_in_the_same_frame_as_the_keys() {
+        for &az in &[0.0, 0.7, 2.5, -1.9] {
+            let f = camera_plane_forward(az);
+            let r = camera_plane_right(az);
+            for (stick, want) in [
+                (Vec2::new(0.0, 1.0), f),
+                (Vec2::new(0.0, -1.0), -f),
+                (Vec2::new(1.0, 0.0), r),
+                (Vec2::new(-1.0, 0.0), -r),
+                (Vec2::new(1.0, 1.0).normalize(), (f + r).normalize()),
+            ] {
+                let (dir, _) = travel_wish(az, Vec3::ZERO, stick);
+                assert_dir(dir, want);
+                // …and the avatar turns onto it, exactly as a key makes it.
+                assert_dir(facing(yaw_from_dir(dir).expect("pushed")), want);
+            }
+        }
+    }
+
+    /// The push is a throttle, not a switch: the direction is unit whatever the
+    /// deflection, and the magnitude comes back beside it for the speed model.
+    #[test]
+    fn the_stick_reports_direction_and_push_separately() {
+        let (dir, push) = travel_wish(0.0, Vec3::ZERO, Vec2::new(0.0, 0.4));
+        assert!((dir.length() - 1.0).abs() < 1e-4, "unit direction: {dir:?}");
+        assert!((push - 0.4).abs() < 1e-5, "push carried through: {push}");
+        // Clamped to the disc even if a caller hands over a longer vector.
+        let (_, over) = travel_wish(0.0, Vec3::ZERO, Vec2::new(3.0, 4.0));
+        assert!((over - 1.0).abs() < 1e-5, "{over}");
+        // A resting thumb is no input at all — not a slow crawl.
+        assert_eq!(travel_wish(0.0, Vec3::ZERO, Vec2::ZERO), (Vec3::ZERO, 0.0));
+    }
+
+    /// Keys beat the stick, and at full throttle, so a thumb resting inside the
+    /// deadzone (or an OSD frame that arrived late) cannot cap a sprint.
+    #[test]
+    fn the_keys_win_the_tie_at_full_throttle() {
+        let keys = wish_dir_camera_relative(0.0, true, false, false, false);
+        let (dir, push) = travel_wish(0.0, keys, Vec2::new(0.9, -0.9));
+        assert_dir(dir, keys);
+        assert_eq!(push, 1.0);
     }
 
     /// The turn eases rather than snapping, but it always converges — and settles
