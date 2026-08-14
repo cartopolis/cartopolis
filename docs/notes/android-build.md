@@ -546,3 +546,86 @@ route), and whether `getLastKnownLocation` ever moves. If the freeze persists,
 the new evidence is a *share sheet on the next launch* naming the render error —
 and if there is no share sheet and no crash report, the renderer never errored
 and the hang is above it.
+
+## The freeze, on hardware at last: it is an ANR, and it is not the permission dialog (2026-08-14, second run)
+
+Build `1.0.0+90e41a75` produced a real log, and it settles more by elimination
+than by naming a culprit. The whole sequence around the tap:
+
+```
+37.752  driver mode on gps=true
+37.752  location worker starting
+37.753  location permission already granted
+37.763  android location providers providers=["fused", "gps", "network"]
+37.767  teleported to geo target lat=53.2058 lng=6.5642
+37.767  map re-anchored / tile fetches queued queued=8 finest_zoom=17
+37.773  globe placed radius=6364465
+37.783  W System.err: java.lang.IllegalArgumentException: pending intent must be mutable
+37.783  requestLocationUpdates failed — falling back to polling the cached fix only
+        … silence …
+44.223  Signal Catcher: reacting to signal 3 / Wrote stack traces to tombstoned
+51.124  (a fresh process)
+```
+
+**`signal 3` is `SIGQUIT`, which is how `ActivityManager` announces an ANR.** So
+the app was not deadlocked in the sense of a native crash and was not killed for
+memory: the system decided it had stopped responding, dumped its threads to
+tombstoned and took it. Six and a half seconds of silence before that, in a log
+that had been emitting `tile fill` every two seconds, is the main loop stopping.
+
+Four readings die on this log, and that is most of its value:
+
+- **It is not the permission dialog, and not a lifecycle failure.** `location
+  permission already granted` — this run never raised a dialog, was never paused
+  and never resumed. The entire 2026-08-13 hypothesis, and the `PERMISSION_DIALOG_UP`
+  work that followed from it, are beside the point for *this* freeze. (Both stay:
+  the reasoning about two threads on one `Window` is still right, it is simply not
+  what happened here.)
+- **It is not the renderer halting.** No `render error` line, so
+  `handle_render_error` never fired and `StopRendering` never latched. That fix
+  removes a real terminal state; it did not remove this one.
+- **It is not the GPS position path.** The freeze is at 37.78 and the first
+  `getLastKnownLocation` poll is a second later. `teleported to geo target` is
+  driver mode's ordinary route-start snap, which has always been a teleport.
+- **It is not the location worker blocking the main loop.** The worker logged its
+  own Java exception at 37.783, i.e. *after* the main thread had already gone
+  quiet, and everything it shares with Bevy is a mutex held for the length of a
+  move.
+
+**What the log did name outright: `FLAG_IMMUTABLE` was wrong.**
+`LocationManager.requestLocationUpdates` asserts `pendingIntent.isMutable()` and
+throws, so the registration never happened, the provider was never started, and
+the poll read a cache nothing was refreshing — an arrow that would never have
+appeared however long you waited. The 2026-08-10 note called this out as the
+residual risk and said which constant to flip; it is flipped
+(`PENDING_INTENT_FLAG_MUTABLE`). This is the second time the shared logcat tail
+has converted an argument into a measurement in one round trip.
+
+**What is still unnamed is where the main loop stopped**, and the log physically
+cannot say: the last line before the silence is whichever system logged most
+recently (`globe placed`), which is not where it stopped. Three things ran on that
+frame — driver mode's entry, the teleport's re-anchor with everything it makes
+rebuild, and the screen wakelock's JNI call — and a truncated log cannot choose
+between them.
+
+So the next round is instrumented rather than argued:
+
+- **`platform::watchdog`** is a thread that watches a per-frame heartbeat and, at
+  2.5 s of silence — inside Android's five-second ANR window, so the report is
+  written *before* the kill — logs the stall and then one line per thread out of
+  `/proc/self/task`: name, scheduler state, and `wchan`. A process may read its own
+  `/proc` with no permission and no root, which is what makes this reachable when
+  the ANR trace (tombstoned), the `ActivityManager` announcement (system UID) and
+  a debugger (a cable) are not. A main thread in `R` for the whole stall is one
+  enormous frame; parked in a futex is a deadlock and the other rows say behind
+  what; parked in binder is a framework call that never came back.
+- **`set_keep_screen_on` now logs on both sides of the call.** Its single log line
+  came *after* `ANativeActivity_setWindowFlags`, and the absence of that line in
+  this log is equally consistent with "the system never ran" and "the call never
+  returned" — different bugs, no way to choose. `keep-screen-on: asking` without
+  `keep-screen-on: done` names it in one line.
+
+The NDK documents `ANativeActivity_setWindowFlags` as callable from any thread
+(it writes a work item the UI thread's looper performs), so the expectation is
+that both lines always appear together; the bracket is there to notice the day
+that stops being true.

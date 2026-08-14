@@ -28,5 +28,6 @@ pub mod location;
 pub mod photo;
 pub mod storage;
 pub mod stream;
+pub mod watchdog;
 pub mod work;
 pub mod workers;
