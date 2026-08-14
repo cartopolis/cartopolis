@@ -1034,7 +1034,26 @@ fn run_client() {
     };
 
     app.add_plugins(default_plugins)
-        .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
+        // `BigSpaceTimingStatsPlugin` is disabled rather than the group being
+        // swapped for `BigSpaceMinimalPlugins`, and the difference matters: the
+        // default group is Minimal + timing + *validation*, and the validator is
+        // already `#[cfg(not(debug_assertions))]`-disabled, so it costs a shipped
+        // build nothing and is a genuinely useful hierarchy check while
+        // developing. Dropping the group would throw that away to remove the
+        // timing.
+        //
+        // The timing plugin, by contrast, is pure overhead **in every profile**:
+        // four systems in `PostUpdate`, ~10 `Instant::now()` per frame inside the
+        // propagation systems, and an `update_averages` that clones both stat
+        // structs into a 64-deep `VecDeque` and recomputes a 64-entry mean every
+        // frame — to populate `PropagationStats` and `GridHashStats`, which
+        // nothing in this tree reads. Upstream keeps it on by default because
+        // upstream's examples display it; we have no such display.
+        .add_plugins(
+            big_space::prelude::BigSpaceDefaultPlugins
+                .build()
+                .disable::<big_space::plugin::BigSpaceTimingStatsPlugin>(),
+        )
         // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
         // creates GlobalClusterSettings) — see the plugin's doc comment.
         .add_plugins(ForceCpuClusteringPlugin)
@@ -3440,7 +3459,20 @@ fn setup_horizon_haze(
     // the one edge the haze can't hide, so it has to sit at the same elevation in
     // every direction. A cube's rim runs from `r` at the face to `r√2` at the
     // corner, which swept up and down as a ring as the camera pivoted.
-    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap());
+    // `ico(3)` — 1,280 triangles, not `ico(5)`'s 20,480. `horizonhaze.wgsl` samples
+    // by per-pixel view direction and says so in its own header ("the mesh shape is
+    // irrelevant — it's just a cheap shell around the camera"), so the subdivision
+    // buys no shading quality whatsoever; it only decides how round the *rim* is,
+    // which is the one thing the paragraph above cares about.
+    //
+    // Not `ico(2)`, and the difference is the rim rather than the silhouette. A
+    // geodesic sphere's radius dips between its vertices by `1 - cos θ`, where θ is
+    // the angular radius of a face: ~6.4° at `ico(2)` (0.6 %) against ~3.2° at
+    // `ico(3)` (0.15 %). Both are nothing next to the cube's 41 % that the rejected
+    // option above was rejected for, but the rim is a ring the eye tracks as the
+    // camera pivots — the exact artefact that argument is about — so this takes the
+    // 16× and leaves the last 4× on the table rather than spending the rim on it.
+    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
     let material = materials.add(HorizonHazeMaterial {
         color: LinearRgba::WHITE,
         params: Vec4::ZERO, // set each frame from the distance fog
@@ -3560,13 +3592,20 @@ fn update_star_sky(
         (&GridCell, &Transform),
         (With<crate::components::FreeCamera>, Without<StarSky>),
     >,
-    mut star: Query<(&mut Transform, &MeshMaterial3d<StarFieldMaterial>), With<StarSky>>,
+    mut star: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<StarFieldMaterial>,
+        ),
+        With<StarSky>,
+    >,
     mut materials: ResMut<Assets<StarFieldMaterial>>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
     };
-    let Ok((mut tf, mat_handle)) = star.single_mut() else {
+    let Ok((mut tf, mut vis, mat_handle)) = star.single_mut() else {
         return;
     };
     // In space the shell moves out past the far limb so stars sit *behind* the
@@ -3596,9 +3635,26 @@ fn update_star_sky(
         Some(_) => 1.0,
         None => (-3.0 * dev.fog_density).exp(),
     };
+    // Drop the field out of the frame entirely by day, rather than blending
+    // ~8,900 additive quads at a brightness of zero. `bright_stars.bin` is 16
+    // bytes a star, so that is ~17,800 triangles in the transparent phase — with
+    // `AlphaMode::Add` and no depth write, so not one of their fragments is
+    // rejected early — multiplied by nothing, for the whole daylight half of the
+    // cycle. The clouds, the rain and the haze shell each already do exactly
+    // this, each with its own note saying why; the star field and the moon were
+    // simply missed when they grew their fades.
+    let brightness = night * STAR_BRIGHTNESS * fog_veil;
+    let want = if brightness <= 0.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params = Vec4::new(
-            night * STAR_BRIGHTNESS * fog_veil,
+            brightness,
             time.elapsed_secs(),
             // Space flag: drops the shader's horizon cut, air extinction and
             // twinkle, none of which exist above the atmosphere.
