@@ -175,6 +175,12 @@ impl TravelMode {
     }
 
     #[must_use]
+    /// **Tofu, all three, in the font egui actually ships** — see
+    /// `PoiCategory::glyph` for the measurement. Kept rather than deleted
+    /// because the codepoints are the right *intent* and a future font stack may
+    /// carry them; the one call site (the Route panel's travel-mode tabs) draws
+    /// `label()` alone now, since a tab reading "Car" needs no help and a tab
+    /// reading "□ Car" is worse than one reading "Car".
     pub fn icon(self) -> &'static str {
         match self {
             Self::Car => "🚗",
