@@ -38,8 +38,9 @@
 //! bookmarks, AI, avatar chooser) are closed by default and can't be opened by
 //! hand in a headless run, so `--ui <list>` opens them for the capture, e.g.
 //! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
-//! `--ui search` is the same idea for the auto-hiding address bar, which reveals
-//! on a pointer at the top edge and so has no other way to appear in a capture.
+//! `--ui search` opens the Search panel *and* seeds it a query, since an empty
+//! field documents nothing; `--ui hud` brings back the status readout, which is
+//! off by default (`hud::StatusHud`).
 //!
 //! ## Metrics: the numbers behind the frame
 //!
@@ -900,6 +901,7 @@ pub fn open_scripted_ui(
     mut route: ResMut<crate::systems::navigation::RouteState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
+    mut status: ResMut<crate::systems::hud::StatusHud>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -913,6 +915,9 @@ pub fn open_scripted_ui(
     // exactly the chrome it asked for.
     dev.open = want("dev");
     dev.show_stats = want("stats");
+    // The status readout is off by default now (`hud::StatusHud`), so a capture
+    // that wants to document it has to ask — `--ui hud`.
+    status.open = want("hud");
     ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
@@ -938,6 +943,8 @@ pub fn open_scripted_ui(
         crate::resources::RightPanel::Places
     } else if want("ai") {
         crate::resources::RightPanel::Assistant
+    } else if want("search") {
+        crate::resources::RightPanel::Search
     } else if want("avatar") || want("appearance") {
         // The chooser moved into the `RightPanel` slot with the rest; the
         // `avatar.open` bool above is what the HUD reads, not the panel, so
@@ -971,11 +978,8 @@ pub fn open_scripted_ui(
             .to
             .set("Route end", seed("CARTO_ROUTE_TO", (53.2109, 6.5642)));
     }
-    // The address bar is the one piece of chrome that cannot be *asked* for: it
-    // auto-hides and reveals on a pointer at the top edge, which a headless run
-    // has none of. `--ui search` seeds a query instead, which both pins the bar
-    // open (the field takes focus) and fills the suggestion dropdown — so the
-    // capture shows the thing the bar exists for, not an empty field.
+    // `--ui search` opens the Search panel (above) *and* seeds a query, so the
+    // capture shows the thing the panel exists for rather than an empty field.
     // `CARTO_SEARCH_QUERY` overrides the demo query, per the `CARTO_*` convention.
     if want("search") {
         let query = std::env::var("CARTO_SEARCH_QUERY").unwrap_or_else(|_| "Amsterdam".into());
@@ -985,6 +989,7 @@ pub fn open_scripted_ui(
     let known = [
         "dev",
         "stats",
+        "hud",
         "ai",
         "avatar",
         "appearance",

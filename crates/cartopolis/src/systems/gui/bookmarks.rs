@@ -279,6 +279,11 @@ fn flatten(store: &UserStore, parent: Option<u64>, depth: usize, out: &mut Vec<R
 struct Actions {
     close: bool,
     new_folder: bool,
+    /// Save where the camera is now as a place. It was the status HUD's ☆, which
+    /// is a strange place for it to have been: the HUD is a readout, it is hidden
+    /// by default now, and pressing ☆ opened *this* panel anyway to show what had
+    /// just been saved. So the button lives where its result appears.
+    new_place: bool,
     delete_place: Option<u64>,
     delete_folder: Option<u64>,
     update: Option<u64>,
@@ -458,6 +463,8 @@ pub fn render_bookmarks_panel(
             (lat, lng, alt, CameraPose::capture(&camera_state))
         });
 
+    let has_place = current.is_some();
+
     let mut rows = Vec::new();
     flatten(&store, None, 0, &mut rows);
 
@@ -490,6 +497,17 @@ pub fn render_bookmarks_panel(
                     .clicked()
                 {
                     act.new_folder = true;
+                }
+                // Disabled rather than hidden before the world anchor exists:
+                // there is nowhere to save *yet*, and a button that comes and goes
+                // in a header is harder to find again than one that is greyed.
+                if ui
+                    .add_enabled(has_place, egui::Button::new("+ Place"))
+                    .on_hover_text("Save where you are now, with this view")
+                    .on_disabled_hover_text("No position yet — the world is still loading")
+                    .clicked()
+                {
+                    act.new_place = true;
                 }
             });
         // A capture puts the camera (or a file dialog) in front of everything, so
@@ -534,8 +552,8 @@ pub fn render_bookmarks_panel(
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(
-                    "No places yet — click ☆ in the corner overlay to save the current \
-                     location, then 📁+ to sort them into folders.",
+                    "No places yet — \"+ Place\" saves where you are now, and \
+                     \"+ Folder\" makes somewhere to sort them into.",
                 )
                 .size(13.0)
                 .color(theme::TEXT_DIM),
@@ -622,6 +640,14 @@ pub fn render_bookmarks_panel(
     drag_ghost(&egui.ctx, &rows);
 
     let close = act.close;
+    if act.new_place {
+        if let Some((lat, lng, alt, pose)) = current.clone() {
+            let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
+            // Named by reverse geocoding, like every other new place — the
+            // placeholder is what shows until the address lands.
+            bookmarks.request_address(id, lat, lng);
+        }
+    }
     apply_photo_actions(&mut bookmarks, &mut store, &act);
     apply(&mut store, &mut nav, act.update.zip(current), act);
 

@@ -16,81 +16,51 @@ use cartopolis_core::NetMessage;
 use egui::Window;
 use web_time::Instant;
 
-/// Where the map controls (compass, locate) stack, clear of the logo card that
-/// now owns the top-left corner. Read by `hud::render_map_controls`; one constant
-/// because the compass and the locate button under it have to agree.
-pub const MAP_CONTROLS_TOP: f32 = 52.0;
-
-/// Width reserved for the app-menu button at the right end of the address bar,
-/// in points: the glyph plus `theme::style`'s 9 pt of horizontal button padding
-/// either side, with a couple of points of slack.
+/// The main menu's state: whether the card above the dock is showing.
 ///
-/// Reserved rather than measured because the row is inside a size-to-content
-/// `Area`, whose `available_width` is *last frame's* width — reading it back to
-/// size this frame's content is the feedback loop the driver bar's module note
-/// describes, and it settles wherever the first frame happened to land.
-///
-/// Wider on a compact layout, where the button spells "Menu" out beside the
-/// glyph: a tooltip is the only label an icon-only control has, and a touch
-/// pointer produces no hover at all (`docs/notes/touch-input.md`), so on the one
-/// viewport where this button is the only route to Settings, sign-in and Exit it
-/// is also the one where its tooltip can never appear.
-fn menu_width(compact: bool) -> f32 {
-    if compact {
-        74.0
-    } else {
-        38.0
-    }
+/// A resource rather than a `Local` because two systems share it — the dock
+/// paints the mark disc that toggles it (and shows it pressed while it is open),
+/// and [`render_main_menu`] paints the card. `toggled` is that hand-off: without
+/// it the click that opens the menu is also a click *outside* the card, which the
+/// dismiss rule below would act on in the same frame, and the menu would never
+/// appear.
+#[derive(Resource, Default)]
+pub struct MainMenu {
+    pub open: bool,
+    /// Set by the dock on the frame the disc was clicked; consumed here.
+    pub toggled: bool,
 }
 
-/// Outer margin of the address-bar card (its `fixed_pos`, mirrored on the right).
-const BAR_MARGIN: f32 = 8.0;
+/// Width of the menu card, in points. Fixed rather than sized to its content for
+/// the reason the driver bar's module note gives: this is an anchored,
+/// size-to-content `Area`, and anything inside it that reaches for the
+/// *available* width would grow the card a little every frame.
+const MENU_WIDTH: f32 = 232.0;
 
-/// The address bar's row height, from `interact_size.y` below. Also the height
-/// the search field is allocated at on a compact layout.
-const BAR_ROW_H: f32 = 26.0;
-
-/// Width the search field gets on a compact viewport: everything the row has
-/// after the mark, the menu button and the gaps between them.
+/// Back / Forward / Home — the location history, as three named entries in the
+/// app menu. One function, because it was three glyph buttons in the address bar
+/// as well until that card was retired, and a phone folding them into a menu must
+/// not become a second history.
 ///
-/// Floored well below anything usable on purpose — the floor is what happens on
-/// a viewport narrower than the controls themselves, and a field clipped to 110
-/// pt can still be typed into, while a negative width is a panic in egui's
-/// layout.
-fn compact_search_width(viewport_w: f32) -> f32 {
-    // Card margins (`BAR_MARGIN` each side) + the frame's own 8 pt inner margins
-    // + the two 6 pt item gaps in the row.
-    const CHROME: f32 = 2.0 * BAR_MARGIN + 2.0 * 8.0 + 2.0 * 6.0;
-    (viewport_w - CHROME - theme::LOGO_SIZE - menu_width(true)).max(110.0)
-}
-
-/// Back / Forward / Home — the location history, as three glyph buttons in the
-/// address bar or three named entries in the app menu. One function, because a
-/// phone folding them into a menu must not become a second history.
-///
-/// Returns whether one of them fired, so a menu caller can close itself.
+/// Returns whether one of them fired, so the caller can close itself.
 fn history_ui(
     ui: &mut egui::Ui,
     nav: &mut crate::systems::geo_nav::GeoNavState,
     home: Option<&crate::systems::user_store::SavedLocation>,
-    labelled: bool,
 ) -> bool {
     let mut acted = false;
     // The glyph is a *candidate*, not a promise. The bundled font stack turns out
     // to have almost no emoji at all — `◀`, `▶` and `🏠` are all missing from it,
-    // so these three buttons have been painting empty boxes on the desktop, where
-    // `labelled` is false and the glyph is all there is. `first_drawable` falls
-    // through to the word, which is worse-looking than an icon and infinitely
-    // better than a box.
+    // so these three buttons painted empty boxes for as long as they were
+    // icon-only. `first_drawable` falls through to the word, which is
+    // worse-looking than an icon and infinitely better than a box.
     let ctx_for_labels = ui.ctx().clone();
     let label = move |candidates: &[&'static str], word: &'static str| {
         let glyph = theme::first_drawable(&ctx_for_labels, candidates);
         if glyph == word {
             word.to_string()
-        } else if labelled {
-            format!("{glyph}  {word}")
         } else {
-            glyph.to_string()
+            format!("{glyph}  {word}")
         }
     };
     if ui
@@ -117,15 +87,15 @@ fn history_ui(
         nav.go_forward();
         acted = true;
     }
-    // Home, browser-style: jump to the user's saved Home location (set from the
-    // status panel's 🏠 button). Disabled until a Home has been saved.
+    // Home, browser-style: jump to the user's saved Home location (Set Home,
+    // below). Disabled until a Home has been saved.
     if ui
         .add_enabled(
             home.is_some(),
             egui::Button::new(label(&["🏠", "⌂", "Home"], "Home")),
         )
         .on_hover_text("Go to your Home location")
-        .on_disabled_hover_text("No Home set — use the 🏠 button in the status panel")
+        .on_disabled_hover_text("No Home set — use Set Home below")
         .clicked()
     {
         if let Some(h) = home {
@@ -142,8 +112,8 @@ fn history_ui(
 }
 
 /// The app menu's account entry (`systems::session`), bundled into one parameter
-/// because [`render_menu_bar`] was already at Bevy's 16-parameter ceiling — the
-/// same reason `network::AuthWriteback` exists.
+/// because [`render_main_menu`] would otherwise sit at Bevy's 16-parameter
+/// ceiling — the same reason `network::AuthWriteback` exists.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SignInMenu<'w> {
     screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
@@ -151,262 +121,154 @@ pub struct SignInMenu<'w> {
     identity: Res<'w, crate::resources::AuthIdentity>,
 }
 
-/// The address bar: the app mark, Back / Forward / Home, the geo search field,
-/// and a hamburger holding what used to be the `File` menu.
+/// The main menu: a card that rises out of the dock's mark disc, holding
+/// everything that is not a place you navigate to.
 ///
-/// **The logo is the switch, and it is the only part that is always there.** The
-/// bar started as a full-width strip, which put an opaque 46 pt band across the
-/// top of the map to carry ~400 pt of controls; then as a card that revealed
-/// itself when the pointer grazed the top edge, which is undiscoverable (you
-/// cannot aim at something you have never seen) and fired on every trip to the
-/// window's title bar. Now a single mark sits in the corner, clicking it unfolds
-/// the rest of the card to the right of it, and clicking it again folds it back —
-/// the logo does not move between the two states, so the card reads as growing
-/// out of it rather than appearing next to it. `Ctrl+L` (the browser shortcut)
-/// unfolds it and focuses the field. The one thing that takes the card away is a
-/// screen with no map on it: driver mode, or a right-hand panel that has gone
-/// full-width on a compact viewport (see the body).
+/// **This is what is left of the address bar.** That was a card in the top-left
+/// corner: a mark you clicked to unfold a search field, three history buttons, the
+/// camera picker and a hamburger. It began as a full-width strip, then a card that
+/// revealed itself when the pointer grazed the top edge (undiscoverable — you
+/// cannot aim at something you have never seen — and fired on every trip to the
+/// window's title bar), then the folding card. All three put the two controls
+/// reached most often, search and the menu, in the corner furthest from the thumb
+/// of anyone holding a phone, and all three had to fold half their contents into
+/// the menu on a narrow viewport anyway. So the search field is a panel
+/// (`geo_nav::render_search_panel`), the mark is a dock disc, and what the compact
+/// layout folded away *permanently* lives here — one menu on every viewport,
+/// rather than a menu whose contents depend on the window width.
 ///
-/// The panel toggles that used to live here (AI, Layers, Places, Appearance) and
-/// the camera-mode picker live in the bottom bar ([`camera_picker_ui`],
-/// `chat::render_chat_panel`), so this card is navigation only.
-///
-/// **On a compact viewport the row folds.** Unfolded, the desktop row is the
-/// mark, three history buttons, a 215 pt field, the camera picker and the menu —
-/// ~460 pt of content in a `274 pt` phone viewport (411 dp at `ui_scale` 1.5).
-/// A content-sized `Area` does not wrap, so the overflow simply hangs off the
-/// right edge, and the menu button is drawn *last*: the one control that reaches
-/// Settings, Appearance, the Assistant, sign-in and Exit was the first thing to
-/// fall off the screen. So on compact the card pins itself to the viewport, the
-/// history buttons and the camera picker move *into* the menu (where they get
-/// words instead of glyphs — see [`MENU_W`]), and the field takes what is left.
+/// Anchored to the bottom centre rather than to the disc it belongs to: the dock
+/// is centred and its width depends on whether there is a session (Chat comes and
+/// goes), so an offset measured from the disc would move under a card that should
+/// not move. It is a floating `Area`, so like the dock and the HUD it is
+/// deliberately *not* in the Phase 7b panel chain.
 #[allow(clippy::too_many_arguments)]
-pub fn render_menu_bar(
+pub fn render_main_menu(
     mut egui: ResMut<EguiManager>,
+    mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
-    store: Res<crate::systems::user_store::UserStore>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    driver: Res<crate::systems::driver::DriverState>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut camera_state: ResMut<crate::resources::CameraState>,
     mut app_exit: MessageWriter<AppExit>,
-    // For the "how far away is this hit" line in the suggestion rows: the same
-    // camera fix the HUD reads out.
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     // Follow mode needs an avatar to follow (logged-in viewer only).
     avatars: Query<(), With<crate::components::Avatar>>,
-    // Whether the bar is unfolded, and the decoded logo. Both survive across
-    // frames; the texture is uploaded once, on the first frame that draws.
-    mut open: Local<bool>,
-    mut logo: Local<Option<egui::TextureHandle>>,
     map_anchor: Res<crate::resources::MapAnchor>,
     mut sign_in: SignInMenu,
+    // (set-home, copy) "✔" flash timers. These two actions leave the menu open —
+    // they are the only entries whose whole result is invisible — so they are the
+    // only ones that need to say they happened.
+    mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
 ) {
-    // Driving takes the whole screen (bare basemap, manoeuvre card in this very
-    // corner) — the address bar is not part of that chrome, mark included.
-    if driver.active {
-        nav.search_has_focus = false;
+    let dismissed_by_disc = std::mem::take(&mut menu.toggled);
+    if !menu.open {
         return;
     }
-    // On a compact viewport a right-hand panel takes the *whole* screen
-    // (`responsive_right_panel`), and this card is a floating `Area`, which egui
-    // always paints above panels — so the mark sat on top of the panel's own
-    // header with no map left behind it to navigate. Dropping it while a panel
-    // owns the screen is the same workaround the compass and the status HUD use
-    // (`hud::render_map_controls`); there is no z-order that puts an `Area`
-    // behind a panel. On a wide viewport the panel docks to the right and never
-    // reaches this corner, so the card stays. `*open` is left alone: closing the
-    // panel brings the bar back in the state it was folded away in.
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    if compact && !right_panel.is(RightPanel::None) {
-        nav.search_has_focus = false;
-        return;
-    }
-    let ctx = egui.ctx_mut();
 
-    // Ctrl+L (browser address-bar shortcut): unfold the bar and grab the search
-    // field's focus next frame (`nav.focus_search`, consumed in `nav_bar_ui`).
-    let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
-    if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
-        nav.focus_search = true;
-    }
-    // `focus_search` is also how a scripted run asks for the bar
-    // (`geo_nav::seed_search`, `--ui search`), which has no pointer to click with.
-    if nav.focus_search {
-        *open = true;
-    }
-    if !*open {
-        // No field on screen → it can hold no focus, and no dropdown hangs off it.
-        nav.search_has_focus = false;
-    }
-
-    if logo.is_none() {
-        *logo = theme::logo_image()
-            .map(|img| ctx.load_texture("cartopolis_logo", img, egui::TextureOptions::LINEAR));
-    }
-
-    // Where the camera is on Earth, for the suggestion rows' distances.
-    let viewer = camera
-        .single()
-        .ok()
+    // Where the camera is on Earth, for Set Home and Copy location.
+    let cam = camera.single().ok();
+    let geo = cam
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf));
+    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
+    let place = geo.zip(altitude);
 
-    let mut toggle = false;
-    // A floating `Area` (not a `Panel::top`) so the side panels keep their full
-    // height and the card overlays them when it unfolds.
-    egui::Area::new(egui::Id::new("menu_bar"))
+    let bottom = crate::systems::dock::reserved_bottom() + 8.0;
+    let max_height = (egui.viewport_pts().y - bottom - 24.0).max(120.0);
+    let ctx = egui.ctx_mut().clone();
+    let mut close = false;
+    let mut set_home = false;
+    let mut copy = false;
+    let home_set = flash_at.0.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
+    let copied = flash_at.1.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
+
+    let area = egui::Area::new(egui::Id::new("main_menu"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(BAR_MARGIN, BAR_MARGIN))
-        .show(ctx, |ui| {
-            // `Frame::popup` rather than `theme::overlay_frame`: the shared overlay
-            // frame is translucent, which is right for a HUD readout and wrong behind
-            // a text field the user is typing into over a moving map. Folded, the card
-            // keeps the *margins* and drops the paint — the logo carries its own teal
-            // card, so a second one around it only muddies the mark, and matching the
-            // margins is what keeps the logo from jumping when the bar unfolds.
-            let frame = if *open {
-                egui::Frame::popup(ui.style())
-            } else {
-                egui::Frame::NONE
-            };
-            frame
-                .inner_margin(egui::Margin::symmetric(8, 6))
-                .show(ui, |ui| {
-                    // A plain row, **not** `egui::MenuBar`: `MenuBar::ui` ends with
-                    // `set_min_size(available_width, …)`, which is right for a bar spanning a
-                    // window and exactly wrong for a card that is supposed to size to its
-                    // content — it stretched the card ~230 pt past the last button. Its other
-                    // job, sharing a menu config so hovering slides between open menus, has
-                    // nothing left to do here now that there is one menu.
-                    //
-                    // `interact_size.y` is the row height and `horizontal` centres against it,
-                    // so bumping it gives the buttons and the taller search field a common,
-                    // roomier height that lines up.
-                    ui.style_mut().spacing.interact_size.y = BAR_ROW_H;
-                    ui.style_mut().spacing.item_spacing.x = 6.0;
-                    // Pin the card to the screen on a compact viewport. `set_width`
-                    // (min *and* max) rather than `set_max_width`, so the width is a
-                    // constant rather than a function of the content — see `MENU_W`
-                    // on why the content may not be measured here.
-                    if compact && *open {
-                        ui.set_width(
-                            compact_search_width(viewport_w)
-                                + theme::LOGO_SIZE
-                                + menu_width(true)
-                                + 12.0,
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        // The mark, and the switch. Frameless: the asset is already a rounded
-                        // teal card, so egui's button frame would draw a box around a box.
-                        let mark = match logo.as_ref() {
-                            // A `SizedTexture` straight off the handle, not an `Image` from a
-                            // URI: this bypasses egui's image *loader* machinery entirely
-                            // (`egui_extras` is not a dependency), because the texture is
-                            // already uploaded.
-                            Some(tex) => ui.add(
-                                egui::Button::image(egui::load::SizedTexture::new(
-                                    tex.id(),
-                                    egui::Vec2::splat(theme::LOGO_SIZE),
-                                ))
-                                .frame(false),
-                            ),
-                            // No logo means a checkout without Git LFS. Say so in the tooltip
-                            // rather than leaving a dead corner.
-                            None => ui.add(
-                                egui::Button::new(egui::RichText::new("V").heading())
-                                    .frame(false)
-                                    .min_size(egui::Vec2::splat(theme::LOGO_SIZE)),
-                            ),
-                        };
-                        if mark
-                            .on_hover_text(if *open {
-                                "Hide the address bar"
-                            } else {
-                                "Search and navigate"
-                            })
-                            .clicked()
-                        {
-                            toggle = true;
-                        }
-                        if !*open {
-                            return;
-                        }
-                        let home = store.data.home.clone();
-                        if compact {
-                            // Everything but the field and the way into the menu has
-                            // folded (see the doc comment). The field is allocated an
-                            // explicit width rather than left to fill: inside a
-                            // size-to-content `Area` "fill" means last frame's width.
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(compact_search_width(viewport_w), BAR_ROW_H),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
-                                },
-                            );
-                        } else {
-                            // Browser-style Back / Forward through the location history. Every
-                            // teleport (search, bookmark, Home, coords) is a history entry.
-                            history_ui(ui, &mut nav, home.as_ref(), false);
-                            // Browser-style geo search: place names via Nominatim, or pasted
-                            // "lat, lng(, altitude)" coordinates. The route planner (ADR-037) is
-                            // reached from the always-visible bottom bar (⚑ Route), alongside the
-                            // other right-hand panels, rather than this card.
-                            crate::systems::geo_nav::nav_bar_ui(ui, &mut nav, viewer);
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
+        .show(&ctx, |ui| {
+            // `Frame::popup`, not `theme::overlay_frame`: the shared overlay frame
+            // is translucent, which is right for a HUD readout and wrong under a
+            // list of commands over a moving map.
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(MENU_WIDTH);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().button_padding.y = 4.0;
+                        // The brand, at the top of the card the mark opened — the
+                        // same two-tone wordmark the splash and the sign-in card
+                        // wear (`theme::WORDMARK_HEAD`).
+                        theme::wordmark_ui(ui, theme::SIZE_TITLE);
+                        ui.separator();
 
-                            // Camera mode, beside the address it applies to — "where am I looking
-                            // from" is the same question as "where am I". It sat in the bottom bar
-                            // while this strip auto-hid and could not be relied on.
-                            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
-                        }
-
-                        // The app menu, at the far end where a browser puts it. Probed rather
-                        // than hard-coded: `☰` is one of the few symbols the loaded font
-                        // actually has, but that is a fact about the font stack, not a
-                        // guarantee (see `theme::first_drawable`).
-                        let hamburger = theme::first_drawable(ui.ctx(), &["☰", "≡", "⋮", "="]);
-                        let menu_label = if compact {
-                            format!("{hamburger}  Menu")
-                        } else {
-                            hamburger.to_string()
-                        };
-                        ui.menu_button(menu_label, |ui| {
-                            if compact {
-                                // The folded controls, with words: a glyph-only button
-                                // explains itself in a tooltip, and a touch pointer
-                                // never produces one (`docs/notes/touch-input.md`).
-                                if history_ui(ui, &mut nav, home.as_ref(), true) {
-                                    ui.close();
-                                }
-                                camera_picker_ui(
-                                    ui,
-                                    &mut camera_state,
-                                    !avatars.is_empty(),
-                                    &globe,
-                                );
-                                ui.separator();
+                        // Justified, the way egui lays a menu out: every entry
+                        // takes the card's full width, so the hit targets line up
+                        // and a two-word label does not make a button half the
+                        // size of its neighbour.
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                            // Where you have been, and how you are looking at it.
+                            if history_ui(ui, &mut nav, store.data.home.as_ref()) {
+                                close = true;
                             }
-                            // Panels you *visit* rather than flip: Appearance is a wardrobe and
-                            // the Assistant is a conversation, so neither earns a permanent
-                            // disc in the dock next to the four places you actually navigate
-                            // between.
+                            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
+                            ui.separator();
+
+                            // The two location actions. They were in the status HUD,
+                            // which is a *readout* — and is hidden by default now, so
+                            // the only two verbs it carried had to move somewhere a
+                            // reader would find them.
+                            ui.add_enabled_ui(place.is_some(), |ui| {
+                                let home_icon = if home_set {
+                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "Set"])
+                                } else {
+                                    theme::first_drawable(ui.ctx(), &["🏠", "⌂", "Home"])
+                                };
+                                if ui
+                                    .button(format!("{home_icon}  Set Home here"))
+                                    .on_hover_text(
+                                        "Home (above) returns to this spot and this view",
+                                    )
+                                    .clicked()
+                                {
+                                    set_home = true;
+                                }
+                                let copy_icon = if copied {
+                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"])
+                                } else {
+                                    theme::first_drawable(ui.ctx(), &["📋", "⎘", "Copy"])
+                                };
+                                if ui
+                                    .button(format!("{copy_icon}  Copy location"))
+                                    .on_hover_text(
+                                        "Copy this place — position and view (paste it into \
+                                     Search to come back)",
+                                    )
+                                    .clicked()
+                                {
+                                    copy = true;
+                                }
+                            });
+                            ui.separator();
+
+                            // Panels you *visit* rather than flip: Appearance is a
+                            // wardrobe and the Assistant is a conversation, so neither
+                            // earns a permanent disc in the dock next to the places you
+                            // actually navigate between.
                             for panel in [
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
                                 crate::resources::RightPanel::Settings,
-                                // About carries the attribution the map data's
-                                // licences require, so it must be reachable from
-                                // the running app, not only from a file in the
-                                // tarball.
+                                // About carries the attribution the map data's licences
+                                // require, so it must be reachable from the running app,
+                                // not only from a file in the tarball.
                                 crate::resources::RightPanel::About,
                             ] {
-                                // Same glyph the panel's own header wears, so the menu entry
-                                // and the badge it opens are recognisably one thing.
+                                // Same glyph the panel's own header wears, so the menu
+                                // entry and the badge it opens are recognisably one thing.
                                 let icon = theme::first_drawable(ui.ctx(), panel.icons());
                                 if ui
                                     .selectable_label(
@@ -416,14 +278,14 @@ pub fn render_menu_bar(
                                     .clicked()
                                 {
                                     right_panel.toggle(panel);
-                                    ui.close();
+                                    close = true;
                                 }
                             }
                             ui.separator();
-                            // Which world you are in, next to the tools that
-                            // inspect it. It reads as a *place* rather than a
-                            // verb when there is a session, because "sign in"
-                            // when you already are is the wrong question.
+                            // Which world you are in, next to the tools that inspect it.
+                            // It reads as a *place* rather than a verb when there is a
+                            // session, because "sign in" when you already are is the
+                            // wrong question.
                             let key = theme::first_drawable(ui.ctx(), &["🔑", "◎", "@"]);
                             let account = if sign_in.session.is_online() {
                                 match sign_in.identity.username.as_deref() {
@@ -437,7 +299,7 @@ pub fn render_menu_bar(
                             };
                             if ui.button(account).clicked() {
                                 sign_in.screen.open = true;
-                                ui.close();
+                                close = true;
                             }
                             ui.separator();
                             let dev_label = if dev_state.open {
@@ -447,33 +309,67 @@ pub fn render_menu_bar(
                             };
                             if ui.button(dev_label).clicked() {
                                 dev_state.open = !dev_state.open;
-                                ui.close();
+                                close = true;
                             }
                             ui.separator();
                             if ui.button("Exit").clicked() {
                                 app_exit.write(AppExit::Success);
-                                ui.close();
+                                close = true;
                             }
-                        })
-                        .response
-                        .on_hover_text("Menu");
+                        });
                     });
-                });
+            });
         });
-    if toggle {
-        *open = !*open;
-        // Folding it away drops the dropdown with it, or the suggestions would
-        // hang under a bar that is no longer there.
-        if !*open {
-            nav.close_suggestions();
+
+    if set_home {
+        if let Some(((lat, lng), alt)) = place {
+            // Capture the current view so Home returns to it exactly.
+            store.set_home(
+                lat,
+                lng,
+                alt,
+                crate::systems::geo_nav::CameraPose::capture(&camera_state),
+            );
+            flash_at.0 = Some(Instant::now());
         }
+    }
+    if copy {
+        if let Some(((lat, lng), alt)) = place {
+            // Copy the view, not just the spot: the look angles come off the live
+            // camera transform (as the dev panel's preset copy does), so they are
+            // right in any camera mode, and pasting the string back — into Search
+            // or a `?place=` URL — reproduces this exact framing.
+            let look = cam.map(|(_, tf)| {
+                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                (pitch.to_degrees(), yaw.to_degrees())
+            });
+            crate::utils::clipboard::set_text(&crate::systems::hud::format_place(
+                lat, lng, alt, look,
+            ));
+            flash_at.1 = Some(Instant::now());
+        }
+    }
+    // Dismiss on a click that landed outside the card — but never on the one that
+    // opened it, which is a click outside the card by definition (see
+    // `MainMenu::toggled`). Escape closes it too, the way every other transient
+    // surface in this app does.
+    let clicked_out = ctx.input(|i| {
+        i.pointer.any_click()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|p| !area.response.rect.contains(p))
+    });
+    if close
+        || (clicked_out && !dismissed_by_disc)
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        menu.open = false;
     }
 }
 
 /// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View whole
-/// Earth"), drawn in the address bar beside the search field — or, on a compact
-/// viewport, as a submenu of the app menu. The mode is also Tab-cyclable. Follow
-/// needs an avatar (logged-in viewer only).
+/// Earth"), drawn as a submenu of the main menu. The mode is also Tab-cyclable.
+/// Follow needs an avatar (logged-in viewer only).
 pub fn camera_picker_ui(
     ui: &mut egui::Ui,
     camera_state: &mut crate::resources::CameraState,
@@ -2424,31 +2320,23 @@ fn shape_display_name(key: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// The address bar is a size-to-content `Area`, so nothing clamps it: what
-    /// the row asks for is what it takes, off the edge of the screen included.
-    /// These are the two numbers that decide whether the app menu — the only
-    /// route to Settings, sign-in and Exit — is on the screen at all.
+    /// The menu card is a size-to-content `Area`, so nothing clamps it: what it
+    /// asks for is what it takes, off the edge of the screen included. This is
+    /// the number that decides whether the app menu — the only route to
+    /// Settings, sign-in and Exit — is on the screen at all. The card it
+    /// replaced folded half its contents away below this width; a card that is
+    /// the same on every viewport has to fit the smallest one instead.
     #[test]
-    fn the_compact_address_bar_fits_a_phone() {
+    fn the_menu_card_fits_a_phone() {
         // 411 dp at `ui_scale` 1.5, i.e. what `quality::Tier::Phone` resolves an
         // ordinary Android handset to.
         let viewport = 274.0;
-        let field = compact_search_width(viewport);
-        let card = field + theme::LOGO_SIZE + menu_width(true) + 12.0;
+        // `Frame::popup`'s margins and the card's stroke, generously.
+        let card = MENU_WIDTH + 24.0;
         assert!(
-            card <= viewport - 2.0 * BAR_MARGIN + 0.5,
-            "card {card} does not fit {viewport} pt with its margins"
+            card <= viewport,
+            "menu card {card} does not fit {viewport} pt"
         );
-        assert!(field >= 110.0, "the search field is unusable at {field} pt");
-    }
-
-    /// A viewport narrower than the chrome must still produce a positive width:
-    /// egui's layout panics on a negative one, so the failure mode of "someone
-    /// opened this at 200 pt" has to be a cramped field, not a crash.
-    #[test]
-    fn a_tiny_viewport_still_yields_a_usable_field() {
-        assert_eq!(compact_search_width(120.0), 110.0);
-        assert!(compact_search_width(0.0) > 0.0);
     }
 
     /// The object editor asks for 320 pt, which is wider than a phone. A

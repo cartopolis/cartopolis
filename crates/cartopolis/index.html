@@ -345,13 +345,11 @@
         margin-bottom: 0.6rem;
       }
       #logo {
-        /* 168 px is the Bevy splash's own logo size. The `vh` term is what keeps
-           a landscape phone from pushing the wordmark and the progress track off
-           the bottom of a 360 px-tall viewport. */
+        /* 168 px is the Bevy splash's own mark size (an 84 pt radius). The `vh`
+           term is what keeps a landscape phone from pushing the wordmark and the
+           progress track off the bottom of a 360 px-tall viewport. */
         width: min(40vw, 30vh, 168px);
         height: auto;
-        /* No layout shift and no broken-image icon if the copy-dir is missing:
-           the box is reserved, and `onerror` removes the element. */
         aspect-ratio: 1;
       }
       #wordmark {
@@ -363,6 +361,13 @@
         font-size: 40px;
         line-height: 1.1;
         color: #f2efea;
+      }
+      /* Cream `carto`, accent `polis` — `theme::WORDMARK_HEAD` here, and the
+         account GUI's `.app-header .wordmark b` over in `jeroen/cartopy`. Three
+         surfaces, one way of writing the name. */
+      #wordmark b {
+        color: #ff9457;
+        font-weight: 600;
       }
       #motto {
         font-size: 16px;
@@ -507,16 +512,37 @@
       })();
     </script>
     <!-- The same screen `systems::splash` paints, in the seconds before it can:
-         logo, wordmark, motto, then the progress this half is uniquely able to
-         report. The logo is fetched from the asset tree trunk copies next to the
-         page (`rel="copy-dir"`); if that copy is missing the mark removes itself
-         rather than showing a broken-image icon — and the "Asset tree" check
-         below will say why. -->
+         mark, wordmark, motto, then the progress this half is uniquely able to
+         report.
+
+         The mark is inline SVG, and it is `theme::paint_mark`'s geometry table in
+         another notation — a circle, four streets, one accent avenue and an amber
+         marker, on a 100-unit square whose radius is 50. Keep the two in step;
+         they are one screen handed over mid-load. It used to be
+         `assets/icon/cartopolis.png` fetched from the copied asset tree, which
+         meant the first thing every visitor saw was a request that could 404 (it
+         carried an `onerror` to remove itself, and the "Asset tree" check below to
+         explain the hole). Drawing it costs no request and cannot arrive late. -->
     <div id="loader" data-state="loading">
       <div id="brand">
-        <img id="logo" src="assets/icon/cartopolis.png" alt=""
-             onerror="this.remove()" />
-        <div id="wordmark">Cartopolis</div>
+        <svg id="logo" viewBox="0 0 100 100" aria-hidden="true">
+          <defs>
+            <clipPath id="mark-clip"><circle cx="50" cy="50" r="42" /></clipPath>
+          </defs>
+          <circle cx="50" cy="50" r="50" fill="#10181e" />
+          <circle cx="50" cy="50" r="47.75" fill="none" stroke="#fd6012" stroke-width="4.5" />
+          <g clip-path="url(#mark-clip)">
+            <g stroke="#f2efea" stroke-width="5">
+              <line x1="31" y1="0" x2="31" y2="100" />
+              <line x1="65" y1="0" x2="65" y2="100" />
+              <line x1="0" y1="35" x2="100" y2="35" />
+              <line x1="0" y1="69" x2="100" y2="69" />
+            </g>
+            <line x1="15.6" y1="74.1" x2="84.4" y2="25.9" stroke="#fd6012" stroke-width="8" />
+          </g>
+          <circle cx="65" cy="35" r="7" fill="#fd9212" />
+        </svg>
+        <div id="wordmark">carto<b>polis</b></div>
         <div id="motto">Explore our world</div>
       </div>
       <div id="track"><div id="bar"></div></div>

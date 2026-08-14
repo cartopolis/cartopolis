@@ -193,7 +193,7 @@ cannot save a call site from it, because `small()` opts out of exactly the
 padding the tier raises.
 
 That mattered on the controls least able to afford it: the route panel's *pick
-this point on the map*, *use my position* and *clear*, the address bar's flag, a
+this point on the map*, *use my position* and *clear*, the search hits' flag, a
 bookmark's rename and delete, and the long-press context menu's *route from
 here* — i.e. the shortcuts that exist so you do not have to type an address on a
 phone. `theme::action_button` / `action_enabled` is the replacement: `small()`

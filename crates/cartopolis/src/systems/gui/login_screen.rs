@@ -16,7 +16,7 @@
 //!
 //! Drawn as a floating `Area` plus a `Window`, both pinned to the top of
 //! `Order::Foreground` every frame with `move_to_top`. That is what puts it above
-//! the address-bar card, which is itself a `Foreground` area (a `Middle`-order
+//! the main menu, which is itself a `Foreground` area (a `Middle`-order
 //! window would render *under* the menu it was opened from). It draws nothing at
 //! all when closed, so it costs no layers and no input the rest of the time — and
 //! it never touches `EguiManager::ui_mut`, so it stays out of the Phase 7b panel
@@ -102,7 +102,6 @@ pub struct LoginScreen {
     error_shown: Option<String>,
     /// A request is in flight and this card is waiting to see how it lands.
     awaiting: bool,
-    logo: Option<egui::TextureHandle>,
 }
 
 impl Default for LoginScreen {
@@ -118,7 +117,6 @@ impl Default for LoginScreen {
             auto_enter: true,
             error_shown: None,
             awaiting: false,
-            logo: None,
         }
     }
 }
@@ -273,10 +271,6 @@ pub fn render_login_screen(
     // the same reason they are clamped sideways.
     let card_h = (viewport.y - 2.0 * CARD_MARGIN - 2.0 * CARD_PAD_Y as f32).max(160.0);
     let ctx = egui.ctx_mut().clone();
-    if screen.logo.is_none() {
-        screen.logo = theme::logo_image()
-            .map(|img| ctx.load_texture("sign_in_logo", img, egui::TextureOptions::LINEAR));
-    }
 
     // ── Backdrop ─────────────────────────────────────────────────────────────
     let backdrop_id = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sign_in_dim"));
@@ -423,26 +417,14 @@ fn card_ui(
 
     // ── Brand row ────────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        match screen.logo.as_ref() {
-            Some(tex) => {
-                ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                    tex.id(),
-                    egui::Vec2::splat(44.0),
-                )));
-            }
-            // A checkout without Git LFS has a 130-byte pointer file for a logo;
-            // say nothing rather than draw a broken box (the address bar's mark
-            // already explains it in a tooltip).
-            None => ui.add_space(44.0),
-        }
+        // The mark is painted, not sampled, so this card needs no texture and no
+        // decode — see `theme::paint_mark`.
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
+        theme::paint_mark(ui.painter(), rect.center(), 22.0, 1.0);
         ui.add_space(4.0);
         ui.vertical(|ui| {
             ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new("Cartopolis")
-                    .font(egui::FontId::new(26.0, theme::brand_family()))
-                    .color(theme::CREAM),
-            );
+            theme::wordmark_ui(ui, 26.0);
             ui.label(
                 egui::RichText::new("Choose how you enter the world")
                     .size(theme::SIZE_SUB)
