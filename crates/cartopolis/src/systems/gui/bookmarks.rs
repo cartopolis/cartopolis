@@ -767,21 +767,30 @@ fn folder_row(
 }
 
 /// One place row: its photo (or the coloured pin dot matching its map pin), the
-/// name — click to jump, long-press or right-click for everything else.
+/// name — click to jump — and a ⋮ that opens everything else.
 ///
-/// **The actions are in a context menu and not in the row, and that is a phone
+/// **The actions are in a menu and not in the row, and that is a phone
 /// decision.** The row used to end in four small buttons (route, update, rename,
 /// delete). On a 300 pt panel that left about half the width for the name, which
 /// is the one thing in the row anybody reads; on a phone, where the panel is the
 /// whole screen and the buttons are still finger-sized, it left a name column too
 /// narrow for "Willem Alexander Sportpark" to be distinguishable from the next
-/// one. Moving them into [`egui::Response::context_menu`] gives the width back
-/// and costs nothing on the desktop, where right-click is where a list row's
-/// actions live anyway.
+/// one. One menu behind one button gives the width back and costs nothing on the
+/// desktop.
 ///
-/// egui reaches that menu from a touch screen on its own: `Response::secondary_clicked`
-/// is true for a *long touch* as well as a right-click, and this client feeds egui
-/// real `Event::Touch`es (`egui_manager::pointer_events`), which is what makes
+/// **The ⋮ is not decoration over the long press — it is the only entrance
+/// anybody could find.** The menu shipped reachable by long press and right-click
+/// alone, and neither advertises itself: right-click is invisible by nature, a
+/// long press doubly so, and the hint was an `on_hover_text` that a touchscreen
+/// never displays. The feature read as missing on the phone build (reported
+/// 2026-08-14) — which is the ordinary fate of a gesture-only affordance, not an
+/// accident of this one. All three gestures now open the same [`place_menu`]:
+/// `Popup::menu` toggles the kebab's on a primary click, and
+/// [`egui::Response::context_menu`] keeps the other two.
+///
+/// egui reaches the long press on its own: `Response::secondary_clicked` is true
+/// for a *long touch* as well as a right-click, and this client feeds egui real
+/// `Event::Touch`es (`egui_manager::pointer_events`), which is what makes
 /// `InputState::any_touches` — the condition on the whole long-press path — true
 /// in the first place.
 #[allow(clippy::too_many_arguments)]
@@ -822,43 +831,66 @@ fn place_row(
             }
         }
         let title = name.to_string();
-        // The name is the drag handle (see `drag_handle`): sensing both click and
-        // drag, egui waits to see whether the press turns into a drag, so a click
-        // still jumps.
-        let name_response = ui
-            .add(
-                egui::Button::new(egui::RichText::new(name).size(13.0))
-                    .wrap_mode(egui::TextWrapMode::Truncate)
-                    .min_size(egui::vec2(ui.available_width(), 0.0))
-                    .sense(egui::Sense::click_and_drag()),
-            )
-            .on_hover_text(format!(
-                "{lat:.5}, {lng:.5}, {altitude:.0} m — click to jump, \
-                 long-press for actions, drag into a folder"
-            ));
-        name_response.dnd_set_drag_payload(Item::Place(id));
-
-        // A long touch sets `clicked()` *as well as* `secondary_clicked()` —
-        // egui's press-and-hold handler synthesises the click so that a widget
-        // with no menu still responds to the press (`interaction.rs`). Without
-        // this guard, opening the menu on a phone would also fly the camera to
-        // the place behind it, which is exactly the view the menu is covering.
-        if name_response.clicked() && !name_response.long_touched() {
-            // Keep the *current* camera mode and move it to the place's spot,
-            // rather than snapping back to the mode it was saved in (`pose: None`
-            // skips `CameraPose::apply`, so `apply_teleport` repositions the mode
-            // you're in — in Follow that means the avatar walks there).
-            act.teleport = Some(Teleport {
-                lat,
-                lng,
-                altitude: Some(altitude),
-                pose: None,
+        // The kebab takes the right edge first and the name gets what is left, so
+        // a long place name truncates instead of running under it — the same
+        // bargain `folder_row` makes with its action buttons.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let kebab = theme::kebab_button(ui).on_hover_text("Actions for this place");
+            // `Popup::menu` toggles on a *primary* click, so this is the same menu
+            // reached by the same code, through the one gesture a phone can see.
+            egui::Popup::menu(&kebab).show(|ui| {
+                place_menu(ui, act, editing, id, &title, (lat, lng), photo, can_update);
             });
-            act.teleport_label = Some(title.clone());
-        }
 
-        name_response.context_menu(|ui| {
-            place_menu(ui, act, editing, id, &title, (lat, lng), photo, can_update);
+            fill_remaining(ui, |ui| {
+                // The name is the drag handle (see `drag_handle`): sensing both
+                // click and drag, egui waits to see whether the press turns into a
+                // drag, so a click still jumps.
+                let name_response = ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(name).size(13.0))
+                            .wrap_mode(egui::TextWrapMode::Truncate)
+                            .min_size(egui::vec2(ui.available_width(), 0.0))
+                            .sense(egui::Sense::click_and_drag()),
+                    )
+                    // No longer spells out how to reach the actions: the button at
+                    // the end of the row does that, and it says so itself. The
+                    // dots cannot appear in this string in any case — the font
+                    // cannot draw them, which is why they are painted.
+                    .on_hover_text(format!(
+                        "{lat:.5}, {lng:.5}, {altitude:.0} m — click to jump, \
+                         drag into a folder"
+                    ));
+                name_response.dnd_set_drag_payload(Item::Place(id));
+
+                // A long touch sets `clicked()` *as well as* `secondary_clicked()`
+                // — egui's press-and-hold handler synthesises the click so that a
+                // widget with no menu still responds to the press
+                // (`interaction.rs`). Without this guard, opening the menu on a
+                // phone would also fly the camera to the place behind it, which is
+                // exactly the view the menu is covering.
+                if name_response.clicked() && !name_response.long_touched() {
+                    // Keep the *current* camera mode and move it to the place's
+                    // spot, rather than snapping back to the mode it was saved in
+                    // (`pose: None` skips `CameraPose::apply`, so `apply_teleport`
+                    // repositions the mode you're in — in Follow that means the
+                    // avatar walks there).
+                    act.teleport = Some(Teleport {
+                        lat,
+                        lng,
+                        altitude: Some(altitude),
+                        pose: None,
+                    });
+                    act.teleport_label = Some(title.clone());
+                }
+
+                // Kept beside the kebab rather than replaced by it: right-click is
+                // where a list row's actions live on a desktop, and the long press
+                // is already load-bearing on a phone. All three open `place_menu`.
+                name_response.context_menu(|ui| {
+                    place_menu(ui, act, editing, id, &title, (lat, lng), photo, can_update);
+                });
+            });
         });
     });
 }
@@ -1315,6 +1347,16 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
     egui::Window::new(&view.name)
         .id(egui::Id::new(("place_photo", view.place)))
         .open(&mut open)
+        // Above the place pins, which are `Order::Middle` `Area`s — the same layer
+        // an `egui::Window` defaults to, resolved *within* a layer by creation
+        // order. `render_place_pins` is ordered last in the frame (it has to be:
+        // it culls against the leftover map area, which is only correct after
+        // every panel has taken its width), so it is created after this window and
+        // was winning the hit test over it. A pin is small, so the symptom is not
+        // "the viewer is dead" but the worse kind — a photo that ignores taps in
+        // one spot, which happens to be the middle of the screen, which is where
+        // the pin of the place you just photographed sits.
+        .order(egui::Order::Foreground)
         .collapsible(false)
         .resizable(true)
         .max_size(viewport * 0.9)
@@ -1443,6 +1485,132 @@ mod tests {
             }
         }
         (out, dragged)
+    }
+
+    /// Open a place row's menu from its ⋮ — a plain primary click, the one
+    /// gesture a touchscreen shows an affordance for — then click the item `dy`
+    /// below it, `dx` across.
+    ///
+    /// Aimed at the row's right edge rather than at a remembered rect: the kebab
+    /// is the last thing in a right-to-left layout, so it ends at the row's edge
+    /// whatever the panel's width or the name's length.
+    ///
+    /// `pick` of `None` presses the ⋮ and stops there, which is how the "opening
+    /// the menu does nothing else" half is asked.
+    fn click_place_kebab(pick: Option<(f32, f32)>) -> Actions {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+
+        let mut kebab = egui::Pos2::ZERO;
+        let mut out = Actions::default();
+        for frame in 0..12 {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            raw.time = Some(frame as f64 * 0.2);
+            raw.predicted_dt = 0.2;
+            let item = pick.map(|(dx, dy)| kebab + egui::vec2(dx, dy));
+            match (frame, item) {
+                (1, _) => raw.events.push(egui::Event::PointerMoved(kebab)),
+                (2, _) => raw.events.push(button(kebab, true)),
+                (3, _) => raw.events.push(button(kebab, false)),
+                // The menu is up from here on: move onto an item and click it.
+                (6, Some(item)) => raw.events.push(egui::Event::PointerMoved(item)),
+                (7, Some(item)) => raw.events.push(button(item, true)),
+                (8, Some(item)) => raw.events.push(button(item, false)),
+                _ => {}
+            }
+
+            let mut act = Actions::default();
+            let mut editing = None;
+            let mut thumbs = HashMap::new();
+            let _ = ctx.run_ui(raw, |ui| {
+                egui::Panel::right("places_test")
+                    .default_size(300.0)
+                    .show(ui, |ui| {
+                        let top = ui.cursor().min;
+                        place_row(
+                            ui,
+                            &mut act,
+                            &mut editing,
+                            &mut thumbs,
+                            1,
+                            0,
+                            "Test place",
+                            [1.0, 0.2, 0.2],
+                            (1.0, 2.0, 10.0),
+                            None,
+                            true,
+                        );
+                        let row = ui.min_rect();
+                        kebab = egui::pos2(
+                            row.right() - theme::close_button_size() * 0.5,
+                            (top.y + ui.cursor().min.y) * 0.5,
+                        );
+                    });
+            });
+            if act.route.is_some() {
+                out.route = act.route;
+            }
+            if act.take_photo.is_some() {
+                out.take_photo = act.take_photo;
+            }
+            if act.teleport.is_some() {
+                out.teleport = act.teleport;
+            }
+        }
+        out
+    }
+
+    /// The ⋮ must open the same menu the long press does, and reach the entry
+    /// that was reported missing.
+    ///
+    /// Swept for the same reason [`sweep_for_route`] is: item heights come from
+    /// the font, and the menu may open above, below or across the button
+    /// depending on what fits.
+    #[test]
+    fn the_kebab_opens_the_menu_and_reaches_the_photo_entry() {
+        let mut photo = None;
+        'sweep: for dx in [-140.0, -100.0, -60.0, -20.0] {
+            for step in 0..40 {
+                let act = click_place_kebab(Some((dx, 6.0 + step as f32 * 4.0)));
+                if act.take_photo.is_some() {
+                    photo = act.take_photo;
+                    break 'sweep;
+                }
+            }
+        }
+        assert_eq!(
+            photo,
+            Some(1),
+            "no sweep of the ⋮ menu ever reached the photo entry"
+        );
+    }
+
+    /// Pressing the ⋮ opens the menu and does nothing else.
+    ///
+    /// The name button fills the rest of the row and jumps the camera when it is
+    /// clicked, so a kebab that leaked its press into the row would fly away from
+    /// the place while showing you a menu about it — the same failure
+    /// [`a_long_touch_opens_the_menu_without_jumping_to_the_place`] guards on the
+    /// other entrance.
+    #[test]
+    fn opening_the_kebab_menu_does_not_fly_to_the_place() {
+        let act = click_place_kebab(None);
+        assert!(
+            act.teleport.is_none(),
+            "pressing ⋮ flew the camera to the place"
+        );
+        assert!(
+            act.route.is_none() && act.take_photo.is_none(),
+            "pressing ⋮ picked a menu item by itself"
+        );
     }
 
     /// Open a place row's context menu — with a right-click, or with a long touch

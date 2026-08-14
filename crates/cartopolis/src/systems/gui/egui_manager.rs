@@ -470,7 +470,31 @@ impl Plugin for EguiPlugin {
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        render_app.init_resource::<EguiWgpuRenderer>();
+        {
+            use bevy::render::GpuResourceAppExt as _;
+            render_app.init_resource::<EguiWgpuRenderer>();
+            // …and again on **every** device, which is what makes the renderer
+            // survive `handle_render_error`'s `DeviceLost` recovery. `RenderStartup`
+            // re-runs each time a `RenderDevice` is acquired, and this drops the
+            // cached `egui_wgpu::Renderer` with it.
+            //
+            // Without this the recovery is worse than the loss. The cached renderer
+            // holds pipelines, bind groups and textures belonging to the dead
+            // device, and nothing in `egui_pass` would notice: `needs_recreate`
+            // compares the *format* and the sample count, both unchanged by a
+            // device loss, and `uploaded_gen` still matches the current output, so
+            // not even a re-upload is attempted. egui would then draw dead handles
+            // at the new device and raise `Validation` — which `handle_render_error`
+            // halts on, by design, because validation errors recur. So a transient,
+            // recoverable `DeviceLost` would be converted into the terminal halt the
+            // recovery exists to avoid. The `init_resource` above stays because the
+            // resource must exist before the first `RenderStartup` runs.
+            render_app.init_gpu_resource::<EguiWgpuRenderer>();
+        }
+        // The wasm arm is a non-send resource (WebGL handles are main-thread-only)
+        // and cannot go through `init_gpu_resource`, which requires `Resource`. It
+        // is also the one target where bevy's device-loss recovery does not apply:
+        // a lost WebGL context is delivered to the page, not to wgpu's callback.
         #[cfg(target_arch = "wasm32")]
         render_app.world_mut().init_non_send::<EguiWgpuRenderer>();
         render_app.add_systems(
@@ -659,6 +683,57 @@ pub(crate) fn pointer_events(
     }
 }
 
+/// Release a finger the bridge still thinks is down but Bevy has already
+/// forgotten, and say so to egui.
+///
+/// **One dropped touch-up is otherwise permanent input death.** `state.touch` is
+/// set on `Started` and cleared in exactly one place — the `Ended | Canceled` arm
+/// of [`pointer_events`] — so if that event never arrives, the id sticks. Android
+/// touch ids only ever increase, so no later finger can match it, and
+/// `pointer_events` returns early for every one of them: egui then receives
+/// `Event::Touch` and nothing else, forever. No `PointerMoved`, no
+/// `PointerButton`, no panel, no button, no way to close anything. Worse, the last
+/// pointer event egui saw said `pressed: true`, so `is_using_pointer()` stays true
+/// and the *world* consumers (`picking`, `camera_controls`) refuse every input as
+/// well, on the grounds that egui has the pointer. The app renders at full rate
+/// and responds to nothing, which is indistinguishable from a hang.
+///
+/// It is not hypothetical on this platform. The Android camera intent
+/// (`platform::photo`) is the one thing that backgrounds the app mid-session, and
+/// android-activity detaches the NativeActivity input queue on pause and discards
+/// what is unconsumed — a finger still on the glass when the camera opens is
+/// exactly the event that goes missing. `quiesce_while_backgrounded` calls
+/// `Touches::release_all` on resume for that reason, and this is what turns that
+/// into the release egui needs to hear.
+///
+/// The events are the same three the ordinary lift emits, in the same order, so
+/// nothing downstream can tell a healed release from a real one — which is the
+/// point: egui must not learn a new state, it must be told the one it missed.
+/// `still_down` answers whether Bevy still has that finger pressed. Taken as a
+/// predicate rather than as `&Touches` so this stays a pure function the tests
+/// can drive — `Touches` has no public way to seed a pressed finger, and the one
+/// behaviour worth pinning here is precisely what happens when it says "no".
+fn heal_lost_touch(
+    state: &mut PointerBridge,
+    still_down: impl Fn(u64) -> bool,
+    out: &mut Vec<egui::Event>,
+) {
+    let Some(held) = state.touch else { return };
+    if still_down(held) {
+        return;
+    }
+    state.touch = None;
+    let Some(pos) = state.last else { return };
+    tracing::debug!(held, "released a touch the bridge never saw lifted");
+    out.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    out.push(egui::Event::PointerGone);
+}
+
 /// Split off the pointer events for one egui pass: everything up to and
 /// including the FIRST button event; the remainder stays in `pending` for the
 /// next pass. egui hit-tests once per pass, at the batch's **final** pointer
@@ -687,6 +762,7 @@ pub fn begin_egui_frame(
     mut window_events: MessageReader<bevy::window::WindowEvent>,
     mut keyboard_input: MessageReader<KeyboardInput>,
     time: Res<Time>,
+    touches: Res<bevy::input::touch::Touches>,
     mut pointer_bridge: Local<PointerBridge>,
     mut pointer_carry: Local<Vec<egui::Event>>,
 ) {
@@ -731,6 +807,14 @@ pub fn begin_egui_frame(
             .map(|p| egui::pos2(p.x / ui_scale, p.y / ui_scale)),
     );
     let mut pending = std::mem::take(&mut *pointer_carry);
+    // A finger we still believe is down, that Bevy no longer has: heal before
+    // reading this frame's events, so the recovery is ordered ahead of whatever
+    // the new finger is doing.
+    heal_lost_touch(
+        &mut pointer_bridge,
+        |id| touches.get_pressed(id).is_some(),
+        &mut pending,
+    );
     for ev in window_events.read() {
         pointer_events(ev, ui_scale, &mut pointer_bridge, &mut pending);
     }
@@ -1120,6 +1204,87 @@ mod tests {
             pointer_events(ev, ui_scale, &mut state, &mut out);
         }
         out
+    }
+
+    /// A finger that goes down and is never lifted — the Android camera intent
+    /// taking the activity away with a thumb still on the glass — must not deafen
+    /// the bridge to every later touch.
+    ///
+    /// Without the heal this is permanent: `state.touch` holds the dead id,
+    /// `pointer_events` returns early for every finger that is not it, and touch
+    /// ids only increase, so egui never receives another pointer event for the
+    /// rest of the run. See [`heal_lost_touch`].
+    #[test]
+    fn a_touch_that_is_never_lifted_does_not_deafen_the_bridge() {
+        use bevy::input::touch::TouchPhase;
+
+        let mut state = PointerBridge::default();
+        let mut out = Vec::new();
+        pointer_events(
+            &touch(7, TouchPhase::Started, 10.0, 20.0),
+            1.0,
+            &mut state,
+            &mut out,
+        );
+        assert_eq!(state.touch, Some(7), "the first finger takes the pointer");
+
+        // The lift never arrives — the app was suspended. On resume Bevy's own
+        // set is released (`quiesce_while_backgrounded`), which is the only
+        // signal that finger 7 is gone.
+        out.clear();
+        heal_lost_touch(&mut state, |_| false, &mut out);
+        assert_eq!(state.touch, None, "the dead finger was not released");
+        assert!(
+            matches!(
+                out.as_slice(),
+                [
+                    egui::Event::PointerButton { pressed: false, .. },
+                    egui::Event::PointerGone
+                ]
+            ),
+            "a healed lift must look exactly like a real one, got {out:?}"
+        );
+
+        // …and the next finger is heard.
+        out.clear();
+        pointer_events(
+            &touch(8, TouchPhase::Started, 30.0, 40.0),
+            1.0,
+            &mut state,
+            &mut out,
+        );
+        assert!(
+            out.iter().any(|e| matches!(
+                e,
+                egui::Event::PointerButton {
+                    pressed: true,
+                    button: egui::PointerButton::Primary,
+                    ..
+                }
+            )),
+            "the finger after a lost lift never reached egui, got {out:?}"
+        );
+    }
+
+    /// The heal must not fire on a finger that is genuinely still down, or every
+    /// drag would be cut short one frame after it started.
+    #[test]
+    fn a_finger_still_on_the_glass_is_left_alone() {
+        use bevy::input::touch::TouchPhase;
+
+        let mut state = PointerBridge::default();
+        let mut out = Vec::new();
+        pointer_events(
+            &touch(3, TouchPhase::Started, 10.0, 20.0),
+            1.0,
+            &mut state,
+            &mut out,
+        );
+
+        out.clear();
+        heal_lost_touch(&mut state, |id| id == 3, &mut out);
+        assert_eq!(state.touch, Some(3), "a live finger was released");
+        assert!(out.is_empty(), "a live finger produced events, got {out:?}");
     }
 
     /// The click-then-flick frame: `[move→target, press, release, move→far]`
