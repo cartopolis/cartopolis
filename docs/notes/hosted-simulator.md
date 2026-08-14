@@ -13,7 +13,7 @@ and each has a different audience:
 | Address | Who | What |
 |---|---|---|
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
-| `https://web.cartopolis.org` | operators | the account admin GUI (`web/`) |
+| `https://web.cartopolis.org` | operators | the account admin GUI — [`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy), a separate repo |
 
 **There is no plaintext port.** The simulator's TCP listener is bound to
 `127.0.0.1` and its HTTP listener to the docker0 gateway, so nothing it serves is
@@ -109,7 +109,13 @@ holding credentials, in order to serve 35 KB of static files and forward JSON to
 a Rust process that was already answering HTTP. What was worth borrowing from
 codebrew is its *front end*: the deepsignal store with its persistent/volatile
 split, and the `App.init` + `components/{pages,elements}` layout. Those are in
-`web/` and the backend is not.
+[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) and the backend is nowhere — the GUI is static
+files Caddy serves, and Caddy proxies `/api/*` to this simulator.
+
+The GUI lives in its own repository because it shares nothing with this one but
+an HTTP contract: no crate, no build, no lockfile, no CI lane. The cost is the
+one seam worth naming — its `src/types.ts` describes what `auth::AccountRow`
+serialises, and with the two apart nothing but a person keeps them in step.
 
 ## Rejected: CORS on the simulator
 
