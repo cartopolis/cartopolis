@@ -577,9 +577,9 @@ fn handle_render_error(
                 attempt = spent + 1,
                 "render device lost — rebuilding the renderer"
             );
-            return RenderErrorPolicy::Recover(
-                bevy::render::settings::RenderCreation::Automatic(default()),
-            );
+            return RenderErrorPolicy::Recover(bevy::render::settings::RenderCreation::Automatic(
+                default(),
+            ));
         }
     }
 
