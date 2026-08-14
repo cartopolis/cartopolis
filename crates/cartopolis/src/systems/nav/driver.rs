@@ -82,9 +82,15 @@
 //! fix wins when there is one ([`crate::platform::location`]) — that is what
 //! "navigating" means — and the avatar is moved to it, so the camera follow, the
 //! arrow, and the progress readout all keep reading the avatar and need to know
-//! nothing about GPS. Today only the web build has a provider; on desktop the
-//! avatar simply stays under the user's control and driver mode narrates *its*
-//! movement, which is also how it is testable without a dongle.
+//! nothing about GPS. The browser and Android have providers; on desktop there is
+//! none, so the avatar simply stays under the user's control and driver mode
+//! narrates *its* movement, which is also how it is testable without a dongle.
+//!
+//! **How the fix is applied depends on how far away it is** ([`GPS_TELEPORT_M`]).
+//! A position write moves the avatar within the anchored frame; it does not move
+//! the frame. So the first fix — the one that can land in a different town from
+//! whatever the app was looking at — is applied as a teleport, which re-anchors
+//! the map and brings the camera and every streamer with it.
 //!
 //! **Heading is a course over ground, not a facing.** The avatar's yaw is bound
 //! to the camera azimuth by `avatar::handle_avatar_movement` (W walks into the
@@ -272,6 +278,30 @@ const REROUTE_COOLDOWN: f32 = 10.0;
 /// display incapable of noticing that it was wrong, which is the one thing it must
 /// always be able to do.
 const SNAP_M: f64 = 25.0;
+
+/// How far a device fix may be from where the avatar already stands before it is
+/// applied as a **teleport** rather than as a position write.
+///
+/// A fix is not a step. The first one in particular arrives from a receiver that
+/// knows nothing about where the app happens to be looking: you plan a route in
+/// the city you were browsing, tap Drive, and the phone reports the town you are
+/// actually sitting in. `place_avatar` writes flat-frame metres measured from the
+/// **map anchor**, and nothing in that path moves the anchor — so a fix a few
+/// hundred kilometres away used to drop the avatar (and, through the chase rig,
+/// the camera) that far from the origin of a frame the tiles, buildings, terrain
+/// and route line are all still built around. Every streamer then rebuilds a
+/// pyramid at once, in one frame, on a phone GPU: exactly the mass mesh/texture
+/// churn this project already documents as the way to lose the device — after
+/// which `RenderErrorPolicy::StopRendering` freezes the picture for good and the
+/// app has to be restarted.
+///
+/// A [`Teleport`] is the operation that means "the world is somewhere else now":
+/// it re-anchors the map, drops the old tiles through the bounded despawn queue
+/// and brings the camera with it. So the rule is the ordinary one for this
+/// codebase — a *move* is a write, a *jump* is a teleport — and the threshold
+/// only has to be past anything a vehicle could cover between two fixes (2 km at
+/// 1 Hz is 7,200 km/h) while staying far inside the flat frame's honest range.
+const GPS_TELEPORT_M: f64 = 2_000.0;
 
 /// Above this reported accuracy (metres, 1σ) the fix cannot support a conclusion
 /// about which street you are on, so the chrome says so and the reroute stands down.
@@ -879,10 +909,10 @@ pub fn drive_driver_mode(
         driver.arrived = false;
     }
 
-    // A device fix wins over the avatar: that is what navigating is. Only the web
-    // build has a provider today, so on desktop this arm never fires and the
-    // avatar keeps its position — driver mode then narrates the user's own
-    // movement, which is exactly what makes it usable without a dongle.
+    // A device fix wins over the avatar: that is what navigating is. Desktop has
+    // no provider, so there this arm never fires and the avatar keeps its position
+    // — driver mode then narrates the user's own movement, which is exactly what
+    // makes it usable without a dongle.
     let now = Instant::now();
     let fix = driver.watch.as_ref().and_then(LocationWatch::latest);
     driver.gps_error = driver.watch.as_ref().and_then(LocationWatch::error);
@@ -911,7 +941,20 @@ pub fn drive_driver_mode(
     );
 
     if let Some(fix) = fix {
-        place_avatar(anchor, fix.lat, fix.lng, &mut avatar_state, &mut avatars);
+        // Near or far — see [`GPS_TELEPORT_M`]. Measured against where the avatar
+        // stands rather than against the previous fix, because the thing that must
+        // not happen is the *world* being left behind, and the avatar's position is
+        // what the map, the camera and every streamer are built around.
+        if fix_is_far(anchor, fix, &avatars) {
+            tracing::info!(
+                lat = fix.lat,
+                lng = fix.lng,
+                "device fix is far from the anchored world — teleporting rather than warping the avatar"
+            );
+            nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None));
+        } else {
+            place_avatar(anchor, fix.lat, fix.lng, &mut avatar_state, &mut avatars);
+        }
         driver.snap_pending = false;
     } else if driver.snap_pending {
         // No provider: start the drive at the route's start rather than wherever
@@ -1203,6 +1246,39 @@ fn place_avatar(
     }
     avatar_state.position = local;
     avatar_state.display_position = local;
+}
+
+/// Is this fix further from the avatar than [`GPS_TELEPORT_M`]?
+///
+/// Both sides are absolute world metres in the anchored flat frame — cell edge
+/// plus local translation for the avatar, [`lat_lng_to_world`] for the fix — so
+/// they are directly comparable and a cell boundary between them is not a jump.
+/// An avatar that cannot be read at all counts as far: there is nothing to write
+/// a position into, and a teleport is the operation that creates the state the
+/// write would need.
+fn fix_is_far(
+    anchor: (f64, f64, u32),
+    fix: GpsFix,
+    avatars: &Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+) -> bool {
+    let Ok((cell, tf)) = avatars.single() else {
+        return true;
+    };
+    let edge = f64::from(WORLD_CELL_EDGE);
+    let here = DVec3::new(
+        (cell.x as f64).mul_add(edge, f64::from(tf.translation.x)),
+        0.0,
+        (cell.z as f64).mul_add(edge, f64::from(tf.translation.z)),
+    );
+    gps_gap_m(anchor, fix.lat, fix.lng, here) > GPS_TELEPORT_M
+}
+
+/// Ground distance, in metres, between a `[lat, lng]` and a point already in the
+/// anchored world frame. Split out of [`fix_is_far`] so the units — the one thing
+/// that can silently be wrong about a threshold — are testable without a `World`.
+fn gps_gap_m(anchor: (f64, f64, u32), lat: f64, lng: f64, here: DVec3) -> f64 {
+    let (fx, fz) = lat_lng_to_world(anchor, lat, lng);
+    (here.x - fx).hypot(here.z - fz)
 }
 
 /// The camera input driver mode handles itself. Same readers
@@ -3496,6 +3572,44 @@ mod tests {
     /// The cue ladder: once per band per manoeuvre, re-armed by the next one, and
     /// silent on the frame driver mode starts — a "Now" chime for whatever junction
     /// you happen to be beside is not a way to begin a drive.
+    /// The rule that decides a write from a teleport, in the units it is written
+    /// in. `GPS_TELEPORT_M` is metres and `lat_lng_to_world` answers in metres of
+    /// the anchored flat frame, and a threshold that silently compared degrees —
+    /// or tile fractions — would read as "always near", i.e. as exactly the
+    /// avatar-warping behaviour this replaced, with nothing to show for itself.
+    #[test]
+    fn a_distant_fix_is_a_teleport_and_a_nearby_one_is_not() {
+        // Groningen, at the zoom the map anchors on.
+        let anchor = (53.2194, 6.5665, 14);
+        let here = DVec3::ZERO;
+
+        // The anchor itself is zero metres away, by definition.
+        assert!(gps_gap_m(anchor, anchor.0, anchor.1, here) < 1.0);
+
+        // ~111 m north (0.001° of latitude) is an ordinary step between two fixes
+        // and must stay a position write.
+        let step = gps_gap_m(anchor, anchor.0 + 0.001, anchor.1, here);
+        assert!(
+            (80.0..160.0).contains(&step),
+            "0.001° of latitude should read as ~111 m, got {step}"
+        );
+        assert!(step < GPS_TELEPORT_M);
+
+        // Amsterdam is a different city and must not be reached by writing a
+        // number into the avatar's transform.
+        let city = gps_gap_m(anchor, 52.3676, 4.9041, here);
+        assert!(
+            city > GPS_TELEPORT_M,
+            "a fix 150 km away must teleport, gap was {city} m"
+        );
+
+        // Symmetric in the avatar's own position: an avatar standing 10 km east of
+        // the anchor is far from a fix *at* the anchor, which is the case that
+        // matters — the map is built around the anchor, not around the fix.
+        let away = DVec3::new(10_000.0, 0.0, 0.0);
+        assert!(gps_gap_m(anchor, anchor.0, anchor.1, away) > GPS_TELEPORT_M);
+    }
+
     #[test]
     fn a_cue_fires_once_per_band_and_re_arms_at_the_next_turn() {
         let mut mem = CueMemory::default();

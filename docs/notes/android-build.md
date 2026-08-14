@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -475,3 +475,74 @@ inference in `run_location` failing, which is the fallback this file names.
 the app, then open it again — the previous run's report plus the log tail goes to
 the share sheet on launch (`offer_last_crash`). The Home-button test above is the
 cheaper half and worth doing first.
+
+## The freeze, half-answered: a halted renderer *is* a hang (2026-08-14)
+
+Still no device log, so the section above stands as written. What changed is that
+one reading of it was chased down in the source and turned out to be a mechanism
+rather than a hypothesis, plus two things on the path to it that were wrong on
+their own merits. All three are fixed; none of them has run on hardware, and if
+the freeze survives them the section above still says what log lines to read.
+
+**`RenderErrorPolicy::StopRendering` is terminal, and terminal looks exactly like
+a hang.** The 2026-08-12 pass installed it to stop the app *vanishing* on a render
+error, and it did that. What was not noticed is that bevy leaves the render state
+`Errored` for the rest of the process: nothing is drawn again, ever, while the
+window, the input and every system keep running. From outside the phone that is a
+still photograph of the last good frame which answers no touch — "it froze and I
+had to restart it", indistinguishable from a deadlock and with the explanation
+only in `logcat`, i.e. only reachable with the cable this whole note exists to do
+without. A pause/resume is the ordinary way for an Android app to lose its
+surface, and a system dialog is the ordinary way to be paused, so *any* GPU error
+that a dialog provoked cost the entire session.
+
+`lib.rs::handle_render_error` now answers by kind. `DeviceLost` — the error wgpu
+delivers through its own device-lost callback, and the one that is plausibly
+transient — rebuilds the renderer through `RenderCreation::Automatic`, twice at
+most (`MAX_RENDER_RECOVERIES`; a device that has genuinely gone answers every
+attempt the same way and an uncapped loop is a flat battery). `Validation` and
+`OutOfMemory` still halt, for the reason the earlier note gives: they recur the
+instant rendering resumes, and `Ignore` on a handheld screen is a strobe. A halt
+is now **written to `crash_report_path()`**, so the next launch hands it to the
+share sheet exactly as a panic — which is the whole point, and is how
+`FLOAT32_FILTERABLE` was named in one round trip. It is also logged once rather
+than once per frame; bevy calls the handler on every extract for as long as the
+state stays `Errored`.
+
+**The first GPS fix used to warp the avatar across a stale map anchor.**
+`driver::place_avatar` writes flat-frame metres measured from the *map anchor*,
+and nothing in that path moves the anchor. The fix a receiver reports knows
+nothing about where the app happens to be looking, so the everyday case — plan a
+route in the city you were browsing, tap Drive, phone reports the town you are
+actually in — dropped the avatar, and through the chase rig the camera,
+potentially hundreds of kilometres from the origin of a frame the tiles,
+buildings, terrain and route line were all still built around. Every streamer
+then rebuilds at once, in one frame, on a phone GPU: the mass mesh/texture churn
+this project already documents as the way to lose the device, after which the
+paragraph above applies. `driver::GPS_TELEPORT_M` decides: past 2 km the fix is
+applied as a `Teleport`, which re-anchors the map, retires the old tiles through
+the bounded despawn queue and brings the camera with it; under it, the cheap
+position write it always was. Note this is also a *correctness* fix independent
+of the freeze — the avatar now ends up on a map of where the device is.
+
+**Two threads were writing the activity's `Window` at the same instant.**
+`platform::android`'s own `open_url` documents that `Activity.startActivity` from
+a non-UI thread reaches `cancelInputsAndStartExitTransition`, which reads the
+decor view, and sidesteps it via the application context.
+`Activity.requestPermissions` reaches the same code through
+`startActivityForResult` and has no such escape — there is no dex-free way to post
+a `Runnable` to the UI thread, which is the constraint this whole file is shaped
+by. What was avoidable is the *other* writer: driver mode turns on and asks for
+the permission on one frame, and `apply_screen_wakelock` answers the same frame by
+setting `FLAG_KEEP_SCREEN_ON`, which the framework performs on the UI thread, on
+that same window, while the framework is also tearing its input channel down for
+the incoming dialog. `PERMISSION_DIALOG_UP` now defers the wakelock until the
+dialog is gone. A flag on a window can wait a second; three writers on one window
+is not a race worth having.
+
+**What a device still has to settle**, unchanged in priority: whether the surface
+survives the first resume (the Home-button test needs no permission and no
+route), and whether `getLastKnownLocation` ever moves. If the freeze persists,
+the new evidence is a *share sheet on the next launch* naming the render error —
+and if there is no share sheet and no crash report, the renderer never errored
+and the hang is above it.

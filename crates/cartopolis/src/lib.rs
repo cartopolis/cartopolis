@@ -487,6 +487,132 @@ fn offer_last_crash() {
     }
 }
 
+/// How many times the renderer may be rebuilt from scratch before the app stops
+/// trying.
+///
+/// A cap, not a policy: a device that has genuinely gone (a driver reset that
+/// takes the GPU with it, a phone that has decided this process may not have one)
+/// answers every attempt the same way, and an uncapped loop would spend the
+/// battery re-initialising wgpu forever. Two is enough to cross a *transient* —
+/// the one this exists for is the Android pause/resume that a system dialog
+/// causes, where the surface goes away underneath a frame in flight.
+const MAX_RENDER_RECOVERIES: u32 = 2;
+
+/// Rebuild attempts spent so far. A `RenderErrorHandler` is a bare `fn` pointer
+/// with no captured state and no `&mut self`, so the counter has to live out
+/// here.
+static RENDER_RECOVERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Set once the renderer has been halted for good, so the halt is logged and
+/// recorded once rather than on every frame for the rest of the run.
+static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What to do about a `RenderError`. **Never end the app**, and — this is the part
+/// that changed — do not always freeze it either.
+///
+/// Bevy's default handler writes `AppExit::error()` on any `RenderError`, and its
+/// own comment calls that overzealous. It cost this project a day: the first phone
+/// the client ever ran on lacked `FLOAT32_FILTERABLE`, four atmosphere LUT bind
+/// groups failed validation, and the client *vanished* three seconds in — aborting
+/// inside libc on the way out, so there was no Rust panic, no exit message, and a
+/// crash report that could only say "the process was killed".
+///
+/// `StopRendering` was the answer to that and it kept the log flowing, but it is
+/// **terminal**: bevy leaves the render state `Errored` and never draws again, so
+/// the app the user is holding is a still photograph of the last good frame that
+/// answers no input. That is indistinguishable from a hang, and it is what a
+/// phone reports as "it froze, I had to restart it". Applying that to *every*
+/// error class meant one lost surface — the ordinary consequence of a system
+/// dialog pausing an Android activity — cost the whole session.
+///
+/// So the answer is by kind:
+///
+/// - **`DeviceLost`** is the one bevy's recovery path exists for (it is delivered
+///   by wgpu's own `set_device_lost_callback`), and it is the one that is
+///   plausibly transient: the device came back, our handles did not. Rebuild, up
+///   to [`MAX_RENDER_RECOVERIES`], with `RenderCreation::Automatic` — the same
+///   thing `RenderPlugin`'s default builds the renderer with at startup, so
+///   recovery lands on the configuration the app already had rather than on a
+///   second, divergent one.
+/// - **`Validation`** is a bug in how we drive wgpu and it recurs the moment
+///   rendering resumes. Rebuilding cannot fix it and would loop; `Ignore` would
+///   resume straight into it, and bevy's own warning on that variant is rapid
+///   flashing, which is not a thing to do to a handheld screen. Halt.
+/// - **`OutOfMemory`** likewise: the scene that would not fit is still the scene.
+///   Halt rather than thrash a device that is already short.
+///
+/// **A halt is recorded, not just logged.** The point of the whole crash-reporter
+/// apparatus is that a phone has no cable; a frozen picture with the explanation
+/// only in `logcat` is the same undiagnosable freeze as before. So the first halt
+/// writes the report the *next* launch hands to the share sheet
+/// (`offer_last_crash`), which is how `FLOAT32_FILTERABLE` was named in one round
+/// trip. Once only — bevy calls this handler every frame for as long as the state
+/// stays `Errored`.
+fn handle_render_error(
+    error: &bevy::render::error_handler::RenderError,
+    _main_world: &mut World,
+    _render_world: &mut World,
+) -> bevy::render::error_handler::RenderErrorPolicy {
+    use bevy::render::error_handler::{ErrorType, RenderErrorPolicy};
+    use std::sync::atomic::Ordering;
+
+    let recoverable = matches!(error.ty, ErrorType::DeviceLost);
+    if recoverable {
+        let spent = RENDER_RECOVERIES.fetch_add(1, Ordering::Relaxed);
+        if spent < MAX_RENDER_RECOVERIES {
+            tracing::warn!(
+                kind = ?error.ty,
+                description = %error.description,
+                attempt = spent + 1,
+                "render device lost — rebuilding the renderer"
+            );
+            return RenderErrorPolicy::Recover(
+                bevy::render::settings::RenderCreation::Automatic(default()),
+            );
+        }
+    }
+
+    // `swap` rather than a load-then-store: this is reached every frame from here
+    // on, and the report and the log line are for the *first* one.
+    if !RENDER_HALTED.swap(true, Ordering::Relaxed) {
+        tracing::error!(
+            kind = ?error.ty,
+            description = %error.description,
+            recoveries = RENDER_RECOVERIES.load(Ordering::Relaxed),
+            "render error — halting the renderer, keeping the app alive"
+        );
+        record_render_halt(error);
+    }
+    RenderErrorPolicy::StopRendering
+}
+
+/// Leave a halted renderer's explanation where the next launch will find it.
+///
+/// Android only, because it is the only platform where nobody can read the log:
+/// on a desktop the same information is already on the terminal the app was
+/// started from. Deliberately the same file the panic hook writes, so there is one
+/// thing `offer_last_crash` has to look for and one share sheet on the next
+/// launch — a halted renderer and a panic are the same question from the user's
+/// side ("it stopped working, here is why").
+#[cfg(target_os = "android")]
+fn record_render_halt(error: &bevy::render::error_handler::RenderError) {
+    let report = format!(
+        "cartopolis {} ({})\nabi: {}\nThe renderer was halted by a {:?} error and the \
+         picture is frozen from here on; the process itself is still running. This is not \
+         a crash — it is the deliberate response to a GPU error we cannot resume through. \
+         Rebuild attempts spent: {}.\nerror: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CARTO_BUILD_SHA").unwrap_or("unknown build"),
+        std::env::consts::ARCH,
+        error.ty,
+        RENDER_RECOVERIES.load(std::sync::atomic::Ordering::Relaxed),
+        error.description,
+    );
+    let _ = std::fs::write(crash_report_path(), report);
+}
+
+#[cfg(not(target_os = "android"))]
+fn record_render_halt(_error: &bevy::render::error_handler::RenderError) {}
+
 /// Start the client.
 ///
 /// On the web this is deliberately *not* the whole of startup: the persistent
@@ -986,35 +1112,10 @@ fn run_client() {
         // Space background: the atmosphere skybox covers this everywhere in the local
         // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
         .insert_resource(ClearColor(Color::BLACK))
-        // A render error stops the renderer; it does not end the app.
-        //
-        // Bevy's default handler writes `AppExit::error()` on any `RenderError`, and
-        // its own comment calls that overzealous. It cost this project a day: the
-        // first phone the client ever ran on lacked `FLOAT32_FILTERABLE`, four
-        // atmosphere LUT bind groups failed validation, and the client *vanished*
-        // three seconds in — aborting inside libc on the way out, so there was no
-        // Rust panic, no exit message, and a crash report that could only say "the
-        // process was killed". Every diagnosis after that started from nothing.
-        //
-        // `StopRendering` keeps the process alive, which is the whole point: the log
-        // keeps flowing, the crash reporter records a *clean* run instead of a kill,
-        // and the failure reads as a frozen view rather than an app that isn't there.
-        // On a platform where each iteration is a CI build and a manual install, that
-        // is the difference between one round trip and one per error.
-        //
-        // Deliberately **not** `Ignore`, which would resume rendering and surface any
-        // errors hiding behind the first. An unaddressed error recurs every frame, and
-        // bevy's own warning on that variant is rapid flashing — not a risk worth
-        // taking on a handheld screen for a diagnostic convenience.
+        // A render error is answered by kind: rebuild the renderer, or halt it —
+        // never by ending the app. See `handle_render_error`.
         .insert_resource(bevy::render::error_handler::RenderErrorHandler(
-            |error, _main_world, _render_world| {
-                tracing::error!(
-                    kind = ?error.ty,
-                    description = %error.description,
-                    "render error — halting the renderer, keeping the app alive"
-                );
-                bevy::render::error_handler::RenderErrorPolicy::StopRendering
-            },
+            handle_render_error,
         ))
         // 2048 rather than 4096: with sun + moon each casting 4 cascades, a night
         // frame renders 8 shadow maps — 2048² quarters the shadow-pass fill and
@@ -2695,6 +2796,16 @@ fn apply_screen_wakelock(
 ) {
     let want = driver.active && prefs.keep_screen_on;
     if want == *held {
+        return;
+    }
+    // Not while a permission dialog is up. `*held` is deliberately left alone, so
+    // this is a *deferral* and not a skip: the next frame asks again, and the flag
+    // lands as soon as the dialog is gone. The reason is
+    // `platform::android::PERMISSION_DIALOG_UP` — driver mode raises the dialog and
+    // wants the wakelock on the same frame, and both end up writing the activity's
+    // one `Window` from different threads.
+    #[cfg(target_os = "android")]
+    if platform::android::permission_dialog_up() {
         return;
     }
     *held = want;

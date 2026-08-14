@@ -494,6 +494,36 @@ const FIRST_FIX_MAX_AGE: Duration = Duration::from_secs(60);
 /// framework is free to be slower.
 const UPDATE_INTERVAL_MS: i64 = 1000;
 
+/// Set while the system's runtime-permission dialog is up.
+///
+/// **This exists to keep two threads off the activity's `Window` at once, and
+/// that is not hygiene.** `Activity.requestPermissions` is reached from the
+/// location worker, and its AOSP implementation ends in
+/// `startActivityForResult` → `cancelInputsAndStartExitTransition`, which reads
+/// `mWindow.peekDecorView()` and walks the view hierarchy cancelling pending
+/// input — a UI-thread structure, touched from ours. `open_url` in this same file
+/// documents that hazard and sidesteps it by starting from the *application*
+/// context; the permission dialog has no such escape, because there is no
+/// dex-free way to post a `Runnable` to the UI thread (see the module note).
+///
+/// What we can do is not make it worse. Driver mode turns on at the same instant
+/// it asks for the permission, and `apply_screen_wakelock` answers that by writing
+/// `FLAG_KEEP_SCREEN_ON` — which the framework performs on the UI thread, on the
+/// same `Window`, while the framework is also tearing that window's input channel
+/// down for the incoming dialog. Three writers on one window is not a race worth
+/// having for a flag that can just as well be set a moment later, so the wakelock
+/// waits on this.
+static PERMISSION_DIALOG_UP: AtomicBool = AtomicBool::new(false);
+
+/// Whether a runtime-permission dialog is up — see [`PERMISSION_DIALOG_UP`].
+///
+/// Always `false` before anything asks for a permission and after the answer
+/// lands, so a caller that reads it on every frame is reading "no" almost always.
+#[must_use]
+pub fn permission_dialog_up() -> bool {
+    PERMISSION_DIALOG_UP.load(Ordering::Relaxed)
+}
+
 /// Distinct request codes per subscription, so two overlapping `LocationWatch`es
 /// cannot cancel each other. `PendingIntent` identity includes the request code, so
 /// a stopping watch's `removeUpdates` then names only its own registration —
@@ -582,6 +612,26 @@ fn nap(cancel: &AtomicBool, total: Duration) -> bool {
         left -= step;
     }
     !cancel.load(Ordering::Relaxed)
+}
+
+/// Raises [`PERMISSION_DIALOG_UP`] for as long as it is alive.
+///
+/// A guard rather than a pair of stores because the wait it spans has five exits
+/// — granted, denied, cancelled, a JNI failure, and the `?` on the request itself
+/// — and one of them forgetting to lower the flag is a permanent one.
+struct PermissionDialog;
+
+impl PermissionDialog {
+    fn raise() -> Self {
+        PERMISSION_DIALOG_UP.store(true, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for PermissionDialog {
+    fn drop(&mut self) {
+        PERMISSION_DIALOG_UP.store(false, Ordering::Relaxed);
+    }
 }
 
 /// The outcome of asking for the location permission.
@@ -848,6 +898,11 @@ fn settle_permission(
     // one, and the two are indistinguishable without knowing whether we ever
     // asked (see `quiesce_while_backgrounded`, which logs the other half).
     tracing::info!("asking for the location permission — the system dialog is about to appear");
+    // Raised *before* the call and lowered on every path out of the wait below
+    // (`PermissionDialog`'s `Drop`), including the `?` — see [`PERMISSION_DIALOG_UP`]
+    // for what reads it. A flag left raised would hold the screen-wakelock write
+    // off for the rest of the run.
+    let _dialog = PermissionDialog::raise();
     request_permission(env, activity)?;
     // **Polling, because the answer is unreachable.** The result arrives at
     // `Activity.onRequestPermissionsResult`, which is a Java method we would have
