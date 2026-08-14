@@ -13,7 +13,9 @@
 //!   [`run_location`] for what it does instead and why.
 //! - **Keep-screen-on** ([`set_keep_screen_on`]) turned out to need no JNI at all:
 //!   the NDK already carries the UI-thread hop we would otherwise have needed a
-//!   `Runnable` for.
+//!   `Runnable` for. It does need a thread of its own, for a reason that has
+//!   nothing to do with JNI and everything to do with android-activity's lock —
+//!   see the function.
 //! - **`open_url`** is plain framework classes (`Uri`, `Intent`, `Context`) and was
 //!   never in doubt.
 //!
@@ -54,7 +56,7 @@
 //! it before the `Err` crosses the boundary.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
 use bevy::android::android_activity::WindowManagerFlags;
@@ -397,31 +399,99 @@ pub fn report_frame(actual_nanos: i64) {
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------
 
+/// The one thread allowed to call `AndroidApp::set_window_flags`. See
+/// [`set_keep_screen_on`] for why it cannot be a Bevy system's thread.
+///
+/// `None` if the thread could not be spawned; the flag is then simply never set,
+/// which costs a screen timeout rather than a frozen app.
+static WINDOW_FLAGS: OnceLock<Option<mpsc::Sender<bool>>> = OnceLock::new();
+
 /// Hold the screen awake while the app is in the foreground (driver mode's reason
 /// for existing: the phone otherwise blanks thirty seconds into a drive).
 ///
-/// **This needs no JNI and no `Runnable`, and that is the interesting part.** The
-/// obvious route — `Window.addFlags(FLAG_KEEP_SCREEN_ON)` — has to run on the Java
-/// UI thread, and `Activity.runOnUiThread` takes a `Runnable`, i.e. a class we
-/// cannot define. But the NDK already exposes exactly this one operation with the
-/// hop built in: `ANativeActivity_setWindowFlags`, which android-activity wraps as
-/// `AndroidApp::set_window_flags`, writes a `CMD_SET_WINDOW_FLAGS` work item into
-/// the activity's main-work pipe; the **UI thread's** looper reads it and performs
-/// the `getWindow().setFlags()` itself. So it is safe to call from any thread by
-/// construction, not by luck.
+/// **This needs no JNI and no `Runnable`.** The obvious route —
+/// `Window.addFlags(FLAG_KEEP_SCREEN_ON)` — has to run on the Java UI thread, and
+/// `Activity.runOnUiThread` takes a `Runnable`, i.e. a class we cannot define. But
+/// the NDK already exposes exactly this one operation with the hop built in:
+/// `ANativeActivity_setWindowFlags` writes a `CMD_SET_WINDOW_FLAGS` work item into
+/// the activity's main-work pipe and the **UI thread's** looper performs the
+/// `getWindow().setFlags()`. That NDK call is thread-safe by construction.
 ///
-/// *Guaranteed by contract:* the NDK documents `ANativeActivity_setWindowFlags` as
-/// "calls `getWindow().setFlags()` of the given activity", and the pipe hop is
-/// AOSP's implementation of it. *Needs a device:* that the flag survives the
-/// activity's own window recreation on a configuration change — the manifest's
-/// `configChanges` list is meant to prevent that recreation, so the expectation is
-/// that it does, but nothing here re-asserts the flag if it doesn't.
-// `allow`: `platform` is a *private* module, so a `pub fn` nothing in the crate
-// calls is dead code — and this deliberately has no caller yet (driver mode is
-// where it belongs). Delete the attribute with the first call site, not before:
-// its absence is what will report the *next* orphan here.
-#[allow(dead_code)]
+/// **android-activity's wrapper is not, and that distinction froze the app.**
+/// `AndroidApp::set_window_flags` is one of three methods that take
+/// `AndroidApp::inner.write()` — and `AndroidApp::poll_events` holds
+/// `inner.read()` *across its callback*, which on this stack is winit's
+/// `single_iteration`, which is the entire Bevy update. So a Bevy system calling
+/// this waits for a write lock whose reader is the frame the system is part of:
+///
+/// ```text
+/// android_main ──read()──▶ poll_events ──▶ winit ──▶ App::update ──┐
+///        ▲                                                         │
+///        └── never returns, so the read guard never drops           ▼
+///                        task-pool thread ──write()──▶ set_window_flags (blocks)
+/// ```
+///
+/// The schedule never finishes, input is never drained, and five seconds later the
+/// system posts an ANR. That is the freeze reported on 2026-08-14 the instant
+/// driver mode turned on, and the bracketed `asking`/`done` pair added for it is
+/// what proved it: the log carries `asking` and no `done`, and the ANR's thread
+/// dump has the task-pool thread parked on a futex inside our own `.so` with no
+/// `libandroid.so` frame — i.e. blocked *before* reaching the NDK, in the Rust
+/// lock.
+///
+/// So the call is queued to a thread of its own, which is free to block until the
+/// frame it was asked in has ended. Two consequences worth knowing: the flag lands
+/// a frame late (irrelevant for a screen timeout measured in tens of seconds), and
+/// a queued writer briefly blocks *readers* — `vm()` and `activity()` take
+/// `inner.read()` — so a JNI call on the location thread can wait out the rest of
+/// a frame. Bounded, and it never touches the schedule. There is no way to avoid
+/// the lock: android-activity 0.6 exposes no raw `ANativeActivity*`, so the NDK
+/// function it wraps cannot be called directly.
+///
+/// *Needs a device:* that the flag survives the activity's own window recreation
+/// on a configuration change — the manifest's `configChanges` list is meant to
+/// prevent that recreation, so the expectation is that it does, but nothing here
+/// re-asserts the flag if it doesn't.
 pub fn set_keep_screen_on(on: bool) {
+    if ANDROID_APP.get().is_none() {
+        return;
+    }
+    // One thread, one queue: values are applied in the order they were asked for,
+    // so a rapid off/on cannot land as on/off.
+    let tx = WINDOW_FLAGS.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<bool>();
+        let spawned = std::thread::Builder::new()
+            // 15 characters — Android truncates a thread name there, and this one
+            // has to stay legible in the watchdog's stalled-process dump.
+            .name("carto winflags".to_string())
+            .spawn(move || {
+                for want in rx {
+                    apply_keep_screen_on(want);
+                }
+            });
+        match spawned {
+            // Detached: the queue is the whole protocol, and the thread ends when
+            // the sender in this `OnceLock` is dropped, i.e. at process exit.
+            Ok(_handle) => Some(tx),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not start the window-flags thread");
+                None
+            }
+        }
+    });
+    if let Some(tx) = tx {
+        let _ = tx.send(on);
+    }
+}
+
+/// Perform the flag write. **Only ever called on the `carto winflags` thread** —
+/// see [`set_keep_screen_on`] for what happens when it isn't.
+///
+/// The bracketed `asking`/`done` pair is a diagnostic, not noise: on a platform
+/// where a blocked call is indistinguishable from a system that never ran, this is
+/// what separates the two in one line of the next report. It caught this bug and
+/// it stays to catch the next one.
+fn apply_keep_screen_on(on: bool) {
     let Some(app) = ANDROID_APP.get() else {
         return;
     };
@@ -436,18 +506,6 @@ pub fn set_keep_screen_on(on: bool) {
             WindowManagerFlags::KEEP_SCREEN_ON,
         )
     };
-    // Logged on **both** sides of the call, and that is a diagnostic, not noise.
-    // On 2026-08-14 the app froze on the frame driver mode turned on, and this was
-    // one of three things that ran there; the log carried no `keep-screen-on` line,
-    // which is equally consistent with "the system never ran" and with "the call
-    // never returned". Those are completely different bugs and there was no way to
-    // choose. A bracketed pair decides it in one line of the next report.
-    //
-    // The NDK documents `ANativeActivity_setWindowFlags` as callable from *any*
-    // thread — it writes a work item that the UI thread's looper performs — so the
-    // expectation is that both lines always appear together. This is here to
-    // notice the day that stops being true, which on this platform is a thing that
-    // has to be noticed from the outside.
     tracing::info!(on, "keep-screen-on: asking");
     app.set_window_flags(add, remove);
     tracing::info!(on, "keep-screen-on: done");
@@ -477,8 +535,9 @@ pub fn set_keep_screen_on(on: bool) {
 /// show lets the IME decline (e.g. when a hardware keyboard is attached), which
 /// would make a negative result unreadable — "nothing happened" has to mean the
 /// framework refused, not that we asked politely.
-// `allow`: see `set_keep_screen_on`. This one is expected to stay uncalled in
-// shipped code — wire it to a debug affordance for the one run, then delete it.
+// `allow`: `platform` is a *private* module, so a `pub fn` nothing in the crate
+// calls is dead code. This one is expected to stay uncalled in shipped code —
+// wire it to a debug affordance for the one run, then delete it.
 #[allow(dead_code)]
 pub fn show_soft_input(show: bool) {
     let Some(app) = ANDROID_APP.get() else {
@@ -526,7 +585,7 @@ const FLAG_ACTIVITY_NEW_TASK: i32 = 0x1000_0000;
 /// Callers own the scheme policy — `data_layers::open_url` already restricts to
 /// http(s) because an OSM `website` tag is untrusted data, and this must not be
 /// wired to anything that skips that step.
-// `allow`: see `set_keep_screen_on`. `data_layers::open_url`'s catch-all arm is the
+// `allow`: see `show_soft_input`. `data_layers::open_url`'s catch-all arm is the
 // call site waiting for this. Note the attribute also keeps `open_url_inner` and
 // `FLAG_ACTIVITY_NEW_TASK` live — rustc's dead-code pass seeds its worklist from
 // `allow(dead_code)` items, so everything reachable from here is spared too.
