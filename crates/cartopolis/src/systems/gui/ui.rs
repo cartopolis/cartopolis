@@ -1081,7 +1081,18 @@ pub fn sync_dialog_to_selection(
     }
 }
 
-/// Render context menu when a prim is right-clicked
+/// The map's context menu: right-click on a desktop, **long-press on a phone**
+/// (`systems::touch` fires an emulated `Right` for a held finger, which is what
+/// `picking` opens this on).
+///
+/// It is reached from a point on the map rather than from a panel, so it is where
+/// the acts that take a *coordinate* live: route to or from here, and save here as
+/// a place.
+///
+/// At 15 system parameters this is one short of Bevy's cap of 16. The next thing
+/// that needs world access here should be grouped into a `SystemParam` rather than
+/// added to the list — `camera_controls` hit the same wall and that is what it
+/// did.
 pub fn render_context_menu(
     mut commands: Commands,
     mut egui: ResMut<EguiManager>,
@@ -1094,6 +1105,14 @@ pub fn render_context_menu(
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut script_editor: ResMut<crate::systems::script_editor::ScriptEditorState>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    // Saving the point under the cursor as a place. `BookmarksState` is `Res` and
+    // not `ResMut` on purpose: `request_address` resolves the name through an
+    // interior-mutability channel, so this menu does not have to contend with the
+    // Places panel for the resource every frame it happens to be open.
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+    bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
+    camera_state: Res<crate::resources::CameraState>,
+    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
 ) {
     use crate::resources::RightPanel;
     use crate::systems::navigation::Endpoint;
@@ -1101,6 +1120,12 @@ pub fn render_context_menu(
     if !context_menu.visible {
         return;
     }
+
+    // Read before the menu closure, which already borrows half the world: this is
+    // one number, and taking the query in there as well buys nothing.
+    let camera_altitude = camera.single().ok().map(|(cell, tf)| {
+        cell.y as f64 * crate::grid::WORLD_CELL_EDGE as f64 + tf.translation.y as f64
+    });
 
     // Position the context menu where the click landed. `screen_pos` came from
     // `Window::cursor_position` (picking), so it is in window points and needs
@@ -1154,6 +1179,42 @@ pub fn render_context_menu(
                     route.set_endpoint_at(Endpoint::From, lat, lng);
                     *right_panel = RightPanel::Route;
                     context_menu.visible = false;
+                }
+
+                // ── Save the point you pointed at ──
+                //
+                // The same ☆ the corner overlay wears, because it is the same act
+                // with a different subject: the overlay's saves *where the camera
+                // is*, this saves *where you tapped*. Until now the second one had
+                // to be done by flying there first and then pressing ☆, which on a
+                // phone means losing the view you were looking at to record a spot
+                // inside it.
+                //
+                // Altitude and pose come from the camera rather than from the hit
+                // point, because a saved place is a remembered *view* as well as a
+                // coordinate (`CameraPose::apply`) — a place saved from orbit that
+                // returned you to ground level would be a different place.
+                if let Some(altitude) = camera_altitude {
+                    let star = theme::first_drawable(ui.ctx(), &["☆", "★", "+"]);
+                    if ui
+                        .button(format!("{star}  Save this place"))
+                        .on_hover_text("Add this point to Places, named by reverse lookup")
+                        .clicked()
+                    {
+                        let id = store.add_bookmark(
+                            crate::systems::bookmarks::PLACEHOLDER_NAME.to_string(),
+                            lat,
+                            lng,
+                            altitude,
+                            crate::systems::geo_nav::CameraPose::capture(&camera_state),
+                        );
+                        // Named by the same reverse lookup the ☆ uses, so a place
+                        // saved either way lands in the list reading as an address
+                        // rather than as six decimals.
+                        bookmarks.request_address(id, lat, lng);
+                        *right_panel = RightPanel::Places;
+                        context_menu.visible = false;
+                    }
                 }
                 ui.separator();
             }
