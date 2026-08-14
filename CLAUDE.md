@@ -174,14 +174,15 @@ Startup switches for bisecting a render problem, each removing one layer:
 
 ## Architecture
 
-There is also **`web/`**, which is not a crate: the account-admin GUI, a Preact +
-deepsignal app built with Bun and deployed to `web.cartopolis.org` on every push
-to `main`. It talks to the simulator's `/api/admin` surface and nothing else. Its
-architecture is borrowed from
-[codebrew](https://code.garage44.eu/jeroen/codebrew) — one deepsignal store whose
-`persistentState` doubles as the localStorage whitelist, an `App.init` bootstrap,
-and `components/{pages,elements}` with one folder per component. `web/README.md`
-has the dev loop; `docs/notes/hosted-simulator.md` has the deployment.
+The account-admin GUI is **not in this repo**: it is
+[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy), a Preact + deepsignal app deployed to
+`web.cartopolis.org` on every push to its own `main`. It talks to this
+simulator's `/api/admin` surface and nothing else, which is the whole reason it
+can live apart. The seam to know about is `src/types.ts` over there — a
+hand-written description of what `auth::AccountRow` serialises here, and with the
+two in separate repositories nothing but a person keeps them in step. Change an
+account field and change it there too. `docs/notes/hosted-simulator.md` has the
+deployment.
 
 This is a **Cargo workspace** with six crates:
 

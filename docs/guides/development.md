@@ -164,11 +164,13 @@ loopback-only, so there is nothing plaintext to reach.
 [`docs/notes/hosted-simulator.md`](../notes/hosted-simulator.md) has the shape and
 what is still open.
 
-**The admin GUI.** `web/` is a Preact + deepsignal app (Bun, no Rust) for managing
-accounts on that simulator; it deploys to
-[web.cartopolis.org](https://web.cartopolis.org). `bun run dev` in that directory
-proxies to a local simulator, so it runs against the real API rather than a mock —
-`web/README.md` has the two commands.
+**The admin GUI is a separate repository.**
+[`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy) — Preact + deepsignal, Bun, no Rust — manages
+accounts on the hosted simulator and deploys itself to
+[web.cartopolis.org](https://web.cartopolis.org) on every push to its `main`. It
+depends on this repo only through the simulator's `/api/admin` responses; its
+README has the dev loop, and its `bun run dev` proxies to a local simulator so it
+runs against the real API rather than a mock.
 
 Platform differences live behind one API in `platform/` — native and wasm
 implementations of `http`, `storage`, `location`, `stream`, `work`, `workers`.
@@ -302,13 +304,14 @@ Both jobs use the prebuilt `cartopolis-ci` image and check out with `lfs: true` 
 that to any new job. `deploy-web.yml`, `deploy-android.yml` and `deploy-sim.yml`
 (all three `workflow_dispatch` only) and `release.yml` are separate workflows.
 
-`deploy-admin.yml` is the exception to both rules above, and deliberately: it runs
-on **every push to `main`** that touches `web/`, and it checks out **without**
-LFS. It is a Bun build of ~35 KB of TypeScript — seconds, not minutes — it
-references no LFS object, and publishing it interrupts nobody. The other three are
-manual because publishing them is either expensive (a ~70 MB wasm link competing
-for a runner slot) or disruptive (`deploy-sim.yml` restarts the live simulator,
-dropping every connected session).
+Every deploy lane in *this* repo is manual, because publishing is either
+expensive (a ~70 MB wasm link competing for a runner slot) or disruptive
+(`deploy-sim.yml` restarts the live simulator, dropping every connected session).
+The admin GUI's lane is the opposite — seconds, and it interrupts nobody — so it
+runs on every push; it lives in the `cartopy` repo along with the app. The runner
+is instance-wide and `/data/cartopolis/admin` is already in its `valid_volumes`,
+so a workflow in another repo publishes to the same host directory with no runner
+change.
 
 **A step may only use a tool the image already has.** The image is built by hand on
 the VPS (`~/build/cartopolis-ci-image/Dockerfile`, then `docker build -t
