@@ -11,6 +11,22 @@ name: Deploy Android
 # There is exactly one APK on disk at a time. The filename is fixed, so each run
 # overwrites the last and nothing accumulates — an APK is 25-45 MB and a history
 # of them is 45 MB per push of something nobody would install twice.
+#
+# **A commit is published once.** The `published` job below compares this run's
+# commit against the one recorded beside the APK and skips the build entirely
+# when they match. Two reasons, and the second is the one that matters:
+#
+#   * it is 15-25 minutes of a capacity-2 runner to rebuild bytes that already
+#     exist, and this workflow is dispatched by hand — by someone who cannot see
+#     from the Actions tab what is currently on the site;
+#   * `VERSION_CODE` is derived from the *run number*, so a second run of the
+#     same commit publishes an APK that differs from the installed one in
+#     nothing but its version code. Every phone then offers an update whose
+#     entire content is that it is numbered higher, which is exactly the noise
+#     that teaches people to ignore updates.
+#
+# Pass `force` to rebuild anyway — for a signing-key change, a landing-page fix
+# applied by hand, or an APK that shipped from a bad checkout.
 on:
   # Manual only. This used to run on every push to `main`, which on a
   # capacity-2 runner meant the APK competed with CI for a slot on every
@@ -19,7 +35,14 @@ on:
   #   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \
   #     -d '{"ref":"main"}' \
   #     "$FORGEJO_API/repos/$FORGEJO_REPO/actions/workflows/deploy-android.yml/dispatches"
+  # …and to build a commit that is already published, add the input:
+  #     -d '{"ref":"main","inputs":{"force":"true"}}'
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if this commit is already published
+        type: boolean
+        default: false
 
 env:
   # Save the Rust cache even when the job fails. `rust-cache`'s post step is
@@ -54,8 +77,63 @@ env:
   SCCACHE_CACHE_SIZE: 20G
 
 jobs:
+  # Seconds, and it saves tens of minutes. A separate job rather than a first
+  # step with eight `if:`s hung off it: a skipped *job* says so in the Actions
+  # tab, while a job that runs every step as a no-op and reports success is
+  # indistinguishable from one that published something.
+  #
+  # It mounts the web root **read-only** — this job's whole purpose is to read
+  # one file, and the deploy job below is the only thing that may write there.
+  # No `actions/checkout`: the commit it compares is `github.sha`, which the
+  # runner supplies, and cloning a repo with LFS assets to read a 41-byte file
+  # would cost more than the check saves.
+  published:
+    name: already published?
+    runs-on: ubuntu-latest
+    container:
+      image: cartopolis-ci:latest
+      options: --volume /data/cartopolis/site:/publish:ro
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Compare the published commit with this one
+        id: check
+        env:
+          COMMIT: ${{ github.sha }}
+          # A `type: boolean` input arrives as the string "true"/"false", and as
+          # empty when the workflow is dispatched through the API without an
+          # `inputs` object at all — hence the default below rather than a bare
+          # comparison.
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          apk=/publish/apk/cartopolis.apk
+          marker=/publish/apk/cartopolis.apk.commit
+          # The marker is written *after* the APK is in place (see Publish), so
+          # it can be stale but never ahead: a run that dies at packaging leaves
+          # the previous commit recorded and the next dispatch rebuilds. Both
+          # halves are required — a marker with no APK beside it is a web root
+          # someone has cleaned out, and skipping there would leave the install
+          # page pointing at nothing.
+          if [ "${FORCE:-false}" = "true" ]; then
+            echo "force requested — building $COMMIT regardless of what is published"
+          elif [ ! -f "$apk" ]; then
+            echo "no APK published yet — building $COMMIT"
+          elif [ ! -f "$marker" ]; then
+            echo "the published APK predates this check and records no commit — building $COMMIT"
+          elif [ "$(cat "$marker")" = "$COMMIT" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$COMMIT is already published at https://cartopolis.org/apk/ — nothing to build. Dispatch with force=true to rebuild it."
+            exit 0
+          else
+            echo "published $(cat "$marker"), want $COMMIT — building"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
   deploy-android:
     name: build apk & publish
+    needs: published
+    if: needs.published.outputs.skip != 'true'
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
@@ -399,6 +477,23 @@ jobs:
             <a href="/">cartopolis.org</a>.</p>
           </main>
           HTML
+
+          # **Last, and on purpose.** This file is what the `published` job reads
+          # to decide there is nothing to do, so it must never claim a build that
+          # is not fully on disk: written here, a run that dies anywhere above
+          # leaves the *previous* commit recorded and the next dispatch rebuilds.
+          # Written before the APK, a half-finished publish would be skipped
+          # forever and the site would keep serving the old app while every log
+          # said the new one had shipped.
+          #
+          # The full sha, where index.html carries only the first eight — that
+          # page is for a human deciding whether to install, this is a machine
+          # comparing against `github.sha`, and eight hex digits is a comparison
+          # that can collide. Served publicly like everything else here, which
+          # also makes `curl https://cartopolis.org/apk/cartopolis.apk.commit`
+          # the answer to "what is on the site right now".
+          printf '%s\n' "$COMMIT" > /publish/apk/.commit.tmp
+          mv -f /publish/apk/.commit.tmp /publish/apk/cartopolis.apk.commit
 
           echo "published $size to https://cartopolis.org/apk/ ($vname, code $vcode, commit $short)"
           ls -la /publish/apk
