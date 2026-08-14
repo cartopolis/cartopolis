@@ -167,8 +167,21 @@ pub fn set_keep_screen_on(on: bool) {
             WindowManagerFlags::KEEP_SCREEN_ON,
         )
     };
+    // Logged on **both** sides of the call, and that is a diagnostic, not noise.
+    // On 2026-08-14 the app froze on the frame driver mode turned on, and this was
+    // one of three things that ran there; the log carried no `keep-screen-on` line,
+    // which is equally consistent with "the system never ran" and with "the call
+    // never returned". Those are completely different bugs and there was no way to
+    // choose. A bracketed pair decides it in one line of the next report.
+    //
+    // The NDK documents `ANativeActivity_setWindowFlags` as callable from *any*
+    // thread — it writes a work item that the UI thread's looper performs — so the
+    // expectation is that both lines always appear together. This is here to
+    // notice the day that stops being true, which on this platform is a thing that
+    // has to be noticed from the outside.
+    tracing::info!(on, "keep-screen-on: asking");
     app.set_window_flags(add, remove);
-    tracing::info!(on, "keep-screen-on");
+    tracing::info!(on, "keep-screen-on: done");
 }
 
 // ---------------------------------------------------------------------------
@@ -465,10 +478,29 @@ const PERMISSION_GRANTED: i32 = 0;
 /// never see the result code, since the callback that would carry it is a Java
 /// override we cannot supply.
 const PERMISSION_REQUEST_CODE: i32 = 0x5645;
-/// `PendingIntent.FLAG_IMMUTABLE`. Mandatory on API 31+ (creating a `PendingIntent`
-/// with neither mutability flag throws `IllegalArgumentException` there), and
-/// harmless below it.
-const PENDING_INTENT_FLAG_IMMUTABLE: i32 = 0x0400_0000;
+/// `PendingIntent.FLAG_MUTABLE`.
+///
+/// **Measured, not chosen** (device log, 2026-08-14). This was `FLAG_IMMUTABLE`,
+/// on the reasoning that the intent is never consumed — we register it to make the
+/// provider *run*, and the `Location` extra it carries goes to a broadcast with no
+/// receiver — so the security-correct flag cost us nothing that the design was not
+/// already giving up. The documented failure mode agreed: an immutable intent
+/// simply arrives with a null extra.
+///
+/// The framework does not agree. `LocationManager.requestLocationUpdates` opens
+/// with `Preconditions.checkArgument(pendingIntent.isMutable(), "pending intent
+/// must be mutable")`, so the immutable one threw
+/// `IllegalArgumentException` before any registration happened at all — and
+/// because the failure is deliberately non-fatal here, the app fell back to
+/// polling a cache that nothing was refreshing. That is an arrow that never
+/// appears and never moves, with one `System.err` line to say why.
+///
+/// One of the two mutability flags is mandatory from API 31 (neither is an
+/// `IllegalArgumentException` of its own) and both are harmless below it, so this
+/// is not a version-gated choice. The intent stays explicit-by-package
+/// ([`request_updates`]), which is what keeps a mutable intent from being an
+/// invitation to the rest of the phone.
+const PENDING_INTENT_FLAG_MUTABLE: i32 = 0x0200_0000;
 
 /// Providers we will use, best first.
 ///
@@ -692,17 +724,17 @@ enum Permission {
 ///   it. If this turned out to be per-client, the poll would return the same
 ///   position forever and the symptom would be an arrow that never moves — which is
 ///   the first thing to check on a device.
-/// - **An immutable `PendingIntent` keeps the registration alive.** Google's own
-///   guidance says location updates are a case for `FLAG_MUTABLE`, and the reported
-///   consequence of getting it wrong is precise and reassuring: with
-///   `FLAG_IMMUTABLE` the `Location` extra "returns as null in your receiver class"
-///   — the broadcast is still *sent*, it simply carries nothing. That is the whole
-///   cost, and we have no receiver to be disappointed. `FLAG_IMMUTABLE` is
-///   therefore both the security-correct choice for an intent we never consume and
-///   the one whose documented failure mode we are already living with. The residual
-///   risk is that some OEM's `LocationManager` rejects an immutable intent outright
-///   rather than sending an empty one; if a device logs the registration going away
-///   after the first fix, this constant is the first thing to flip.
+/// - ~~**An immutable `PendingIntent` keeps the registration alive.**~~ **Settled
+///   on hardware, 2026-08-14, and it was wrong.** The reasoning was that an
+///   unconsumed intent should take the security-correct flag and that the
+///   documented cost — a null `Location` extra in a receiver we do not have — was
+///   already ours. `LocationManager` does not offer that trade:
+///   `requestLocationUpdates` asserts `pendingIntent.isMutable()` up front and
+///   throws. The registration never existed, the provider was never started, and
+///   the poll below read a cache nothing was refreshing. See
+///   [`PENDING_INTENT_FLAG_MUTABLE`]. The line that named it was one `System.err`
+///   stack trace in the log tail the crash reporter shares, which is the whole
+///   argument for that instrument.
 /// - **Foreground rate.** Android 8's background location throttling (a few fixes
 ///   an hour) does not apply to a foreground app. This app is only ever foreground
 ///   while it renders, so the expectation is the requested ~1 Hz.
@@ -1093,7 +1125,7 @@ fn request_updates(
                     JValue::Object(activity),
                     JValue::Int(request_code),
                     JValue::Object(&intent),
-                    JValue::Int(PENDING_INTENT_FLAG_IMMUTABLE),
+                    JValue::Int(PENDING_INTENT_FLAG_MUTABLE),
                 ],
             )?
             .l()?;

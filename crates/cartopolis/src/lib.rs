@@ -656,6 +656,10 @@ fn run_client() {
     offer_last_crash();
     #[cfg(target_os = "android")]
     let _ = std::fs::write(run_breadcrumb_path(), "");
+    // Started here, before the `App` exists, because the failure it reports is one
+    // the `App` cannot: a main loop that stops. Everything after this line runs
+    // watched (`platform::watchdog`).
+    platform::watchdog::start();
 
     // Resolve the render budget first: it decides how wide the worker pool below
     // is allowed to be, and every later reader (`setup_camera`, the streamers)
@@ -1875,7 +1879,13 @@ fn run_client() {
             PostUpdate,
             systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
         )
-        .add_systems(Last, frame_limiter);
+        // `Last`, and after the frame limiter rather than before it: the heartbeat
+        // has to mean "a whole frame completed", so anything that can wedge the
+        // schedule — a system, a render extract, the limiter's own sleep — is
+        // inside the interval the watchdog measures. Beating in `First` would say
+        // the loop is alive at the moment it enters the frame it is about to hang
+        // in, which is the one frame that matters.
+        .add_systems(Last, (frame_limiter, watchdog_beat).chain());
 
     // The run's verdict has to become the process's. `app.run()` returns an
     // `AppExit` and dropping it made every failure look like a success: a `--shot`
@@ -2811,6 +2821,11 @@ fn apply_screen_wakelock(
     *held = want;
     #[cfg(target_os = "android")]
     platform::android::set_keep_screen_on(want);
+}
+
+/// Tell the watchdog a frame finished. See `platform::watchdog`.
+fn watchdog_beat() {
+    platform::watchdog::beat();
 }
 
 /// Mirror the user's guidance preference into driver mode.
