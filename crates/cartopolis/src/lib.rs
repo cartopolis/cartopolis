@@ -3098,6 +3098,7 @@ fn sync_guidance_pref(
 fn quiesce_while_backgrounded(
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut exits: MessageReader<AppExit>,
+    mut touches: ResMut<bevy::input::touch::Touches>,
 ) {
     // Leaving on purpose — suspended or exiting — is not a crash, so the
     // breadcrumb goes. What it must survive is the app dying on screen.
@@ -3124,6 +3125,16 @@ fn quiesce_while_backgrounded(
             }
             bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
                 platform::workers::set_paused(false);
+                // Every finger that was on the glass when we left is gone, and we
+                // will never be told so: android-activity detaches the input queue
+                // on pause and drops what is unconsumed, and nothing in Bevy 0.19
+                // releases a touch on a lifecycle change. A touch that stays
+                // "pressed" across a suspend is not a stale reading, it is a
+                // permanently held finger — `TouchGestures` keeps its primary and
+                // reads every later finger as the second of a pinch, and
+                // `egui_manager::heal_lost_touch` needs this to be the signal that
+                // its own held id is dead. Both bridges recover from this one call.
+                touches.release_all();
             }
             bevy::window::AppLifecycle::Idle => {}
         }
