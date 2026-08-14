@@ -469,6 +469,18 @@ fn offer_last_crash() {
     if report.trim().is_empty() {
         return;
     }
+    // The framework's own record of how the last few processes ended, and — for an
+    // ANR — the thread dump the system wrote. This goes **above** the log excerpt
+    // because it answers a bigger question than the log can: a truncated log says
+    // the app stopped, and this says whether it was declared unresponsive, killed
+    // for memory, killed by a signal, or simply swiped away. See
+    // `platform::android::recent_exit_reasons`.
+    let report = match platform::android::recent_exit_reasons() {
+        Some(exits) => format!("{report}\n{exits}\n"),
+        None => format!(
+            "{report}\n(no exit-reason record — the framework keeps these only from API 30)\n"
+        ),
+    };
     // Read the log buffer *before* anything below adds to it, so the excerpt is
     // the dead run's last words and not this one's first.
     let report = match platform::android::own_logcat() {

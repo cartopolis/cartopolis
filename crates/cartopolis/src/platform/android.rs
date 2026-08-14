@@ -425,13 +425,39 @@ fn share_text_inner(
     })
 }
 
-/// The number of trailing log lines [`own_logcat`] asks for.
+/// The number of trailing log lines [`own_logcat`] asks logd for.
 ///
-/// Sized against the *consumer*, not the producer: the result is carried to the
-/// share sheet in an `Intent` extra, and an intent crosses a binder transaction
-/// with a hard limit around a megabyte. 600 lines of logcat is well inside that
-/// and comfortably spans a launch that dies before its first frame.
-const LOGCAT_TAIL_LINES: &str = "600";
+/// **Raised from 600 on 2026-08-14, because 600 covered fifteen seconds.** The
+/// figure was sized against the consumer — the share `Intent` crosses a binder
+/// transaction capped near a megabyte — and that reasoning is still right, but it
+/// answered the wrong question: what a report needs is not *n lines*, it is
+/// *enough time*. This client emits two messages per frame that nothing has yet
+/// fixed ([`LOG_NOISE`]), so at 30 fps the tail reached back barely past the
+/// moment it was trying to explain, and a freeze whose cause was several seconds
+/// earlier was outside it. Ask for far more, drop the known repeats, and let
+/// `tail_bytes` do the capping — the byte budget was always the real constraint.
+const LOGCAT_TAIL_LINES: &str = "8000";
+
+/// Per-frame log messages that are dropped from a shared report.
+///
+/// Both are real problems and neither is fixed by hiding it here; what is fixed is
+/// a *report* in which they are 95% of the content. They are matched on substrings
+/// rather than tags because both arrive twice — once from Bevy's `android_log`
+/// layer and once through the stdout pump, under different tags.
+///
+/// - `could not set cursor position` — `bevy_winit` pushes `Window`'s cursor
+///   position into winit whenever it changes, and winit's Android backend cannot
+///   set one. `systems::touch` changes it every frame a finger moves, by design
+///   (`docs/notes/touch-input.md`: the world-click consumers read the `Window`),
+///   so the platform answers every real touch move with an `error!`.
+/// - `Missing texture: Managed(` — `egui_wgpu` is asked to draw with a texture id
+///   it does not hold. It has been firing continuously since the first run that
+///   drew anything, so it is not new and it is not the freeze, but it is
+///   undiagnosed and it should not be dropped from the log *itself*.
+///
+/// A count of what was removed goes in the report, so a reader is never quietly
+/// shown a filtered log.
+const LOG_NOISE: [&str; 2] = ["could not set cursor position", "Missing texture: Managed("];
 
 /// The previous process's own log lines, read back out of the kernel log buffer.
 ///
@@ -462,8 +488,246 @@ pub fn own_logcat() -> Option<String> {
         .args(["-d", "-b", "main,crash", "-t", LOGCAT_TAIL_LINES])
         .output()
         .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (kept, dropped) = strip_log_noise(&text);
+    if kept.trim().is_empty() {
+        return None;
+    }
+    Some(if dropped == 0 {
+        kept
+    } else {
+        format!("({dropped} repeated per-frame lines removed — see LOG_NOISE)\n{kept}")
+    })
+}
+
+/// Drop every line containing one of [`LOG_NOISE`]; return what is left and how
+/// many went.
+///
+/// Split out from [`own_logcat`] so it is testable off a device — the one part of
+/// the crash reporter that has logic in it rather than a framework call.
+fn strip_log_noise(text: &str) -> (String, usize) {
+    let mut dropped = 0;
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let noisy = LOG_NOISE.iter().any(|needle| line.contains(needle));
+            dropped += usize::from(noisy);
+            !noisy
+        })
+        .collect();
+    (kept.join("\n").trim().to_string(), dropped)
+}
+
+// ---------------------------------------------------------------------------
+// 5. Why the last run ended — the framework already knows
+// ---------------------------------------------------------------------------
+
+/// `ApplicationExitInfo.REASON_ANR`.
+const EXIT_REASON_ANR: i32 = 6;
+
+/// How much of an ANR trace the report carries.
+///
+/// The trace is a dump of *every* thread in the process and runs to hundreds of
+/// kilobytes on a real app. The **head** is what matters and the head is what this
+/// keeps: `main` is the first thread in the dump, and `main` is the thread the ANR
+/// is about. The ceiling is the binder transaction the share `Intent` crosses,
+/// which is ~1 MB for everything in it together — the logcat tail is in there too.
+const ANR_TRACE_MAX_BYTES: usize = 64 * 1024;
+
+/// One line per recent process death, and — for an ANR — the thread dump.
+///
+/// **This is the instrument the previous two rounds needed and did not have.**
+/// `docs/notes/android-build.md` says twice that an app cannot learn why it was
+/// killed: the low-memory killer announces itself under the system UID, and the
+/// ANR trace goes to tombstoned, so the evidence for either is *negative* — our
+/// log simply stops. That was true of `logcat`. It is not true of the framework:
+/// since API 30 `ActivityManager.getHistoricalProcessExitReasons` hands an app its
+/// own recent deaths, each with a reason code, and for `REASON_ANR`
+/// `getTraceInputStream()` returns **the very trace the system wrote to
+/// tombstoned** — every thread, Java and native frames, with no permission and no
+/// root.
+///
+/// So "the main loop stopped and the log cannot say where" is answerable after
+/// all, and answerable from the share sheet on the next launch rather than from a
+/// cable. The reason code alone settles the question the note calls unanswerable
+/// — ANR, native crash, low memory and "the user swiped it away" are four
+/// different codes and were previously one silence.
+///
+/// API-gated at 30 (`minSdkVersion` is 28), and every failure is silent: this
+/// enriches a report that is worth sending with or without it.
+pub fn recent_exit_reasons() -> Option<String> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    match exit_reasons_inner(&mut env, &activity) {
+        Ok(text) => text,
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read the historical exit reasons");
+            None
+        }
+    }
+}
+
+fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<String>, Fail> {
+    if sdk_int(env)? < 30 {
+        return Ok(None);
+    }
+    // Not `with_local_frame` around the whole thing: the trace read below is a
+    // loop, and a frame sized for the worst case is worse than frames sized for
+    // each step. This one covers the list walk.
+    let (summary, anr_infos) = env.with_local_frame_returning_local(32, |env| {
+        let name: JObject = env.new_string("activity")?.into();
+        let manager = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        if manager.as_raw().is_null() {
+            return Err(Fail("getSystemService(\"activity\") returned null".to_string()));
+        }
+        // `(null, 0, 6)`: our own package, any pid, the six most recent. Six spans
+        // several install-test-crash cycles without turning the report into a
+        // history book.
+        let list = env
+            .call_method(
+                &manager,
+                "getHistoricalProcessExitReasons",
+                "(Ljava/lang/String;II)Ljava/util/List;",
+                &[
+                    JValue::Object(&JObject::null()),
+                    JValue::Int(0),
+                    JValue::Int(6),
+                ],
+            )?
+            .l()?;
+        let count = env.call_method(&list, "size", "()I", &[])?.i()?;
+        let mut lines = Vec::new();
+        let mut anr = Vec::new();
+        for index in 0..count {
+            let info = env
+                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
+                .l()?;
+            if info.as_raw().is_null() {
+                continue;
+            }
+            let reason = env.call_method(&info, "getReason", "()I", &[])?.i()?;
+            let status = env.call_method(&info, "getStatus", "()I", &[])?.i()?;
+            let pid = env.call_method(&info, "getPid", "()I", &[])?.i()?;
+            let timestamp = env.call_method(&info, "getTimestamp", "()J", &[])?.j()?;
+            let description = env
+                .call_method(&info, "getDescription", "()Ljava/lang/String;", &[])?
+                .l()?;
+            let description = if description.as_raw().is_null() {
+                String::new()
+            } else {
+                env.get_string(&JString::from(description))?.into()
+            };
+            lines.push(format!(
+                "  pid {pid} — {} (reason {reason}, status {status}) at {timestamp} — {description}",
+                reason_name(reason)
+            ));
+            // Only the newest ANR is worth a trace: the list is newest-first, so
+            // the first one found is the death being reported.
+            if reason == EXIT_REASON_ANR && anr.is_empty() {
+                anr.push(env.new_global_ref(&info)?);
+            }
+        }
+        Ok((lines, anr))
+    })?;
+
+    let mut out = String::from("--- how this app's recent processes ended (ActivityManager) ---\n");
+    if summary.is_empty() {
+        out.push_str("  (the framework has no record — this may be the first run)\n");
+    }
+    for line in &summary {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(info) = anr_infos.first() {
+        out.push_str(
+            "\n--- the system's own ANR thread dump for that run (head; `main` is first) ---\n",
+        );
+        match read_trace(env, info.as_obj()) {
+            Ok(Some(trace)) => out.push_str(&trace),
+            Ok(None) => out.push_str("(the trace stream was empty)\n"),
+            Err(Fail(msg)) => {
+                clear_pending(env);
+                out.push_str(&format!("(could not read the trace: {msg})\n"));
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+/// `ApplicationExitInfo`'s reason codes, spelled out. The number alone is a
+/// lookup nobody holding a phone can perform.
+fn reason_name(reason: i32) -> &'static str {
+    match reason {
+        1 => "EXIT_SELF (we asked to go)",
+        2 => "SIGNALED",
+        3 => "LOW_MEMORY (the OOM killer)",
+        4 => "CRASH (an unhandled Java exception)",
+        5 => "CRASH_NATIVE (a signal — SIGSEGV and friends)",
+        EXIT_REASON_ANR => "ANR (the system decided we stopped responding)",
+        7 => "INITIALIZATION_FAILURE",
+        8 => "PERMISSION_CHANGE",
+        9 => "EXCESSIVE_RESOURCE_USAGE",
+        10 => "USER_REQUESTED (swiped away)",
+        11 => "USER_STOPPED",
+        12 => "DEPENDENCY_DIED",
+        13 => "OTHER",
+        14 => "FREEZER",
+        15 => "PACKAGE_STATE_CHANGE",
+        16 => "PACKAGE_UPDATED",
+        _ => "unknown reason",
+    }
+}
+
+/// Drain `ApplicationExitInfo.getTraceInputStream()` into a `String`, capped.
+fn read_trace(env: &mut JNIEnv, info: &JObject) -> Result<Option<String>, Fail> {
+    let stream = env.with_local_frame_returning_local(8, |env| {
+        Ok(env
+            .call_method(info, "getTraceInputStream", "()Ljava/io/InputStream;", &[])?
+            .l()?)
+    })?;
+    if stream.as_raw().is_null() {
+        return Ok(None);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    env.with_local_frame::<_, _, Fail>(8, |env| {
+        // One buffer for the whole read: allocating it inside the loop would put a
+        // local reference per chunk into a frame sized for none of them, which on a
+        // 400 KB trace is the 512-entry table overflow that aborts the process —
+        // the failure this file's module note opens with.
+        let buf = env.new_byte_array(8192)?;
+        loop {
+            let read = env
+                .call_method(&stream, "read", "([B)I", &[JValue::Object(&buf)])?
+                .i()?;
+            if read <= 0 {
+                break;
+            }
+            let mut chunk = vec![0i8; read as usize];
+            env.get_byte_array_region(&buf, 0, &mut chunk)?;
+            bytes.extend(chunk.iter().map(|b| *b as u8));
+            if bytes.len() >= ANR_TRACE_MAX_BYTES {
+                break;
+            }
+        }
+        // Best-effort: a leaked stream lives until the process ends, and the
+        // process is about to have a very short life either way.
+        let _ = env.call_method(&stream, "close", "()V", &[]);
+        Ok(())
+    })?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    bytes.truncate(ANR_TRACE_MAX_BYTES);
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 // ---------------------------------------------------------------------------

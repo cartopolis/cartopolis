@@ -629,3 +629,58 @@ The NDK documents `ANativeActivity_setWindowFlags` as callable from any thread
 (it writes a work item the UI thread's looper performs), so the expectation is
 that both lines always appear together; the bracket is there to notice the day
 that stops being true.
+
+## Why that log could not name the cause, and what makes the next one able to
+
+Worth writing down, because "we had a full log and still could not say" is the
+kind of conclusion that gets re-litigated. Two separate reasons, and both are
+fixed rather than argued around.
+
+**A stalled main loop cannot log where it stalled.** The last line before the
+silence is whichever system logged most recently, which is a different thing and
+was in this case `globe placed` — a system that finished. Nothing in the process
+was going to write the interesting line, because the thread that would write it
+was the thread that had stopped. This is not a gap in the log filter; it is the
+shape of the failure.
+
+**And the excerpt only reached back fifteen seconds.** `LOGCAT_TAIL_LINES` was
+600, sized against the binder limit the share `Intent` crosses — correct
+reasoning about the wrong quantity. What a report needs is not *n lines*, it is
+*enough time*, and this client emits two messages **per frame**:
+
+- `could not set cursor position` (`bevy_winit`, ERROR). `bevy_winit::system`
+  pushes `Window`'s cursor position into winit whenever it changes and winit's
+  Android backend cannot set one; `systems::touch` changes it on every frame a
+  finger moves, deliberately (`docs/notes/touch-input.md` — the world-click
+  consumers read the `Window`). So the platform answers every real touch move
+  with an `error!`, and there is no filter level that keeps `bevy_winit` at INFO
+  for surface diagnostics while dropping this.
+- `Missing texture: Managed(2)` (`egui_wgpu`, WARN). Undiagnosed. It has been
+  firing continuously since the first run that drew anything, so it is neither
+  new nor the freeze — but it is a real bug and it is still open.
+
+Between them they were ~95% of a 600-line tail. The fix is on the *report*, not
+on the log: ask logd for 8,000 lines, drop the two known repeats
+(`LOG_NOISE` / `strip_log_noise`), and let the existing byte cap do the capping.
+The count of removed lines is printed, so nobody is quietly handed a filtered
+log.
+
+**The bigger miss: the framework had already written the answer.** This note says
+twice that an app cannot learn why it was killed — the LMK announces itself under
+the system UID, the ANR trace goes to tombstoned. That is true of `logcat` and it
+is **not true of `ActivityManager`**. Since API 30
+`getHistoricalProcessExitReasons` hands an app its own recent deaths with a reason
+code each, and for `REASON_ANR` `ApplicationExitInfo.getTraceInputStream()`
+returns *the very trace the system wrote to tombstoned* — every thread, Java and
+native frames — with no permission, no root and no cable. Framework classes only,
+so the no-dex rule never threatened it.
+
+`platform::android::recent_exit_reasons` reads both, and `offer_last_crash` puts
+them **above** the log excerpt because they answer a bigger question than the log
+can: ANR, native crash, low memory and "the user swiped it away" are four
+different reason codes and were previously one silence. The `main` thread is the
+first in an ANR dump, which is why the trace is capped from the head.
+
+`platform::watchdog` stays. It reports a stall *live*, before the kill, and it
+works on a stall the system never escalates to an ANR — but where the two overlap,
+the system's own dump is strictly better evidence than a `/proc` state column.
