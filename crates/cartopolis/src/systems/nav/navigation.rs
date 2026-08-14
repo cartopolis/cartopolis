@@ -1384,25 +1384,14 @@ pub fn render_route_panel(
             // Summary: the one line the planner exists to produce.
             match (&route.status, &route.route) {
                 (SolveStatus::Fetching(done, total), _) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new(if *total > 0 {
-                                format!("Reading map data… {done}/{total}")
-                            } else {
-                                "Reading map data…".to_string()
-                            })
-                            .size(theme::SIZE_SUB),
-                        );
-                    });
+                    if *total > 0 {
+                        theme::busy_progress(ui, "Reading map data…", *done, *total);
+                    } else {
+                        theme::busy(ui, "Reading map data…");
+                    }
                 }
                 (SolveStatus::Solving, _) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Finding the best route…").size(theme::SIZE_SUB),
-                        );
-                    });
+                    theme::busy(ui, "Finding the best route…");
                 }
                 (SolveStatus::Failed(msg), _) => {
                     ui.label(
@@ -1615,9 +1604,14 @@ fn start_row(
             {
                 actions.swap = true;
             }
-            if theme::action_enabled(ui, has_here, icons.here)
-                .on_hover_text("Start from my current position")
-                .clicked()
+            if theme::action_enabled_because(
+                ui,
+                has_here,
+                icons.here,
+                "No position yet — the map has not placed you",
+            )
+            .on_hover_text("Start from my position")
+            .clicked()
             {
                 actions.use_here = Some(Endpoint::From);
             }
@@ -1707,9 +1701,14 @@ fn endpoint_row(
             {
                 actions.pick = Some(end);
             }
-            if theme::action_enabled(ui, has_here, icons.here)
-                .on_hover_text("Use my current position")
-                .clicked()
+            if theme::action_enabled_because(
+                ui,
+                has_here,
+                icons.here,
+                "No position yet — the map has not placed you",
+            )
+            .on_hover_text("Use my position")
+            .clicked()
             {
                 actions.use_here = Some(end);
             }

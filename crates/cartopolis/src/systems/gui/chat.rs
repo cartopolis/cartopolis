@@ -173,10 +173,24 @@ pub fn render_chat_panel(
                 }))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Join room:");
-                        ui.text_edit_singleline(&mut chat.join_input);
-                        join_now =
-                            ui.button("Join").clicked() && !chat.join_input.trim().is_empty();
+                        ui.label("Join room");
+                        // Enter submits, as it does in every other field in the
+                        // client — this was the one that only took a click.
+                        let field = ui.add(egui::TextEdit::singleline(&mut chat.join_input));
+                        let entered =
+                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        // Disabled on an empty field rather than live-and-inert.
+                        // `data_layers` states the rule this restores — "a control
+                        // that swallows a tap is indistinguishable from a broken
+                        // app" — and Join was pressing to no effect and no message.
+                        let ready = !chat.join_input.trim().is_empty();
+                        let join = crate::systems::theme::action_enabled_because(
+                            ui,
+                            ready,
+                            "Join",
+                            "Type a room name first",
+                        );
+                        join_now = (join.clicked() || entered) && ready;
                     });
                     ui.separator();
                     // Shout is a property of the *local* channel only; a room or
@@ -189,7 +203,14 @@ pub fn render_chat_panel(
                     // and a fixed input width either overflows the narrow layout or
                     // leaves a gap in the wide one.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let send = ui.button("Send");
+                        // Same rule as Join above.
+                        let ready = !chat.input.trim().is_empty();
+                        let send = crate::systems::theme::action_enabled_because(
+                            ui,
+                            ready,
+                            "Send",
+                            "Type a message first",
+                        );
                         // `desired_width`, not `add_sized(available_size())`: this
                         // layout's available *height* is the whole rest of the
                         // panel, and sizing to it grows the single-line field into
@@ -211,6 +232,14 @@ pub fn render_chat_panel(
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    let empty = chat.channels.get(active).is_none_or(|c| c.lines.is_empty());
+                    if empty {
+                        theme::empty_state(
+                            ui,
+                            "No messages yet",
+                            "Anything you say here reaches the people nearby.",
+                        );
+                    }
                     if let Some(ch) = chat.channels.get(active) {
                         for line in &ch.lines {
                             let who = match line.distance {

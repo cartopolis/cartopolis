@@ -358,21 +358,21 @@ pub fn render_script_panel(
                         .button(save_label)
                         .on_hover_text("Store the script and (re)start it — saving is a restart")
                         .clicked();
-                    stop = ui
-                        .button("Stop")
-                        .on_hover_text("Remove the script from this prim")
-                        .clicked();
+                    // Confirmed: this deletes the script off the server and
+                    // empties the buffer, and it sits between Save and Touch.
+                    stop = theme::confirm_button(
+                        ui,
+                        ui.id().with("stop_script"),
+                        "Stop",
+                        "Remove the script?",
+                    );
                     touch = ui
                         .button("Touch")
                         .on_hover_text("Fire on_touch, as if you had clicked the prim")
                         .clicked();
                 });
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Console")
-                            .color(theme::TEXT_DIM)
-                            .small(),
-                    );
+                    theme::section(ui, "Console");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         clear_console = theme::action_button(ui, "Clear").clicked();
                     });

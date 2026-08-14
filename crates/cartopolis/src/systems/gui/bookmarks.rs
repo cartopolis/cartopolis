@@ -729,9 +729,10 @@ fn folder_row(
             // is left, so a long folder name truncates instead of running under
             // them.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::action_button(ui, "🗑")
-                    .on_hover_text("Delete the folder (its places move up a level)")
-                    .clicked()
+                // Confirmed, unlike its neighbours: this is one 32 pt target
+                // away from Rename, and the row it deletes may be holding a
+                // folded subtree the user cannot currently see.
+                if theme::confirm_button(ui, ui.id().with(("delete_folder", id)), "🗑", "Delete?")
                 {
                     act.delete_folder = Some(id);
                 }
@@ -971,7 +972,17 @@ fn place_menu(
             act.view_photo = Some((id, name.to_string(), stem.to_string()));
             ui.close();
         }
-        if ui.button("Remove the photo").clicked() {
+        // A separator and a two-press confirm, because this entry sits directly
+        // under "View the photo" and removes two JPEGs from `platform::storage`
+        // with no undo — on a phone that is a ~20 pt mis-tap between looking at
+        // a picture and destroying it.
+        ui.separator();
+        if theme::confirm_button(
+            ui,
+            ui.id().with(("remove_photo", id)),
+            "Remove the photo",
+            "Remove it — this cannot be undone",
+        ) {
             act.clear_photo = Some(id);
             ui.close();
         }
@@ -1006,7 +1017,12 @@ fn place_menu(
         ui.close();
     }
     ui.separator();
-    if ui.button("🗑  Delete this place").clicked() {
+    if theme::confirm_button(
+        ui,
+        ui.id().with(("delete_place", id)),
+        "Delete this place",
+        "Delete it — this cannot be undone",
+    ) {
         act.delete_place = Some(id);
         ui.close();
     }

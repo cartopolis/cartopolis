@@ -335,8 +335,7 @@ pub fn render_ai_panel(
                         ui.add_space(4.0);
                     }
                     if is_busy {
-                        ui.spinner();
-                        ui.label("Thinking…");
+                        theme::busy(ui, "Thinking…");
                     }
                 });
 

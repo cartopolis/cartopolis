@@ -219,22 +219,18 @@ pub fn render_settings_panel(
     }
 }
 
-/// A section title. One helper so the three tabs cannot drift into three
-/// different weights of heading.
+/// A section title. Delegates to `theme::section`, which is where this idiom
+/// lives now — it was the only *named* section helper in the client while four
+/// other panels each invented their own, so it was promoted rather than copied.
 fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(title).strong());
+    theme::section(ui, title);
 }
 
 /// A line under a control saying what it does *not* do yet. Deliberately plain
 /// text in the dim tone rather than a warning colour: it is a fact about the
 /// build, not something the user did wrong.
 fn pending(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::SIZE_CHIP)
-            .color(theme::TEXT_DIM),
-    );
+    theme::note(ui, text);
 }
 
 /// General: the settings a phone user looks for first.

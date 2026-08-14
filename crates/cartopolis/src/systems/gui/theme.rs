@@ -1232,6 +1232,204 @@ pub fn panel_header_with(
     close
 }
 
+// ─── The four states a designer forgets ───────────────────────────────────────
+//
+// This file owned colour, type, spacing, buttons, headers and checkboxes, and
+// stopped there — it exported `ERROR` and `WARN` as *colours* and nothing that
+// draws with them. So the app grew eight spinner sites in two idioms, seven
+// error surfaces in seven constructions, five empty states in five shapes, and
+// three mutually contradictory answers to "this control cannot act here" (hide
+// it / grey it / leave it live and let the click do nothing).
+//
+// The touch consequence is the one that justifies the vocabulary on its own:
+// **every disabled-state explanation in the client was an
+// `on_disabled_hover_text`, which a touchscreen never shows.** `bookmarks`
+// records that fact in a comment about long-press hints and then uses one
+// anyway, to explain a button disabled during world load — i.e. on the app's
+// primary platform, in the first thirty seconds a user ever spends in it, the
+// entire disabled-state layer was addressed to nobody. That answer has to be
+// fixable in one place, which means it has to *be* in one place.
+
+/// A section title inside a panel.
+///
+/// Promoted out of `settings.rs`, which had the only named helper for this while
+/// Appearance used a bare `ui.label`, About used `strong().color(CREAM)`, the
+/// script editor used a `small()` dim label, and Layers overloaded a checkbox as
+/// a heading. Four idioms across ten panels, and only one of them had a name.
+pub fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(title)
+            .size(SIZE_SUB)
+            .strong()
+            .color(CREAM),
+    );
+}
+
+/// A line under a control stating a constraint or a stored intention — *not* a
+/// failure. Plain dim text rather than a warning colour: it is a fact about the
+/// build or the world, not something the user did wrong.
+pub fn note(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(SIZE_CHIP)
+            .color(TEXT_DIM)
+            .italics(),
+    );
+}
+
+/// The body of a list with nothing in it.
+///
+/// `hint` is **not optional**, and that is the whole design: "No places yet" on
+/// its own is a dead end, and the Places panel's existing empty state — which
+/// names the two buttons and says what each does — is the model this generalises.
+/// Four lists in the client currently draw literally nothing when empty (an empty
+/// chat channel, a fresh AI conversation, an empty folder, the texture library),
+/// which is indistinguishable from a panel that failed to load.
+pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
+    ui.add_space(12.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new(headline)
+                .size(SIZE_BODY)
+                .color(TEXT_DIM),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(egui::RichText::new(hint).size(SIZE_SUB).color(TEXT_DIM)).wrap());
+    });
+    ui.add_space(12.0);
+}
+
+/// One in-progress row: spinner plus what is being waited for.
+///
+/// **The** spinner idiom. A bare `ui.spinner()` takes its colour from
+/// `noninteractive.fg_stroke` and its size from the row, which is why the sign-in
+/// card hand-rolled a themed one and the other seven sites did not — two
+/// spinners, in one app, for one meaning.
+pub fn busy(ui: &mut egui::Ui, label: &str) {
+    ui.horizontal(|ui| {
+        ui.add(egui::Spinner::new().size(SIZE_BODY).color(ACCENT));
+        ui.label(egui::RichText::new(label).size(SIZE_SUB).color(TEXT_DIM));
+    });
+}
+
+/// [`busy`] with a count, for the one kind of wait that can say how far along it
+/// is. The Route panel's tile read is the only place in the client that has this
+/// number today; it should not be the only place that can show it.
+pub fn busy_progress(ui: &mut egui::Ui, label: &str, done: usize, total: usize) {
+    busy(ui, &format!("{label} {done}/{total}"));
+}
+
+/// An inline failure with a Dismiss, returning `true` when dismissed so the
+/// caller clears its own `Option<String>`.
+///
+/// On a faint [`ERROR`]-tinted chip rather than as bare coloured text, so that an
+/// error can never again be styled as a footnote — the Search panel reported a
+/// geocoding failure through `ui.weak()`, which is the *quietest* tone in the
+/// palette, for the one string that most needs to be read.
+#[must_use]
+pub fn inline_error(ui: &mut egui::Ui, message: &str) -> bool {
+    let mut dismissed = false;
+    egui::Frame::NONE
+        .fill(ERROR.gamma_multiply(0.16))
+        .stroke(Stroke::new(1.0, ERROR.gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(RADIUS_SM))
+        .inner_margin(Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(message).size(SIZE_SUB).color(ERROR))
+                        .wrap(),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                dismissed = action_button(ui, "Dismiss").clicked();
+            });
+        });
+    dismissed
+}
+
+/// A control that cannot act, and the reason — **in a form a phone can read.**
+///
+/// Under a pointer this is `on_disabled_hover_text`, which is what the ten
+/// existing `add_enabled` sites do (where they explain themselves at all — most
+/// grey a control and say nothing). Under a finger the reason is drawn as a
+/// [`note`] beneath the control instead, because a tooltip on a touchscreen is a
+/// sentence addressed to nobody. One helper, so that answer is decided once.
+pub fn action_enabled_because(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: impl Into<egui::WidgetText>,
+    why_disabled: &str,
+) -> egui::Response {
+    let resp = action_enabled(ui, enabled, label);
+    if enabled {
+        return resp;
+    }
+    if touch_layout() {
+        note(ui, why_disabled);
+        resp
+    } else {
+        resp.on_disabled_hover_text(why_disabled)
+    }
+}
+
+/// How long an armed [`confirm_button`] waits before disarming itself.
+const CONFIRM_ARMED_S: f64 = 3.0;
+
+/// A destructive action that takes two presses: the first arms the button and
+/// swaps its label, the second does the thing. Returns `true` only on the second.
+///
+/// **Nothing in this client confirms anything.** Deleting a place removes two
+/// JPEGs from `platform::storage`; "Remove the photo" sits one row under "View
+/// the photo" with no separator, which on a phone is a ~20 pt mis-tap between
+/// looking at a picture and destroying it; the script editor's Stop deletes a
+/// script off the server; and there is no undo for any of them.
+///
+/// A modal would be the conventional answer and is the wrong shape here: this
+/// app draws its panels into one shared root `Ui` with a hand-built ordering
+/// chain, and a floating confirm dialog is a new `Area` fighting that chain for
+/// a decision that is one bit wide. Arming in place costs no layer, cannot be
+/// occluded, and puts the confirmation exactly where the finger already is.
+///
+/// State lives in `ui.memory` under `id`, so a caller stays a one-liner and no
+/// panel needs a new field; the arm times out so a button left armed by a stray
+/// tap does not lie in wait.
+#[must_use]
+pub fn confirm_button(ui: &mut egui::Ui, id: egui::Id, label: &str, confirm_label: &str) -> bool {
+    let now = ui.input(|i| i.time);
+    let armed_at: Option<f64> = ui.memory(|m| m.data.get_temp(id));
+    let armed = armed_at.is_some_and(|t| now - t < CONFIRM_ARMED_S);
+
+    let resp = if armed {
+        ui.add(
+            egui::Button::new(egui::RichText::new(confirm_label).color(INK).strong())
+                .fill(ERROR)
+                .corner_radius(CornerRadius::same(RADIUS_SM)),
+        )
+    } else {
+        action_button(ui, label)
+    };
+
+    if resp.clicked() {
+        if armed {
+            ui.memory_mut(|m| m.data.remove::<f64>(id));
+            return true;
+        }
+        ui.memory_mut(|m| m.data.insert_temp(id, now));
+        return false;
+    }
+    // Repaint while armed, or the label would sit on "Delete?" until some other
+    // event happened to redraw the panel — a timeout nobody can see has not
+    // timed out.
+    if armed {
+        ui.ctx().request_repaint();
+    } else if armed_at.is_some() {
+        ui.memory_mut(|m| m.data.remove::<f64>(id));
+    }
+    false
+}
+
 /// A checkbox whose box is square. egui derives the checkbox frame's rounding
 /// from the shared widget visuals ([`RADIUS`], sized for buttons), and on a
 /// ~14 pt box that radius reads as a circle — an unchecked toggle then looks
