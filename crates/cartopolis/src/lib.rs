@@ -1488,6 +1488,14 @@ fn run_client() {
             systems::geo_nav::apply_teleport
                 .after(systems::geo_nav::drive_geocode)
                 .after(systems::user_store::restore_start_location)
+                // The avatar has to be *in* the BigSpace before it can be
+                // teleported within it: `attach_avatar_to_bigspace` inserts the
+                // `GridCell` that `apply_teleport`'s avatar query filters on, and
+                // without this edge the startup restore ran first, missed the
+                // query and moved only the camera. Bevy inserts the sync point
+                // that makes the deferred insert visible because this ordering
+                // is explicit.
+                .after(attach_avatar_to_bigspace)
                 .before(systems::free_camera::camera_controls),
             systems::user_store::autosave_user_store
                 .run_if(not(systems::shot_harness::harness_active)),

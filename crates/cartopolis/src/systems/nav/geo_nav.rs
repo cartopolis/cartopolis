@@ -1605,12 +1605,31 @@ pub fn apply_teleport(
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
 
     let (avatar_cell, avatar_local) = grid.translation_to_grid(DVec3::new(wx, AVATAR_GROUND_Y, wz));
+    // The entity and the state move together or not at all. They used to be
+    // written a line apart with only the *entity* guarded, so on any frame the
+    // query missed, `AvatarState` claimed a position the avatar was not at — and
+    // the follow camera frames `display_position` while the model is drawn at the
+    // transform, so the two disagreeing is precisely "the camera looks at empty
+    // ground". The query needs a `GridCell`, which `main::attach_avatar_to_bigspace`
+    // inserts through `Commands`, so the frame it misses is a real one: the first,
+    // which is the frame `restore_start_location` teleports on.
+    //
+    // `apply_teleport` is ordered after that attach now, so the miss should not
+    // happen at all — this guard is the belt to that braces, and it is cheap.
+    // Skipping rather than half-applying is the right failure: an avatar that
+    // stays put with state that agrees is recoverable by the next teleport, while
+    // state that lies about where the avatar is never resolves on its own.
     if let Ok((mut cell, mut tf)) = avatars.single_mut() {
         *cell = avatar_cell;
         tf.translation = avatar_local;
+        avatar_state.position = avatar_local;
+        avatar_state.display_position = avatar_local;
+    } else {
+        tracing::warn!(
+            "geo_nav: teleported the camera but not the avatar — no avatar with a \
+             GridCell yet; avatar state left where the entity actually is"
+        );
     }
-    avatar_state.position = avatar_local;
-    avatar_state.display_position = avatar_local;
 
     if let Ok((mut cell, mut tf)) = cameras.single_mut() {
         match camera_state.mode {
