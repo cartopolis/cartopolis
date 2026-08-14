@@ -1070,15 +1070,15 @@ fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
     ));
     let galley = painter.layout_no_wrap(
         name.to_string(),
-        egui::FontId::proportional(13.0),
+        egui::FontId::proportional(theme::SIZE_SUB),
         theme::CREAM,
     );
-    let pad = egui::vec2(6.0, 3.0);
+    let pad = theme::CHIP_PADDING;
     // Offset off the cursor so it never covers the row being dropped onto.
     let rect = egui::Rect::from_min_size(pos + egui::vec2(12.0, 8.0), galley.size() + pad * 2.0);
     painter.rect(
         rect,
-        4.0,
+        theme::RADIUS_SM,
         theme::LABEL_CHIP,
         egui::Stroke::new(1.0, egui_color(color)),
         egui::StrokeKind::Inside,

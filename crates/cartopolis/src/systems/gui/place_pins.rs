@@ -338,11 +338,11 @@ fn teardrop(tip: egui::Pos2, centre: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
 /// otherwise: a saved-places layer with every name always drawn covers the city
 /// it is describing, and the panel is where the list lives.
 fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: &str) {
-    let font = egui::FontId::proportional(12.0);
+    let font = egui::FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
         .layout_no_wrap(name.to_string(), font, theme::CREAM);
-    let pad = egui::vec2(6.0, 3.0);
+    let pad = theme::CHIP_PADDING;
     let mut chip = egui::Rect::from_center_size(
         egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
         galley.size() + pad * 2.0,
@@ -354,7 +354,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
         (map_rect.top() + 2.0 - chip.top()).max(0.0),
     ));
     let painter = ui.painter();
-    painter.rect_filled(chip, 4.0, theme::LABEL_CHIP);
+    painter.rect_filled(chip, theme::RADIUS_SM, theme::LABEL_CHIP);
     painter.galley(chip.min + pad, galley, theme::CREAM);
 }
 
