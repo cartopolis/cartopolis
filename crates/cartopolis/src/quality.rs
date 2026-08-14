@@ -179,13 +179,16 @@ pub struct Budget {
     /// **2.53 Mpx**, against the ~1.3 Mpx the same budget calls a phone's share, on
     /// a target that is `Rgba16Float` whenever the atmosphere is up.
     ///
-    /// Applied as `bevy_camera::MainPassResolutionOverride`, which every 3D pass
-    /// node honours and which the existing `upscaling` node blits back up. Two
-    /// consequences worth knowing. The **UI is unaffected** — `egui_pass` runs
-    /// after `upscaling`, onto the full-size output — so the chrome and the text
-    /// stay crisp while the world gets cheaper, which is the right way round on a
-    /// 5.7" screen. And it is *fill* this saves, not memory: the render target is
-    /// still allocated at full size.
+    /// Applied by shrinking the camera's *extracted target size* in the render
+    /// world (`systems::render_scale`), so the main texture is allocated at the
+    /// reduced size and the `upscaling` blit already in the graph stretches it
+    /// over the full-size swapchain. **Not** `MainPassResolutionOverride`, which
+    /// is the component that looks like it is for this and which put the map in
+    /// the corner of the phone — see that module's header for why.
+    ///
+    /// The **UI is unaffected** — `egui_pass` runs after `upscaling`, onto the
+    /// full-size output — so the chrome and the text stay crisp while the world
+    /// gets cheaper, which is the right way round on a 5.7" screen.
     ///
     /// 1.0 means "insert nothing", so every tier above the phone is bit-identical
     /// to before and `cargo shots` output does not move.

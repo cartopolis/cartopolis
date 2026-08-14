@@ -45,13 +45,13 @@ fn rain_layer(uv: vec2<f32>, t: f32, cols: f32, speed: f32, slant: f32, thin: f3
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Screen UV in 0..1, then aspect-correct x so streaks stay vertical/round.
     //
-    // `main_pass_viewport`, not `viewport`: the phone tier renders the 3D passes
-    // below the target's resolution (`systems::render_scale`), and Bevy's rule for
-    // that is that a shader wanting the size it is *actually* rasterising into must
-    // read this field. `in.position.xy` is a fragment coordinate in the reduced
-    // space, so dividing it by the full target size would push the whole rain
-    // field into one corner of the screen. The two are identical on every tier
-    // that does not scale.
+    // `main_pass_viewport`, not `viewport`: Bevy's rule is that a shader wanting
+    // the size it is *actually* rasterising into reads this field, because a main
+    // pass may be smaller than the target it sits in. The phone tier's render
+    // scale (`systems::render_scale`) shrinks the target itself, so here the two
+    // fields are equal and either would do — this one stays because it is the one
+    // that keeps being right if an upscaler that renders into a sub-rect ever
+    // arrives.
     let uv = in.position.xy / view.main_pass_viewport.zw;
     let aspect = view.main_pass_viewport.z / max(view.main_pass_viewport.w, 1.0);
     let suv = vec2<f32>(uv.x * aspect, uv.y);
