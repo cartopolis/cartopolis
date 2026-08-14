@@ -39,8 +39,35 @@ use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
-/// Gap between the discs.
+/// Gap between the discs, on a viewport with room for it.
 const SPACING: f32 = 10.0;
+/// The tightest the row may be packed before the discs would have to shrink.
+/// Below this the buttons read as one strip rather than as separate targets.
+const SPACING_MIN: f32 = 3.0;
+
+/// Gap between the discs at this viewport width.
+///
+/// **The row does not fit the web phone tier at full spacing.** Signed in it is
+/// five discs — `5 × 40 + 4 × 10` = 240 pt — against a viewport of ≈214 pt
+/// (393 CSS px ÷ `theme::WEB_PHONE_MAX_DPR`-derived scale). The `Area` is
+/// `CENTER_BOTTOM` and sizes to its content with nothing clamping it, so the
+/// overflow is symmetric: 13 pt off each end, which is exactly the app mark and
+/// the Search disc — the two controls the whole dock layout exists to put under
+/// a thumb, and the mark is the only route to Settings, sign-in and Exit.
+///
+/// Tightening the gaps is the cheap half of the fix and the one that costs
+/// nothing: the discs keep their 40 pt (60 dp on Android, 73 on the web tier),
+/// well clear of [`theme::MIN_TOUCH_TARGET_DP`], and only the air between them
+/// goes. If a sixth entry is ever added this will stop being enough and the
+/// answer will have to be that Chat folds into the mark's menu on the narrow
+/// tier — the row cannot hold six.
+#[must_use]
+fn disc_spacing(viewport_w: f32, discs: usize) -> f32 {
+    let gaps = discs.saturating_sub(1).max(1) as f32;
+    let discs_w = discs as f32 * theme::ROUND_BUTTON_SIZE;
+    let slack = viewport_w - discs_w;
+    (slack / gaps).clamp(SPACING_MIN, SPACING)
+}
 /// Gap from the bottom edge.
 const BOTTOM_MARGIN: f32 = 14.0;
 /// Inset of the top-left layers disc, matching the compass column under it.
@@ -111,6 +138,7 @@ pub fn render_dock(
     // `Area` behind a panel, so the only answer is to drop them, which is what the
     // compass and the status HUD do as well. On a wide viewport the panel docks to
     // the right and never reaches these corners, so they stay.
+    let viewport_w = egui.viewport_pts().x;
     let covered = egui.compact() && !right_panel.is(RightPanel::None);
     if covered {
         // The card would float over a panel that is the whole screen, with no
@@ -126,11 +154,17 @@ pub fn render_dock(
 
     let mut clicked: Option<RightPanel> = None;
     let mut menu_clicked = false;
+    // Chat comes and goes with the session, and the mark always closes the row.
+    let disc_count = ENTRIES
+        .iter()
+        .filter(|p| **p != RightPanel::Chat || has_session)
+        .count()
+        + 1;
     if !covered {
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.x = SPACING;
+                ui.spacing_mut().item_spacing.x = disc_spacing(viewport_w, disc_count);
                 ui.horizontal(|ui| {
                     for (panel, icon) in ENTRIES.iter().zip(&icons) {
                         if *panel == RightPanel::Chat && !has_session {
@@ -190,15 +224,36 @@ mod tests {
     /// pinning: the next entry does not fit.
     #[test]
     fn the_dock_fits_a_phone() {
-        // 411 dp at `ui_scale` 1.5, i.e. what `quality::Tier::Phone` resolves an
-        // ordinary Android handset to.
-        let viewport = 274.0;
+        // **Both documented phone viewports**, because they are 60 pt apart and
+        // this test used to check only the roomier one — which is how a row that
+        // overflows the web tier by 13 pt at each end shipped. 274 pt is 411 dp
+        // at `ui_scale` 1.5 (an ordinary Android handset); ~214 pt is 393 CSS px
+        // on the web phone tier, and it is the binding case.
         let discs = ENTRIES.len() + 1; // + the app mark
-        let row = discs as f32 * theme::ROUND_BUTTON_SIZE + (discs - 1) as f32 * SPACING;
+        for viewport in [274.0_f32, 214.0] {
+            let row = discs as f32 * theme::ROUND_BUTTON_SIZE
+                + (discs - 1) as f32 * disc_spacing(viewport, discs);
+            assert!(
+                row <= viewport,
+                "a {discs}-disc dock is {row} pt in {viewport}"
+            );
+        }
+    }
+
+    /// The gaps close before anything else does, and they stop closing before
+    /// the discs stop reading as separate buttons.
+    #[test]
+    fn spacing_tightens_only_as_far_as_it_has_to() {
+        assert_eq!(disc_spacing(1280.0, 5), SPACING, "a desktop keeps full air");
+        assert_eq!(disc_spacing(274.0, 5), SPACING, "so does an Android phone");
+        let web = disc_spacing(214.0, 5);
         assert!(
-            row <= viewport,
-            "a {discs}-disc dock is {row} pt in {viewport}"
+            web < SPACING && web >= SPACING_MIN,
+            "the web tier tightens: {web}"
         );
+        // A viewport narrower than the discs themselves cannot be solved by
+        // spacing, and must not answer with a negative gap.
+        assert_eq!(disc_spacing(10.0, 5), SPACING_MIN);
     }
 
     /// The two corners the map's floating controls own must not overlap the
