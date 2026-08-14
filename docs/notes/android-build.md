@@ -84,6 +84,30 @@ launch with nothing on screen and one line in `logcat`. There is no equivalent o
 the web build's `?query=string` switch surface yet; anything the phone needs to be
 told has to become UI or an env default.
 
+### Running the phone's configuration on a workstation
+
+Worth knowing before the next Android bug is diagnosed by `adb install`, because
+the two facts above compose into one nobody had written down: **a default
+`cargo run -p cartopolis` does not exercise anything the phone does.** The
+desktop default is solo — an in-process simulator, server-authoritative movement
+— and the phone has no `solo` compiled in at all, so it takes the offline arm
+(`avatar::handle_avatar_movement` moving the transform itself) which a desktop
+run never reaches. On top of that `quality::auto()` hands Android
+`Budget::phone()` unconditionally, which no desktop resolves to.
+
+Both are reachable locally, and together they are as close to the device as a
+machine with a keyboard gets:
+
+```bash
+CARTO_QUALITY=phone cargo run -p cartopolis --no-default-features -- --offline
+```
+
+`--no-default-features` is the part that is easy to leave off and the part that
+matters most: it is what drops `solo`. What this still does *not* reproduce is
+the device — the GPU and its driver, the `AssetManager`, the NativeActivity
+lifecycle — so it narrows a bug rather than settling one. That is worth a lot on
+its own, given the alternative is a thirteen-minute build and an install.
+
 ## `hasCode="false"` is a design constraint, not a packaging detail
 
 Reaching a framework service from `android_main` is plain JNI and costs nothing.
