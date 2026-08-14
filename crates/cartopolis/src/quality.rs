@@ -179,13 +179,16 @@ pub struct Budget {
     /// **2.53 Mpx**, against the ~1.3 Mpx the same budget calls a phone's share, on
     /// a target that is `Rgba16Float` whenever the atmosphere is up.
     ///
-    /// Applied as `bevy_camera::MainPassResolutionOverride`, which every 3D pass
-    /// node honours and which the existing `upscaling` node blits back up. Two
-    /// consequences worth knowing. The **UI is unaffected** — `egui_pass` runs
-    /// after `upscaling`, onto the full-size output — so the chrome and the text
-    /// stay crisp while the world gets cheaper, which is the right way round on a
-    /// 5.7" screen. And it is *fill* this saves, not memory: the render target is
-    /// still allocated at full size.
+    /// Applied by shrinking the camera's *extracted target size* in the render
+    /// world (`systems::render_scale`), so the main texture is allocated at the
+    /// reduced size and the `upscaling` blit already in the graph stretches it
+    /// over the full-size swapchain. **Not** `MainPassResolutionOverride`, which
+    /// is the component that looks like it is for this and which put the map in
+    /// the corner of the phone — see that module's header for why.
+    ///
+    /// The **UI is unaffected** — `egui_pass` runs after `upscaling`, onto the
+    /// full-size output — so the chrome and the text stay crisp while the world
+    /// gets cheaper, which is the right way round on a 5.7" screen.
     ///
     /// 1.0 means "insert nothing", so every tier above the phone is bit-identical
     /// to before and `cargo shots` output does not move.
@@ -361,12 +364,27 @@ impl Budget {
             // the flat map's raster size later does not silently raise the
             // phone's with it.
             tile_px: 256,
-            // 0.7 linear = ~49% of the fragments: 2.53 Mpx becomes ~1.24 Mpx,
-            // which lands almost exactly on the 1.3 Mpx ceiling `index.html`
-            // already enforces for the web phone tier. Chosen to match that number
-            // rather than picked for feel, so the two platforms' phone budgets
-            // mean the same thing.
-            render_scale: 0.7,
+            // A half, which is **a quarter of the fragments**: a Fairphone 4's
+            // 1080×2340 (2.53 Mpx) is rendered at 540×1170 (0.63 Mpx) and blitted
+            // up. The chrome is untouched at the full panel resolution, so what
+            // this softens is the map and nothing that carries text.
+            //
+            // Exactly a half rather than the 0.7 this started at, and the reason is
+            // the blit rather than the budget. Bevy's `upscaling` samples through a
+            // `NonFiltering` sampler (`systems::render_scale` has the detail), so
+            // the upscale is point-sampled: 1/2 expands every rendered pixel into a
+            // clean 2×2 block, while 0.7 spreads an irregular "duplicate every third
+            // column" cadence across the screen that crawls whenever the camera
+            // moves. A non-integer step is only worth having once that sampler is
+            // `Linear` — which is why the test below pins the reciprocal, not the
+            // pixel count.
+            //
+            // This is now deliberately *below* the 1.3 Mpx ceiling `index.html`
+            // enforces for the web phone tier, where the upscale is a CSS transform
+            // the compositor filters for free. The two platforms' phone budgets no
+            // longer mean the same number of pixels, and that is the honest position:
+            // one of them pays for its upscale and the other does not.
+            render_scale: 0.5,
             // Leave pacing to FIFO. See the field's own comment: a sleep-based
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
