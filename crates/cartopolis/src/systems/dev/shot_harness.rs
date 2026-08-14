@@ -473,6 +473,27 @@ pub struct ShotMetrics {
     /// one that is rendered but unseen is a depth or colour problem.
     pub route_meshes: usize,
     pub route_rendered: usize,
+    /// Mesh entities under the local avatar, and how many the view rendered.
+    ///
+    /// The same split the route and globe counts make, added because the avatar
+    /// is where that split had never been instrumented and the cost of that was a
+    /// year: `avatar_asset_exists` probed a *relative* `assets/` path, so on
+    /// Android, on the web and in any binary started outside the repo root every
+    /// character style read as absent, `resolve_avatar_holders` returned nothing,
+    /// and the avatar spawned with **no meshes at all**. Nothing failed. Follow
+    /// mode was offered, the camera followed, the avatar walked and collision
+    /// blocked it, because every one of those hangs off the `Avatar` entity
+    /// rather than off its model. `avatar_meshes == 0` is exactly that state, and
+    /// it is the one number that could have said so.
+    ///
+    /// So read them as a pair: `0/0` is "never spawned" (an asset or appearance
+    /// problem), `n/0` is "spawned but not drawn" (culling, visibility or the
+    /// slot mask). Assert them with `--shot-mode avatar`, which is the only mode
+    /// that frames the avatar — in free/earth the camera sits at `--at` while the
+    /// avatar stands at the map anchor, so a zero there means "out of shot" and
+    /// proves nothing.
+    pub avatar_meshes: usize,
+    pub avatar_rendered: usize,
     /// Measured ground level at the map anchor, metres above NAP, and how many
     /// patches the height layer has fetched (`systems::height`). `NaN` and 0 mean
     /// the layer is off, out of AHN's coverage, or has not answered yet — which is
@@ -499,8 +520,50 @@ pub struct ShotMetrics {
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,ground_m,height_patches,\
+route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
 terrain_ready,terrain_relief_m,software_renderer";
+
+/// The avatar's contribution to [`ShotMetrics`], as one parameter.
+///
+/// A `SystemParam` rather than three more arguments because `drive_capture` is
+/// near Bevy's 16-parameter ceiling — the same reason `readouts` beside it is a
+/// tuple. The three belong together anyway: they are one question asked in three
+/// steps, since the model meshes carry no marker of their own. They are glTF
+/// nodes instantiated under a holder, so the only thing that identifies them as
+/// the avatar's is that the avatar is their ancestor.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct AvatarReadout<'w, 's> {
+    avatars: Query<'w, 's, Entity, With<crate::components::Avatar>>,
+    children: Query<'w, 's, &'static Children>,
+    meshes: Query<
+        'w,
+        's,
+        &'static bevy::camera::visibility::ViewVisibility,
+        With<bevy::render::mesh::Mesh3d>,
+    >,
+}
+
+impl AvatarReadout<'_, '_> {
+    /// `(meshes under the local avatar, how many the view rendered)`.
+    ///
+    /// Zero for both when there is no avatar entity at all, which is the honest
+    /// answer for a run that has none rather than a reason to fail.
+    fn counts(&self) -> (usize, usize) {
+        let Ok(avatar) = self.avatars.single() else {
+            return (0, 0);
+        };
+        let (mut total, mut drawn) = (0, 0);
+        for entity in self.children.iter_descendants(avatar) {
+            if let Ok(visibility) = self.meshes.get(entity) {
+                total += 1;
+                if visibility.get() {
+                    drawn += 1;
+                }
+            }
+        }
+        (total, drawn)
+    }
+}
 
 impl ShotMetrics {
     /// One metric by name, as a number — booleans as 1/0. Read back out of the
@@ -518,7 +581,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{:.2},{},{},{:.2},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -547,6 +610,8 @@ impl ShotMetrics {
             self.globe_tile_px,
             self.route_meshes,
             self.route_rendered,
+            self.avatar_meshes,
+            self.avatar_rendered,
             self.ground_m,
             self.height_patches,
             self.terrain_ready,
@@ -1200,6 +1265,10 @@ pub fn drive_capture(
         Res<crate::systems::osm_buildings::OsmBuildings>,
         Res<crate::systems::lod22::Lod22Buildings>,
         Res<bevy::render::renderer::RenderAdapterInfo>,
+        // Appended, so every existing index above keeps its meaning. It is here
+        // rather than as a 17th argument because that is one past Bevy's
+        // parameter ceiling, which is the reason this tuple exists at all.
+        AvatarReadout,
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1409,6 +1478,9 @@ pub fn drive_capture(
             _ => (0.0, 0.0),
         };
         let shot = &harness.shots[progress.index];
+        // Walked once here rather than twice in the struct literal below: the
+        // descendant walk is the only metric that costs a traversal.
+        let avatar_counts = readouts.9.counts();
         let m = ShotMetrics {
             shot: progress.index + 1,
             name: shot.name.clone(),
@@ -1434,6 +1506,8 @@ pub fn drive_capture(
             furniture_factor: readouts.4.factor,
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
+            avatar_meshes: avatar_counts.0,
+            avatar_rendered: avatar_counts.1,
             globe_entities: globe_meshes.iter().count(),
             globe_visible: globe_meshes
                 .iter()
@@ -1476,6 +1550,8 @@ pub fn drive_capture(
                     furniture_factor = format!("{:.3}", m.furniture_factor),
                     route_meshes = m.route_meshes,
                     route_rendered = m.route_rendered,
+                    avatar_meshes = m.avatar_meshes,
+                    avatar_rendered = m.avatar_rendered,
                     globe_entities = m.globe_entities,
                     globe_visible = m.globe_visible,
                     globe_rendered = m.globe_rendered,
@@ -1750,6 +1826,8 @@ mod tests {
             globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
             route_meshes: 0,
             route_rendered: 0,
+            avatar_meshes: 0,
+            avatar_rendered: 0,
             ground_m: f32::NAN,
             height_patches: 0,
             terrain_ready: false,
