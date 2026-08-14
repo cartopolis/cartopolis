@@ -297,6 +297,20 @@ pub struct AppPrefs {
     /// running process's tier. The panel says so rather than implying otherwise.
     #[serde(default)]
     pub quality: QualityPreset,
+    /// The fraction of the screen the 3D world is rendered at, or `None` to follow
+    /// the device's tier.
+    ///
+    /// **The one field in this struct that applies live**, and the contrast with
+    /// [`Self::quality`] directly above is the point rather than an inconsistency.
+    /// A tier is a `OnceLock` read before the world exists and can only ever be a
+    /// restart; this is a `Resource` the render world re-extracts every frame, so
+    /// the picture moves under the slider.
+    ///
+    /// `None` is "Automatic" — the *absence* of an answer, exactly as
+    /// [`QualityPreset::Auto`] is. Clamped on the way in by `RenderScale::new`,
+    /// because this file is hand-editable.
+    #[serde(default)]
+    pub render_scale: Option<f32>,
 }
 
 /// serde's `default` for a bool that starts on.
@@ -315,6 +329,7 @@ impl Default for AppPrefs {
             keep_screen_on: yes(),
             voice_guidance: yes(),
             quality: QualityPreset::default(),
+            render_scale: None,
         }
     }
 }
@@ -1093,6 +1108,7 @@ mod tests {
             keep_screen_on: false,
             voice_guidance: false,
             quality: QualityPreset::Low,
+            render_scale: Some(0.75),
         };
         let text = serde_json::to_string(&prefs).expect("serialises");
         assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);

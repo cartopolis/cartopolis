@@ -21,8 +21,15 @@
 //! through `web_sys` bindings that a worker would need re-bound. So the tile path
 //! splits — fetch on the main thread, [`submit`] the decode.
 //!
-//! Native builds have no such gap: `AsyncComputeTaskPool` is already a real thread
-//! pool, so [`submit`] forwards to it and the call sites read the same.
+//! **Native builds have real threads but not free ones.** [`submit`] used to
+//! forward to `AsyncComputeTaskPool`, on the reasoning that native already had a
+//! thread pool so there was nothing to add. That was right about the threads and
+//! wrong about the neighbours: Bevy spawns **pipeline compilation** and the
+//! screenshot readback onto that same pool, and our jobs are blocking rasterises
+//! with no yield point, so a shader compile could sit behind hundreds of them and
+//! the geometry waiting on it was silently skipped. So this owns a `TaskPool` of
+//! its own on every target now, and the two halves differ only in how a thread is
+//! created. See `imp::POOL`.
 
 /// A unit of CPU-bound work. `Send` because it crosses to another core/worker.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -30,19 +37,98 @@ pub type Job = Box<dyn FnOnce() + Send + 'static>;
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use super::Job;
-    use bevy::tasks::AsyncComputeTaskPool;
+    use bevy::tasks::{TaskPool, TaskPoolBuilder};
+    use std::sync::OnceLock;
 
-    /// Native already has real threads — Bevy's compute pool is exactly this pool.
-    pub fn init(_workers: usize) {}
+    /// Our own threads, deliberately **not** `AsyncComputeTaskPool`.
+    ///
+    /// It used to be that pool, on the reasoning that native already has real
+    /// threads so there was nothing to add. That was true about the threads and
+    /// wrong about who else is on them, and the cost lands on the platform least
+    /// able to absorb it.
+    ///
+    /// Bevy spawns **pipeline compilation** onto `AsyncComputeTaskPool` — on
+    /// `not(wasm32)`, `not(macos)`, `multi_threaded`, i.e. exactly Android
+    /// (`bevy_render`'s `pipeline_cache::create_pipeline_task`). Our jobs are
+    /// blocking MVT rasterises, ~120 ms each with no yield point, so each one owns
+    /// a pool thread outright; the phone tier caps that pool at 3, and a teleport
+    /// queues hundreds of jobs while the streamers keep refilling it. A shader
+    /// compile handed to that queue waits behind all of them.
+    ///
+    /// The symptom is not a stall, which is what makes it hard to place: geometry
+    /// whose pipeline is not resident yet is **silently skipped** by every pass
+    /// node, so the first seconds after launch and after every teleport are a
+    /// stuttering, half-drawn map, and each pipeline arrives as a hitch rather
+    /// than a frame. Adreno compiles run 50–300 ms apiece and nothing prewarms.
+    ///
+    /// This is the same starvation `set_paused` was added for — Bevy's screenshot
+    /// readback is detached onto that pool too — and CLAUDE.md records the general
+    /// rule that anything spawned there inherits it. A pool of our own is the fix
+    /// for the class rather than for each victim: `set_paused` remains, because it
+    /// answers a different question (quiescing *our* work before the shutter), but
+    /// it is no longer the only thing standing between a tile burst and every other
+    /// async consumer in the engine.
+    static POOL: OnceLock<TaskPool> = OnceLock::new();
+
+    /// Build the pool at `workers` wide.
+    ///
+    /// Called from `run()` before the app is built. Idempotent: a second call is a
+    /// no-op rather than a panic, so a test harness that starts twice is fine.
+    pub fn init(workers: usize) {
+        let _ = POOL.get_or_init(|| {
+            let threads = workers.max(1);
+            let mut builder = TaskPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name("carto tile worker".to_string());
+            // Below the render and main threads on Android, because otherwise the
+            // scheduler ranks them above it: these threads are CPU-saturated for
+            // 120 ms at a stretch so EAS reads them as the important ones, while
+            // the render thread blocks in FIFO acquire and reads as idle. On a
+            // 2-big/6-little SoC that hands the streamers the big cores and the
+            // frame an A55.
+            //
+            // Be honest about the ceiling: this is a CFS weight only. Java's
+            // `Process.setThreadPriority` would *also* move the thread into the
+            // background cpuset, and that half needs a `Runnable`, i.e. a
+            // `classes.dex` (`docs/notes/android-build.md`). Pinning to the little
+            // cluster with `sched_setaffinity` is the stronger libc-only version
+            // and is deliberately not taken: it would need the cluster derived from
+            // `cpuinfo_max_freq` rather than a hardcoded core layout, and starving
+            // the streamers outright is a worse failure than deprioritising them.
+            if cfg!(target_os = "android") {
+                builder = builder.on_thread_spawn(|| {
+                    #[cfg(target_os = "android")]
+                    // SAFETY: `setpriority` takes no pointers and cannot fail in a
+                    // way that matters — `PRIO_PROCESS` with `who == 0` is the
+                    // *calling thread* on Linux, and lowering a priority never
+                    // requires privilege.
+                    unsafe {
+                        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                    }
+                });
+            }
+            builder.build()
+        });
+    }
+
+    fn pool() -> &'static TaskPool {
+        // `init` runs at the top of `run()`, but a unit test can reach a streamer
+        // without one. Falling back to a single thread keeps that path working
+        // instead of panicking on a `OnceLock` nobody set.
+        POOL.get_or_init(|| {
+            TaskPoolBuilder::new()
+                .num_threads(1)
+                .thread_name("carto tile worker (unsized)".to_string())
+                .build()
+        })
+    }
 
     pub fn submit(job: Job) {
-        AsyncComputeTaskPool::get()
-            .spawn(async move { job() })
-            .detach();
+        pool().spawn(async move { job() }).detach();
     }
 
     pub fn worker_count() -> usize {
-        AsyncComputeTaskPool::get().thread_num()
+        pool().thread_num()
     }
 }
 
@@ -125,8 +211,8 @@ mod imp {
 }
 
 pub use imp::init;
-/// Pool width, for diagnostics/HUD. Native callers must wait until Bevy's task
-/// pools exist (it reads `AsyncComputeTaskPool`), so it is not called from [`start`].
+/// Pool width, for diagnostics/HUD. Safe to call at any point now that the pool is
+/// ours — it no longer reads a Bevy global that has to exist first.
 #[allow(unused_imports, dead_code)]
 pub use imp::worker_count;
 
@@ -179,15 +265,22 @@ pub fn outstanding() -> usize {
 
 /// Stop (or resume) admitting jobs to the pool.
 ///
-/// **Why this exists.** On native, [`submit`] *is* `AsyncComputeTaskPool` — and so
-/// is Bevy's screenshot readback, which `collect_screenshots` spawns and detaches
-/// onto the same pool. Our jobs are blocking closures (a full MVT rasterise, ~120 ms
-/// each — `docs/notes/tile-raster-cost.md`), so each one owns a pool thread outright
-/// with no yield point. On an 8-core host the pool is 3 threads wide, a teleport
-/// queues hundreds of jobs, and the streamers keep refilling it: the readback future
-/// is FIFO'd behind all of them and may simply never be polled. That is a `--shot`
-/// that renders 194 healthy frames and never writes a PNG
+/// **Why this exists.** It was written when [`submit`] *was* `AsyncComputeTaskPool`
+/// on native — and so is Bevy's screenshot readback, which `collect_screenshots`
+/// spawns and detaches onto that pool. Our jobs are blocking closures (a full MVT
+/// rasterise, ~120 ms each — `docs/notes/tile-raster-cost.md`), so each one owns a
+/// thread outright with no yield point. On an 8-core host the pool is 3 threads
+/// wide, a teleport queues hundreds of jobs, and the streamers keep refilling it:
+/// the readback future was FIFO'd behind all of them and might never be polled.
+/// That is a `--shot` that renders 194 healthy frames and never writes a PNG
 /// (`docs/notes/headless-shots-software-renderer.md`).
+///
+/// The pool split (see the module header) removed that particular collision, and
+/// this is **still needed**, for a reason the split does not address: the shot
+/// harness has to know our own work is *finished*, not merely running elsewhere.
+/// A tile decode that lands between the settle verdict and the shutter changes the
+/// picture being captured. So this quiesces our jobs deliberately, where the split
+/// merely stops them blocking somebody else's.
 ///
 /// Pausing is deliberately *parking*, not dropping. The streamers de-duplicate on
 /// "a fetch is in flight", so a discarded decode is never re-queued — the tile would

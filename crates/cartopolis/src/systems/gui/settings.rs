@@ -123,10 +123,20 @@ pub fn render_settings_panel(
     #[cfg(feature = "audio")] soundscape: Option<
         Res<crate::systems::player::soundscape::Soundscape>,
     >,
+    windows: Query<&Window>,
     mut commands: Commands,
 ) {
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
+    // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
+    // a headless `--shot` run, where there is no window and the hint degrades to a
+    // sentence without numbers rather than inventing a resolution.
+    let target = windows.iter().next().map(|w| {
+        UVec2::new(
+            w.resolution.physical_width(),
+            w.resolution.physical_height(),
+        )
+    });
     let mut open = right_panel.is(RightPanel::Settings);
     let mut close = false;
     let mut play_tone = false;
@@ -166,7 +176,7 @@ pub fn render_settings_panel(
             .auto_shrink([false, false])
             .show(ui, |ui| match state.tab {
                 SettingsTab::General => general_tab(ui, &mut edited),
-                SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode),
+                SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
                 SettingsTab::Audio => play_tone = audio_tab(ui, &mut state),
             });
     });
@@ -262,7 +272,7 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
 
 /// Map: the two things that change what the map *looks* like and had no UI at
 /// all outside the developer panel.
-fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode) {
+fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode, target: Option<UVec2>) {
     section(ui, "Lighting");
     ui.horizontal_wrapped(|ui| {
         // `Manual` is deliberately absent: it is the developer panel's mode (its
@@ -302,6 +312,73 @@ fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode) {
     pending(
         ui,
         "Takes effect the next time the application starts. Automatic picks by device.",
+    );
+
+    ui.add_space(8.0);
+    render_scale_row(ui, prefs, target);
+}
+
+/// The render-scale slider.
+///
+/// Deliberately **not** followed by a `pending(...)` note, unlike the quality
+/// preset directly above it, and the contrast is the point rather than an
+/// oversight: that preset cannot apply to a running process (`quality::budget()`
+/// is a `OnceLock` read before the world exists), while this is a `Resource` the
+/// render world re-extracts every frame. Do not paste that note down here.
+fn render_scale_row(ui: &mut egui::Ui, prefs: &mut AppPrefs, target: Option<UVec2>) {
+    use crate::systems::render_scale::RenderScale;
+
+    // The tier's own value is what "Automatic" resolves to, and it is what the
+    // slider must show while the preference is `None` — otherwise dragging away
+    // from Automatic makes the picture jump before it moves.
+    let tier_default = crate::quality::budget().render_scale;
+    let mut scale = prefs.render_scale.unwrap_or(tier_default);
+    let auto = prefs.render_scale.is_none();
+
+    ui.horizontal(|ui| {
+        ui.label("Render scale");
+        if !auto && ui.small_button("Automatic").clicked() {
+            prefs.render_scale = None;
+        }
+    });
+
+    let response = ui.add(
+        egui::Slider::new(&mut scale, RenderScale::RANGE)
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+            .step_by(0.05),
+    );
+    if response.changed() {
+        prefs.render_scale = Some(RenderScale::new(scale).0);
+    }
+
+    // The resolved pixel count, not just the percentage. On a phone "50%" means
+    // nothing and "540 x 1170" means everything, and it is the number a bug report
+    // needs — the same reasoning as `build_line()` further down this panel. Uses
+    // the renderer's own `scaled_size`, not a second copy of the arithmetic, so
+    // the figure here cannot drift from the one the main pass uses.
+    let hint = match target {
+        Some(target) => {
+            let scaled = crate::systems::render_scale::scaled_size(target, scale);
+            format!(
+                "The 3D world is drawn at {} x {} and scaled up.",
+                scaled.x, scaled.y
+            )
+        }
+        None => "The 3D world is drawn below the screen's resolution and scaled up.".to_string(),
+    };
+    ui.label(
+        egui::RichText::new(if auto {
+            format!("Automatic — following this device's tier. {hint}")
+        } else {
+            hint
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+    ui.label(
+        egui::RichText::new("The interface stays sharp; only the map softens.")
+            .small()
+            .color(theme::TEXT_DIM),
     );
 }
 

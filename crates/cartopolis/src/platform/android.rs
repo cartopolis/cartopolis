@@ -125,6 +125,275 @@ fn activity() -> JObject<'static> {
 }
 
 // ---------------------------------------------------------------------------
+// The environment Android does not have
+// ---------------------------------------------------------------------------
+
+/// The system-property stand-in for an environment variable.
+///
+/// **This is the one seam in this file that is not JNI**, and that is why it
+/// works: `__system_property_get` is bare libc, so it needs no framework class,
+/// no `Runnable` and therefore no `classes.dex`. It is the whole trick.
+///
+/// The problem it solves is that every debugging switch in this tree —
+/// `CARTO_NO_ATMOSPHERE`, `CARTO_FPS_LOG`, `CARTO_QUALITY`, `CARTO_NO_HAZE`,
+/// `CARTO_NO_ENVMAP`, `CARTO_NO_OCEAN` — reaches the process through
+/// [`crate::env_flag`] / [`crate::env_value`], i.e. `std::env::var_os`. A
+/// NativeActivity is started by the zygote and inherits `app_process`'s
+/// environment, which contains none of these and which nothing on the device can
+/// add to: there is no shell to export from. So on the single platform whose
+/// renderer most needs bisecting, every switch built for bisecting a renderer was
+/// silently dead. `quality.rs` already documents this for one field and solves it
+/// by moving the value into `Budget`; that does not generalise to a flag whose
+/// entire purpose is to be flipped between two runs.
+///
+/// The mapping is mechanical: `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`.
+/// The `debug.` prefix is load-bearing rather than decorative — it is the one
+/// property namespace `adb shell setprop` may write **on a production build**
+/// without root, which is what makes this reachable on the user's own phone
+/// rather than only on an eng build:
+///
+/// ```text
+/// adb shell setprop debug.carto.no_atmosphere 1
+/// adb shell am force-stop eu.garage44.cartopolis   # properties are read at startup
+/// ```
+///
+/// Two limits inherited from the platform, neither of which binds us today.
+/// A value is capped at `PROP_VALUE_MAX` = 92 bytes including the NUL, so the
+/// buffer below is exactly that and a longer value is truncated by the platform
+/// rather than by us. And a *name* was capped at 31 bytes before Android 8; we
+/// target 28+, where it is not, but the longest name this produces
+/// (`debug.carto.no_atmosphere`, 25) fits the old limit anyway.
+///
+/// Returns `None` for an unset property, matching `env::var`'s shape. An empty
+/// value is `Some("")` here and is filtered by the callers, exactly as the
+/// environment path filters an empty variable.
+pub fn system_property(name: &str) -> Option<String> {
+    // `PROP_VALUE_MAX`, from `<sys/system_properties.h>`. Not re-exported by the
+    // `libc` crate, so it is written out with its source rather than guessed.
+    const PROP_VALUE_MAX: usize = 92;
+
+    // The name mapping lives in `lib.rs`, not here, for one reason: it is the half
+    // that can be wrong *silently* — a name that maps to a property nobody sets
+    // reads as "off" forever — and a test beside it here would never run. This
+    // module is `cfg(target_os = "android")`, no CI lane builds Android tests, and
+    // `cargo check` does not compile `cfg(test)` at all (CLAUDE.md). So the pure
+    // half sits on the native lane where `cargo test -p cartopolis` reaches it.
+    let key = crate::android_property_name(name);
+    let key = std::ffi::CString::new(key).ok()?;
+    let mut buf = [0u8; PROP_VALUE_MAX];
+    // SAFETY: `key` is a NUL-terminated C string that outlives the call, and `buf`
+    // is `PROP_VALUE_MAX` bytes — the maximum the platform will write, including
+    // its NUL. The return is the value's length, or 0 when the property is unset.
+    let len = unsafe {
+        libc::__system_property_get(key.as_ptr(), buf.as_mut_ptr().cast::<libc::c_char>())
+    };
+    if len <= 0 {
+        return None;
+    }
+    // Trust the length rather than scanning for the NUL, but clamp it: a negative
+    // value is already handled above, and a length past the buffer would be a
+    // platform bug we should not turn into a panic.
+    let len = (len as usize).min(PROP_VALUE_MAX);
+    Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// ADPF — telling the scheduler what we are actually trying to do
+// ---------------------------------------------------------------------------
+
+/// Android Dynamic Performance Framework: report each frame's real duration
+/// against the one we are aiming for, so the governor clocks for the work rather
+/// than guessing from thread busy-ness.
+///
+/// **Why this is worth reaching for.** Without it the kernel's EAS governor sees a
+/// render thread that blocks in FIFO acquire (so it looks idle) and tile workers
+/// that saturate a core for 120 ms at a stretch (so they look essential). That is
+/// exactly backwards, and `nice` — which `platform::workers` also applies — only
+/// adjusts the *relative* weight of two threads. It cannot tell the SoC that the
+/// whole process has a 16.7 ms deadline it is missing, which is the thing that
+/// actually raises clocks on a thermally-constrained 2-big/6-little part.
+///
+/// **Why it is reachable at all.** `APerformanceHint_*` are plain C functions in
+/// `libandroid.so`. No Java interface, no callback, therefore no `Runnable` and no
+/// `classes.dex` — the constraint that rules out `Window.setSustainedPerformanceMode`
+/// (see this module's header) does not apply. This is the dex-free substitute for
+/// it, and the better tool anyway.
+///
+/// **Why `dlsym` rather than linking.** The API is level 33; `build-apk.sh` builds
+/// against the **platform-28** sysroot, whose `libandroid.so` stub does not export
+/// these symbols, so a direct `extern "C"` reference fails at *link* time — on
+/// every build, including devices that would have supported it. `ndk-sys` declares
+/// them (`ffi_aarch64.rs`) but declaring is not linking. Resolving at run time
+/// keeps `minSdkVersion 28` intact and degrades to nothing on an older handset.
+///
+/// A Fairphone 4 on Android 13 is API 33 exactly, i.e. the first version that has
+/// this.
+///
+/// **Unverified on hardware**, like everything else in this file. The failure mode
+/// is deliberately silent-and-inert (a null manager, a missing symbol and an
+/// unsupported device all end at "do nothing"), so [`start_perf_hint`] logs which
+/// way it went — without that line there is no way to tell "ADPF is helping" from
+/// "ADPF was never running".
+mod perf_hint {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+
+    /// The live session, as an address rather than a pointer, so the static needs
+    /// no `unsafe impl Send`. Zero means "no session".
+    ///
+    /// Behind a `Mutex` because `APerformanceHintSession` is not safe for
+    /// concurrent use and the reporting system is not pinned to a thread — Bevy's
+    /// executor may run it anywhere. The lock is uncontended in practice (one
+    /// caller, once a frame) and the alternative, a `NonSend` resource, would force
+    /// the system onto the main thread for no benefit.
+    static SESSION: Mutex<usize> = Mutex::new(0);
+
+    type GetManager = unsafe extern "C" fn() -> *mut c_void;
+    type CreateSession = unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
+    type ReportActual = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+    type UpdateTarget = unsafe extern "C" fn(*mut c_void, i64) -> i32;
+
+    struct Api {
+        report: ReportActual,
+        update_target: UpdateTarget,
+    }
+
+    static API: Mutex<Option<&'static Api>> = Mutex::new(None);
+
+    /// `dlsym` one symbol out of `libandroid.so`.
+    ///
+    /// Via an explicit `dlopen` handle rather than `RTLD_DEFAULT`, because
+    /// `RTLD_DEFAULT` is **not portable across our own ABIs**: bionic defines it as
+    /// `(void*)0` on LP64 and `(void*)-1` on 32-bit, and `build-apk.sh` accepts
+    /// `armeabi-v7a` as well as `arm64-v8a`. A null handle would silently resolve
+    /// nothing on the 32-bit build — the one failure this whole module is shaped to
+    /// avoid, since "no ADPF" and "ADPF misprobed" look identical from outside.
+    ///
+    /// `libandroid.so` is already loaded (the process links it for `ANativeWindow`
+    /// and `AAssetManager`), so this bumps a refcount and hands back the existing
+    /// handle. It is deliberately never `dlclose`d: the function pointers outlive
+    /// the call and the library is wanted for the life of the process anyway.
+    unsafe fn symbol(handle: *mut c_void, name: &[u8]) -> Option<*mut c_void> {
+        let ptr = libc::dlsym(handle, name.as_ptr().cast());
+        (!ptr.is_null()).then_some(ptr)
+    }
+
+    /// Open a session for `tid`, aiming at `target_nanos` per frame.
+    ///
+    /// Returns whether ADPF is now running, which the caller logs — this is the
+    /// only externally visible difference between "supported and active" and
+    /// "silently absent".
+    pub fn start(tid: i32, target_nanos: i64) -> bool {
+        let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if *session != 0 {
+            return true;
+        }
+        // SAFETY: each `dlsym` is checked for null before being transmuted, and the
+        // signatures are transcribed from `ndk-sys`' own declarations for these
+        // exact symbols. A wrong signature here would be UB, so they are not
+        // guessed — see `ffi_aarch64.rs`.
+        unsafe {
+            let handle = libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW);
+            if handle.is_null() {
+                return false;
+            }
+            // All four or none: a device that has the manager but is missing one of
+            // the calls would leave a session nothing could report to.
+            let (Some(get_manager), Some(create), Some(report), Some(update_target)) = (
+                symbol(handle, b"APerformanceHint_getManager\0"),
+                symbol(handle, b"APerformanceHint_createSession\0"),
+                symbol(handle, b"APerformanceHint_reportActualWorkDuration\0"),
+                symbol(handle, b"APerformanceHint_updateTargetWorkDuration\0"),
+            ) else {
+                return false;
+            };
+            let get_manager: GetManager = std::mem::transmute(get_manager);
+            let create: CreateSession = std::mem::transmute(create);
+            let report: ReportActual = std::mem::transmute(report);
+            let update_target: UpdateTarget = std::mem::transmute(update_target);
+
+            let manager = get_manager();
+            if manager.is_null() {
+                return false;
+            }
+            let threads = [tid];
+            let handle = create(manager, threads.as_ptr(), threads.len(), target_nanos);
+            if handle.is_null() {
+                return false;
+            }
+            *session = handle as usize;
+            *API.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::leak(Box::new(Api {
+                report,
+                update_target,
+            })));
+        }
+        true
+    }
+
+    /// Report the frame that just finished. No-op when there is no session.
+    pub fn report(actual_nanos: i64) {
+        // The guard is held **across** the FFI call, not just long enough to copy
+        // the handle out. `APerformanceHintSession` is not safe for concurrent use
+        // and Bevy's executor may run the reporting system on any thread, so
+        // releasing the lock before calling would leave exactly the race the mutex
+        // is here to prevent. (It was written that way first.)
+        let session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if *session == 0 {
+            return;
+        }
+        let api = *API.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(api) = api else { return };
+        // SAFETY: `*session` is a live handle from `createSession`, never closed —
+        // the process owns it for its lifetime — and the guard above serialises the
+        // calls the session is not itself safe for. `max(1)` because ADPF rejects a
+        // non-positive duration, and a zero-length frame is what a paused clock
+        // reports.
+        unsafe {
+            (api.report)(*session as *mut c_void, actual_nanos.max(1));
+        }
+    }
+
+    /// Change the deadline we are aiming at — a display refresh change, or the
+    /// frame cap moving.
+    #[allow(dead_code)]
+    pub fn set_target(target_nanos: i64) {
+        let session = *SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if session == 0 {
+            return;
+        }
+        let api = *API.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(api) = api else { return };
+        // SAFETY: as `report`.
+        unsafe {
+            (api.update_target)(session as *mut c_void, target_nanos.max(1));
+        }
+    }
+}
+
+/// Open the ADPF session for the calling thread. See [`perf_hint`].
+pub fn start_perf_hint(target_nanos: i64) {
+    // SAFETY: `gettid` takes no arguments and cannot fail.
+    let tid = unsafe { libc::gettid() };
+    if perf_hint::start(tid, target_nanos) {
+        tracing::info!(
+            tid,
+            target_ms = target_nanos as f64 / 1.0e6,
+            "ADPF performance hint session open"
+        );
+    } else {
+        // Not a warning: an API-32 handset is not misconfigured, it simply predates
+        // this. But it must be visible, or there is no way to tell an inactive
+        // session from an ineffective one.
+        tracing::info!("no ADPF on this device — frame hints are not available");
+    }
+}
+
+/// Report the duration of the frame that just finished.
+pub fn report_frame(actual_nanos: i64) {
+    perf_hint::report(actual_nanos);
+}
+
+// ---------------------------------------------------------------------------
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------
 
@@ -576,7 +845,13 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
     // Not `with_local_frame` around the whole thing: the trace read below is a
     // loop, and a frame sized for the worst case is worse than frames sized for
     // each step. This one covers the list walk.
-    let (summary, anr_infos) = env.with_local_frame_returning_local(32, |env| {
+    // `with_local_frame`, not `with_local_frame_returning_local`: the latter exists
+    // to promote a single **local reference** out of the frame being popped, so its
+    // closure must return a `JObject`. This one returns `(Vec<String>,
+    // Vec<GlobalRef>)` — strings already copied out of the JVM and *global* refs
+    // that outlive any frame by construction — which is exactly the case the plain
+    // form is for.
+    let (summary, anr_infos) = env.with_local_frame::<_, _, Fail>(32, |env| {
         let name: JObject = env.new_string("activity")?.into();
         let manager = env
             .call_method(
@@ -689,7 +964,12 @@ fn reason_name(reason: i32) -> &'static str {
 
 /// Drain `ApplicationExitInfo.getTraceInputStream()` into a `String`, capped.
 fn read_trace(env: &mut JNIEnv, info: &JObject) -> Result<Option<String>, Fail> {
-    let stream = env.with_local_frame_returning_local(8, |env| {
+    // The error type is spelled out because nothing in the closure body pins it:
+    // every `?` here converts *into* `E`, so `E` is only constrained by the return,
+    // and `Ok(..)` alone leaves it ambiguous. This is the one call in the file where
+    // `returning_local` is the right choice — a single local `JObject` promoted out
+    // of the frame — so it keeps it and gains the turbofish.
+    let stream = env.with_local_frame_returning_local::<_, Fail>(8, |env| {
         Ok(env
             .call_method(info, "getTraceInputStream", "()Ljava/io/InputStream;", &[])?
             .l()?)

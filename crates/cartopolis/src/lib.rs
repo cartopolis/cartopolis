@@ -886,19 +886,22 @@ fn run_client() {
                 },
                 async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
                     min_threads: 2,
-                    // `Budget::worker_cap` is where the phone's ceiling is written,
-                    // and this is the only place that can enforce it on native:
-                    // `platform::workers::submit` *is* `AsyncComputeTaskPool` here,
-                    // and `platform::workers::init` is a no-op off the web (it sizes
-                    // a worker pool that only wasm has). So on a handset the cap was
-                    // silently doing nothing, and the real width was this line.
+                    // Bevy's own default width, and no longer ours to cap.
                     //
-                    // It matters more than a thread count usually does: our jobs are
-                    // blocking ~120 ms tiny-skia rasterises with no yield point, and
-                    // a phone's 2 big + 6 little cores share one thermal envelope
-                    // with the render thread. Oversubscribing it does not make the
-                    // map arrive sooner, it makes the frame that draws the map late.
-                    max_threads: quality::budget().worker_cap.unwrap_or(12),
+                    // `Budget::worker_cap` used to be enforced here, because
+                    // `platform::workers::submit` *was* `AsyncComputeTaskPool` on
+                    // native and `workers::init` was a no-op off the web. The tile
+                    // jobs have their own pool now (`platform::workers`), which is
+                    // where that cap and the Android `nice` both moved.
+                    //
+                    // What is left on this pool is Bevy's own async work — and the
+                    // reason the split matters: **pipeline compilation** is spawned
+                    // here (`pipeline_cache::create_pipeline_task`, on exactly
+                    // `not(wasm32) + not(macos) + multi_threaded`, i.e. Android), as
+                    // is the screenshot readback. Both used to queue behind hundreds
+                    // of 120 ms blocking rasterises with no yield point. Do not put
+                    // a cap back on this without moving the tile jobs back too.
+                    max_threads: usize::MAX,
                     percent: 0.45,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
@@ -1034,7 +1037,26 @@ fn run_client() {
     };
 
     app.add_plugins(default_plugins)
-        .add_plugins(big_space::prelude::BigSpaceDefaultPlugins)
+        // `BigSpaceTimingStatsPlugin` is disabled rather than the group being
+        // swapped for `BigSpaceMinimalPlugins`, and the difference matters: the
+        // default group is Minimal + timing + *validation*, and the validator is
+        // already `#[cfg(not(debug_assertions))]`-disabled, so it costs a shipped
+        // build nothing and is a genuinely useful hierarchy check while
+        // developing. Dropping the group would throw that away to remove the
+        // timing.
+        //
+        // The timing plugin, by contrast, is pure overhead **in every profile**:
+        // four systems in `PostUpdate`, ~10 `Instant::now()` per frame inside the
+        // propagation systems, and an `update_averages` that clones both stat
+        // structs into a 64-deep `VecDeque` and recomputes a 64-entry mean every
+        // frame — to populate `PropagationStats` and `GridHashStats`, which
+        // nothing in this tree reads. Upstream keeps it on by default because
+        // upstream's examples display it; we have no such display.
+        .add_plugins(
+            big_space::prelude::BigSpaceDefaultPlugins
+                .build()
+                .disable::<big_space::plugin::BigSpaceTimingStatsPlugin>(),
+        )
         // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
         // creates GlobalClusterSettings) — see the plugin's doc comment.
         .add_plugins(ForceCpuClusteringPlugin)
@@ -1797,6 +1819,7 @@ fn run_client() {
                 handle_back_gesture,
                 apply_screen_wakelock,
                 sync_guidance_pref,
+                systems::render_scale::apply_preferred_render_scale,
             ),
         )
         // Phase 7d: the on-screen keyboard — the only keyboard Android and a phone
@@ -1941,13 +1964,23 @@ fn run_client() {
             PostUpdate,
             systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
         )
-        // `Last`, and after the frame limiter rather than before it: the heartbeat
-        // has to mean "a whole frame completed", so anything that can wedge the
-        // schedule — a system, a render extract, the limiter's own sleep — is
-        // inside the interval the watchdog measures. Beating in `First` would say
-        // the loop is alive at the moment it enters the frame it is about to hang
-        // in, which is the one frame that matters.
-        .add_systems(Last, (frame_limiter, watchdog_beat).chain());
+        // Three systems, one chain, and each position is load-bearing.
+        //
+        // `report_frame_to_scheduler` runs **before** the limiter: it tells ADPF how
+        // long the frame took, and the limiter *sleeps* to hit a deadline, so
+        // measuring after it would report the sleep as work and describe a process
+        // that is always exactly on time however slow it really is.
+        //
+        // `watchdog_beat` runs **after** it, for the mirror-image reason: the
+        // heartbeat has to mean "a whole frame completed", so anything that can
+        // wedge the schedule — a system, a render extract, the limiter's own sleep
+        // — is inside the interval the watchdog measures. Beating in `First` would
+        // say the loop is alive at the moment it enters the frame it is about to
+        // hang in, which is the one frame that matters.
+        .add_systems(
+            Last,
+            (report_frame_to_scheduler, frame_limiter, watchdog_beat).chain(),
+        );
 
     // The run's verdict has to become the process's. `app.run()` returns an
     // `AppExit` and dropping it made every failure look like a success: a `--shot`
@@ -2012,8 +2045,29 @@ fn attach_avatar_to_bigspace(
 /// `?CARTO_NO_ATMOSPHERE=1`, or the tidier `?no_atmosphere` (the `CARTO_`
 /// prefix and the case are both optional in a URL, where there is no environment
 /// to collide with).
+///
+/// **Android has no environment either**, and its version of the problem is worse
+/// than the browser's: a NativeActivity is started by the zygote and inherits
+/// `app_process`'s environment, and there is no shell on the phone to add to it.
+/// So every switch here was silently dead on the one platform whose renderer is
+/// hardest to bisect — the platform where you cannot attach a debugger, cannot
+/// read stderr and get one build per CI run. There the source is a **system
+/// property**: `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`, set with
+/// `adb shell setprop` and read at startup. See
+/// [`platform::android::system_property`] for why `debug.` specifically, and for
+/// the rest of the recipe.
 pub fn env_flag(name: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        // Android has no environment either, and for a harder reason than the
+        // browser's: the zygote hands a NativeActivity `app_process`'s own
+        // environment and there is no shell on the device to add to it. So the
+        // same switches come from system properties instead — see
+        // `platform::android::system_property`, which is also where the
+        // `adb shell setprop` recipe lives.
+        return platform::android::system_property(name).is_some_and(|v| v != "0" && !v.is_empty());
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
     }
@@ -2042,13 +2096,97 @@ fn query_flag(name: &str) -> bool {
 /// naming rules, as [`env_flag`]. `CARTO_PLACE="53.2, 6.5, 120m"` on desktop,
 /// `?place=53.2,6.5,120m` in the browser.
 pub fn env_value(name: &str) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        // See `env_flag`: system properties stand in for the environment.
+        return platform::android::system_property(name).filter(|v| !v.is_empty());
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         std::env::var(name).ok().filter(|v| !v.is_empty())
     }
     #[cfg(target_arch = "wasm32")]
     {
         query_value(name).filter(|v| !v.is_empty())
+    }
+}
+
+/// `CARTO_NO_ATMOSPHERE` → `debug.carto.no_atmosphere`: the Android half of
+/// [`env_value`]'s name mapping.
+///
+/// **Deliberately not inside `platform::android`**, and not `cfg`-gated, although
+/// it is only ever *called* from there. That module is
+/// `cfg(target_os = "android")`; no CI lane builds Android tests, and `cargo
+/// check` — which is all the Android lane runs — does not compile `cfg(test)`
+/// code at all. A test next to the caller would therefore never execute on any
+/// machine, and this is precisely the function whose failure is silent: a name
+/// that maps to a property nobody sets reads as "unset" forever, so a typo here
+/// looks exactly like a switch that does not work. Here it is covered by the
+/// ordinary `cargo test -p cartopolis` run.
+///
+/// The `debug.` prefix is load-bearing rather than decorative — it is the one
+/// property namespace `adb shell setprop` may write on a **production** build
+/// without root, which is what makes this reachable on a user's own phone.
+// `allow(dead_code)` off Android, against the workspace's `unused = "deny"`: the
+// sole non-test caller is `platform::android`, which does not exist on this
+// target, so here the tests below are the only users — which is exactly the
+// arrangement this function was moved out of that module to get.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn android_property_name(name: &str) -> String {
+    let short = name.strip_prefix("CARTO_").unwrap_or(name);
+    format!("debug.carto.{}", short.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod android_property_tests {
+    use super::android_property_name;
+
+    #[test]
+    fn a_carto_variable_maps_to_a_debug_property() {
+        assert_eq!(
+            android_property_name("CARTO_NO_ATMOSPHERE"),
+            "debug.carto.no_atmosphere"
+        );
+        assert_eq!(
+            android_property_name("CARTO_FPS_LOG"),
+            "debug.carto.fps_log"
+        );
+        assert_eq!(
+            android_property_name("CARTO_QUALITY"),
+            "debug.carto.quality"
+        );
+    }
+
+    /// The prefix is optional, so a name that never carried it still lands in our
+    /// own namespace rather than loose in the platform's.
+    #[test]
+    fn an_unprefixed_name_is_still_namespaced() {
+        assert_eq!(android_property_name("QUALITY"), "debug.carto.quality");
+    }
+
+    /// A property *name* was capped at 31 bytes before Android 8. We target 28+,
+    /// where it is not — but the cap is the kind of thing that would truncate
+    /// silently on an older handset, and every switch this is called with fits it
+    /// anyway, so the cheap thing is to keep it that way.
+    #[test]
+    fn every_switch_fits_the_legacy_name_limit() {
+        for name in [
+            "CARTO_NO_ATMOSPHERE",
+            "CARTO_NO_HAZE",
+            "CARTO_NO_ENVMAP",
+            "CARTO_NO_OCEAN",
+            "CARTO_NO_SHADOWS",
+            "CARTO_NO_SPACE_RAYMARCH",
+            "CARTO_FPS_LOG",
+            "CARTO_FPS_CAP",
+            "CARTO_QUALITY",
+            "CARTO_RENDER_SCALE",
+            "CARTO_TILE_URL",
+            "CARTO_PLACE",
+        ] {
+            let mapped = android_property_name(name);
+            assert!(mapped.len() <= 31, "{mapped} is {} bytes", mapped.len());
+        }
     }
 }
 
@@ -2711,6 +2849,47 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
 ///
 /// Sleeping — not spinning: the point is to leave the GPU idle, so burning a core
 /// for sub-millisecond deadline precision would defeat it.
+/// Tell Android's performance governor how long the frame actually took.
+///
+/// Ordered **before** `frame_limiter`, and that is the whole subtlety: the limiter
+/// sleeps to hit a deadline, so measuring after it would report the sleep as work
+/// and describe a process that is always exactly on time no matter how slow it is.
+/// `Time<Real>::delta` at this point is the previous frame's wall clock, which is
+/// what ADPF wants — it compares it against the target and moves the clocks.
+///
+/// `Time<Real>`, not `Time`: the virtual clock is clamped (and `--shot` runs it at
+/// a fixed step), so it measures intent rather than elapsed time.
+///
+/// A no-op off Android, where the session never opens. See
+/// `platform::android::start_perf_hint` for why this is reachable without a
+/// `classes.dex` and why it is `dlsym`ed rather than linked.
+// Off Android the body below is `cfg`-ed away entirely, so both parameters become
+// unused and `mut` becomes needless — which the workspace's `unused = "deny"` turns
+// into two errors. The signature has to stay identical on every target regardless,
+// because it is a Bevy system and the registration is not `cfg`-ed: a second
+// registration arm would be one more thing to keep in step for a system that does
+// nothing off the handset.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(unused_variables, unused_mut, clippy::needless_pass_by_value)
+)]
+fn report_frame_to_scheduler(time: Res<Time<Real>>, mut started: Local<bool>) {
+    #[cfg(target_os = "android")]
+    {
+        if !*started {
+            *started = true;
+            // The deadline to aim at. The phone tier leaves pacing to FIFO
+            // (`fps_cap: None`), so the target is the display's own period rather
+            // than a cap of ours — 60 Hz, which is what a Fairphone 4 has.
+            let target = quality::budget()
+                .fps_cap
+                .map_or(1.0e9 / 60.0, |fps| 1.0e9 / fps);
+            platform::android::start_perf_hint(target as i64);
+        }
+        platform::android::report_frame(time.delta().as_nanos() as i64);
+    }
+}
+
 fn frame_limiter(
     mut deadline: Local<Option<std::time::Instant>>,
     mut period: Local<Option<Duration>>,
@@ -3440,7 +3619,20 @@ fn setup_horizon_haze(
     // the one edge the haze can't hide, so it has to sit at the same elevation in
     // every direction. A cube's rim runs from `r` at the face to `r√2` at the
     // corner, which swept up and down as a ring as the camera pivoted.
-    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap());
+    // `ico(3)` — 1,280 triangles, not `ico(5)`'s 20,480. `horizonhaze.wgsl` samples
+    // by per-pixel view direction and says so in its own header ("the mesh shape is
+    // irrelevant — it's just a cheap shell around the camera"), so the subdivision
+    // buys no shading quality whatsoever; it only decides how round the *rim* is,
+    // which is the one thing the paragraph above cares about.
+    //
+    // Not `ico(2)`, and the difference is the rim rather than the silhouette. A
+    // geodesic sphere's radius dips between its vertices by `1 - cos θ`, where θ is
+    // the angular radius of a face: ~6.4° at `ico(2)` (0.6 %) against ~3.2° at
+    // `ico(3)` (0.15 %). Both are nothing next to the cube's 41 % that the rejected
+    // option above was rejected for, but the rim is a ring the eye tracks as the
+    // camera pivots — the exact artefact that argument is about — so this takes the
+    // 16× and leaves the last 4× on the table rather than spending the rim on it.
+    let mesh = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
     let material = materials.add(HorizonHazeMaterial {
         color: LinearRgba::WHITE,
         params: Vec4::ZERO, // set each frame from the distance fog
@@ -3560,13 +3752,20 @@ fn update_star_sky(
         (&GridCell, &Transform),
         (With<crate::components::FreeCamera>, Without<StarSky>),
     >,
-    mut star: Query<(&mut Transform, &MeshMaterial3d<StarFieldMaterial>), With<StarSky>>,
+    mut star: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<StarFieldMaterial>,
+        ),
+        With<StarSky>,
+    >,
     mut materials: ResMut<Assets<StarFieldMaterial>>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
     };
-    let Ok((mut tf, mat_handle)) = star.single_mut() else {
+    let Ok((mut tf, mut vis, mat_handle)) = star.single_mut() else {
         return;
     };
     // In space the shell moves out past the far limb so stars sit *behind* the
@@ -3596,9 +3795,26 @@ fn update_star_sky(
         Some(_) => 1.0,
         None => (-3.0 * dev.fog_density).exp(),
     };
+    // Drop the field out of the frame entirely by day, rather than blending
+    // ~8,900 additive quads at a brightness of zero. `bright_stars.bin` is 16
+    // bytes a star, so that is ~17,800 triangles in the transparent phase — with
+    // `AlphaMode::Add` and no depth write, so not one of their fragments is
+    // rejected early — multiplied by nothing, for the whole daylight half of the
+    // cycle. The clouds, the rain and the haze shell each already do exactly
+    // this, each with its own note saying why; the star field and the moon were
+    // simply missed when they grew their fades.
+    let brightness = night * STAR_BRIGHTNESS * fog_veil;
+    let want = if brightness <= 0.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params = Vec4::new(
-            night * STAR_BRIGHTNESS * fog_veil,
+            brightness,
             time.elapsed_secs(),
             // Space flag: drops the shader's horizon cut, air extinction and
             // twinkle, none of which exist above the atmosphere.

@@ -36,8 +36,15 @@
 //! It is an instrument and not a cure: nothing here unsticks anything. It costs
 //! one relaxed atomic store per frame and a sleeping thread.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+// Native-only, alongside the three items below them that are the only users. See
+// the comment on `STALL`.
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicBool;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 /// How long the main loop may go without a beat before it is called a stall.
 ///
@@ -46,10 +53,24 @@ use std::time::{Duration, Instant};
 /// appears after the kill would never be written. Comfortably above any honest
 /// frame: this client's worst measured hitches are a re-anchor's tile rebuild, and
 /// those are per-frame-bounded and land in tens of milliseconds.
+// `cfg`: the only reader is `watch`, which is native-only — see `start`. The
+// module itself is unconditional because `beat` is called from the frame loop
+// on every target, so without this the workspace's `unused = "deny"` fails the
+// wasm build on three dead items. That lane is compiled by no CI job
+// (`docs/notes/checking-the-web-build.md`), so it fails silently until someone
+// runs it by hand.
+#[cfg(not(target_arch = "wasm32"))]
 const STALL: Duration = Duration::from_millis(2_500);
 
 /// How often the watcher wakes. A quarter of [`STALL`] bounds how late the report
 /// can be, and a four-times-a-second sleeper costs nothing measurable.
+// `cfg`: the only reader is `watch`, which is native-only — see `start`. The
+// module itself is unconditional because `beat` is called from the frame loop
+// on every target, so without this the workspace's `unused = "deny"` fails the
+// wasm build on three dead items. That lane is compiled by no CI job
+// (`docs/notes/checking-the-web-build.md`), so it fails silently until someone
+// runs it by hand.
+#[cfg(not(target_arch = "wasm32"))]
 const POLL: Duration = Duration::from_millis(600);
 
 /// Milliseconds since [`start`], written by [`beat`] and read by the watcher.
@@ -60,6 +81,13 @@ const POLL: Duration = Duration::from_millis(600);
 static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
 /// Set while a stall is being reported, so the report is written once per stall
 /// rather than four times a second for as long as it lasts.
+// `cfg`: the only reader is `watch`, which is native-only — see `start`. The
+// module itself is unconditional because `beat` is called from the frame loop
+// on every target, so without this the workspace's `unused = "deny"` fails the
+// wasm build on three dead items. That lane is compiled by no CI job
+// (`docs/notes/checking-the-web-build.md`), so it fails silently until someone
+// runs it by hand.
+#[cfg(not(target_arch = "wasm32"))]
 static STALLED: AtomicBool = AtomicBool::new(false);
 
 /// The main loop is alive. Called once per frame; everything else here is
