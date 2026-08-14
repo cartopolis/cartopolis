@@ -272,12 +272,7 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
 
 /// Map: the two things that change what the map *looks* like and had no UI at
 /// all outside the developer panel.
-fn map_tab(
-    ui: &mut egui::Ui,
-    prefs: &mut AppPrefs,
-    sun_mode: &mut SunMode,
-    target: Option<UVec2>,
-) {
+fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode, target: Option<UVec2>) {
     section(ui, "Lighting");
     ui.horizontal_wrapped(|ui| {
         // `Manual` is deliberately absent: it is the developer panel's mode (its

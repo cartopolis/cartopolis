@@ -2065,8 +2065,7 @@ pub fn env_flag(name: &str) -> bool {
         // same switches come from system properties instead — see
         // `platform::android::system_property`, which is also where the
         // `adb shell setprop` recipe lives.
-        return platform::android::system_property(name)
-            .is_some_and(|v| v != "0" && !v.is_empty());
+        return platform::android::system_property(name).is_some_and(|v| v != "0" && !v.is_empty());
     }
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
@@ -2148,8 +2147,14 @@ mod android_property_tests {
             android_property_name("CARTO_NO_ATMOSPHERE"),
             "debug.carto.no_atmosphere"
         );
-        assert_eq!(android_property_name("CARTO_FPS_LOG"), "debug.carto.fps_log");
-        assert_eq!(android_property_name("CARTO_QUALITY"), "debug.carto.quality");
+        assert_eq!(
+            android_property_name("CARTO_FPS_LOG"),
+            "debug.carto.fps_log"
+        );
+        assert_eq!(
+            android_property_name("CARTO_QUALITY"),
+            "debug.carto.quality"
+        );
     }
 
     /// The prefix is optional, so a name that never carried it still lands in our

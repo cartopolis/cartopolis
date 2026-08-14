@@ -168,7 +168,10 @@ impl Plugin for RenderScalePlugin {
         // The blit that expands the reduced picture has to interpolate, or the
         // slider is a lie at every value except an exact reciprocal — see
         // `make_the_blit_filter`.
-        render_app.add_systems(RenderStartup, make_the_blit_filter.after(init_blit_pipeline));
+        render_app.add_systems(
+            RenderStartup,
+            make_the_blit_filter.after(init_blit_pipeline),
+        );
         // `PrepareAssets` is the slot: after `ExtractCommands` (so the sizes to
         // scale exist and are this frame's), and before `PrepareViews`, which is
         // where `prepare_view_targets` reads `physical_target_size` to allocate

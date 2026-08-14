@@ -249,8 +249,7 @@ mod perf_hint {
     static SESSION: Mutex<usize> = Mutex::new(0);
 
     type GetManager = unsafe extern "C" fn() -> *mut c_void;
-    type CreateSession =
-        unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
+    type CreateSession = unsafe extern "C" fn(*mut c_void, *const i32, usize, i64) -> *mut c_void;
     type ReportActual = unsafe extern "C" fn(*mut c_void, i64) -> i32;
     type UpdateTarget = unsafe extern "C" fn(*mut c_void, i64) -> i32;
 
@@ -323,11 +322,10 @@ mod perf_hint {
                 return false;
             }
             *session = handle as usize;
-            *API.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Box::leak(Box::new(Api {
-                    report,
-                    update_target,
-                })));
+            *API.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::leak(Box::new(Api {
+                report,
+                update_target,
+            })));
         }
         true
     }
