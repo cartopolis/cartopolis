@@ -845,7 +845,13 @@ fn exit_reasons_inner(env: &mut JNIEnv, activity: &JObject) -> Result<Option<Str
     // Not `with_local_frame` around the whole thing: the trace read below is a
     // loop, and a frame sized for the worst case is worse than frames sized for
     // each step. This one covers the list walk.
-    let (summary, anr_infos) = env.with_local_frame_returning_local(32, |env| {
+    // `with_local_frame`, not `with_local_frame_returning_local`: the latter exists
+    // to promote a single **local reference** out of the frame being popped, so its
+    // closure must return a `JObject`. This one returns `(Vec<String>,
+    // Vec<GlobalRef>)` — strings already copied out of the JVM and *global* refs
+    // that outlive any frame by construction — which is exactly the case the plain
+    // form is for.
+    let (summary, anr_infos) = env.with_local_frame::<_, _, Fail>(32, |env| {
         let name: JObject = env.new_string("activity")?.into();
         let manager = env
             .call_method(
@@ -958,7 +964,12 @@ fn reason_name(reason: i32) -> &'static str {
 
 /// Drain `ApplicationExitInfo.getTraceInputStream()` into a `String`, capped.
 fn read_trace(env: &mut JNIEnv, info: &JObject) -> Result<Option<String>, Fail> {
-    let stream = env.with_local_frame_returning_local(8, |env| {
+    // The error type is spelled out because nothing in the closure body pins it:
+    // every `?` here converts *into* `E`, so `E` is only constrained by the return,
+    // and `Ok(..)` alone leaves it ambiguous. This is the one call in the file where
+    // `returning_local` is the right choice — a single local `JObject` promoted out
+    // of the frame — so it keeps it and gains the turbofish.
+    let stream = env.with_local_frame_returning_local::<_, Fail>(8, |env| {
         Ok(env
             .call_method(info, "getTraceInputStream", "()Ljava/io/InputStream;", &[])?
             .l()?)
