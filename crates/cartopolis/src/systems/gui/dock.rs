@@ -68,11 +68,13 @@ fn disc_spacing(viewport_w: f32, discs: usize) -> f32 {
     let slack = viewport_w - discs_w;
     (slack / gaps).clamp(SPACING_MIN, SPACING)
 }
-/// Gap from the bottom edge.
-const BOTTOM_MARGIN: f32 = 14.0;
-/// Inset of the top-left layers disc, matching the compass column under it.
-const LEFT_MARGIN: f32 = 12.0;
-const TOP_MARGIN: f32 = 8.0;
+/// Inset from the window edge — [`theme::OSD_MARGIN`] on all four sides, the
+/// same as every other floating control. These were three separate numbers (14
+/// at the bottom, 12 at the left, 8 at the top), which is why the layers disc
+/// and the compass column under it did not sit in the same corner.
+const BOTTOM_MARGIN: f32 = theme::OSD_MARGIN;
+const LEFT_MARGIN: f32 = theme::OSD_MARGIN;
+const TOP_MARGIN: f32 = theme::OSD_MARGIN;
 
 /// The panels that get a disc, in screen order. Their glyphs and names come from
 /// [`RightPanel::icons`] / [`RightPanel::label`] — the same table the panel
@@ -102,9 +104,15 @@ pub fn reserved_bottom() -> f32 {
 /// Where the top-left map controls start, clear of the layers disc above them.
 /// Read by `hud::render_map_controls`; one constant because the compass and
 /// everything stacked under it have to agree.
+///
+/// The gap is [`theme::OSD_GROUP_GAP`], not [`theme::OSD_GAP`], and the
+/// difference is the whole reason that constant exists: the layers disc opens a
+/// *panel* and the compass column under it controls the *view*. With one gap for
+/// both, four dark discs 8 pt apart read as one strip of chrome down the corner
+/// and nothing said where the panel toggle ended.
 #[must_use]
 pub fn reserved_top() -> f32 {
-    TOP_MARGIN + theme::ROUND_BUTTON_SIZE + 8.0
+    TOP_MARGIN + theme::ROUND_BUTTON_SIZE + theme::OSD_GROUP_GAP
 }
 
 /// Draw the dock and the layers disc, and route clicks into the (mutually
@@ -254,6 +262,17 @@ mod tests {
         // A viewport narrower than the discs themselves cannot be solved by
         // spacing, and must not answer with a negative gap.
         assert_eq!(disc_spacing(10.0, 5), SPACING_MIN);
+    }
+
+    /// The layers disc heads the top-left column that `hud` continues, so it is
+    /// anchored at the same inset those discs centre on — it was flush to a
+    /// 12 pt left margin under an 8 pt top one, against a column that centred
+    /// every disc under it on a different axis.
+    #[test]
+    fn the_column_is_one_column() {
+        assert_eq!(LEFT_MARGIN, theme::OSD_MARGIN);
+        assert_eq!(TOP_MARGIN, theme::OSD_MARGIN);
+        assert_eq!(BOTTOM_MARGIN, theme::OSD_MARGIN);
     }
 
     /// The two corners the map's floating controls own must not overlap the

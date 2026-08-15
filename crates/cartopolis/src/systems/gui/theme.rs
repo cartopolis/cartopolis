@@ -910,6 +910,7 @@ pub fn round_button(
             ink,
             icon,
             icon_size: 17.0,
+            ring_width: 1.5,
         },
     );
     paint_focus_ring(ui, &resp, rect, true);
@@ -936,6 +937,92 @@ pub fn mark_button(ui: &mut egui::Ui, tooltip: &str, selected: bool) -> egui::Re
     resp.on_hover_text(tooltip)
 }
 
+// ─── The map's floating controls ──────────────────────────────────────────────
+//
+// Everything that floats over the map — the dock, the compass column, the
+// on-screen navigation controls, the scale bar — is laid out from these three
+// numbers and painted by [`map_disc`]. They used to be per-module constants, and
+// what that bought was six edge insets (8, 10, 12, 14, 16 and a bare `-10`),
+// four disc diameters (28, 40, 44, 46) and two different answers to what a held
+// control looks like, all within one screen. The point of a floating control is
+// that it reads as *chrome over a map* rather than as part of the map, and that
+// only works if there is one of it.
+
+/// Inset of a floating control from the window edge, in points. One number for
+/// all four edges: a top-left column indented 12 and a top margin of 8 is a
+/// corner that looks like a mistake.
+pub const OSD_MARGIN: f32 = 12.0;
+/// Gap between two controls that belong to one cluster (the two halves of a
+/// zoom pair, the compass and the locate button under it).
+pub const OSD_GAP: f32 = 8.0;
+/// Gap between two clusters sharing an edge. Deliberately more than twice
+/// [`OSD_GAP`]: with one gap for both, a column of discs reads as a single
+/// undifferentiated strip, which is what the layers disc and the compass under
+/// it had become.
+pub const OSD_GROUP_GAP: f32 = 18.0;
+
+/// The fill of a control that is a *guide* rather than a plate — the
+/// thumbstick's well, which is [`ROUND_BUTTON_SIZE`]-and-a-half across and at
+/// [`OVERLAY`]'s opacity read as a hole punched in the map rather than as
+/// something to put a thumb on. Same slate, half the coverage.
+///
+/// Nothing legible sits on it, which is what lets it go this far — [`OVERLAY`]'s
+/// own note is a contrast argument about the text inside a box, and there is no
+/// text here. The floor is the other direction: at alpha 90 the well vanished
+/// into pale beige map, and a stick you cannot see the travel of is a pad.
+pub const OVERLAY_SOFT: Color32 = Color32::from_rgba_unmultiplied_const(0x1B, 0x28, 0x30, 140);
+
+/// Where a [`map_disc`] wants its mark drawn, and in what ink.
+pub struct DiscFace {
+    pub center: egui::Pos2,
+    pub radius: f32,
+    pub ink: Color32,
+}
+
+/// Allocate and paint one floating map disc, and hand back where to draw its
+/// mark. The plate — fill, ring, hover and pressed states, focus ring — is this
+/// function's business; the glyph inside it is the caller's, because half of
+/// them are painted from line segments rather than typed ([`close_button`] has
+/// the reason).
+///
+/// `on` is the engaged state — a panel open, a lock held, a button pressed — and
+/// wears the same muted-orange plate a selected dock disc does, so "this is on"
+/// is one colour everywhere on the map. `tone` is the ring that engagement
+/// carries: [`ACCENT_RING`] normally, [`AMBER`] for the two *held* states
+/// (north-up lock, follow-and-rotate) that the palette reserves it for.
+///
+/// `sense` is the caller's, because the tests differ by what the control means:
+/// a rate wants `click_and_drag` (a finger drifting a point while held is a
+/// drag, and `clicked()` drops the whole push), an edge wants `click()`.
+pub fn map_disc(
+    ui: &mut egui::Ui,
+    size: f32,
+    on: bool,
+    tone: Color32,
+    sense: egui::Sense,
+) -> (egui::Response, DiscFace) {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size), sense);
+    let held = resp.is_pointer_button_down_on();
+    let (fill, ring, ink) = match (on || held, resp.hovered()) {
+        (true, _) => (ACCENT_MUTED, tone, CREAM),
+        (false, true) => (SURFACE_HOVER, ACCENT, CREAM),
+        (false, false) => (OVERLAY, OVERLAY_LINE, TEXT),
+    };
+    let radius = size * 0.5 - 1.0;
+    let p = ui.painter();
+    p.circle_filled(rect.center(), radius, fill);
+    p.circle_stroke(rect.center(), radius, Stroke::new(1.5, ring));
+    paint_focus_ring(ui, &resp, rect, true);
+    (
+        resp,
+        DiscFace {
+            center: rect.center(),
+            radius,
+            ink,
+        },
+    )
+}
+
 /// The look of one icon disc, shared by [`round_button`] and the medallion a
 /// panel header wears — they have to be the same object at two sizes, or the
 /// header stops reading as "the dock button you just pressed".
@@ -945,11 +1032,17 @@ struct Disc<'a> {
     ink: Color32,
     icon: &'a str,
     icon_size: f32,
+    /// Width of the ring. A disc that floats over the map needs the heavier one
+    /// ([`map_disc`] uses the same value): its ring is the only thing separating
+    /// it from a bright tile, and at 1 pt over pale beige paper the plate read as
+    /// a flat hole with no edge at all. A medallion inside a panel header has the
+    /// header band behind it and keeps the hairline.
+    ring_width: f32,
 }
 
 fn paint_disc(p: &egui::Painter, center: egui::Pos2, radius: f32, d: Disc<'_>) {
     p.circle_filled(center, radius, d.fill);
-    p.circle_stroke(center, radius, Stroke::new(1.0, d.ring));
+    p.circle_stroke(center, radius, Stroke::new(d.ring_width, d.ring));
     p.text(
         center,
         egui::Align2::CENTER_CENTER,
@@ -1042,6 +1135,35 @@ pub fn action_enabled(
         ui.add_enabled(enabled, egui::Button::new(label))
     })
     .inner
+}
+
+/// One segment of a switcher — `Auto`/`Day`/`Night`, `Auto`/`Manual`, the
+/// clock's `Local`/`UTC`.
+///
+/// **A chip has to look like a control even when it is off.** These were
+/// `ui.selectable_label`, whose unselected state paints no background and no
+/// outline at all: the sun switcher rendered as the bare words "Auto Day Night"
+/// with one of them in an orange pill, so two of the three read as a caption for
+/// the third rather than as the two other choices. Off is a plate now — the same
+/// raised surface and hairline every button at rest wears — and on is the muted
+/// orange the dock discs and [`map_disc`] already use for "this is the live one".
+///
+/// It takes its height from the enclosing `interact_size` rather than pinning
+/// one, which is what keeps it finger-sized inside a box that has already raised
+/// that floor for the touch tier (see `hud::hud_area`) without making it a
+/// 32 pt slab on a desktop.
+pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let (fill, stroke, ink) = if selected {
+        (ACCENT_MUTED, ACCENT_RING, CREAM)
+    } else {
+        (SURFACE_RAISED, LINE, TEXT)
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
+            .corner_radius(CornerRadius::same(RADIUS_SM)),
+    )
 }
 
 /// The ✕ every panel closes with — **painted, not typed.**
@@ -1210,6 +1332,7 @@ pub fn panel_header_with(
                 ink: CREAM,
                 icon,
                 icon_size: 13.0,
+                ring_width: 1.0,
             },
         );
         row.add(
