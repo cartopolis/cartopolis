@@ -1045,14 +1045,58 @@ pub fn end_egui_frame(
         .ctx
         .tessellate(full_output.shapes, pixels_per_point);
 
+    // Carry unconsumed texture deltas forward instead of dropping them.
+    //
+    // A delta is *incremental*: egui allocates a texture once with a full image
+    // (`pos: None`) and every later change is a patch (`pos: Some`) against it.
+    // egui clears its own accumulator on `end_pass`, so whatever is written here is
+    // the only copy. Overwriting the previous `textures_delta` therefore loses the
+    // allocation, and egui-wgpu answers the first patch against a texture it never
+    // allocated with `panic!("Tried to update a texture that has not been allocated
+    // yet.")` — an abort, not a dropped frame.
+    //
+    // Desktop never reached it because `egui_pass` runs from frame zero, so nothing
+    // is ever unconsumed. **Android has no view for its first few seconds**: winit
+    // logs `Creating new window` about five seconds after `android_main`, and every
+    // egui frame before that produces deltas with no view to apply them. The font
+    // atlas is allocated in that window, so the app aborted a few seconds after
+    // startup on every launch (reproduced on the emulator 2026-08-15).
+    //
+    // `append` is egui's own merge and keeps order, so the allocation stays ahead of
+    // its patches. It is a no-op once a view exists, which is the steady state on
+    // every platform.
+    // Bounded by `APPLIED_GENERATION`: carry forward only while the last write is
+    // still unapplied, or every frame would re-upload the whole atlas forever.
+    let mut textures_delta = if render_output.generation == applied_generation() {
+        Default::default()
+    } else {
+        std::mem::take(&mut render_output.textures_delta)
+    };
+    textures_delta.append(full_output.textures_delta);
+
     *render_output = EguiRenderOutput {
         clipped_primitives,
-        textures_delta: full_output.textures_delta,
+        textures_delta,
         size_in_pixels,
         pixels_per_point,
         generation: render_output.generation.wrapping_add(1),
         force_next_write: false,
     };
+}
+
+/// Generation of the last [`EguiRenderOutput`] whose texture deltas actually
+/// reached the GPU, written by `egui_pass` and read by `end_egui_frame`.
+///
+/// A `static` rather than a resource because the two live in different worlds:
+/// `egui_pass` runs in the render world on an extracted copy, so it has no way to
+/// tell the main world "I applied that" through ordinary change detection. One
+/// `u64` of shared state is cheaper than a channel, and the only thing the main
+/// world needs to know is whether its last write was consumed.
+static APPLIED_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+fn applied_generation() -> u64 {
+    APPLIED_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ─── Render pass system ────────────────────────────────────────────────────────
@@ -1129,6 +1173,10 @@ pub fn egui_pass(
         for (id, delta) in &render_data.textures_delta.set {
             renderer.update_texture(render_device.wgpu_device(), render_queue, *id, delta);
         }
+        // Tell the main world these landed, so `end_egui_frame` stops carrying them
+        // forward. Set here rather than at the end of the pass because this loop is
+        // the whole of "applied" — everything below is geometry.
+        APPLIED_GENERATION.store(render_data.generation, std::sync::atomic::Ordering::Relaxed);
         // Upload vertex/index buffers; collect any extra staging command buffers.
         let encoder = render_context.command_encoder();
         renderer.update_buffers(
