@@ -11,11 +11,11 @@
 //! - **Location** (`start_location`) cannot use `LocationListener`, because that
 //!   is an interface and implementing it needs a class. See the long comment on
 //!   [`run_location`] for what it does instead and why.
-//! - **Keep-screen-on** ([`set_keep_screen_on`]) turned out to need no JNI at all:
-//!   the NDK already carries the UI-thread hop we would otherwise have needed a
-//!   `Runnable` for. It does need a thread of its own, for a reason that has
-//!   nothing to do with JNI and everything to do with android-activity's lock —
-//!   see the function.
+//! - **Keep-screen-on** ([`set_keep_screen_on`]) is a `PowerManager.WakeLock`, and
+//!   the reason it is not the window flag every Android app uses has nothing to do
+//!   with the no-class rule: the NDK does carry the UI-thread hop we would
+//!   otherwise have needed a `Runnable` for, and taking it deadlocked the app
+//!   twice on android-activity's `RwLock`. See the function.
 //! - **`open_url`** is plain framework classes (`Uri`, `Intent`, `Context`) and was
 //!   never in doubt.
 //!
@@ -59,7 +59,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
-use bevy::android::android_activity::WindowManagerFlags;
 use bevy::android::ANDROID_APP;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
@@ -399,74 +398,98 @@ pub fn report_frame(actual_nanos: i64) {
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------
 
-/// The one thread allowed to call `AndroidApp::set_window_flags`. See
-/// [`set_keep_screen_on`] for why it cannot be a Bevy system's thread.
-///
-/// `None` if the thread could not be spawned; the flag is then simply never set,
-/// which costs a screen timeout rather than a frozen app.
-static WINDOW_FLAGS: OnceLock<Option<mpsc::Sender<bool>>> = OnceLock::new();
+/// `PowerManager.SCREEN_BRIGHT_WAKE_LOCK`. Deprecated since API 17 in favour of
+/// `FLAG_KEEP_SCREEN_ON` — and taken anyway, because the flag is exactly what we
+/// cannot reach from here (see [`set_keep_screen_on`]). Deprecated is not removed:
+/// `PowerManagerService` still honours the level, and if a future release stops
+/// doing so the cost is a screen that times out mid-drive, not a broken app.
+const SCREEN_BRIGHT_WAKE_LOCK: i32 = 0x0000_000a;
 
-/// Hold the screen awake while the app is in the foreground (driver mode's reason
-/// for existing: the phone otherwise blanks thirty seconds into a drive).
+/// Android wants `app:reason`, and logs a complaint about a tag that isn't shaped
+/// that way. It is also what shows up in `dumpsys power`, which is how anyone
+/// chasing a battery drain finds out it was us.
+const WAKE_LOCK_TAG: &str = "cartopolis:driving";
+
+/// The one thread that touches the wake lock. See [`set_keep_screen_on`].
 ///
-/// **This needs no JNI and no `Runnable`.** The obvious route —
-/// `Window.addFlags(FLAG_KEEP_SCREEN_ON)` — has to run on the Java UI thread, and
-/// `Activity.runOnUiThread` takes a `Runnable`, i.e. a class we cannot define. But
-/// the NDK already exposes exactly this one operation with the hop built in:
+/// `None` if the thread could not be spawned; the screen is then simply never held
+/// awake, which costs a screen timeout rather than a frozen app.
+static WAKE_LOCK: OnceLock<Option<mpsc::Sender<bool>>> = OnceLock::new();
+
+/// Hold the screen awake while driving (driver mode's reason for existing: the
+/// phone otherwise blanks thirty seconds into a drive).
+///
+/// ## Why this is a wake lock and not the window flag
+///
+/// The Android-shaped answer is `Window.addFlags(FLAG_KEEP_SCREEN_ON)`. It has to
+/// run on the Java UI thread, and `Activity.runOnUiThread` takes a `Runnable`, i.e.
+/// a class we cannot define. The NDK carries the hop for us —
 /// `ANativeActivity_setWindowFlags` writes a `CMD_SET_WINDOW_FLAGS` work item into
-/// the activity's main-work pipe and the **UI thread's** looper performs the
-/// `getWindow().setFlags()`. That NDK call is thread-safe by construction.
+/// the activity's main-work pipe and the UI thread's looper performs the
+/// `setFlags`, and *that* call is thread-safe by construction. So this was written
+/// against `AndroidApp::set_window_flags`, twice, and froze the app both times.
 ///
-/// **android-activity's wrapper is not, and that distinction froze the app.**
-/// `AndroidApp::set_window_flags` is one of three methods that take
-/// `AndroidApp::inner.write()` — and `AndroidApp::poll_events` holds
+/// **The obstacle is a Rust lock, not Android.** `AndroidApp::set_window_flags` is
+/// the only method in this process that takes `AndroidApp::inner.write()` — winit
+/// and Bevy take nothing but `read()`. And `AndroidApp::poll_events` holds
 /// `inner.read()` *across its callback*, which on this stack is winit's
-/// `single_iteration`, which is the entire Bevy update. So a Bevy system calling
-/// this waits for a write lock whose reader is the frame the system is part of:
+/// `single_iteration`, which is the entire Bevy update — inside which winit calls
+/// `input_events_iter()` and `native_window()`, both of which take `inner.read()`
+/// **again, on the same thread**. `std::sync::RwLock` parks a reader behind a
+/// waiting writer to keep writers from starving, so:
 ///
 /// ```text
-/// android_main ──read()──▶ poll_events ──▶ winit ──▶ App::update ──┐
-///        ▲                                                         │
-///        └── never returns, so the read guard never drops           ▼
-///                        task-pool thread ──write()──▶ set_window_flags (blocks)
+/// android_main ─read()─▶ poll_events ─▶ winit ─▶ Bevy update ─┐
+///        ▲                                                    │ native_window()
+///        │                                        ─read()─ blocked, writer waiting
+///        └── outer guard never drops                          ▼
+///            wake-lock thread ─write()─▶ set_window_flags ─ blocked on the guard
 /// ```
 ///
-/// The schedule never finishes, input is never drained, and five seconds later the
-/// system posts an ANR. That is the freeze reported on 2026-08-14 the instant
-/// driver mode turned on, and the bracketed `asking`/`done` pair added for it is
-/// what proved it: the log carries `asking` and no `done`, and the ANR's thread
-/// dump has the task-pool thread parked on a futex inside our own `.so` with no
-/// `libandroid.so` frame — i.e. blocked *before* reaching the NDK, in the Rust
-/// lock.
+/// Three parties, one cycle, and it needs no bad luck beyond the write landing
+/// mid-frame. The first fix (2026-08-14) moved the call off the frame's own thread,
+/// which turned a certain self-deadlock into a race — entering driver mode won it,
+/// leaving driver mode lost it, and the report on 2026-08-15 is the ANR: `asking`
+/// with no `done` in the log, `carto winflags` parked on a futex inside our own
+/// `.so` with no `libandroid.so` frame above it, and every Bevy thread waiting on a
+/// frame that will not end. There is no third position to move the call to: every
+/// point we can reach from Bevy is inside that read guard, and android-activity 0.6
+/// exposes neither a `try_` variant nor the raw `ANativeActivity*` that would let
+/// us skip the wrapper (`activity_as_ptr` hands back the `jobject`, not the struct).
 ///
-/// So the call is queued to a thread of its own, which is free to block until the
-/// frame it was asked in has ended. Two consequences worth knowing: the flag lands
-/// a frame late (irrelevant for a screen timeout measured in tens of seconds), and
-/// a queued writer briefly blocks *readers* — `vm()` and `activity()` take
-/// `inner.read()` — so a JNI call on the location thread can wait out the rest of
-/// a frame. Bounded, and it never touches the schedule. There is no way to avoid
-/// the lock: android-activity 0.6 exposes no raw `ANativeActivity*`, so the NDK
-/// function it wraps cannot be called directly.
+/// `PowerManager.WakeLock` sidesteps all of it: `acquire`/`release` are ordinary
+/// binder calls, safe from any thread, needing no UI-thread hop and therefore no
+/// `Runnable` — and, the point here, never touching `AndroidApp::inner`. With this
+/// change nothing in the process takes that write lock, so the re-entrant reads
+/// winit performs every frame can no longer be made to block by anything we do.
 ///
-/// *Needs a device:* that the flag survives the activity's own window recreation
-/// on a configuration change — the manifest's `configChanges` list is meant to
-/// prevent that recreation, so the expectation is that it does, but nothing here
-/// re-asserts the flag if it doesn't.
+/// It costs the `WAKE_LOCK` permission (normal, granted at install) and a
+/// deprecated level constant.
+///
+/// *Needs a device:* that `SCREEN_BRIGHT_WAKE_LOCK` still keeps the display lit on
+/// current Android. The `held` field on the `keep-screen-on: done` line is
+/// `WakeLock.isHeld()` read back after the call, which proves the lock was taken —
+/// not that the display obeyed it. Watch the screen; that is the measurement.
 pub fn set_keep_screen_on(on: bool) {
     if ANDROID_APP.get().is_none() {
         return;
     }
     // One thread, one queue: values are applied in the order they were asked for,
-    // so a rapid off/on cannot land as on/off.
-    let tx = WINDOW_FLAGS.get_or_init(|| {
+    // so a rapid off/on cannot land as on/off. It also keeps the `WakeLock` global
+    // reference on a single thread, and keeps the binder round-trip off the frame.
+    let tx = WAKE_LOCK.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<bool>();
         let spawned = std::thread::Builder::new()
             // 15 characters — Android truncates a thread name there, and this one
             // has to stay legible in the watchdog's stalled-process dump.
-            .name("carto winflags".to_string())
+            .name("carto wakelock".to_string())
             .spawn(move || {
+                // The lock is made once, on first use, and then reused: creating a
+                // fresh one per acquire would leave the old one to a finalizer, and
+                // a screen lock released by the GC is released whenever it likes.
+                let mut lock: Option<GlobalRef> = None;
                 for want in rx {
-                    apply_keep_screen_on(want);
+                    apply_keep_screen_on(&mut lock, want);
                 }
             });
         match spawned {
@@ -474,7 +497,7 @@ pub fn set_keep_screen_on(on: bool) {
             // the sender in this `OnceLock` is dropped, i.e. at process exit.
             Ok(_handle) => Some(tx),
             Err(e) => {
-                tracing::warn!(error = %e, "could not start the window-flags thread");
+                tracing::warn!(error = %e, "could not start the wake-lock thread");
                 None
             }
         }
@@ -484,31 +507,111 @@ pub fn set_keep_screen_on(on: bool) {
     }
 }
 
-/// Perform the flag write. **Only ever called on the `carto winflags` thread** —
-/// see [`set_keep_screen_on`] for what happens when it isn't.
+/// Perform the acquire or release. **Only ever called on the `carto wakelock`
+/// thread**, which owns `lock`.
 ///
 /// The bracketed `asking`/`done` pair is a diagnostic, not noise: on a platform
 /// where a blocked call is indistinguishable from a system that never ran, this is
-/// what separates the two in one line of the next report. It caught this bug and
-/// it stays to catch the next one.
-fn apply_keep_screen_on(on: bool) {
-    let Some(app) = ANDROID_APP.get() else {
-        return;
-    };
-    let (add, remove) = if on {
-        (
-            WindowManagerFlags::KEEP_SCREEN_ON,
-            WindowManagerFlags::empty(),
-        )
-    } else {
-        (
-            WindowManagerFlags::empty(),
-            WindowManagerFlags::KEEP_SCREEN_ON,
-        )
-    };
+/// what separates the two in one line of the next report. It has now caught this
+/// bug twice and it stays to catch the next one.
+fn apply_keep_screen_on(lock: &mut Option<GlobalRef>, on: bool) {
     tracing::info!(on, "keep-screen-on: asking");
-    app.set_window_flags(add, remove);
-    tracing::info!(on, "keep-screen-on: done");
+    match set_wake_lock(lock, on) {
+        Ok(held) => tracing::info!(on, held, "keep-screen-on: done"),
+        Err(msg) => tracing::warn!(on, error = %msg, "keep-screen-on: failed"),
+    }
+}
+
+/// Acquire or release the lock, making it first if there isn't one, and report
+/// `WakeLock.isHeld()` afterwards.
+fn set_wake_lock(lock: &mut Option<GlobalRef>, on: bool) -> Result<bool, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    if lock.is_none() {
+        match new_wake_lock(&mut env, &activity) {
+            Ok(made) => *lock = Some(made),
+            Err(Fail(msg)) => {
+                clear_pending(&env);
+                return Err(msg);
+            }
+        }
+    }
+    let Some(lock) = lock.as_ref() else {
+        return Err("no wake lock".to_string());
+    };
+    match hold_wake_lock(&mut env, lock, on) {
+        Ok(held) => Ok(held),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
+/// `PowerManager.newWakeLock(SCREEN_BRIGHT_WAKE_LOCK, tag)`, reference counting
+/// off.
+///
+/// Uncounted on purpose. The caller is edge-triggered (`lib.rs`'s
+/// `apply_screen_wakelock` only sends when the answer changes), so a counted lock
+/// would balance — but *would* is doing the work in that sentence, and the failure
+/// mode of a miscount is a screen held awake until the process dies, which the user
+/// experiences as a flat battery and cannot attribute to anything. Uncounted,
+/// `release` on a lock that isn't held is a no-op rather than the `RuntimeException`
+/// a counted one throws.
+fn new_wake_lock(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail> {
+    env.with_local_frame::<_, _, Fail>(8, |env| {
+        // `Context.POWER_SERVICE`. A static-field read would need the field's class
+        // and its type; the value has been "power" since API 1 and is part of the
+        // public contract (same reasoning as `location_manager`).
+        let name: JObject = env.new_string("power")?.into();
+        let power = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        if power.as_raw().is_null() {
+            return Err(Fail("getSystemService(\"power\") returned null".to_string()));
+        }
+        let tag: JObject = env.new_string(WAKE_LOCK_TAG)?.into();
+        let lock = env
+            .call_method(
+                &power,
+                "newWakeLock",
+                "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;",
+                &[JValue::Int(SCREEN_BRIGHT_WAKE_LOCK), JValue::Object(&tag)],
+            )?
+            .l()?;
+        if lock.as_raw().is_null() {
+            return Err(Fail("newWakeLock returned null".to_string()));
+        }
+        env.call_method(
+            &lock,
+            "setReferenceCounted",
+            "(Z)V",
+            &[JValue::Bool(u8::from(false))],
+        )?;
+        Ok(env.new_global_ref(&lock)?)
+    })
+}
+
+/// `WakeLock.acquire()` / `WakeLock.release()`, then read the state back.
+fn hold_wake_lock(env: &mut JNIEnv, lock: &GlobalRef, on: bool) -> Result<bool, Fail> {
+    env.with_local_frame::<_, _, Fail>(4, |env| {
+        if on {
+            // The untimed overload deliberately: a timeout would release the lock
+            // mid-drive, and the release here is driven by leaving driver mode.
+            env.call_method(lock.as_obj(), "acquire", "()V", &[])?;
+        } else {
+            env.call_method(lock.as_obj(), "release", "()V", &[])?;
+        }
+        Ok(env.call_method(lock.as_obj(), "isHeld", "()Z", &[])?.z()?)
+    })
 }
 
 // ---------------------------------------------------------------------------

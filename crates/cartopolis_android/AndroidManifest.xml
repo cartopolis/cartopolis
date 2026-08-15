@@ -81,6 +81,17 @@
          so a device with no location hardware must still be able to install. -->
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- Hold the screen on while driving. A *normal* permission: granted at
+         install, never prompted for.
+
+         The usual way to keep a screen lit is FLAG_KEEP_SCREEN_ON, which needs no
+         permission at all — and is unreachable here for a reason that is about
+         android-activity's lock rather than about Android
+         (`platform::android::set_keep_screen_on` has the deadlock). A wake lock
+         is the same effect through a thread-safe binder call, and this line is
+         what it costs. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- A photo on a saved place (`platform::photo`, docs/notes/place-photos.md).
          Capped at API 28 on purpose: from 29 scoped storage lets an app insert its
          own row into the MediaStore with no permission at all, and that insert is
