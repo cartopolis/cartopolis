@@ -1073,6 +1073,10 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<StarFieldMaterial>::default())
         .add_plugins(MaterialPlugin::<MoonMaterial>::default())
         .add_plugins(MaterialPlugin::<HorizonHazeMaterial>::default())
+        // The sky for adapters that cannot run the atmosphere above (its module
+        // header has the whole story). The plugin is added unconditionally — the
+        // shell is only spawned on the runs that need it.
+        .add_plugins(MaterialPlugin::<systems::sky_dome::SkyDomeMaterial>::default())
         .add_plugins(MaterialPlugin::<CloudMaterial>::default())
         .add_plugins(MaterialPlugin::<GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<RainMaterial>::default())
@@ -1345,6 +1349,9 @@ fn run_client() {
         Startup,
         (
             systems::free_camera::setup_camera,
+            // After the camera, which is where this run's `SkyMode` is decided —
+            // it can't be known before the render device exists.
+            systems::sky_dome::setup_sky_dome.after(systems::free_camera::setup_camera),
             spawn_avatar_entity,
             setup_sky,
             setup_stars,
@@ -1740,6 +1747,7 @@ fn run_client() {
                 update_moon.after(systems::free_camera::camera_controls),
                 (
                     update_horizon_haze.after(systems::free_camera::camera_controls),
+                    systems::sky_dome::update_sky_dome.after(systems::free_camera::camera_controls),
                     update_clouds.after(systems::free_camera::camera_controls),
                     update_globe_clouds.after(systems::free_camera::camera_controls),
                     update_rain.after(systems::free_camera::camera_controls),
@@ -2282,7 +2290,10 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
 }
 
 /// Apparent diameter of the sun disk, in radians (the true value is 0.0093).
-const SUN_DISK_ANGULAR_SIZE: f32 = 0.024;
+///
+/// Shared with `systems::sky_dome`, which draws its own disc on the adapters
+/// where bevy's sky pass — and so bevy's `SunDisk` — never runs.
+pub(crate) const SUN_DISK_ANGULAR_SIZE: f32 = 0.024;
 
 /// Threshold on `moonlight_factor` below which the moon light is despawned: its
 /// illuminance (and shadows) would be imperceptible, so paying for its cascade
@@ -2376,7 +2387,11 @@ fn manage_lights(
 /// Global trim on the sun's illuminance: the OSM basemap is near-white, so full
 /// physical daylight drives most of the frame into the tonemapper's shoulder
 /// (Bevy's default TonyMcMapface) and everything reads flat and washed out.
-const SUN_SCALE: f32 = 0.75;
+///
+/// Shared with `systems::sky_dome`, whose sky scatters the same sunlight: a sky
+/// brighter than the light lighting it is the sort of thing two private copies of
+/// one number produce.
+pub(crate) const SUN_SCALE: f32 = 0.75;
 
 /// Camera exposure (EV100) at full daylight. Exposure adapts toward night by this
 /// many stops, mimicking eye/camera adaptation so twilight and the lit city aren't

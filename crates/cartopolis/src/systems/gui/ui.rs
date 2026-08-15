@@ -474,6 +474,10 @@ pub fn render_dev_panel(
     camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    // Which sky this run actually got. The checkbox below says what was *asked*
+    // for, and on a device whose adapter refused the atmosphere the two differ —
+    // which, without this line, is a thing you can only learn from `logcat`.
+    sky: Res<crate::systems::sky_dome::SkyMode>,
 ) {
     if !dev.open {
         return;
@@ -600,6 +604,16 @@ pub fn render_dev_panel(
                 dev.atmosphere_enabled,
                 egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
             );
+            if *sky == crate::systems::sky_dome::SkyMode::Dome {
+                ui.label(
+                    egui::RichText::new("↳ analytic sky dome (no FLOAT32_FILTERABLE)").small(),
+                )
+                .on_hover_text(
+                    "This GPU cannot sample bevy's atmosphere LUTs, so the sky is \
+                     drawn by systems::sky_dome instead. CARTO_SKY_DOME=1 forces \
+                     the same on any machine.",
+                );
+            }
             ui.separator();
             crate::systems::theme::checkbox(ui, &mut dev.show_stats, "Show stats overlay (FPS)");
             ui.separator();

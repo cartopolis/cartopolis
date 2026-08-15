@@ -99,6 +99,29 @@ fn air_mass(sin_elevation: f32) -> f32 {
 /// warmer, brighter sun than the ground beneath it.
 const SCALE_HEIGHT_M: f32 = 8_500.0;
 
+/// Fraction of the sea-level air column that is still *above* `alt_m` — the
+/// barometric factor every altitude term in the sky model is built on.
+///
+/// Pulled out of [`sun_transmittance_at`] because the sky needs the same number
+/// for a different purpose: how much air is left to scatter into a view ray
+/// (`systems::sky_dome`). Two copies of `exp(-h/H)` with two scale heights is
+/// how a sky and the sun lighting it come to disagree about where the air ends.
+pub fn barometric_column(alt_m: f32) -> f32 {
+    (-alt_m.max(0.0) / SCALE_HEIGHT_M).exp()
+}
+
+/// The two scattering species' zenith optical depths for a time of day: Rayleigh
+/// (fixed) and aerosol (the diurnal [`haze`] swing).
+///
+/// Exposed because the analytic sky dome scatters with exactly the coefficients
+/// the beam is extincted by (`systems::sky_dome`). A sky with its own private
+/// palette is the failure `docs/notes/cloud-lighting.md` describes for clouds:
+/// at a low sun everything that reads off `utils::sun` reddens together and the
+/// one thing that doesn't looks painted on.
+pub fn zenith_scattering(hours: f32) -> (Vec3, Vec3) {
+    (RAYLEIGH, AEROSOL * haze(hours))
+}
+
 /// Per-channel atmospheric transmittance of the direct sun beam for a time of day.
 /// Encodes both the sun's color (channel ratios) and its dimming (magnitude).
 pub fn sun_transmittance(hours: f32, decl_rad: f32) -> Vec3 {
@@ -118,8 +141,9 @@ pub fn sun_transmittance(hours: f32, decl_rad: f32) -> Vec3 {
 /// factor don't strictly separate, but at cloud altitudes the error is far below
 /// anything visible.
 pub fn sun_transmittance_at(hours: f32, decl_rad: f32, alt_m: f32) -> Vec3 {
-    let column = (-alt_m.max(0.0) / SCALE_HEIGHT_M).exp();
-    let depth = (RAYLEIGH + AEROSOL * haze(hours)) * column;
+    let column = barometric_column(alt_m);
+    let (rayleigh, aerosol) = zenith_scattering(hours);
+    let depth = (rayleigh + aerosol) * column;
     (-depth * air_mass(sun_direction(hours, decl_rad).y)).exp()
 }
 
