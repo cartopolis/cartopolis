@@ -14,26 +14,32 @@
   (`libcartopolis_android.so` → `cartopolis_android`).
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="eu.garage44.cartopolis"
-    android:versionCode="1"
-    android:versionName="1.0.0-local">
+    package="eu.garage44.cartopolis">
 
-    <!-- The two version attributes above are **fallbacks that a real build never
-         uses**: `build-apk.sh` passes its own version-code and version-name
-         flags to `aapt2 link`, which overwrites these in the compiled manifest.
-         (Those flag names are spelled without their leading dashes here on
-         purpose: a double hyphen is illegal *inside* an XML comment, and
-         writing them out cost this project one 16-minute build that compiled
-         the entire Bevy stack before aapt2 read the file.) They are
-         kept so that hand-running aapt2 against this file still produces a
-         package that installs.
+    <!-- **No version attributes here, deliberately.** `aapt2 link`'s version-code
+         and version-name flags (spelled without their leading dashes: a double
+         hyphen is illegal *inside* an XML comment) *inject* a value and only
+         when the manifest carries none — they do not overwrite one that is
+         already there. This file used to declare `versionCode="1"` and
+         `versionName="1.0.0-local"` under a comment claiming aapt2 would
+         overwrite them, and the opposite was true: the flags were discarded
+         silently and **every APK ever published shipped as version 1 /
+         1.0.0-local**.
 
-         They were also, for the whole of this app's history, the only values
-         there were — every APK ever published claimed to be version 1, so
-         nothing on the device could say which build it was and Android had no
-         reason to treat any of them as an update to another. See the version
-         block in `build-apk.sh` for where the real numbers come from and why
-         a CI code is deliberately larger than a local one. -->
+         That cost more than tidiness. `deploy-android.yml` computes a monotonic
+         code from the run number, offset above any local build, precisely so a
+         download from the install page can always update a sideloaded one — a
+         guarantee that never existed. And nothing on a device could say which
+         build it was: the crash reporter's `CARTO_BUILD_SHA` (baked into the
+         binary from the same version-name) said `1.0.0+087e7198` while Android's
+         app info said `1.0.0-local`, so the two identifiers for one build
+         disagreed. Confirmed on an emulator 2026-08-15, from a share sheet
+         showing one and `dumpsys` the other.
+
+         `build-apk.sh` supplies both on every path, including a hand build (it
+         falls back to the commit count), so there is nothing to fall back to
+         here. See its version block for why a CI code is deliberately larger
+         than a local one. -->
 
     <!-- API 28 because that is where Android's Vulkan support becomes something
          wgpu can rely on; below it the GLES fallback would be the only backend and

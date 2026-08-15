@@ -1984,6 +1984,14 @@ fn run_client() {
             PostUpdate,
             systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
         )
+        // Says whether the avatar is actually on screen, on every platform.
+        //
+        // `Last` and not `Update`, because the thing it reads is `ViewVisibility`,
+        // which Bevy writes in `PostUpdate`. From `Update` it would report the
+        // *previous* frame — harmless for a settled `--shot`, which is why
+        // `drive_capture` gets away with it, and misleading for a live log where the
+        // interesting moment is the frame the count changes.
+        .add_systems(Last, systems::avatar::log_avatar_draw_counts)
         // Three systems, one chain, and each position is load-bearing.
         //
         // `report_frame_to_scheduler` runs **before** the limiter: it tells ADPF how

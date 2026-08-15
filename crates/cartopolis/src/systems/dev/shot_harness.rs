@@ -523,47 +523,15 @@ globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_textur
 route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
 terrain_ready,terrain_relief_m,software_renderer";
 
-/// The avatar's contribution to [`ShotMetrics`], as one parameter.
+/// The avatar's contribution to [`ShotMetrics`].
 ///
-/// A `SystemParam` rather than three more arguments because `drive_capture` is
-/// near Bevy's 16-parameter ceiling — the same reason `readouts` beside it is a
-/// tuple. The three belong together anyway: they are one question asked in three
-/// steps, since the model meshes carry no marker of their own. They are glTF
-/// nodes instantiated under a holder, so the only thing that identifies them as
-/// the avatar's is that the avatar is their ancestor.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct AvatarReadout<'w, 's> {
-    avatars: Query<'w, 's, Entity, With<crate::components::Avatar>>,
-    children: Query<'w, 's, &'static Children>,
-    meshes: Query<
-        'w,
-        's,
-        &'static bevy::camera::visibility::ViewVisibility,
-        With<bevy::render::mesh::Mesh3d>,
-    >,
-}
-
-impl AvatarReadout<'_, '_> {
-    /// `(meshes under the local avatar, how many the view rendered)`.
-    ///
-    /// Zero for both when there is no avatar entity at all, which is the honest
-    /// answer for a run that has none rather than a reason to fail.
-    fn counts(&self) -> (usize, usize) {
-        let Ok(avatar) = self.avatars.single() else {
-            return (0, 0);
-        };
-        let (mut total, mut drawn) = (0, 0);
-        for entity in self.children.iter_descendants(avatar) {
-            if let Ok(visibility) = self.meshes.get(entity) {
-                total += 1;
-                if visibility.get() {
-                    drawn += 1;
-                }
-            }
-        }
-        (total, drawn)
-    }
-}
+/// Defined in [`crate::systems::avatar`] rather than here, because `--shot` is no
+/// longer its only reader: the same count is logged on every platform by
+/// `avatar::log_avatar_draw_counts`, which is the only form of it that reaches a
+/// phone (a scripted capture needs a CLI, and Android has none — see
+/// `docs/notes/android-build.md`). One implementation, two sinks, on the same
+/// rule as every other `ShotMetrics` field.
+use crate::systems::avatar::AvatarReadout;
 
 impl ShotMetrics {
     /// One metric by name, as a number — booleans as 1/0. Read back out of the
