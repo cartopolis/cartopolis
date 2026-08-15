@@ -507,6 +507,14 @@ fn set_fov(projection: &mut Mut<Projection>, fov: f32) {
     }
 }
 
+/// Radius of the ground disc that carries the world out to the horizon past the
+/// last streamed tile, in metres.
+///
+/// Named because it is the farthest thing in the flat tier, which makes it the
+/// bound anything standing *behind* the world has to clear —
+/// `sky_dome::SKY_DOME_RADIUS` is chosen against it, and there is a test.
+pub const GROUND_DISC_RADIUS: f32 = 150_000.0;
+
 /// Camera exposure (EV100) paired with the physical `RAW_SUNLIGHT` sun. Bevy's
 /// atmosphere demo uses 13.0; higher = darker overall. This is the main knob for
 /// balancing scene brightness against the (now physical) sky.
@@ -597,15 +605,16 @@ pub fn setup_camera(
     // env map is the half that does not survive: it re-bakes a cubemap and its
     // mip chain every frame, and `dev.envmap_enabled` is already seeded from the
     // budget, so this needs no tier test of its own.
-    // …and one thing the run must be *asked*, not assumed. bevy_pbr's atmosphere
-    // keeps its four LUTs (transmittance, multiscattering, sky-view, render-sky) in
-    // `Rgba32Float` and samples them with a filtering sampler, which wgpu permits
-    // only when the adapter offers `FLOAT32_FILTERABLE`. Desktop GPUs and lavapipe
-    // do; a great many mobile ones do not, and the first phone this app ever ran on
-    // (Adreno 619, 2026-08-12) is one of them.
+    // …and one thing the run must be *asked*, not assumed. Bevy 0.19's atmosphere
+    // takes its coefficients from a `ScatteringMedium` asset, which bakes them into
+    // two `Rgba32Float` lookup textures read through a `FilterMode::Linear` sampler
+    // (`bevy_pbr::medium`). wgpu permits filtering a 32-bit float texture only when
+    // the adapter offers `FLOAT32_FILTERABLE`. Desktop GPUs and lavapipe do; a great
+    // many mobile ones do not, and the first phone this app ever ran on (Adreno 619
+    // in a Fairphone 4, 2026-08-12) is one of them.
     //
-    // The consequence is not a missing sky, it is **no app**: each LUT bind group
-    // fails validation, and Bevy's default error handler answers a validation error
+    // The consequence is not a missing sky, it is **no app**: the bind group fails
+    // validation, and Bevy's default error handler answers a validation error
     // by quitting. So the whole client died three seconds in, having rendered
     // nothing, with no Rust panic — the process aborted in libc on the way out
     // (`FORTIFY: pthread_mutex_lock called on a destroyed mutex`) which is
@@ -622,13 +631,28 @@ pub fn setup_camera(
     if !float32_filterable {
         tracing::warn!(
             adapter = %adapter.name,
-            "no FLOAT32_FILTERABLE on this adapter — disabling the atmosphere, whose \
-             LUTs would fail bind-group validation and take the whole app down with them"
+            "no FLOAT32_FILTERABLE on this adapter — bevy's atmosphere would fail \
+             bind-group validation and take the whole app down with it; falling back \
+             to the analytic sky dome"
         );
     }
-    let want_atmosphere =
-        dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE") && float32_filterable;
+    // Which sky this run gets, decided once and recorded, because three places
+    // downstream have to make the *same* choice (`systems::sky_dome::SkyMode`).
+    // `CARTO_NO_ATMOSPHERE` and the dev-panel toggle still mean no sky at all —
+    // they are bisecting switches, and one that quietly substituted another sky
+    // would bisect nothing. `CARTO_SKY_DOME` is the other direction: it forces the
+    // fallback on hardware that could run the real thing, which is the only way to
+    // look at what the phone sees without holding the phone.
+    let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
+    let want_atmosphere = want_sky && float32_filterable && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
+    commands.insert_resource(if want_atmosphere {
+        crate::systems::sky_dome::SkyMode::Atmosphere
+    } else if want_sky {
+        crate::systems::sky_dome::SkyMode::Dome
+    } else {
+        crate::systems::sky_dome::SkyMode::None
+    });
 
     commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
         // The root must carry Visibility: renderable children inherit it, and a
@@ -768,7 +792,7 @@ pub fn setup_camera(
         // the horizon reads as a black gulf; with it, DistanceFog fades the
         // ground into the haze so fog and sky meet seamlessly at any altitude.
         root.spawn_spatial((
-            Mesh3d(meshes.add(Circle::new(150_000.0))),
+            Mesh3d(meshes.add(Circle::new(GROUND_DISC_RADIUS))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.83, 0.83, 0.80),
                 perceptual_roughness: 1.0,
