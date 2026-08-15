@@ -240,6 +240,36 @@ fn normalize_server(raw: &str) -> String {
 }
 
 /// Draw the sign-in screen when it is open, and apply what it is asked for.
+/// The taller of the two bands the on-screen keyboard leaves — the whole
+/// viewport when there is no keyboard.
+///
+/// A pure function so the case that matters can be checked without a screen: the
+/// keyboard docks to whichever edge is *further* from the focused field, so the
+/// band is above it as often as below, and a version of this that only ever
+/// lifted would put the card under the slab half the time.
+#[must_use]
+fn free_band(viewport: egui::Vec2, slab: Option<egui::Rect>) -> egui::Rect {
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+    let Some(slab) = slab else {
+        return screen;
+    };
+    let above = egui::Rect::from_min_max(screen.min, egui::pos2(screen.max.x, slab.min.y));
+    let below = egui::Rect::from_min_max(egui::pos2(0.0, slab.max.y), screen.max);
+    // A slab that somehow covers everything leaves the screen rather than a
+    // negative band: a card squeezed to nothing is worse than one behind a
+    // keyboard the user can close.
+    let best = if above.height() >= below.height() {
+        above
+    } else {
+        below
+    };
+    if best.height() > 1.0 {
+        best
+    } else {
+        screen
+    }
+}
+
 pub fn render_login_screen(
     mut egui: ResMut<EguiManager>,
     mut screen: ResMut<LoginScreen>,
@@ -248,6 +278,7 @@ pub fn render_login_screen(
     identity: Res<AuthIdentity>,
     time: Res<Time<Real>>,
     splash: Res<crate::systems::splash::BootSplash>,
+    keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
     // A session that failed or dropped is the one thing that opens this by itself:
     // the client has just fallen back to offline and the user did not ask it to.
@@ -296,10 +327,29 @@ pub fn render_login_screen(
 
     let viewport = egui.viewport_pts();
     let card_w = card_width(viewport.x);
+    // **The keyboard takes its half of the screen, and the card has to live in
+    // the other half.** This is the one card in the app whose whole purpose is
+    // typing, and it was laid out against the full viewport: centred, it put the
+    // password field and the Sign in button under a slab that covers ~40 % of a
+    // phone, and the `ScrollArea` below could not help because the card's *frame*
+    // was already down there. Which layer paints on top is not the issue and
+    // never was — the keyboard raises itself last, so it is drawn above the card
+    // and its keys work. What was underneath them was the thing being typed into.
+    //
+    // `free` is the band the keyboard leaves. `layout` docks the slab to whichever
+    // edge is further from the focused field, so this is a *shift*, not a lift:
+    // the card moves down as readily as up. `slab()` is last frame's rect (the
+    // keyboard is drawn after this system, by construction — it must raise itself
+    // last), so the card follows one frame behind the keyboard opening. That is
+    // the same contract `place_pins` reads it under, and a frame of lag on a slab
+    // that appears once per sign-in is not worth an ordering inversion.
+    let free = free_band(viewport, keyboard.slab());
+    // How far the card's centre moves from the viewport's, to sit in that band.
+    let keyboard_shift = free.center().y - viewport.y * 0.5;
     // What is left for the card's own content once the margins are taken. The
     // rows below scroll inside this rather than running off the bottom edge —
     // the same reason they are clamped sideways.
-    let card_h = (viewport.y - 2.0 * CARD_MARGIN - 2.0 * CARD_PAD_Y as f32).max(160.0);
+    let card_h = (free.height() - 2.0 * CARD_MARGIN - 2.0 * CARD_PAD_Y as f32).max(160.0);
     let ctx = egui.ctx_mut().clone();
 
     // ── Backdrop ─────────────────────────────────────────────────────────────
@@ -314,11 +364,14 @@ pub fn render_login_screen(
             // A soft accent-tinted glow behind the card, built from nested rounded
             // rects because egui has no gradient primitive — the same trick the
             // boot splash uses to stand in for `index.html`'s radial one.
+            // Centred on the card, not on the screen — the glow is what says
+            // "the thing you are looking at is here", so it has to follow the
+            // card into the band the keyboard leaves.
             let card = egui::Rect::from_center_size(
-                rect.center(),
+                rect.center() + egui::vec2(0.0, keyboard_shift),
                 egui::vec2(
                     card_outer_width(viewport.x),
-                    (rect.height() * 0.62).min(560.0),
+                    (free.height() * 0.62).min(560.0),
                 ),
             );
             for i in 1..=5 {
@@ -359,7 +412,7 @@ pub fn render_login_screen(
         .collapsible(false)
         .anchor(
             egui::Align2::CENTER_CENTER,
-            egui::vec2(0.0, (1.0 - t) * RISE),
+            egui::vec2(0.0, keyboard_shift + (1.0 - t) * RISE),
         )
         .frame(frame)
         .max_width(card_outer_width(viewport.x))
@@ -808,5 +861,39 @@ mod tests {
             auto_enter: false,
         };
         assert_eq!(LoginScreen::from_prefs(&prefs).prefs(), prefs);
+    }
+
+    /// The card has to end up in the band the keyboard leaves — this is the one
+    /// card in the app that exists to be typed into, and it was centred on the
+    /// full viewport with the slab over its password field and its submit
+    /// button.
+    #[test]
+    fn the_card_takes_the_band_the_keyboard_leaves() {
+        let viewport = egui::vec2(274.0, 610.0);
+        // No keyboard: the whole screen, and no shift at all.
+        let all = free_band(viewport, None);
+        assert_eq!(all.height(), 610.0);
+        assert!((all.center().y - viewport.y * 0.5).abs() < 1e-3);
+
+        // Docked to the bottom (the usual case — a field in the upper half).
+        let bottom = egui::Rect::from_min_max(egui::pos2(0.0, 380.0), egui::pos2(274.0, 610.0));
+        let above = free_band(viewport, Some(bottom));
+        assert_eq!(above.max.y, 380.0, "the band must stop at the slab");
+        assert!(
+            above.center().y < viewport.y * 0.5,
+            "the card moves up, not down"
+        );
+
+        // Docked to the top: `layout` flips it when the focused field is low, and
+        // a rule that only ever lifted would then push the card *into* it.
+        let top = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(274.0, 230.0));
+        let below = free_band(viewport, Some(top));
+        assert_eq!(below.min.y, 230.0);
+        assert!(below.center().y > viewport.y * 0.5, "the card moves down");
+
+        // Neither band is usable: fall back to the screen rather than to a card
+        // squeezed to nothing.
+        let everything = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+        assert_eq!(free_band(viewport, Some(everything)).height(), 610.0);
     }
 }

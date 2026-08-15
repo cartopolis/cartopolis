@@ -188,6 +188,27 @@ pub fn render_main_menu(
 
     let area = egui::Area::new(egui::Id::new("main_menu"))
         .order(egui::Order::Foreground)
+        // **The sizing pass decides how tall this card may ever be.** An `Area`
+        // lays out its first frame against `Spacing::default_area_size`, which
+        // egui defaults to 600×**400**, then remembers the content's size and
+        // uses *that* as the `max_rect` for every frame after. Overflow is
+        // supposed to grow it back — "if the contents overflow, the area will
+        // grow" — but only if the content reports its true height, and this one
+        // cannot: the `ScrollArea` shrinks to the room it is given, and inside a
+        // justified top-down layout the widgets past the bottom are allocated
+        // whatever is left, which by then is a few points. The result is a
+        // *stable* wrong answer — content and container agree at ~340 pt — so it
+        // does not flicker or recover, it just ends.
+        //
+        // What that cost: the card stopped after About, and Sign in…, the status
+        // readout, Developer tools and Exit were simply not on screen. Every one
+        // of them is the only route to what it does. It reads as a menu that is
+        // merely short, which is why it survived a UI sweep that was looking at
+        // this very card.
+        //
+        // So the sizing pass gets the whole band the card is allowed, and the
+        // remembered size is then the content's own.
+        .default_size(egui::vec2(MENU_WIDTH, max_height))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
         .show(&ctx, |ui| {
             // `Frame::popup`, not `theme::overlay_frame`: the shared overlay frame
@@ -2424,6 +2445,94 @@ fn shape_display_name(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A bottom-anchored `Area` taller than the sizing pass allows settles at
+    /// a wrong height and stays there.** egui lays an `Area` out once against
+    /// `Spacing::default_area_size` (600×**400**), remembers the content's size,
+    /// and uses that as the `max_rect` from then on. Overflow is meant to grow
+    /// it back, but only if the content reports its real height — and a
+    /// `ScrollArea` shrinks to the room it is given while a justified top-down
+    /// layout hands the widgets past the bottom whatever is left. Container and
+    /// content then agree on the truncated height: a *stable* wrong answer, so
+    /// it neither flickers nor recovers.
+    ///
+    /// The main menu was ~470 pt of entries in a 400 pt sizing pass, and the four
+    /// below the fold — Sign in…, the status readout, Developer tools and Exit —
+    /// were simply absent. It reads as a menu that is merely short, which is how
+    /// it survived a UI sweep aimed at this very card.
+    ///
+    /// This reproduces the mechanism rather than calling the system (which needs
+    /// a `World`), and asserts the fix: the sizing pass gets the whole band, so
+    /// the card ends up as tall as its content.
+    #[test]
+    fn a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0));
+        let rows = 24;
+        let row = 24.0;
+        let wanted = rows as f32 * row;
+        assert!(
+            wanted > 400.0,
+            "the case only exists above the default sizing pass"
+        );
+
+        let run = |default_size: Option<egui::Vec2>| {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            let mut last = 0.0;
+            // Several frames: the failure is what it *settles* on, not frame one.
+            for _ in 0..8 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let _ = ctx.run_ui(raw, |ui| {
+                    let mut area = egui::Area::new(egui::Id::new("card"))
+                        .order(egui::Order::Foreground)
+                        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -60.0));
+                    if let Some(size) = default_size {
+                        area = area.default_size(size);
+                    }
+                    area.show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.set_width(MENU_WIDTH);
+                            egui::ScrollArea::vertical()
+                                .max_height(816.0)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.with_layout(
+                                        egui::Layout::top_down_justified(egui::Align::Min),
+                                        |ui| {
+                                            for i in 0..rows {
+                                                ui.add_sized(
+                                                    egui::vec2(MENU_WIDTH, row),
+                                                    egui::Button::new(format!("row {i}")),
+                                                );
+                                            }
+                                        },
+                                    );
+                                });
+                        });
+                    });
+                });
+                last = ctx
+                    .memory(|m| m.area_rect(egui::Id::new("card")))
+                    .map_or(0.0, |r| r.height());
+            }
+            last
+        };
+
+        let starved = run(None);
+        let fixed = run(Some(egui::vec2(MENU_WIDTH, 816.0)));
+        assert!(
+            starved < wanted * 0.9,
+            "the bug should reproduce without a sizing hint: {starved} vs {wanted}"
+        );
+        assert!(
+            fixed >= wanted,
+            "with the band as the sizing pass the card must hold its content: \
+             {fixed} vs {wanted}"
+        );
+    }
 
     /// The menu card is a size-to-content `Area`, so nothing clamps it: what it
     /// asks for is what it takes, off the edge of the screen included. This is
