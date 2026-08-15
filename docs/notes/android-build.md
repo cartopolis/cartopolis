@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -64,9 +64,17 @@ What that leaves on the phone is a *map viewer*, and it is worth being concrete
 about the edges, because two of them are not Android's doing. The camera works
 fully — pan, pinch, twist, tilt are all `TouchGestures`, and taps reach picking,
 the gizmo and the pins through the emulated mouse (`docs/notes/touch-input.md`).
-**The avatar is visible** — it was not, on any Android build before 2026-08-14,
-and the cause was neither the port's nor the renderer's: see the `std::fs` entry
-under "Things that are not obvious" below. **The avatar walks from the on-screen
+**The avatar is visible in Follow mode** — measured on a device-shaped emulator
+2026-08-15, not inferred: `avatar: meshes drawn … meshes = 10; rendered = 10;
+mode = "follow"`, with the character in the captured frame. It was not visible on
+any Android build before 2026-08-14, and the cause was neither the port's nor the
+renderer's: see the `std::fs` entry under "Things that are not obvious" below.
+**But the app does not *open* in Follow** — `free_camera::seed_start_view` seeds
+`CameraMode::Orbit`, and on a fresh install there is no saved location to restore
+a mode from, so nothing leaves Earth view until the locate button is tapped. The
+avatar is drawn the whole time, 1.5 km below the camera and sub-pixel, which is
+why "the avatar is not visible" and "the avatar is not rendered" are different
+claims and only the instrument below tells them apart. **The avatar walks from the on-screen
 stick** (2026-08-14). Until then it could not be moved at all: movement was WASD
 and no gesture anywhere in the tree stood in for it, which was the same gap the
 web build had on a phone rather than something the port introduced — and it is
@@ -83,6 +91,32 @@ of — and clap's response to an unknown flag is `exit(2)`, i.e. the app dying o
 launch with nothing on screen and one line in `logcat`. There is no equivalent of
 the web build's `?query=string` switch surface yet; anything the phone needs to be
 told has to become UI or an env default.
+
+### An emulator answers most Android questions without a device
+
+Everything in this note used to come from someone holding a phone, which made a
+hypothesis cost a round trip and left claims like "the avatar is visible" asserted
+rather than measured. A **headless emulator settles most of them**, and the part
+that makes it worth trusting is that `ndk-translation` on a `google_apis;x86_64`
+API 34 image runs the **arm64-v8a APK unmodified** — the artifact under test is the
+one that shipped, not an x86_64 rebuild that might differ.
+
+    adb install -r cartopolis-arm64-v8a.apk
+    adb shell monkey -p eu.garage44.cartopolis -c android.intent.category.LAUNCHER 1
+    adb logcat -d | grep 'avatar:'
+
+It proves asset loading, scene spawn, startup order, camera mode, touch targets and
+panics. It proves **nothing about a real Adreno or Mali driver**: it renders on
+SwiftShader, so the same rule as the software-renderer shot harness applies — take
+geometry, placement and visibility, and leave colour, exposure and anything
+driver-shaped to a device (`docs/notes/headless-shots-software-renderer.md`).
+
+Two things to know before reading a run. `adb shell pm clear` first, or
+`offer_last_crash` puts the previous run's **share sheet in front of the app** and
+every capture is of that sheet rather than the map. And a crash report is offered
+only when the last run died *without* a lifecycle event, which is what makes
+"Force stop, then reopen" the way to get a log off a real phone with no cable —
+swiping the app away is a clean suspend and deletes the breadcrumb.
 
 ### Running the phone's configuration on a workstation
 
