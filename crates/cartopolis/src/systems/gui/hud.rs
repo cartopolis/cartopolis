@@ -1,6 +1,6 @@
 //! Top-right status overlay: wall-clock time, the camera's geographic position
 //! and altitude, the sun and weather switchers — and, in the opposite corner, the
-//! compass, the locate button and the ⓘ disc that shows this readout.
+//! compass and the locate button.
 //!
 //! **It is off by default** ([`StatusHud`]). It is an instrument panel — six rows
 //! of numbers and chips over the top-right of a map — and the two *verbs* it used
@@ -8,8 +8,15 @@
 //! the Places panel (which is where the place then appears), and Set Home and
 //! Copy location into the main menu. What is left is a readout, and a readout
 //! that is up whether or not anyone is reading it is just chrome over the map.
-//! The ⓘ disc under the compass is how it comes back; it stays up until it is
-//! switched off again.
+//!
+//! **The switch is in the main menu, not on the map.** It was a small ⓘ disc at
+//! the foot of the compass column, and it cost that column its only argument for
+//! being a column: three discs the same size on one axis, all of them controls
+//! *for the view*. A fourth at 28 pt, for a panel of numbers nobody flips while
+//! moving, read as a mis-sized member of the set rather than as a different kind
+//! of thing — the size was doing the work a position should have done. The main
+//! menu is where the readout's own verbs already went, and where the other
+//! inspection toggle (developer tools) lives.
 //!
 //! The clock shows real local time once [`WorldClock`] has learned the
 //! region's UTC offset (from the transit feed), and UTC until then.
@@ -317,57 +324,11 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState) -> bool {
     clicked
 }
 
-/// Diameter (points) of the ⓘ disc that shows the status readout. Smaller than
-/// the controls above it on purpose: it switches a panel of numbers on, which is
-/// not an action anyone takes while moving, and at the same size it would read as
-/// a third navigation control.
-const INFO_SIZE: f32 = 28.0;
-
 /// Whether the status readout is on screen. Off by default — see the module note.
+/// Switched from the main menu (`ui::render_main_menu`), not from the map.
 #[derive(Resource, Default)]
 pub struct StatusHud {
     pub open: bool,
-}
-
-/// Draws the ⓘ disc under the left-hand column and returns true when clicked.
-/// `top` is where the column has got to, since the locate button above it only
-/// exists when there is an avatar to locate.
-///
-/// Painted from primitives like the compass and the locate arrow, and for the
-/// same reason: `ⓘ` is not in the bundled font subset (`theme::first_drawable`'s
-/// inventory says so), so a glyph here would be an empty box. A dot over a stem
-/// is two shapes, and two shapes cannot be tofu.
-fn info_overlay(ctx: &egui::Context, top: f32, open: bool) -> bool {
-    let mut clicked = false;
-    egui::Area::new(egui::Id::new("info_overlay"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(column_x(INFO_SIZE), top))
-        .show(ctx, |ui| {
-            let (resp, face) = theme::map_disc(
-                ui,
-                INFO_SIZE,
-                open,
-                theme::ACCENT_RING,
-                egui::Sense::click(),
-            );
-            let p = ui.painter();
-            let (c, r, ink) = (face.center, face.radius, face.ink);
-            // The "i": a dot and a stem.
-            p.circle_filled(egui::pos2(c.x, c.y - r * 0.42), r * 0.13, ink);
-            p.line_segment(
-                [
-                    egui::pos2(c.x, c.y - r * 0.10),
-                    egui::pos2(c.x, c.y + r * 0.48),
-                ],
-                egui::Stroke::new(2.0, ink),
-            );
-            resp.clone().on_hover_text(if open {
-                "Hide the status readout"
-            } else {
-                "Show the status readout (time, position, sun, weather)"
-            });
-            clicked = resp.clicked();
-        });
-    clicked
 }
 
 // ─── Scale bar ────────────────────────────────────────────────────────────────
@@ -522,7 +483,6 @@ pub fn render_map_controls(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
     right_panel: Res<crate::resources::RightPanel>,
-    mut status: ResMut<StatusHud>,
     camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
@@ -650,7 +610,7 @@ pub fn render_map_controls(
     // there is nothing left for it to do.
     // The bottom edge of what the column has drawn so far; each control below
     // adds its own gap before its own height.
-    let mut column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
+    let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
     if !avatars.is_empty() {
         use crate::resources::CameraMode;
         let state = match (camera_state.mode, camera_state.follow_rotate) {
@@ -670,20 +630,6 @@ pub fn render_map_controls(
                 LocateState::FollowRotate => camera_state.follow_rotate = false,
             }
         }
-        column += theme::OSD_GAP + LOCATE_SIZE;
-    }
-
-    // …and the readout switch at the foot of the column, a group gap below the
-    // navigation controls above it: the compass and the locate button steer the
-    // *view*, and this one switches a panel of numbers on. Same argument as the
-    // gap `dock::reserved_top` leaves under the layers disc, and the reason the
-    // ⓘ is a smaller disc than either of them.
-    //
-    // The stack is measured rather than pinned because the locate button above it
-    // is conditional, and a fixed offset would leave a hole in the column in
-    // `--offline`.
-    if info_overlay(egui.ctx_mut(), column + theme::OSD_GROUP_GAP, status.open) {
-        status.open = !status.open;
     }
 }
 
@@ -1119,43 +1065,50 @@ mod tests {
         );
     }
 
-    /// Every disc in the top-left column sits on one centre line, including the
-    /// layers disc at the head of it — which is the dock's, anchored flush to
-    /// the margin, and was therefore the one that did not.
+    /// **The column is one column: one axis, one diameter.** Both halves of that
+    /// are load-bearing and both were broken. The layers disc at the head is
+    /// `dock`'s, anchored flush to its own margin, so it sat 3 pt off the axis of
+    /// the discs below it; and the compass was 46 pt against everything else's
+    /// 40, so the stack visibly bulged in the middle.
     ///
-    /// It is measured through [`column_x`] and `dock`'s own margin rather than
-    /// against a literal, so a future change to either inset moves the whole
-    /// column or fails here; a hard-coded 12 would have silently gone on
-    /// agreeing with a stale number.
+    /// It is measured through [`column_x`] and the theme's own inset rather than
+    /// against a literal, so a future change to either moves the whole column or
+    /// fails here; a hard-coded 12 would have gone on agreeing with a stale
+    /// number. `dock::the_column_is_one_column` is the other half, asserting the
+    /// layers disc's margin is that same inset.
     #[test]
-    fn the_left_column_shares_one_centre_line() {
+    fn the_left_column_is_one_axis_and_one_diameter() {
         let axis = theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE * 0.5;
-        for size in [COMPASS_SIZE, LOCATE_SIZE, INFO_SIZE] {
+        for size in [COMPASS_SIZE, LOCATE_SIZE] {
+            assert_eq!(
+                size,
+                theme::ROUND_BUTTON_SIZE,
+                "the column is one diameter; {size} is not it"
+            );
             let centre = column_x(size) + size * 0.5;
             assert!(
                 (centre - axis).abs() < 1e-3,
                 "a {size} pt disc centres at {centre}, not {axis}"
             );
         }
-        // The layers disc at the head of the column is `dock`'s, anchored at its
-        // own left margin — `dock::the_column_is_one_column` is the other half of
-        // this, asserting that margin is the same number.
     }
 
     /// The column's gaps say what belongs together: the compass and the locate
-    /// arrow steer the view and sit a plain gap apart, while the layers disc
-    /// above (a panel) and the ⓘ below (a readout switch) are a group gap out.
-    /// With one gap for all three, four discs read as an undifferentiated strip.
+    /// arrow both steer the *view* and sit a plain gap apart, while the layers
+    /// disc above them opens a panel and is a group gap out. With one gap for
+    /// both, the discs read as an undifferentiated strip of chrome.
     #[test]
     fn the_column_groups_the_view_controls() {
         let compass_top = crate::systems::dock::reserved_top();
         let locate_top = compass_top + COMPASS_SIZE + theme::OSD_GAP;
-        let info_top = locate_top + LOCATE_SIZE + theme::OSD_GROUP_GAP;
-        assert!(locate_top - (compass_top + COMPASS_SIZE) < info_top - (locate_top + LOCATE_SIZE));
-        // Nothing overlaps its neighbour, which four hand-placed anchors do not
+        let above_compass = compass_top - (theme::OSD_MARGIN + theme::ROUND_BUTTON_SIZE);
+        assert!(
+            locate_top - (compass_top + COMPASS_SIZE) < above_compass,
+            "the gap under the layers disc must exceed the one inside the pair"
+        );
+        // …and nothing overlaps its neighbour, which hand-placed anchors do not
         // guarantee on their own.
         assert!(locate_top >= compass_top + COMPASS_SIZE);
-        assert!(info_top >= locate_top + LOCATE_SIZE);
     }
 
     /// The overlay must not grow across frames: a size-to-content anchored

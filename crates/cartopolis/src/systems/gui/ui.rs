@@ -147,6 +147,7 @@ pub fn render_main_menu(
     mut egui: ResMut<EguiManager>,
     mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
+    mut status: ResMut<crate::systems::hud::StatusHud>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
@@ -302,6 +303,28 @@ pub fn render_main_menu(
                                 close = true;
                             }
                             ui.separator();
+                            // The two things that switch an *instrument* on over
+                            // the map, grouped because that is what they have in
+                            // common. The status readout used to be a small ⓘ disc
+                            // at the foot of the compass column, where being a
+                            // different size was the only thing saying it was a
+                            // different kind of control — see `hud`'s module note.
+                            let status_label = if status.open {
+                                "Hide status readout"
+                            } else {
+                                "Status readout"
+                            };
+                            if ui
+                                .button(status_label)
+                                .on_hover_text(
+                                    "Time, position, altitude, and the sun and weather \
+                                     switchers, over the top-right of the map",
+                                )
+                                .clicked()
+                            {
+                                status.open = !status.open;
+                                close = true;
+                            }
                             let dev_label = if dev_state.open {
                                 "Hide developer tools"
                             } else {

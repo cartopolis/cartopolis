@@ -40,7 +40,8 @@
 //! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
 //! `--ui search` opens the Search panel *and* seeds it a query, since an empty
 //! field documents nothing; `--ui hud` brings back the status readout, which is
-//! off by default (`hud::StatusHud`).
+//! off by default (`hud::StatusHud`); and `--ui menu` opens the app mark's card,
+//! which is where the entries that left the map live.
 //!
 //! ## Metrics: the numbers behind the frame
 //!
@@ -964,6 +965,7 @@ pub fn open_scripted_ui(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut status: ResMut<crate::systems::hud::StatusHud>,
+    mut menu: ResMut<crate::systems::ui::MainMenu>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -980,6 +982,11 @@ pub fn open_scripted_ui(
     // The status readout is off by default now (`hud::StatusHud`), so a capture
     // that wants to document it has to ask — `--ui hud`.
     status.open = want("hud");
+    // `--ui menu` opens the app mark's card. It is the one piece of chrome a
+    // scripted run could not reach at all, and it is where the entries that left
+    // the map now live — Set Home, Copy location and the status readout's own
+    // switch. A control nothing can screenshot is a control nobody reviews.
+    menu.open = want("menu");
     ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
@@ -1052,6 +1059,7 @@ pub fn open_scripted_ui(
         "dev",
         "stats",
         "hud",
+        "menu",
         "ai",
         "avatar",
         "appearance",
