@@ -1179,6 +1179,7 @@ fn run_client() {
         .init_resource::<systems::geo_nav::GeoNavState>()
         .init_resource::<systems::navigation::RouteState>()
         .init_resource::<systems::driver::DriverState>()
+        .init_resource::<systems::locate::LocateTracking>()
         .init_resource::<systems::route_ahead::RouteAhead>()
         .init_resource::<systems::bookmarks::BookmarksState>()
         .insert_resource(user_store)
@@ -1953,6 +1954,15 @@ fn run_client() {
                 systems::hud::render_map_controls
                     .after(systems::ui::render_main_menu)
                     .after(systems::driver::drive_driver_mode),
+                // Device tracking (`systems::locate`) — the locate button's own
+                // mode, and the smaller sibling of the drive above. After the
+                // drive tick, which is what declares driver mode active and so
+                // decides which of the two owns the avatar this frame; before the
+                // camera, which is what consumes the heading it writes.
+                systems::locate::track_device_pose
+                    .after(systems::driver::drive_driver_mode)
+                    .after(avatar::handle_avatar_movement)
+                    .before(systems::free_camera::camera_controls),
             ),
         )
         // Phase 6: Transform gizmos

@@ -898,6 +898,19 @@ pub struct CameraState {
     /// by the GPS/locate button; cleared when the user manually left-drags to orbit
     /// (matching OM, where touching the map drops the rotate-follow).
     pub follow_rotate: bool,
+    /// What [`Self::follow_rotate`] should aim at, when something other than the
+    /// avatar's own facing knows better: a world-XZ yaw in the same convention as
+    /// the avatar's render yaw, so the two are interchangeable at the one site
+    /// that consumes them.
+    ///
+    /// Written by [`crate::systems::locate`] from the device compass, and `None`
+    /// otherwise — which is the identity here, so nothing has to branch on
+    /// whether a phone is being tracked. It exists because the avatar's facing is
+    /// the wrong signal for "which way is the user pointing the phone": that yaw
+    /// is a smoothed function of the keys held and the camera azimuth, so feeding
+    /// the compass into it would fight the movement systems for the same field and
+    /// leave the view turning after the phone had stopped.
+    pub follow_heading: Option<f32>,
     /// Driver mode holds the chase rig itself (`systems::driver`): while this is
     /// set, the Follow camera ignores the wheel and the rotate-drag, and takes its
     /// distance, tilt and azimuth from the map orientation instead. A navigation
@@ -969,6 +982,7 @@ impl Default for CameraState {
             orbit_north_reset: false,
             orbit_north_lock: false,
             follow_rotate: false,
+            follow_heading: None,
             drive_locked: false,
             drive_lookahead: Vec2::ZERO,
         }

@@ -2300,6 +2300,7 @@ dependencies = [
  "jni",
  "js-sys",
  "libc",
+ "ndk-sys",
  "postcard",
  "rfd",
  "rustls",

@@ -87,6 +87,13 @@
          so a device with no location hardware must still be able to install. -->
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- The compass (`platform::orientation`), which turns the map with the phone
+         when the locate button is lit. No permission: the rotation vector is not a
+         restricted sensor, so the only manifest entry it wants is this advisory
+         one, and it is `required="false"` for the same reason the GNSS line above
+         is — a device with no magnetometer loses the heading and keeps the map. -->
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
+
     <!-- Hold the screen on while driving. A *normal* permission: granted at
          install, never prompted for.
 

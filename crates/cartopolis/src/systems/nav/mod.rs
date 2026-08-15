@@ -2,6 +2,7 @@
 
 pub mod driver;
 pub mod geo_nav;
+pub mod locate;
 pub mod navigation;
 pub mod route_ahead;
 pub mod transit_live;

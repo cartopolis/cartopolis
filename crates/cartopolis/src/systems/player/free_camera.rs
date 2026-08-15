@@ -1127,8 +1127,14 @@ pub fn camera_controls(
             // sits directly behind when `azimuth ≡ face + π` (its look direction then
             // equals the avatar's facing). Ease along the shortest arc so a turn glides.
             if camera_state.follow_rotate {
+                // The compass wins when there is one (`systems::locate` writes it
+                // while the phone is being tracked); otherwise the avatar's own
+                // facing, as before. Same convention, so this is a choice of
+                // source and not a second code path.
+                let heading = camera_state.follow_heading;
                 if let Ok((_, avatar_tf)) = avatar_cells.single() {
-                    let face = avatar_tf.rotation.to_euler(EulerRot::YXZ).0;
+                    let face =
+                        heading.unwrap_or_else(|| avatar_tf.rotation.to_euler(EulerRot::YXZ).0);
                     let target = face + std::f32::consts::PI;
                     let mut d = (target - camera_state.azimuth).rem_euclid(std::f32::consts::TAU);
                     if d > std::f32::consts::PI {

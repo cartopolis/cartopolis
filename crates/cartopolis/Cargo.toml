@@ -241,6 +241,17 @@ bevy = { workspace = true, features = ["android-native-activity"] }
 # `JavaVM`/`JObject` from two `jni` versions are distinct types, and the error that
 # produces names a trait bound rather than a duplicate crate.
 jni = "0.21.1"
+# The NDK's C sensor API, for the compass (`platform::orientation`). It is here
+# rather than behind `jni` for a reason that is not a preference:
+# `SensorEventListener` is a Java *interface*, so the JNI route needs a class we
+# would have to define — the exact thing `android:hasCode="false"` forbids.
+# `ASensorManager` needs no `classes.dex` at all.
+#
+# A new *edge*, not a new subtree: `ndk-sys` is already in `Cargo.lock` under
+# `android-activity` (and so under bevy's Android backend), so naming it here
+# compiles nothing extra. `ndk` 0.9's safe wrappers do not cover sensors, which is
+# why this is the `-sys` crate.
+ndk-sys = "0.6"
 # `__system_property_get` (`platform::android::system_property`) and
 # `setpriority` (the tile-worker nice in `run`). Both are bare libc, not
 # framework calls, so neither needs a `classes.dex` — which is the only reason
@@ -303,6 +314,11 @@ web-sys = { version = "0.3", features = [
     "GeolocationCoordinates",
     "GeolocationPositionError",
     "PositionOptions",
+    # The compass (`platform::orientation`): `deviceorientationabsolute`, and
+    # `deviceorientation` for Safari. Only `alpha`/`absolute` are typed here —
+    # `webkitCompassHeading` and `screen.orientation.angle` are read through
+    # `Reflect`, being non-standard and legacy-shaped respectively.
+    "DeviceOrientationEvent",
     # Microphone capture (`platform::audio`): `getUserMedia` through
     # `MediaDevices`, then a WebAudio graph — a `MediaStreamAudioSourceNode` into
     # a `ScriptProcessorNode` whose `AudioProcessingEvent` carries the PCM.
