@@ -1315,6 +1315,10 @@ fn run_client() {
         .add_systems(
             Update,
             (
+                // Anywhere in Update is early enough: it only has to beat
+                // PostUpdate's `end_egui_frame`, which is what would otherwise
+                // reuse an older frame's tessellation for the capture.
+                systems::shot_harness::keep_egui_fresh,
                 systems::shot_harness::open_scripted_ui,
                 systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
                 systems::shot_harness::place_space_orbit
