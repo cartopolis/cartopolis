@@ -3064,9 +3064,11 @@ fn frame_time_watchdog(
 /// the pairing bug — there is no path that sets the flag and forgets to clear it,
 /// because nothing sets it, this only ever reports the current answer.
 ///
-/// Edge-triggered on the answer, not the inputs: `set_window_flags` crosses a
-/// JNI-ish boundary into the activity's looper, and doing that every frame for
-/// an unchanged value would be silly.
+/// Edge-triggered on the answer, not the inputs: the platform call is a binder
+/// round-trip to `PowerManagerService`, and making it every frame for an unchanged
+/// value would be silly. The wake lock is deliberately *uncounted* on the other
+/// side, so this edge-triggering is a cost saving and not a correctness
+/// requirement — see `platform::android::new_wake_lock`.
 fn apply_screen_wakelock(
     driver: Res<systems::driver::DriverState>,
     prefs: Res<resources::AppPrefs>,
@@ -3077,11 +3079,11 @@ fn apply_screen_wakelock(
         return;
     }
     // Not while a permission dialog is up. `*held` is deliberately left alone, so
-    // this is a *deferral* and not a skip: the next frame asks again, and the flag
+    // this is a *deferral* and not a skip: the next frame asks again, and the lock
     // lands as soon as the dialog is gone. The reason is
     // `platform::android::PERMISSION_DIALOG_UP` — driver mode raises the dialog and
-    // wants the wakelock on the same frame, and both end up writing the activity's
-    // one `Window` from different threads.
+    // wants the wakelock on the same frame, and asking the framework to light the
+    // screen while it is putting a dialog on it is a fight over the same surface.
     #[cfg(target_os = "android")]
     if platform::android::permission_dialog_up() {
         return;

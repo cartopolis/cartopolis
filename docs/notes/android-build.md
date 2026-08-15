@@ -875,3 +875,87 @@ Three rounds of instrument earned this: the watchdog said the schedule stopped
 rather than the renderer, the ANR reader said which thread and that it was a futex
 in our own code, and the bracketed pair said which call. None of the three could
 have named it alone.
+
+## The same freeze again, on the way *out* of driver mode — the dedicated thread was a race, not a fix (2026-08-15)
+
+Build `1.0.0+f09669b8`. Driver mode and GPS worked; leaving driver mode froze the
+app. The log is the previous section's log with the sign flipped:
+
+```
+10:26:51.034  driver mode off
+10:26:51.099  keep-screen-on: asking on=false     ← thread 12812, `carto winflags`
+10:26:51.103  map LOD zoom changed …              ← thread 12727, android_main, mid-frame
+              … no `keep-screen-on: done` …
+10:26:54.086  MAIN LOOP STALLED — no frame for 2833 ms
+              12812 carto winflags  state=S  wchan=futex_wait_queue_me
+              12727 android_main    state=S  wchan=futex_wait_queue_me
+              ANR: Input dispatching timed out … Waited 5002ms for MotionEvent
+```
+
+Note what moved: the blocked writer is no longer a Bevy pool thread, it is the
+dedicated one, exactly where the previous fix put it. **Moving the call off the
+frame's thread did not break the cycle, it added a third party to it.**
+
+The sentence that names it is in the previous section, written as a *bounded cost*:
+
+> while a writer is queued `RwLock`'s writer preference blocks *readers*
+
+That is true of every reader, and the reader it matters for is **`android_main`
+itself**. `poll_events` holds `inner.read()` across its callback, and inside that
+callback winit's `single_iteration` calls `input_events_iter()` and
+`native_window()` — both of which take `inner.read()` **again, on the same
+thread**. `std::sync::RwLock` parks a reader behind a waiting writer so writers
+cannot starve, so a re-entrant read is a deadlock the moment a writer is queued:
+
+```
+android_main ─read()─▶ poll_events ─▶ winit ─▶ Bevy update ─┐
+       ▲                                                    │ native_window()
+       │                                       ─read()─ parked behind the writer
+       └─ outer guard never drops                           ▼
+           carto winflags ─write()─▶ set_window_flags ─ parked on the outer guard
+```
+
+Three parties, one cycle, and it needs no bad luck beyond the write landing while
+a frame is running — which is most of the time, because this client renders
+continuously. **Entering driver mode won that race and leaving it lost.** The
+23 ms between `asking` and `done` on the way in (`10:25:22.710` → `.733`) was the
+writer catching the gap between two `poll_events` calls; there is no such gap to
+catch reliably.
+
+**There is no third place to put the call.** Every point reachable from Bevy is
+inside that read guard. android-activity 0.6 offers no `try_` variant that would
+let a writer decline to queue, and — as the previous section established — no raw
+`ANativeActivity*` to skip the wrapper with. The window flag is unreachable from
+this process, full stop.
+
+So `set_keep_screen_on` is a **`PowerManager.WakeLock`** now
+(`SCREEN_BRIGHT_WAKE_LOCK`, uncounted, tag `cartopolis:driving`, plus
+`android.permission.WAKE_LOCK` in the manifest). `acquire`/`release` are ordinary
+binder calls: safe from any thread, no UI-thread hop and therefore no `Runnable`,
+and — the point — they never touch `AndroidApp::inner`.
+
+**The property that makes this a fix and not a fourth round: with the window-flag
+call gone, nothing in the process takes `inner.write()` at all.** It was the only
+caller; winit, Bevy and the rest of `platform::android` take nothing but `read()`.
+An `RwLock` with no writers cannot park a reader, so the re-entrant reads winit
+performs every frame — and the `vm()` / `activity()` reads every JNI call in this
+file makes from a Bevy system — are unconditionally safe again. That is a
+structural claim about the whole process, and it is worth re-checking with
+`grep -rn 'set_window_flags\|motion_axis'` before adding any android-activity call.
+
+**The generalisation from the previous section stands and should be read one notch
+stronger.** It said: never call an android-activity `inner.write()` method from a
+Bevy system. The correct rule is *never call one at all*, from any thread, while
+the winit event loop is running. A dedicated thread does not make a write safe; it
+only moves which thread is holding the deadlock when the picture stops.
+
+Two things about the wake lock are inference and need the device to settle:
+
+- **`SCREEN_BRIGHT_WAKE_LOCK` is deprecated (API 17) in favour of the very flag we
+  cannot use.** Deprecated is not removed and `PowerManagerService` still honours
+  the level, but if a future release stops doing so the failure is graceful — the
+  screen times out mid-drive, and nothing freezes.
+- **`held` on the `keep-screen-on: done` line is `WakeLock.isHeld()` read back
+  after the call.** It proves the lock was taken; it does not prove the display
+  obeyed it. Watch the screen for thirty seconds of driving — that is the
+  measurement, and it is the only one that counts here.
