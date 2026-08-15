@@ -4,6 +4,7 @@ pub mod ai_assistant;
 pub mod bookmarks;
 pub mod chat;
 pub mod data_layers;
+pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;
 pub mod hud;

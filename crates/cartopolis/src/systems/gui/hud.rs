@@ -682,7 +682,15 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                 // numbers. These switchers are chips, not buttons — so tighten
                 // locally, while keeping a 20 pt hit target.
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                ui.spacing_mut().interact_size.y = 20.0;
+                // 20 pt is 30 dp on a phone. It predates
+                // `theme::MIN_TOUCH_TARGET_DP` and it is applied to the two
+                // switchers *and* the clock toggle, so the whole box was under
+                // the guideline on the tier that most needs it.
+                ui.spacing_mut().interact_size.y = if theme::touch_layout() {
+                    theme::row_height()
+                } else {
+                    20.0
+                };
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 3.0;
                     // Profile chip: a placeholder avatar dot with the account
@@ -719,13 +727,17 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         mono(ui, data.time.clone(), theme::SIZE_VALUE, theme::CREAM);
                         let zone = if data.utc { "UTC" } else { "Local" };
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new(zone).size(theme::SIZE_TINY))
-                                    .small(),
-                            )
-                            .on_hover_text("Toggle the clock between local time and UTC")
-                            .clicked()
+                        // `theme::action_button`, not `Button::small()`:
+                        // `small()` zeroes the vertical padding *and* skips the
+                        // `interact_size` floor, so this was a ~13.5 pt widget —
+                        // 20 dp under a finger, against a 48 dp guideline, on the
+                        // one control in this box that is not a chip.
+                        if theme::action_button(
+                            ui,
+                            egui::RichText::new(zone).size(theme::SIZE_CHIP),
+                        )
+                        .on_hover_text("Toggle the clock between local time and UTC")
+                        .clicked()
                         {
                             actions.toggle_utc = true;
                         }

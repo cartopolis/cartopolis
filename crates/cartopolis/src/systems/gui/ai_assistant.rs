@@ -289,16 +289,19 @@ pub fn render_ai_panel(
     config: Res<AiConfig>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
 ) {
-    let mut open = right_panel.is(crate::resources::RightPanel::Assistant);
+    let open_before = right_panel.is(crate::resources::RightPanel::Assistant);
+    let mut open = open_before;
+    // Hoisted out of the draw closure, where it was the only panel in the client
+    // writing its own slot mid-frame — every other one collects a `close` and
+    // acts after `show_collapsible` returns.
+    let mut close = false;
 
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     crate::systems::egui_manager::responsive_right_panel("ai_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             let panel = crate::resources::RightPanel::Assistant;
-            if theme::panel_header(ui, panel.icons(), panel.label()) {
-                *right_panel = crate::resources::RightPanel::None;
-            }
+            close = theme::panel_header(ui, panel.icons(), panel.label());
 
             if config.api_key.is_none() {
                 ui.colored_label(theme::WARN, "Set ANTHROPIC_API_KEY in .env to enable.");
@@ -332,8 +335,7 @@ pub fn render_ai_panel(
                         ui.add_space(4.0);
                     }
                     if is_busy {
-                        ui.spinner();
-                        ui.label("Thinking…");
+                        theme::busy(ui, "Thinking…");
                     }
                 });
 
@@ -363,6 +365,13 @@ pub fn render_ai_panel(
                 }
             });
         });
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request.
+    if close || (open_before && !open) {
+        *right_panel = crate::resources::RightPanel::None;
+    }
 }
 
 // ---------------------------------------------------------------------------

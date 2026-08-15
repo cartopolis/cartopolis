@@ -830,6 +830,7 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
 
 pub fn camera_mode_toggle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    egui_manager: Res<crate::systems::egui_manager::EguiManager>,
     mut camera_state: ResMut<CameraState>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
@@ -851,6 +852,15 @@ pub fn camera_mode_toggle(
         camera_state.mode = CameraMode::Free;
     }
     if !keyboard_input.just_pressed(KeyCode::Tab) {
+        return;
+    }
+    // **The only game binding in the client that had no guard at all.** Tab is
+    // also egui's focus-traversal key, so pressing it while typing an address
+    // into Search moved the focus *and* threw the camera into Fly mode — and
+    // since Tab is now forwarded to egui unconditionally (`egui_manager`), the
+    // overlap is live on every frame rather than only on focused ones. Same
+    // predicate every other key in this file uses.
+    if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
         return;
     }
     // Cycle Follow → Fly → Earth → Follow, skipping Follow when there's no avatar.

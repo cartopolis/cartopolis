@@ -1906,7 +1906,6 @@ pub fn render_driver_hud(
     data_layers: Res<crate::systems::data_layers::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
     ai: Res<crate::resources::AiAssistantState>,
-    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     if !driver.active {
         return;
@@ -1935,12 +1934,12 @@ pub fn render_driver_hud(
     } = driver_layout(viewport_x, egui.compact());
     // What any full-width box may claim, the chip included.
     let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
-    // Escape leaves. It is the keyboard's shortcut rather than the only exit now —
-    // Stop moved onto the manoeuvre card, which is always drawn, because a touch
-    // device has no Escape key and the strip Stop used to live on stands down
-    // behind any docked panel. Gated the same way every other key binding in the
-    // client is, so typing an address does not end the trip.
-    let exit = keyboard.just_pressed(KeyCode::Escape) && !egui.ui_owns_keyboard(false, &keyboard);
+    // Escape used to leave from here. It is `systems::dismiss`'s rung 8 now, for
+    // the reason that module exists: this was the *only* Escape handler in the
+    // client that actually worked, so it stepped past a menu or a dialog drawn
+    // over the trip and ended the trip instead. Stop is still on the manoeuvre
+    // card, which is always drawn — a touch device has no Escape key, and that
+    // was already the real exit.
     let ctx = egui.ctx_mut().clone();
     let panel = |fill: egui::Color32| {
         egui::Frame::NONE
@@ -2285,7 +2284,7 @@ pub fn render_driver_hud(
     // Arriving and stopping are the same act as far as the mode is concerned —
     // the route line stays drawn either way, because clearing it is the planner's
     // business and a driver who has just parked may well want to see it.
-    if exit || done {
+    if done {
         driver.exit();
     }
 }

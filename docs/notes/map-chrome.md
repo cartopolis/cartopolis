@@ -100,6 +100,12 @@ tools, Exit. A menu whose contents depend on the window width is two menus.
 - **`dock::reserved_top` / `reserved_bottom` are the two edges** everything else
   anchors against. A second copy of that arithmetic is how the scale bar and the
   thumbstick drift when the dock grows an entry.
+- **Place pins cull against `reserved_top`/`reserved_bottom` too.** They are the
+  one overlay drawn *after* everything else, at the same `Order::Middle` the dock
+  uses, so within that order a pin raised later wins egui's hit test. On a phone
+  the dock is ~240 pt of a 274 pt viewport, so a saved place near the bottom edge
+  was taking the taps meant for Search and the app menu. Same reasoning as the
+  keyboard subtraction beside it; the two edges were simply never added.
 - **The dock is not unconditionally at the bottom.** The on-screen keyboard docks
   a slab to the same edge, so the dock stands down entirely while it is up — the
   same `Area`-over-`Area` reasoning driver mode already uses. "It is only an
@@ -110,7 +116,18 @@ tools, Exit. A menu whose contents depend on the window width is two menus.
   the menu all drop while one is open on a narrow viewport. On a wide one the
   panel docks to the right and never reaches those corners.
 - Driver mode suppresses all of it: it owns the screen and puts its manoeuvre
-  card in the top-left corner.
+  card in the top-left corner. Note this held only for the chrome *written* for
+  driver mode — the place pins and the interact prompt came from elsewhere and
+  never learned about it, so teardrops kept drawing over the navigation map (and
+  a pin's click is a `Teleport`) and driving past a bench popped "Sit at Bench"
+  into the speed pill's band. Anything new that draws over the map has to opt
+  out explicitly; there is no ambient "driver mode is on" that hides an `Area`.
+- **The dock's spacing is responsive, its disc size is not.** Signed in the row
+  is five discs = 240 pt, against ≈214 pt on the web phone tier — it overflowed
+  symmetrically, losing the Search disc and the mark, which are the two the
+  layout exists to place. `dock::disc_spacing` closes the gaps instead of
+  shrinking the targets. A sixth entry does not fit at any spacing, and the
+  answer then is that Chat folds into the mark's menu on the narrow tier.
 
 ## The mark and the wordmark are drawn, not shipped
 

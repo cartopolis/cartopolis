@@ -85,6 +85,27 @@ const CASING_HALF_WIDTH: f32 = 4.8;
 /// Radius of the start/finish discs.
 const MARKER_RADIUS: f32 = 7.0;
 
+/// Start and finish, as linear sRGB — **one source for the marker on the map and
+/// the glyph in the panel**, which the user sees at the same moment while
+/// planning: the coloured dot beside the "Where to?" field is meant to *be* the
+/// marker out on the ground. They had drifted to two greens and two reds
+/// (`(51,199,89)` vs `(80,190,110)`, `(230,64,56)` vs `(225,95,85)`) 500 lines
+/// apart in this file.
+///
+/// Not palette colours: green-means-start and red-means-finish is wayfinding
+/// convention, the same exemption `driver::DRIVE_BLUE` and the road-sign colours
+/// claim, and bending them to the app's orange would cost the convention.
+const ROUTE_START_RGB: [f32; 3] = [0.20, 0.78, 0.35];
+const ROUTE_FINISH_RGB: [f32; 3] = [0.90, 0.25, 0.22];
+
+/// [`ROUTE_START_RGB`] / [`ROUTE_FINISH_RGB`] as an egui colour, for the panel's
+/// endpoint glyphs. egui wants sRGB bytes; `Color::srgb` takes the same numbers
+/// as floats, so this is only the unit conversion.
+fn marker_color(rgb: [f32; 3]) -> egui::Color32 {
+    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    egui::Color32::from_rgb(byte(rgb[0]), byte(rgb[1]), byte(rgb[2]))
+}
+
 /// Half-width of the thin connector drawn from a pin to where the route joins the
 /// road, and the gap below which no connector is drawn at all (the pin is on the
 /// road already). A long connector — the pin snapped across water to a drivable
@@ -1035,8 +1056,18 @@ pub fn update_route_visuals(
             let p = RouteMaterials {
                 fill: line(0.16, 0.53, 0.90, rung(20.0)),
                 casing: line(0.06, 0.22, 0.42, rung(18.0)),
-                start: line(0.20, 0.78, 0.35, rung(22.0)),
-                finish: line(0.90, 0.25, 0.22, rung(22.0)),
+                start: line(
+                    ROUTE_START_RGB[0],
+                    ROUTE_START_RGB[1],
+                    ROUTE_START_RGB[2],
+                    rung(22.0),
+                ),
+                finish: line(
+                    ROUTE_FINISH_RGB[0],
+                    ROUTE_FINISH_RGB[1],
+                    ROUTE_FINISH_RGB[2],
+                    rung(22.0),
+                ),
             };
             commands.insert_resource(RouteMaterials {
                 fill: p.fill.clone(),
@@ -1307,9 +1338,14 @@ pub fn render_route_panel(
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for mode in TravelMode::ALL {
                     let selected = route.mode == mode;
-                    let label = format!("{} {}", mode.icon(), mode.label());
+                    // The word alone: `TravelMode::icon`'s three emoji are not in
+                    // the font egui installs, so this tab read "□ Car".
+                    let label = mode.label();
                     if ui
-                        .selectable_label(selected, egui::RichText::new(label).size(13.0))
+                        .selectable_label(
+                            selected,
+                            egui::RichText::new(label).size(theme::SIZE_SUB),
+                        )
                         .clicked()
                         && !selected
                     {
@@ -1338,7 +1374,7 @@ pub fn render_route_panel(
                         Endpoint::From => "Click the map to set the starting point…",
                         Endpoint::To => "Click the map to set the destination…",
                     })
-                    .size(12.0)
+                    .size(theme::SIZE_SUB)
                     .color(theme::ACCENT_TEXT),
                 );
             }
@@ -1348,28 +1384,19 @@ pub fn render_route_panel(
             // Summary: the one line the planner exists to produce.
             match (&route.status, &route.route) {
                 (SolveStatus::Fetching(done, total), _) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new(if *total > 0 {
-                                format!("Reading map data… {done}/{total}")
-                            } else {
-                                "Reading map data…".to_string()
-                            })
-                            .size(12.5),
-                        );
-                    });
+                    if *total > 0 {
+                        theme::busy_progress(ui, "Reading map data…", *done, *total);
+                    } else {
+                        theme::busy(ui, "Reading map data…");
+                    }
                 }
                 (SolveStatus::Solving, _) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(egui::RichText::new("Finding the best route…").size(12.5));
-                    });
+                    theme::busy(ui, "Finding the best route…");
                 }
                 (SolveStatus::Failed(msg), _) => {
                     ui.label(
                         egui::RichText::new(msg.as_str())
-                            .size(12.5)
+                            .size(theme::SIZE_SUB)
                             .color(theme::ERROR),
                     );
                 }
@@ -1377,12 +1404,11 @@ pub fn render_route_panel(
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(format_duration(r.duration_s))
-                                .size(19.0)
+                                .size(theme::SIZE_HEADING)
                                 .strong(),
                         );
                         ui.label(
                             egui::RichText::new(format!("· {}", format_distance(r.distance_m)))
-                                .size(14.0)
                                 .color(theme::TEXT_DIM),
                         );
                     });
@@ -1391,8 +1417,7 @@ pub fn render_route_panel(
                         // the primary slot. It replaced "Show on map", which framed
                         // the route from above — entering driver mode goes to the
                         // route anyway, and does the rest of it too.
-                        if ui
-                            .button(egui::RichText::new("Start driving").strong())
+                        if theme::primary_button(ui, "Start driving")
                             .on_hover_text(
                                 "Follow this route: strip the map, lock the camera \
                                  behind the arrow, and show the next turn",
@@ -1409,7 +1434,7 @@ pub fn render_route_panel(
                 (SolveStatus::Idle, None) => {
                     ui.label(
                         egui::RichText::new("Set a start and a destination to plan a route.")
-                            .size(12.5)
+                            .size(theme::SIZE_SUB)
                             .color(theme::TEXT_DIM),
                     );
                 }
@@ -1419,36 +1444,43 @@ pub fn render_route_panel(
             if let Some(r) = &route.route {
                 ui.add_space(6.0);
                 ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, step) in r.steps.iter().enumerate() {
-                        let resp = ui
-                            .horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(theme::first_drawable(
-                                        ui.ctx(),
-                                        step.maneuver.icon_candidates(),
-                                    ))
-                                    .size(15.0)
-                                    .color(theme::ACCENT_TEXT),
-                                );
-                                ui.vertical(|ui| {
-                                    ui.label(egui::RichText::new(step.instruction()).size(12.5));
-                                    if step.distance_m >= 1.0 {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (i, step) in r.steps.iter().enumerate() {
+                            let resp = ui
+                                .horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(theme::first_drawable(
+                                            ui.ctx(),
+                                            step.maneuver.icon_candidates(),
+                                        ))
+                                        .size(theme::SIZE_VALUE)
+                                        .color(theme::ACCENT_TEXT),
+                                    );
+                                    ui.vertical(|ui| {
                                         ui.label(
-                                            egui::RichText::new(format_distance(step.distance_m))
-                                                .size(11.0)
-                                                .color(theme::TEXT_DIM),
+                                            egui::RichText::new(step.instruction())
+                                                .size(theme::SIZE_SUB),
                                         );
-                                    }
-                                });
-                            })
-                            .response;
-                        if resp.interact(egui::Sense::click()).clicked() {
-                            actions.goto_step = Some(i);
+                                        if step.distance_m >= 1.0 {
+                                            ui.label(
+                                                egui::RichText::new(format_distance(
+                                                    step.distance_m,
+                                                ))
+                                                .size(theme::SIZE_CHIP)
+                                                .color(theme::TEXT_DIM),
+                                            );
+                                        }
+                                    });
+                                })
+                                .response;
+                            if resp.interact(egui::Sense::click()).clicked() {
+                                actions.goto_step = Some(i);
+                            }
+                            ui.add_space(3.0);
                         }
-                        ui.add_space(3.0);
-                    }
-                });
+                    });
             }
         });
 
@@ -1540,7 +1572,7 @@ fn start_row(
         ui.spacing_mut().item_spacing.x = 5.0;
         ui.label(
             egui::RichText::new("From")
-                .size(11.0)
+                .size(theme::SIZE_CHIP)
                 .color(theme::TEXT_DIM),
         );
         let label = if route.from.label == HERE_LABEL {
@@ -1552,9 +1584,13 @@ fn start_row(
         };
         if ui
             .add(
-                egui::Label::new(egui::RichText::new(label).size(12.0).color(theme::TEXT))
-                    .truncate()
-                    .sense(egui::Sense::click()),
+                egui::Label::new(
+                    egui::RichText::new(label)
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT),
+                )
+                .truncate()
+                .sense(egui::Sense::click()),
             )
             .on_hover_text("Click to change the starting point")
             .clicked()
@@ -1568,9 +1604,14 @@ fn start_row(
             {
                 actions.swap = true;
             }
-            if theme::action_enabled(ui, has_here, icons.here)
-                .on_hover_text("Start from my current position")
-                .clicked()
+            if theme::action_enabled_because(
+                ui,
+                has_here,
+                icons.here,
+                "No position yet — the map has not placed you",
+            )
+            .on_hover_text("Start from my position")
+            .clicked()
             {
                 actions.use_here = Some(Endpoint::From);
             }
@@ -1619,14 +1660,10 @@ fn endpoint_row(
 ) {
     let has_here = here.is_some();
     let (glyph, colour, hint) = match end {
-        Endpoint::From => (icons.start, egui::Color32::from_rgb(80, 190, 110), "Start"),
+        Endpoint::From => (icons.start, marker_color(ROUTE_START_RGB), "Start"),
         // Phrased as the question rather than as a field name: this is the one
         // thing the panel asks for, and "Destination" reads like a form label.
-        Endpoint::To => (
-            icons.finish,
-            egui::Color32::from_rgb(225, 95, 85),
-            "Where to?",
-        ),
+        Endpoint::To => (icons.finish, marker_color(ROUTE_FINISH_RGB), "Where to?"),
     };
     let wp = match end {
         Endpoint::From => &mut route.from,
@@ -1635,7 +1672,11 @@ fn endpoint_row(
 
     let mut field_rect = egui::Rect::NOTHING;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(glyph).size(13.0).color(colour));
+        ui.label(
+            egui::RichText::new(glyph)
+                .size(theme::SIZE_SUB)
+                .color(colour),
+        );
         let field = ui.add(
             egui::TextEdit::singleline(&mut wp.label)
                 .desired_width(waypoint_field_width(ui.available_width()))
@@ -1660,9 +1701,14 @@ fn endpoint_row(
             {
                 actions.pick = Some(end);
             }
-            if theme::action_enabled(ui, has_here, icons.here)
-                .on_hover_text("Use my current position")
-                .clicked()
+            if theme::action_enabled_because(
+                ui,
+                has_here,
+                icons.here,
+                "No position yet — the map has not placed you",
+            )
+            .on_hover_text("Use my position")
+            .clicked()
             {
                 actions.use_here = Some(end);
             }

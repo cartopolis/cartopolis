@@ -320,7 +320,16 @@ fn egui_color(c: [f32; 3]) -> egui::Color32 {
 /// The fold arrow, painted rather than written: ▶/▼ are not in the bundled icon
 /// font and come out as tofu boxes next to every folder.
 fn fold_arrow(ui: &mut egui::Ui, collapsed: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+    // **The target grows, the triangle does not.** 12 pt is 18 dp on a phone —
+    // the smallest control in the app, on the Places tree's fold control. The
+    // arrow is painted from `rect.center()` at a fixed 4 pt radius, so widening
+    // the allocation costs nothing visually and buys a hittable target.
+    let side = 12.0_f32.max(if theme::touch_layout() {
+        theme::row_height()
+    } else {
+        12.0
+    });
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let c = rect.center();
         let r = 4.0;
@@ -530,7 +539,7 @@ pub fn render_bookmarks_panel(
                         .size(12.0)
                         .color(theme::TEXT_DIM),
                 );
-                if ui.small_button("Cancel").clicked() {
+                if theme::action_button(ui, "Cancel").clicked() {
                     act.cancel_photo = true;
                 }
             });
@@ -543,7 +552,7 @@ pub fn render_bookmarks_panel(
                         .size(12.0)
                         .color(theme::WARN),
                 );
-                if ui.small_button("Dismiss").clicked() {
+                if theme::action_button(ui, "Dismiss").clicked() {
                     act.dismiss_photo_error = true;
                 }
             });
@@ -559,81 +568,93 @@ pub fn render_bookmarks_panel(
                 .color(theme::TEXT_DIM),
             );
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for row in &rows {
-                ui.add_space(2.0);
-                match row {
-                    Row::Folder {
-                        id,
-                        depth,
-                        name,
-                        color,
-                        collapsed,
-                        count,
-                    } => {
-                        folder_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            *id,
-                            *depth,
+        egui::ScrollArea::vertical()
+            // `auto_shrink` defaults to true on both axes, which sizes the
+            // area to its content: on a short list the scrollbar lands in the
+            // middle of the panel and the rows do not fill the width the panel
+            // was docked at. Every other panel in the client says this; these
+            // two were written before it was the house rule.
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for row in &rows {
+                    ui.add_space(2.0);
+                    match row {
+                        Row::Folder {
+                            id,
+                            depth,
                             name,
-                            *color,
-                            *collapsed,
-                            *count,
-                        );
-                    }
-                    Row::Place {
-                        id,
-                        depth,
-                        name,
-                        color,
-                        lat,
-                        lng,
-                        altitude,
-                        photo,
-                    } => {
-                        place_row(
-                            ui,
-                            &mut act,
-                            &mut editing,
-                            &mut thumbs,
-                            *id,
-                            *depth,
+                            color,
+                            collapsed,
+                            count,
+                        } => {
+                            folder_row(
+                                ui,
+                                &mut act,
+                                &mut editing,
+                                *id,
+                                *depth,
+                                name,
+                                *color,
+                                *collapsed,
+                                *count,
+                            );
+                        }
+                        Row::Place {
+                            id,
+                            depth,
                             name,
-                            *color,
-                            (*lat, *lng, *altitude),
-                            photo.as_deref(),
-                            current.is_some(),
-                        );
+                            color,
+                            lat,
+                            lng,
+                            altitude,
+                            photo,
+                        } => {
+                            place_row(
+                                ui,
+                                &mut act,
+                                &mut editing,
+                                &mut thumbs,
+                                *id,
+                                *depth,
+                                name,
+                                *color,
+                                (*lat, *lng, *altitude),
+                                photo.as_deref(),
+                                current.is_some(),
+                            );
+                        }
                     }
                 }
-            }
-            // Somewhere to drop a row to get it *out* of a folder. Only while a
-            // drag is live — an always-present strip is just clutter, and the
-            // tree has no other empty space to aim at once it fills the panel.
-            if egui::DragAndDrop::has_payload_of_type::<Item>(ui.ctx()) {
-                ui.add_space(6.0);
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 26.0),
-                    egui::Sense::hover(),
-                );
-                let hot = response.contains_pointer();
-                let stroke = egui::Stroke::new(1.0, if hot { theme::ACCENT } else { theme::LINE });
-                ui.painter()
-                    .rect_stroke(rect.shrink(1.0), 4.0, stroke, egui::StrokeKind::Inside);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "drop here for the top level",
-                    egui::FontId::proportional(12.0),
-                    stroke.color,
-                );
-                if let Some(item) = response.dnd_release_payload::<Item>() {
-                    act.drop = Some((*item, None));
+                // Somewhere to drop a row to get it *out* of a folder. Only while a
+                // drag is live — an always-present strip is just clutter, and the
+                // tree has no other empty space to aim at once it fills the panel.
+                if egui::DragAndDrop::has_payload_of_type::<Item>(ui.ctx()) {
+                    ui.add_space(6.0);
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 26.0),
+                        egui::Sense::hover(),
+                    );
+                    let hot = response.contains_pointer();
+                    let stroke =
+                        egui::Stroke::new(1.0, if hot { theme::ACCENT } else { theme::LINE });
+                    ui.painter().rect_stroke(
+                        rect.shrink(1.0),
+                        4.0,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "drop here for the top level",
+                        egui::FontId::proportional(12.0),
+                        stroke.color,
+                    );
+                    if let Some(item) = response.dnd_release_payload::<Item>() {
+                        act.drop = Some((*item, None));
+                    }
                 }
-            }
-        });
+            });
     });
     bookmarks.editing = editing;
     bookmarks.photo_textures = thumbs;
@@ -708,9 +729,10 @@ fn folder_row(
             // is left, so a long folder name truncates instead of running under
             // them.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::action_button(ui, "🗑")
-                    .on_hover_text("Delete the folder (its places move up a level)")
-                    .clicked()
+                // Confirmed, unlike its neighbours: this is one 32 pt target
+                // away from Rename, and the row it deletes may be holding a
+                // folded subtree the user cannot currently see.
+                if theme::confirm_button(ui, ui.id().with(("delete_folder", id)), "🗑", "Delete?")
                 {
                     act.delete_folder = Some(id);
                 }
@@ -733,10 +755,18 @@ fn folder_row(
                 fill_remaining(ui, |ui| {
                     // The name is the drag handle (see `drag_handle`). Clicking it
                     // folds, which is what a tree row's name does everywhere else.
-                    let name = ui.add(
+                    // A `Label` applies no `interact_size` floor, so this row's
+                    // hit rect was its galley — about 18 pt, i.e. 27 dp — while
+                    // the sibling *place* row is a `Button` and gets the full
+                    // 32 pt. That made the folder name, which is both the
+                    // fold target and the drag handle, the smallest drag source
+                    // in the panel. Allocating the row's height first fixes both
+                    // without changing how it looks.
+                    let name = ui.add_sized(
+                        egui::vec2(ui.available_width(), theme::row_height()),
                         egui::Label::new(
                             egui::RichText::new(label)
-                                .size(13.5)
+                                .size(theme::SIZE_BODY)
                                 .strong()
                                 .color(egui_color(color)),
                         )
@@ -942,7 +972,17 @@ fn place_menu(
             act.view_photo = Some((id, name.to_string(), stem.to_string()));
             ui.close();
         }
-        if ui.button("Remove the photo").clicked() {
+        // A separator and a two-press confirm, because this entry sits directly
+        // under "View the photo" and removes two JPEGs from `platform::storage`
+        // with no undo — on a phone that is a ~20 pt mis-tap between looking at
+        // a picture and destroying it.
+        ui.separator();
+        if theme::confirm_button(
+            ui,
+            ui.id().with(("remove_photo", id)),
+            "Remove the photo",
+            "Remove it — this cannot be undone",
+        ) {
             act.clear_photo = Some(id);
             ui.close();
         }
@@ -977,7 +1017,12 @@ fn place_menu(
         ui.close();
     }
     ui.separator();
-    if ui.button("🗑  Delete this place").clicked() {
+    if theme::confirm_button(
+        ui,
+        ui.id().with(("delete_place", id)),
+        "Delete this place",
+        "Delete it — this cannot be undone",
+    ) {
         act.delete_place = Some(id);
         ui.close();
     }
@@ -1070,15 +1115,15 @@ fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
     ));
     let galley = painter.layout_no_wrap(
         name.to_string(),
-        egui::FontId::proportional(13.0),
+        egui::FontId::proportional(theme::SIZE_SUB),
         theme::CREAM,
     );
-    let pad = egui::vec2(6.0, 3.0);
+    let pad = theme::CHIP_PADDING;
     // Offset off the cursor so it never covers the row being dropped onto.
     let rect = egui::Rect::from_min_size(pos + egui::vec2(12.0, 8.0), galley.size() + pad * 2.0);
     painter.rect(
         rect,
-        4.0,
+        theme::RADIUS_SM,
         theme::LABEL_CHIP,
         egui::Stroke::new(1.0, egui_color(color)),
         egui::StrokeKind::Inside,

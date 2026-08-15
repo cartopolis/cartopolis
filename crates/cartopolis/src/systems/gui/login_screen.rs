@@ -33,6 +33,7 @@ use cartopolis_core::AuthCredential;
 
 use crate::resources::AuthIdentity;
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::network;
 use crate::systems::session::{
     can_simulate, can_solo, SessionKind, SessionMode, SessionPrefs, SessionRequest, SessionState,
     SessionStatus,
@@ -122,6 +123,17 @@ impl Default for LoginScreen {
 }
 
 impl LoginScreen {
+    /// Is a request this card issued still in flight?
+    ///
+    /// Exposed for `systems::dismiss`: the card's own close button is disabled
+    /// while it is waiting, and Escape must not be a way around that — an
+    /// unbounded modal you can dismiss halfway through a handshake leaves the
+    /// session in a state nothing on screen describes.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.awaiting
+    }
+
     /// Seed the fields from the remembered session (called once at startup, before
     /// the first frame).
     pub fn from_prefs(prefs: &SessionPrefs) -> Self {
@@ -191,18 +203,36 @@ fn offered_kinds() -> Vec<SessionKind> {
     kinds
 }
 
-/// A bare host means the standard sim port. Typing `sim.example` and getting
-/// "invalid socket address" would be the first thing this screen ever said to
-/// someone, and it is a question the app can answer itself.
+/// Complete what the person typed into something [`network::resolve_target`] can
+/// act on — **without inventing a port for an address that reaches the network**.
+///
+/// This used to append [`DEFAULT_PORT`] to every bare host, which was right when
+/// a remote sim was a plaintext TCP socket on 4747 and became wrong the day
+/// `resolve_target` started sending a bare hostname to `wss://host/ws` over 443.
+/// The two rules compose into `wss://cartopolis.org:4747/ws` — so the address
+/// `docs/notes/hosted-simulator.md` tells people to type was the one address the
+/// sign-in card could not reach, while `--connect cartopolis.org` (which skips
+/// this function) worked. A default port is only meaningful where the port is
+/// still a real socket: loopback, which is solo's in-process sim, and an explicit
+/// `tcp://`, which is the opt-out for a LAN dev sim.
 fn normalize_server(raw: &str) -> String {
     let host = raw.trim();
+    if host.is_empty() {
+        return String::new();
+    }
+    // A scheme was typed: the person has said exactly what they want, including
+    // whether there is a port. Nothing to complete.
+    if host.contains("://") {
+        return host.to_string();
+    }
     // Only two shapes are unambiguously missing a port: a name or IPv4 with no
     // colon at all, and a bracketed IPv6 literal. A *bare* IPv6 address is all
     // colons, and appending to it would produce something that parses as neither
     // an address nor an address-with-port — so it is left exactly as typed and
     // fails later with the server's own message.
     let bracketed = host.starts_with('[') && host.ends_with(']');
-    if !host.is_empty() && (bracketed || !host.contains(':')) {
+    let portless = bracketed || !host.contains(':');
+    if portless && network::is_loopback_host(host) {
         format!("{host}:{DEFAULT_PORT}")
     } else {
         host.to_string()
@@ -356,15 +386,15 @@ pub fn render_login_screen(
     ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
 
     // ── Keyboard ─────────────────────────────────────────────────────────────
-    let (escape, enter) = ctx.input(|i| {
-        (
-            i.key_pressed(egui::Key::Escape),
-            i.key_pressed(egui::Key::Enter),
-        )
-    });
-    close |= escape;
+    // Escape is `systems::dismiss`'s, not this card's: it is one rung of a
+    // ladder that has to close exactly one thing per press, and four files
+    // reading the same key independently is how one press would close two.
+    //
     // Enter submits from anywhere on the card — including out of the password
-    // field, which is where a keyboard-driven sign-in ends.
+    // field, which is where a keyboard-driven sign-in ends. Note the comment
+    // that used to say so was only true with a field focused, since that was
+    // the condition for the key arriving at all; it is true now.
+    let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     submit |= enter && !session.status.is_busy();
 
     if sign_out {
@@ -466,7 +496,10 @@ fn card_ui(
         field(ui, "Server", |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut screen.server)
-                    .hint_text(format!("sim.example.org:{DEFAULT_PORT}"))
+                    // A bare hostname, because that is now what works and what
+                    // the docs hand out. A hint carrying `:4747` taught the one
+                    // shape that cannot reach a TLS sim.
+                    .hint_text("cartopolis.org")
                     .desired_width(f32::INFINITY),
             );
         });
@@ -666,12 +699,36 @@ fn dim(c: egui::Color32, a: f32) -> egui::Color32 {
 mod tests {
     use super::*;
 
-    /// A bare host is the common way to type a sim address, and the port is
-    /// always the same one.
+    /// **A bare hostname is left bare**, because `resolve_target` sends it to
+    /// `wss://host/ws` on 443. Completing it with the TCP sim port produced
+    /// `wss://host:4747/ws`, which is why the public address in
+    /// `docs/notes/hosted-simulator.md` could be typed into this card and never
+    /// connect.
     #[test]
-    fn bare_hosts_get_the_default_port() {
-        assert_eq!(normalize_server("sim.example.org"), "sim.example.org:4747");
-        assert_eq!(normalize_server("  10.0.0.4  "), "10.0.0.4:4747");
+    fn a_remote_host_keeps_the_port_it_was_given() {
+        assert_eq!(normalize_server("cartopolis.org"), "cartopolis.org");
+        assert_eq!(normalize_server("  sim.example.org  "), "sim.example.org");
+        assert_eq!(normalize_server("  10.0.0.4  "), "10.0.0.4");
+    }
+
+    /// Loopback is the one place a default port still means a socket: it is
+    /// solo's in-process sim, which `resolve_target` keeps on plain TCP.
+    #[test]
+    fn loopback_still_gets_the_default_port() {
+        assert_eq!(normalize_server("localhost"), "localhost:4747");
+        assert_eq!(normalize_server("127.0.0.1"), "127.0.0.1:4747");
+        assert_eq!(normalize_server("[::1]"), "[::1]:4747");
+    }
+
+    /// An explicit scheme is the person saying exactly what they want — the
+    /// `tcp://` and `ws://` opt-outs `resolve_target` documents.
+    #[test]
+    fn an_explicit_scheme_is_left_alone() {
+        assert_eq!(
+            normalize_server("tcp://sim.example.org"),
+            "tcp://sim.example.org"
+        );
+        assert_eq!(normalize_server("wss://host/ws"), "wss://host/ws");
     }
 
     #[test]
@@ -682,6 +739,18 @@ mod tests {
         );
         assert_eq!(normalize_server("127.0.0.1:4747"), "127.0.0.1:4747");
         assert_eq!(normalize_server("[::1]:4747"), "[::1]:4747");
+    }
+
+    /// The regression this card shipped with: the address the project documents
+    /// as *the* one to type has to survive the field and come out of
+    /// `resolve_target` on 443.
+    #[test]
+    fn the_documented_public_address_reaches_the_public_simulator() {
+        let typed = normalize_server("cartopolis.org");
+        assert!(matches!(
+            network::resolve_target(&typed),
+            network::Target::WebSocket(ref url) if url == "wss://cartopolis.org/ws"
+        ));
     }
 
     /// A bare IPv6 literal is all colons; appending `:4747` to it would produce

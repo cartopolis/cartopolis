@@ -1360,9 +1360,11 @@ pub fn render_poi_popup(
         .fixed_pos(anchor)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .show(egui.ctx_mut(), |ui| {
-            egui::Frame::NONE
-                .fill(theme::LABEL_CHIP)
-                .corner_radius(4.0)
+            // A chip that happens to carry controls: the fill and the radius are
+            // `chip_frame`'s so it matches the pin labels it appears beside, and
+            // only the margin opens up — six points of padding around a close
+            // button and two actions reads as a cramped box, not as a chip.
+            theme::chip_frame()
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
                     ui.set_max_width(240.0);
@@ -1370,7 +1372,6 @@ pub fn render_poi_popup(
                         ui.label(
                             egui::RichText::new(&popup.title)
                                 .strong()
-                                .size(14.0)
                                 .color(theme::CREAM),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1381,7 +1382,7 @@ pub fn render_poi_popup(
                     });
                     ui.label(
                         egui::RichText::new(&popup.subtitle)
-                            .size(12.0)
+                            .size(theme::SIZE_SUB)
                             .color(theme::TEXT_DIM),
                     );
                     ui.add_space(4.0);
@@ -2061,7 +2062,7 @@ fn buildings_section(
     crate::systems::theme::checkbox(
         ui,
         &mut dl.buildings_enabled,
-        egui::RichText::new("Buildings").size(14.0),
+        egui::RichText::new("Buildings"),
     );
     ui.indent("buildings", |ui| {
         // Grayed out while the master is off: the sources are gated by it, so
@@ -2071,13 +2072,13 @@ fn buildings_section(
                 crate::systems::theme::checkbox(
                     ui,
                     &mut dl.tdbag_enabled,
-                    egui::RichText::new("3DBAG (NL)").size(13.0),
+                    egui::RichText::new("3DBAG (NL)").size(theme::SIZE_SUB),
                 )
             });
             crate::systems::theme::checkbox(
                 ui,
                 &mut dl.osm_buildings_enabled,
-                egui::RichText::new("OSM 3D buildings and windows").size(13.0),
+                egui::RichText::new("OSM 3D buildings and windows").size(theme::SIZE_SUB),
             );
             tdbag
         })
@@ -2096,6 +2097,7 @@ pub fn render_data_layers_panel(
 ) {
     let open_before = right_panel.is(crate::resources::RightPanel::Layers);
     let mut open = open_before;
+    let mut reset_layers = false;
     let mut close = false;
     let mut about = false;
     let compact = egui.compact();
@@ -2108,7 +2110,21 @@ pub fn render_data_layers_panel(
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = crate::resources::RightPanel::Layers;
-        close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+        // **The one dead end in the client.** These ~13 toggles persist to
+        // `user.json`, so a map switched off by mistake — or by curiosity —
+        // stays off across restarts, and the only way back was to remember
+        // which of them had been on. Reset is a header action rather than a
+        // footer button because the footer is inside the scroll area, i.e. past
+        // the ~900 pt of rows that a blanked map gives you no reason to scroll
+        // through.
+        close = crate::systems::theme::panel_header_with(ui, panel.icons(), panel.label(), |ui| {
+            if crate::systems::theme::action_button(ui, "Reset")
+                .on_hover_text("Switch every layer back to how it ships")
+                .clicked()
+            {
+                reset_layers = true;
+            }
+        });
         // The body is ~35 rows and ~900 pt tall against a 609 pt phone viewport
         // (411 dp at `ui_scale` 1.5), and a `Panel` does not scroll on its own —
         // it simply clips. Everything from "Height" down, including the only
@@ -2122,7 +2138,7 @@ pub fn render_data_layers_panel(
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.layers[i].enabled,
-                        egui::RichText::new(def.name).size(14.0),
+                        egui::RichText::new(def.name),
                     );
                     ui.indent(def.key, |ui| {
                         for (label, style) in def.categories {
@@ -2135,7 +2151,7 @@ pub fn render_data_layers_panel(
                                 // `◎`, not `●` — U+25CF is tofu in the bundled
                                 // stack, so the legend's colour dot was a box.
                                 ui.label(egui::RichText::new("◎").size(theme::SIZE_CHIP).color(c));
-                                ui.label(egui::RichText::new(*label).size(13.0));
+                                ui.label(egui::RichText::new(*label).size(theme::SIZE_SUB));
                             });
                         }
                         // Live moving vehicles ride on the transit layer (ADR-026).
@@ -2144,7 +2160,7 @@ pub fn render_data_layers_panel(
                             crate::systems::theme::checkbox(
                                 ui,
                                 &mut dl.vehicles_enabled,
-                                egui::RichText::new("Live vehicles").size(13.0),
+                                egui::RichText::new("Live vehicles").size(theme::SIZE_SUB),
                             );
                         }
                     });
@@ -2169,35 +2185,35 @@ pub fn render_data_layers_panel(
                 crate::systems::theme::checkbox(
                     ui,
                     &mut dl.map_enabled,
-                    egui::RichText::new("Map").size(14.0),
+                    egui::RichText::new("Map"),
                 );
                 ui.indent("map", |ui| {
-                    ui.label(egui::RichText::new("OSM ground tiles").size(13.0));
+                    ui.label(egui::RichText::new("OSM ground tiles").size(theme::SIZE_SUB));
                     ui.add_space(2.0);
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.trees_enabled,
-                        egui::RichText::new("Trees").size(13.0),
+                        egui::RichText::new("Trees").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.furniture_enabled,
-                        egui::RichText::new("Street furniture").size(13.0),
+                        egui::RichText::new("Street furniture").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.roads_textured,
-                        egui::RichText::new("Road textures").size(13.0),
+                        egui::RichText::new("Road textures").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.water_shading,
-                        egui::RichText::new("Water shading").size(13.0),
+                        egui::RichText::new("Water shading").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.street_labels,
-                        egui::RichText::new("Street labels").size(13.0),
+                        egui::RichText::new("Street labels").size(theme::SIZE_SUB),
                     );
                 });
                 ui.add_space(4.0);
@@ -2206,12 +2222,15 @@ pub fn render_data_layers_panel(
                 crate::systems::theme::checkbox(
                     ui,
                     &mut dl.height_enabled,
-                    egui::RichText::new("Height").size(14.0),
+                    egui::RichText::new("Height"),
                 );
                 ui.indent("height", |ui| {
                     // Say where it works, in the panel rather than in a doc comment: a
                     // toggle that silently does nothing over Berlin is a bug report.
-                    ui.label(egui::RichText::new("AHN elevation — Netherlands only").size(13.0));
+                    ui.label(
+                        egui::RichText::new("AHN elevation — Netherlands only")
+                            .size(theme::SIZE_SUB),
+                    );
                 });
                 ui.add_space(4.0);
                 ui.separator();
@@ -2234,6 +2253,28 @@ pub fn render_data_layers_panel(
                 }
             });
     });
+    if reset_layers {
+        // Field by field rather than `*dl = DataLayers::default()`: this resource
+        // also holds the live cell streams, the marker index and the open POI
+        // card, and replacing it wholesale would tear down streaming work that
+        // has nothing to do with which layers are ticked. The toggles are the
+        // only thing a reset is about.
+        let fresh = DataLayers::default();
+        for (layer, def) in dl.layers.iter_mut().zip(fresh.layers.iter()) {
+            layer.enabled = def.enabled;
+        }
+        dl.buildings_enabled = fresh.buildings_enabled;
+        dl.tdbag_enabled = fresh.tdbag_enabled;
+        dl.osm_buildings_enabled = fresh.osm_buildings_enabled;
+        dl.map_enabled = fresh.map_enabled;
+        dl.vehicles_enabled = fresh.vehicles_enabled;
+        dl.trees_enabled = fresh.trees_enabled;
+        dl.furniture_enabled = fresh.furniture_enabled;
+        dl.roads_textured = fresh.roads_textured;
+        dl.water_shading = fresh.water_shading;
+        dl.street_labels = fresh.street_labels;
+        dl.height_enabled = fresh.height_enabled;
+    }
     if about {
         *right_panel = crate::resources::RightPanel::About;
     } else if close || (open_before && !open) {

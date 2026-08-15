@@ -90,24 +90,47 @@ impl PoiCategory {
         }
     }
 
-    /// One glyph for the HUD prompt. Restricted to characters the bundled brand
-    /// font actually has — `systems::theme` documents what happens when it isn't
-    /// (a tofu box), and a prompt is exactly where that would show.
+    /// One glyph for the HUD prompt.
+    ///
+    /// **Every pictographic emoji here was a tofu box until 2026-08-14.** The
+    /// table was written as `🍴 ☕ 🛍 🎭 🛏 🎓 🚉 ⚽ ⛪ 📍` under a comment claiming
+    /// these were "characters the bundled brand font actually has"; ten of the
+    /// twelve were in *no* font egui installs. Its `Proportional` family is
+    /// `["Ubuntu-Light", "NotoEmoji-Regular", "emoji-icon-font"]`, and between
+    /// them those cover the BMP symbol blocks and essentially none of the
+    /// Miscellaneous-Symbols-and-Pictographs plane — so walking up to a
+    /// restaurant, a café, a shop, a hotel, a school, a station, a park or a
+    /// church drew an empty box. Only `✚` and `€` ever rendered.
+    ///
+    /// Two things let it ship. `theme::tests::no_painted_glyph_is_tofu` walked
+    /// `cartopolis/src` only and this crate is outside it — the hole was the
+    /// crate boundary, not the rule, and that test now scans here too. And this
+    /// call site has no egui `Context`, so unlike every icon in the client it
+    /// cannot run a `theme::first_drawable` ladder; the glyph has to be right
+    /// when it is *written*. `world_places::InteractKind::Prop` had already
+    /// worked this out for itself and picked `•` with a comment saying why.
+    ///
+    /// So these are BMP symbols, each verified against the installed stack.
+    /// Where the font has no pictograph for a category the choice falls back on
+    /// map convention (crossed implements for a restaurant, scales for a shop)
+    /// or on a plainly distinct mark — the prompt names the place in words
+    /// beside it (`Look at Vismarkt (café)`), so the glyph's job is to be
+    /// distinguishable, and any distinguishable mark beats a box.
     #[must_use]
     pub fn glyph(self) -> &'static str {
         match self {
-            Self::Food => "🍴",
-            Self::Drink => "☕",
-            Self::Shop => "🛍",
-            Self::Culture => "🎭",
-            Self::Lodging => "🛏",
+            Self::Food => "⚔",
+            Self::Drink => "⛱",
+            Self::Shop => "⚖",
+            Self::Culture => "♬",
+            Self::Lodging => "♜",
             Self::Health => "✚",
-            Self::Education => "🎓",
-            Self::Transport => "🚉",
-            Self::Leisure => "⚽",
-            Self::Worship => "⛪",
+            Self::Education => "⚛",
+            Self::Transport => "☸",
+            Self::Leisure => "❀",
+            Self::Worship => "☉",
             Self::Money => "€",
-            Self::Place => "📍",
+            Self::Place => "•",
         }
     }
 }

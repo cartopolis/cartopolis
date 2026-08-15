@@ -1250,7 +1250,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
     // Report focus so the auto-hiding top bar stays up while the user types.
     nav.search_has_focus = field.has_focus();
     if nav.in_flight > 0 {
-        ui.spinner();
+        theme::busy(ui, "Searching…");
     }
 
     if field.changed() {
@@ -1346,6 +1346,9 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
     };
     let status = nav.status();
     let stale = nav.stale;
+    // Set by the error chip below; consumed after the closure, since `nav` is
+    // borrowed for the duration of it.
+    let mut dismiss_error = false;
     let has_content = coord_entry.is_some()
         || !nav.suggestions.is_empty()
         || !recents.is_empty()
@@ -1401,10 +1404,25 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                 }
             }
             if let Some(msg) = &status {
-                ui.weak(msg.as_str());
+                // Was `ui.weak()` — the quietest tone in the palette, on the one
+                // string in this panel that most needs to be read. A geocoding
+                // failure and "no results" arrive through the same slot, so the
+                // chip only comes out for the failure.
+                if nav.error.is_some() {
+                    dismiss_error = theme::inline_error(ui, msg.as_str());
+                } else {
+                    ui.label(
+                        egui::RichText::new(msg.as_str())
+                            .size(theme::SIZE_SUB)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
             }
         });
 
+    if dismiss_error {
+        nav.error = None;
+    }
     if let Some(s) = routed {
         // Routing to a hit does *not* fly there: the whole point is that you are
         // planning a journey to somewhere you are not.
@@ -1482,7 +1500,8 @@ pub fn render_search_panel(
     if nav.focus_search {
         *right_panel = RightPanel::Search;
     }
-    let mut open = right_panel.is(RightPanel::Search);
+    let open_before = right_panel.is(RightPanel::Search);
+    let mut open = open_before;
     if !open {
         // No field on screen → it can hold no focus, and nothing is listening for
         // the Enter that submits it.
@@ -1511,7 +1530,11 @@ pub fn render_search_panel(
         close = theme::panel_header(ui, panel.icons(), panel.label());
         search_ui(ui, &mut nav, viewer);
     });
-    if close {
+    // A drag on the panel's edge that pulls it shut writes `open = false` and
+    // never touches the header, so a panel that consults only its ✕ reopens on
+    // the next frame — the slot still says it is the active panel. Both are the
+    // same request. (`data_layers` and About were already written this way.)
+    if close || (open_before && !open) {
         *right_panel = RightPanel::None;
         nav.search_has_focus = false;
         nav.close_suggestions();

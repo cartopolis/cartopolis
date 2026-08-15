@@ -76,7 +76,16 @@ pub fn render_place_pins(
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    driver: Res<crate::systems::driver::DriverState>,
 ) {
+    // Driver mode owns the screen and strips the map to the route — but this
+    // system never learned that, so the teardrops kept drawing over the
+    // navigation view, and every one of them is a live `Area` whose click is a
+    // `Teleport`. Tapping a saved place at 50 km/h is not a gesture that should
+    // be reachable.
+    if driver.active {
+        return;
+    }
     if store.data.bookmarks.is_empty() {
         return;
     }
@@ -103,6 +112,18 @@ pub fn render_place_pins(
             map_rect.min.y = map_rect.min.y.max(slab.bottom());
         }
     }
+    // **The dock and the top-left disc column need exactly the same treatment,
+    // and only the keyboard ever got it.** They are floating `Area`s too, so
+    // they reserve nothing in the root `Ui` either — and `render_place_pins`
+    // runs last (Phase 8) at the same `Order::Middle` the dock draws in, so
+    // within that order a pin raised later wins egui's hit test. On a phone the
+    // dock is ~240 pt of a 274 pt viewport, so a saved place projecting anywhere
+    // near the bottom edge was swallowing taps meant for Search and the app
+    // menu — the two controls the whole dock layout exists to put under a thumb.
+    // The reasoning is the keyboard's, verbatim; the edges were simply never
+    // added.
+    map_rect.max.y -= crate::systems::dock::reserved_bottom();
+    map_rect.min.y += crate::systems::dock::reserved_top();
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -338,11 +359,11 @@ fn teardrop(tip: egui::Pos2, centre: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
 /// otherwise: a saved-places layer with every name always drawn covers the city
 /// it is describing, and the panel is where the list lives.
 fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: &str) {
-    let font = egui::FontId::proportional(12.0);
+    let font = egui::FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
         .layout_no_wrap(name.to_string(), font, theme::CREAM);
-    let pad = egui::vec2(6.0, 3.0);
+    let pad = theme::CHIP_PADDING;
     let mut chip = egui::Rect::from_center_size(
         egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
         galley.size() + pad * 2.0,
@@ -354,7 +375,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
         (map_rect.top() + 2.0 - chip.top()).max(0.0),
     ));
     let painter = ui.painter();
-    painter.rect_filled(chip, 4.0, theme::LABEL_CHIP);
+    painter.rect_filled(chip, theme::RADIUS_SM, theme::LABEL_CHIP);
     painter.galley(chip.min + pad, galley, theme::CREAM);
 }
 
