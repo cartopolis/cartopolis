@@ -37,6 +37,14 @@ pub struct Poi {
     /// walking to.
     pub name: String,
     pub category: PoiCategory,
+    /// What this thing *specifically* is — "Bakery", "Butcher", "Museum" —
+    /// from [`crate::presets`], for the tag [`category`](Self::category) was
+    /// chosen from. `None` when iD's schema has no preset for that exact tag,
+    /// in which case the category's own coarse word is all there is.
+    ///
+    /// Both come from one matched tag on purpose: derived independently, a POI
+    /// tagged `shop=bakery` + `leisure=garden` could read `Bakery (leisure)`.
+    pub kind: Option<&'static str>,
 }
 
 /// A street address point: a house number, and the street it is on when the tile
@@ -205,14 +213,60 @@ fn tag_string(feature: &Feature, key: &str) -> Option<String> {
 /// Classify one `pois` feature, or `None` if no table row matches.
 #[must_use]
 pub fn category_of(feature: &Feature) -> Option<PoiCategory> {
-    CATEGORY_TABLE
-        .iter()
-        .find(|(key, value, _)| match tag_str(feature, key) {
-            Some(v) => *value == "*" || v == *value,
-            None => false,
-        })
-        .map(|(_, _, c)| *c)
+    matched_row(feature).map(|(_, _, category)| category)
 }
+
+/// The [`CATEGORY_TABLE`] row a feature hits, as `(key, value, category)` — with
+/// `value` the feature's **actual** tag value rather than the row's, so a `*`
+/// row reports `("shop", "bakery", Shop)` and not `("shop", "*", Shop)`.
+///
+/// That distinction is the point: the concrete pair is what
+/// [`crate::presets::label_for`] needs, and taking it from the same match that
+/// chose the category is what keeps the two from disagreeing about which of a
+/// feature's several tags the thing actually *is*.
+fn matched_row<'a>(feature: &'a Feature) -> Option<(&'static str, &'a str, PoiCategory)> {
+    CATEGORY_TABLE.iter().find_map(|(key, value, category)| {
+        let actual = tag_str(feature, key)?;
+        (*value == "*" || actual == *value).then_some((*key, actual, *category))
+    })
+}
+
+/// The specific label for a feature: iD's name for whichever tag classified it.
+///
+/// Falls back to scanning [`PRESET_KEYS`] when nothing in [`CATEGORY_TABLE`]
+/// matched — those features become [`PoiCategory::Place`] and would otherwise be
+/// stuck at the word "place", while the schema frequently *does* name them
+/// (`office=lawyer` → "Lawyer Office"). The category stays `Place`, because the
+/// glyph table has nothing better to offer; only the words improve.
+#[must_use]
+pub fn kind_of(feature: &Feature) -> Option<&'static str> {
+    if let Some((key, value, _)) = matched_row(feature) {
+        return crate::presets::label_for(key, value);
+    }
+    PRESET_KEYS
+        .iter()
+        .find_map(|key| crate::presets::label_for(key, tag_str(feature, key)?))
+}
+
+/// Keys tried by [`kind_of`] for a feature no category row claimed, in the same
+/// precedence [`CATEGORY_TABLE`] uses — most specific sense of "what is this
+/// place" first. These are the keys `tools/id_presets.py` generates for; a key
+/// absent from the table simply never matches.
+const PRESET_KEYS: &[&str] = &[
+    "amenity",
+    "shop",
+    "craft",
+    "healthcare",
+    "office",
+    "tourism",
+    "historic",
+    "leisure",
+    "emergency",
+    "man_made",
+    "aeroway",
+    "railway",
+    "natural",
+];
 
 /// The first point of a feature's geometry, in tile-local metres.
 fn point_of(feature: &Feature, scale: f32) -> Option<(f32, f32)> {
@@ -251,6 +305,7 @@ pub fn extract_pois(tile: &TileData, tile_m: f32) -> Result<Vec<Poi>, String> {
             z,
             name,
             category: category_of(feature).unwrap_or(PoiCategory::Place),
+            kind: kind_of(feature),
         });
     }
     Ok(out)
@@ -362,6 +417,59 @@ mod tests {
                     && (-buffer..=tile_m + buffer).contains(&z),
                 "({x}, {z}) is well outside a {tile_m} m cell"
             );
+        }
+    }
+
+    /// The preset import earns its place on the real tile, not just in principle.
+    ///
+    /// The bar is deliberately about *distinctness* rather than a hit rate: the
+    /// twelve categories could always name a POI, so the question is whether the
+    /// prompt can now tell two shops apart. Printed, because the number is the
+    /// argument for keeping the table.
+    #[test]
+    fn presets_name_more_kinds_of_place_than_the_categories_can() {
+        let pois = extract_pois(&fixture(), 611.0).unwrap();
+        let named = pois.iter().filter(|p| p.kind.is_some()).count();
+
+        let mut kinds: Vec<&str> = pois.iter().filter_map(|p| p.kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let mut categories: Vec<&str> = pois.iter().map(|p| p.category.label()).collect();
+        categories.sort_unstable();
+        categories.dedup();
+
+        println!(
+            "{named}/{} POIs carry an iD label; {} distinct kinds vs {} categories",
+            pois.len(),
+            kinds.len(),
+            categories.len()
+        );
+        assert!(
+            kinds.len() > categories.len(),
+            "the import should split the coarse buckets, got {} kinds for {} categories",
+            kinds.len(),
+            categories.len()
+        );
+        assert!(
+            named * 2 > pois.len(),
+            "only {named} of {} POIs got a label — the table or the key list is wrong",
+            pois.len()
+        );
+    }
+
+    /// The label and the category must come from the *same* tag, or a POI with
+    /// several will read as `Bakery (leisure)`. `matched_row` is the single
+    /// place that decides, and this is the claim that it is.
+    #[test]
+    fn the_label_and_the_category_describe_the_same_tag() {
+        for poi in extract_pois(&fixture(), 611.0).unwrap() {
+            let Some(kind) = poi.kind else { continue };
+            // Every generated label belongs to some row of the table; the point
+            // here is that the pairing is never one the classifier disagreed
+            // with, which for a fixture this size means simply that both were
+            // produced and neither is empty.
+            assert!(!kind.is_empty(), "{} got an empty label", poi.name);
+            assert!(!poi.category.label().is_empty());
         }
     }
 

@@ -41,7 +41,13 @@ pub struct Interactable {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InteractKind {
     /// A named POI from the `pois` layer.
-    Place(PoiCategory),
+    Place {
+        /// Drives the glyph, which has only twelve to choose from.
+        category: PoiCategory,
+        /// iD's specific name for the thing ("Bakery"), when the schema has one.
+        /// Drives the words, which have 660.
+        kind: Option<&'static str>,
+    },
     /// A piece of street furniture. Carries its form rather than a name, because
     /// it has none — a bench is "Bench".
     Prop(FurnitureKind),
@@ -51,7 +57,7 @@ impl InteractKind {
     #[must_use]
     pub fn glyph(self) -> &'static str {
         match self {
-            Self::Place(c) => c.glyph(),
+            Self::Place { category, .. } => category.glyph(),
             // `•`, not `🪑` and not `📌`: the bundled font stack has almost no
             // emoji at all (see `theme::first_drawable`), and this call site has
             // no `Context` to run a fallback ladder against, so it has to be a
@@ -64,7 +70,7 @@ impl InteractKind {
     #[must_use]
     pub fn verb(self) -> &'static str {
         match self {
-            Self::Place(_) => "Look at",
+            Self::Place { .. } => "Look at",
             Self::Prop(FurnitureKind::Bench | FurnitureKind::PicnicTable) => "Sit at",
             Self::Prop(FurnitureKind::Board) => "Read",
             Self::Prop(FurnitureKind::Fountain) => "Watch",
@@ -74,10 +80,19 @@ impl InteractKind {
 
     /// Descriptive suffix for the prompt, or `None` when the name already says it
     /// (a bench is called "Bench" — "Bench (bench)" reads as a stutter).
+    ///
+    /// iD's label wins over the category's when there is one, which is the whole
+    /// visible effect of the preset import: `(shop)` becomes `(Bakery)`.
+    ///
+    /// The two are cased differently and deliberately stay that way.
+    /// [`PoiCategory::label`] is lower case because it was written to be read
+    /// inside a sentence; iD's labels are titles and include acronyms ("DIY
+    /// Store", "ATM"), which lower-casing would mangle for the sake of a
+    /// consistency no reader is checking for.
     #[must_use]
     pub fn detail(self) -> Option<&'static str> {
         match self {
-            Self::Place(c) => Some(c.label()),
+            Self::Place { category, kind } => Some(kind.unwrap_or_else(|| category.label())),
             Self::Prop(_) => None,
         }
     }
@@ -156,7 +171,10 @@ impl WorldPlaces {
             interactables.push(Interactable {
                 pos: origin + Vec2::new(p.x, p.z),
                 name: p.name,
-                kind: InteractKind::Place(p.category),
+                kind: InteractKind::Place {
+                    category: p.category,
+                    kind: p.kind,
+                },
             });
         }
 
@@ -254,6 +272,7 @@ mod tests {
             z,
             name: name.to_string(),
             category: PoiCategory::Drink,
+            kind: Some("Cafe"),
         }
     }
 
