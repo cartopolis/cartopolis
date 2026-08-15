@@ -22,11 +22,18 @@
 //! touchscreen 3D application converged on, for the mechanical reason that those
 //! are where the thumbs already are when a phone is held in two hands.
 //!
+//! Both edges are anchored to the **bottom**, and grow upwards from the dock
+//! line: the stick opposite a column of round controls, at the two places a
+//! phone held in two hands already has a thumb. Nothing is anchored to the
+//! middle of an edge — see [`vertical_pair`] for the version that was, and what
+//! it cost.
+//!
 //!   - **Fly** — a thumbstick bottom-left (forward/back + strafe, *proportional*
-//!     so a small push is a slow drift) and a climb/descend pair on the right.
+//!     so a small push is a slow drift) and a climb/descend pair bottom-right.
 //!   - **Follow** — the same thumbstick, walking the *avatar* rather than the
-//!     camera; a zoom pair on the right that becomes a climb pair in flight; and
-//!     a jump/fly pair bottom-right, opposite the stick. Until this existed the avatar was
+//!     camera; the same bottom-right pair, zooming the camera on foot and
+//!     climbing in flight; and a jump/flight pair stacked above it. Until this
+//!     existed the avatar was
 //!     the one thing on a phone that could not be moved at all: its whole
 //!     vocabulary was WASD, which is six keys a touchscreen does not have and
 //!     no gesture ever stood in for (`docs/notes/android-build.md` recorded it
@@ -58,20 +65,50 @@ use crate::resources::{CameraMode, CameraState, RightPanel};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::theme;
 
-/// Diameter (points) of one round control. Above the 48 dp guideline on the
-/// touch tier, where `EguiManager::ui_scale` is ≥1.5 (`docs/notes/touch-input.md`).
-const CONTROL_SIZE: f32 = 44.0;
-/// Gap between the two controls of a pair.
-const CONTROL_GAP: f32 = 10.0;
-/// Inset of the right-hand column from the window edge.
-const RIGHT_MARGIN: f32 = 12.0;
+/// Diameter (points) of one round control — [`theme::ROUND_BUTTON_SIZE`], the
+/// one disc that floats over this map. 60 dp on the touch tier, where
+/// `EguiManager::ui_scale` is ≥1.5 (`docs/notes/touch-input.md`), so it clears
+/// the 48 dp guideline with room to spare; it was 44 for the same reason and all
+/// that bought was a fourth diameter on a screen that only needed one.
+const CONTROL_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 /// Radius (points) of the thumbstick's well, and of the knob inside it.
 const STICK_RADIUS: f32 = 54.0;
 const STICK_KNOB_RADIUS: f32 = 22.0;
-/// Inset of the stick's well from the left and bottom edges. The bottom inset is
-/// measured from the top of the dock, not from the window (see
-/// [`crate::systems::dock::reserved_bottom`]).
-const STICK_MARGIN: f32 = 16.0;
+
+/// Distance from the bottom of the window to the bottom of a cluster: clear of
+/// the dock, which owns the bottom edge, plus the standard edge inset.
+fn bottom_offset() -> f32 {
+    theme::OSD_MARGIN + crate::systems::dock::reserved_bottom()
+}
+
+/// Height of a two-button stack.
+fn pair_height() -> f32 {
+    CONTROL_SIZE * 2.0 + theme::OSD_GAP
+}
+
+/// Bottom offset of the jump/flight pair: a group gap above the zoom/climb pair,
+/// which owns the corner. Named rather than inlined so the test below measures
+/// the same arithmetic the anchor uses.
+fn actions_bottom_offset() -> f32 {
+    bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
+}
+
+/// How much of the bottom-**left** corner the thumbstick claims, in points, for
+/// whatever else wants to sit above it — the scale bar
+/// (`hud::render_map_controls`) is the only caller so far.
+///
+/// Measured from the window's bottom edge, so it already contains the dock's
+/// own reservation and a caller adds nothing but its own gap. `0` means the
+/// corner is the dock's alone, which is the desktop case and every touch case
+/// where the controls are suppressed.
+#[must_use]
+pub fn bottom_left_reserved(cluster: Option<Cluster>) -> f32 {
+    match cluster {
+        Some(Cluster::Fly | Cluster::Walk) => bottom_offset() + STICK_RADIUS * 2.0,
+        // Earth mode has no stick, and neither has a run with no controls at all.
+        Some(Cluster::Zoom) | None => crate::systems::dock::reserved_bottom(),
+    }
+}
 
 /// Fraction of the stick's radius that reads as "still centred". A thumb resting
 /// in the well wanders a few points, and without this the camera drifts for as
@@ -260,9 +297,10 @@ pub fn render_map_osd(
 /// the held test that suits a rate would fire a jump every frame of a press.
 ///
 /// Bottom-**right**, opposite the stick, because that is where the other thumb
-/// is: the same left-translates / right-acts split the module opens with. The
-/// climb pair stays on the right *edge*, centred, so the three never overlap at
-/// any window size.
+/// is: the same left-translates / right-acts split the module opens with. It
+/// stacks *above* the zoom/climb pair, which is the bottom-most thing on that
+/// edge in every mode — see [`vertical_pair`] for why the pair rather than this
+/// owns the corner.
 ///
 /// Flight is a toggle rather than a hold: holding a button for the duration of a
 /// flight is not a control, it is a punishment, and the keyboard's own `F` is a
@@ -274,18 +312,19 @@ fn action_pair(ctx: &egui::Context, flying: bool) -> (bool, bool) {
     egui::Area::new(egui::Id::new("osd_actions"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(
-                -STICK_MARGIN,
-                -(STICK_MARGIN + crate::systems::dock::reserved_bottom()),
-            ),
+            egui::vec2(-theme::OSD_MARGIN, -actions_bottom_offset()),
         )
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = CONTROL_GAP;
-                if !flying && round_button(ui, Mark::Jump).clicked() {
+                ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
+                if !flying && round_button(ui, Mark::Jump, false).clicked() {
                     jump = true;
                 }
-                if round_button(ui, Mark::Wings).clicked() {
+                // The flight toggle is a *state*, not a rate or an edge that
+                // vanishes — so it wears the engaged plate while flying, the same
+                // muted orange an open panel's dock disc wears. It was the one
+                // control on the map whose on and off looked identical.
+                if round_button(ui, Mark::Wings, flying).clicked() {
                     fly_toggle = true;
                 }
             });
@@ -305,28 +344,49 @@ enum Mark {
     Down,
     /// Jump: a chevron with a bar under it — an arrow leaving the ground.
     Jump,
-    /// Flight: a pair of swept strokes. Not a wing shape, which needs curves and
-    /// reads as a smear at 44 pt; two strokes rising from a point say "up and
-    /// away" at any size, which is the whole vocabulary the other marks use.
+    /// Flight: a swept delta, filled.
+    ///
+    /// It was two strokes rising from a common point over a bar, and on the
+    /// screen that was an argument from the wrong premise — the marks around it
+    /// are strokes, so a stroke mark was said to be the vocabulary. But it sits
+    /// directly above the climb pair, whose marks are a `^` and a `v`, and two
+    /// strokes rising from a point *is* a `v`. Four discs in a column then read
+    /// as two up/down pairs, one of which silently did something else. A filled
+    /// dart is the one shape in this set that cannot be read as a chevron, and
+    /// being filled is also the honest signal: this is the only control here that
+    /// holds a state rather than expressing a rate.
     Wings,
 }
 
-/// Two round buttons stacked on the right edge, centred vertically. Returns
-/// `+1` while the top one is held, `-1` while the bottom one is, `0` otherwise —
-/// *held*, not clicked, because these are rates.
+/// Two round buttons at the bottom of the right edge. Returns `+1` while the top
+/// one is held, `-1` while the bottom one is, `0` otherwise — *held*, not
+/// clicked, because these are rates.
+///
+/// **The pair is the bottom-most thing on that edge in every mode**, and that is
+/// the whole of its position rule. It used to be anchored `RIGHT_CENTER`, i.e.
+/// halfway up the window, while the jump/flight pair sat in the corner below it:
+/// two clusters of identical discs on one edge at two unrelated heights, the
+/// busier of them out of a thumb's reach on a phone held in one hand, and — since
+/// the scale bar was also anchored to that corner — one of them overlapping a
+/// readout it painted over. Bottom-anchored, the right edge is a single column
+/// that grows upwards, mirroring the stick opposite it, and the pair keeps one
+/// position across Fly, Follow, Follow-in-flight and Earth. That last part is the
+/// same argument the module makes for swapping zoom for climb *inside* the pair:
+/// a phone should not have to learn two positions for one verb.
 fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 {
     let mut wish = 0.0;
-    let height = CONTROL_SIZE * 2.0 + CONTROL_GAP;
     egui::Area::new(egui::Id::new(id))
-        .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-RIGHT_MARGIN, 0.0))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
+        )
         .show(ctx, |ui| {
-            ui.set_height(height);
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = CONTROL_GAP;
-                if round_button(ui, top).is_pointer_button_down_on() {
+                ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
+                if round_button(ui, top, false).is_pointer_button_down_on() {
                     wish += 1.0;
                 }
-                if round_button(ui, bottom).is_pointer_button_down_on() {
+                if round_button(ui, bottom, false).is_pointer_button_down_on() {
                     wish -= 1.0;
                 }
             });
@@ -334,31 +394,33 @@ fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 
     wish
 }
 
-/// One round control. Returns whether it is *being held*.
 /// One round control. Returns its `Response`, so the caller picks the test that
 /// suits it: a rate wants `is_pointer_button_down_on` (a finger drifting a point
 /// or two while held produces a *drag*, and `clicked()` would drop the whole
 /// push — the same reason the on-screen keyboard dismisses on the pointer), while
 /// an edge like a jump wants `clicked()`, or it fires every frame of the press.
-fn round_button(ui: &mut egui::Ui, mark: Mark) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::Vec2::splat(CONTROL_SIZE),
+///
+/// The plate is [`theme::map_disc`], which is what makes these the same object as
+/// the dock discs eight points below them and the compass in the far corner.
+/// They were painted here instead, one shade off on every state — `TEXT_DIM` ink
+/// at rest against the dock's `TEXT`, no lift on hover, `ACCENT_BRIGHT` for the
+/// pressed ring against the dock's `ACCENT_RING` (which the palette notes
+/// measures 4.2:1 on the muted fill where the bright one measures 2.7).
+fn round_button(ui: &mut egui::Ui, mark: Mark, on: bool) -> egui::Response {
+    let (resp, face) = theme::map_disc(
+        ui,
+        CONTROL_SIZE,
+        on,
+        theme::ACCENT_RING,
         egui::Sense::click_and_drag(),
     );
-    let held = resp.is_pointer_button_down_on();
-    let (fill, ring, ink) = if held {
-        (theme::ACCENT_MUTED, theme::ACCENT_BRIGHT, theme::CREAM)
-    } else if resp.hovered() {
-        (theme::OVERLAY, theme::ACCENT, theme::CREAM)
-    } else {
-        (theme::OVERLAY, theme::OVERLAY_LINE, theme::TEXT_DIM)
-    };
-    let p = ui.painter();
-    let c = rect.center();
-    let r = CONTROL_SIZE * 0.5 - 1.0;
-    p.circle_filled(c, r, fill);
-    p.circle_stroke(c, r, egui::Stroke::new(1.5, ring));
-    paint_mark(p, c, CONTROL_SIZE * 0.22, mark, ink);
+    paint_mark(
+        ui.painter(),
+        face.center,
+        CONTROL_SIZE * 0.22,
+        mark,
+        face.ink,
+    );
     resp
 }
 
@@ -385,18 +447,22 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
             );
             p.line_segment([c + egui::vec2(-dx, dy), c + egui::vec2(dx, dy)], stroke);
         }
-        // Two swept strokes rising from a common point.
+        // A swept delta, drawn as its two halves: the dart has a notched tail,
+        // so it is not convex, and `convex_polygon` is the only filled primitive
+        // egui tessellates correctly. Each half is a triangle and each triangle
+        // is convex, and they share the nose and the notch, so the seam between
+        // them lands on the axis where a dart has a crease anyway.
         Mark::Wings => {
-            let (dx, dy) = (s, s * 0.7);
-            p.line_segment([c + egui::vec2(0.0, dy), c + egui::vec2(-dx, -dy)], stroke);
-            p.line_segment([c + egui::vec2(0.0, dy), c + egui::vec2(dx, -dy)], stroke);
-            p.line_segment(
-                [
-                    c + egui::vec2(-dx * 0.5, 0.0),
-                    c + egui::vec2(dx * 0.5, 0.0),
-                ],
-                stroke,
-            );
+            let (nose, tip, notch) = (s * 1.15, s * 0.75, s * 0.3);
+            let apex = c + egui::vec2(0.0, -nose);
+            let tail = c + egui::vec2(0.0, notch);
+            for side in [-1.0_f32, 1.0] {
+                p.add(egui::Shape::convex_polygon(
+                    vec![apex, c + egui::vec2(side * s, tip), tail],
+                    ink,
+                    egui::Stroke::NONE,
+                ));
+            }
         }
         // Chevrons, not filled triangles: at 44 pt a solid arrowhead reads as a
         // blob, and the same two segments scale to any control size.
@@ -424,10 +490,7 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
     egui::Area::new(egui::Id::new("osd_stick"))
         .anchor(
             egui::Align2::LEFT_BOTTOM,
-            egui::vec2(
-                STICK_MARGIN,
-                -(STICK_MARGIN + crate::systems::dock::reserved_bottom()),
-            ),
+            egui::vec2(theme::OSD_MARGIN, -bottom_offset()),
         )
         .show(ctx, |ui| {
             let (rect, resp) =
@@ -445,7 +508,13 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
                 }
             }
             let p = ui.painter();
-            p.circle_filled(centre, STICK_RADIUS, theme::OVERLAY);
+            // The well is a *guide*, not a plate: it is two and a half discs
+            // across, and at the opacity the buttons use it was the heaviest
+            // thing on the screen — a black hole in the bottom-left corner of the
+            // map, larger and darker than every control it shares an edge with
+            // put together. [`theme::OVERLAY_SOFT`] keeps the map visible through
+            // it; the hairline is what says where the travel ends.
+            p.circle_filled(centre, STICK_RADIUS, theme::OVERLAY_SOFT);
             p.circle_stroke(
                 centre,
                 STICK_RADIUS,
@@ -454,12 +523,15 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
             // The knob shows where the thumb has taken it, which is the whole of
             // the feedback: without it a proportional stick is indistinguishable
             // from an on/off pad and the user has no way to learn the gradient.
+            // It is the *disc*, so it carries the disc's rest and engaged
+            // colours — the same two plates every other control on this screen
+            // switches between.
             let travel = STICK_RADIUS - STICK_KNOB_RADIUS - 2.0;
             let knob = centre + egui::vec2(wish.x, -wish.y) * travel;
             let (fill, ring) = if wish == Vec2::ZERO {
-                (theme::OVERLAY_LINE, theme::TEXT_DIM)
+                (theme::OVERLAY, theme::OVERLAY_LINE)
             } else {
-                (theme::ACCENT_MUTED, theme::ACCENT_BRIGHT)
+                (theme::ACCENT_MUTED, theme::ACCENT_RING)
             };
             p.circle_filled(knob, STICK_KNOB_RADIUS, fill);
             p.circle_stroke(knob, STICK_KNOB_RADIUS, egui::Stroke::new(1.5, ring));
@@ -521,6 +593,50 @@ mod tests {
             cluster_for(CameraMode::Free, false, false, true, true),
             None
         );
+    }
+
+    /// The right edge is **one** column that grows upwards from the dock line,
+    /// not two clusters at unrelated heights. Both pairs are anchored
+    /// `RIGHT_BOTTOM`, so this measures the two spans they claim above the
+    /// bottom edge and asserts they are disjoint with exactly a group gap
+    /// between them — the arithmetic the two anchors are written from.
+    #[test]
+    fn the_right_edge_clusters_stack_without_overlapping() {
+        let pair = (bottom_offset(), bottom_offset() + pair_height());
+        let actions = (
+            actions_bottom_offset(),
+            actions_bottom_offset() + pair_height(),
+        );
+        assert!(
+            actions.0 >= pair.1,
+            "the action pair starts at {} inside a zoom pair reaching {}",
+            actions.0,
+            pair.1
+        );
+        assert!((actions.0 - pair.1 - theme::OSD_GROUP_GAP).abs() < 1e-3);
+        // …and the bottom-most of them clears the dock, which owns that edge.
+        assert!(pair.0 >= crate::systems::dock::reserved_bottom());
+    }
+
+    /// What the bottom-left corner reserves has to cover the stick actually
+    /// drawn there, or the scale bar that reads this lands on it — which is the
+    /// collision that moved the bar off the opposite corner in the first place.
+    #[test]
+    fn the_bottom_left_reservation_covers_the_stick() {
+        let stick_top = bottom_offset() + STICK_RADIUS * 2.0;
+        for cluster in [Cluster::Fly, Cluster::Walk] {
+            assert!(
+                bottom_left_reserved(Some(cluster)) >= stick_top,
+                "{cluster:?} draws a stick reaching {stick_top} and reserves {}",
+                bottom_left_reserved(Some(cluster))
+            );
+        }
+        // Earth mode draws no stick, and a pointer run draws nothing at all —
+        // in both the corner is the dock's alone, and reserving the stick's
+        // space anyway would float the scale bar over empty map.
+        let bare = crate::systems::dock::reserved_bottom();
+        assert_eq!(bottom_left_reserved(Some(Cluster::Zoom)), bare);
+        assert_eq!(bottom_left_reserved(None), bare);
     }
 
     #[test]

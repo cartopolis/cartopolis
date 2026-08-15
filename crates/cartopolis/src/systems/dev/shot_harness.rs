@@ -40,7 +40,8 @@
 //! `--ui dev` or `--ui dev,layers,stats` (or `--ui all`); see [`open_scripted_ui`].
 //! `--ui search` opens the Search panel *and* seeds it a query, since an empty
 //! field documents nothing; `--ui hud` brings back the status readout, which is
-//! off by default (`hud::StatusHud`).
+//! off by default (`hud::StatusHud`); and `--ui menu` opens the app mark's card,
+//! which is where the entries that left the map live.
 //!
 //! ## Metrics: the numbers behind the frame
 //!
@@ -912,6 +913,35 @@ pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
     harness.is_some()
 }
 
+/// Keep egui's geometry in step with the world for the whole of a scripted run.
+///
+/// **A settled capture could otherwise show chrome from twenty seconds earlier.**
+/// `egui_manager::end_egui_frame` skips the tessellate → upload chain whenever
+/// egui reports `repaint_delay == Duration::MAX`, and redraws the last-written
+/// primitives instead — which is free and correct for the thing it was written
+/// for, a static menu bar under a mouse that has not moved. It is not correct
+/// for an overlay whose content comes from the **ECS**: egui's repaint signal
+/// answers "has anything I know about changed", and it knows nothing about the
+/// camera. So a run that flies somewhere and then goes quiet — which is exactly
+/// what `--settle` is — keeps painting the shapes from the last frame egui
+/// happened to consider interesting.
+///
+/// It was found the way these things are: a `--shot-mode earth` capture from
+/// 14,000 km carried a scale bar reading "200 m", the altitude the camera had on
+/// frame 2 of the run, while `render_map_controls` had correctly drawn no bar at
+/// all for the twenty seconds since. Anything read off the world and drawn into
+/// the overlay could be that stale — the clock, the coordinates, the compass
+/// needle, an open panel's contents — and nothing about the image says so.
+///
+/// Forcing the write costs one tessellation per frame, in the one kind of run
+/// that is already spending 250 ms a frame on a software rasteriser and whose
+/// entire purpose is the picture at the end of it. The live app keeps the skip.
+pub fn keep_egui_fresh(
+    mut render_output: ResMut<crate::systems::egui_manager::EguiRenderOutput>,
+) {
+    render_output.force_next_write = true;
+}
+
 /// Open the UI panels named by `--ui` so a scripted capture can document them —
 /// the dev lighting/weather controls, the layers list, the bookmarks or AI
 /// panels — not just the always-on HUD and menu bar. These panels are normally
@@ -935,6 +965,7 @@ pub fn open_scripted_ui(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut status: ResMut<crate::systems::hud::StatusHud>,
+    mut menu: ResMut<crate::systems::ui::MainMenu>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -951,6 +982,11 @@ pub fn open_scripted_ui(
     // The status readout is off by default now (`hud::StatusHud`), so a capture
     // that wants to document it has to ask — `--ui hud`.
     status.open = want("hud");
+    // `--ui menu` opens the app mark's card. It is the one piece of chrome a
+    // scripted run could not reach at all, and it is where the entries that left
+    // the map now live — Set Home, Copy location and the status readout's own
+    // switch. A control nothing can screenshot is a control nobody reviews.
+    menu.open = want("menu");
     ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
@@ -1023,6 +1059,7 @@ pub fn open_scripted_ui(
         "dev",
         "stats",
         "hud",
+        "menu",
         "ai",
         "avatar",
         "appearance",

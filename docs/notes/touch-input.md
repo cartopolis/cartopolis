@@ -1,7 +1,7 @@
 ---
 topic: touch-input
 triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "context_menu", "long_touched"]
-updated: 2026-08-13
+updated: 2026-08-15
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -159,11 +159,22 @@ gesture arms were deleted rather than left as a second way to do it.
 camera mode:
 
 - **Fly** — a proportional thumbstick bottom-left (forward/back + strafe) and a
-  climb/descend pair on the right. Left thumb translates, right thumb changes
+  climb/descend pair bottom-right. Left thumb translates, right thumb changes
   height, which is where the thumbs already are on a two-handed phone.
-- **Follow** — the same stick, walking the *avatar*, plus the zoom pair.
-- **Earth** — a zoom pair on the right. Redundant with the pinch by
+- **Follow** — the same stick, walking the *avatar*; the same bottom-right pair,
+  zooming on foot and climbing in flight; and a jump/flight pair stacked above
+  it.
+- **Earth** — the same bottom-right pair, zooming. Redundant with the pinch by
   design: one-handed is how a phone is held most of the time.
+
+**Both edges anchor to the bottom.** The pair was `RIGHT_CENTER` until
+2026-08-15 — halfway up the window, with the jump/flight pair in the corner
+below it: two clusters of identical discs on one edge at two unrelated heights,
+the busier of them out of a one-handed thumb's reach, and overlapping the scale
+bar that was anchored to the same corner. Anchored to the bottom, the right edge
+is one column that grows upwards and the pair keeps a single position across all
+four states. The scale bar moved to the bottom-left and sits above whatever
+`map_osd::bottom_left_reserved` says the stick claims.
 
 The stick's *magnitude* is kept, which is the whole difference from the gestures
 it replaced: `camera_controls` derives a throttle from `move_direction.length()`
