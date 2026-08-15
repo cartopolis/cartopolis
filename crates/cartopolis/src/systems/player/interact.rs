@@ -340,13 +340,30 @@ mod tests {
         assert_eq!(board.line(), "Read Information board");
     }
 
-    /// A named place carries its category, because the name alone rarely says
-    /// what the thing is.
+    /// A named place carries a description, because the name alone rarely says
+    /// what the thing is — iD's specific one when the schema had a preset for
+    /// the tag, and the coarse category's word when it did not.
     #[test]
-    fn a_place_prompt_names_the_category() {
+    fn a_place_prompt_describes_the_place() {
         use crate::systems::places::PoiCategory;
-        let cafe = target("Vismarkt", InteractKind::Place(PoiCategory::Drink));
-        assert_eq!(cafe.line(), "Look at Vismarkt (café)");
+        let bakery = target(
+            "Bakkerij Klaas",
+            InteractKind::Place {
+                category: PoiCategory::Shop,
+                kind: Some("Bakery"),
+            },
+        );
+        assert_eq!(bakery.line(), "Look at Bakkerij Klaas (Bakery)");
+
+        // The fallback, which is what every POI read like before the import.
+        let unknown = target(
+            "Vismarkt",
+            InteractKind::Place {
+                category: PoiCategory::Drink,
+                kind: None,
+            },
+        );
+        assert_eq!(unknown.line(), "Look at Vismarkt (café)");
     }
 
     /// Tapping the prompt has to do exactly what E does — same clip, same
@@ -378,7 +395,10 @@ mod tests {
         let it = Interactable {
             pos: Vec2::new(120.0, -40.0),
             name: "Vismarkt".to_string(),
-            kind: InteractKind::Place(PoiCategory::Drink),
+            kind: InteractKind::Place {
+                category: PoiCategory::Drink,
+                kind: None,
+            },
         };
         assert_eq!(TargetInfo::of(&it).pos, Vec2::new(120.0, -40.0));
     }
