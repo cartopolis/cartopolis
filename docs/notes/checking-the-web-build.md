@@ -17,11 +17,14 @@ RUSTUP_TOOLCHAIN=nightly \
 CARGO_UNSTABLE_BUILD_STD=std,panic_abort \
 CARGO_TARGET_DIR=/home/agent/cargo-target/wasmcheck \
 RUSTFLAGS="--cfg=web_sys_unstable_apis -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128" \
-cargo check -p cartopolis --target wasm32-unknown-unknown --no-default-features
+cargo check -p cartopolis --target wasm32-unknown-unknown \
+    --no-default-features --features audio
 ```
 
-Add `--features audio` to reach `platform::audio`'s web arm, which the shipped
-build does not compile (below).
+`--features audio` is part of the shipped configuration since 2026-08-15, not an
+extra: `index.html` carries `data-cargo-features="audio"`. Leave it off and the
+check silently covers a build nobody deploys — which is how the browser came to
+ship with no soundscape at all ([audio-off-platform.md](audio-off-platform.md)).
 
 ## Why each part is load-bearing
 

@@ -56,9 +56,19 @@ Phase 1 is the **offline viewer**, the same shape as Phase 1 on the web: the
 streamed OSM / 3DBAG / AHN map and a local avatar, with no simulator, no auth and
 no world persistence. Two consequences that look like bugs if you don't know:
 
-The APK is built `--no-default-features`, so the `solo` feature — and with it the
-in-process `cartopolis_simulator` and its bundled SQLite — is not compiled at all.
+The APK drops the `solo` feature — and with it the in-process
+`cartopolis_simulator` and its bundled SQLite — so it is not compiled at all.
 Nothing cross-compiles `rusqlite` for Android today, and nobody has tried.
+
+That is expressed as `default-features = false` on
+`crates/cartopolis_android/Cargo.toml`'s dependency line, **plus `features =
+["audio"]` naming one default back**. Until 2026-08-15 it did not, and the
+consequence was a phone with no sound of any kind: no footsteps, no wind, and no
+driver turn cues, which is the one part of navigation usable without looking at
+the screen. Android needs nothing of the ALSA headers that made `audio` a feature
+in the first place — cpal resolves to the platform's AAudio.
+[audio-off-platform.md](audio-off-platform.md) has the rest, including why the
+same omission silenced the web build.
 
 What that leaves on the phone is a *map viewer*, and it is worth being concrete
 about the edges, because two of them are not Android's doing. The camera works
@@ -99,11 +109,14 @@ Both are reachable locally, and together they are as close to the device as a
 machine with a keyboard gets:
 
 ```bash
-CARTO_QUALITY=phone cargo run -p cartopolis --no-default-features -- --offline
+CARTO_QUALITY=phone cargo run -p cartopolis \
+    --no-default-features --features audio -- --offline
 ```
 
 `--no-default-features` is the part that is easy to leave off and the part that
-matters most: it is what drops `solo`. What this still does *not* reproduce is
+matters most: it is what drops `solo`. `--features audio` is what puts back the
+one default the APK keeps — without it this "closest thing to the device" is
+silent in a way the device is not, which is a worse lie than either extreme. What this still does *not* reproduce is
 the device — the GPU and its driver, the `AssetManager`, the NativeActivity
 lifecycle — so it narrows a bug rather than settling one. That is worth a lot on
 its own, given the alternative is a thirteen-minute build and an install.

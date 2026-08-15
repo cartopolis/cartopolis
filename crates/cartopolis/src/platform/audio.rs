@@ -31,19 +31,35 @@
 //! audio device at all (`docs/notes/container-audio.md`). Both arms *compile*,
 //! and the shared DSP is unit-tested.
 //!
-//! The web arm carries a second caveat that is easy to miss. The shipped web
-//! build runs `--no-default-features` (`crates/cartopolis/index.html`), and `audio`
-//! is a *default* feature — so the browser client is currently built **without**
-//! this module's web arm, and [`AudioInput::available`] is `false` there. Voice
-//! in the browser needs that feature turned on for wasm first; until then this
-//! code is compiled only when someone asks for it explicitly.
+//! The web arm used to carry a second caveat: the shipped web build runs
+//! `--no-default-features` (`crates/cartopolis/index.html`) and `audio` is a
+//! *default* feature, so the browser client was built without this module's web
+//! arm at all and [`AudioInput::available`] answered `false` there. Fixed
+//! 2026-08-15 — `index.html` and the CI wasm lane now name `audio` back
+//! explicitly. The same omission had silenced the Android APK
+//! (`crates/cartopolis_android/Cargo.toml`).
+//!
+//! One browser-specific fact belongs with this module even though it bites
+//! *playback* rather than capture: an `AudioContext` created without a user
+//! gesture starts suspended and stays that way, so the WebAudio output produces
+//! silence until something resumes it. The unlock is a script in `index.html`,
+//! because the context is cpal's and no Rust code here can reach it.
 
-// Without the `audio` feature there is no capture backend, so nothing calls the
-// level maths, the downmix or the ring buffer — but they still compile and are
-// still covered by the suite, exactly as `systems::player::soundscape` does it.
-// The agent container and CI build `--no-default-features`, and this is what
-// keeps the DSP under test on a host that cannot link ALSA at all.
-#![cfg_attr(not(feature = "audio"), allow(dead_code))]
+// Where there is no capture backend nothing calls the level maths, the downmix
+// or the ring buffer — but they still compile and are still covered by the suite,
+// exactly as `systems::player::soundscape` does it. The agent container and CI
+// build `--no-default-features`, and this is what keeps the DSP under test on a
+// host that cannot link ALSA at all.
+//
+// The condition is deliberately the negation of [`AudioInput::available`] and not
+// merely `not(feature = "audio")`. Android has the feature — it plays sound
+// through AAudio — and *still* has no capture arm, so it is the one target where
+// the two differ. Writing this as a feature test alone made turning `audio` on
+// for the phone fail the build with eight dead-code errors under
+// `[workspace.lints.rust] unused = "deny"`: the recurring platform-vs-feature
+// confusion `docs/notes/android-build.md` warns about, arriving from the other
+// direction. Keep the two expressions in step.
+#![cfg_attr(any(not(feature = "audio"), target_os = "android"), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};

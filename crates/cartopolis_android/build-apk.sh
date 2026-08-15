@@ -160,13 +160,18 @@ else
 fi
 
 echo "==> cargo ndk ($ABI / $TRIPLE, profile $PROFILE)"
-# `--no-default-features` drops `solo`: Phase-1 Android is the offline viewer, so
-# there is no in-process simulator on the phone and therefore no bundled SQLite to
-# cross-compile. `--platform` is the *native API level* the NDK links against and
-# must match the manifest's minSdkVersion, or the .so imports symbols the oldest
-# supported device does not have and the dynamic linker fails the load at launch.
+# The feature set is NOT chosen here. `cartopolis_android` declares no features of
+# its own, so a `--no-default-features` on this line would be a no-op that merely
+# reads like a decision — which is how the phone came to ship without a soundscape
+# for months. What the APK contains is `crates/cartopolis_android/Cargo.toml`'s
+# dependency line on `cartopolis`: `default-features = false` (no `solo`, hence no
+# bundled SQLite to cross-compile) plus `features = ["audio"]`. Change it there.
+#
+# `--platform` is the *native API level* the NDK links against and must match the
+# manifest's minSdkVersion, or the .so imports symbols the oldest supported device
+# does not have and the dynamic linker fails the load at launch.
 cargo ndk -t "$ABI" --platform "$MIN_SDK" build \
-    -p cartopolis_android --no-default-features --profile "$PROFILE"
+    -p cartopolis_android --profile "$PROFILE"
 
 # Cargo's output directory is named after the profile except for `dev`, which
 # lands in `debug/`. One special case, and getting it wrong looks like the build

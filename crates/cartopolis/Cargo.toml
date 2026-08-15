@@ -46,6 +46,19 @@ solo = ["dep:cartopolis_simulator"]
 # headless ones that will never open a device — the agent container and CI among
 # them. Those build with `--no-default-features --features solo`.
 #
+# That reason is **Linux-desktop-only**, and being a *default* feature made it
+# look like a platform capability instead. Android and the web both build
+# `--no-default-features` (to drop `solo`, which needs a bundled SQLite neither
+# can cross-compile), and for months that silently took the soundscape with it —
+# a phone and a browser with no footsteps, no wind and no driver turn cues,
+# reported by nothing. Neither platform needs ALSA at all: cpal resolves to
+# AAudio on Android and to WebAudio on wasm. So both build lanes now name this
+# feature back explicitly, and any *new* lane that turns the defaults off must
+# too:
+#   crates/cartopolis_android/Cargo.toml   features = ["audio"]
+#   crates/cartopolis/index.html           data-cargo-features="audio"
+#   .forgejo/workflows/ci.yml              --features audio (the wasm check)
+#
 # The clips themselves are synthesised at startup, so this adds no assets and no
 # Git LFS exposure; the only cost is the decoder and the platform backend.
 #

@@ -216,10 +216,80 @@
         window.__phone = phone;
       })();
     </script>
+    <!-- The autoplay unlock. Must run before the module is fetched, because it
+         works by replacing a global the module will later reach for. -->
+    <script>
+      (function () {
+        // A browser refuses to start an `AudioContext` that was neither created
+        // nor resumed from a user gesture, and this app's context is neither:
+        // cpal's WebAudio backend constructs it from `AudioPlugin::finish`,
+        // seconds into page load with nothing clicked, and calls `resume()`
+        // exactly once — a promise that is rejected there and never retried.
+        // Nothing throws and nothing logs. The app simply never makes a sound,
+        // for the whole session, including the Settings ▸ Audio sound test.
+        //
+        // There is no handle to that context on the Rust side to fix it from:
+        // rodio owns the cpal stream, `bevy_audio` owns the rodio sink, and
+        // neither surfaces the `AudioContext`. Hence a wrapper around the
+        // constructor here — every context the module creates is remembered,
+        // and resumed on the first gesture that reaches the page.
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+
+        var live = [];
+        var resumeAll = function () {
+          for (var i = 0; i < live.length; i++) {
+            if (live[i].state === "suspended") {
+              // A rejection here is the ordinary case before the first gesture
+              // and is not worth a console error; the listeners stay armed.
+              live[i].resume().catch(function () {});
+            }
+          }
+        };
+
+        // A subclass rather than a wrapping function: instances stay real
+        // `AudioContext`s, so wasm-bindgen's `instanceof` checks still hold.
+        var Tracked = class extends Ctx {
+          constructor() {
+            super(...arguments);
+            live.push(this);
+            // If the page has already been interacted with — a click during the
+            // ~70 MB download is the common case — this succeeds immediately and
+            // there is no silence to unlock later.
+            resumeAll();
+          }
+        };
+        window.AudioContext = Tracked;
+        if (window.webkitAudioContext) window.webkitAudioContext = Tracked;
+
+        // Deliberately not `once`: the first gesture often lands before the
+        // context exists at all, and a context can be suspended again later (a
+        // backgrounded tab), so every gesture has to be able to unlock.
+        // Capture phase, because winit `preventDefault`s pointer events on the
+        // canvas and a bubble-phase listener would never see the one gesture
+        // that matters — the click on the map.
+        ["pointerdown", "touchend", "keydown", "mousedown"].forEach(function (ev) {
+          window.addEventListener(ev, resumeAll, { capture: true, passive: true });
+        });
+        // For diagnosing "why is it silent" from the console.
+        window.__audioContexts = live;
+      })();
+    </script>
     <!-- Build this crate's `cartopolis` bin for wasm, Phase-1 Viewer (no sim,
-         so no default `solo` feature). ADR-031/033. -->
+         so no default `solo` feature). ADR-031/033.
+
+         `audio` has to be named back explicitly. It is a *default* feature only
+         because on Linux `bevy_audio` needs `libasound2-dev` at build time, and
+         turning the defaults off to drop `solo` silently took the whole
+         soundscape with it — the browser build had no footsteps, no wind and no
+         driver turn cues, and `platform::audio`'s mic test reported "this build
+         has no audio support". The browser needs none of ALSA: `bevy_audio`
+         enables `rodio/wasm-bindgen` on wasm and cpal's backend is WebAudio.
+
+         Keep this in step with `.forgejo/workflows/ci.yml`'s wasm check, which
+         passes the same two flags on the command line. -->
     <link data-trunk rel="rust" data-bin="cartopolis" data-cargo-no-default-features
-          data-initializer="loader.js" />
+          data-cargo-features="audio" data-initializer="loader.js" />
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
