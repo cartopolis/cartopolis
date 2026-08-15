@@ -189,7 +189,8 @@ seconds once warm, and it is what CI's `cargo check` job runs:
 ```bash
 rustup target add wasm32-unknown-unknown --toolchain nightly     # once
 RUSTUP_TOOLCHAIN=nightly \
-  cargo check -p cartopolis --no-default-features --target wasm32-unknown-unknown
+  cargo check -p cartopolis --no-default-features --features audio \
+    --target wasm32-unknown-unknown
 ```
 
 **Nightly is required even for the check**, and this is not the `-Z build-std` the
@@ -197,9 +198,13 @@ full build needs — it is `wasm_thread`, which opens `feature(stdarch_wasm_atom
 in a `cfg_attr(target_arch = "wasm32")`. On stable that is a hard `E0554` from a
 dependency, before any of our code is reached, and no flag turns it off.
 
-`--no-default-features` is not optional: it is what drops `solo`, and the web build
-has no in-process sim. This rung catches essentially everything that rots, because
-what rots is `cfg(target_arch = "wasm32")` code that no other lane ever compiles.
+The two feature flags are not optional and are not opposites. `--no-default-features`
+is what drops `solo`, and the web build has no in-process sim; `--features audio`
+puts back the one other default, which the web build does ship — dropping both is
+how the browser client spent months with the soundscape compiled out
+(`docs/notes/audio-off-platform.md`). Together they are exactly what `index.html`
+asks trunk for. This rung catches essentially everything that rots, because what
+rots is `cfg(target_arch = "wasm32")` code that no other lane ever compiles.
 
 **2. Run it in a browser:**
 

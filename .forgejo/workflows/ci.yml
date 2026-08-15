@@ -378,7 +378,11 @@ jobs:
       # reaching a `Resource`, wasm-only paths referring to renamed items.
       # `--cfg=web_sys_unstable_apis` is inherited from `.cargo/config.toml` here
       # precisely because this does NOT set RUSTFLAGS.
-      # `--no-default-features` matches the web build: no `solo`, hence no sim.
+      # `--no-default-features --features audio` matches the web build exactly —
+      # see `crates/cartopolis/index.html`, which spells the same pair as
+      # `data-cargo-no-default-features` + `data-cargo-features`. No `solo`,
+      # hence no sim; but `audio` back on, because dropping the defaults to lose
+      # `solo` had also been losing the soundscape and the mic test.
       #
       # Nightly is not optional and is *not* about `-Z build-std`, which this lane
       # does not use: `wasm_thread` opens `feature(stdarch_wasm_atomic_wait)` under
@@ -419,7 +423,8 @@ jobs:
             -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check --locked -p cartopolis --no-default-features --target wasm32-unknown-unknown
+          cargo check --locked -p cartopolis --no-default-features --features audio \
+              --target wasm32-unknown-unknown
 
       # A check, not the APK: no link, no aapt2, no signing. That is the cheap half
       # and it catches what rots — a renamed item behind an android cfg, a
