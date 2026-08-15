@@ -1530,6 +1530,121 @@ pub fn handle_avatar_movement(
     avatar_state.display_position = transform.translation;
 }
 
+/// How many of the avatar's meshes exist, and how many the view drew.
+///
+/// A `SystemParam` because the answer takes three queries and its first reader,
+/// `shot_harness::drive_capture`, was already at Bevy's 16-parameter ceiling. The
+/// three belong together anyway: they are one question asked in three steps, since
+/// the model meshes carry no marker of their own. They are glTF nodes instantiated
+/// under a holder, so the only thing identifying them as the avatar's is that the
+/// avatar is their ancestor.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct AvatarReadout<'w, 's> {
+    avatars: Query<'w, 's, Entity, With<Avatar>>,
+    children: Query<'w, 's, &'static Children>,
+    meshes: Query<
+        'w,
+        's,
+        &'static bevy::camera::visibility::ViewVisibility,
+        With<bevy::render::mesh::Mesh3d>,
+    >,
+}
+
+impl AvatarReadout<'_, '_> {
+    /// `(meshes under the local avatar, how many the view rendered)`.
+    ///
+    /// Zero for both when there is no avatar entity at all, which is the honest
+    /// answer for a run that has none rather than a reason to fail.
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        let Ok(avatar) = self.avatars.single() else {
+            return (0, 0);
+        };
+        let (mut total, mut drawn) = (0, 0);
+        for entity in self.children.iter_descendants(avatar) {
+            if let Ok(visibility) = self.meshes.get(entity) {
+                total += 1;
+                if visibility.get() {
+                    drawn += 1;
+                }
+            }
+        }
+        (total, drawn)
+    }
+}
+
+/// Log the spawned-vs-drawn split whenever it changes.
+///
+/// `ShotMetrics` has carried `avatar_meshes`/`avatar_rendered` since 2026-08-14,
+/// and they answer the invisible-avatar question exactly — `0/0` is "never
+/// spawned", `n/0` is "spawned but not drawn". They were unreachable on the one
+/// platform that needed them: a scripted capture is driven by CLI flags, and
+/// Android has no CLI at all (`lib.rs::parse_cli` hands it a fixed `--offline`,
+/// because the zygote's `argv` belongs to `app_process`). So the phone could
+/// report `avatar: model ready nodes=78 hidden=0` — every mesh present and
+/// unmasked — and still leave "is any of it on screen?" unanswerable without
+/// attaching a debugger to a device nobody can attach a debugger to.
+///
+/// On change rather than per frame, which makes it an instrument instead of
+/// chatter: it fires a handful of times while the model streams in and then goes
+/// quiet, so a steady state costs one comparison and one log line total. That also
+/// makes the *transition* legible — `10/10` dropping to `10/0` names the frame the
+/// avatar stopped being drawn, which a periodic sample would blur.
+///
+/// Deliberately not gated to Android or to a dev build. It is three queries and a
+/// tuple compare, the desktop log is where the phone's behaviour gets compared
+/// against a known-good one, and a diagnostic that only exists on the platform you
+/// cannot debug is a diagnostic nobody has ever seen working.
+pub fn log_avatar_draw_counts(
+    readout: AvatarReadout,
+    camera_state: Res<crate::resources::CameraState>,
+    // The camera is big_space's floating origin, so an entity's `GlobalTransform`
+    // *is* its offset from the camera in metres — the camera↔avatar distance needs
+    // no cell arithmetic, just the length of this.
+    avatars: Query<&GlobalTransform, With<Avatar>>,
+    mut last: Local<Option<(usize, usize, &'static str, i64)>>,
+) {
+    let (meshes, rendered) = readout.counts();
+    // Skip the initial (0, 0): the avatar entity exists from `Startup` but its
+    // glTF is asynchronous, so every run would open with a "no meshes" line that
+    // is merely early rather than wrong.
+    if (meshes, rendered) == (0, 0) && last.is_none() {
+        return;
+    }
+    let mode = match camera_state.mode {
+        crate::resources::CameraMode::Avatar => "follow",
+        crate::resources::CameraMode::Free => "fly",
+        crate::resources::CameraMode::Orbit => "earth",
+    };
+    // Rounded to a decade of metres so a walking avatar doesn't re-log every frame
+    // while a camera stranded a kilometre away still shows up as one line.
+    let distance = avatars
+        .single()
+        .map(|t| t.translation().length())
+        .unwrap_or(f32::NAN);
+    let banded = if distance.is_finite() {
+        (distance as i64 / 10) * 10
+    } else {
+        -1
+    };
+    let key = (meshes, rendered, mode, banded);
+    if *last == Some(key) {
+        return;
+    }
+    *last = Some(key);
+    // `rendered` counts entities that passed view-visibility, which is a CPU-side
+    // frustum test — it says "submitted", not "you can see it". An avatar the
+    // camera is a kilometre above passes that test and is still sub-pixel, so the
+    // distance is logged beside the counts: `10/10` at `distance_m = 1478` is the
+    // shape of "drawn, but not where anyone is looking".
+    tracing::info!(
+        meshes,
+        rendered,
+        mode,
+        distance_m = distance as i64,
+        "avatar: meshes drawn (spawned/rendered; distance is camera→avatar)"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
