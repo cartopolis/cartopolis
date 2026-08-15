@@ -576,7 +576,9 @@ fn new_wake_lock(env: &mut JNIEnv, activity: &JObject) -> Result<GlobalRef, Fail
             )?
             .l()?;
         if power.as_raw().is_null() {
-            return Err(Fail("getSystemService(\"power\") returned null".to_string()));
+            return Err(Fail(
+                "getSystemService(\"power\") returned null".to_string(),
+            ));
         }
         let tag: JObject = env.new_string(WAKE_LOCK_TAG)?.into();
         let lock = env
@@ -650,6 +652,93 @@ pub fn show_soft_input(show: bool) {
         app.show_soft_input(false);
     } else {
         app.hide_soft_input(false);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The two facts the compass needs from the framework
+// ---------------------------------------------------------------------------
+//
+// `crate::platform::orientation`'s Android arm is *not* JNI — it is the NDK's C
+// sensor API, precisely because `SensorEventListener` is an interface and this APK
+// ships no class to implement it. But two of its inputs have no C equivalent at
+// all, so they are here, where the JVM plumbing already lives.
+
+/// The display's rotation in degrees (0/90/180/270), or `None` if it cannot be
+/// read.
+///
+/// This is the `screen_angle_deg` of [`crate::platform::orientation::screen_up_bearing`]
+/// — how far the *content* is turned clockwise inside the device to stay upright
+/// — and `Display.getRotation()` is defined as exactly that quantity, in quarter
+/// turns. Without it the compass is 90° out in landscape and 180° out upside
+/// down, which is the orientation half of a map app gets held in.
+///
+/// `WindowManager.getDefaultDisplay()` is deprecated in favour of
+/// `Context.getDisplay()` (API 30), and is used anyway: it is not removed, it
+/// works from API 1 to 36, and the replacement would need a version branch to
+/// avoid throwing on our API 28 floor. The deprecation is about multi-display
+/// correctness on a *non-visual* context; an `Activity` has exactly one display
+/// and it is the one the user is looking at.
+///
+/// *Needs a device:* that this reports the rotation of the display the activity is
+/// on rather than of the physical panel, on a phone that has been turned.
+pub fn display_rotation_deg() -> Option<i32> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    match display_rotation_inner(&mut env, &activity) {
+        Ok(deg) => Some(deg),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read the display rotation");
+            None
+        }
+    }
+}
+
+fn display_rotation_inner(env: &mut JNIEnv, activity: &JObject) -> Result<i32, Fail> {
+    env.with_local_frame(6, |env| {
+        let wm = env
+            .call_method(
+                activity,
+                "getWindowManager",
+                "()Landroid/view/WindowManager;",
+                &[],
+            )?
+            .l()?;
+        let display = env
+            .call_method(&wm, "getDefaultDisplay", "()Landroid/view/Display;", &[])?
+            .l()?;
+        let rotation = env.call_method(&display, "getRotation", "()I", &[])?.i()?;
+        // `Surface.ROTATION_0..3` are quarter turns, not degrees.
+        Ok::<i32, Fail>(rotation.rem_euclid(4) * 90)
+    })
+}
+
+/// The app's package name (`eu.garage44.cartopolis`), or `None`.
+///
+/// Read rather than hardcoded: the manifest owns it, and a constant here would be
+/// a second place to change it that nothing would notice going stale. Its only use
+/// is `ASensorManager_getInstanceForPackage`, which uses it to attribute the
+/// sensor's power draw to this app in the battery breakdown.
+pub fn package_name() -> Option<String> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    let result = env.with_local_frame(4, |env| {
+        let name = env
+            .call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let s: String = env.get_string(&JString::from(name))?.into();
+        Ok::<String, Fail>(s)
+    });
+    match result {
+        Ok(name) => Some(name),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read the package name");
+            None
+        }
     }
 }
 

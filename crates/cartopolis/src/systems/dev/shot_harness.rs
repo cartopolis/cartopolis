@@ -936,9 +936,7 @@ pub fn harness_active(harness: Option<Res<ShotHarness>>) -> bool {
 /// Forcing the write costs one tessellation per frame, in the one kind of run
 /// that is already spending 250 ms a frame on a software rasteriser and whose
 /// entire purpose is the picture at the end of it. The live app keeps the skip.
-pub fn keep_egui_fresh(
-    mut render_output: ResMut<crate::systems::egui_manager::EguiRenderOutput>,
-) {
+pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::EguiRenderOutput>) {
     render_output.force_next_write = true;
 }
 

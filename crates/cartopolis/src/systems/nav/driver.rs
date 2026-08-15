@@ -1226,7 +1226,11 @@ impl DriverState {
 
 /// Put the avatar (and so the arrow, the camera and the progress readout) at a
 /// geographic position within the current anchor frame.
-fn place_avatar(
+///
+/// Shared with [`crate::systems::locate`], which follows a device fix with no
+/// route under it: the near/far rule below is about the *world* being anchored,
+/// not about navigating, so both callers need the identical pair.
+pub(crate) fn place_avatar(
     anchor: (f64, f64, u32),
     lat: f64,
     lng: f64,
@@ -1256,7 +1260,7 @@ fn place_avatar(
 /// An avatar that cannot be read at all counts as far: there is nothing to write
 /// a position into, and a teleport is the operation that creates the state the
 /// write would need.
-fn fix_is_far(
+pub(crate) fn fix_is_far(
     anchor: (f64, f64, u32),
     fix: GpsFix,
     avatars: &Query<(&mut GridCell, &mut Transform), With<Avatar>>,

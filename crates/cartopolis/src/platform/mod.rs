@@ -16,6 +16,10 @@
 //! share the plumbing (the JVM handle, the activity, local-reference discipline,
 //! exception clearing). Callers still program against the seam, not against this:
 //! `location::LocationWatch` is what `systems::driver` uses on every platform.
+//!
+//! [`orientation`] is the compass beside [`location`]'s position, and is the one
+//! seam whose Android arm is *not* in [`android`] — it is the NDK's C sensor API
+//! rather than JNI, for the reason its own module note gives.
 
 /// Android platform services. Gated on the target because every line of it is JNI
 /// against the framework — see the module's own note for the no-dex constraint that
@@ -25,6 +29,7 @@ pub mod android;
 pub mod audio;
 pub mod http;
 pub mod location;
+pub mod orientation;
 pub mod photo;
 pub mod storage;
 pub mod stream;

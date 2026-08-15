@@ -141,7 +141,10 @@ fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool
     egui::Area::new(egui::Id::new("compass_overlay"))
         // Top-left: the status HUD moved into the top-right corner, so the compass
         // takes the opposite one to keep both clear of the docked panels.
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(theme::OSD_MARGIN, cfg.top))
+        .anchor(
+            egui::Align2::LEFT_TOP,
+            egui::vec2(theme::OSD_MARGIN, cfg.top),
+        )
         .show(ctx, |ui| {
             let sense = if interactive {
                 egui::Sense::click()
@@ -253,26 +256,34 @@ fn column_x(size: f32) -> f32 {
     theme::OSD_MARGIN + (theme::ROUND_BUTTON_SIZE - size) * 0.5
 }
 
-/// Locate-button state, mirroring Organic Maps' location-button cycle. Derived
-/// from the camera each frame; a click advances it (see `render_hud`).
+/// Locate-button state. Two, not three: see the module note on
+/// [`crate::systems::locate`] for why the plain follow-without-rotate rung came
+/// out of the cycle. Derived from [`crate::systems::locate::LocateTracking`] —
+/// not from the camera, which can drop follow-and-rotate on its own and would
+/// leave the button unlit over a running GNSS radio.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LocateState {
-    /// Not following the avatar (Fly/Earth camera) — a click recenters onto it.
+    /// Not tracking — a click starts it.
     Off,
-    /// Following the avatar (Avatar mode), free orbit.
-    Follow,
-    /// Following *and* rotating with the avatar's heading (chase cam).
-    FollowRotate,
+    /// Tracking the device: its position moves the avatar, its compass turns the
+    /// view. Where there is no device provider (desktop) this is the avatar's own
+    /// position and facing, which is the same promise against the only sensors
+    /// that exist there.
+    Tracking,
 }
 
 /// Draws the GPS/locate button beneath the compass (Organic-Maps style) and
 /// returns true when clicked. The icon is a navigation "location arrow": a hollow
-/// muted outline when off, a filled accent orange arrow while following, and a filled
-/// amber arrow while follow-and-rotate (the amber echoes the compass's north-up
-/// lock — both are *held* states).
+/// muted outline when off and a filled amber arrow while tracking.
 /// Drawn from primitives, like the compass — egui's bundled font carries few
 /// emoji, so a glyph would risk rendering as tofu.
-fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState) -> bool {
+///
+/// `hover` is the whole caption, because what tracking *means* depends on what
+/// the device could actually answer with: a phone reporting a heading, a phone
+/// that has refused the permission and a desktop that has no sensor at all are
+/// three different situations behind one lit button, and the tooltip is where
+/// they are told apart.
+fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState, hover: &str) -> bool {
     let mut clicked = false;
     egui::Area::new(egui::Id::new("locate_overlay"))
         // Directly under the compass, centred on its column.
@@ -281,18 +292,15 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState) -> bool {
             egui::vec2(column_x(LOCATE_SIZE), top),
         )
         .show(ctx, |ui| {
-            // Following is an engaged state, so it takes the plate the dock's
-            // open panels and every other engaged control take. The two
-            // following states then differ by their ring — accent for plain
-            // follow, the reserved amber for follow-and-rotate — which is
-            // exactly how the compass says "north-up held" one disc above.
+            // Tracking is an engaged state, so it takes the plate the dock's
+            // open panels and every other engaged control take, and the reserved
+            // amber ring — which is exactly how the compass says "north-up held"
+            // one disc above. Both are states the app is *holding* for you.
             let (tone, on) = match state {
                 LocateState::Off => (theme::ACCENT_RING, false),
-                LocateState::Follow => (theme::ACCENT_RING, true),
-                LocateState::FollowRotate => (theme::AMBER, true),
+                LocateState::Tracking => (theme::AMBER, true),
             };
-            let (resp, face) =
-                theme::map_disc(ui, LOCATE_SIZE, on, tone, egui::Sense::click());
+            let (resp, face) = theme::map_disc(ui, LOCATE_SIZE, on, tone, egui::Sense::click());
             let p = ui.painter();
             let c = face.center;
             // Navigation "location arrow" (a kite), pointing up.
@@ -314,14 +322,59 @@ fn locate_overlay(ctx: &egui::Context, top: f32, state: LocateState) -> bool {
                 outline.push(outline[0]);
                 p.add(egui::Shape::line(outline, egui::Stroke::new(1.6, face.ink)));
             }
-            resp.clone().on_hover_text(match state {
-                LocateState::Off => "Center on my location",
-                LocateState::Follow => "Following — click to rotate with heading",
-                LocateState::FollowRotate => "Follow & rotate — click to stop rotating",
-            });
+            resp.clone().on_hover_text(hover);
             clicked = resp.clicked();
         });
     clicked
+}
+
+/// The locate button's caption: what pressing it will do, or — while it is lit —
+/// what the device is actually telling us.
+///
+/// Pure over the tracking state so the four situations it distinguishes can be
+/// exercised without a phone (see the tests). The lit ones report the compass
+/// bearing when there is one, because "tracking" and "tracking, but the compass
+/// hasn't reported yet" look identical on the button and feel identical to a user
+/// wondering why the map is not turning.
+fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTracking) -> String {
+    use crate::platform::orientation::OrientationWatch;
+    match state {
+        LocateState::Off if OrientationWatch::available() => {
+            "Track this device — my position, and the compass turns the map".to_string()
+        }
+        LocateState::Off => "Center on my location and follow my heading".to_string(),
+        LocateState::Tracking => {
+            let mut s = match tracking.heading {
+                Some(h) => {
+                    let mut line =
+                        format!("Tracking this device — heading {}°", h.bearing_deg.round());
+                    // Only iOS reports one, and only once the magnetometer has
+                    // settled. A wide figure here is the explanation for a map
+                    // that is pointing *nearly* the right way.
+                    if let Some(a) = h.accuracy_deg {
+                        line.push_str(&format!(" ±{}°", a.round()));
+                    }
+                    line
+                }
+                None if OrientationWatch::available() => {
+                    "Tracking this device — waiting for the compass".to_string()
+                }
+                None => "Following — this device has no compass".to_string(),
+            };
+            if let Some(error) = &tracking.error {
+                // Appended rather than replacing: the mode really is on, and a
+                // caption that said only "denied" over a lit button would leave
+                // nothing to explain what the button is still doing. No warning
+                // glyph in front of it — `⚠` is not in the bundled font subset
+                // (`theme::first_drawable`'s inventory), and a tofu box is a worse
+                // sign of trouble than none.
+                s.push('\n');
+                s.push_str(error);
+            }
+            s.push_str("\nClick to stop");
+            s
+        }
+    }
 }
 
 /// Whether the status readout is on screen. Off by default — see the module note.
@@ -483,6 +536,7 @@ pub fn render_map_controls(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
     right_panel: Res<crate::resources::RightPanel>,
+    mut tracking: ResMut<crate::systems::locate::LocateTracking>,
     camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
@@ -613,21 +667,27 @@ pub fn render_map_controls(
     let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
     if !avatars.is_empty() {
         use crate::resources::CameraMode;
-        let state = match (camera_state.mode, camera_state.follow_rotate) {
-            (CameraMode::Avatar, true) => LocateState::FollowRotate,
-            (CameraMode::Avatar, false) => LocateState::Follow,
-            _ => LocateState::Off,
+        let state = if tracking.active {
+            LocateState::Tracking
+        } else {
+            LocateState::Off
         };
-        if locate_overlay(egui.ctx_mut(), column + theme::OSD_GAP, state) {
+        let hover = locate_hover(state, &tracking);
+        if locate_overlay(egui.ctx_mut(), column + theme::OSD_GAP, state, &hover) {
             match state {
-                // Recenter: enter Follow and snap the rig onto the avatar (the same
-                // proven path Tab / the Camera menu use).
+                // Recenter *and* orient: snap the rig onto the avatar (the same
+                // proven path Tab / the Camera menu use), then hand it to
+                // `systems::locate`, which owns the sensors from here.
                 LocateState::Off => {
                     crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
                     camera_state.mode = CameraMode::Avatar;
+                    camera_state.follow_rotate = true;
+                    tracking.enter();
                 }
-                LocateState::Follow => camera_state.follow_rotate = true,
-                LocateState::FollowRotate => camera_state.follow_rotate = false,
+                LocateState::Tracking => {
+                    camera_state.follow_rotate = false;
+                    tracking.exit();
+                }
             }
         }
     }
@@ -1197,5 +1257,47 @@ mod tests {
                 && (last.height() - prev.height()).abs() < 0.5,
             "HUD size still changing: {prev:?} -> {last:?}"
         );
+    }
+
+    /// The locate button's caption must tell the four situations apart. They look
+    /// identical on the button — one amber arrow — so the caption is the only place
+    /// "tracking, and the compass is working" is distinguishable from "tracking,
+    /// but nothing is turning the map and here is why".
+    #[test]
+    fn the_locate_caption_says_which_of_the_four_it_is() {
+        use crate::platform::orientation::{DeviceHeading, OrientationWatch};
+        use crate::systems::locate::LocateTracking;
+
+        let mut t = LocateTracking::default();
+        let off = locate_hover(LocateState::Off, &t);
+        assert!(off.contains("compass") || off.contains("heading"), "{off}");
+
+        // Tracking with a heading: the bearing is in the text, and the accuracy
+        // beside it when the platform stated one.
+        t.heading = Some(DeviceHeading {
+            bearing_deg: 123.4,
+            accuracy_deg: Some(15.0),
+        });
+        let with = locate_hover(LocateState::Tracking, &t);
+        assert!(with.contains("123°"), "{with}");
+        assert!(with.contains("±15°"), "{with}");
+        assert!(with.contains("stop"), "{with}");
+
+        // Tracking with no heading yet. What that *means* depends on whether this
+        // build has a compass at all, which is exactly the distinction the caption
+        // exists to carry — so the assertion follows the same cfg the code does.
+        t.heading = None;
+        let without = locate_hover(LocateState::Tracking, &t);
+        if OrientationWatch::available() {
+            assert!(without.contains("waiting"), "{without}");
+        } else {
+            assert!(without.contains("no compass"), "{without}");
+        }
+
+        // An error is appended, never substituted: the mode is still on.
+        t.error = Some("Location permission denied".to_string());
+        let failed = locate_hover(LocateState::Tracking, &t);
+        assert!(failed.contains("Location permission denied"), "{failed}");
+        assert!(failed.contains("stop"), "{failed}");
     }
 }
