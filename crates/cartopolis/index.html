@@ -293,6 +293,17 @@
     <!-- Bevy fetches assets over HTTP relative to the page; the client's asset
          root is `assets` on wasm (see main.rs). Trunk copies the tree there. -->
     <link data-trunk rel="copy-dir" href="../../assets" data-target-path="assets" />
+    <!-- Android App Links. The phone fetches /.well-known/assetlinks.json at
+         install time and will only open `https://cartopolis.org/go?place=…` in the
+         app if it names that package *and* the certificate the APK is signed with
+         (docs/notes/place-links.md).
+
+         It rides in the trunk dist rather than being placed on the host by hand
+         for one reason: deploy-web.yml publishes with `rsync --delete`, so
+         anything under the web root that trunk did not produce is removed on the
+         next deploy. A file the site needs and the build does not know about is a
+         file that works until the next push. -->
+    <link data-trunk rel="copy-file" href="assetlinks.json" data-target-path=".well-known" />
     <style>
       html,
       body {
@@ -518,13 +529,18 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
-      #android-hint {
+      /* Two hints, one slot: install the app, or open the place you followed a
+         link to in the app you already have. Only ever one of them is shown. */
+      #android-hint,
+      #android-open {
         margin: 14px 0 0;
         text-align: center;
         font: 14px/1.4 "Plus Jakarta Sans", system-ui, sans-serif;
       }
-      #android-hint a { color: #fd9212; text-decoration: none; }
-      #android-hint a:hover { text-decoration: underline; }
+      #android-hint a,
+      #android-open a { color: #fd9212; text-decoration: none; }
+      #android-hint a:hover,
+      #android-open a:hover { text-decoration: underline; }
       #bootlog .warn { color: #d8c07a; }
       #bootlog .error { color: #e88b7d; }
     </style>
@@ -625,13 +641,37 @@
       <p id="android-hint" hidden>
         <a href="/apk/">On an Android phone? Install the app instead →</a>
       </p>
+      <!-- The same slot, but for a phone that arrived by following a link to a
+           place: the app can show that place natively, and the 70 MB module about
+           to download cannot do it better. Filled in by the script below. -->
+      <p id="android-open" hidden>
+        <a id="android-open-link" href="#">Open this place in the Cartopolis app →</a>
+      </p>
     </div>
     <script>
       // Reveal the APK link on Android only. A userAgent test is the right tool
       // here despite its reputation: the question is literally "is this device
       // running the OS the APK targets", which no feature test can answer.
       if (/Android/i.test(navigator.userAgent)) {
-        document.getElementById("android-hint").hidden = false;
+        // A place in the URL changes which hint is the useful one. Reaching this
+        // page *with* one means either the app is not installed, or Android did
+        // not verify the App Link (a sideloaded build, or link handling turned off
+        // for the app) — and a page cannot tell those apart: there is no way to
+        // ask "is that app installed?", by design. So this offers the custom
+        // scheme and lets the tap answer the question. It is a button and never an
+        // automatic redirect: a navigation to an unhandled scheme is an error page
+        // on some browsers and a silent nothing on others, and either would be
+        // inflicted on someone who is perfectly happy in the browser.
+        var params = new URLSearchParams(location.search);
+        var place = params.get("place") || params.get("PLACE");
+        if (place) {
+          var open = document.getElementById("android-open");
+          document.getElementById("android-open-link").href =
+            "cartopolis://go?place=" + encodeURIComponent(place);
+          open.hidden = false;
+        } else {
+          document.getElementById("android-hint").hidden = false;
+        }
       }
       // `?log` (or `?LOG`) keeps the loader up after the first frame — the flag
       // the hand-over below already reads. It reveals the checklist and the boot
