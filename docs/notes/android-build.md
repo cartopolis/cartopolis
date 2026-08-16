@@ -1,6 +1,6 @@
 ---
 topic: android-build
-triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk"]
+triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url]
 updated: 2026-08-15
 ---
 
@@ -173,6 +173,14 @@ place this bit, and the shape generalises:
 - `InMemoryDexClassLoader` over hand-authored dex bytes would work and is
   rejected on this note's own grounds: it is Java bytecode we author and `d8`
   compiles, wearing a byte array.
+
+The **launch intent** is the second place it bit, and it bit differently — nothing
+here needs a callback, and the JNI call (`getIntent().getDataString()`) is one
+line. What the no-dex rule costs there is the *trampoline activity* that would
+re-deliver a link tapped while the app is already running, because
+`NativeActivity` never calls `setIntent` and a replacement for it is a Java class.
+So a place link is honoured on a cold start and ignored on a warm one; the whole
+reasoning is in [place-links.md](place-links.md).
 
 So location is **pulled, not pushed**: `requestLocationUpdates` is registered
 with the `PendingIntent` overload — a broadcast with deliberately no receiver,

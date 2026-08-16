@@ -184,32 +184,51 @@ speed, remaining distance and ETA all come off that.
 
 ### Sharing a place
 
-The **⧉** button on the status overlay copies where you are *and* how you are
-looking at it:
+**☰ ▸ Copy link** copies where you are *and* how you are looking at it, as a link:
 
 ```
-53.21940, 6.56650, 120m, -12.5°, 45.0°
+https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45
 ```
 
-That is latitude, longitude, altitude, and the camera's pitch and yaw. Paste it
-into the search bar to fly back to the exact framing (the degree signs and the
-`m` are optional on the way back in — a bare `53.2194, 6.5665` still works, and
-a pair without angles just keeps your current view).
+The five numbers are latitude, longitude, altitude, and the camera's pitch and
+yaw — so whoever follows it arrives at your exact framing, not merely at the same
+town. Send it anywhere a link goes.
 
-The same string opens a session somewhere:
+**What happens when someone taps it** depends on what they have:
 
+| | |
+|---|---|
+| An Android phone with the app installed | The app opens at that camera |
+| Anything else | The web client opens at that camera |
+
+Nothing has to be installed for the link to work, and nothing has to be chosen —
+the phone decides. (Android only makes that choice for the app it downloaded from
+[cartopolis.org/apk](https://cartopolis.org/apk/); a build you compiled yourself
+is signed differently, and for that one the web page shows an **Open this place in
+the Cartopolis app** link instead.)
+
+Following a link while the app is *already running* is the one case that does not
+work: Android brings it forward without moving the camera. Close it first, or
+paste the link into the search bar.
+
+The link is also just a place, so all the old spellings still work:
+
+- **Search bar:** paste the whole link, or the bare `53.2194, 6.5665, 120m` form
+  — the degree signs and the `m` are optional, and a pair with no angles keeps
+  your current view.
 - **Web:** `?place=53.21940,6.56650,120,-12.5,45` on the page URL.
-- **Desktop:** `CARTO_PLACE="53.21940, 6.56650, 120m, -12.5°, 45.0°"` in the
-  environment.
+- **Desktop:** `CARTO_PLACE=…` in the environment, holding either the link or the
+  numbers.
 
-A launch place takes precedence over the restored last location, so a shared
-link always lands where it says. Everything after the coordinates is optional:
-`?place=53.2194,6.5665` picks the spot and leaves the rest alone.
+A launch place takes precedence over the restored last location, so a shared link
+always lands where it says. Everything after the coordinates is optional:
+`?place=53.2194,6.5665` picks the spot and leaves the rest alone. A link carries
+the view and nothing else — your time of day, weather and layers stay yours.
 
-In the browser, ⧉ copies to the system clipboard as it does on the desktop (over
-https or on localhost — the browser's Clipboard API refuses a plain-http page).
-Pasting *into* the app is desktop-only for now, so on the web the way back to a
-place is the URL rather than the search bar.
+In the browser, Copy link copies to the system clipboard as it does on the desktop
+(over https or on localhost — the browser's Clipboard API refuses a plain-http
+page). Pasting *into* the app is desktop-only for now, so on the web the way back
+to a place is the URL rather than the search bar.
 
 ## Authoring objects
 
