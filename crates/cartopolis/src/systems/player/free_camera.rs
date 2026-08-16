@@ -1086,7 +1086,7 @@ pub fn camera_controls(
                 }
                 // Pinch is the wheel's continuous twin: spreading the fingers
                 // pulls the avatar closer, exactly as scrolling in does.
-                if touch.pair() && !egui_manager.ctx.egui_wants_pointer_input() {
+                if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
                     camera_state.distance /= touch.pinch;
                 }
                 // …and the on-screen pair is the wheel's *held* twin, for the
@@ -1129,12 +1129,16 @@ pub fn camera_controls(
             }
 
             // Touch: one finger orbits (the left-drag above), two fingers twist
-            // the azimuth. Same gate as the mouse — a finger egui has claimed
+            // the azimuth. Nearly the mouse's gate — a finger egui has claimed
             // holds a pointer button down, so `egui_wants_pointer_input()`
-            // answers for it too.
+            // answers for it too — but routed through `ui_blocked`, because that
+            // one boolean cannot answer for two fingers at once: the whole point
+            // of the on-screen stick is that you hold it *while* turning the
+            // view, and while it is held egui wants the pointer for as long as
+            // the thumb rests there (`systems::touch`).
             if !locked
                 && gizmo_state.active_axis.is_none()
-                && !egui_manager.ctx.egui_wants_pointer_input()
+                && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
             {
                 if touch.drag != Vec2::ZERO {
                     camera_state.follow_rotate = false;
@@ -1366,9 +1370,11 @@ pub fn camera_controls(
             }
 
             // Touch look: one finger is the mouse-look drag. The two-finger
-            // gestures fly instead, and are handled with the keys below.
-            let touch_owns_pointer =
-                gizmo_state.active_axis.is_none() && !egui_manager.ctx.egui_wants_pointer_input();
+            // gestures fly instead, and are handled with the keys below. Through
+            // `ui_blocked` rather than egui's bare verdict, so the thumb on the
+            // fly stick does not also veto the finger turning the view.
+            let touch_owns_pointer = gizmo_state.active_axis.is_none()
+                && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input());
             if touch_owns_pointer {
                 rotation_delta += touch.drag;
             }
@@ -1650,7 +1656,9 @@ pub fn camera_controls(
             // Space tier only: horizontal drag of the "turn the view" gesture,
             // which spins the compass rather than the planet.
             let mut heading_delta = 0.0_f32;
-            if gizmo_state.active_axis.is_some() || egui_manager.ctx.egui_wants_pointer_input() {
+            if gizmo_state.active_axis.is_some()
+                || touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input())
+            {
                 camera_state.pan_offset = None;
                 cursor_moved_events.clear();
             } else {
@@ -1739,7 +1747,7 @@ pub fn camera_controls(
             // ground half as close. Sharing `zoom_orbit_target` with the wheel is
             // what keeps the space tier's "a step is a fraction of the altitude,
             // not of the Earth's radius" rule applying to the fingers too.
-            if touch.pair() && !egui_manager.ctx.egui_wants_pointer_input() {
+            if touch.pair() && !touch.ui_blocked(egui_manager.ctx.egui_wants_pointer_input()) {
                 camera_state.orbit_distance_target = zoom_orbit_target(
                     camera_state.orbit_distance_target,
                     1.0 / touch.pinch as f64,

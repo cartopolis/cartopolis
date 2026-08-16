@@ -58,6 +58,27 @@
 //! one accelerate/glide curve; a second writer would fight it (and would have to
 //! duplicate the altitude-scaled speed, the ground clamp and the big_space
 //! re-anchoring). So this system writes [`OsdInput`] and stops.
+//!
+//! ## It reads fingers, not egui's pointer
+//!
+//! egui has exactly one pointer and the first finger down owns it, so an OSD
+//! built out of ordinary egui responses is a **one-finger** OSD: hold the stick
+//! and nothing else on the screen — the camera included — can be touched, and
+//! land a finger on the map first and the stick is dead until you lift it. Both
+//! halves of that were real, and the first is why this changed: pushing the stick
+//! to walk is the one control you hold down continuously, and holding it froze
+//! the view.
+//!
+//! So every control here is driven from the raw fingers `systems::touch` claims
+//! for it ([`crate::systems::touch::UiClaimRegions`], published at the bottom of
+//! [`render_map_osd`] out of the rects the layout actually produced), with the
+//! egui response left in as the `or` arm — that is the mouse's path, and the only
+//! one a desktop run has. A rate reads [`TouchGestures::ui_held`], an edge reads
+//! [`TouchGestures::ui_released`]; both are already hit-testable rects, so it
+//! costs a `contains` per control and no state anywhere.
+//!
+//! [`TouchGestures::ui_held`]: crate::systems::touch::TouchGestures::ui_held
+//! [`TouchGestures::ui_released`]: crate::systems::touch::TouchGestures::ui_released
 
 use bevy::prelude::*;
 
@@ -155,6 +176,54 @@ pub struct OsdInput {
     pub walk: Vec2,
 }
 
+/// The fingers the on-screen controls own this frame, in **egui** points.
+///
+/// A projection of `TouchGestures`' claimed sets through `EguiManager::ui_scale`,
+/// made once per frame so no control has to know that the touchscreen and egui
+/// measure in different points.
+#[derive(Default)]
+struct Fingers {
+    held: Vec<(u64, egui::Pos2)>,
+    released: Vec<egui::Pos2>,
+}
+
+impl Fingers {
+    fn new(touch: &crate::systems::touch::TouchGestures, ui_scale: f32) -> Self {
+        let to_ui = move |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
+        Self {
+            held: touch
+                .ui_held()
+                .iter()
+                .map(|(id, p)| (*id, to_ui(*p)))
+                .collect(),
+            released: touch.ui_released().iter().map(|(_, p)| to_ui(*p)).collect(),
+        }
+    }
+
+    /// Is a claimed finger resting in this rect? The held test, for a rate.
+    fn pressing(&self, rect: egui::Rect) -> bool {
+        self.held.iter().any(|(_, p)| rect.contains(*p))
+    }
+
+    /// Did a claimed finger lift inside this rect this frame? The edge test —
+    /// the finger equivalent of `Response::clicked`.
+    fn lifted_in(&self, rect: egui::Rect) -> bool {
+        self.released.iter().any(|p| rect.contains(*p))
+    }
+
+    fn at(&self, id: u64) -> Option<egui::Pos2> {
+        self.held.iter().find(|(f, _)| *f == id).map(|(_, p)| *p)
+    }
+
+    /// The first claimed finger inside this rect, if any.
+    fn inside(&self, rect: egui::Rect) -> Option<u64> {
+        self.held
+            .iter()
+            .find(|(_, p)| rect.contains(*p))
+            .map(|(id, _)| *id)
+    }
+}
+
 /// Which cluster the current camera wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cluster {
@@ -236,6 +305,8 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 pub fn render_map_osd(
     mut egui: ResMut<EguiManager>,
     mut osd: ResMut<OsdInput>,
+    mut regions: ResMut<crate::systems::touch::UiClaimRegions>,
+    mut stick_finger: Local<Option<u64>>,
     camera_state: Res<CameraState>,
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<RightPanel>,
@@ -249,6 +320,10 @@ pub fn render_map_osd(
     // `set_if_neq` at the end so a resting control does not mark the resource
     // changed sixty times a second.
     let mut next = OsdInput::default();
+    // The same applies to the claimed regions, and more sharply: a rect left
+    // published over a control that is no longer drawn is a piece of the map
+    // that silently swallows fingers.
+    let mut areas: Vec<egui::Rect> = Vec::new();
 
     if let Some(cluster) = cluster_for(
         camera_state.mode,
@@ -258,11 +333,14 @@ pub fn render_map_osd(
         theme::touch_layout() || touch.ever(),
     ) {
         let flying = avatar_state.is_flying;
+        let ui_scale = egui.ui_scale();
+        let fingers = Fingers::new(&touch, ui_scale);
         let ctx = egui.ctx_mut();
         match cluster {
             Cluster::Fly => {
-                next.climb = vertical_pair(ctx, "osd_climb", Mark::Up, Mark::Down);
-                next.fly = thumbstick(ctx);
+                next.climb =
+                    vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
+                next.fly = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
             }
             Cluster::Walk => {
                 // The right-edge pair carries whichever vertical the avatar
@@ -271,21 +349,52 @@ pub fn render_map_osd(
                 // the same place as Fly mode's — a phone should not have to learn
                 // two positions for one verb.
                 if flying {
-                    next.climb = vertical_pair(ctx, "osd_climb", Mark::Up, Mark::Down);
+                    next.climb =
+                        vertical_pair(ctx, &fingers, &mut areas, "osd_climb", Mark::Up, Mark::Down);
                 } else {
-                    next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
+                    next.zoom = vertical_pair(
+                        ctx,
+                        &fingers,
+                        &mut areas,
+                        "osd_zoom",
+                        Mark::Plus,
+                        Mark::Minus,
+                    );
                 }
-                next.walk = thumbstick(ctx);
-                let (jump, fly_toggle) = action_pair(ctx, flying);
+                next.walk = thumbstick(ctx, &fingers, &mut stick_finger, &mut areas);
+                let (jump, fly_toggle) = action_pair(ctx, &fingers, &mut areas, flying);
                 next.jump = jump;
                 next.fly_toggle = fly_toggle;
             }
             Cluster::Zoom => {
-                next.zoom = vertical_pair(ctx, "osd_zoom", Mark::Plus, Mark::Minus);
+                next.zoom = vertical_pair(
+                    ctx,
+                    &fingers,
+                    &mut areas,
+                    "osd_zoom",
+                    Mark::Plus,
+                    Mark::Minus,
+                );
             }
         }
+        // Published in the window's points, which is what the touchscreen
+        // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
+        regions.set_if_neq(crate::systems::touch::UiClaimRegions {
+            rects: areas.iter().map(|r| to_window(*r, ui_scale)).collect(),
+        });
+    } else {
+        *stick_finger = None;
+        regions.set_if_neq(crate::systems::touch::UiClaimRegions::default());
     }
     osd.set_if_neq(next);
+}
+
+/// An egui rect in the window's own logical points.
+fn to_window(r: egui::Rect, ui_scale: f32) -> Rect {
+    Rect::from_corners(
+        Vec2::new(r.min.x, r.min.y) * ui_scale,
+        Vec2::new(r.max.x, r.max.y) * ui_scale,
+    )
 }
 
 /// Jump and the flight toggle, bottom-right — the verbs a phone had no key for.
@@ -307,9 +416,14 @@ pub fn render_map_osd(
 /// toggle too. The jump button disappears in flight — it would mean nothing
 /// there, and a control that is visibly present and does nothing is worse than
 /// one that is absent (the same argument this module's suppression rules make).
-fn action_pair(ctx: &egui::Context, flying: bool) -> (bool, bool) {
+fn action_pair(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    areas: &mut Vec<egui::Rect>,
+    flying: bool,
+) -> (bool, bool) {
     let (mut jump, mut fly_toggle) = (false, false);
-    egui::Area::new(egui::Id::new("osd_actions"))
+    let area = egui::Area::new(egui::Id::new("osd_actions"))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-theme::OSD_MARGIN, -actions_bottom_offset()),
@@ -317,18 +431,25 @@ fn action_pair(ctx: &egui::Context, flying: bool) -> (bool, bool) {
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
-                if !flying && round_button(ui, Mark::Jump, false).clicked() {
-                    jump = true;
+                if !flying {
+                    // A claimed finger lifting inside the disc is the same event
+                    // `clicked()` reports, which is why the two are `or`-ed and
+                    // not chosen between: on a phone the first arm fires, on a
+                    // desktop (or when this finger also happens to hold egui's
+                    // pointer) the second does, and a jump is idempotent either
+                    // way.
+                    let resp = round_button(ui, Mark::Jump, false);
+                    jump = resp.clicked() || fingers.lifted_in(resp.rect);
                 }
                 // The flight toggle is a *state*, not a rate or an edge that
                 // vanishes — so it wears the engaged plate while flying, the same
                 // muted orange an open panel's dock disc wears. It was the one
                 // control on the map whose on and off looked identical.
-                if round_button(ui, Mark::Wings, flying).clicked() {
-                    fly_toggle = true;
-                }
+                let resp = round_button(ui, Mark::Wings, flying);
+                fly_toggle = resp.clicked() || fingers.lifted_in(resp.rect);
             });
         });
+    areas.push(area.response.rect);
     (jump, fly_toggle)
 }
 
@@ -373,9 +494,16 @@ enum Mark {
 /// position across Fly, Follow, Follow-in-flight and Earth. That last part is the
 /// same argument the module makes for swapping zoom for climb *inside* the pair:
 /// a phone should not have to learn two positions for one verb.
-fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 {
+fn vertical_pair(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    areas: &mut Vec<egui::Rect>,
+    id: &str,
+    top: Mark,
+    bottom: Mark,
+) -> f32 {
     let mut wish = 0.0;
-    egui::Area::new(egui::Id::new(id))
+    let area = egui::Area::new(egui::Id::new(id))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
             egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
@@ -383,14 +511,20 @@ fn vertical_pair(ctx: &egui::Context, id: &str, top: Mark, bottom: Mark) -> f32 
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
-                if round_button(ui, top, false).is_pointer_button_down_on() {
+                // A claimed finger resting on the disc is the held state, whether
+                // or not egui's one pointer is that finger — so zooming with one
+                // thumb no longer forbids the other from turning the view.
+                let resp = round_button(ui, top, false);
+                if resp.is_pointer_button_down_on() || fingers.pressing(resp.rect) {
                     wish += 1.0;
                 }
-                if round_button(ui, bottom, false).is_pointer_button_down_on() {
+                let resp = round_button(ui, bottom, false);
+                if resp.is_pointer_button_down_on() || fingers.pressing(resp.rect) {
                     wish -= 1.0;
                 }
             });
         });
+    areas.push(area.response.rect);
     wish
 }
 
@@ -479,15 +613,40 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
     }
 }
 
+/// Which finger drives the stick this frame, given the one that drove it last.
+///
+/// Two rules, and the order between them is the whole of it: a finger already
+/// steering keeps the stick until it *lifts* — not until it leaves the well,
+/// because pushing past the rim is how full throttle is asked for — and only
+/// when there is no such finger does the stick adopt one from inside its own
+/// area.
+///
+/// `area` is the square the well is drawn in, not the disc: it is the rect
+/// published as the claim region, and a finger the UI has taken out of the
+/// camera's hands but which no control then reads is a finger that does nothing
+/// at all. The corners are a few points past the rim and `stick_wish` clamps
+/// them back onto it.
+#[must_use]
+fn stick_owner(current: Option<u64>, fingers: &Fingers, area: egui::Rect) -> Option<u64> {
+    current
+        .filter(|id| fingers.at(*id).is_some())
+        .or_else(|| fingers.inside(area))
+}
+
 /// The translation stick, bottom-left. Returns its reading in the unit disc.
 ///
 /// Bottom-*left* because the dock (the panel toggles) is bottom-centre and the
 /// climb pair is right-of-centre: the three do not overlap at any window size,
 /// which a corner anchor cannot promise on its own.
-fn thumbstick(ctx: &egui::Context) -> Vec2 {
+fn thumbstick(
+    ctx: &egui::Context,
+    fingers: &Fingers,
+    owner: &mut Option<u64>,
+    areas: &mut Vec<egui::Rect>,
+) -> Vec2 {
     let mut wish = Vec2::ZERO;
     let size = STICK_RADIUS * 2.0;
-    egui::Area::new(egui::Id::new("osd_stick"))
+    let area = egui::Area::new(egui::Id::new("osd_stick"))
         .anchor(
             egui::Align2::LEFT_BOTTOM,
             egui::vec2(theme::OSD_MARGIN, -bottom_offset()),
@@ -496,16 +655,21 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
             let (rect, resp) =
                 ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::click_and_drag());
             let centre = rect.center();
+            *owner = stick_owner(*owner, fingers, rect);
+            // The mouse is the `or` arm, and on a desktop it is the only one.
             // `interact_pointer_pos` is the position of the pointer that owns
-            // *this* widget's drag, so a second finger elsewhere on the glass
-            // cannot steer the stick.
-            if resp.is_pointer_button_down_on() {
-                if let Some(at) = resp.interact_pointer_pos() {
-                    wish = stick_wish(
-                        Vec2::new(at.x - centre.x, at.y - centre.y),
-                        STICK_RADIUS - STICK_KNOB_RADIUS * 0.5,
-                    );
-                }
+            // *this* widget's drag, so it cannot be stolen by a finger elsewhere
+            // either.
+            let at = owner.and_then(|id| fingers.at(id)).or_else(|| {
+                resp.is_pointer_button_down_on()
+                    .then(|| resp.interact_pointer_pos())
+                    .flatten()
+            });
+            if let Some(at) = at {
+                wish = stick_wish(
+                    Vec2::new(at.x - centre.x, at.y - centre.y),
+                    STICK_RADIUS - STICK_KNOB_RADIUS * 0.5,
+                );
             }
             let p = ui.painter();
             // The well is a *guide*, not a plate: it is two and a half discs
@@ -536,12 +700,91 @@ fn thumbstick(ctx: &egui::Context) -> Vec2 {
             p.circle_filled(knob, STICK_KNOB_RADIUS, fill);
             p.circle_stroke(knob, STICK_KNOB_RADIUS, egui::Stroke::new(1.5, ring));
         });
+    areas.push(area.response.rect);
     wish
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Claimed fingers at `(id, position)`, in egui points.
+    fn fingers(held: &[(u64, (f32, f32))], released: &[(f32, f32)]) -> Fingers {
+        Fingers {
+            held: held
+                .iter()
+                .map(|(id, (x, y))| (*id, egui::pos2(*x, *y)))
+                .collect(),
+            released: released.iter().map(|(x, y)| egui::pos2(*x, *y)).collect(),
+        }
+    }
+
+    /// The square the well is drawn in, as `thumbstick` allocates it.
+    fn well() -> egui::Rect {
+        egui::Rect::from_center_size(
+            egui::pos2(100.0, 700.0),
+            egui::Vec2::splat(STICK_RADIUS * 2.0),
+        )
+    }
+
+    /// The stick takes the finger that lands in its well — no egui pointer
+    /// involved, which is what lets a second finger turn the view at the same
+    /// time.
+    #[test]
+    fn the_stick_adopts_a_finger_that_lands_in_the_well() {
+        let held = fingers(&[(3, (110.0, 710.0))], &[]);
+        assert_eq!(stick_owner(None, &held, well()), Some(3));
+        // A finger elsewhere on the glass is not its business, even though it is
+        // claimed by *some* control.
+        let elsewhere = fingers(&[(3, (400.0, 300.0))], &[]);
+        assert_eq!(stick_owner(None, &elsewhere, well()), None);
+    }
+
+    /// Pushing past the rim is how full throttle is asked for, so the claim
+    /// survives leaving the well and ends only when the finger lifts.
+    #[test]
+    fn the_stick_holds_its_finger_past_the_rim_and_drops_it_on_lift() {
+        let strayed = fingers(&[(3, (300.0, 500.0))], &[]);
+        assert_eq!(stick_owner(Some(3), &strayed, well()), Some(3));
+        assert_eq!(stick_owner(Some(3), &fingers(&[], &[]), well()), None);
+    }
+
+    /// A second finger in the well while the first still steers changes nothing
+    /// — a stick with two owners would jump between them every frame.
+    #[test]
+    fn the_stick_does_not_change_hands_mid_push() {
+        let both = fingers(&[(3, (300.0, 500.0)), (4, (105.0, 705.0))], &[]);
+        assert_eq!(stick_owner(Some(3), &both, well()), Some(3));
+    }
+
+    /// The round controls hit-test the same fingers: a rate reads the held set,
+    /// an edge the released one, and neither is the other's answer.
+    #[test]
+    fn a_disc_reads_a_held_finger_and_a_lifted_one_separately() {
+        let disc = egui::Rect::from_min_size(egui::pos2(300.0, 700.0), egui::Vec2::splat(60.0));
+        let resting = fingers(&[(1, (330.0, 730.0))], &[]);
+        assert!(resting.pressing(disc));
+        assert!(!resting.lifted_in(disc), "still down is not a release");
+        let lifted = fingers(&[], &[(330.0, 730.0)]);
+        assert!(!lifted.pressing(disc));
+        assert!(lifted.lifted_in(disc));
+        // …and a finger on the neighbouring disc is neither.
+        let neighbour = fingers(&[(1, (330.0, 630.0))], &[(330.0, 630.0)]);
+        assert!(!neighbour.pressing(disc) && !neighbour.lifted_in(disc));
+    }
+
+    /// The claimed regions are published in the window's points; egui laid them
+    /// out in its own, and on the touch tier those differ by ~1.5×. Publishing
+    /// the egui rect raw would put the hit area at two thirds of the control.
+    #[test]
+    fn the_published_region_is_scaled_out_of_egui_points() {
+        let r = to_window(
+            egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(30.0, 60.0)),
+            1.5,
+        );
+        assert_eq!(r.min, Vec2::new(15.0, 30.0));
+        assert_eq!(r.max, Vec2::new(45.0, 90.0));
+    }
 
     /// The two modes that translate something get the stick; Earth, whose whole
     /// vocabulary is drag/pinch/twist, gets the zoom pair alone.

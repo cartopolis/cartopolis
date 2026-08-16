@@ -29,6 +29,32 @@
 //! Deltas are in **logical points**, the same unit `CursorMoved::position` uses,
 //! so a finger and a mouse move the camera by the same amount per point and the
 //! existing sensitivity constants carry over unchanged.
+//!
+//! ## A finger belongs to one thing at a time ([`UiClaimRegions`])
+//!
+//! egui has exactly **one** pointer, and both bridges above were written around
+//! it: the pointer-holding finger drives the widgets, and everything that reads
+//! the world asks `egui_wants_pointer_input()` — one boolean, for the whole
+//! screen — before acting. That is right for a mouse and wrong for a hand: with a
+//! thumb resting on the on-screen stick (`systems::map_osd`) the boolean is true
+//! for as long as it rests there, so a *second* finger anywhere else on the glass
+//! could not turn the view. The stick was a modal control by accident — the one
+//! thing you hold down continuously, and holding it froze the camera.
+//!
+//! So the glass is partitioned instead of arbitrated. Whoever draws an on-screen
+//! control publishes its rects into [`UiClaimRegions`]; a finger that **lands**
+//! inside one is claimed by the UI for as long as it stays down (it keeps the
+//! claim when it slides out of the well, exactly as an egui drag keeps its
+//! widget), and every claimed finger is then invisible to the gesture recogniser
+//! and to the emulated mouse. What is left is the map's, and
+//! [`TouchGestures::ui_blocked`] is what the camera asks instead of the bare
+//! `egui_wants_pointer_input()`: a pointer egui only "wants" because a claimed
+//! thumb is holding it does not speak for the fingers beside it.
+//!
+//! The claimed fingers are not thrown away — [`TouchGestures::ui_held`] and
+//! [`TouchGestures::ui_released`] hand them back to the control that owns them,
+//! which is how `map_osd` steers the stick from a finger that egui's single
+//! pointer has never heard of.
 
 use bevy::input::mouse::MouseButtonInput;
 use bevy::input::touch::Touches;
@@ -53,6 +79,38 @@ const MIN_PAIR_SEPARATION_PTS: f32 = 24.0;
 /// ratio and teleports the camera.
 const MAX_PINCH_PER_FRAME: f32 = 1.6;
 
+/// The parts of the glass an on-screen control owns, in **window** logical
+/// points (what [`Touches`] reports), rewritten every frame by whoever draws
+/// them — `systems::map_osd` is the only writer so far.
+///
+/// Read one frame late: the controls are drawn in `Update` and this is consumed
+/// in `PreUpdate`. That is harmless because every region here is anchored to a
+/// window edge and does not move; the only stale frame is the one a control
+/// appears or disappears on, where a finger landing in that exact millisecond is
+/// attributed to whichever of the two the previous frame believed. Publishing
+/// from the draw is still the right way round — the rects are the layout's, and
+/// a second copy of the anchor arithmetic over here is how the hit area and the
+/// picture drift apart.
+///
+/// **One writer, who rewrites the whole list.** A second publisher (the dock, the
+/// HUD) would need slots keyed by owner, and is not worth adding until something
+/// besides the on-screen controls is held down *while the other hand works* —
+/// which is the only situation any of this exists for. What the other chrome
+/// gets instead is the status quo: with a claimed thumb down, a tap on it is a
+/// free finger, so it reaches neither the widget (egui's pointer is elsewhere)
+/// nor, a tap carrying no drag, the camera in any visible amount.
+#[derive(Resource, Default, Debug, Clone, PartialEq)]
+pub struct UiClaimRegions {
+    pub rects: Vec<Rect>,
+}
+
+impl UiClaimRegions {
+    /// Does any region contain this point?
+    fn claims(&self, at: Vec2) -> bool {
+        self.rects.iter().any(|r| r.contains(at))
+    }
+}
+
 /// This frame's recognised touch gestures, in logical points.
 ///
 /// Every field is rewritten each frame by [`recognize_touch_gestures`]; there is
@@ -63,10 +121,15 @@ const MAX_PINCH_PER_FRAME: f32 = 1.6;
 /// `egui_wants_pointer_input()`, so a finger that egui has claimed (a panel
 /// button, a slider) never also moves the world — the gate works for touch for
 /// the same reason it works for the mouse, because the egui bridge holds a
-/// pointer button down for the whole gesture.
+/// pointer button down for the whole gesture. It goes through
+/// [`TouchGestures::ui_blocked`] rather than being asked directly, because that
+/// one boolean cannot answer for two fingers at once (see the module note).
 #[derive(Resource, Debug)]
 pub struct TouchGestures {
-    /// Fingers down this frame.
+    /// Fingers down this frame that the UI has **not** claimed — the ones this
+    /// resource speaks for. A thumb parked on the on-screen stick is not counted
+    /// here, which is what lets the finger beside it be an ordinary one-finger
+    /// drag rather than half of a pinch.
     pub fingers: usize,
     /// One-finger drag this frame. Zero unless exactly one finger is down — a
     /// second finger arriving ends the drag rather than jumping it to the
@@ -85,8 +148,19 @@ pub struct TouchGestures {
     /// the two gestures agree about which way "turn the view right" is.
     pub twist: f32,
 
+    /// Fingers an on-screen control owns, and where each is now — claimed at the
+    /// moment it landed inside a [`UiClaimRegions`] rect and held until it
+    /// lifts. Id-sorted, like every other list here.
+    ui_held: Vec<(u64, Vec2)>,
+    /// Claimed fingers that lifted **this frame**, at their last position, so a
+    /// control whose verb is an edge (a jump, a toggle) can see the release it
+    /// would otherwise have to learn from egui's pointer.
+    ui_released: Vec<(u64, Vec2)>,
+
     // ── recogniser state ────────────────────────────────────────────────
-    /// Last frame's finger positions, id-sorted.
+    /// Last frame's finger positions, id-sorted. Every finger, claimed or not:
+    /// this is what says which ids are *new* this frame, and a claim is decided
+    /// on the frame a finger lands.
     ///
     /// Kept here rather than read from [`bevy::input::touch::Touch::delta`],
     /// which is only refreshed on frames that carry touch *events*: hold a
@@ -137,6 +211,8 @@ impl Default for TouchGestures {
             // Multiplicative identity, not zero — see the field's doc.
             pinch: 1.0,
             twist: 0.0,
+            ui_held: Vec::new(),
+            ui_released: Vec::new(),
             seen: Vec::new(),
             primary: None,
             press: None,
@@ -152,7 +228,38 @@ impl TouchGestures {
     /// gesture but no `CursorMoved` accompanies it, so an anchor left over from
     /// the last real mouse drag would survive to jump the view on the next one.
     pub fn active(&self) -> bool {
-        self.fingers > 0
+        self.fingers > 0 || !self.ui_held.is_empty()
+    }
+
+    /// Fingers an on-screen control owns, and where they are now (window points).
+    /// Its own hit-testing is the control's business — this only says which
+    /// fingers are *available* to it, i.e. the ones no gesture will also consume.
+    pub fn ui_held(&self) -> &[(u64, Vec2)] {
+        &self.ui_held
+    }
+
+    /// Claimed fingers that lifted this frame, at their last position — the
+    /// release edge for a control whose verb is an event rather than a rate.
+    pub fn ui_released(&self) -> &[(u64, Vec2)] {
+        &self.ui_released
+    }
+
+    /// True when a finger the UI owns is down *beside* one it does not.
+    ///
+    /// This is the case `egui_wants_pointer_input()` gets wrong: egui's single
+    /// pointer is held by the claimed thumb, so the boolean says "the UI has the
+    /// pointer" on behalf of a finger that is not the one asking.
+    fn escapes_ui(&self) -> bool {
+        !self.ui_held.is_empty() && self.fingers > 0
+    }
+
+    /// Should a world consumer stand down, given egui's own verdict?
+    ///
+    /// The gate every camera gesture goes through instead of calling
+    /// `egui_wants_pointer_input()` directly. Takes the verdict as a bool rather
+    /// than an `egui::Context` so the rule stays a pure function.
+    pub fn ui_blocked(&self, egui_wants_pointer: bool) -> bool {
+        egui_wants_pointer && !self.escapes_ui()
     }
 
     /// True when exactly two fingers are down, i.e. the pinch/twist/tilt
@@ -173,6 +280,7 @@ impl TouchGestures {
 pub fn recognize_touch_gestures(
     touches: Res<Touches>,
     time: Res<Time>,
+    regions: Res<UiClaimRegions>,
     mut gestures: ResMut<TouchGestures>,
     mut mouse_button: MessageWriter<MouseButtonInput>,
     mut windows: Query<(Entity, &mut Window)>,
@@ -189,16 +297,33 @@ pub fn recognize_touch_gestures(
     fingers.sort_unstable_by_key(|(id, _)| *id);
 
     let previous = std::mem::take(&mut gestures.seen);
-    let read = recognize(&previous, &fingers);
 
-    gestures.fingers = fingers.len();
+    // Hand the UI its fingers first: what is left is the map's, and neither
+    // bridge below ever sees the ones the UI took. `previous` is the *whole*
+    // previous frame either way — it is only ever looked up by id, and it is
+    // what says which fingers are new (i.e. which are claimable) this frame.
+    let mut ui_held = std::mem::take(&mut gestures.ui_held);
+    let mut ui_released = std::mem::take(&mut gestures.ui_released);
+    let free = update_claims(
+        &mut ui_held,
+        &mut ui_released,
+        &previous,
+        &fingers,
+        &regions,
+    );
+
+    let read = recognize(&previous, &free);
+
+    gestures.fingers = free.len();
     gestures.ever_touched |= !fingers.is_empty();
     gestures.drag = read.drag;
     gestures.pinch = read.pinch;
     gestures.twist = read.twist;
     gestures.two_drag = read.two_drag;
+    gestures.ui_held = ui_held;
+    gestures.ui_released = ui_released;
 
-    let emulated = emulate_mouse(&mut gestures, &fingers, time.delta_secs());
+    let emulated = emulate_mouse(&mut gestures, &free, time.delta_secs());
     if let Some(aim) = emulated.cursor {
         // Physical pixels: that is the window's own storage, and
         // `cursor_position()` divides by the scale on the way back out.
@@ -214,6 +339,50 @@ pub fn recognize_touch_gestures(
     }
 
     gestures.seen = fingers;
+}
+
+/// Move this frame's fingers between the UI's set and the map's, and hand back
+/// the map's. All three lists are id-sorted, and stay so.
+///
+/// A claim is decided **once, on the frame the finger lands**, and then held
+/// until it lifts. Re-testing the region every frame would be the other obvious
+/// rule and it is the wrong one twice over: a thumb pushed past the stick's rim
+/// — which is the ordinary way to ask for full throttle — would hand itself to
+/// the camera mid-push, and a finger dragging the map *into* the stick's corner
+/// would be swallowed by it.
+fn update_claims(
+    held: &mut Vec<(u64, Vec2)>,
+    released: &mut Vec<(u64, Vec2)>,
+    previous: &[(u64, Vec2)],
+    fingers: &[(u64, Vec2)],
+    regions: &UiClaimRegions,
+) -> Vec<(u64, Vec2)> {
+    let position_of = |id: u64| fingers.iter().find(|(f, _)| *f == id).map(|(_, p)| *p);
+
+    // Follow the fingers already claimed: still down means a new position, gone
+    // means a release, reported for exactly the frame it happened on.
+    released.clear();
+    for (id, last) in std::mem::take(held) {
+        match position_of(id) {
+            Some(now) => held.push((id, now)),
+            None => released.push((id, last)),
+        }
+    }
+
+    // Claim the newcomers that landed on a control.
+    for (id, pos) in fingers {
+        let landed = !previous.iter().any(|(seen, _)| seen == id);
+        if landed && regions.claims(*pos) {
+            held.push((*id, *pos));
+        }
+    }
+    held.sort_unstable_by_key(|(id, _)| *id);
+
+    fingers
+        .iter()
+        .filter(|(id, _)| !held.iter().any(|(owned, _)| owned == id))
+        .copied()
+        .collect()
 }
 
 /// What one frame's finger positions say, given the previous frame's. The pure
@@ -644,6 +813,174 @@ mod tests {
         emulate_mouse(&mut g, &one(180.0, 200.0), DT);
         let aimed = emulate_mouse(&mut g, &pair(50.0), DT).cursor;
         assert_eq!(aimed, Some(Vec2::new(200.0, 200.0)));
+    }
+
+    // ── the UI's fingers ─────────────────────────────────────────────────
+
+    /// A stick-sized well in the bottom-left corner of a 400×800 screen.
+    fn stick_region() -> UiClaimRegions {
+        UiClaimRegions {
+            rects: vec![Rect::new(20.0, 690.0, 130.0, 780.0)],
+        }
+    }
+
+    /// Drive whole frames of finger positions through the split, returning what
+    /// the map was left with each frame.
+    fn claims(frames: &[Vec<(u64, Vec2)>]) -> (TouchGestures, Vec<Vec<(u64, Vec2)>>) {
+        let mut g = TouchGestures::default();
+        let regions = stick_region();
+        let mut previous: Vec<(u64, Vec2)> = Vec::new();
+        let free = frames
+            .iter()
+            .map(|fingers| {
+                let mut held = std::mem::take(&mut g.ui_held);
+                let mut released = std::mem::take(&mut g.ui_released);
+                let free = update_claims(&mut held, &mut released, &previous, fingers, &regions);
+                g.ui_held = held;
+                g.ui_released = released;
+                g.fingers = free.len();
+                previous = fingers.clone();
+                free
+            })
+            .collect();
+        (g, free)
+    }
+
+    fn thumb() -> (u64, Vec2) {
+        (0, Vec2::new(70.0, 740.0))
+    }
+
+    fn on_map(id: u64, x: f32, y: f32) -> (u64, Vec2) {
+        (id, Vec2::new(x, y))
+    }
+
+    /// The whole point: a thumb on the stick and a finger on the map are two
+    /// separate inputs, and the map's one is an ordinary one-finger drag — not
+    /// half of a pinch, which is what the pair used to be read as.
+    #[test]
+    fn a_finger_beside_the_stick_is_still_a_one_finger_drag() {
+        let (g, free) = claims(&[
+            vec![thumb()],
+            vec![thumb(), on_map(1, 300.0, 200.0)],
+            vec![thumb(), on_map(1, 320.0, 210.0)],
+        ]);
+        assert_eq!(g.ui_held().len(), 1, "the stick keeps its thumb");
+        assert_eq!(free[2], vec![on_map(1, 320.0, 210.0)]);
+        let read = recognize(&[thumb(), on_map(1, 300.0, 200.0)], &free[2]);
+        assert_eq!(read.drag, Vec2::new(20.0, 10.0));
+        assert_eq!(read.pinch, 1.0);
+    }
+
+    /// egui's verdict speaks for its one pointer. While that pointer is a thumb
+    /// the UI has claimed, it does not speak for the fingers beside it.
+    #[test]
+    fn a_claimed_thumb_does_not_gate_the_other_fingers() {
+        let (g, _) = claims(&[vec![thumb()], vec![thumb(), on_map(1, 300.0, 200.0)]]);
+        assert!(!g.ui_blocked(true), "the map finger must still be heard");
+        // …and with nothing but the thumb down, egui's verdict stands.
+        let (alone, _) = claims(&[vec![thumb()]]);
+        assert!(alone.ui_blocked(true));
+        // A finger that never touched a control is egui's business as before.
+        let (map_only, _) = claims(&[vec![on_map(1, 300.0, 200.0)]]);
+        assert!(map_only.ui_blocked(true));
+        assert!(!map_only.ui_blocked(false));
+    }
+
+    /// Pushing the stick past its rim is how you ask for full throttle; the
+    /// claim has to survive it, or the camera takes the thumb mid-push.
+    #[test]
+    fn a_thumb_dragged_off_the_well_keeps_the_stick() {
+        let strayed = (0, Vec2::new(200.0, 600.0));
+        let (g, free) = claims(&[vec![thumb()], vec![strayed]]);
+        assert_eq!(g.ui_held(), &[strayed]);
+        assert!(free[1].is_empty(), "the map gets nothing: {:?}", free[1]);
+    }
+
+    /// The mirror of it: a drag that wanders *into* the corner belongs to the
+    /// map it started on.
+    #[test]
+    fn a_map_drag_that_crosses_the_stick_is_not_claimed() {
+        let (g, free) = claims(&[
+            vec![on_map(1, 300.0, 200.0)],
+            vec![on_map(1, 70.0, 740.0)], // inside the well now
+        ]);
+        assert!(g.ui_held().is_empty());
+        assert_eq!(free[1].len(), 1);
+    }
+
+    /// A release is reported once, on the frame it happens, so a control whose
+    /// verb is an edge can read it without keeping its own state.
+    #[test]
+    fn a_claimed_finger_reports_its_release_once() {
+        let (g, _) = claims(&[vec![thumb()], vec![thumb()], vec![]]);
+        assert_eq!(g.ui_released(), &[thumb()]);
+        let (later, _) = claims(&[vec![thumb()], vec![], vec![]]);
+        assert!(later.ui_released().is_empty(), "not re-reported");
+        assert!(later.ui_held().is_empty());
+    }
+
+    /// A claimed thumb never becomes the emulated mouse: the world's click
+    /// consumers must not see a press at the stick's corner.
+    #[test]
+    fn the_emulated_mouse_ignores_a_claimed_finger() {
+        let (_, free) = claims(&[vec![thumb()], vec![thumb()]]);
+        let mut g = TouchGestures::default();
+        let out: Vec<_> = free.iter().map(|f| emulate_mouse(&mut g, f, DT)).collect();
+        assert!(out
+            .iter()
+            .all(|e| e.buttons.is_empty() && e.cursor.is_none()));
+    }
+
+    /// End to end, through the real system and Bevy's own `Touches`: a thumb
+    /// parked on a control and a finger dragging the map are two live inputs.
+    ///
+    /// The pure tests above pin the split; this pins the *wiring* — that the
+    /// system reads [`UiClaimRegions`], that the claimed thumb survives from one
+    /// frame to the next, and that what the camera reads on the far side is a
+    /// one-finger drag it is allowed to act on.
+    #[test]
+    fn the_system_gives_the_ui_its_thumb_and_the_map_the_rest() {
+        use bevy::input::touch::{TouchInput, TouchPhase};
+        use bevy::window::{PrimaryWindow, WindowPlugin};
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::input::InputPlugin,
+            WindowPlugin::default(),
+        ))
+        .init_resource::<TouchGestures>()
+        .insert_resource(stick_region())
+        // `InputPlugin` fills `Touches` in `PreUpdate`; `Update` is after it,
+        // which is the ordering the real app spells out explicitly.
+        .add_systems(Update, recognize_touch_gestures);
+        let window = app
+            .world_mut()
+            .query_filtered::<Entity, With<PrimaryWindow>>()
+            .single(app.world())
+            .expect("primary window");
+        let mut finger = |id: u64, phase: TouchPhase, pos: Vec2| {
+            app.world_mut().write_message(TouchInput {
+                phase,
+                position: pos,
+                window,
+                force: None,
+                id,
+            });
+            app.update();
+        };
+
+        let thumb = Vec2::new(70.0, 740.0);
+        finger(0, TouchPhase::Started, thumb);
+        finger(1, TouchPhase::Started, Vec2::new(300.0, 200.0));
+        finger(1, TouchPhase::Moved, Vec2::new(340.0, 230.0));
+
+        let g = app.world().resource::<TouchGestures>();
+        assert_eq!(g.ui_held(), &[(0, thumb)], "the control keeps its thumb");
+        assert_eq!(g.fingers, 1, "the map is left one finger, not a pair");
+        assert_eq!(g.drag, Vec2::new(40.0, 30.0));
+        assert_eq!(g.pinch, 1.0, "two fingers, but not a pinch");
+        assert!(!g.ui_blocked(true), "…and the camera may act on it");
     }
 
     /// Three fingers are deliberately inert — see `recognize`.
