@@ -1523,12 +1523,52 @@ impl Drop for PermissionDialog {
     }
 }
 
-/// The outcome of asking for the location permission.
+/// The outcome of asking for a runtime permission.
 enum Permission {
     Granted,
     Denied,
-    /// The watch was dropped while the dialog was up.
+    /// The caller cancelled while the dialog was up.
     Cancelled,
+}
+
+/// The microphone, for [`ensure_permission`]. `platform::audio`'s Android arm is
+/// the only caller.
+pub const PERM_RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+
+/// Ask for one runtime permission and block until it is answered.
+///
+/// The generic form of what location has always done here, exposed because the
+/// microphone needs exactly the same dance and reimplementing it would mean two
+/// copies of the polling wait, the dialog guard and the local-frame discipline.
+///
+/// **Blocks for up to [`PERMISSION_WAIT`] (two minutes), so call it from a
+/// worker thread and never from a Bevy system.** There is no callback to wait on
+/// — `onRequestPermissionsResult` is a Java override this dex-free app cannot
+/// supply — so the answer is polled, exactly as `settle_permission` documents.
+/// `cancel` is checked every 100 ms, which is how a caller that has given up (the
+/// user closed the panel) stops paying for the wait.
+///
+/// `Err` is a *structural* failure — no activity, no JVM, a JNI call that threw —
+/// and is distinct from a denial: one is worth showing the user as "denied,
+/// here's how to change it" and the other is a bug in this file.
+pub fn ensure_permission(permission: &str, cancel: &AtomicBool) -> Result<bool, String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("could not attach to the JVM: {e}"))?;
+    let activity = activity();
+    // The short name is what the log wants: the caller passes a fully-qualified
+    // constant, and `android.permission.RECORD_AUDIO` in a line that already says
+    // "permission" three times reads worse than "RECORD_AUDIO".
+    let what = permission.rsplit('.').next().unwrap_or(permission);
+    match settle_permission(&mut env, &activity, cancel, &[permission], what) {
+        Ok(Permission::Granted) => Ok(true),
+        Ok(Permission::Denied | Permission::Cancelled) => Ok(false),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
 }
 
 /// The worker thread.
@@ -1620,7 +1660,13 @@ fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
         .map_err(|e| format!("could not attach the location thread to the JVM: {e}"))?;
     let activity = activity();
 
-    match settle_permission(&mut env, &activity, cancel) {
+    match settle_permission(
+        &mut env,
+        &activity,
+        cancel,
+        &[PERM_FINE, PERM_COARSE],
+        "location",
+    ) {
         Ok(Permission::Granted) => {}
         Ok(Permission::Denied) => {
             // Terminal, and the one message the driver-mode UI most needs: without
@@ -1773,26 +1819,34 @@ struct Reading {
 
 // --- permission ------------------------------------------------------------
 
+/// Ask for `names` (any one of which is enough) and wait for the answer.
+///
+/// `what` names the capability in the log — "location", "microphone" — because
+/// the interesting line is not that *a* permission was asked for but which one,
+/// on a platform where the log excerpt shared after a freeze is the whole
+/// instrument.
 fn settle_permission(
     env: &mut JNIEnv,
     activity: &JObject,
     cancel: &AtomicBool,
+    names: &[&str],
+    what: &str,
 ) -> Result<Permission, Fail> {
-    if permission_granted(env, activity)? {
-        tracing::info!("location permission already granted");
+    if permission_granted(env, activity, names)? {
+        tracing::info!("{what} permission already granted");
         return Ok(Permission::Granted);
     }
     // The dialog backgrounds the activity. That is expected and is why this line
     // is here: a freeze that follows it is a *lifecycle* failure, not a location
     // one, and the two are indistinguishable without knowing whether we ever
     // asked (see `quiesce_while_backgrounded`, which logs the other half).
-    tracing::info!("asking for the location permission — the system dialog is about to appear");
+    tracing::info!("asking for the {what} permission — the system dialog is about to appear");
     // Raised *before* the call and lowered on every path out of the wait below
     // (`PermissionDialog`'s `Drop`), including the `?` — see [`PERMISSION_DIALOG_UP`]
     // for what reads it. A flag left raised would hold the screen-wakelock write
     // off for the rest of the run.
     let _dialog = PermissionDialog::raise();
-    request_permission(env, activity)?;
+    request_permission(env, activity, names)?;
     // **Polling, because the answer is unreachable.** The result arrives at
     // `Activity.onRequestPermissionsResult`, which is a Java method we would have
     // to override — a class, and therefore out. `Context.checkSelfPermission` is a
@@ -1802,32 +1856,33 @@ fn settle_permission(
     let steps = PERMISSION_WAIT.as_millis() / 500;
     for step in 0..steps {
         if !nap(cancel, Duration::from_millis(500)) {
-            tracing::info!("location watch dropped while the permission dialog was up");
+            tracing::info!("{what} request dropped while the permission dialog was up");
             return Ok(Permission::Cancelled);
         }
-        if permission_granted(env, activity)? {
+        if permission_granted(env, activity, names)? {
             // `as u64`: `tracing`'s field values do not cover `u128`, which is
             // what `Duration::as_millis` arithmetic produces.
             tracing::info!(
                 waited_ms = ((step + 1) * 500) as u64,
-                "location permission granted"
+                "{what} permission granted"
             );
             return Ok(Permission::Granted);
         }
     }
-    tracing::info!("location permission never granted — giving up");
+    tracing::info!("{what} permission never granted — giving up");
     Ok(Permission::Denied)
 }
 
-/// Whether we hold *either* location permission.
+/// Whether we hold *any* of `names`.
 ///
-/// Coarse alone is accepted rather than treated as a denial: it yields a real fix
-/// with an honest `accuracy_m` of a kilometre or two, which the caller can judge,
-/// and refusing it would turn "the user picked Approximate" into "location is
-/// broken".
-fn permission_granted(env: &mut JNIEnv, activity: &JObject) -> Result<bool, Fail> {
+/// Any, not all, and that is the location case: coarse alone is accepted rather
+/// than treated as a denial, because it yields a real fix with an honest
+/// `accuracy_m` of a kilometre or two, which the caller can judge, and refusing
+/// it would turn "the user picked Approximate" into "location is broken". A
+/// single-element slice (the microphone) reads the same way.
+fn permission_granted(env: &mut JNIEnv, activity: &JObject, names: &[&str]) -> Result<bool, Fail> {
     env.with_local_frame(8, |env| {
-        for name in [PERM_FINE, PERM_COARSE] {
+        for name in names {
             let perm: JObject = env.new_string(name)?.into();
             let result = env
                 .call_method(
@@ -1861,15 +1916,19 @@ fn permission_granted(env: &mut JNIEnv, activity: &JObject) -> Result<bool, Fail
 /// the narrowest the race can be made without leaving the constraint. If it
 /// misbehaves the symptom would be the dialog failing to appear at all, after which
 /// `settle_permission` reports a denial two minutes later — noisy, but not a crash.
-fn request_permission(env: &mut JNIEnv, activity: &JObject) -> Result<(), Fail> {
-    env.with_local_frame(8, |env| {
+fn request_permission(env: &mut JNIEnv, activity: &JObject, names: &[&str]) -> Result<(), Fail> {
+    // One local reference per name plus the array, inside a frame sized for the
+    // largest call site with slack — the local-reference table aborts the process
+    // at 512 entries and this is called from a loop-free path only by luck.
+    let frame = (names.len() as i32 + 1).max(8);
+    env.with_local_frame(frame, |env| {
         let null = JObject::null();
-        let names = env.new_object_array(2, "java/lang/String", &null)?;
-        let fine: JObject = env.new_string(PERM_FINE)?.into();
-        let coarse: JObject = env.new_string(PERM_COARSE)?.into();
-        env.set_object_array_element(&names, 0, &fine)?;
-        env.set_object_array_element(&names, 1, &coarse)?;
-        let names: JObject = names.into();
+        let array = env.new_object_array(names.len() as i32, "java/lang/String", &null)?;
+        for (i, name) in names.iter().enumerate() {
+            let value: JObject = env.new_string(name)?.into();
+            env.set_object_array_element(&array, i as i32, &value)?;
+        }
+        let names: JObject = array.into();
         env.call_method(
             activity,
             "requestPermissions",
