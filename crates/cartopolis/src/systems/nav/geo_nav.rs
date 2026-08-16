@@ -658,20 +658,72 @@ pub fn lat_lng_to_world(anchor: (f64, f64, u32), lat: f64, lng: f64) -> (f64, f6
     ((fx - fcx) * gs, (fy - fcy) * gs)
 }
 
+/// One anchor's Mercator constants, resolved once.
+///
+/// [`world_to_lat_lng`] is the whole of this for a single point, and for a single
+/// point that is the right shape. For a *bulk* conversion it is the wrong one
+/// twice over. Everything `new` computes here — the ground scale, the anchor's
+/// fractional tile, the zoom's tile count — depends only on the anchor, and the
+/// per-call version paid six transcendentals for them on every sample:
+/// `tile_to_meters`'s `cos`/`powi` and `lat_lng_to_tile_frac`'s `tan`/`cos`/`ln`.
+/// `terrain::bake` called it 65,536 times per map anchor, on the main thread.
+///
+/// The second saving is the one worth naming in a type: **Mercator is separable**.
+/// Longitude is a function of `wx` alone and latitude of `wz` alone, so a grid of
+/// `n × n` samples needs `n` longitudes and `n` latitudes, not `n²` of each — and
+/// the expensive half, latitude's `sinh().atan()`, is the half that collapses.
+/// Splitting the conversion into two methods is what makes that fact usable
+/// instead of merely true.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldFrame {
+    /// Ground metres per tile at the anchor's latitude.
+    gs: f64,
+    /// The anchor's own fractional tile coordinate.
+    fcx: f64,
+    fcy: f64,
+    /// Tiles across the world at this zoom.
+    n: f64,
+}
+
+impl WorldFrame {
+    #[must_use]
+    pub fn new(anchor: (f64, f64, u32)) -> Self {
+        let (clat, clng, zoom) = anchor;
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
+        Self {
+            gs: tile_to_meters(zoom, clat),
+            fcx,
+            fcy,
+            n: 2.0_f64.powi(zoom as i32),
+        }
+    }
+
+    /// Longitude of a world easting. Independent of `wz`.
+    #[must_use]
+    pub fn lng_at(&self, wx: f64) -> f64 {
+        (wx / self.gs + self.fcx) / self.n * 360.0 - 180.0
+    }
+
+    /// Latitude of a world northing. Independent of `wx`, and the expensive one.
+    #[must_use]
+    pub fn lat_at(&self, wz: f64) -> f64 {
+        let fy = wz / self.gs + self.fcy;
+        ((1.0 - 2.0 * fy / self.n) * std::f64::consts::PI)
+            .sinh()
+            .atan()
+            .to_degrees()
+    }
+}
+
 /// Inverse of [`lat_lng_to_world`].
+///
+/// Delegates to [`WorldFrame`] so there is one Mercator inverse in the tree rather
+/// than a bulk copy that can drift from the single-point one. Converting more than
+/// a handful of points — anything grid-shaped — should build the frame once and
+/// call its two halves directly.
 pub fn world_to_lat_lng(anchor: (f64, f64, u32), wx: f64, wz: f64) -> (f64, f64) {
-    let (clat, clng, zoom) = anchor;
-    let gs = tile_to_meters(zoom, clat);
-    let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, zoom);
-    let fx = wx / gs + fcx;
-    let fy = wz / gs + fcy;
-    let n = 2.0_f64.powi(zoom as i32);
-    let lng = fx / n * 360.0 - 180.0;
-    let lat = ((1.0 - 2.0 * fy / n) * std::f64::consts::PI)
-        .sinh()
-        .atan()
-        .to_degrees();
-    (lat, lng)
+    let frame = WorldFrame::new(anchor);
+    (frame.lat_at(wz), frame.lng_at(wx))
 }
 
 /// Where the camera is on Earth — the single definition of that, shared by the
@@ -2148,6 +2200,38 @@ mod tests {
         globe.anchor_lng = ANCHOR.1;
         globe.ready = true;
         globe
+    }
+
+    /// The separability [`WorldFrame`] is built on, asserted rather than assumed:
+    /// longitude may not depend on the northing, nor latitude on the easting.
+    ///
+    /// This is what lets a grid conversion cost `n + n` instead of `n²`, and it is
+    /// exactly the kind of property that is true of the maths, easy to break in the
+    /// code, and invisible afterwards — a `lat_at` that quietly read `wx` would
+    /// still return plausible coordinates everywhere near the anchor.
+    #[test]
+    fn the_mercator_frame_is_separable() {
+        let frame = WorldFrame::new(ANCHOR);
+        for w in [-40_000.0, -1_200.0, 0.0, 850.0, 40_000.0] {
+            for other in [-40_000.0, 0.0, 40_000.0] {
+                let (_, lng) = world_to_lat_lng(ANCHOR, w, other);
+                assert!((lng - frame.lng_at(w)).abs() < 1e-12, "lng moved with wz");
+                let (lat, _) = world_to_lat_lng(ANCHOR, other, w);
+                assert!((lat - frame.lat_at(w)).abs() < 1e-12, "lat moved with wx");
+            }
+        }
+    }
+
+    /// The frame is an optimisation, so it has to agree with the round trip it
+    /// replaced — not merely with itself.
+    #[test]
+    fn the_frame_round_trips_against_the_forward_mapping() {
+        for (lat, lng) in [(53.2194, 6.5665), (53.5, 6.0), (52.9, 7.1)] {
+            let (wx, wz) = lat_lng_to_world(ANCHOR, lat, lng);
+            let frame = WorldFrame::new(ANCHOR);
+            assert!((frame.lat_at(wz) - lat).abs() < 1e-9);
+            assert!((frame.lng_at(wx) - lng).abs() < 1e-9);
+        }
     }
 
     /// Near the ground the anchored Mercator frame is the ground truth (the

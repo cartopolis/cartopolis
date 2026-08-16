@@ -53,7 +53,7 @@
 use bevy::prelude::*;
 
 use crate::systems::data_layers::DataLayers;
-use crate::systems::geo_nav::world_to_lat_lng;
+use crate::systems::geo_nav::{world_to_lat_lng, WorldFrame};
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightPatch, HeightRequest};
 use crate::systems::map_stream::MapStream;
 
@@ -111,9 +111,20 @@ pub struct TerrainSnapshot {
 #[derive(Resource, Default)]
 pub struct TerrainField {
     ground: TerrainSnapshot,
-    /// Map-anchor generation these samples were baked for; a re-anchor invalidates
-    /// them because the whole frame moved.
-    anchor_gen: u32,
+    /// Map-anchor generation this field has already **answered for** — with
+    /// samples or without. A re-anchor invalidates it because the whole frame
+    /// moved.
+    ///
+    /// "Answered", not "baked", and the distinction is the whole point. It used to
+    /// be a bare `u32` paired with an `is_ready()` test, which meant a box AHN has
+    /// no data for — all sea, over the border, anywhere outside the Netherlands
+    /// that `covers` still admits — never satisfied the guard: `bake` returned
+    /// `None`, `clear()` early-returned because the field was already empty,
+    /// `is_ready()` stayed false, and `update_terrain_field` re-baked 65,536
+    /// samples on the main thread on **every frame, forever**. The comment beside
+    /// it claimed the opposite. An empty answer is still an answer, and only an
+    /// `Option` can say so.
+    answered_gen: Option<u32>,
     /// Absolute height (m above NAP) that `0.0` means here — the ground under the
     /// anchor. Not used for placement (everything is relative); reported, because
     /// it is the one number that says *where* the field is.
@@ -227,9 +238,13 @@ pub fn update_terrain_field(
     };
     if !dl.height_enabled || !HeightLayer::covers(anchor.0, anchor.1) {
         field.clear();
+        // The layer can come back on without the anchor moving, so this is not an
+        // answer for the current generation — leave `answered_gen` alone and let
+        // the bake run when it does.
+        field.answered_gen = None;
         return;
     }
-    if field.is_ready() && field.anchor_gen == stream.anchor_generation {
+    if field.answered_gen == Some(stream.anchor_generation) {
         return;
     }
 
@@ -242,8 +257,9 @@ pub fn update_terrain_field(
     let Some((samples, datum)) = bake(patch, anchor, TERRAIN_HALF_M) else {
         // A box AHN has nothing at all for (all sea, or over the border): stay
         // flat rather than re-asking every frame — `HeightLayer` caches the patch,
-        // so this costs one comparison from here on.
-        field.anchor_gen = stream.anchor_generation;
+        // so this costs one comparison from here on. Recording the generation is
+        // what makes that true; see `answered_gen`.
+        field.answered_gen = Some(stream.anchor_generation);
         field.clear();
         return;
     };
@@ -254,7 +270,7 @@ pub fn update_terrain_field(
         samples: std::sync::Arc::new(samples),
         half_m: TERRAIN_HALF_M,
     };
-    field.anchor_gen = stream.anchor_generation;
+    field.answered_gen = Some(stream.anchor_generation);
     field.datum_m = datum;
     field.range_m = (lo, hi);
     field.revision = field.revision.wrapping_add(1);
@@ -300,12 +316,20 @@ fn field_request(anchor: (f64, f64, u32), half: f32) -> HeightRequest {
 fn bake(patch: &HeightPatch, anchor: (f64, f64, u32), half: f32) -> Option<(Vec<f32>, f32)> {
     let n = TERRAIN_GRID;
     let step = (half * 2.0) as f64 / (n - 1) as f64;
+    // Mercator is separable, so the grid's 65,536 coordinate conversions are
+    // really `n` longitudes and `n` latitudes (`geo_nav::WorldFrame` says why this
+    // is worth spelling out). Naively this ran the anchor's trig, a `sinh` and an
+    // `atan` per *sample*, on the main thread, once per map anchor.
+    let frame = WorldFrame::new(anchor);
+    let axis: Vec<f64> = (0..n).map(|i| -half as f64 + i as f64 * step).collect();
+    let lngs: Vec<f64> = axis.iter().map(|&wx| frame.lng_at(wx)).collect();
+    let lats: Vec<f64> = axis.iter().map(|&wz| frame.lat_at(wz)).collect();
+
     let mut raw = vec![f32::NAN; n * n];
-    for z in 0..n {
-        let wz = -half as f64 + z as f64 * step;
-        for x in 0..n {
-            let wx = -half as f64 + x as f64 * step;
-            let (lat, lng) = world_to_lat_lng(anchor, wx, wz);
+    for (z, &lat) in lats.iter().enumerate() {
+        for (x, &lng) in lngs.iter().enumerate() {
+            // `wgs84_to_rd` is a bivariate polynomial and genuinely is per sample;
+            // after the above it is the whole remaining cost of this loop.
             if let Some(v) = patch.at(wgs84_to_rd(lat, lng)) {
                 raw[z * n + x] = v;
             }
@@ -354,11 +378,17 @@ fn edge_taper(x: usize, z: usize, n: usize) -> f32 {
 /// Close no-data holes by repeated neighbour averaging. Each pass reaches one cell
 /// further, so [`FILL_PASSES`] is a distance, not a quality knob.
 fn fill_holes(grid: &mut [f32], n: usize) {
+    // One scratch buffer for the whole run, refilled per pass, rather than a fresh
+    // 256 KB `to_vec()` each time round. A pass has to read a *snapshot* — filling
+    // in place would let a cell average neighbours this pass already invented, so
+    // the fill would run further than `FILL_PASSES` says and in row-major order
+    // only — but it does not need a new allocation to get one.
+    let mut prev = vec![0.0f32; grid.len()];
     for _ in 0..FILL_PASSES {
         if grid.iter().all(|v| v.is_finite()) {
             return;
         }
-        let prev = grid.to_vec();
+        prev.copy_from_slice(grid);
         for z in 0..n {
             for x in 0..n {
                 if prev[z * n + x].is_finite() {
