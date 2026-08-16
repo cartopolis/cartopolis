@@ -54,7 +54,6 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
 use crate::systems::theme;
-use crate::systems::vector_tiles::TileData;
 use cartopolis_core::world::{tile_to_lat_lng, tile_to_meters};
 use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
 
@@ -2437,7 +2436,14 @@ fn build_layer_cell(
             .map(|p| (lat_lng_to_local(p.lat, p.lng, ax, ay, z, tile_m), p))
             .collect(),
         CellSource::Tile(bytes) => {
-            let tile = TileData::parse(bytes)?;
+            // Shared: `LAYER_DEFS` carries two tile-sourced layers (`pois` and
+            // `public_transport`), so this ran twice over the same body per cell —
+            // and `map_geometry` and the clipmap were parsing it a third and fourth
+            // time for the same ground at the same moment.
+            let tile = crate::systems::tile_loader::parse_shared(
+                cartopolis_core::TileKey::new(cx, cy, LAYER_ZOOM),
+                bytes,
+            )?;
             extract_pois(&tile, def.tile_layer, def.classify_tile)
                 .into_iter()
                 .map(|p| {

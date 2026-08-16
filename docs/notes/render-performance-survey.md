@@ -133,6 +133,29 @@ phone that leaves two cores idle for most of Update. Most clique members early-o
 so the realised cost concentrates in the streamers — but the ceiling is structural
 and no amount of `.after()` tuning moves it.
 
+### The repeat parses are collapsed (2026-08-16)
+
+`tile_loader::parse_shared` keys a `Weak<TileData>` cache on the **source** tile,
+which is the ancestor when overzooming — so the finest clipmap ring's 81 z17
+tiles share **4** parses rather than doing 81 (pinned by a test). The globe,
+`map_geometry`, both tile-sourced data layers and the routing corridor go through
+the same cache, so ground being streamed by several consumers at once is parsed
+once between them.
+
+It stays `Weak` on purpose: a fully-decoded dense z14 tile peaks at ~12.5 MiB and
+the globe can want hundreds at once, so anything strong would be a memory policy
+rather than a cache. That number, from `allocation-budgets.md`, is what
+`tile-raster-cost.md` said this was blocked on.
+
+The enabling change was `TileData`'s per-layer memo moving from
+`std::cell::OnceCell` to `OnceLock`, i.e. from `Send` to `Send + Sync`. A
+compile-time assertion in `crates/geo` holds it there, because `cartopolis_geo` is
+single-threaded and would otherwise test green while breaking the cache.
+
+**Not visible in `settled_s` on this container**, and that is expected: lavapipe
+spends ~1 s per frame rasterising, so a cold ground fill is bounded by frames
+drawn, not by tiles decoded. The saving is in worker time and allocation traffic.
+
 ### The unused MVT layers are not decoded
 
 `docs/notes/vector-tile-unused-layers.md` says the geometry cell "decodes all of
@@ -146,17 +169,6 @@ The decode is memoised; the path building and the bounds scan are not.
 
 ## Open, with the reason they are still open
 
-- **The overzoom fan-out parses one z14 body up to 64 times.**
-  `TilePayload::decode` parses per sub-tile, and `map_geometry`, both `pois`
-  layer-defs, the globe and routing each parse the same body again — on the order
-  of 65–70 parses per anchor, each a full `bytes.to_vec()` plus a fresh prost
-  decode. This is the largest single number in the pipeline.
-  **Blocked on a type change:** `TileData` holds `std::cell::OnceCell`, which is
-  not `Sync`, so it cannot be shared across worker threads at all until that
-  becomes a `OnceLock`. A weak `HashMap<TileKey, Weak<TileData>>` beside the byte
-  cache is the shape; it must stay *weak*, or a globe fill pins hundreds of
-  12.5 MiB readers (the size `docs/notes/allocation-budgets.md` measured, which is
-  the number `tile-raster-cost.md` said this was blocked on).
 - **`osm_buildings` blocks io-pool threads with `std::thread::sleep`** on three
   paths inside `async fn`s. `async-io` is in the graph only transitively; making
   it a direct dependency, with the reactor thread that implies on Android, is a

@@ -20,7 +20,7 @@
 //! * **Styling.** There is no cartography in the data. [`PAINT_ORDER`] *is* the
 //!   map's look, bottom layer first.
 
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
@@ -48,22 +48,31 @@ use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
 /// geometry *and* properties into a fresh `Vec<Feature>` on **every** call, and
 /// [`PAINT_ORDER`] lists `streets` twice (casing then fill) and `buildings` twice
 /// (fill then outline) — so the two heaviest layers of every rendered tile were
-/// decoded twice each. `OnceCell` (not `RefCell`) because a decoded layer is never
+/// decoded twice each. `OnceLock` (not `RefCell`) because a decoded layer is never
 /// invalidated; the interior mutability is initialise-once, so `&TileData` stays
 /// the shape every consumer wants.
 ///
-/// Deliberately **not** cached across tasks: a parsed reader holds `geo_types`
-/// f32 geometry for every feature in the tile and nothing here measures how much
-/// that is, whereas `tile_source`'s byte cache holds things whose size is exactly
-/// known. Collapsing the ~179 repeat parses a fresh anchor makes is the obvious
-/// follow-up, once someone has a number for the memory.
+/// **`OnceLock`, not `OnceCell`, so this is `Sync`** — which is what lets one
+/// parse be shared between worker threads rather than merely between the
+/// consumers on one. That was the blocker on collapsing the repeat parses a fresh
+/// anchor makes: the overzoom fan-out resolves up to 64 clipmap tiles to the same
+/// z14 ancestor, and each was a separate task doing its own full `bytes.to_vec()`
+/// and prost decode. `cartopolis`'s `tile_loader::parse_shared` is the cache; the
+/// memory question it was waiting on is answered in
+/// `docs/notes/allocation-budgets.md` (12.5 MiB peak for a fully-decoded dense
+/// z14 tile), which is also why that cache holds `Weak` references and not strong
+/// ones.
+///
+/// The lock is uncontended in the steady state — `get_or_init` on an initialised
+/// `OnceLock` is an acquire load — so the sharing costs the single-threaded path
+/// nothing measurable.
 pub struct TileData {
     reader: Reader,
     layers: Vec<Layer>,
     /// Decoded features per `Layer::layer_index`. Empty for a layer that failed
     /// to decode — the byte-taking callers all treated that as "skip the layer",
     /// and folding it in here keeps that behaviour in one place.
-    features: Vec<OnceCell<Vec<Feature>>>,
+    features: Vec<OnceLock<Vec<Feature>>>,
 }
 
 impl TileData {
@@ -86,7 +95,7 @@ impl TileData {
         Ok(Self {
             reader,
             layers,
-            features: (0..slots).map(|_| OnceCell::new()).collect(),
+            features: (0..slots).map(|_| OnceLock::new()).collect(),
         })
     }
 
@@ -122,6 +131,15 @@ impl TileData {
         }
     }
 }
+
+/// Sharing a parse across worker threads is the whole reason [`TileData`]'s memo
+/// is a `OnceLock`, and nothing else in this crate would notice if that stopped
+/// being true — the crate is single-threaded, so a regression to `OnceCell` would
+/// compile and test green here and fail only in `cartopolis`, at the cache.
+const _: fn() = || {
+    fn assert_shareable<T: Send + Sync>() {}
+    assert_shareable::<TileData>();
+};
 
 // ─── Guarding a body we did not author ───────────────────────────────────────
 
