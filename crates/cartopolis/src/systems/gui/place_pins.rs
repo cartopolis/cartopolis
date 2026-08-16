@@ -334,6 +334,37 @@ fn pin(
         .clicked()
 }
 
+/// Paint the pin's silhouette to fit `rect`, in the folder colour — the same
+/// marker [`pin`] puts on the map, at whatever size the caller has room for.
+///
+/// The Places panel's rows use it for a place with no photo. That slot used to be
+/// a `first_drawable(&["📍", "⌖", "•"])` text glyph, which is a probe for
+/// *whatever the bundled font happens to draw*: it resolved to `⌖`, a crosshair
+/// with no relationship to the teardrop standing over the same place on the map.
+/// A painted pin cannot fall back to the wrong picture, and the list and the map
+/// then show one marker rather than two unrelated ones.
+pub fn paint_pin_glyph(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    // Fit the whole silhouette — `2r` wide by `(HEAD_LIFT + 1) r` tall — inside
+    // the slot, then stand it on the bottom of the fitted box.
+    let r = (rect.width() * 0.5).min(rect.height() / (HEAD_LIFT + 1.0));
+    let tip = egui::pos2(
+        rect.center().x,
+        rect.center().y + (HEAD_LIFT + 1.0) * r * 0.5,
+    );
+    let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
+    let rim = egui::Color32::from_rgb(
+        (f32::from(color.r()) * 0.57) as u8,
+        (f32::from(color.g()) * 0.57) as u8,
+        (f32::from(color.b()) * 0.57) as u8,
+    );
+    painter.add(egui::Shape::convex_polygon(
+        teardrop(tip, centre, r),
+        color,
+        egui::Stroke::new(1.0, rim),
+    ));
+    painter.circle_filled(centre, r * HOLE_R, theme::CREAM);
+}
+
 /// Outline of the pin: the tip, then the head circle's arc from one tangent
 /// point round the top to the other. With the centre `HEAD_LIFT × r` above the
 /// tip the tangent points sit `acos(1 / HEAD_LIFT)` either side of straight

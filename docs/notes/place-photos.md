@@ -1,7 +1,7 @@
 ---
 topic: place-photos
-triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched"]
-updated: 2026-08-13
+triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour"]
+updated: 2026-08-16
 ---
 
 # A saved place can carry a photo
@@ -89,6 +89,27 @@ well as* `secondary_clicked()`, so a long press on a place would open the menu
 *and* fly the camera to the place behind it. `place_row` guards the jump with
 `!name_response.long_touched()`. Anything else that grows a context menu on a
 clickable widget needs the same guard.
+
+## A photo must not move the row it is in
+
+The row opens with one fixed 28 pt square (`bookmarks::marker_slot`): the photo
+tile when there is one, the place's map pin painted at the same size when there
+isn't. It was a 28 pt tile against a 12 pt text glyph, so whether a place happened
+to have a photo shifted its name — and its kebab, and its whole row — half a slot
+sideways. A list of saved places is scanned down its left edge; rows that do not
+share a margin read as broken before anyone works out which of them is the odd
+one. The folder colour a place carries moved with it: it is the pin's fill when
+there is no photo, and a hairline frame *inside* the tile when there is (outside,
+it made the photo rows a shade wider than the pin rows — the same misalignment
+one step smaller).
+
+The pin is painted, not a glyph (`place_pins::paint_pin_glyph`). The slot used to
+call `theme::first_drawable(&["📍", "⌖", "•"])`, which probes the bundled font and
+had settled on `⌖` — a crosshair, next to a teardrop standing over the same place
+on the map. Painting it means the panel and the map cannot disagree.
+
+**Closing the viewer used to freeze the app**, and that is a renderer constraint
+rather than a photo one: [`egui-texture-lifetime`](egui-texture-lifetime.md).
 
 ## Storage shape
 

@@ -398,8 +398,20 @@ pub struct PlaceFolder {
     pub collapsed: bool,
 }
 
-/// Pin colour for a place that is in no folder — the classic red map pin.
-pub const DEFAULT_PIN_COLOR: [f32; 3] = [0.906, 0.243, 0.212];
+/// Pin colour for a place that is in no folder: the brand accent (`#FD6012`,
+/// `theme::ACCENT`).
+///
+/// It was the classic map red (`#E73E36`) — borrowed from every other map, and
+/// the only saturated colour in this app that belonged to nothing in it. Every
+/// unfoldered place is drawn in it twice, as the pin on the map *and* as the
+/// marker or the photo frame in the Places row, so on a fresh install the panel
+/// was outlined in a red the rest of the UI never uses, which reads as a warning
+/// rather than as a colour. The accent is the one saturated colour the palette
+/// does own, and a place with no folder is exactly the "no group chose this"
+/// case that should wear it. Colours a user picks for a folder are untouched —
+/// [`FOLDER_PALETTE`] below still starts at blue, so a folder never comes up in
+/// the same orange the top level is in.
+pub const DEFAULT_PIN_COLOR: [f32; 3] = [0.992, 0.376, 0.071];
 
 /// Colours handed to new folders, in order, so a fresh tree is legible without
 /// anyone opening the colour picker. Wraps around once exhausted.

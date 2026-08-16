@@ -204,6 +204,11 @@ pub const PLACEHOLDER_NAME: &str = "Resolving address…";
 /// Points of indentation per tree level.
 const INDENT: f32 = 12.0;
 
+/// Side of the square a place row opens with — see [`marker_slot`]. The photo
+/// tile's size, because that is the one of the two that cannot be chosen freely
+/// (the stored thumbnail is cut for it).
+const MARKER_SLOT: f32 = crate::utils::photo::THUMB_POINTS;
+
 /// One line of the flattened tree. Owned copies of what the row draws, so the
 /// render loop holds no borrow of the store and can queue mutations freely.
 enum Row {
@@ -496,29 +501,33 @@ pub fn render_bookmarks_panel(
     )
     .show_collapsible(ui_root, &mut open, |ui| {
         let panel = crate::resources::RightPanel::Places;
-        act.close =
-            crate::systems::theme::panel_header_with(ui, panel.icons(), panel.label(), |ui| {
-                // Spelled out rather than an icon: 📁 is not in the bundled icon
-                // font and renders as a tofu box.
-                if ui
-                    .button("+ Folder")
-                    .on_hover_text("New folder — drag places into it to group them")
-                    .clicked()
-                {
-                    act.new_folder = true;
-                }
-                // Disabled rather than hidden before the world anchor exists:
-                // there is nowhere to save *yet*, and a button that comes and goes
-                // in a header is harder to find again than one that is greyed.
-                if ui
-                    .add_enabled(has_place, egui::Button::new("+ Place"))
-                    .on_hover_text("Save where you are now, with this view")
-                    .on_disabled_hover_text("No position yet — the world is still loading")
-                    .clicked()
-                {
-                    act.new_place = true;
-                }
-            });
+        // The two add buttons are a row of their own under the header, not header
+        // actions. Both are spelled out — 📁 is not in the bundled icon font and
+        // renders as a tofu box — and two words plus a medallion, a title and a
+        // close button do not fit across a 300 pt panel: the header gave the
+        // buttons the right edge and truncated its own name to "Save…", which is
+        // the one thing in a header nobody can do without.
+        act.close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+        ui.horizontal(|ui| {
+            // Disabled rather than hidden before the world anchor exists: there is
+            // nowhere to save *yet*, and a button that comes and goes is harder to
+            // find again than one that is greyed.
+            if ui
+                .add_enabled(has_place, egui::Button::new("+ Place"))
+                .on_hover_text("Save where you are now, with this view")
+                .on_disabled_hover_text("No position yet — the world is still loading")
+                .clicked()
+            {
+                act.new_place = true;
+            }
+            if ui
+                .button("+ Folder")
+                .on_hover_text("New folder — drag places into it to group them")
+                .clicked()
+            {
+                act.new_folder = true;
+            }
+        });
         // A capture puts the camera (or a file dialog) in front of everything, so
         // this strip is only seen on the way back — which is exactly when "did
         // that work?" is the question. It is also the only place the capture can
@@ -760,18 +769,35 @@ fn folder_row(
                     // the sibling *place* row is a `Button` and gets the full
                     // 32 pt. That made the folder name, which is both the
                     // fold target and the drag handle, the smallest drag source
-                    // in the panel. Allocating the row's height first fixes both
-                    // without changing how it looks.
-                    let name = ui.add_sized(
+                    // in the panel. So the row's full hit area is allocated first
+                    // and the text drawn into it.
+                    //
+                    // Allocated by hand rather than through `add_sized`, which
+                    // places its widget *centred* and justified: that left the
+                    // folder name floating in the middle of its row while every
+                    // place under it started at the left margin. `Label::halign`
+                    // does not reach it — egui centres the whole allocated rect
+                    // before the label positions its galley inside it.
+                    let (rect, name) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), theme::row_height()),
-                        egui::Label::new(
-                            egui::RichText::new(label)
-                                .size(theme::SIZE_BODY)
-                                .strong()
-                                .color(egui_color(color)),
-                        )
-                        .truncate()
-                        .sense(egui::Sense::click_and_drag()),
+                        egui::Sense::click_and_drag(),
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(label)
+                                        .size(theme::SIZE_BODY)
+                                        .strong()
+                                        .color(egui_color(color)),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            );
+                        },
                     );
                     name.dnd_set_drag_payload(Item::Folder(id));
                     if name.clicked() {
@@ -796,8 +822,9 @@ fn folder_row(
     }
 }
 
-/// One place row: its photo (or the coloured pin dot matching its map pin), the
-/// name — click to jump — and a ⋮ that opens everything else.
+/// One place row: its photo (or the pin matching the one on the map — see
+/// [`marker_slot`]), the name — click to jump — and a ⋮ that opens everything
+/// else.
 ///
 /// **The actions are in a menu and not in the row, and that is a phone
 /// decision.** The row used to end in four small buttons (route, update, rename,
@@ -844,22 +871,7 @@ fn place_row(
 
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * INDENT);
-        match photo.and_then(|stem| thumbnail(ui, thumbs, stem, color).map(|t| (stem, t))) {
-            Some((stem, tile)) => {
-                if tile.clicked() {
-                    act.view_photo = Some((id, name.to_string(), stem.to_string()));
-                }
-            }
-            // No photo (or its file is gone): the dot, which is the map pin's
-            // colour, so the panel and the map read as one thing.
-            None => {
-                ui.label(
-                    egui::RichText::new(theme::first_drawable(ui.ctx(), &["📍", "⌖", "•"]))
-                        .size(12.0)
-                        .color(egui_color(color)),
-                );
-            }
-        }
+        marker_slot(ui, act, thumbs, id, name, color, photo);
         let title = name.to_string();
         // The kebab takes the right edge first and the name gets what is left, so
         // a long place name truncates instead of running under it — the same
@@ -1039,11 +1051,10 @@ fn thumbnail(
     ui: &mut egui::Ui,
     thumbs: &mut HashMap<String, Option<egui::TextureHandle>>,
     stem: &str,
-    color: [f32; 3],
-) -> Option<egui::Response> {
+) -> Option<egui::TextureHandle> {
     // Both the read and the decode happen once per photo per run, and the
     // `None` is remembered too — see the field's own note.
-    let texture = thumbs
+    thumbs
         .entry(stem.to_string())
         .or_insert_with(|| {
             let bytes = crate::utils::photo_store::read_thumb(stem)?;
@@ -1057,27 +1068,68 @@ fn thumbnail(
                 egui::TextureOptions::LINEAR,
             ))
         })
-        .as_ref()?;
+        .clone()
+}
 
-    let side = crate::utils::photo::THUMB_POINTS;
-    let response = ui.add(
-        egui::Image::new(egui::load::SizedTexture::new(
-            texture.id(),
-            egui::vec2(side, side),
-        ))
-        .corner_radius(4.0)
-        .sense(egui::Sense::click()),
+/// The square every place row opens with: the photo tile when there is one, the
+/// place's map pin when there isn't.
+///
+/// **It is one fixed size for both cases, and that is the point.** The photo was a
+/// 28 pt tile and the no-photo case a 12 pt text glyph, so whether a place
+/// happened to have a photo moved its name — and the whole rest of its row —
+/// sideways by half a slot. A list whose rows do not share a left margin reads as
+/// broken before anyone works out why, and giving a place a photo is not supposed
+/// to be a layout event. The slot is as tall as an interactive row, with the
+/// square centred in it, so the rows are also the same height as each other.
+fn marker_slot(
+    ui: &mut egui::Ui,
+    act: &mut Actions,
+    thumbs: &mut HashMap<String, Option<egui::TextureHandle>>,
+    id: u64,
+    name: &str,
+    color: [f32; 3],
+    photo: Option<&str>,
+) {
+    // Sensed as a click only when there is a photo to open: a slot that senses
+    // clicks it does nothing with is a hole in the row that swallows them.
+    let texture = photo.and_then(|stem| thumbnail(ui, thumbs, stem).map(|t| (stem, t)));
+    let sense = if texture.is_some() {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (slot, response) = ui.allocate_exact_size(
+        egui::vec2(MARKER_SLOT, MARKER_SLOT.max(theme::row_height())),
+        sense,
     );
-    // The photo takes the dot's place, so the folder colour it was carrying moves
-    // to a ring around the tile — without it, giving a place a photo silently
-    // removes it from its group as far as the eye is concerned.
+    let tile = egui::Rect::from_center_size(slot.center(), egui::Vec2::splat(MARKER_SLOT));
+
+    let Some((stem, texture)) = texture else {
+        // No photo (or its file is gone): the marker standing over this place on
+        // the map, in the same colour, at row size.
+        crate::systems::place_pins::paint_pin_glyph(ui.painter(), tile, egui_color(color));
+        return;
+    };
+
+    egui::Image::new(egui::load::SizedTexture::new(texture.id(), tile.size()))
+        .corner_radius(theme::RADIUS_SM)
+        .paint_at(ui, tile);
+    // The photo stands where the pin would, so the folder colour it was carrying
+    // moves to a frame around the tile — without it, giving a place a photo
+    // silently removes it from its group as far as the eye is concerned. Drawn
+    // *inside* the tile at a hairline's width: a 1.5 pt ring hung on the outside
+    // made every photo row a little wider than every pin row, which is the
+    // misalignment this slot exists to remove.
     ui.painter().rect_stroke(
-        response.rect,
-        4.0,
-        egui::Stroke::new(1.5, egui_color(color)),
-        egui::StrokeKind::Outside,
+        tile,
+        theme::RADIUS_SM,
+        egui::Stroke::new(1.0, egui_color(color)),
+        egui::StrokeKind::Inside,
     );
-    Some(response.on_hover_text("Open the photo"))
+    if response.clicked() {
+        act.view_photo = Some((id, name.to_string(), stem.to_string()));
+    }
+    response.on_hover_text("Open the photo");
 }
 
 /// Follow the pointer with the name of whatever is being dragged. `dnd_drag_source`
@@ -1138,7 +1190,14 @@ fn fill_remaining(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
     ui.allocate_ui_with_layout(
         size,
-        egui::Layout::left_to_right(egui::Align::Center),
+        // `main_align: Min`, i.e. **left-aligned text**. `Layout::left_to_right`
+        // ships `Align::Center` there ("looks best to e.g. center text within a
+        // button"), and `Button` lays its galley out with `ui.layout()`'s
+        // horizontal align — which for a horizontal layout *is* `main_align`. The
+        // rows are full-width buttons, so that centred every place name over its
+        // own row: four names of four lengths each starting at a different x, in a
+        // list whose whole job is to be scanned down the left edge.
+        egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
         contents,
     );
 }
@@ -1275,6 +1334,93 @@ fn apply_photo_actions(bookmarks: &mut BookmarksState, store: &mut UserStore, ac
             unavailable: false,
         });
     }
+}
+
+/// Fill an empty store with a few saved places so `--ui places` captures the
+/// panel doing its job rather than its "No places yet" card.
+///
+/// The other scripted panels seed themselves for the same reason (`--ui route`
+/// plans a route, `--ui search` types a query). This one has to reach further
+/// than they do: a photo is two files in `platform::storage` and a scripted run
+/// writes nothing, so the demo photos are *textures* put straight into the
+/// thumbnail cache under a stem no file backs. `thumbnail`'s cache is keyed by
+/// stem and only reads storage on a miss, so a pre-filled entry is the whole
+/// trick — and the row it produces is the real one, mixed in with rows that have
+/// no photo, which is the alignment case this panel gets wrong when it gets it
+/// wrong.
+pub fn seed_demo_places(
+    ctx: &egui::Context,
+    bookmarks: &mut BookmarksState,
+    store: &mut UserStore,
+) {
+    if !store.data.bookmarks.is_empty() {
+        return;
+    }
+    let folder = store.add_folder("Groningen".to_string(), None);
+    // Long enough to truncate in a 300 pt panel, which is what a reverse-geocoded
+    // name looks like in practice.
+    let seeds = [
+        ("Laan Corpus den Hoorn, Corpus den Hoorn", None, false),
+        (
+            "Laan Corpus den Hoorn, Corpus den Hoorn",
+            Some(folder),
+            true,
+        ),
+        (
+            "Slochterdiep, Harkstede, Midden-Groningen",
+            Some(folder),
+            true,
+        ),
+        ("Grote Markt, Binnenstad", None, false),
+    ];
+    for (i, (name, parent, photo)) in seeds.into_iter().enumerate() {
+        let id = store.add_bookmark(
+            name.to_string(),
+            53.219 + i as f64 * 0.004,
+            6.566 + i as f64 * 0.006,
+            300.0,
+            CameraPose::default(),
+        );
+        store.move_place(id, parent);
+        if !photo {
+            continue;
+        }
+        let stem = format!("demo-{id}");
+        if let Some(b) = store.data.bookmarks.iter_mut().find(|b| b.id == id) {
+            b.photo = Some(stem.clone());
+        }
+        bookmarks
+            .photo_textures
+            .insert(stem.clone(), Some(demo_thumb(ctx, &stem, i)));
+    }
+}
+
+/// A stand-in photo for [`seed_demo_places`]: a diagonal wash, so the tile reads
+/// as an image rather than as a flat swatch at thumbnail size.
+fn demo_thumb(ctx: &egui::Context, stem: &str, seed: usize) -> egui::TextureHandle {
+    let edge = crate::utils::photo::THUMB_EDGE as usize;
+    let mut pixels = Vec::with_capacity(edge * edge * 4);
+    for y in 0..edge {
+        for x in 0..edge {
+            let t = (x + y) as f32 / (2 * edge) as f32;
+            let (r, g, b) = match seed % 2 {
+                0 => (0.35 + 0.5 * t, 0.45 + 0.35 * t, 0.30 + 0.20 * t),
+                _ => (0.20 + 0.25 * t, 0.35 + 0.45 * t, 0.55 + 0.40 * t),
+            };
+            pixels.extend_from_slice(&[
+                (r * 255.0) as u8,
+                (g * 255.0) as u8,
+                (b * 255.0) as u8,
+                255,
+            ]);
+        }
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([edge, edge], &pixels);
+    ctx.load_texture(
+        format!("place_thumb_{stem}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 /// Drop the cached thumbnail of a place's photo, and close the viewer if it is

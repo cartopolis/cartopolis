@@ -1312,41 +1312,48 @@ pub fn panel_header_with(
         Stroke::new(1.0, SURFACE_HOVER),
     );
 
-    let mut close = false;
+    let close;
     {
+        // The **actions are placed first**, from the right edge, and the title
+        // gets what is left. The other way round is what the Places panel shipped
+        // as: a truncating `Label` in a left-to-right layout claims the whole
+        // remaining width (truncation is how it fits, so it always "fits"), which
+        // left the right-to-left child rect empty and let "+ Folder"/"+ Place"
+        // overflow leftwards *over* the panel's own name. Same bargain every row
+        // in the Places panel makes with its kebab.
         let mut row = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(band.shrink2(egui::Vec2::splat(HEADER_INSET)))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         row.spacing_mut().item_spacing.x = 8.0;
-        let (medallion, _) =
-            row.allocate_exact_size(egui::Vec2::splat(HEADER_MEDALLION), egui::Sense::hover());
-        paint_disc(
-            row.painter(),
-            medallion.center(),
-            HEADER_MEDALLION * 0.5 - 0.5,
-            Disc {
-                fill: ACCENT_MUTED,
-                ring: ACCENT_RING,
-                ink: CREAM,
-                icon,
-                icon_size: 13.0,
-                ring_width: 1.0,
-            },
-        );
-        row.add(
-            egui::Label::new(
-                egui::RichText::new(title)
-                    .font(FontId::new(SIZE_TITLE, brand_family()))
-                    .color(CREAM),
-            )
-            .truncate()
-            .selectable(false),
-        );
-        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close = close_button(ui).clicked();
-            extra(ui);
+        close = close_button(&mut row).clicked();
+        extra(&mut row);
+        row.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let (medallion, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(HEADER_MEDALLION), egui::Sense::hover());
+            paint_disc(
+                ui.painter(),
+                medallion.center(),
+                HEADER_MEDALLION * 0.5 - 0.5,
+                Disc {
+                    fill: ACCENT_MUTED,
+                    ring: ACCENT_RING,
+                    ink: CREAM,
+                    icon,
+                    icon_size: 13.0,
+                    ring_width: 1.0,
+                },
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(title)
+                        .font(FontId::new(SIZE_TITLE, brand_family()))
+                        .color(CREAM),
+                )
+                .truncate()
+                .selectable(false),
+            );
         });
     }
     ui.advance_cursor_after_rect(band);
