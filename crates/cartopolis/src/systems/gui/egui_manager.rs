@@ -482,9 +482,11 @@ pub struct EguiRenderOutput {
 
 /// Lazily-initialized egui-wgpu renderer in the render world.
 /// Stores the renderer alongside the sample count it was compiled for so we
-/// can detect and handle MSAA changes (e.g. camera settings changed), plus the
+/// can detect and handle MSAA changes (e.g. camera settings changed), the
 /// [`EguiRenderOutput::generation`] whose geometry/textures are currently resident
-/// on the GPU (`None` until the first upload).
+/// on the GPU (`None` until the first upload), and the textures egui has finished
+/// with but which cannot be destroyed until the frame that drew them has been
+/// **submitted** — see [`egui_pass`].
 // On wasm `egui_wgpu::Renderer` holds WebGL handles that are `!Send + !Sync` (the
 // browser GPU is main-thread-only), so it cannot be a normal Bevy `Resource` there
 // — it is stored as a **non-send** resource instead (ADR-033). On native it stays a
@@ -492,7 +494,15 @@ pub struct EguiRenderOutput {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Resource))]
 #[derive(Default)]
 pub struct EguiWgpuRenderer(
-    pub Mutex<Option<(egui_wgpu::Renderer, TextureFormat, u32, Option<u64>)>>,
+    pub  Mutex<
+        Option<(
+            egui_wgpu::Renderer,
+            TextureFormat,
+            u32,
+            Option<u64>,
+            Vec<egui::TextureId>,
+        )>,
+    >,
 );
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
@@ -1194,7 +1204,7 @@ pub fn egui_pass(
     // (Re-)create the wgpu renderer when the output format or sample count changes.
     let needs_recreate = guard
         .as_ref()
-        .map(|(_, fmt, s, _)| *fmt != texture_format || *s != sample_count)
+        .map(|(_, fmt, s, _, _)| *fmt != texture_format || *s != sample_count)
         .unwrap_or(true);
 
     if needs_recreate {
@@ -1213,10 +1223,22 @@ pub fn egui_pass(
             sample_count,
             // A fresh renderer holds no buffers, so force an upload below.
             None,
+            // Whatever was queued for destruction belonged to the renderer this
+            // replaces; dropping it releases those textures the safe way (wgpu
+            // keeps a dropped resource alive until the buffers using it retire).
+            Vec::new(),
         ));
     }
 
-    let (renderer, _, _, uploaded_gen) = guard.as_mut().unwrap();
+    let (renderer, _, _, uploaded_gen, pending_free) = guard.as_mut().unwrap();
+
+    // Destroy last frame's retired textures *now*, at the top of the pass, rather
+    // than at the bottom of the one that retired them — see the note where they
+    // are queued. Bevy has submitted that frame's command buffers by the time this
+    // runs again, so the destroy can no longer invalidate a recorded draw.
+    for id in pending_free.drain(..) {
+        renderer.free_texture(&id);
+    }
 
     let screen_descriptor = egui_wgpu::ScreenDescriptor {
         size_in_pixels: render_data.size_in_pixels,
@@ -1284,12 +1306,27 @@ pub fn egui_pass(
         render_context.add_command_buffer(cb);
     }
 
-    // Release GPU resources for textures egui no longer needs — once, on the frame
-    // the delta arrived (see `needs_upload`), not every frame it stays resident.
+    // Queue the textures egui has finished with — once, on the frame the delta
+    // arrived (see `needs_upload`), not every frame it stays resident. **Queued,
+    // not freed**, because `Renderer::free_texture` calls `wgpu::Texture::destroy`,
+    // which takes effect immediately rather than when the last user retires: doing
+    // it here would destroy a texture whose draw call this very pass has just
+    // recorded, and wgpu answers that at `Queue::submit` — after the render graph
+    // has moved on — with
+    //
+    //     Validation Error … In a draw command … Texture with
+    //     'egui_texid_Managed(3)' label has been destroyed
+    //
+    // `handle_render_error` halts the renderer on `Validation` (it recurs), so the
+    // whole app freezes with the picture it last drew. Reported from a phone on
+    // 2026-08-16: opening a saved place's photo and closing it again froze the app,
+    // because egui retires a texture in the pass that its `TextureHandle` is
+    // dropped in, and the viewer's window — image and all — was drawn in that same
+    // pass. egui-wgpu's own winit painter has the same ordering constraint and
+    // solves it by freeing after `Queue::submit`; the render graph submits for us,
+    // so the equivalent here is "at the top of the next pass".
     if needs_upload {
-        for id in &render_data.textures_delta.free {
-            renderer.free_texture(id);
-        }
+        pending_free.extend(render_data.textures_delta.free.iter().copied());
     }
 }
 

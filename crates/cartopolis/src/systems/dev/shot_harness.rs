@@ -1038,6 +1038,8 @@ pub fn open_scripted_ui(
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut status: ResMut<crate::systems::hud::StatusHud>,
     mut menu: ResMut<crate::systems::ui::MainMenu>,
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+    egui: Res<crate::systems::egui_manager::EguiManager>,
     mut done: Local<Option<usize>>,
 ) {
     if *done == Some(progress.index) {
@@ -1118,6 +1120,12 @@ pub fn open_scripted_ui(
         route
             .to
             .set("Route end", seed("CARTO_ROUTE_TO", (53.2109, 6.5642)));
+    }
+    // `--ui places` needs saved places for the same reason `--ui route` needs a
+    // route: a scripted run never loads `user.json`, so the panel would otherwise
+    // document its empty state. Only fills a store that has nothing in it.
+    if want("places") || want("bookmarks") {
+        crate::systems::bookmarks::seed_demo_places(&egui.ctx, &mut bookmarks, &mut store);
     }
     // `--ui search` opens the Search panel (above) *and* seeds a query, so the
     // capture shows the thing the panel exists for rather than an empty field.
