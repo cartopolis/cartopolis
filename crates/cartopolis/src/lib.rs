@@ -878,7 +878,20 @@ fn run_client() {
         .set(bevy::app::TaskPoolPlugin {
             task_pool_options: bevy::app::TaskPoolOptions {
                 io: bevy::app::TaskPoolThreadAssignmentPolicy {
-                    min_threads: 2,
+                    // Four, not two, and the floor is what a phone actually gets:
+                    // `percent` resolves against `available_parallelism`, so an
+                    // 8-core handset lands on 0.30 x 8 = 2 while the widths above
+                    // were measured on a 22-core workstation that lands on 7. Two
+                    // sockets is what the six streamers' 57 aggregate in-flight
+                    // slots were really funnelling through, and `platform::http`'s
+                    // fetch is a *blocking* call — so a single slow Overpass patch
+                    // held half the device's HTTP capacity.
+                    //
+                    // Raising a floor rather than the percentage, because this is
+                    // the small-machine case and the large one was measured. Safe
+                    // for the same reason the paragraph above gives: these threads
+                    // block on a socket rather than burning a core.
+                    min_threads: 4,
                     max_threads: 8,
                     percent: 0.30,
                     on_thread_spawn: None,
