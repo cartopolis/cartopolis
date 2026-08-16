@@ -2477,9 +2477,44 @@ const NIGHT_EXPOSURE_LIFT: f32 = 2.0;
 /// it; this is that adaptation. Gated on `horizon_proximity`, so it fades out
 /// well before midnight and leaves the night floor untouched.
 const TWILIGHT_EXPOSURE_LIFT: f32 = 2.5;
-/// Stops of exposure lift at full overcast, so an overcast scene reads dim but
-/// legible after the direct sun is pulled down (see the `overcast` term).
-const OVERCAST_EXPOSURE_LIFT: f32 = 0.4;
+/// Stops of exposure lift at full overcast — the eye adapting to a duller sky,
+/// exactly as [`TWILIGHT_EXPOSURE_LIFT`] is the eye adapting to dusk.
+///
+/// It has to *pay for the light the overcast model removes*, and at 0.4 it did
+/// not come close. [`overcast_lighting`] leaves ~20 klux of ground illuminance at
+/// noon against a clear sky's ~93 klux — 2.2 stops — so 0.4 of a lift rendered a
+/// grey day 1.8 stops (3.5×) under. That, and not the cloud shader, is most of
+/// what "the lighting is bad" was on the phone: a grey day is *soft*, not dark,
+/// and the eye does not experience it as three stops down from a sunny one.
+///
+/// Not the full 2.2 either: an overcast day should still read a little duller
+/// than a sunny one, and adapting the whole way would make the two identical.
+/// The residual ~0.6 stop is that difference, and `overcast_tests` holds it
+/// there — the three constants here only mean anything as a set.
+const OVERCAST_EXPOSURE_LIFT: f32 = 1.6;
+/// Fraction of the direct beam a full overcast takes away.
+///
+/// A stratus deck does not thin the sun, it *replaces* it: at full cover there is
+/// no beam and no shadow left, only a sky-wide light source. At the old 0.72 the
+/// sun still carried 28 % of a noon beam through a solid deck — a directional key
+/// light under a sky that by construction has no direction.
+const OVERCAST_BEAM_CUT: f32 = 0.92;
+/// Illuminance (lux) the deck itself contributes at full overcast, on top of the
+/// clear-sky ambient.
+///
+/// This is where the beam goes. A cut with nowhere for the energy to land is just
+/// a dimmer, and that is what the old model was: 0.72 off the sun against 1.8× on
+/// an ambient of 900 lux put back 720 of the ~66,000 lux it took. An overcast sky
+/// is the brightest thing in the frame and lights the ground from every direction
+/// at once, so the overcast look is this term *dominating* the beam — soft,
+/// shadowless, and bright. There is a test for that ordering, because it is the
+/// one that makes a grey day read as a grey day rather than as a dim sunny one.
+///
+/// 12 klux against the ~7 klux of beam left puts a full overcast at ~20 klux of
+/// ground illuminance, about two thirds of it diffuse. Real overcast daylight is
+/// 15–25 klux and effectively all diffuse; the beam that survives here is the
+/// price of `cloud_cover` being one scalar for every kind of cloud there is.
+const OVERCAST_SKY_FILL: f32 = 12_000.0;
 
 /// How saturated the sun's *light* colour is (1 = full transmittance colour,
 /// 0 = white). Kept well below 1 because the built-in atmosphere already reddens
@@ -2503,6 +2538,34 @@ const SUN_EXTINCTION_SOFTNESS: f32 = 0.45;
 /// at 1800 the near-white basemap and the near-white buildings washed into one
 /// pale sheet.
 const AMBIENT_DAY_BRIGHTNESS: f32 = 900.0;
+/// …and what stands in for it on a run that has **no** environment map.
+///
+/// The constant above is a trim, and the sentence justifying it — "the sky's own
+/// IBL already fills the shadows" — is a statement about a component that half
+/// the tiers do not carry. `quality::Budget::sky_ibl` is false on the laptop and
+/// the phone, and `SkyMode::Dome` has no atmosphere to bake a cubemap from at
+/// all, so on every one of those runs 900 lux was the *entire* fill: the sun, and
+/// then nothing. It shows exactly where you would predict — a facade turned away
+/// from the sun goes to near-black, and water (albedo `#0F2935`, roughness 0.06,
+/// i.e. a mirror with nothing to mirror) renders as a black hole in the map. Both
+/// are in the Fairphone screenshots this was tuned against; `water.rs`'s own
+/// module header names the environment map as what its sea reflects.
+///
+/// The magnitude is the analytic sky's own hemispherical irradiance, discounted.
+/// Integrating the sky-dome model over the hemisphere at noon gives ~16 klux
+/// (luminance-weighted) — which is the right order for a real clear sky, and is
+/// what bevy's `AtmosphereEnvironmentMapLight` delivers on the tiers that have
+/// it. `AmbientLight` cannot be handed that number: it is unoccluded and arrives
+/// from every direction including below, where the IBL it replaces has a ground
+/// half that is dark and a sky half that is not. A quarter of it is the honest
+/// discount for that, and it is still a *fill* rather than a key — the sun is
+/// ~60 klux beside it.
+///
+/// This also puts water back, and for a reason worth knowing: bevy's ambient is
+/// not diffuse-only. `ambient.wgsl` runs `EnvBRDFApprox` for the specular lobe
+/// too, so raising it restores the grazing-angle sheen a water surface is almost
+/// entirely made of — no cubemap, no per-cell material churn.
+const AMBIENT_DAY_BRIGHTNESS_NO_IBL: f32 = 4_000.0;
 /// Ambient floor at night — a faint blue city skyglow so the world doesn't vanish
 /// into pure black between the lit windows. Deliberately low: this is a *floor*,
 /// not the main night light (that's the moon + window glow). At the old value of
@@ -2580,15 +2643,37 @@ fn sun_light(hours: f32, decl_rad: f32, fog_density: f32) -> (Color, f32) {
 /// Ambient light for a time of day: brightness follows the sky through twilight
 /// (the sky lights the city before sunrise and after sunset), color follows the
 /// sky's hue — blue night, warm dawn/dusk, cool-white day.
-fn ambient_light(hours: f32, moon_age_days: f32, decl_rad: f32) -> AmbientLight {
+fn ambient_light(hours: f32, moon_age_days: f32, decl_rad: f32, sky_ibl: bool) -> AmbientLight {
     let c = utils::sun::ambient_sky_color(hours, decl_rad);
+    let day = if sky_ibl {
+        AMBIENT_DAY_BRIGHTNESS
+    } else {
+        AMBIENT_DAY_BRIGHTNESS_NO_IBL
+    };
     AmbientLight {
         color: Color::linear_rgb(c.x, c.y, c.z),
         brightness: AMBIENT_NIGHT_BRIGHTNESS
-            + AMBIENT_DAY_BRIGHTNESS * utils::sun::daylight(hours, decl_rad)
+            + day * utils::sun::daylight(hours, decl_rad)
             + MOON_AMBIENT_BRIGHTNESS * moonlight_factor(hours, moon_age_days, decl_rad),
         affects_lightmapped_meshes: true,
     }
+}
+
+/// How a cloud deck redistributes the ground's light: what is left of the direct
+/// beam, and the diffuse fill that replaces what it took.
+///
+/// Split out of [`apply_day_night_cycle`] because it is the whole overcast look
+/// in two numbers and because the balance between them — not either one alone —
+/// is what has to hold (there is a test). The failure it replaces was a model
+/// that only ever *subtracted*: it cut the beam hard, added almost nothing back,
+/// and left [`OVERCAST_EXPOSURE_LIFT`] to pay for a three-stop hole with 0.4 of a
+/// stop. An overcast day is not a dim day, it is a day whose light arrives from
+/// the whole sky instead of from one direction.
+fn overcast_lighting(overcast: f32) -> (f32, f32) {
+    (
+        1.0 - OVERCAST_BEAM_CUT * overcast,
+        OVERCAST_SKY_FILL * overcast,
+    )
 }
 
 /// Marker for the catalog star field (spun around the celestial pole).
@@ -3355,6 +3440,14 @@ fn apply_day_night_cycle(
             // adaptation, no day/night cycle at all — which is a lighting failure
             // that looks nothing like a missing bloom.
             Option<&mut bevy::post_process::bloom::Bloom>,
+            // Whether anything but `AmbientLight` is filling the shadowed side.
+            // Asked of the camera rather than of `quality::Budget`, because two
+            // independent things can withhold it — the tier (`sky_ibl`) and the
+            // adapter (no atmosphere at all ⇒ nothing to bake a cubemap from,
+            // `SkyMode::Dome`) — and `setup_camera` has already resolved both
+            // into this one component's presence. See
+            // `AMBIENT_DAY_BRIGHTNESS_NO_IBL`.
+            Option<&bevy::light::AtmosphereEnvironmentMapLight>,
         ),
         (
             With<crate::components::FreeCamera>,
@@ -3371,8 +3464,9 @@ fn apply_day_night_cycle(
     // below crossfades on it. As a boolean these all stepped at once, mid-zoom.
     let space = camera
         .single()
-        .map(|(cell, tf, _, _)| globe.space_factor(cell, tf))
+        .map(|(cell, tf, _, _, _)| globe.space_factor(cell, tf))
         .unwrap_or(0.0);
+    let sky_ibl = camera.single().is_ok_and(|(_, _, _, _, env)| env.is_some());
     if !dev.is_changed() && (space - *was_space).abs() < SPACE_RAMP_STEP {
         return;
     }
@@ -3398,7 +3492,7 @@ fn apply_day_night_cycle(
         // A small lift so an overcast scene reads dim-but-legible rather than
         // being crushed once the direct sun is pulled down.
         - OVERCAST_EXPOSURE_LIFT * overcast;
-    if let Ok((_, _, mut exp, bloom)) = camera.single_mut() {
+    if let Ok((_, _, mut exp, bloom, _)) = camera.single_mut() {
         // The globe's map imagery is bright (near-white paper); from orbit the
         // sunlit hemisphere blows out, so stop the camera down as you climb. This
         // rides `space_factor`, so at the tier boundary it's exactly the ground
@@ -3433,9 +3527,11 @@ fn apply_day_night_cycle(
             .lerp(LinearRgba::WHITE.to_vec4(), space),
     ));
     let mut illuminance = ground_lux.lerp(RAW_SUNLIGHT * SUN_SCALE, space);
+    let (beam_factor, sky_fill) = overcast_lighting(overcast);
     if overcast > 0.0 {
-        // Cloud thins the direct beam and greys its colour toward the sky.
-        illuminance *= 1.0 - 0.72 * overcast;
+        // Cloud replaces the direct beam with sky (`overcast_lighting`) and greys
+        // what is left of its colour toward the sky's.
+        illuminance *= beam_factor;
         let c = LinearRgba::from(sun_color).to_vec4();
         let lum = c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
         sun_color = Color::from(LinearRgba::from_vec4(
@@ -3466,11 +3562,18 @@ fn apply_day_night_cycle(
         // Space has no sky to scatter light back into the shadowed side, so the
         // ambient falls off toward Earthshine scale — just enough that the night
         // side reads as unlit land rather than a hole cut out of the starfield.
-        let ground = ambient_light(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad);
+        let ground = ambient_light(
+            dev.time_of_day,
+            dev.moon_age_days,
+            dev.sun_declination_rad,
+            sky_ibl,
+        );
         let mut ground_rgb = LinearRgba::from(ground.color).to_vec4();
-        // Overcast fills shadows: the diffuse sky light rises and greys, so an
-        // overcast day is flat and cool rather than sunlit-and-shadowed.
-        let ground_brightness = ground.brightness * (1.0 + 0.8 * overcast);
+        // Overcast fills shadows: the deck *is* the light source now, so what the
+        // beam lost above arrives here instead — flat, shadowless and cool rather
+        // than sunlit-and-shadowed. Gated on daylight so a cloudy night is not lit
+        // by a sky that has nothing to scatter.
+        let ground_brightness = ground.brightness + sky_fill * day;
         if overcast > 0.0 {
             let lum = ground_rgb.x * 0.2126 + ground_rgb.y * 0.7152 + ground_rgb.z * 0.0722;
             ground_rgb = ground_rgb.lerp(Vec4::new(lum, lum, lum, 1.0), 0.5 * overcast);
@@ -3940,6 +4043,23 @@ pub const CLOUD_WIND: Vec2 = Vec2::new(118.0, 44.0);
 const CLOUD_SUN_GAIN: f32 = 1.0;
 /// Gain on the ambient sky term — how much the shadowed side is filled in.
 const CLOUD_AMBIENT_GAIN: f32 = 1.0;
+/// Floor under the deck's ambient colour, for the hours when the sky it is taken
+/// from has gone dark. See the argument at the `sky_rgb` it clamps.
+const CLOUD_NIGHT_FLOOR: Vec3 = Vec3::new(0.045, 0.045, 0.055);
+/// Fraction of the ambient sky an opaque cloud core still receives, at the two
+/// ends of the coverage range — the shader lerps between them.
+///
+/// One number could not do this job. A lone cumulus on a blue sky has a *dark*
+/// base: it is optically deep, lit from above, and standing over ground that
+/// bounces very little back. A solid overcast has a bright one: the deck is
+/// thinner, and it is the sky — it has no darker sky beside it to be dark
+/// against. The old single 0.35 was the cumulus answer applied to both, which is
+/// how a fully overcast day came out as a grey ceiling with the horizon glowing
+/// white underneath it. At full cover the base now lands on the haze colour it
+/// meets at the horizon, give or take the 15 % of modulation left so the deck
+/// still has some structure in it rather than being one flat field of grey.
+const CLOUD_SKY_FLOOR_SCATTERED: f32 = 0.35;
+const CLOUD_SKY_FLOOR_OVERCAST: f32 = 0.85;
 /// Clouds are at full strength up to this camera altitude, then fade out so a
 /// high flight or orbit view sees clear sky (the shell is a ceiling seen from
 /// below; flying *above* the deck to look down on the tops is a follow-up).
@@ -4103,7 +4223,6 @@ fn update_clouds(
 
     let hours = dev.time_of_day;
     let decl = dev.sun_declination_rad;
-    let day = utils::sun::daylight(hours, decl);
 
     // Sunlight *at deck altitude* — less air above the deck than above the city,
     // so it is brighter and less reddened than the beam the ground gets. That
@@ -4114,21 +4233,28 @@ fn update_clouds(
     let beam = utils::sun::sun_transmittance_at(hours, decl, CLOUD_LAYER_HEIGHT);
     let sun_rgb = beam * utils::sun::sun_disc(hours, decl) * CLOUD_SUN_GAIN;
 
-    // Ambient sky light filling the shadowed side. Built from the same
-    // ingredients — and in the same shape — as `free_camera::distance_fog`'s
-    // colour, so the two agree at every hour instead of being two guesses at the
-    // same sky: a grey-blue day dome, near-black at night, warmed toward the sun's
-    // own tint while it sits near the horizon.
-    let tint = beam / beam.max_element().max(1e-4);
-    let warm = 0.35 * utils::sun::horizon_proximity(hours, decl);
-    let sky_day = Vec3::new(0.38, 0.44, 0.55);
-    // Deliberately brighter, and warmer, than the fog's night colour: a cloud base
-    // over a city catches its glow from below, so an overcast night sky reads as a
-    // dim lid rather than as a void. Matching the fog exactly here would make the
-    // deck darker than the sky behind it and turn it into black holes in the star
-    // field — the one place cloud and fog should *not* agree.
-    let sky_night = Vec3::new(0.045, 0.045, 0.055);
-    let sky_rgb = sky_night.lerp(sky_day, day) * Vec3::ONE.lerp(tint, warm) * CLOUD_AMBIENT_GAIN;
+    // Ambient sky light filling the shadowed side — and, at full cover, the deck's
+    // whole colour.
+    //
+    // It **is** the camera's fog colour now, not a second hand-authored palette
+    // built "in the same shape" as it. The two were meant to agree and did not:
+    // the fog colour is ~0.5 linear by day and the deck's base worked out at ~0.15,
+    // so an overcast sky rendered as a mid-grey lid sitting over a near-white
+    // horizon band, with a hard step between them — the single ugliest thing in
+    // the Fairphone screenshots. Both are written into the same post-exposure
+    // linear space (bevy's `apply_fog` mixes toward `DistanceFog::color` after
+    // exposure, and `horizonhaze.wgsl` paints it un-exposed to match), so this is
+    // not a units mismatch to be scaled away — they were simply two different
+    // greys, and taking the one already on the camera makes them one.
+    //
+    // What survives from the old code is the *floor*: a cloud base over a city
+    // catches its glow from below, so an overcast night sky must read as a dim lid
+    // rather than as a void. Matching the fog's night colour exactly would make
+    // the deck darker than the sky behind it and turn it into black holes in the
+    // star field — the one place cloud and fog should not agree, and now the only
+    // one.
+    let haze = fog.color.to_linear().to_vec3();
+    let sky_rgb = haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN;
 
     if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
         mat.params0 = Vec4::new(
@@ -4141,7 +4267,13 @@ fn update_clouds(
         mat.sun_dir = sun_direction(hours, decl).extend(CLOUD_DECK_THICKNESS);
         mat.sun_color = LinearRgba::new(sun_rgb.x, sun_rgb.y, sun_rgb.z, CLOUD_OPACITY);
         mat.sky_color = LinearRgba::new(sky_rgb.x, sky_rgb.y, sky_rgb.z, CLOUD_HIGH_OPACITY);
-        mat.haze_color = fog.color.to_linear();
+        // The haze colour's alpha was documented "unused" and is the deck's sky
+        // floor — a Rust-side decision precisely because it is a *lighting* one
+        // (`cloud_sky_floor`), and the shader is where shape lives.
+        mat.haze_color = fog
+            .color
+            .to_linear()
+            .with_alpha(cloud_sky_floor(dev.cloud_cover));
         // World-anchor: the camera's horizontal position in the local anchor
         // frame, in metres, so the deck stays fixed over the ground as you fly
         // under it rather than sliding with the camera. Metres, not the shader's
@@ -4158,6 +4290,18 @@ fn update_clouds(
             CLOUD_HIGH_LAYER_HEIGHT,
         );
     }
+}
+
+/// How much of the ambient sky an opaque cloud core keeps, for a coverage.
+///
+/// Ramped over the *top* of the coverage range rather than linearly across it:
+/// "overcast" is a state the sky arrives at near the end, and a lone cumulus at
+/// 30 % cover should look no different from one at 10 %.
+fn cloud_sky_floor(cover: f32) -> f32 {
+    CLOUD_SKY_FLOOR_SCATTERED.lerp(
+        CLOUD_SKY_FLOOR_OVERCAST,
+        utils::sun::smoothstep(0.55, 1.0, cover),
+    )
 }
 
 /// Per-metre density of a [`FogFalloff`], for the cloud deck's aerial perspective
@@ -4527,5 +4671,133 @@ fn update_globe_clouds(
         mat.lit_color = LinearRgba::from_vec4(lit);
         mat.shadow_color = LinearRgba::rgb(0.06, 0.09, 0.16);
         mat.north_axis = globe.north_axis_local().extend(0.0);
+    }
+}
+
+/// The overcast look, as arithmetic.
+///
+/// None of it can be checked by rendering here — a software rasteriser is not
+/// evidence about colour or exposure (`docs/notes/headless-shots-software-renderer.md`)
+/// — but all of it is decided on the CPU before a fragment runs, so all of it can
+/// be checked as numbers. These pin the two balances the tuning rests on: what an
+/// overcast sky does to the *ground*, and where the deck's own base tone lands
+/// against the horizon it has to meet.
+#[cfg(test)]
+mod overcast_tests {
+    use super::*;
+
+    /// Ground illuminance under this model, for a coverage — beam plus fill, at
+    /// the sun's noon elevation.
+    fn ground_lux(overcast: f32) -> f32 {
+        let (hours, decl) = (12.0, 0.0);
+        let (beam, fill) = overcast_lighting(overcast);
+        let (_, lux) = sun_light(hours, decl, 0.0);
+        let day = utils::sun::daylight(hours, decl);
+        lux * beam + ambient_light(hours, 0.0, decl, true).brightness + fill * day
+    }
+
+    /// A clear sky must be untouched: every overcast term is a multiple of the
+    /// coverage, so zero coverage is the old scene exactly.
+    #[test]
+    fn a_clear_sky_is_not_an_overcast_one_with_the_knobs_at_zero() {
+        assert_eq!(overcast_lighting(0.0), (1.0, 0.0));
+        assert_eq!(cloud_sky_floor(0.0), CLOUD_SKY_FLOOR_SCATTERED);
+    }
+
+    /// The exposure lift has to pay for the light the model removes. It need not
+    /// pay *all* of it — an overcast day should still read a little duller — but
+    /// the gap is what the phone was rendering three times too dark through.
+    #[test]
+    fn the_exposure_lift_covers_most_of_the_light_the_deck_takes() {
+        let stops_lost = (ground_lux(0.0) / ground_lux(1.0)).log2();
+        // The model itself must stay a real dimming — an overcast sky that lit the
+        // ground as brightly as the sun would be no overcast at all.
+        assert!(
+            (1.0..3.0).contains(&stops_lost),
+            "overcast should cost 1–3 stops, costs {stops_lost}"
+        );
+        let residual = stops_lost - OVERCAST_EXPOSURE_LIFT;
+        assert!(
+            (0.0..=0.75).contains(&residual),
+            "an overcast scene should land within ¾ of a stop of a sunny one, \
+             lands {residual} stops under"
+        );
+    }
+
+    /// …and it has to arrive as *fill*, not as a dimmer. At full cover the sky
+    /// must out-light the beam, because that — not the brightness — is what makes
+    /// a grey day read as a grey day: no key light, no shadow, no direction.
+    #[test]
+    fn a_full_overcast_is_lit_by_the_sky_rather_than_by_the_sun() {
+        let (hours, decl) = (12.0, 0.0);
+        let (beam, fill) = overcast_lighting(1.0);
+        let (_, lux) = sun_light(hours, decl, 0.0);
+        let diffuse = ambient_light(hours, 0.0, decl, true).brightness + fill;
+        assert!(
+            diffuse > lux * beam,
+            "the deck should out-light the beam it replaced: sky {diffuse}, sun {}",
+            lux * beam
+        );
+    }
+
+    /// The deck and the horizon are one sky. At full cover the base tone the
+    /// shader lands on must sit within a small fraction of the fog colour the
+    /// horizon-haze shell paints, or the two meet in the step the Fairphone
+    /// screenshots showed — a grey lid over a white band.
+    ///
+    /// This is the arithmetic of `update_clouds` + `clouds.wgsl`'s ambient term
+    /// for an opaque core (`shape_low == 1`), which is what a solid overcast is
+    /// made of; the sun term is negligible under an optical depth of 7.
+    #[test]
+    fn an_overcast_deck_meets_the_horizon_it_recedes_into() {
+        let fog = systems::free_camera::distance_fog(0.2, 12.0, 0.0);
+        let haze = fog.color.to_linear().to_vec3();
+        let base = haze.max(CLOUD_NIGHT_FLOOR) * CLOUD_AMBIENT_GAIN * cloud_sky_floor(1.0);
+        let ratio = base.length() / haze.length();
+        assert!(
+            (0.8..=1.0).contains(&ratio),
+            "an overcast deck should land on the haze colour, lands at {ratio}× it"
+        );
+        // The old constants, for the record: a base of 0.35 × (0.38, 0.44, 0.55)
+        // against a fog colour of ~(0.46, 0.52, 0.65) — under a third of it.
+        let was = Vec3::new(0.38, 0.44, 0.55) * 0.35;
+        assert!(was.length() / haze.length() < 0.4);
+    }
+
+    /// …and scattered cloud must *not* get that treatment. A lone cumulus has a
+    /// dark base against a bright sky; lifting it to the haze colour would erase
+    /// the one cue that says the thing is solid.
+    #[test]
+    fn scattered_cloud_keeps_a_dark_base() {
+        assert!(cloud_sky_floor(0.3) < 0.5 * cloud_sky_floor(1.0));
+        // Monotonic across the range, so no coverage between the two ends is
+        // darker than one below it.
+        let mut last = -1.0;
+        for i in 0..=20 {
+            let f = cloud_sky_floor(i as f32 / 20.0);
+            assert!(f >= last, "sky floor dipped at cover {}", i as f32 / 20.0);
+            last = f;
+        }
+    }
+
+    /// A run with no environment map has to make the ambient stand in for it, and
+    /// the difference is the whole reason the phone's shaded facades and its water
+    /// came out black. Night is untouched: the env map is a *sky* light.
+    #[test]
+    fn a_run_without_sky_ibl_gets_a_real_ambient_fill() {
+        let ibl = ambient_light(12.0, 0.0, 0.0, true).brightness;
+        let none = ambient_light(12.0, 0.0, 0.0, false).brightness;
+        assert!(
+            none > 3.0 * ibl,
+            "the fill that replaces the env map should dominate the trim it \
+             replaces: {none} vs {ibl}"
+        );
+        // …but stay a fill rather than a key light: the sun is still the sun.
+        let (_, sun) = sun_light(12.0, 0.0, 0.0);
+        assert!(none < 0.25 * sun, "ambient {none} rivals the sun {sun}");
+        assert_eq!(
+            ambient_light(1.0, 0.0, 0.0, true).brightness,
+            ambient_light(1.0, 0.0, 0.0, false).brightness
+        );
     }
 }

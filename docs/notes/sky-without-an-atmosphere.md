@@ -135,6 +135,46 @@ The gate against a repeat is the phone-tier arm of the headless scene smoke
 desktop arm does under `CARTO_QUALITY=phone`. It is the same assertion twice on
 purpose: what is being checked is not a new property but that the checked one
 still holds on the unwatched tier.
+## Losing the atmosphere loses the *lighting*, not just the sky
+
+The section above is the same shape of fault one layer over: there, a system
+*required* a component the gate withholds; here, nothing at all replaced what
+that component was doing.
+
+Found 2026-08-16, from the first Fairphone screenshots of a working sky. The dome
+replaces what the atmosphere **drew**. Nothing replaced what it **lit with**.
+
+`AtmosphereEnvironmentMapLight` bakes the sky into an IBL cubemap, and on the
+tiers that carry it that is the scene's whole diffuse fill — `AmbientLight` beside
+it is a trim, which is exactly what `AMBIENT_DAY_BRIGHTNESS = 900` says it is and
+why it is so small. On a `SkyMode::Dome` run there is no atmosphere to bake from,
+so the env map is absent and that 900 lux is not a trim on the fill, it *is* the
+fill. Two tiers reach the same place by the other route: `quality::Budget::sky_ibl`
+is false on the laptop and the phone whether or not the adapter could have run the
+atmosphere.
+
+What it looks like, both visible in the screenshots:
+
+- a facade turned away from the sun goes to near-black, because the only thing
+  that was ever going to light it was the sky;
+- **water renders as a black hole in the map.** `WATER_ALBEDO` is `#0F2935` at
+  roughness 0.06 — a mirror, correctly, since almost everything you see looking at
+  water is reflected. With no cubemap there is nothing to reflect. `water.rs`'s own
+  module header names the environment map as the thing its sea reflects; that
+  sentence is simply false on half the tiers.
+
+The fix is `AMBIENT_DAY_BRIGHTNESS_NO_IBL`, chosen by integrating this dome's own
+model over the hemisphere (~16 klux at noon, the right order for a clear sky) and
+discounting it to a quarter, because `AmbientLight` is unoccluded and omni-
+directional where the IBL it stands in for has a dark ground half. It puts the
+water back for a reason worth knowing: bevy's ambient is **not diffuse-only** —
+`ambient.wgsl` runs `EnvBRDFApprox` for the specular lobe too, so raising it
+restores the grazing-angle sheen a water surface is mostly made of, with no
+cubemap and no per-cell material churn.
+
+A real procedural cubemap generated from this dome would be better still —
+it would have a sun in it, and a ground half — and is the obvious next step if
+the flat fill reads wrong. It was not needed to stop the water being black.
 
 ## Verification status
 
