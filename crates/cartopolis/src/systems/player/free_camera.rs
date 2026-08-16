@@ -643,8 +643,16 @@ pub fn setup_camera(
     // would bisect nothing. `CARTO_SKY_DOME` is the other direction: it forces the
     // fallback on hardware that could run the real thing, which is the only way to
     // look at what the phone sees without holding the phone.
+    //
+    // `budget.sky_dome` is the tier's own answer, and it is a *separate* question
+    // from `float32_filterable` above even though both land here. That one is
+    // "could this adapter run bevy's atmosphere at all"; this one is "should this
+    // machine spend a frame on it". A Mali that has the feature was previously
+    // handed the full atmosphere on the strength of being able to run it — the
+    // substitution of "can" for "should" a tier exists to prevent. See the field.
     let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let want_atmosphere = want_sky && float32_filterable && !crate::env_flag("CARTO_SKY_DOME");
+    let want_atmosphere =
+        want_sky && float32_filterable && !budget.sky_dome && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
     commands.insert_resource(if want_atmosphere {
         crate::systems::sky_dome::SkyMode::Atmosphere
@@ -690,6 +698,13 @@ pub fn setup_camera(
             } else {
                 budget.msaa
             },
+            // Explicit, because Bevy's required-component default is
+            // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
+            // camera — no atmosphere, no bloom, i.e. the phone — bevy_pbr sets
+            // `TONEMAP_IN_SHADER`, so the curve is not one full-screen pass but
+            // work in every mesh fragment shader, multiplied by the ground
+            // overdraw. See `quality::Budget::tonemapping`.
+            budget.tonemapping,
             // Bevy's default far plane (1 km) clips the streamed tile pyramid
             // and the horizon ground disc; reversed-z depth keeps precision
             // fine at this range.

@@ -2284,7 +2284,21 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
 /// clamps to it while warning. Asking for 4 anyway does not buy four cascades, it
 /// just builds a config the backend then discards — so this asks for what the
 /// platform can actually deliver.
-const SHADOW_CASCADES: usize = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
+///
+/// Below that ceiling it is the tier's call, not a `cfg`'s. It used to be a bare
+/// `if cfg!(target_arch = "wasm32") { 1 } else { 4 }`, and Android answers
+/// "native" to every `cfg` in this tree — so a handset that turned shadows on got
+/// a workstation's four cascades over two lights, i.e. up to eight shadow passes
+/// across the ~79% of submitted triangles that cast. Latent today, because the
+/// phone tier defaults `shadows: false`; live the moment anyone uses the dev
+/// panel's toggle, and live for the Balanced rung as it stands.
+///
+/// Reading it as a `min` keeps the platform ceiling and the budget in the right
+/// relationship: neither can raise what the other refuses.
+fn shadow_cascades() -> usize {
+    let platform_max = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
+    platform_max.min(quality::budget().shadow_cascades)
+}
 
 fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
@@ -2299,9 +2313,9 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
         CascadeShadowConfigBuilder {
-            num_cascades: SHADOW_CASCADES,
+            num_cascades: shadow_cascades(),
             minimum_distance: 2.0,
-            maximum_distance: 3000.0,
+            maximum_distance: quality::budget().shadow_distance_m,
             first_cascade_far_bound: 60.0,
             overlap_proportion: 0.2,
         }
@@ -2359,7 +2373,7 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         // the whole light (rather than toggling `shadow_maps_enabled`, which also
         // panics) keeps the two live lights' cascade counts equal at all times.
         CascadeShadowConfigBuilder {
-            num_cascades: SHADOW_CASCADES,
+            num_cascades: shadow_cascades(),
             minimum_distance: 2.0,
             maximum_distance: 1200.0,
             first_cascade_far_bound: 80.0,
@@ -3951,6 +3965,19 @@ impl Material for CloudMaterial {
         descriptor.primitive.cull_mode = None;
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             depth.depth_write_enabled = Some(false);
+        }
+        // The phone's cheaper cloud variant. A shader def rather than a uniform
+        // branch, so the desktop program is byte-identical to what it was and the
+        // handset's is genuinely shorter — a dynamic branch would still cost the
+        // register pressure of the octaves it skips.
+        //
+        // Resolved from the tier here rather than passed through the material,
+        // because it cannot change while the process runs and one extra pipeline
+        // variant is exactly what specialization is for.
+        if quality::is_phone() {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("CLOUDS_LOW".into());
+            }
         }
         Ok(())
     }
