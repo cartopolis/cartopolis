@@ -777,6 +777,60 @@ fn display_rotation_inner(env: &mut JNIEnv, activity: &JObject) -> Result<i32, F
     })
 }
 
+/// The URL this launch was started with, if it was started by tapping a link:
+/// `getIntent().getDataString()`.
+///
+/// This is how a `cartopolis://` link and a verified `https://cartopolis.org/go`
+/// App Link reach the client (`systems::place_link`). Every class here is a
+/// framework one, so — like `open_url` — the no-dex rule never threatened it.
+///
+/// **It answers for the launch, and only the launch.** `android-activity` 0.6
+/// surfaces no intent at all, and `android.app.NativeActivity` does not override
+/// `onNewIntent`, so nothing calls `setIntent` and `getIntent` keeps handing back
+/// the intent that *started* the activity for as long as the process lives. With
+/// `launchMode="singleTask"` in the manifest, tapping a second link while the app
+/// is already running therefore brings the existing task forward showing the place
+/// it was already at, and this function reports the *first* link again. That is a
+/// platform limit rather than an oversight: the fix is a trampoline activity, and a
+/// trampoline is a Java class, and a Java class is a `classes.dex` this APK
+/// deliberately does not have (`docs/notes/android-build.md`). Callers must read it
+/// **once**, at startup, or a link followed hours ago will teleport the camera
+/// again.
+///
+/// Returns `None` for an ordinary launcher tap, which carries an `ACTION_MAIN`
+/// intent with no data — the overwhelmingly common case, and not a failure.
+pub fn launch_url() -> Option<String> {
+    let java_vm = vm().ok()?;
+    let mut env = java_vm.attach_current_thread().ok()?;
+    let activity = activity();
+    let result = env.with_local_frame(6, |env| {
+        let intent = env
+            .call_method(&activity, "getIntent", "()Landroid/content/Intent;", &[])?
+            .l()?;
+        if intent.is_null() {
+            return Ok::<Option<String>, Fail>(None);
+        }
+        // `getDataString()` rather than `getData()` + `toString()`: one call, and it
+        // is already null-for-absent, which is the answer we want for a launcher tap.
+        let data = env
+            .call_method(&intent, "getDataString", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if data.is_null() {
+            return Ok(None);
+        }
+        let url: String = env.get_string(&JString::from(data))?.into();
+        Ok(Some(url))
+    });
+    match result {
+        Ok(url) => url.filter(|u| !u.trim().is_empty()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            tracing::warn!(error = %msg, "could not read the launch intent");
+            None
+        }
+    }
+}
+
 /// The app's package name (`eu.garage44.cartopolis`), or `None`.
 ///
 /// Read rather than hardcoded: the manifest owns it, and a constant here would be
