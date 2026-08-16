@@ -245,6 +245,20 @@ This is a **Cargo workspace** with six crates:
 
 **Every build reaches a remote sim over TLS, and the address decides** (`network::resolve_target`). A bare hostname resolves to `wss://host/ws` — so the *easy* thing to type is the encrypted one, which is the whole design: the wire carries a password and then a session token, and this used to cross a public plaintext port in the clear. Loopback (`127.0.0.1`, `localhost`, `::1`) stays plain TCP, because that is solo's in-process sim and TLS to yourself is a self-signed cert plus a disabled verifier — the appearance of security over traffic that never touches a network. `tcp://` and `ws://` opt out explicitly, for a private CA or a LAN dev sim; nobody reaches either by typing a hostname, and `a_remote_address_is_always_encrypted` fails if that ever stops being true. Two dependency constraints follow and are not preferences: **rustls, not native-tls** (native-tls is OpenSSL, and the CI Android lane has only the NDK's clang), and rustls 0.23 **panics at the first connection** unless a `CryptoProvider` is installed — it compiles fine and dies when somebody signs in, so `network::install_crypto_provider` does it explicitly.
 
+**The user-safety surface is split the same way, and the server is what refuses**
+(`docs/notes/user-safety.md`). A filter, a report path, a block and published
+contact details are what a store requires of an app carrying user-generated
+content, and this one has chat, voice, shared prims and author scripts. Filing a
+report and setting a block are *player* actions, so they are on the wire
+(`SetBlocked` / `BlockedList` / `ReportUser` / `ReportAck`, protocol 16), as is
+deleting your own account (`DeleteAccount`, which re-checks the password because
+a session token can be a remembered one on somebody else's device). Triaging a
+report is an operator action, so it is on `/api/admin/reports`. Every refusal is
+enforced in `ChatHub`'s fan-out and in `net.rs`, never in the panel that draws
+it — a client can be rewritten, so a block applied in the UI is not a block. The
+one thing the client decides for itself is hiding lines that had *already*
+arrived when the block was made, which the server cannot retract.
+
 **Account management is HTTP, not the wire** (`crates/simulator/src/http.rs`, `--http-listen`). Operator actions are deliberately off `NetMessage`: putting them there would run an authorisation decision through the same path as a movement intent and would move every client's protocol version whenever the *admin* surface changed. What the two surfaces share is the account table and the session map, which is the point — an admin signs in with an ordinary account. Two consequences worth knowing: **`disabled = 1` gates the next handshake, not the current session** (`Sessions` is keyed by token with no principal index), and the **last enabled admin cannot be demoted, disabled or deleted** — a running server with no admin is only repairable with shell access, via `simulator --create-admin <user>` and `CARTO_ADMIN_PASSWORD`.
 
 ## Documentation (notes + commit bodies)
