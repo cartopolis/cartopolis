@@ -258,6 +258,19 @@ const QT_MIN_ALT: f64 = 35_000.0;
 /// twice as fast — which is most of what a zoom through the tier feels like.
 const MAX_GLOBE_TILE_BUILDS_PER_FRAME: usize = 8;
 
+/// Tile materials the albedo ramp may rewrite per frame ([`update_globe_albedo`]).
+///
+/// The third burst in the same frames as the two caps around it, and the only one
+/// that had none. A step touches every live tile — ~450 at low orbit — dirtying a
+/// uniform apiece for re-upload, and it fires while a climb has the build and
+/// despawn queues at their own limits.
+///
+/// Higher than those two because a uniform write is not a mesh upload: this is a
+/// 64-byte buffer patch, not a megabyte of packed mips. 64 clears a full set in
+/// about seven frames, which is well inside the time `ALBEDO_UPDATE_STEP` (0.03 of
+/// a ramp that takes a whole climb to traverse) allows before the next step.
+const MAX_GLOBE_ALBEDO_WRITES_PER_FRAME: usize = 64;
+
 /// Max globe tiles to despawn per frame — the mass-*despawn* half of the
 /// device-loss guard (its upload half is `MAX_GLOBE_TILE_BUILDS_PER_FRAME`). A
 /// zoom-out, stale reclaim, or re-anchor teardown can retire 100+ tiles at once;
@@ -1021,6 +1034,9 @@ pub fn update_globe_albedo(
     tinted: Query<(&GlobeSurfaceTint, &MeshMaterial3d<GlobeSurfaceMaterial>), With<GlobeMesh>>,
     mut materials: ResMut<Assets<GlobeSurfaceMaterial>>,
     mut applied: Local<Option<f32>>,
+    // How far through the live tile set the current step has got. The rewrite is
+    // spread over frames (see below), so it has to remember where it was.
+    mut cursor: Local<usize>,
 ) {
     let Ok((cell, tf)) = camera.single() else {
         return;
@@ -1029,11 +1045,29 @@ pub fn update_globe_albedo(
     let a = 1.0f32.lerp(GLOBE_DEEP_ALBEDO, space);
     albedo.0 = a;
     gloss.0 = space;
-    if applied.is_some_and(|p| (a - p).abs() < ALBEDO_UPDATE_STEP) {
+    // A step begins when the ramp has drifted far enough, and *ends* only when the
+    // cursor has walked the whole set — so the two conditions are separate.
+    if *cursor == 0 && applied.is_some_and(|p| (a - p).abs() < ALBEDO_UPDATE_STEP) {
         return;
     }
-    *applied = Some(a);
-    for (tint, mat) in tinted.iter() {
+    // Amortised, because the alternative is a burst at the worst possible moment.
+    // A step touches every live tile material — ~450 of them at low orbit, each
+    // write dirtying a uniform for re-upload — and it fires during exactly the
+    // climbs when the tile build and despawn queues are already at their own
+    // per-frame caps. Those two have been budgeted since the device-loss work;
+    // this was the third burst in the same frames and the only one without a cap.
+    //
+    // A tile a few frames behind the ramp is invisible: `ALBEDO_UPDATE_STEP` is
+    // 0.03 of a range that takes a whole climb to traverse, and new tiles read the
+    // current `GlobeSurfaceAlbedo` at spawn rather than waiting for a sweep.
+    let budget = crate::quality::budget().per_frame(MAX_GLOBE_ALBEDO_WRITES_PER_FRAME);
+    let mut done = 0;
+    for (tint, mat) in tinted.iter().skip(*cursor) {
+        if done >= budget {
+            *cursor += done;
+            return;
+        }
+        done += 1;
         if let Some(mut m) = materials.get_mut(&mat.0) {
             m.base.base_color = Color::srgb(tint.0.x * a, tint.0.y * a, tint.0.z * a);
             // Only the masked surfaces have an ocean at all; leave the backstop
@@ -1043,6 +1077,10 @@ pub fn update_globe_albedo(
             }
         }
     }
+    // The sweep completed: bank the value that was being applied, so the next
+    // drift past `ALBEDO_UPDATE_STEP` starts a fresh one.
+    *cursor = 0;
+    *applied = Some(a);
 }
 
 /// Whole-globe quadtree tile streaming: select the tile set whose screen-space

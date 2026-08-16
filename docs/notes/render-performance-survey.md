@@ -236,6 +236,25 @@ The decode is memoised; the path building and the bounds scan are not.
   after launch and after every teleport, not steady-state frames — and `--shot`
   waits for settle, so the harness hides exactly this.
 
+## A trap in the instrument itself
+
+**`--frames` sweeps only place the first viewpoint.** Every capture after the
+first reports `alt_m=0` with `space_factor` and `globe_albedo` as `NaN`
+(reproduced 2026-08-16 on a 6-frame 60 km → 3000 km climb, and confirmed
+pre-existing by re-running against a clean tree). The likely cause is that each
+waypoint is a teleport, a teleport re-anchors, `setup_globe` rebuilds, and the
+settle test waits on the tile streams but not on the globe being placed — so the
+shutter fires while `GlobeState` is still empty.
+
+This matters more than it looks, because `--frames` + `--csv` is precisely the
+tool CLAUDE.md documents for catching *a hard cut in a ramp* — the one thing a
+single still cannot show. Until it is fixed, verify a ramp with separate `--shot`
+runs at several altitudes, which does work:
+
+    400 km   space_factor 0.039   globe_albedo 0.983
+    1500 km  space_factor 0.487   globe_albedo 0.781
+    3000 km  space_factor 1.000   globe_albedo 0.550
+
 ## What a phone cannot be measured on here
 
 Lavapipe is a CPU rasteriser: geometry, placement, culling and visibility are

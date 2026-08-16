@@ -912,9 +912,11 @@ pub fn update_buildings(
     // detail patch (it only refreshes via a new fetch, which we now skip here) so
     // it doesn't shine through the real meshes.
     if over_lod22 && !osm.detail_entities.is_empty() {
-        for e in osm.detail_entities.drain(..) {
-            commands.entity(e).despawn();
-        }
+        // Through the bounded queue, not inline: this is one merged multi-megabyte
+        // mesh plus its windows, and freeing it in a single command buffer is the
+        // mass-despawn burst `platform::stream` owns a queue to prevent.
+        let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
+        osm.far.retire_all(retired);
         osm.last_center = None;
     }
     // `coverage_resolved` holds the FIRST fetch those few startup frames: a
@@ -1272,9 +1274,14 @@ pub fn update_buildings(
             return;
         }
     };
-    for entity in osm.detail_entities.drain(..) {
-        commands.entity(entity).despawn();
-    }
+    // The patch swap, and the last inline mass-despawn in this module. The
+    // outgoing patch is a merged mesh over up to several thousand buildings; the
+    // incoming one is uploaded in this same frame a few lines below, so freeing
+    // the old one inline put an unbounded free and a multi-megabyte upload in one
+    // command buffer — the shape CLAUDE.md names as the original
+    // `VK_ERROR_DEVICE_LOST` trigger.
+    let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
+    osm.far.retire_all(retired);
     let patch_cell = patch.patch_cell;
     let count = patch.buildings.len();
     osm.buildings = patch.buildings; // retain footprints for future per-building conversion
