@@ -141,12 +141,24 @@ above, and the alternative is a void.
 
 **The table is the tier**, so a knob that has no `Budget` field is a knob the
 phone does not get. That is the rule the four rows added on 2026-08-10 exist to
-enforce, and it is not a style preference: **every env-var and query-string
-escape hatch is unreachable on Android.** `CARTO_FPS_CAP`,
-`CARTO_NO_SPACE_RAYMARCH` and `CARTO_QUALITY` all go through
-`std::env::var` off wasm, and a zygote-launched NativeActivity process has no
-settable environment and no `?query=` — so on the one platform the phone tier was
-written for, "force it with an env var" is not an answer to anything.
+enforce, and it is not a style preference: a zygote-launched NativeActivity
+process has no settable environment and no `?query=`, so on the one platform the
+phone tier was written for, "force it with a raw env var" is not an answer to
+anything.
+
+*Corrected 2026-08-16.* This used to say **every** env-var escape hatch is
+unreachable on Android, naming `CARTO_FPS_CAP`, `CARTO_NO_SPACE_RAYMARCH` and
+`CARTO_QUALITY`. That is true only of switches read through raw `std::env::var`.
+Anything going through `crate::env_flag` / `env_value` maps to a
+`debug.carto.<name>` **system property** on Android, which is the one namespace
+`adb shell setprop` may write on a production build without root — so those *are*
+reachable on a shipped APK with no rebuild. `CARTO_QUALITY` and
+`CARTO_NO_SPACE_RAYMARCH` were always on that path; `CARTO_FPS_CAP` was the one
+switch still bypassing it, and was moved onto it on 2026-08-16. The rule the
+paragraph exists to defend is unchanged — a tier decision belongs in `Budget`,
+not behind a debugging knob — but "unreachable" was the wrong reason for it, and
+it hid the fact that a real device can be instrumented from `adb` alone
+(`docs/notes/render-performance-survey.md`).
 
 ### Not measured
 
