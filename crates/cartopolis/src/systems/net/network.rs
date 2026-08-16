@@ -780,6 +780,36 @@ pub fn apply_network_snapshot(
             } => {
                 auth.chat.receive(&channel, sender_name, body, distance_m);
             }
+            NetMessage::ServerError {
+                request_id,
+                message,
+                ..
+            } if request_id == crate::resources::DELETE_ACCOUNT_REQUEST => {
+                tracing::warn!(%message, "account deletion refused");
+                auth.identity.delete_error = Some(message);
+            }
+            NetMessage::BlockedList { usernames } => {
+                auth.chat.blocked = usernames;
+            }
+            NetMessage::ReportAck { accepted, .. } => {
+                auth.chat.notice = Some(crate::systems::chat::ChatNotice {
+                    text: if accepted {
+                        "Report sent. The people who run this world will see it."
+                    } else {
+                        "That report could not be filed."
+                    }
+                    .to_string(),
+                    error: !accepted,
+                });
+            }
+            NetMessage::AccountDeleted => {
+                // The socket is closing behind this; the session teardown that
+                // follows is the ordinary disconnect path.
+                tracing::info!("account deleted; the server has closed the session");
+                auth.identity.deleted = true;
+                auth.identity.username = None;
+                auth.identity.principal_id = None;
+            }
             NetMessage::PrimScript {
                 prim_id,
                 source,
