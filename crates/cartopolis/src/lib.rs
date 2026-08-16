@@ -878,7 +878,20 @@ fn run_client() {
         .set(bevy::app::TaskPoolPlugin {
             task_pool_options: bevy::app::TaskPoolOptions {
                 io: bevy::app::TaskPoolThreadAssignmentPolicy {
-                    min_threads: 2,
+                    // Four, not two, and the floor is what a phone actually gets:
+                    // `percent` resolves against `available_parallelism`, so an
+                    // 8-core handset lands on 0.30 x 8 = 2 while the widths above
+                    // were measured on a 22-core workstation that lands on 7. Two
+                    // sockets is what the six streamers' 57 aggregate in-flight
+                    // slots were really funnelling through, and `platform::http`'s
+                    // fetch is a *blocking* call — so a single slow Overpass patch
+                    // held half the device's HTTP capacity.
+                    //
+                    // Raising a floor rather than the percentage, because this is
+                    // the small-machine case and the large one was measured. Safe
+                    // for the same reason the paragraph above gives: these threads
+                    // block on a socket rather than burning a core.
+                    min_threads: 4,
                     max_threads: 8,
                     percent: 0.30,
                     on_thread_spawn: None,
@@ -1417,6 +1430,7 @@ fn run_client() {
                     .run_if(systems::data_layers::feature_toggles_changed)
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
+                    .after(systems::map_stream::update_tile_occlusion)
                     .after(rendering::spawn_regions),
                 // …and the entities that streamed in *this* frame get the current
                 // state applied unconditionally, because the gate above is closed on
@@ -1526,6 +1540,12 @@ fn run_client() {
             (
                 systems::map_stream::apply_stream_textures
                     .after(systems::map_stream::update_map_stream),
+                // Which clipmap tiles are buried under finer ones, and can be left
+                // out of the draw list. After the textures land, so a tile that
+                // became ready this frame counts this frame; before the visibility
+                // sweep, which is the only thing allowed to act on it.
+                systems::map_stream::update_tile_occlusion
+                    .after(systems::map_stream::apply_stream_textures),
                 // Stand the basemap on the measured ground. After the spawn pass,
                 // so a tile that appeared this frame is lifted in the same frame
                 // it is placed rather than showing flat for one.
@@ -1985,7 +2005,7 @@ fn run_client() {
                 // created continuously here as tiles, buildings and surfaces
                 // stream. A system that runs is a system that pays for its query;
                 // the cheapest diagnostic is one the phone never registers.
-                log_render_cost.run_if(|| !quality::is_phone()),
+                log_render_cost.run_if(|| !quality::is_phone() || env_flag("CARTO_RENDER_COST")),
                 frame_stats,
             ),
         )
@@ -2021,7 +2041,17 @@ fn run_client() {
         // hang in, which is the one frame that matters.
         .add_systems(
             Last,
-            (report_frame_to_scheduler, frame_limiter, watchdog_beat).chain(),
+            (
+                report_frame_to_scheduler,
+                // Not under the shot harness. The limiter sleeps to a deadline, so
+                // with it running `ShotMetrics::frame_ms` can never read below the
+                // tier's cap however cheap the frame got — an optimisation worth
+                // measuring is exactly one the limiter would hide. A scripted
+                // capture has no display to pace to and no eyes on it anyway.
+                frame_limiter.run_if(not(systems::shot_harness::harness_active)),
+                watchdog_beat,
+            )
+                .chain(),
         );
 
     // The run's verdict has to become the process's. `app.run()` returns an
@@ -2223,6 +2253,7 @@ mod android_property_tests {
             "CARTO_FPS_CAP",
             "CARTO_QUALITY",
             "CARTO_RENDER_SCALE",
+            "CARTO_RENDER_COST",
             "CARTO_TILE_URL",
             "CARTO_PLACE",
         ] {
@@ -2273,7 +2304,21 @@ fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
 /// clamps to it while warning. Asking for 4 anyway does not buy four cascades, it
 /// just builds a config the backend then discards — so this asks for what the
 /// platform can actually deliver.
-const SHADOW_CASCADES: usize = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
+///
+/// Below that ceiling it is the tier's call, not a `cfg`'s. It used to be a bare
+/// `if cfg!(target_arch = "wasm32") { 1 } else { 4 }`, and Android answers
+/// "native" to every `cfg` in this tree — so a handset that turned shadows on got
+/// a workstation's four cascades over two lights, i.e. up to eight shadow passes
+/// across the ~79% of submitted triangles that cast. Latent today, because the
+/// phone tier defaults `shadows: false`; live the moment anyone uses the dev
+/// panel's toggle, and live for the Balanced rung as it stands.
+///
+/// Reading it as a `min` keeps the platform ceiling and the budget in the right
+/// relationship: neither can raise what the other refuses.
+fn shadow_cascades() -> usize {
+    let platform_max = if cfg!(target_arch = "wasm32") { 1 } else { 4 };
+    platform_max.min(quality::budget().shadow_cascades)
+}
 
 fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
@@ -2288,9 +2333,9 @@ fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
         CascadeShadowConfigBuilder {
-            num_cascades: SHADOW_CASCADES,
+            num_cascades: shadow_cascades(),
             minimum_distance: 2.0,
-            maximum_distance: 3000.0,
+            maximum_distance: quality::budget().shadow_distance_m,
             first_cascade_far_bound: 60.0,
             overlap_proportion: 0.2,
         }
@@ -2348,7 +2393,7 @@ fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         // the whole light (rather than toggling `shadow_maps_enabled`, which also
         // panics) keeps the two live lights' cascade counts equal at all times.
         CascadeShadowConfigBuilder {
-            num_cascades: SHADOW_CASCADES,
+            num_cascades: shadow_cascades(),
             minimum_distance: 2.0,
             maximum_distance: 1200.0,
             first_cascade_far_bound: 80.0,
@@ -2926,14 +2971,28 @@ fn report_frame_to_scheduler(time: Res<Time<Real>>, mut started: Local<bool>) {
     #[cfg(target_os = "android")]
     {
         if !*started {
-            *started = true;
-            // The deadline to aim at. The phone tier leaves pacing to FIFO
-            // (`fps_cap: None`), so the target is the display's own period rather
-            // than a cap of ours — 60 Hz, which is what a Fairphone 4 has.
-            let target = quality::budget()
-                .fps_cap
-                .map_or(1.0e9 / 60.0, |fps| 1.0e9 / fps);
-            platform::android::start_perf_hint(target as i64);
+            // Ask the compositor for the rate we actually want to run at, and aim
+            // ADPF at the same number. Both used to assume 60 Hz.
+            //
+            // That assumption is the whole bug on a modern handset.
+            // `PresentMode::AutoVsync` paces to *the panel*, so on a 90 or 120 Hz
+            // screen a scene budgeted for 30 fps renders two to four times the
+            // frames it needs, heats up, and gets thermally throttled below what a
+            // cap would have held. And the ADPF deadline was `1e9/60` regardless,
+            // so on those same devices every frame was reported comfortably on time
+            // and the governor never had a reason to boost.
+            //
+            // Retried until the surface exists: `native_window()` is `None` for the
+            // first few seconds on Android (winit logs `Creating new window` about
+            // five seconds after `android_main`), so a one-shot at startup would
+            // silently never take.
+            let fps = quality::budget().target_fps();
+            if platform::android::set_frame_rate(fps) {
+                *started = true;
+                let period = (1.0e9 / f64::from(fps)) as i64;
+                platform::android::start_perf_hint(period);
+                platform::android::set_perf_hint_target(period);
+            }
         }
         platform::android::report_frame(time.delta().as_nanos() as i64);
     }
@@ -2962,8 +3021,14 @@ fn frame_limiter(
             // made the main thread look idle to the Linux scheduler on a
             // 2-big-6-little SoC whose tile workers look busy — the wrong signal
             // for deciding which of them gets a fast core.
-            let fps: f64 = std::env::var("CARTO_FPS_CAP")
-                .ok()
+            //
+            // Through `env_value`, not `std::env::var`: on Android the former maps
+            // to the `debug.carto.*` system properties and the latter reads an
+            // environment the zygote never gave us. This was the one switch that
+            // bypassed it — so the knob for A/B-ing a frame cap was unreachable on
+            // the only platform where a frame cap is the answer, while the
+            // property-name test below already listed it as if it worked.
+            let fps: f64 = env_value("CARTO_FPS_CAP")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| quality::budget().fps_cap.unwrap_or(0.0));
             if fps <= 0.0 {
@@ -3230,83 +3295,41 @@ fn handle_back_gesture(
     }
 }
 
+/// The periodic half of [`systems::render_census`] — the same walk the shot
+/// harness makes per capture, on a five-second timer.
+///
+/// Both the walk and the phone gate are deliberate. Resolving every `Mesh3d`
+/// handle into `Assets<Mesh>` is a real hitch on a dense scene, so it is throttled
+/// rather than run per frame; and the gate is a `run_if` at registration rather
+/// than an early return here, because a return does not save the query — Bevy
+/// still matches the census's seven-component `Query` against every archetype the
+/// streamers create.
+///
+/// The phone *does* get it on request, which is the part that changed. Gating it
+/// off entirely meant the numbers the phone budget is a set of predictions about
+/// (`docs/notes/wasm-performance.md`) were the ones the phone could never report,
+/// and a scripted capture cannot stand in — Android has no CLI. `CARTO_RENDER_COST`
+/// goes through `env_flag`, so on a device it is `adb shell setprop
+/// debug.carto.render_cost 1` against the shipped APK, no rebuild.
 fn log_render_cost(
     time: Res<Time<Real>>,
     mut next: Local<f32>,
-    meshes: Res<Assets<Mesh>>,
-    q: Query<(
-        &Mesh3d,
-        &bevy::camera::visibility::ViewVisibility,
-        Has<bevy::light::NotShadowCaster>,
-        Has<crate::components::OsmBuildingMesh>,
-        Has<systems::lod22::Lod22Mesh>,
-        Has<systems::map_stream::StreamTile>,
-        Has<crate::components::GlobeMesh>,
-    )>,
+    census: systems::render_census::RenderCensus,
 ) {
     *next -= time.delta_secs();
     if *next > 0.0 {
         return;
     }
     *next = 5.0;
-    // A full walk of every `Mesh3d` entity, resolving each handle into
-    // `Assets<Mesh>` to sum its vertices. That is a real periodic hitch, and on the
-    // one platform where it is most expensive it is also useless: nobody is reading
-    // a phone's log while holding the phone. Desktop keeps it — it is how the tile
-    // and building budgets get watched — but the handset does not pay for a
-    // diagnostic with no reader.
-    //
-    // The phone gate is a `run_if` at registration (see `lib.rs`'s `add_systems`)
-    // rather than a return here, because an early return does not save the query:
-    // Bevy still matches this system's seven-component `Query` against every
-    // archetype the streamers create.
-
-    let tris = |h: &Handle<Mesh>| -> usize {
-        meshes.get(h).map_or(0, |m| {
-            // Use the non-panicking accessors: meshes uploaded RENDER_WORLD-only
-            // (tiles, globe, transit) have had their main-world geometry dropped
-            // after extraction, so `indices()`/`count_vertices()` would panic
-            // (they assert MAIN_WORLD). Count those as 0 rather than crashing.
-            match m.try_indices_option() {
-                Ok(Some(i)) => i.len() / 3,
-                Ok(None) => m.count_vertices() / 3, // non-indexed, still in main world
-                Err(_) => 0,                        // extracted to render world only
-            }
-        })
-    };
-    let (mut draws, mut total, mut shadow) = (0usize, 0usize, 0usize);
-    let (mut bld, mut lod22, mut tiles, mut globe) = (0usize, 0usize, 0usize, 0usize);
-    for (mesh, vis, no_shadow, is_bld, is_lod22, is_tile, is_globe) in &q {
-        if !vis.get() {
-            continue; // not actually rendered this frame
-        }
-        let t = tris(&mesh.0);
-        draws += 1;
-        total += t;
-        if !no_shadow {
-            shadow += t;
-        }
-        if is_bld {
-            bld += t;
-        }
-        if is_lod22 {
-            lod22 += t;
-        }
-        if is_tile {
-            tiles += t;
-        }
-        if is_globe {
-            globe += t;
-        }
-    }
+    let c = census.counts();
     tracing::info!(
-        draws,
-        ktris_total = total / 1000,
-        ktris_shadow = shadow / 1000,
-        ktris_buildings = bld / 1000,
-        ktris_lod22 = lod22 / 1000,
-        ktris_tiles = tiles / 1000,
-        ktris_globe = globe / 1000,
+        draws = c.draws,
+        ktris_total = c.tris_total / 1000,
+        ktris_shadow = c.tris_shadow / 1000,
+        ktris_buildings = c.tris_buildings / 1000,
+        ktris_lod22 = c.tris_lod22 / 1000,
+        ktris_tiles = c.tris_tiles / 1000,
+        ktris_globe = c.tris_globe / 1000,
         "render cost",
     );
 }
@@ -3976,6 +3999,19 @@ impl Material for CloudMaterial {
         descriptor.primitive.cull_mode = None;
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             depth.depth_write_enabled = Some(false);
+        }
+        // The phone's cheaper cloud variant. A shader def rather than a uniform
+        // branch, so the desktop program is byte-identical to what it was and the
+        // handset's is genuinely shorter — a dynamic branch would still cost the
+        // register pressure of the octaves it skips.
+        //
+        // Resolved from the tier here rather than passed through the material,
+        // because it cannot change while the process runs and one extra pipeline
+        // variant is exactly what specialization is for.
+        if quality::is_phone() {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("CLOUDS_LOW".into());
+            }
         }
         Ok(())
     }

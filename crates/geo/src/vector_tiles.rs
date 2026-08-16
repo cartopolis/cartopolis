@@ -20,7 +20,7 @@
 //! * **Styling.** There is no cartography in the data. [`PAINT_ORDER`] *is* the
 //!   map's look, bottom layer first.
 
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 
 use geo_types::Geometry;
 use mvt_reader::feature::{Feature, Value};
@@ -48,22 +48,31 @@ use crate::road_texture::{road_class, road_width_m, RoadClass, StreetFlags};
 /// geometry *and* properties into a fresh `Vec<Feature>` on **every** call, and
 /// [`PAINT_ORDER`] lists `streets` twice (casing then fill) and `buildings` twice
 /// (fill then outline) — so the two heaviest layers of every rendered tile were
-/// decoded twice each. `OnceCell` (not `RefCell`) because a decoded layer is never
+/// decoded twice each. `OnceLock` (not `RefCell`) because a decoded layer is never
 /// invalidated; the interior mutability is initialise-once, so `&TileData` stays
 /// the shape every consumer wants.
 ///
-/// Deliberately **not** cached across tasks: a parsed reader holds `geo_types`
-/// f32 geometry for every feature in the tile and nothing here measures how much
-/// that is, whereas `tile_source`'s byte cache holds things whose size is exactly
-/// known. Collapsing the ~179 repeat parses a fresh anchor makes is the obvious
-/// follow-up, once someone has a number for the memory.
+/// **`OnceLock`, not `OnceCell`, so this is `Sync`** — which is what lets one
+/// parse be shared between worker threads rather than merely between the
+/// consumers on one. That was the blocker on collapsing the repeat parses a fresh
+/// anchor makes: the overzoom fan-out resolves up to 64 clipmap tiles to the same
+/// z14 ancestor, and each was a separate task doing its own full `bytes.to_vec()`
+/// and prost decode. `cartopolis`'s `tile_loader::parse_shared` is the cache; the
+/// memory question it was waiting on is answered in
+/// `docs/notes/allocation-budgets.md` (12.5 MiB peak for a fully-decoded dense
+/// z14 tile), which is also why that cache holds `Weak` references and not strong
+/// ones.
+///
+/// The lock is uncontended in the steady state — `get_or_init` on an initialised
+/// `OnceLock` is an acquire load — so the sharing costs the single-threaded path
+/// nothing measurable.
 pub struct TileData {
     reader: Reader,
     layers: Vec<Layer>,
     /// Decoded features per `Layer::layer_index`. Empty for a layer that failed
     /// to decode — the byte-taking callers all treated that as "skip the layer",
     /// and folding it in here keeps that behaviour in one place.
-    features: Vec<OnceCell<Vec<Feature>>>,
+    features: Vec<OnceLock<Vec<Feature>>>,
 }
 
 impl TileData {
@@ -86,7 +95,7 @@ impl TileData {
         Ok(Self {
             reader,
             layers,
-            features: (0..slots).map(|_| OnceCell::new()).collect(),
+            features: (0..slots).map(|_| OnceLock::new()).collect(),
         })
     }
 
@@ -122,6 +131,15 @@ impl TileData {
         }
     }
 }
+
+/// Sharing a parse across worker threads is the whole reason [`TileData`]'s memo
+/// is a `OnceLock`, and nothing else in this crate would notice if that stopped
+/// being true — the crate is single-threaded, so a regression to `OnceCell` would
+/// compile and test green here and fail only in `cartopolis`, at the cache.
+const _: fn() = || {
+    fn assert_shareable<T: Send + Sync>() {}
+    assert_shareable::<TileData>();
+};
 
 // ─── Guarding a body we did not author ───────────────────────────────────────
 
@@ -241,6 +259,20 @@ pub const TILE_PX: u32 = 512;
 /// rendered by magnifying the z14 ancestor.
 pub const MAX_SOURCE_ZOOM: u32 = 14;
 
+/// Ceiling on how far [`SubTile::resolve`] will magnify, as a shift.
+///
+/// A saturating bound, not a policy — the client never asks for more than a
+/// handful of levels of overzoom. It exists because `z` arrives from a `TileKey`
+/// that nothing range-checks at that boundary, and the unclamped
+/// `1i64 << (z - MAX_SOURCE_ZOOM)` panics in debug and produces nonsense in
+/// release once `z` reaches 78.
+///
+/// 31 rather than a rounder number because [`SubTile::factor`] is a `u32`: at a
+/// shift of 32 the `factor as u32` narrowing truncates to **zero**, turning an
+/// overflow panic into a silently degenerate sub-tile, which is the worse of the
+/// two failures. This is the largest shift the field can actually hold.
+pub const MAX_OVERZOOM_SHIFT: u32 = 31;
+
 /// How far past its own edge a tile's geometry may legitimately reach, as a
 /// fraction of the layer's extent.
 ///
@@ -303,10 +335,15 @@ impl SubTile {
     /// wrapping, where a truncating divide would pick the tile one to the east.
     #[must_use]
     pub fn resolve(z: u32, x: i64, y: i64) -> ((u32, i64, i64), Self) {
+        // `MAX_OVERZOOM_SHIFT`, not `z - MAX_SOURCE_ZOOM`: `z` reaches here from a
+        // `TileKey`, which is not range-checked at this boundary, and `1i64 << 63`
+        // is a panic in debug and nonsense in release. Clamping keeps an absurd
+        // zoom absurd (the sub-tile is a vanishing speck) instead of a crash on a
+        // network-adjacent input path.
         if z <= MAX_SOURCE_ZOOM {
             return ((z, x, y), Self::WHOLE);
         }
-        let shift = z - MAX_SOURCE_ZOOM;
+        let shift = (z - MAX_SOURCE_ZOOM).min(MAX_OVERZOOM_SHIFT);
         let factor = 1i64 << shift;
         let (sx, sy) = (x >> shift, y >> shift);
         (
@@ -1115,16 +1152,22 @@ fn clip_ring(points: &[[f32; 2]], extent: f32) -> Vec<[f32; 2]> {
 
     // The clip lands successive vertices on the same border point whenever the
     // ring grazes a corner; earcut turns a duplicate into a degenerate ear.
+    /// Two clipped vertices close enough that earcut would see one.
+    fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() <= 1e-5 && (a[1] - b[1]).abs() <= 1e-5
+    }
     let mut out: Vec<[f32; 2]> = Vec::with_capacity(ring.len());
     for p in ring {
-        if out
-            .last()
-            .is_none_or(|q: &[f32; 2]| (p[0] - q[0]).abs() > 1e-5 || (p[1] - q[1]).abs() > 1e-5)
-        {
+        if out.last().is_none_or(|q: &[f32; 2]| !near(p, *q)) {
             out.push(p);
         }
     }
-    while out.len() >= 2 && out[0] == out[out.len() - 1] {
+    // Closing vertex, on the same tolerance the interior dedup above uses. An exact
+    // `==` here left a ring whose ends differ by less than 1e-5 — but not by
+    // nothing — carrying a near-duplicate seam vertex into earcut, which is exactly
+    // the degenerate ear this function exists to prevent, arrived at from the one
+    // direction the loop above cannot see.
+    while out.len() >= 2 && near(out[0], out[out.len() - 1]) {
         out.pop();
     }
     if out.len() < 3 {
@@ -2946,6 +2989,21 @@ mod tests {
         let (src, sub) = SubTile::resolve(12, 100, 200);
         assert_eq!(src, (12, 100, 200));
         assert_eq!(sub, SubTile::WHOLE);
+    }
+
+    /// An absurd zoom stays absurd rather than overflowing the shift.
+    ///
+    /// `z` reaches `resolve` from a `TileKey` nothing range-checks at that
+    /// boundary, and the unclamped `1i64 << (z - MAX_SOURCE_ZOOM)` panics in debug
+    /// the moment `z` reaches 78 — reachable from a malformed tile source, i.e.
+    /// from the network.
+    #[test]
+    fn an_absurd_zoom_clamps_instead_of_overflowing_the_shift() {
+        for z in [78, 100, u32::MAX] {
+            let (src, sub) = SubTile::resolve(z, 1, 1);
+            assert_eq!(src.0, MAX_SOURCE_ZOOM);
+            assert!(sub.factor > 0, "z={z} produced a degenerate sub-tile");
+        }
     }
 
     #[test]

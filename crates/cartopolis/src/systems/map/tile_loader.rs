@@ -8,10 +8,72 @@ use std::sync::{Arc, Mutex};
 use bevy::tasks::IoTaskPool;
 
 use crate::platform::work::Dispatcher;
+use crate::systems::vector_tiles;
 pub use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
 
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
+
+/// Parsed tile bodies, shared between everything that wants the same one.
+///
+/// **The overzoom fan-out is the reason this exists.** Anything above
+/// `MAX_SOURCE_ZOOM` is drawn by magnifying its z14 ancestor, so a z17 clipmap
+/// ring resolves up to 64 distinct tiles onto one body — and each was a separate
+/// worker task calling `TileData::parse`, which is a full `bytes.to_vec()` copy
+/// plus a fresh prost decode of every layer it then touches. The byte cache and
+/// the single-flight table already collapsed the *fetch*; nothing collapsed the
+/// parse. `map_geometry`, both tile-sourced data layers, the globe and the routing
+/// corridor each parsed the same bodies again on top of that.
+///
+/// **`Weak`, deliberately.** A fully-decoded dense z14 tile peaks at ~12.5 MiB
+/// (`docs/notes/allocation-budgets.md` — the number `vector_tiles::TileData`'s doc
+/// said this was blocked on), and the globe can want hundreds of tiles at once. A
+/// strong cache would be a memory policy nobody had designed; weak references
+/// give the whole win — every consumer alive at the same time shares one parse —
+/// and cost nothing in the steady state, because an entry dies with its last
+/// reader. What this is emphatically *not* is a second byte cache with a
+/// different eviction rule.
+static PARSED_TILES: Mutex<Option<HashMap<TileKey, std::sync::Weak<vector_tiles::TileData>>>> =
+    Mutex::new(None);
+
+/// Dead entries tolerated before the map is swept.
+///
+/// Sweeping on every miss would be O(n) per parse; never sweeping would leak one
+/// small entry per tile ever seen. A tile key and a `Weak` are ~40 bytes, so a
+/// few hundred is nothing and the sweep is rare.
+const PARSED_SWEEP_AT: usize = 512;
+
+/// Parse `bytes` as the vector tile `source`, or hand back the parse someone else
+/// is already holding.
+///
+/// The key is the **source** tile, not the requested one: that is what makes the
+/// 64 sub-tiles of one ancestor a single parse. Callers that are not overzooming
+/// pass their own key, which is the same thing.
+///
+/// A poisoned lock is not fatal here and must not be — the cache is an
+/// optimisation, and refusing to draw the map because another thread panicked
+/// mid-insert would turn a slow tile into a broken one. Both arms fall back to
+/// parsing directly.
+pub fn parse_shared(source: TileKey, bytes: &[u8]) -> Result<Arc<vector_tiles::TileData>, String> {
+    let mut guard = match PARSED_TILES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(hit) = map.get(&source).and_then(std::sync::Weak::upgrade) {
+        return Ok(hit);
+    }
+    // Parsed with the lock held, which is the deliberate choice: it means two
+    // workers racing the same body do the work once instead of twice. The
+    // alternative — parse outside, insert after — is a single-flight table, and
+    // this is not a network round trip. Contention is bounded by the pool width.
+    let parsed = Arc::new(vector_tiles::TileData::parse(bytes)?);
+    if map.len() >= PARSED_SWEEP_AT {
+        map.retain(|_, weak| weak.strong_count() > 0);
+    }
+    map.insert(source, Arc::downgrade(&parsed));
+    Ok(parsed)
+}
 
 /// Wait after a tile's first failure before it may be re-queued, doubling with
 /// each further failure.
@@ -256,6 +318,10 @@ pub enum TilePayload {
     Vector {
         bytes: Arc<Vec<u8>>,
         sub: crate::systems::vector_tiles::SubTile,
+        /// The tile the bytes actually are — the z14 ancestor when overzooming.
+        /// Carried so [`parse_shared`] can key on it, which is what makes the up
+        /// to 64 sub-tiles of one ancestor a single parse rather than 64.
+        source: TileKey,
     },
 }
 
@@ -275,8 +341,8 @@ impl TilePayload {
         use crate::systems::vector_tiles;
         match self {
             TilePayload::Raster(bytes) => decode_tile_image(&bytes),
-            TilePayload::Vector { bytes, sub } => {
-                let tile = vector_tiles::TileData::parse(&bytes)?;
+            TilePayload::Vector { bytes, sub, source } => {
+                let tile = parse_shared(source, &bytes)?;
                 let rgba =
                     vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
                 image::RgbaImage::from_raw(size, size, rgba)
@@ -343,7 +409,7 @@ pub async fn fetch_tile_payload(key: &TileKey, template: &str) -> Result<TilePay
         return Ok(TilePayload::Raster(bytes));
     }
 
-    Ok(TilePayload::Vector { bytes, sub })
+    Ok(TilePayload::Vector { bytes, sub, source })
 }
 
 /// A globe tile's RGBA **with the ocean mask packed into the alpha channel**
@@ -390,7 +456,7 @@ pub async fn fetch_globe_tile_payload(
     if vector_tiles::looks_like_raster(&bytes) {
         return Ok(GlobeTilePayload::Raster(bytes));
     }
-    Ok(GlobeTilePayload::Vector { bytes, sub })
+    Ok(GlobeTilePayload::Vector { bytes, sub, source })
 }
 
 /// A fetched globe tile body, still undecoded. The globe's twin of [`TilePayload`],
@@ -400,6 +466,9 @@ pub enum GlobeTilePayload {
     Vector {
         bytes: Arc<Vec<u8>>,
         sub: crate::systems::vector_tiles::SubTile,
+        /// The ancestor the bytes are, for [`parse_shared`]. The globe overzooms
+        /// too, and its quadtree wants a *lot* of tiles at once.
+        source: TileKey,
     },
 }
 
@@ -422,10 +491,12 @@ impl GlobeTilePayload {
                 paint_water_alpha_by_colour(&mut rgba);
                 Ok((rgba, true))
             }
-            GlobeTilePayload::Vector { bytes, sub } => {
-                // One parse for both passes: the render and the mask read the same
-                // layers, and each used to open its own `Reader` over this body.
-                let tile = vector_tiles::TileData::parse(&bytes)?;
+            GlobeTilePayload::Vector { bytes, sub, source } => {
+                // One parse for both passes — and, through `parse_shared`, one for
+                // every other tile magnified from the same ancestor. The render and
+                // the mask read the same layers, and each used to open its own
+                // `Reader` over this body.
+                let tile = parse_shared(source, &bytes)?;
                 let pixels =
                     vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
                 let mut rgba = image::RgbaImage::from_raw(size, size, pixels)
@@ -590,6 +661,77 @@ pub struct RegionTileTexture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Groningen z14 body the `cartopolis_geo` budgets are measured against.
+    fn fixture() -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../geo/tests/fixtures/groningen_z14.mvt"
+        ))
+        .expect("fixture")
+    }
+
+    /// Two asks for the same source share one parse; a different source does not.
+    ///
+    /// The first half is the whole point — it is what turns a z17 ring's 64
+    /// sub-tiles of one ancestor into one decode. The second is the half that
+    /// would be a *bug*: keying too loosely would hand a tile its neighbour's
+    /// geometry, which is not slow, it is wrong.
+    #[test]
+    fn one_source_is_parsed_once_and_shared() {
+        let bytes = fixture();
+        let a = parse_shared(TileKey::new(8380, 5254, 14), &bytes).expect("parse");
+        let b = parse_shared(TileKey::new(8380, 5254, 14), &bytes).expect("parse");
+        assert!(Arc::ptr_eq(&a, &b), "the same source must share one parse");
+
+        let other = parse_shared(TileKey::new(8381, 5254, 14), &bytes).expect("parse");
+        assert!(
+            !Arc::ptr_eq(&a, &other),
+            "a different source is its own entry"
+        );
+    }
+
+    /// How much the sharing is actually worth, stated rather than assumed.
+    ///
+    /// The finest clipmap ring at street level is 9x9 z17 tiles, and z17 is three
+    /// levels above `MAX_SOURCE_ZOOM` — so every one of them is a magnified z14
+    /// ancestor, and 81 separate worker tasks each did a full `bytes.to_vec()` plus
+    /// a prost decode of the *same handful* of bodies. This is the number that
+    /// makes `parse_shared` worth a global.
+    ///
+    /// A ratio rather than an exact count, because the ring's position decides how
+    /// many ancestors it straddles (a 9-wide span of z17 covers two z14 columns
+    /// unless it lands on a boundary). The floor is what matters.
+    #[test]
+    fn a_street_level_ring_collapses_to_a_handful_of_parses() {
+        use crate::systems::vector_tiles::SubTile;
+        let (cx, cy) = (67043, 42033); // a z17 tile over Groningen
+        let sources: std::collections::HashSet<_> = (-4..=4)
+            .flat_map(|dy| (-4..=4).map(move |dx| (cx + dx, cy + dy)))
+            .map(|(x, y)| SubTile::resolve(17, x, y).0)
+            .collect();
+        assert_eq!(81 / sources.len(), 20, "81 tiles should share ~4 parses");
+        assert!(sources.len() <= 4, "got {} distinct bodies", sources.len());
+    }
+
+    /// The cache holds `Weak`s, so a parse nobody is reading is not kept alive.
+    ///
+    /// This is the property that lets it be unbounded: a dense z14 tile peaks at
+    /// ~12.5 MiB, and the globe can want hundreds at once, so anything strong here
+    /// would be a memory policy rather than a cache.
+    #[test]
+    fn a_parse_nobody_holds_is_dropped() {
+        let bytes = fixture();
+        let key = TileKey::new(1234, 5678, 14);
+        let first = parse_shared(key, &bytes).expect("parse");
+        let addr = Arc::as_ptr(&first);
+        drop(first);
+        let second = parse_shared(key, &bytes).expect("parse");
+        assert!(
+            !std::ptr::eq(addr, Arc::as_ptr(&second)),
+            "a dropped parse must not be resurrected from the cache"
+        );
+    }
 
     /// The water ramp was rewritten from `f32` into integers so it would
     /// vectorise. Both channels are bytes, so the domain is small enough to

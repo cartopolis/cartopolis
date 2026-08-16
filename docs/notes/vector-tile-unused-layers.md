@@ -9,8 +9,14 @@ updated: 2026-08-10
 Surveyed 2026-07-31 on the Groningen z14 fixture
 (`crates/cartopolis/tests/fixtures/groningen_z14.mvt`, 495 KB), by dumping every
 layer's feature count, property keys and `kind` histogram. `map_geometry` fetches
-this body once per cell and decodes all of it, so anything listed here costs **no
-request** — the only question is whether we build something out of it.
+this body once per cell, so anything listed here costs **no request** — the only
+question is whether we build something out of it.
+
+*Corrected 2026-08-16:* this used to say the cell "decodes all of it". It does
+not, and has not since `TileData::features` became a lazy per-layer `OnceCell` —
+every "loop over all layers" site filters *before* touching `features()`, so an
+unwanted layer is never decoded and the two layers below that nothing reads cost
+nothing at all. The conclusions are unaffected; the cost model was.
 
 | Layer | Features | Used for |
 |---|---|---|

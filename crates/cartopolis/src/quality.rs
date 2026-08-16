@@ -45,6 +45,7 @@
 
 use std::sync::OnceLock;
 
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::math::{UVec2, UVec3};
 use bevy::render::view::Msaa;
 
@@ -139,6 +140,57 @@ pub struct Budget {
     /// LUT sizes were never anything but `AtmosphereSettings::default()`, and the
     /// LUTs are recomputed **every frame**. See [`AtmosphereLuts`].
     pub atmosphere_luts: AtmosphereLuts,
+    /// Shadow cascades per directional light, below the platform's own ceiling
+    /// (`lib.rs::shadow_cascades`).
+    ///
+    /// Only meaningful where [`Self::shadows`] is on, but it is a rung on this
+    /// ladder rather than a constant because it *was* a constant — a bare
+    /// `cfg!(target_arch = "wasm32")` test, which Android fails in the direction
+    /// that costs it: the handset got a workstation's four cascades, over two
+    /// lights, across the ~79% of submitted triangles that cast shadows.
+    ///
+    /// The count must be the same for the sun and the moon or bevy_light panics
+    /// outright (see CLAUDE.md), which is why one function answers for both and
+    /// why this is not a per-light field.
+    pub shadow_cascades: usize,
+    /// How far the sun's cascades reach, in metres. The moon's is fixed and
+    /// shorter; it is only ever a night-time fill light.
+    pub shadow_distance_m: f32,
+    /// Take `systems::sky_dome`'s analytic sky even on hardware that could run
+    /// bevy_pbr's real one.
+    ///
+    /// The dome already exists as a *capability* fallback — an Adreno 619 has no
+    /// `FLOAT32_FILTERABLE`, bevy's atmosphere would fail bind-group validation,
+    /// and `free_camera::setup_camera` substitutes the dome. That decision is
+    /// rightly made on the adapter. This is the separate, *budget* decision the
+    /// same code was making by accident: a Mali that does support the feature was
+    /// handed the full atmosphere on the grounds that it could run it, which is
+    /// exactly the "can" for "should" substitution a tier exists to stop.
+    ///
+    /// What the atmosphere costs a handset, beyond its own sky pass: four LUTs
+    /// recomputed every frame (halved, but four), and `AtmosphereSettings`'
+    /// `#[require(Hdr)]`, which makes the main texture `Rgba16Float` — 8 B/px of
+    /// colour at 1080×2340, enough to overrun a tiler's on-chip tile budget and
+    /// make the driver bin the pass into more tiles and re-issue every draw for
+    /// each. The `msaa` field above already carries that argument at length; this
+    /// is the same argument applied to its cause rather than its symptom.
+    ///
+    /// The dome is ~20 instructions per fragment with no LUT, no compute pass and
+    /// no float32 texture. On a 5.7" screen it is a flatter sky, not a missing one.
+    pub sky_dome: bool,
+    /// Tonemapping curve for the main pass.
+    ///
+    /// A cost question only on a tier with no `Hdr` camera, which is most of what
+    /// the phone is: with no atmosphere and no bloom there is no `Hdr` component,
+    /// and bevy_pbr answers that by setting `TONEMAP_IN_SHADER` — so the curve
+    /// stops being one full-screen pass and becomes work in *every mesh fragment
+    /// shader*, multiplied by the ground overdraw. Bevy's default there is
+    /// `TonyMcMapface`, which samples a 3D LUT; `AcesFitted` is pure arithmetic
+    /// and needs no texture bound at all.
+    ///
+    /// Deband dither stays on regardless — the sky dome's gradient is precisely
+    /// the banding case it exists for, and it is arithmetic, not a fetch.
+    pub tonemapping: Tonemapping,
     /// Whether the space tier may switch the atmosphere to
     /// `AtmosphereMode::Raymarched` (`globe::space_raymarch`).
     ///
@@ -291,6 +343,12 @@ impl Budget {
             // here.
             msaa: Msaa::Sample2,
             atmosphere_luts: AtmosphereLuts::bevy_defaults(),
+            shadow_cascades: 4,
+            shadow_distance_m: 3000.0,
+            sky_dome: false,
+            // The camera is `Hdr` here (atmosphere + bloom), so this is one
+            // full-screen pass and the LUT is worth its fidelity.
+            tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: true,
             tile_px: crate::systems::vector_tiles::TILE_PX,
             render_scale: 1.0,
@@ -331,6 +389,14 @@ impl Budget {
             // exists to avoid — so this rung is the one that gives up edges.
             msaa: Msaa::Off,
             atmosphere_luts: AtmosphereLuts::halved(),
+            // Three, and 1.5 km. An iGPU can afford shadows — this rung keeps
+            // them — but not a workstation's reach: the fourth cascade covers the
+            // 1.5–3 km band, which at street level is haze and rooftops.
+            shadow_cascades: 3,
+            shadow_distance_m: 1500.0,
+            // This rung's brief is to keep the picture, and the sky is most of it.
+            sky_dome: false,
+            tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
             // Native resolution: an integrated GPU is bandwidth-limited, not
@@ -358,6 +424,16 @@ impl Budget {
             worker_cap: Some(3),
             msaa: Msaa::Off,
             atmosphere_luts: AtmosphereLuts::halved(),
+            // Dead while `shadows` is false, which is the default here — but the
+            // dev panel can turn shadows on, and this is what it then gets. Two
+            // cascades to 800 m is a shadow you can stand in, not a shadow map of
+            // the horizon.
+            shadow_cascades: 2,
+            shadow_distance_m: 800.0,
+            sky_dome: true,
+            // No atmosphere and no bloom means no `Hdr`, which means the curve
+            // runs per fragment rather than once — so it must not sample a LUT.
+            tonemapping: Tonemapping::AcesFitted,
             space_raymarch: false,
             // Half of `vector_tiles::TILE_PX`, and the same 256 the globe settled
             // on. Written out rather than derived from `TILE_PX / 2` so raising
@@ -389,6 +465,41 @@ impl Budget {
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.
             fps_cap: None,
+        }
+    }
+
+    /// The frame rate this tier wants to be *presented* at.
+    ///
+    /// Distinct from [`Self::fps_cap`], and the difference is the point.
+    /// `fps_cap` drives `frame_limiter`, a `thread::sleep` that only makes sense
+    /// where the client is racing an unsynchronised presentation mode; it is
+    /// `None` on the phone precisely because Android runs `AutoVsync` and a second
+    /// pacer would beat against the first.
+    ///
+    /// This is the number to *tell the compositor*, which is a different
+    /// conversation: it says "do not run me faster than this", and the platform
+    /// obliges by picking a display mode rather than by us sleeping. Without it a
+    /// 120 Hz panel renders a 30 fps-budgeted scene at 120 and the phone is
+    /// thermally throttled for the privilege.
+    ///
+    /// 60 everywhere else, matching what the limiter would have done.
+    // Its only non-test caller is `report_frame_to_scheduler`'s Android arm, which
+    // is `cfg`-ed away everywhere else — so off the handset the tests below are the
+    // only users, and the workspace's `unused = "deny"` would otherwise fail the
+    // native lane for a method that exists precisely to be called on one target.
+    // Same arrangement as `lib.rs::android_property_name`.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    #[must_use]
+    pub fn target_fps(&self) -> f32 {
+        match self.tier {
+            // Not 30. The phone budget's brief is "whatever it takes to hold ~30 fps
+            // on a Fairphone 4", but that is a floor it aims to clear, not a rate to
+            // pin a better device to — and this is a hint the platform rounds to a
+            // mode it has. Asking for 60 lets a handset that can hold 60 run at 60
+            // and one that cannot fall to its own half-rate, while still telling a
+            // 120 Hz panel not to spend twice the power on frames nobody asked for.
+            Tier::Phone => 60.0,
+            _ => self.fps_cap.unwrap_or(60.0) as f32,
         }
     }
 
@@ -604,7 +715,28 @@ mod tests {
                 "raymarch: {name}"
             );
             assert!(lower.tile_px <= upper.tile_px, "tile_px: {name}");
+            assert!(
+                lower.shadow_cascades <= upper.shadow_cascades,
+                "shadow_cascades: {name}"
+            );
+            assert!(
+                lower.shadow_distance_m <= upper.shadow_distance_m,
+                "shadow_distance_m: {name}"
+            );
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
+            // The analytic dome is the cheap sky, so a rung may only *gain* the
+            // real atmosphere as it goes up — this one inverts like the biases.
+            assert!(lower.sky_dome || !upper.sky_dome, "sky_dome: {name}");
+            // A LUT tonemapper is the expensive one, and it is only affordable on
+            // a rung whose camera is `Hdr` — where the curve is one pass rather
+            // than per fragment. Tying the two together here is what stops a
+            // future rung turning the atmosphere off and quietly moving a 3D
+            // texture fetch into every mesh shader.
+            assert!(
+                lower.tonemapping != Tonemapping::TonyMcMapface
+                    || upper.tonemapping == Tonemapping::TonyMcMapface,
+                "tonemapping: {name}"
+            );
             // A bigger bias is a *smaller* ring, and a bigger divisor a smaller
             // per-frame budget — both invert.
             assert!(lower.radius_bias >= upper.radius_bias, "radius: {name}");
@@ -619,6 +751,27 @@ mod tests {
                     .cmple(upper.atmosphere_luts.sky_view)
                     .all(),
                 "atmosphere LUTs: {name}"
+            );
+        }
+    }
+
+    /// Every rung asks the compositor for a real rate, including the one that
+    /// deliberately has no `fps_cap`.
+    ///
+    /// The phone's `fps_cap` is `None` because a `thread::sleep` limiter layered on
+    /// `AutoVsync` is two pacers beating against each other — but "do not sleep" and
+    /// "run as fast as the panel will go" are different instructions, and reading
+    /// the first as the second is what leaves a 120 Hz handset rendering a 30
+    /// fps-budgeted scene at 120 until it throttles. `target_fps` is the second
+    /// conversation and must never be zero.
+    #[test]
+    fn every_rung_asks_the_compositor_for_a_rate() {
+        for budget in [Budget::phone(), Budget::balanced(), Budget::desktop()] {
+            let fps = budget.target_fps();
+            assert!(
+                fps >= 30.0 && fps <= 120.0,
+                "{:?} asked for {fps} fps",
+                budget.tier
             );
         }
     }

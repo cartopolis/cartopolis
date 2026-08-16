@@ -12,7 +12,7 @@
 use crate::components::FreeCamera;
 use crate::components::{MapBackstop, StreamTileFailed, StreamTileReady};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -193,6 +193,16 @@ pub struct MapStream {
     /// every frame was pure waste — the desired set only changes when the camera
     /// crosses a tile centre at some level, or the LOD zoom steps.
     desired: DesiredTiles,
+    /// Tiles completely painted over by finer, ready ones — see
+    /// [`occluded_by_finer`]. Written by [`update_tile_occlusion`], read by
+    /// `data_layers::map_tile_want`, which is the sole visibility writer for a
+    /// `StreamTile` and would otherwise un-hide them the next frame.
+    pub occluded: HashSet<TileKey>,
+    /// Bumped whenever [`Self::occluded`] changes, so the gated visibility sweep
+    /// has a value to notice. Without it the sweep's `run_if` — a comparison over
+    /// `ToggleWants` — would be false on every frame a tile finished streaming,
+    /// and the holes would only be cut the next time somebody touched a checkbox.
+    pub occlusion_revision: u32,
 }
 
 /// The clipmap's desired set, cached against the centres that produced it.
@@ -316,6 +326,8 @@ impl Default for MapStream {
             quads: HashMap::new(),
             placeholder: None,
             desired: DesiredTiles::default(),
+            occluded: HashSet::new(),
+            occlusion_revision: 0,
         }
     }
 }
@@ -650,6 +662,93 @@ fn clipmap(
     (wanted, spawn_order)
 }
 
+/// Which tiles are completely painted over by finer, ready ones — and can
+/// therefore be hidden without changing a single pixel.
+///
+/// **The clipmap is eight opaque layers deep under the camera**, and nothing was
+/// cutting holes in it. Each level is a ring around its own centre and the levels
+/// nest, so the ground you are standing on is covered by z10 *through* z17 at once,
+/// stacked 0.4 m apart. `Opaque3d` is a `BinnedPhaseItem` in Bevy 0.19 — binned by
+/// pipeline and asset, not sorted front-to-back — and every tile has its own
+/// material, so the draw order is effectively arbitrary; there is no depth prepass
+/// in this tree either. Early-Z therefore rejects nothing reliably and all eight
+/// textured fragments are shaded, per ground pixel, on a device whose scarcest
+/// resource is fill.
+///
+/// The rule is recursive and the recursion is the point: a tile covers its
+/// footprint if it is ready *or* if all four of its children cover theirs. So a
+/// coarse tile may be hidden behind a child that is itself hidden behind
+/// grandchildren, which is exactly the eight-deep case. Working from the finest
+/// zoom down makes it one pass.
+///
+/// `tiles` maps every live tile to whether it has imagery. Returns the subset to
+/// hide; the caller is responsible for never hiding a `MapBackstop` (see
+/// `data_layers::map_tile_want`).
+fn occluded_by_finer(
+    tiles: &HashMap<TileKey, bool>,
+    finest: u32,
+    coarsest: u32,
+) -> HashSet<TileKey> {
+    let mut covering: HashSet<TileKey> = HashSet::new();
+    let mut occluded: HashSet<TileKey> = HashSet::new();
+    // The finest level has no children, so it covers exactly where it is ready.
+    for (&key, &ready) in tiles {
+        if key.z == finest && ready {
+            covering.insert(key);
+        }
+    }
+    for z in (coarsest..finest).rev() {
+        for (&key, &ready) in tiles {
+            if key.z != z {
+                continue;
+            }
+            let all_children_cover = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().all(|(dx, dy)| {
+                covering.contains(&TileKey::new(key.x * 2 + dx, key.y * 2 + dy, z + 1))
+            });
+            if all_children_cover {
+                occluded.insert(key);
+                covering.insert(key);
+            } else if ready {
+                covering.insert(key);
+            }
+        }
+    }
+    occluded
+}
+
+/// Recompute which clipmap tiles are hidden behind finer ones.
+///
+/// Ordered after `apply_stream_textures`, so a tile that gained its imagery this
+/// frame is counted this frame rather than the next.
+///
+/// Runs every frame and rebuilds the map from scratch, which is affordable and
+/// deliberately simpler than the alternative: the whole pyramid is ~424 entries, so
+/// this is a few thousand hash operations against a saving of several *screens* of
+/// fragment shading. The scratch map is a `Local` so the steady state allocates
+/// nothing. An incremental scheme would have to track despawns, re-anchors and LOD
+/// zoom steps as well as readiness edges, and each of those is a way to leave a
+/// stale hole in the basemap.
+pub fn update_tile_occlusion(
+    mut stream: ResMut<MapStream>,
+    tiles: Query<(&StreamTile, Has<StreamTileReady>)>,
+    mut live: Local<HashMap<TileKey, bool>>,
+) {
+    live.clear();
+    live.extend(tiles.iter().map(|(tile, ready)| (tile.key, ready)));
+    let finest = stream.current_zoom;
+    if finest < MIN_ZOOM {
+        return; // no pyramid yet (no anchor)
+    }
+    let occluded = occluded_by_finer(&live, finest, MIN_ZOOM);
+    // Compared before it is written: this is a `ResMut`, and assigning
+    // unconditionally would mark `MapStream` changed on every frame of the run for
+    // every reader that watches it.
+    if occluded != stream.occluded {
+        stream.occluded = occluded;
+        stream.occlusion_revision = stream.occlusion_revision.wrapping_add(1);
+    }
+}
+
 /// Spawn ground tiles within `LOAD_RADIUS` of the camera; despawn the rest.
 pub fn update_map_stream(
     mut commands: Commands,
@@ -969,6 +1068,75 @@ mod tests {
     /// reading whatever tier the machine running them resolved to.
     fn desktop() -> crate::quality::Budget {
         crate::quality::Budget::desktop()
+    }
+
+    /// All four children ready hides the parent; three does not.
+    ///
+    /// The asymmetry is the whole safety property. Hiding a tile that is *not*
+    /// fully covered punches a hole through to whatever is under it — at the
+    /// coarsest level, to the sky — and a hole in the basemap is a much worse
+    /// outcome than the overdraw this exists to remove. So the test that matters
+    /// is the negative one.
+    #[test]
+    fn a_tile_hides_only_when_every_child_covers_it() {
+        let parent = TileKey::new(10, 20, 14);
+        let children = |ready: usize| {
+            let mut tiles = HashMap::from([(parent, true)]);
+            for (i, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].iter().enumerate() {
+                tiles.insert(
+                    TileKey::new(parent.x * 2 + dx, parent.y * 2 + dy, 15),
+                    i < ready,
+                );
+            }
+            tiles
+        };
+        assert!(occluded_by_finer(&children(4), 15, 14).contains(&parent));
+        for partial in 0..4 {
+            assert!(
+                !occluded_by_finer(&children(partial), 15, 14).contains(&parent),
+                "{partial} ready children must not hide the parent"
+            );
+        }
+    }
+
+    /// A missing child is not a covering child. The clipmap's coarse levels span a
+    /// wider area than the fine ones, so most coarse tiles have no children in the
+    /// live set at all — and reading "no children" as "all children cover" would
+    /// hide the entire horizon.
+    #[test]
+    fn a_tile_with_no_children_at_all_stays_visible() {
+        let lone = TileKey::new(3, 4, 12);
+        let tiles = HashMap::from([(lone, true)]);
+        assert!(occluded_by_finer(&tiles, 17, 10).is_empty());
+    }
+
+    /// Coverage is transitive: a z14 tile hidden behind its own hidden children is
+    /// still covering, so *its* parent may hide too. This is the eight-deep stack
+    /// the clipmap actually builds, and a non-recursive rule would only ever
+    /// remove one layer of it.
+    #[test]
+    fn coverage_passes_through_a_hidden_generation() {
+        // z12 → four z13 → sixteen z14. Only the z14 leaves carry imagery.
+        let mut tiles = HashMap::new();
+        let root = TileKey::new(2, 2, 12);
+        tiles.insert(root, true);
+        for dx in 0..2 {
+            for dy in 0..2 {
+                let mid = TileKey::new(root.x * 2 + dx, root.y * 2 + dy, 13);
+                tiles.insert(mid, false); // no imagery of its own
+                for ex in 0..2 {
+                    for ey in 0..2 {
+                        tiles.insert(TileKey::new(mid.x * 2 + ex, mid.y * 2 + ey, 14), true);
+                    }
+                }
+            }
+        }
+        let hidden = occluded_by_finer(&tiles, 14, 12);
+        assert!(
+            hidden.contains(&root),
+            "the root must hide behind two levels"
+        );
+        assert_eq!(hidden.len(), 5, "the root and its four unpainted children");
     }
 
     /// The relief grid must follow the tile, not a constant. A fixed 48 was sized

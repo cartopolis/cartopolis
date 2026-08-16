@@ -49,6 +49,20 @@ const LOD22_CONCURRENCY: usize = 6;
 /// upstream or corrupt in the cache (which the error path invalidates), so the
 /// fourth attempt would cost a fetch to learn the same thing.
 const LOD22_MAX_ATTEMPTS: u32 = 3;
+
+/// Wait after a cell's first failure, doubling twice: 2 s, 4 s, 8 s — and then a
+/// minute's rest before the attempt count is forgiven.
+///
+/// Both were 0.0, and the pair of zeroes turned the reasoning above into something
+/// it does not support. "Absent upstream or corrupt" describes a *permanent*
+/// condition, but with no backoff the three attempts were spent on three
+/// consecutive frames, so a transient network failure produced exactly the same
+/// verdict — and with no cooldown that verdict was final, leaving a hole in the
+/// LoD2.2 buildings for the life of the map anchor. Three tries spread over
+/// fourteen seconds, retried a minute later, tells the two apart.
+const LOD22_BACKOFF_SECS: f64 = 2.0;
+const LOD22_BACKOFF_DOUBLINGS: u32 = 2;
+const LOD22_RETRY_AFTER_SECS: f64 = 60.0;
 /// Cells despawned per frame. One is a whole merged LoD2.2 mesh — the single
 /// heaviest entity the client frees, which is why the *upload* cap next door is 1 —
 /// and a re-anchor retires all `(2·LOD22_RADIUS+1)² = 25` of them at once. Freeing
@@ -153,9 +167,9 @@ impl Default for Lod22Buildings {
                 max_in_flight: LOD22_CONCURRENCY,
                 min_interval_secs: 0.0,
                 max_attempts: LOD22_MAX_ATTEMPTS,
-                backoff_secs: 0.0,
-                backoff_doublings: 0,
-                cooldown_secs: 0.0,
+                backoff_secs: LOD22_BACKOFF_SECS,
+                backoff_doublings: LOD22_BACKOFF_DOUBLINGS,
+                cooldown_secs: LOD22_RETRY_AFTER_SECS,
                 despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
             }),
             cells: HashMap::new(),

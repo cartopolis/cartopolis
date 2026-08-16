@@ -294,9 +294,16 @@ fn spawn_geometry_task(
                 // **One** parse for all seven consumers. Each of them used to open
                 // its own `Reader` over this same body — seven full copies plus
                 // seven prost decodes of the tile per streamed cell.
+                //
+                // Through `parse_shared`, so it is also one parse with whichever
+                // clipmap tiles are magnifying this same z14 body right now: the
+                // geometry cell and the basemap ring stream the same ground at the
+                // same moment, and used to decode it twice over.
                 let parsed = fetched
                     .map_err(|e| format!("surface tile fetch failed: {e}"))
-                    .and_then(|bytes| vector_tiles::TileData::parse(&bytes));
+                    .and_then(|bytes| {
+                        crate::systems::tile_loader::parse_shared(key, &bytes)
+                    });
                 let outcome = match parsed {
                     Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m) {
                         Ok(mut meshes) => {

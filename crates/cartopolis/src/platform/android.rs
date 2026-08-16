@@ -394,6 +394,68 @@ pub fn report_frame(actual_nanos: i64) {
     perf_hint::report(actual_nanos);
 }
 
+/// Move the ADPF deadline. See [`frame_rate`] for where the number comes from.
+pub fn set_perf_hint_target(target_nanos: i64) {
+    perf_hint::set_target(target_nanos);
+}
+
+/// Ask the compositor to run this window at a given frame rate.
+///
+/// **A frame cap is a performance answer on a handset, not a concession**, and
+/// this is the one the platform actually honours. `PresentMode::AutoVsync` paces
+/// to *the display's* refresh rate, so on a 90 or 120 Hz panel a scene budgeted
+/// for 30 renders two to four times the frames it needs — and the phone answers
+/// that by heating up and being thermally throttled below what a cap would have
+/// held comfortably. Nothing in this client told the display otherwise.
+///
+/// `ANativeWindow_setFrameRate` is a *hint*: the platform may still choose a
+/// multiple of what is asked for, and on a device with no seamless refresh-rate
+/// switching it may do nothing at all. That is why this reports what it did.
+///
+/// API 30+, `dlsym`ed for exactly the reason [`perf_hint`] gives — an API-29
+/// handset is not misconfigured, and a missing symbol must be distinguishable
+/// from a misprobed one.
+pub fn set_frame_rate(fps: f32) -> bool {
+    use std::ffi::c_void;
+    /// `ANativeWindow_setFrameRate(window, fps, compatibility)`.
+    type SetFrameRate = unsafe extern "C" fn(*mut c_void, f32, i8) -> i32;
+    /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT` — "this is the rate I
+    /// want", as opposed to `FIXED_SOURCE`, which is for video whose cadence is
+    /// fixed by its content and must not be resampled.
+    const COMPATIBILITY_DEFAULT: i8 = 0;
+
+    let Some(app) = ANDROID_APP.get() else {
+        return false;
+    };
+    let Some(window) = app.native_window() else {
+        return false; // no surface yet; the caller retries once there is one
+    };
+    // SAFETY: `dlsym` is null-checked before the transmute, and the signature is
+    // transcribed from `ndk-sys`' declaration of this symbol rather than guessed.
+    // The window pointer is borrowed for the duration of the call only — the
+    // `NativeWindow` guard above keeps it alive across it.
+    unsafe {
+        let handle = libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW);
+        if handle.is_null() {
+            return false;
+        }
+        let ptr = libc::dlsym(handle, c"ANativeWindow_setFrameRate".as_ptr());
+        if ptr.is_null() {
+            tracing::info!("no ANativeWindow_setFrameRate on this device (API < 30)");
+            return false;
+        }
+        let set: SetFrameRate = std::mem::transmute(ptr);
+        let rc = set(window.ptr().as_ptr().cast(), fps, COMPATIBILITY_DEFAULT);
+        if rc == 0 {
+            tracing::info!(fps, "asked the compositor for a frame rate");
+            true
+        } else {
+            tracing::info!(fps, rc, "the compositor refused the frame rate hint");
+            false
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. Keep the screen on
 // ---------------------------------------------------------------------------

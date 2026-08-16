@@ -54,7 +54,6 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
 use crate::systems::theme;
-use crate::systems::vector_tiles::TileData;
 use cartopolis_core::world::{tile_to_lat_lng, tile_to_meters};
 use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
 
@@ -1628,10 +1627,20 @@ pub struct ToggleWants {
     /// The map anchor's own tile, or `None` before the first anchor. A legacy
     /// region quad outside it is stale and hidden regardless of the toggles.
     anchor_tile: Option<(i64, i64, i64)>,
+    /// `MapStream::occlusion_revision`. Not a toggle at all — it is here because
+    /// this struct is what the sweep's `run_if` compares, and the set of clipmap
+    /// tiles hidden behind finer ones changes whenever a tile finishes streaming.
+    /// Without it the holes would only be cut the next time a checkbox moved.
+    occlusion_revision: u32,
 }
 
 impl ToggleWants {
-    fn of(dl: &DataLayers, in_space: bool, map_anchor: &crate::resources::MapAnchor) -> Self {
+    fn of(
+        dl: &DataLayers,
+        in_space: bool,
+        map_anchor: &crate::resources::MapAnchor,
+        occlusion_revision: u32,
+    ) -> Self {
         // The panel toggle AND the space tier (from orbit the flat patch floats
         // over the globe, parallax-shifted — ADR-025). Folding both in here is
         // what keeps these systems the *sole* visibility writer for these
@@ -1669,6 +1678,7 @@ impl ToggleWants {
                 let (ax, ay) = cartopolis_core::world::lat_lng_to_tile(clat, clng, z);
                 (ax, ay, z as i64)
             }),
+            occlusion_revision,
         }
     }
 }
@@ -1693,12 +1703,14 @@ pub fn feature_toggles_changed(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    stream: Res<crate::systems::map_stream::MapStream>,
     mut last: Local<Option<ToggleWants>>,
 ) -> bool {
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
         &map_anchor,
+        stream.occlusion_revision,
     );
     // `None` on the first evaluation, so the sweep always runs once — which is
     // also what applies the persisted toggles from `user.json` at startup.
@@ -1754,11 +1766,11 @@ pub fn apply_feature_toggles(
     mut map: Query<
         (
             &mut Visibility,
+            &crate::systems::map_stream::StreamTile,
             Has<crate::components::StreamTileReady>,
             Has<crate::components::MapBackstop>,
         ),
         (
-            With<crate::systems::map_stream::StreamTile>,
             Without<crate::components::RegionMesh>,
             Without<crate::components::OsmBuildingMesh>,
             Without<crate::systems::osm_buildings::WindowGlow>,
@@ -1776,6 +1788,7 @@ pub fn apply_feature_toggles(
         ),
     >,
     map_anchor: Res<crate::resources::MapAnchor>,
+    stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     // Mirror the panel's 3DBAG toggle into `osm_buildings`' coverage gate — the
     // coverage predicates are free functions over statics, out of reach of this
@@ -1799,6 +1812,7 @@ pub fn apply_feature_toggles(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
         &map_anchor,
+        stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
         if *vis != want.osm {
@@ -1810,8 +1824,8 @@ pub fn apply_feature_toggles(
             *vis = want.lod22;
         }
     }
-    for (mut vis, ready, backstop) in map.iter_mut() {
-        let tile_vis = map_tile_want(&want, ready, backstop);
+    for (mut vis, tile, ready, backstop) in map.iter_mut() {
+        let tile_vis = map_tile_want(&want, ready, backstop, stream.occluded.contains(&tile.key));
         if *vis != tile_vis {
             *vis = tile_vis;
         }
@@ -1832,12 +1846,27 @@ pub fn apply_feature_toggles(
 /// hiding it would open a hole to the sky at the horizon. This has to happen here
 /// rather than in `map_stream`, because these systems are the sole visibility writer
 /// for a `StreamTile` and would otherwise un-hide them the next frame.
-fn map_tile_want(want: &ToggleWants, ready: bool, backstop: bool) -> Visibility {
-    if ready || backstop {
-        want.map
-    } else {
-        Visibility::Hidden
+///
+/// The `occluded` arm is the reverse case and the expensive one. The clipmap's
+/// levels nest, so under the camera eight opaque textured layers are stacked 0.4 m
+/// apart, and `Opaque3d` is binned rather than depth-sorted (every tile has its own
+/// material) with no depth prepass anywhere — so early-Z rejects nothing reliably
+/// and every one of those layers is shaded, per ground pixel. A tile whose whole
+/// footprint is painted by finer *ready* tiles can be hidden without changing a
+/// pixel; `map_stream::occluded_by_finer` decides which those are, recursively, so
+/// a coarse tile hidden behind children that are themselves hidden still counts.
+///
+/// The backstop stays exempt regardless. It is the one tile nothing is stacked
+/// under, and the cost of being wrong there is a hole to the sky rather than a
+/// slightly redundant draw.
+fn map_tile_want(want: &ToggleWants, ready: bool, backstop: bool, occluded: bool) -> Visibility {
+    if backstop {
+        return want.map;
     }
+    if occluded || !ready {
+        return Visibility::Hidden;
+    }
+    want.map
 }
 
 /// What one legacy region quad should be showing — see the `anchor_tile` field of
@@ -1910,11 +1939,11 @@ pub fn apply_feature_toggles_to_new(
     mut map: Query<
         (
             &mut Visibility,
+            &crate::systems::map_stream::StreamTile,
             Has<crate::components::StreamTileReady>,
             Has<crate::components::MapBackstop>,
         ),
         (
-            With<crate::systems::map_stream::StreamTile>,
             Or<(
                 Added<crate::systems::map_stream::StreamTile>,
                 Added<crate::components::StreamTileReady>,
@@ -1937,11 +1966,13 @@ pub fn apply_feature_toggles_to_new(
         ),
     >,
     map_anchor: Res<crate::resources::MapAnchor>,
+    stream: Res<crate::systems::map_stream::MapStream>,
 ) {
     let want = ToggleWants::of(
         &dl,
         camera_in_space(&globe, camera.single().ok()),
         &map_anchor,
+        stream.occlusion_revision,
     );
     for mut vis in osm_meshes.iter_mut() {
         if *vis != want.osm {
@@ -1953,8 +1984,8 @@ pub fn apply_feature_toggles_to_new(
             *vis = want.lod22;
         }
     }
-    for (mut vis, ready, backstop) in map.iter_mut() {
-        let tile_vis = map_tile_want(&want, ready, backstop);
+    for (mut vis, tile, ready, backstop) in map.iter_mut() {
+        let tile_vis = map_tile_want(&want, ready, backstop, stream.occluded.contains(&tile.key));
         if *vis != tile_vis {
             *vis = tile_vis;
         }
@@ -2405,7 +2436,14 @@ fn build_layer_cell(
             .map(|p| (lat_lng_to_local(p.lat, p.lng, ax, ay, z, tile_m), p))
             .collect(),
         CellSource::Tile(bytes) => {
-            let tile = TileData::parse(bytes)?;
+            // Shared: `LAYER_DEFS` carries two tile-sourced layers (`pois` and
+            // `public_transport`), so this ran twice over the same body per cell —
+            // and `map_geometry` and the clipmap were parsing it a third and fourth
+            // time for the same ground at the same moment.
+            let tile = crate::systems::tile_loader::parse_shared(
+                cartopolis_core::TileKey::new(cx, cy, LAYER_ZOOM),
+                bytes,
+            )?;
             extract_pois(&tile, def.tile_layer, def.classify_tile)
                 .into_iter()
                 .map(|p| {

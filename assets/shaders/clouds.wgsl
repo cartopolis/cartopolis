@@ -73,9 +73,34 @@ const OPTICAL_DEPTH_LOW: f32 = 7.0;
 // The high deck is thin by construction — cirrus you can see the sun through.
 const OPTICAL_DEPTH_HIGH: f32 = 1.6;
 
+// ---- quality tier -----------------------------------------------------------
+// `CLOUDS_LOW` is set by `CloudMaterial::specialize` on `quality::Tier::Phone`.
+//
+// This shader was the most expensive fragment program the phone ran and the only
+// one with no tier knob at all: 14 FBM octaves before the alpha bail — ~56 integer
+// hashes per pixel over the whole upper half of the screen — and the march past it
+// adds nine more. Its one existing quality control is the *distance* LOD below,
+// which is about aliasing rather than cost.
+//
+// What the low tier gives up is structure, not weather: half the octaves in each
+// deck, no domain warp (the curl that makes a billow lean), a single-tap sun march
+// and one fewer multiple-scattering octave. It reads as a flatter, softer sky,
+// which on a 5.7" panel is most of what a 60 km cloud deck reads as anyway.
+#ifdef CLOUDS_LOW
+const OCT_LOW: i32 = 3;
+const OCT_LOW_BILLOW: i32 = 1;
+const OCT_HIGH: i32 = 2;
+const SUN_STEPS: i32 = 1;
+const MS_OCTAVES: i32 = 2;
+#else
+const OCT_LOW: i32 = 6;
+const OCT_LOW_BILLOW: i32 = 2;
+const OCT_HIGH: i32 = 4;
 // Taps in the sun march. Three is enough because the field it marches is
 // low-frequency; each tap costs a whole (small) FBM.
 const SUN_STEPS: i32 = 3;
+const MS_OCTAVES: i32 = 3;
+#endif
 
 // Henyey-Greenstein lobes. The forward peak is the silver lining; the weaker
 // backward lobe is the bright side you see with the sun behind you.
@@ -93,7 +118,7 @@ const MAX_PHASE: f32 = 8.0;
 // extinction, contributing a fraction of the energy and carrying a fraction of
 // the anisotropy. It costs three multiplies and no extra samples, and it is what
 // keeps a thick cloud base a luminous grey rather than collapsing to black.
-const MS_OCTAVES: i32 = 3;
+// (Octave count is tiered, above.)
 const MS_ATTENUATION: f32 = 0.5;
 const MS_CONTRIBUTION: f32 = 0.5;
 const MS_ECCENTRICITY: f32 = 0.5;
@@ -279,12 +304,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         1.0,
     );
     // Domain warp: displace the sample by a low-frequency field of its own, so the
-    // billows lean and curl instead of sitting square on the noise lattice.
+    // billows lean and curl instead of sitting square on the noise lattice. Two
+    // more FBMs, and the first thing the low tier drops — it is the most expensive
+    // thing here that is pure shape.
+#ifdef CLOUDS_LOW
+    let uv_low = uv_low_base;
+#else
     let w0 = fbm(uv_low_base * 0.45, 2, 0, detail_low) - 0.5;
     let w1 = fbm(uv_low_base * 0.45 + vec2<f32>(5.2, 1.3), 2, 0, detail_low) - 0.5;
     let uv_low = uv_low_base + vec2<f32>(w0, w1) * WARP;
+#endif
 
-    let shape_low = smoothstep(thresh, thresh + soft, fbm(uv_low, 6, 2, detail_low));
+    let shape_low = smoothstep(
+        thresh,
+        thresh + soft,
+        fbm(uv_low, OCT_LOW, OCT_LOW_BILLOW, detail_low),
+    );
 
     // ---- high deck --------------------------------------------------------
     let t_high = params2.w / dir.y;
@@ -295,7 +330,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         1.0,
     );
     let thresh_high = 1.0 - cover * HIGH_COVER_SCALE;
-    let shape_high = smoothstep(thresh_high, thresh_high + soft, fbm(uv_high, 4, 0, detail_high));
+    let shape_high = smoothstep(
+        thresh_high,
+        thresh_high + soft,
+        fbm(uv_high, OCT_HIGH, 0, detail_high),
+    );
 
     // ---- opacity ----------------------------------------------------------
     // Beer's law on the view ray, so a core saturates smoothly rather than being

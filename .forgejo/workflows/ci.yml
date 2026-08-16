@@ -235,6 +235,19 @@ jobs:
       #   * The tile source is pinned. A scripted run gets no server handshake and
       #     the built-in fallback is the public raster basemap; the globe should be
       #     imaged off our own mirror, not a third party's.
+      # `draws` is a *workload* ceiling, and it is the one performance number this
+      # job may honestly assert. A draw count is a property of what the client
+      # selected — culling, LOD and visibility run the same code on the runner's
+      # software rasteriser as on a phone — where a frame time here is a property
+      # of a shared 8-core VPS. `docs/notes/render-performance-survey.md` has the
+      # full table of what is and is not gateable.
+      #
+      # 200 against a measured 123 (2026-08-16), which is far looser than the ~2%
+      # the allocation budgets use, and deliberately: those are bit-identical run
+      # to run, while this one moves with which globe tiles have arrived by the
+      # settle verdict. It is sized to catch a regression of the kind that matters
+      # — something switching the clipmap occlusion culling off, or a tier losing
+      # its radius bias — not to pin the exact number.
       - name: Headless scene smoke (orbit)
         if: github.ref == 'refs/heads/main'
         timeout-minutes: 15
@@ -245,7 +258,8 @@ jobs:
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
-            --expect 'settled==true' --expect 'globe_rendered>0' || {
+            --expect 'settled==true' --expect 'globe_rendered>0' \
+            --expect 'draws<=200' || {
               echo "::error::scene smoke failed — the metrics behind it:"
               cat /tmp/orbit.json 2>/dev/null || echo "(no dump: the run died before it captured)"
               exit 1

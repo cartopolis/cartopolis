@@ -643,8 +643,16 @@ pub fn setup_camera(
     // would bisect nothing. `CARTO_SKY_DOME` is the other direction: it forces the
     // fallback on hardware that could run the real thing, which is the only way to
     // look at what the phone sees without holding the phone.
+    //
+    // `budget.sky_dome` is the tier's own answer, and it is a *separate* question
+    // from `float32_filterable` above even though both land here. That one is
+    // "could this adapter run bevy's atmosphere at all"; this one is "should this
+    // machine spend a frame on it". A Mali that has the feature was previously
+    // handed the full atmosphere on the strength of being able to run it — the
+    // substitution of "can" for "should" a tier exists to prevent. See the field.
     let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let want_atmosphere = want_sky && float32_filterable && !crate::env_flag("CARTO_SKY_DOME");
+    let want_atmosphere =
+        want_sky && float32_filterable && !budget.sky_dome && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
     commands.insert_resource(if want_atmosphere {
         crate::systems::sky_dome::SkyMode::Atmosphere
@@ -690,6 +698,13 @@ pub fn setup_camera(
             } else {
                 budget.msaa
             },
+            // Explicit, because Bevy's required-component default is
+            // `TonyMcMapface` and that samples a 3D LUT. On a tier with no `Hdr`
+            // camera — no atmosphere, no bloom, i.e. the phone — bevy_pbr sets
+            // `TONEMAP_IN_SHADER`, so the curve is not one full-screen pass but
+            // work in every mesh fragment shader, multiplied by the ground
+            // overdraw. See `quality::Budget::tonemapping`.
+            budget.tonemapping,
             // Bevy's default far plane (1 km) clips the streamed tile pyramid
             // and the horizon ground disc; reversed-z depth keeps precision
             // fine at this range.
@@ -1000,12 +1015,21 @@ pub fn camera_controls(
         return;
     };
     // Work on copies of the camera's Transform + GridCell and write them back at the
-    // end only if they actually changed. The camera is the big_space FloatingOrigin:
-    // any change to its Transform/GridCell forces big_space to recompute EVERY
-    // entity's GlobalTransform that frame (O(scene), see grid/propagation.rs). The
-    // follow-lerp / look_at / orbit placement below rewrote these every frame even
-    // when the view was perfectly still, which pinned that whole-scene propagation on
-    // permanently and is the dominant CPU cost of a stationary frame.
+    // end only if they actually changed. The follow-lerp / look_at / orbit placement
+    // below rewrote both every frame even when the view was perfectly still.
+    //
+    // **Not** because a moved floating origin re-propagates the scene — this comment
+    // used to say that, and it is wrong. `LocalFloatingOrigin::compute_all` seeds the
+    // origin grid from the camera's *cell* (`grid/local_origin.rs`), so moving the
+    // camera a metre recomputes exactly one `GlobalTransform`: its own. Crossing a
+    // `WORLD_CELL_EDGE` boundary is the expensive event, and at 10 km that is ~40
+    // minutes of walking (`docs/notes/render-performance-survey.md` has the rest, and
+    // the measured conclusion that big_space is not this client's bottleneck).
+    //
+    // The guard is still worth keeping for the ordinary reason: a `Changed<Transform>`
+    // on the camera is read by a great many client systems and by Bevy's own light and
+    // cluster paths, and firing it on a stationary frame makes all of them do work for
+    // a view that did not move.
     let prev_transform = *camera_transform_mut;
     let prev_cell = *camera_cell_mut;
     let mut camera_transform = prev_transform;
@@ -1243,8 +1267,11 @@ pub fn camera_controls(
                 // Framerate-independent follow smoothing, in world space.
                 let cam_alpha = 1.0 - (-12.0_f32 * delta_time).exp();
                 let w = cam_world.lerp(target_world, cam_alpha as f64);
-                // Snap once essentially settled, else the floating origin (and the
-                // whole-scene propagation) keeps changing by a hair while standing.
+                // Snap once essentially settled, else an asymptotic lerp keeps the
+                // camera transform changing by a hair while standing still — which
+                // fires `Changed<Transform>` on the floating origin every frame, and
+                // that is what the write-back guard at the top of this function
+                // exists to avoid.
                 if w.distance_squared(target_world) < 1e-6 {
                     target_world
                 } else {

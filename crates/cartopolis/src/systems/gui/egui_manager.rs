@@ -283,12 +283,54 @@ impl Default for EguiManager {
     }
 }
 
+/// Whether the last tessellated geometry can stand in for this frame.
+///
+/// `repaint_delay` is egui's own answer to "how long may I go without being
+/// drawn": `Duration::MAX` for a UI waiting on input, and something finite when a
+/// widget has called `request_repaint_after`. Measuring it against the time since
+/// the last write is the whole of the test — a finite delay does not mean "draw
+/// now", it means "draw within", and an animating widget re-requests on every pass
+/// it draws.
+fn geometry_still_current(repaint_delay: std::time::Duration, since_write: f32) -> bool {
+    repaint_delay.as_secs_f32() > since_write
+}
+
+/// How soon [`EguiManager::animating`] asks for the next pass.
+///
+/// 250 ms because the fastest thing that animates on its own is a seconds clock
+/// and a speed readout, and a quarter of a second is quick enough that neither
+/// visibly lags while still being a fifteenth of a 60 Hz repaint. It is a *lower
+/// bound on staleness*, not a frame rate: any real input repaints immediately.
+const ANIMATING_REDRAW: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl EguiManager {
     /// Borrow the egui context mutably. Only valid between `begin_egui_frame`
     /// and `end_egui_frame` (i.e. during the Update schedule). Use for floating
     /// windows/areas (`egui::Window`, `egui::Area`), which still take `&Context`.
     pub fn ctx_mut(&mut self) -> &mut egui::Context {
         &mut self.ctx
+    }
+
+    /// Declare that what was just drawn will change on its own, and ask egui for
+    /// another pass within [`ANIMATING_REDRAW`].
+    ///
+    /// **A widget whose content is a function of the clock must call this, or it
+    /// freezes.** [`end_egui_frame`] skips the whole tessellate → upload chain when
+    /// egui reports nothing to redraw, and egui decides that from *input*: events,
+    /// pointer movement, a wheel, an explicit `request_repaint`. A moving avatar, a
+    /// GPS fix and the passage of time are none of those. So on any frame nobody is
+    /// touching the screen the previously-tessellated geometry is simply
+    /// re-presented — correct for a static panel, and wrong for a clock, a speed, a
+    /// frame-rate readout or a countdown, which stop and stay stopped until
+    /// something is tapped. That is worst on the platform with no mouse to move and
+    /// on the screen whose entire job is a changing number.
+    ///
+    /// The skip is still worth having, which is why this is opt-in per site rather
+    /// than a blanket repaint: four passes a second where the UI genuinely animates
+    /// is a fifteenth of the sixty it would otherwise cost, and nothing at all where
+    /// it does not.
+    pub fn animating(&self) {
+        self.ctx.request_repaint_after(ANIMATING_REDRAW);
     }
 
     /// Logical viewport size in points (physical pixels ÷ display scale), as egui
@@ -993,7 +1035,14 @@ fn bevy_key_to_egui(key: KeyCode) -> Option<egui::Key> {
 pub fn end_egui_frame(
     mut egui_manager: ResMut<EguiManager>,
     mut render_output: ResMut<EguiRenderOutput>,
+    time: Res<Time<Real>>,
+    // Wall-clock seconds since the last real write, for the repaint-delay test
+    // below. A `Local` rather than a field on the output resource because writing
+    // it there would go through `DerefMut` and mark the resource changed every
+    // frame — defeating exactly the extract skip this function exists to set up.
+    mut since_write: Local<f32>,
 ) {
+    *since_write += time.delta_secs();
     // Unconditional, and deliberately not gated on a surface existing: every
     // `begin_pass` needs its `end_pass`, or a windowless frame would leave the
     // pass open and the next `begin_pass` would nest inside it. `begin_egui_frame`
@@ -1027,10 +1076,22 @@ pub fn end_egui_frame(
     // NB: these reads must not go through `DerefMut` — touching `render_output`
     // mutably would mark it changed and defeat the very skip we're setting up.
     let force = render_output.force_next_write;
-    let quiet = full_output
+    // How long egui is willing to go before it needs drawing again. `MAX` is "not
+    // until something happens" — a static panel — and any finite value comes from a
+    // `request_repaint_after`, i.e. from a widget that told us it animates
+    // (`EguiManager::animating`).
+    //
+    // Comparing it against the time since the last write, rather than testing it
+    // for `MAX`, is what makes those two cases different in the right way. A bare
+    // `== MAX` test would treat "repaint within 250 ms" as "repaint now", and since
+    // an animating widget re-requests on every pass it draws, the skip would be off
+    // permanently while anything on screen animated — trading a frozen clock for
+    // full-rate tessellation, which is not the trade worth making.
+    let repaint_delay = full_output
         .viewport_output
         .get(&egui::ViewportId::ROOT)
-        .is_some_and(|v| v.repaint_delay == std::time::Duration::MAX);
+        .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+    let quiet = geometry_still_current(repaint_delay, *since_write);
     if !force
         && quiet
         && full_output.textures_delta.is_empty()
@@ -1040,6 +1101,7 @@ pub fn end_egui_frame(
         // Drop the shapes without tessellating them.
         return;
     }
+    *since_write = 0.0;
 
     let clipped_primitives = egui_manager
         .ctx
@@ -1237,6 +1299,27 @@ pub fn egui_pass(
 mod tests {
     use super::*;
     use bevy::input::mouse::MouseButtonInput;
+
+    /// A UI waiting on input is reused forever; a UI that said it animates is
+    /// reused *until its deadline* and then redrawn.
+    ///
+    /// The second half is the one worth pinning. Testing `repaint_delay` for
+    /// `Duration::MAX` instead — which is what this did — reads a finite delay as
+    /// "redraw now", and since an animating widget re-requests every pass it draws,
+    /// the skip goes off permanently the moment anything on screen animates. Both
+    /// failure modes are silent: one freezes a clock, the other quietly tessellates
+    /// the whole UI sixty times a second.
+    #[test]
+    fn animating_ui_is_redrawn_on_its_deadline_and_not_before() {
+        let forever = std::time::Duration::MAX;
+        assert!(geometry_still_current(forever, 0.0));
+        assert!(geometry_still_current(forever, 3_600.0));
+
+        assert!(geometry_still_current(ANIMATING_REDRAW, 0.0));
+        assert!(geometry_still_current(ANIMATING_REDRAW, 0.2));
+        assert!(!geometry_still_current(ANIMATING_REDRAW, 0.3));
+    }
+
     use bevy::input::InputPlugin;
     use bevy::window::{
         CursorMoved, ExitCondition, PrimaryWindow, WindowCloseRequested, WindowEvent, WindowPlugin,

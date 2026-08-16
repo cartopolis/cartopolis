@@ -46,7 +46,7 @@ use crate::systems::routing::{
 };
 use crate::systems::theme;
 use crate::systems::tile_loader::load_tile_image;
-use crate::systems::vector_tiles::{self, TileData};
+use crate::systems::vector_tiles;
 use cartopolis_core::TileKey;
 use cartopolis_core::{tile_source_kind, TileSourceKind};
 
@@ -840,7 +840,12 @@ fn build_and_search(
         let mut failures = 0usize;
         for (tile, bytes) in bodies {
             let key = TileKey::new(tile.0, tile.1, zoom);
-            match TileData::parse(&bytes).and_then(|t| graph.add_tile(&t, tile)) {
+            // Shared with the basemap and the geometry cells: a street-level
+            // corridor is over ground the client is already streaming, so these
+            // bodies are usually parsed already.
+            match crate::systems::tile_loader::parse_shared(key, &bytes)
+                .and_then(|t| graph.add_tile(&t, tile))
+            {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::warn!(tile = %key.to_path(), error = %e, "route tile unreadable");

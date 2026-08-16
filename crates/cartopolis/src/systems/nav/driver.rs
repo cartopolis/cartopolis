@@ -1914,6 +1914,12 @@ pub fn render_driver_hud(
     if !driver.active {
         return;
     }
+    // Every number on this screen — the distance to the next turn, the ETA, the
+    // speed, the progress edge — is a function of where the vehicle is, and driving
+    // produces no egui input at all. Without this the HUD is tessellated once and
+    // then re-presented unchanged until something is tapped, i.e. it freezes at the
+    // moment the driver stops touching the phone. See `EguiManager::animating`.
+    egui.animating();
     // The route being *driven*, which during a reroute is the one being replaced.
     let Some(r) = route.displayed() else {
         return;
