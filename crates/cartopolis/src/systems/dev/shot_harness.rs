@@ -425,8 +425,52 @@ pub struct ShotMetrics {
     /// shot; on a timed-out one this *is* the diagnosis, and without it the only
     /// way to learn which stream was slow is to re-run with a longer `--wait`.
     pub busy: Vec<String>,
-    /// Mean frame time over the settled frames (ms) — the space tier's render cost.
+    /// Mean and worst frame time over the settled frames (ms).
+    ///
+    /// Both come from `Time<Real>`, and that is a correction rather than a
+    /// detail. They used to be accumulated from `Time`, whose delta Bevy clamps at
+    /// `max_delta` (0.25 s) — so on a CPU rasteriser, where a settled ground frame
+    /// takes the better part of a second, `frame_ms` saturated at exactly 250.0 and
+    /// reported a fixed number for every scene. At the other end `frame_limiter`
+    /// floored it at the tier's cap. A metric clamped at both ends measures
+    /// neither, which is worse than not having one.
+    ///
+    /// Read them as a pair and read them *sceptically*: a frame time under lavapipe
+    /// or on a shared CI runner is a property of the machine, not of the change, so
+    /// this is a column to look at and not a column to gate on. `draws` and the
+    /// triangle counts below are the ones a gate may assert.
+    ///
+    /// `frame_ms_max` exists because the mean is the one statistic a hitch cannot
+    /// move: forty settled frames at 16 ms and one at 400 average to 25.
     pub frame_ms: f32,
+    pub frame_ms_max: f32,
+    /// What the renderer was asked to draw at the shutter
+    /// ([`crate::systems::render_census`]): visible mesh entities, then triangles
+    /// in total, in the shadow-casting subset, and per streamer.
+    ///
+    /// Unlike the timings above these are exact and machine-independent — they
+    /// describe what the client *selected*, and culling, LOD and visibility run the
+    /// same code on lavapipe as on a GPU. That makes them the columns the
+    /// `scene-smoke` CI job can assert a ceiling on.
+    ///
+    /// `draws` matters on its own and not only as a proxy for triangles: Bevy
+    /// excludes Adreno ≤ 730 and older Mali from GPU preprocessing entirely, so on
+    /// the phones this client targets every one of these is a CPU-issued draw call
+    /// with its own bind group.
+    pub draws: usize,
+    pub tris_total: usize,
+    pub tris_shadow: usize,
+    pub tris_buildings: usize,
+    pub tris_lod22: usize,
+    pub tris_tiles: usize,
+    pub tris_globe: usize,
+    /// Tile-decode jobs still outstanding when the settle test passed
+    /// (`platform::workers`), i.e. the streaming backlog behind the picture.
+    ///
+    /// Sampled at the *verdict*, not at the shutter, and that is the only place it
+    /// can be: the harness quiesces the worker pool between the two, so a reading
+    /// taken at the shutter is 0 by construction and says nothing.
+    pub worker_outstanding: usize,
     pub alt_m: i64,
     /// Space-tier crossfade, 0 (ground) → 1 (deep space). Every ramp rides this.
     pub space_factor: f32,
@@ -518,7 +562,9 @@ pub struct ShotMetrics {
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
 /// so the two never drift; a mismatch would silently mislabel columns.
 /// `busy` is `|`-joined rather than comma-joined for the obvious reason.
-const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,alt_m,space_factor,in_space,\
+const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,\
+draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,\
+alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
@@ -550,7 +596,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -559,6 +605,15 @@ impl ShotMetrics {
             self.settled_s,
             self.busy.join("|"),
             self.frame_ms,
+            self.frame_ms_max,
+            self.draws,
+            self.tris_total,
+            self.tris_shadow,
+            self.tris_buildings,
+            self.tris_lod22,
+            self.tris_tiles,
+            self.tris_globe,
+            self.worker_outstanding,
             self.alt_m,
             self.space_factor,
             self.in_space,
@@ -876,10 +931,19 @@ pub struct ShotProgress {
     elapsed: f32,
     /// Seconds the tile streams have been quiet.
     quiet: f32,
-    /// Frames and wall-clock seconds since placement, for the mean frame time
-    /// reported with each capture (how the space tier's render cost is A/B'd).
+    /// Frames, total wall-clock seconds and the worst single frame since the
+    /// stream went quiet — the mean and max frame time reported with each capture.
+    ///
+    /// Wall clock (`Time<Real>`), never the virtual clock: Bevy clamps `Time`'s
+    /// delta at `max_delta` (0.25 s), so accumulating that measured a fixed 250 ms
+    /// on any renderer slower than four frames a second and quietly described every
+    /// scene as costing the same.
     frames: u32,
     frame_time: f32,
+    frame_time_max: f32,
+    /// Outstanding tile-decode jobs at the settle verdict, held across the quiesce
+    /// that follows it — after which the count is 0 by construction.
+    worker_outstanding: usize,
     /// The settle test's answer, taken on the frame it passed and held across the
     /// quiesce that follows. Held rather than recomputed because `quiet` keeps
     /// accruing while the CPU pool drains: a shot that gave up at `--wait` would
@@ -1130,6 +1194,7 @@ pub fn place_camera(
     progress.quiet = 0.0;
     progress.frames = 0;
     progress.frame_time = 0.0;
+    progress.frame_time_max = 0.0;
     // `--shot-mode avatar`: third-person follow — the camera frames the avatar
     // (teleported to `--at`) instead of sitting at a fixed point. `--at` altitude
     // becomes the follow distance and `--look` (pitch°, yaw°) the orbit
@@ -1272,6 +1337,11 @@ pub fn drive_capture(
         // rather than as a 17th argument because that is one past Bevy's
         // parameter ceiling, which is the reason this tuple exists at all.
         AvatarReadout,
+        crate::systems::render_census::RenderCensus,
+        // The wall clock, for the frame-time columns only. Everything else the
+        // harness schedules against is deliberately the *virtual* clock — see
+        // `ShotProgress::frame_time` for why the two must not be confused.
+        Res<Time<Real>>,
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1338,9 +1408,15 @@ pub fn drive_capture(
     progress.elapsed += time.delta_secs();
     // Only count settled frames: the first second after a teleport is dominated
     // by tile decode/upload, not by the steady-state render cost being measured.
+    //
+    // `real`, not `time`: the virtual clock is clamped at `max_delta` and, under
+    // `--shot`, deliberately stepped — it measures the scripted run's intent, which
+    // is what `elapsed`/`quiet` above want and exactly what a frame time does not.
     if progress.quiet > 0.0 {
+        let frame = readouts.11.delta_secs();
         progress.frames += 1;
-        progress.frame_time += time.delta_secs();
+        progress.frame_time += frame;
+        progress.frame_time_max = progress.frame_time_max.max(frame);
     }
     if progress.fired {
         // The readback normally lands within a frame or two; don't hang forever.
@@ -1445,6 +1521,11 @@ pub fn drive_capture(
             busy: busy.clone(),
             at: progress.elapsed,
         });
+        // The streaming backlog, sampled here and only here. The quiesce below
+        // drains the pool to zero before the shutter, so the same reading taken
+        // with the rest of the metrics would always be 0 and would describe the
+        // harness rather than the world.
+        progress.worker_outstanding = crate::platform::workers::outstanding();
         // Stop feeding the CPU pool *before* the shutter. On native the pool that
         // rasterises tiles is `AsyncComputeTaskPool`, and so is the pool Bevy
         // detaches the screenshot readback onto — with blocking 120 ms jobs and
@@ -1484,6 +1565,10 @@ pub fn drive_capture(
         // Walked once here rather than twice in the struct literal below: the
         // descendant walk is the only metric that costs a traversal.
         let avatar_counts = readouts.9.counts();
+        // Likewise: one walk of every mesh entity, resolving each handle into
+        // `Assets<Mesh>`. Expensive per frame, free once per capture — and this is
+        // the frame the pool is already quiesced for.
+        let render = readouts.10.counts();
         let m = ShotMetrics {
             shot: progress.index + 1,
             name: shot.name.clone(),
@@ -1493,6 +1578,15 @@ pub fn drive_capture(
             settled_s: verdict.at,
             busy: verdict.busy.iter().map(|s| (*s).to_string()).collect(),
             frame_ms: 1000.0 * progress.frame_time / progress.frames.max(1) as f32,
+            frame_ms_max: 1000.0 * progress.frame_time_max,
+            draws: render.draws,
+            tris_total: render.tris_total,
+            tris_shadow: render.tris_shadow,
+            tris_buildings: render.tris_buildings,
+            tris_lod22: render.tris_lod22,
+            tris_tiles: render.tris_tiles,
+            tris_globe: render.tris_globe,
+            worker_outstanding: progress.worker_outstanding,
             alt_m: globe.altitude_m(cell, tf) as i64,
             space_factor: globe.space_factor(cell, tf),
             in_space: globe.in_space(cell, tf),
@@ -1540,6 +1634,11 @@ pub fn drive_capture(
                     busy = m.busy.join("|"),
                     settled_in = format!("{:.1}s", m.settled_s),
                     frame_ms = format!("{:.1}", m.frame_ms),
+                    frame_ms_max = format!("{:.1}", m.frame_ms_max),
+                    draws = m.draws,
+                    ktris_total = m.tris_total / 1000,
+                    ktris_shadow = m.tris_shadow / 1000,
+                    worker_outstanding = m.worker_outstanding,
                     alt_m = m.alt_m,
                     space_factor = format!("{:.3}", m.space_factor),
                     in_space = m.in_space,
@@ -1809,6 +1908,15 @@ mod tests {
             busy: vec!["map_tiles".into(), "lod22".into()],
             settled_s: 1.0,
             frame_ms: 16.6,
+            frame_ms_max: 42.0,
+            draws: 0,
+            tris_total: 0,
+            tris_shadow: 0,
+            tris_buildings: 0,
+            tris_lod22: 0,
+            tris_tiles: 0,
+            tris_globe: 0,
+            worker_outstanding: 0,
             alt_m: 1000,
             space_factor: 0.0,
             in_space: false,

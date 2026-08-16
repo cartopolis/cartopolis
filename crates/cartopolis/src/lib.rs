@@ -1985,7 +1985,7 @@ fn run_client() {
                 // created continuously here as tiles, buildings and surfaces
                 // stream. A system that runs is a system that pays for its query;
                 // the cheapest diagnostic is one the phone never registers.
-                log_render_cost.run_if(|| !quality::is_phone()),
+                log_render_cost.run_if(|| !quality::is_phone() || env_flag("CARTO_RENDER_COST")),
                 frame_stats,
             ),
         )
@@ -2021,7 +2021,17 @@ fn run_client() {
         // hang in, which is the one frame that matters.
         .add_systems(
             Last,
-            (report_frame_to_scheduler, frame_limiter, watchdog_beat).chain(),
+            (
+                report_frame_to_scheduler,
+                // Not under the shot harness. The limiter sleeps to a deadline, so
+                // with it running `ShotMetrics::frame_ms` can never read below the
+                // tier's cap however cheap the frame got — an optimisation worth
+                // measuring is exactly one the limiter would hide. A scripted
+                // capture has no display to pace to and no eyes on it anyway.
+                frame_limiter.run_if(not(systems::shot_harness::harness_active)),
+                watchdog_beat,
+            )
+                .chain(),
         );
 
     // The run's verdict has to become the process's. `app.run()` returns an
@@ -2223,6 +2233,7 @@ mod android_property_tests {
             "CARTO_FPS_CAP",
             "CARTO_QUALITY",
             "CARTO_RENDER_SCALE",
+            "CARTO_RENDER_COST",
             "CARTO_TILE_URL",
             "CARTO_PLACE",
         ] {
@@ -2962,8 +2973,14 @@ fn frame_limiter(
             // made the main thread look idle to the Linux scheduler on a
             // 2-big-6-little SoC whose tile workers look busy — the wrong signal
             // for deciding which of them gets a fast core.
-            let fps: f64 = std::env::var("CARTO_FPS_CAP")
-                .ok()
+            //
+            // Through `env_value`, not `std::env::var`: on Android the former maps
+            // to the `debug.carto.*` system properties and the latter reads an
+            // environment the zygote never gave us. This was the one switch that
+            // bypassed it — so the knob for A/B-ing a frame cap was unreachable on
+            // the only platform where a frame cap is the answer, while the
+            // property-name test below already listed it as if it worked.
+            let fps: f64 = env_value("CARTO_FPS_CAP")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| quality::budget().fps_cap.unwrap_or(0.0));
             if fps <= 0.0 {
@@ -3230,83 +3247,41 @@ fn handle_back_gesture(
     }
 }
 
+/// The periodic half of [`systems::render_census`] — the same walk the shot
+/// harness makes per capture, on a five-second timer.
+///
+/// Both the walk and the phone gate are deliberate. Resolving every `Mesh3d`
+/// handle into `Assets<Mesh>` is a real hitch on a dense scene, so it is throttled
+/// rather than run per frame; and the gate is a `run_if` at registration rather
+/// than an early return here, because a return does not save the query — Bevy
+/// still matches the census's seven-component `Query` against every archetype the
+/// streamers create.
+///
+/// The phone *does* get it on request, which is the part that changed. Gating it
+/// off entirely meant the numbers the phone budget is a set of predictions about
+/// (`docs/notes/wasm-performance.md`) were the ones the phone could never report,
+/// and a scripted capture cannot stand in — Android has no CLI. `CARTO_RENDER_COST`
+/// goes through `env_flag`, so on a device it is `adb shell setprop
+/// debug.carto.render_cost 1` against the shipped APK, no rebuild.
 fn log_render_cost(
     time: Res<Time<Real>>,
     mut next: Local<f32>,
-    meshes: Res<Assets<Mesh>>,
-    q: Query<(
-        &Mesh3d,
-        &bevy::camera::visibility::ViewVisibility,
-        Has<bevy::light::NotShadowCaster>,
-        Has<crate::components::OsmBuildingMesh>,
-        Has<systems::lod22::Lod22Mesh>,
-        Has<systems::map_stream::StreamTile>,
-        Has<crate::components::GlobeMesh>,
-    )>,
+    census: systems::render_census::RenderCensus,
 ) {
     *next -= time.delta_secs();
     if *next > 0.0 {
         return;
     }
     *next = 5.0;
-    // A full walk of every `Mesh3d` entity, resolving each handle into
-    // `Assets<Mesh>` to sum its vertices. That is a real periodic hitch, and on the
-    // one platform where it is most expensive it is also useless: nobody is reading
-    // a phone's log while holding the phone. Desktop keeps it — it is how the tile
-    // and building budgets get watched — but the handset does not pay for a
-    // diagnostic with no reader.
-    //
-    // The phone gate is a `run_if` at registration (see `lib.rs`'s `add_systems`)
-    // rather than a return here, because an early return does not save the query:
-    // Bevy still matches this system's seven-component `Query` against every
-    // archetype the streamers create.
-
-    let tris = |h: &Handle<Mesh>| -> usize {
-        meshes.get(h).map_or(0, |m| {
-            // Use the non-panicking accessors: meshes uploaded RENDER_WORLD-only
-            // (tiles, globe, transit) have had their main-world geometry dropped
-            // after extraction, so `indices()`/`count_vertices()` would panic
-            // (they assert MAIN_WORLD). Count those as 0 rather than crashing.
-            match m.try_indices_option() {
-                Ok(Some(i)) => i.len() / 3,
-                Ok(None) => m.count_vertices() / 3, // non-indexed, still in main world
-                Err(_) => 0,                        // extracted to render world only
-            }
-        })
-    };
-    let (mut draws, mut total, mut shadow) = (0usize, 0usize, 0usize);
-    let (mut bld, mut lod22, mut tiles, mut globe) = (0usize, 0usize, 0usize, 0usize);
-    for (mesh, vis, no_shadow, is_bld, is_lod22, is_tile, is_globe) in &q {
-        if !vis.get() {
-            continue; // not actually rendered this frame
-        }
-        let t = tris(&mesh.0);
-        draws += 1;
-        total += t;
-        if !no_shadow {
-            shadow += t;
-        }
-        if is_bld {
-            bld += t;
-        }
-        if is_lod22 {
-            lod22 += t;
-        }
-        if is_tile {
-            tiles += t;
-        }
-        if is_globe {
-            globe += t;
-        }
-    }
+    let c = census.counts();
     tracing::info!(
-        draws,
-        ktris_total = total / 1000,
-        ktris_shadow = shadow / 1000,
-        ktris_buildings = bld / 1000,
-        ktris_lod22 = lod22 / 1000,
-        ktris_tiles = tiles / 1000,
-        ktris_globe = globe / 1000,
+        draws = c.draws,
+        ktris_total = c.tris_total / 1000,
+        ktris_shadow = c.tris_shadow / 1000,
+        ktris_buildings = c.tris_buildings / 1000,
+        ktris_lod22 = c.tris_lod22 / 1000,
+        ktris_tiles = c.tris_tiles / 1000,
+        ktris_globe = c.tris_globe / 1000,
         "render cost",
     );
 }
