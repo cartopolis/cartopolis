@@ -35,6 +35,14 @@ const VOICE_CHANNEL: &str = "voice:local";
 const MAX_VOICE_BYTES: usize = 1500;
 const MIN_VOICE_INTERVAL: Duration = Duration::from_millis(15);
 
+/// Longest username the moderation messages will act on.
+///
+/// Same reasoning as `MAX_ROOM_LEN`: `SetBlocked`/`ReportUser` carry a `String`
+/// straight off the wire whose only other bound is `MAX_FRAME`, and both end up
+/// as a row in SQLite. Comfortably past any account name — `accounts.username`
+/// is what these have to match, and nobody signs up with a paragraph.
+const MAX_USERNAME_LEN: usize = 64;
+
 /// Turn a client-supplied room name into a channel key, or refuse it.
 ///
 /// `ChatScope::Room` is a `String` straight off the wire and was bounded only by
@@ -278,8 +286,32 @@ pub async fn handle_connection<T: FrameTransport>(
     // connections' tasks, and the only drain is a `select!` arm that shares the
     // loop with `framed.send`, so a client whose window has closed stops draining
     // while its neighbours keep speaking.
-    let (mut chat_rx, mut voice_rx) = chat.register(avatar_id);
+    // The block list is loaded before the inbox exists and before any scrollback
+    // is replayed, which is the only ordering that works: a list fetched *after*
+    // the replay would let a blocked person's stored lines through on every
+    // single login, which is the one place a block is most obviously broken.
+    let blocked = {
+        let principal_id = principal.to_string();
+        conn.lock()
+            .ok()
+            .and_then(|c| crate::db::blocked_usernames(&c, &principal_id).ok())
+            .unwrap_or_default()
+    };
+    let blocked_lower: std::collections::HashSet<String> =
+        blocked.iter().map(|u| u.to_lowercase()).collect();
+    // Built once per connection rather than once per message: a few dozen short
+    // strings into a `HashSet`, against a `ChatSend` path that would otherwise
+    // rebuild it at typing speed.
+    let filter = config.moderation_filter();
+    let (mut chat_rx, mut voice_rx) = chat.register(avatar_id, blocked.clone());
+    let blocked_frame = encode_app_frame(&NetMessage::BlockedList {
+        usernames: blocked.clone(),
+    })?;
+    framed.send(Bytes::from(blocked_frame)).await?;
     for r in chat_history(&conn, GLOBAL_CHANNEL) {
+        if blocked_lower.contains(&r.sender_name.to_lowercase()) {
+            continue;
+        }
         let frame = encode_app_frame(&NetMessage::ChatMessage {
             channel: GLOBAL_CHANNEL.into(),
             sender_id: r.sender_id as u64,
@@ -531,6 +563,14 @@ pub async fn handle_connection<T: FrameTransport>(
                                 if body.is_empty() {
                                     return Ok(());
                                 }
+                                // Masked once, here, before the message is stored,
+                                // echoed or fanned out — so every copy that exists
+                                // anywhere is the masked one, and a client cannot
+                                // opt out of the filter by not applying it.
+                                let (body, masked) = filter.mask(&body);
+                                if masked > 0 {
+                                    tracing::debug!(%display_name, masked, "chat line filtered");
+                                }
                                 let now_ms = now_millis();
                                 match scope {
                                     ChatScope::Global => {
@@ -546,7 +586,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             sender_name: display_name.clone(), sent_at_ms: now_ms,
                                             body, distance_m: None,
                                         })?;
-                                        chat.deliver_all(&frame);
+                                        chat.deliver_all(&display_name, &frame);
                                     }
                                     ChatScope::Room(room) => {
                                         // A member first, and a valid name first of
@@ -573,7 +613,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             sender_name: display_name.clone(), sent_at_ms: now_ms,
                                             body, distance_m: None,
                                         })?;
-                                        chat.deliver_room(&channel, crate::chat::Lane::Text, &frame);
+                                        chat.deliver_room(&channel, &display_name, crate::chat::Lane::Text, &frame);
                                     }
                                     ChatScope::Local { shout } => {
                                         if last_local.elapsed() < MIN_LOCAL_INTERVAL {
@@ -598,7 +638,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                                     sender_name: display_name.clone(), sent_at_ms: now_ms,
                                                     body: body.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, crate::chat::Lane::Text, frame);
+                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Text, frame);
                                             }
                                         }
                                     }
@@ -783,7 +823,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                                     channel: VOICE_CHANNEL.into(), sender_id: avatar_id,
                                                     seq, payload: payload.clone(), distance_m: Some(d),
                                                 })?;
-                                                chat.deliver_to(id, crate::chat::Lane::Voice, frame);
+                                                chat.deliver_to(id, &display_name, crate::chat::Lane::Voice, frame);
                                             }
                                         }
                                     }
@@ -807,7 +847,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                             channel: channel.clone(), sender_id: avatar_id,
                                             seq, payload, distance_m: None,
                                         })?;
-                                        chat.deliver_room_except(&channel, avatar_id, crate::chat::Lane::Voice, &frame);
+                                        chat.deliver_room_except(&channel, avatar_id, &display_name, crate::chat::Lane::Voice, &frame);
                                     }
                                     // Global voice is deliberately not carried: it is
                                     // an unbounded fan-out and the loudest abuse
@@ -816,6 +856,123 @@ pub async fn handle_connection<T: FrameTransport>(
                                     // it here if that call is revisited.
                                     ChatScope::Global => {
                                         tracing::debug!("dropped global voice frame");
+                                    }
+                                }
+                            }
+                            // No `request_id`: the answer is the whole
+                            // `BlockedList`, not an ack, so there is nothing to
+                            // correlate.
+                            NetMessage::SetBlocked { request_id: _, username: subject, blocked: on } => {
+                                let subject = subject.trim().to_string();
+                                // Blocking yourself would take your own words out
+                                // of every channel you speak in, and reads as the
+                                // chat being broken. Refused, silently: nobody
+                                // means it.
+                                if subject.is_empty()
+                                    || subject.eq_ignore_ascii_case(&display_name)
+                                    || subject.chars().count() > MAX_USERNAME_LEN
+                                {
+                                    return Ok(());
+                                }
+                                let principal_id = principal.to_string();
+                                let list = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    if let Err(e) = crate::db::set_block(&c, &principal_id, &subject, on) {
+                                        tracing::warn!(error = %e, "block write failed");
+                                        return Ok(());
+                                    }
+                                    crate::db::blocked_usernames(&c, &principal_id).unwrap_or_default()
+                                };
+                                // The live connection and the row move together;
+                                // a block that only lands at the next login is not
+                                // a block anyone would call working.
+                                chat.set_blocked(avatar_id, &subject, on);
+                                tracing::info!(%display_name, %subject, blocked = on, "block updated");
+                                let frame = encode_app_frame(&NetMessage::BlockedList { usernames: list })?;
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::ReportUser { request_id, username: subject, reason, note, message } => {
+                                let subject = subject.trim().to_string();
+                                let accepted = !subject.is_empty()
+                                    && !subject.eq_ignore_ascii_case(&display_name)
+                                    && subject.chars().count() <= MAX_USERNAME_LEN;
+                                if accepted {
+                                    let note: String = note.trim().chars().take(cartopolis_core::MAX_REPORT_NOTE_LEN).collect();
+                                    let message: Option<String> = message.map(|m| {
+                                        m.chars().take(cartopolis_core::MAX_REPORT_MESSAGE_LEN).collect()
+                                    });
+                                    let principal_id = principal.to_string();
+                                    if let Ok(c) = conn.lock() {
+                                        match crate::db::insert_report(
+                                            &c, &principal_id, &display_name, &subject,
+                                            reason.as_str(), &note, message.as_deref(),
+                                        ) {
+                                            // At `warn`, and with the subject in it,
+                                            // because on a small deployment the log
+                                            // *is* the moderation queue until
+                                            // somebody opens the admin API.
+                                            Ok(id) => tracing::warn!(
+                                                report_id = id, reporter = %display_name, %subject,
+                                                reason = reason.as_str(), "user reported"
+                                            ),
+                                            Err(e) => tracing::error!(error = %e, "report write failed"),
+                                        }
+                                    }
+                                }
+                                let frame = encode_app_frame(&NetMessage::ReportAck { request_id, accepted })?;
+                                framed.send(Bytes::from(frame)).await?;
+                            }
+                            NetMessage::DeleteAccount { request_id, password } => {
+                                // The password is re-checked even though this
+                                // connection is authenticated: a session token can
+                                // be a remembered one on a device somebody else is
+                                // holding, and this is the one request that cannot
+                                // be undone. Hashing happens off the SQLite mutex,
+                                // for the reason `authenticate` documents.
+                                let phc = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::auth::lookup_account(&c, &display_name).ok().flatten()
+                                };
+                                let ok = match phc {
+                                    Some((_, phc)) => crate::auth::verify_password_bounded(password, phc).await,
+                                    None => false,
+                                };
+                                if !ok {
+                                    let frame = encode_app_frame(&NetMessage::ServerError {
+                                        request_id, code: 401,
+                                        message: "that password is not right".into(),
+                                    })?;
+                                    framed.send(Bytes::from(frame)).await?;
+                                    return Ok(());
+                                }
+                                let outcome = {
+                                    let Ok(c) = conn.lock() else { return Ok(()) };
+                                    crate::auth::delete_own_account(&c, principal, &display_name)
+                                };
+                                match outcome {
+                                    Ok(crate::auth::SelfDelete::Deleted) => {
+                                        let revoked = sessions.revoke_principal(principal);
+                                        tracing::warn!(%display_name, revoked, "account deleted by its owner");
+                                        let frame = encode_app_frame(&NetMessage::AccountDeleted)?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                        // The account is gone, so this connection is
+                                        // authenticated as nobody. Ending it here is
+                                        // what makes that true of the socket too.
+                                        return Err(anyhow::anyhow!("account deleted"));
+                                    }
+                                    Ok(crate::auth::SelfDelete::LastAdmin) => {
+                                        let frame = encode_app_frame(&NetMessage::ServerError {
+                                            request_id, code: 409,
+                                            message: "this is the last admin account; grant admin to someone else first".into(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
+                                    }
+                                    Ok(crate::auth::SelfDelete::Unknown) | Err(_) => {
+                                        let frame = encode_app_frame(&NetMessage::ServerError {
+                                            request_id, code: 500,
+                                            message: "could not delete the account".into(),
+                                        })?;
+                                        framed.send(Bytes::from(frame)).await?;
                                     }
                                 }
                             }
@@ -831,7 +988,10 @@ pub async fn handle_connection<T: FrameTransport>(
                             | NetMessage::PrimScript { .. }
                             | NetMessage::ScriptOutput { .. }
                             | NetMessage::RegionCapacity { .. }
-                            | NetMessage::VoiceData { .. } => {
+                            | NetMessage::VoiceData { .. }
+                            | NetMessage::BlockedList { .. }
+                            | NetMessage::ReportAck { .. }
+                            | NetMessage::AccountDeleted => {
                                 tracing::debug!("ignored message from client");
                             }
                             }
@@ -1053,7 +1213,9 @@ pub async fn tick_loop(
                     body: text.clone(),
                     distance_m: Some(d),
                 }) {
-                    Ok(frame) => chat.deliver_to(*id, crate::chat::Lane::Text, frame),
+                    Ok(frame) => {
+                        chat.deliver_to(*id, name.as_str(), crate::chat::Lane::Text, frame)
+                    }
                     Err(e) => tracing::error!("script say encode: {e}"),
                 }
             }

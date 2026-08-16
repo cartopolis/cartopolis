@@ -1,3 +1,4 @@
+use anyhow::Context;
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,22 @@ pub struct SimConfig {
     /// Directory from which *.png texture files are served to clients.
     #[serde(default = "default_texture_dir")]
     pub texture_dir: String,
+    /// Words masked in chat (`cartopolis_core::moderation`).
+    ///
+    /// Defaults to the built-in seed list. An operator replaces it wholesale —
+    /// there is no "add to the defaults" mode, because the words a community
+    /// needs blocked are not a superset of anyone else's and a half-inherited
+    /// list is impossible to reason about.
+    #[serde(default = "default_moderation_words")]
+    pub moderation_words: Vec<String>,
+    /// A file of words, one per line, `#` for a comment. Read at startup into
+    /// [`SimConfig::moderation_words`], replacing whatever was there.
+    ///
+    /// A path rather than a long TOML array because this is the one setting an
+    /// operator edits under pressure, mid-incident, and a text file is what a
+    /// text editor and `>>` are good at.
+    #[serde(default)]
+    pub moderation_words_file: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -55,6 +72,13 @@ fn default_texture_dir() -> String {
     "data/textures".into()
 }
 
+fn default_moderation_words() -> Vec<String> {
+    cartopolis_core::moderation::DEFAULT_WORDS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
@@ -65,6 +89,8 @@ impl Default for SimConfig {
             aoi_radius: default_aoi(),
             osm_tile_url_template: default_osm_tile_url_template(),
             texture_dir: default_texture_dir(),
+            moderation_words: default_moderation_words(),
+            moderation_words_file: None,
         }
     }
 }
@@ -77,7 +103,34 @@ impl SimConfig {
             figment = figment.merge(Toml::file("cartopolis.toml"));
         }
         figment = figment.merge(Env::prefixed("CARTO_"));
-        Ok(figment.extract()?)
+        let mut config: Self = figment.extract()?;
+        config.load_moderation_words()?;
+        Ok(config)
+    }
+
+    /// Resolve [`SimConfig::moderation_words_file`] into the in-memory list.
+    ///
+    /// A missing or unreadable file is an **error**, not a fallback to the seed
+    /// list. Silently running with different filtering than the operator
+    /// configured is the failure this whole surface exists to avoid, and it would
+    /// only be noticed by whoever it failed to protect.
+    pub fn load_moderation_words(&mut self) -> anyhow::Result<()> {
+        let Some(ref path) = self.moderation_words_file else {
+            return Ok(());
+        };
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read moderation_words_file {path}"))?;
+        self.moderation_words = text.lines().map(str::to_string).collect();
+        Ok(())
+    }
+
+    /// The compiled chat filter. Built per caller — it is a few dozen short
+    /// strings, and a connection builds one once.
+    #[must_use]
+    pub fn moderation_filter(&self) -> cartopolis_core::moderation::Filter {
+        cartopolis_core::moderation::Filter::from_words(
+            self.moderation_words.iter().map(String::as_str),
+        )
     }
 
     /// CLI flags override file/env (ADR-014).

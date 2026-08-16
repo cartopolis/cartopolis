@@ -227,6 +227,44 @@ pub fn delete_account(conn: &Connection, id: &str) -> anyhow::Result<bool> {
     Ok(n > 0)
 }
 
+/// What [`delete_own_account`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfDelete {
+    Deleted,
+    /// Refused: this is the last enabled admin. Deleting it would leave a running
+    /// server nobody can administer — the same guard the admin API applies, and
+    /// it has to be here too or an admin could walk through the wall by using the
+    /// in-app button instead of the API.
+    LastAdmin,
+    /// No such account. Reachable if two sessions delete the same account at once.
+    Unknown,
+}
+
+/// Delete the caller's *own* account, and the personal traces of it.
+///
+/// The password check is **not** here: it needs an argon2 verify, which must not
+/// run with the SQLite mutex held (see `net::authenticate` for what that cost
+/// last time). The caller verifies, then calls this.
+pub fn delete_own_account(
+    conn: &Connection,
+    principal: Uuid,
+    username: &str,
+) -> anyhow::Result<SelfDelete> {
+    let id = principal.to_string();
+    let Some(row) = get_account(conn, &id)? else {
+        return Ok(SelfDelete::Unknown);
+    };
+    if row.admin && !row.disabled && enabled_admin_count(conn)? <= 1 {
+        return Ok(SelfDelete::LastAdmin);
+    }
+    crate::db::erase_account_traces(conn, &id, username)?;
+    if delete_account(conn, &id)? {
+        Ok(SelfDelete::Deleted)
+    } else {
+        Ok(SelfDelete::Unknown)
+    }
+}
+
 /// How many enabled admins exist.
 ///
 /// The guard behind every destructive admin operation: deleting, disabling or
@@ -416,6 +454,22 @@ impl Sessions {
     /// for a password again.
     pub fn revoke(&self, token: &str) {
         self.by_token.lock().unwrap().remove(token);
+    }
+
+    /// Invalidate every token belonging to one principal, and say how many went.
+    ///
+    /// A linear scan, because the map is deliberately keyed by token and by
+    /// nothing else — the note on [`crate::auth::set_disabled`] calls that out as
+    /// the reason disabling an account gates only the *next* handshake. Account
+    /// **deletion** cannot be left that way: the account row is gone, so a
+    /// surviving token would resolve to a principal with no account behind it and
+    /// keep playing. It is a handful of thousand entries at most and it runs once
+    /// per deletion.
+    pub fn revoke_principal(&self, principal: Uuid) -> usize {
+        let mut map = self.by_token.lock().unwrap();
+        let before = map.len();
+        map.retain(|_, s| s.principal != principal);
+        before - map.len()
     }
 
     /// Live token count, for tests and diagnostics.
