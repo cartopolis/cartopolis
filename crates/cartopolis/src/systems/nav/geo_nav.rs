@@ -863,17 +863,45 @@ pub fn parse_location(input: &str) -> Option<LocationFix> {
     })
 }
 
-/// Where this session should start, if the launch asked for a specific place:
-/// `?place=53.21940,6.56650,120m,-12.5,45` on the web, `CARTO_PLACE` in the
-/// environment on desktop. The value is exactly what the HUD's ⧉ button copies,
-/// so a shared place is a shareable URL.
+/// Where this session should start, if the launch asked for a specific place.
+///
+/// Three ways in, all of them the same string in the end (`systems::place_link`):
+///
+/// - **A tapped link on Android** — `cartopolis://go?place=…`, or the verified
+///   `https://cartopolis.org/go?place=…` App Link. First, because it is an
+///   instruction for *this* launch in the most literal sense available: someone
+///   just tapped it.
+/// - **`?place=53.21940,6.56650,120m,-12.5,45`** in the web client's own URL.
+/// - **`CARTO_PLACE`** in the environment on desktop (a system property on
+///   Android, see [`crate::env_value`]).
+///
+/// Every one of them accepts a whole link as readily as a bare coordinate string,
+/// so pasting a shared URL into `CARTO_PLACE` works and needs no explaining.
 ///
 /// Takes precedence over the persisted last location (see
 /// `user_store::restore_start_location`) — a link that names a place and then
 /// drops you where you left off would be no link at all.
+///
+/// **Called once, at startup.** The Android arm cannot answer anything else: the
+/// launch intent is frozen for the life of the process
+/// (`platform::android::launch_url` has the why), so polling it would re-teleport
+/// the camera to a link the user followed hours ago.
 pub fn launch_place() -> Option<LocationFix> {
+    #[cfg(target_os = "android")]
+    if let Some(url) = crate::platform::android::launch_url() {
+        match crate::systems::place_link::place_from_link(&url) {
+            Some(fix) => {
+                tracing::info!(%url, "starting at the place this launch's link names");
+                return Some(fix);
+            }
+            // Not a failure worth refusing the launch over: the app can be started
+            // by a link that names no place at all once it handles more than one.
+            None => tracing::warn!(%url, "launch link names no place we can parse"),
+        }
+    }
+
     let raw = crate::env_value("CARTO_PLACE")?;
-    let fix = parse_location(&raw);
+    let fix = crate::systems::place_link::place_from_link(&raw);
     if fix.is_none() {
         tracing::warn!(place = %raw, "ignoring unparseable launch place");
     }
@@ -1242,7 +1270,12 @@ pub fn drive_geocode(
         .last_sent_at
         .is_some_and(|t| t.elapsed() < *MIN_REQUEST_INTERVAL);
     let fresh = query != nav.last_sent || nav.force_search;
-    let eligible = fresh && query.len() >= MIN_QUERY_LEN && parse_location(&query).is_none();
+    // `place_from_link`, not `parse_location`: a pasted cartopolis link is a place
+    // this client can answer on its own, and sending it to Nominatim as a search
+    // term would be a request that can only come back empty.
+    let eligible = fresh
+        && query.len() >= MIN_QUERY_LEN
+        && crate::systems::place_link::place_from_link(&query).is_none();
 
     // A query we have already answered costs nothing, so it does not wait for
     // anything: not the debounce (which exists only to avoid firing a request
@@ -1339,7 +1372,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
 
     let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if submitted {
-        if let Some(fix) = parse_location(&nav.query) {
+        if let Some(fix) = crate::systems::place_link::place_from_link(&nav.query) {
             nav.pending_teleport = Some(Teleport::fix(fix));
             nav.show_suggestions = false;
         } else if nav.query.trim() == nav.last_sent && !nav.stale && !nav.suggestions.is_empty() {
@@ -1361,9 +1394,10 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         nav.show_suggestions = false;
     }
 
-    // Suggestion dropdown under the field. Pasted coordinates get a single
-    // direct "Go to" entry instead of a lookup.
-    let coord_fix = parse_location(&nav.query);
+    // Suggestion dropdown under the field. Pasted coordinates — or a pasted
+    // cartopolis link, which is the same thing wearing a URL — get a single direct
+    // "Go to" entry instead of a lookup.
+    let coord_fix = crate::systems::place_link::place_from_link(&nav.query);
     let coord_entry = coord_fix.map(|fix| {
         let mut s =
             GeoSuggestion::plain(format!("{:.5}, {:.5}", fix.lat, fix.lng), fix.lat, fix.lng);

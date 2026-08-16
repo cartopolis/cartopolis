@@ -264,10 +264,11 @@ pub fn render_main_menu(
                                     theme::first_drawable(ui.ctx(), &["📋", "⎘", "Copy"])
                                 };
                                 if ui
-                                    .button(format!("{copy_icon}  Copy location"))
+                                    .button(format!("{copy_icon}  Copy link"))
                                     .on_hover_text(
-                                        "Copy this place — position and view (paste it into \
-                                     Search to come back)",
+                                        "Copy a link to this place — position and view. It \
+                                     opens the app on a phone that has it, the web client \
+                                     everywhere else, and pastes into Search here.",
                                     )
                                     .clicked()
                                 {
@@ -381,13 +382,19 @@ pub fn render_main_menu(
         if let Some(((lat, lng), alt)) = place {
             // Copy the view, not just the spot: the look angles come off the live
             // camera transform (as the dev panel's preset copy does), so they are
-            // right in any camera mode, and pasting the string back — into Search
-            // or a `?place=` URL — reproduces this exact framing.
+            // right in any camera mode, and following the link back reproduces this
+            // exact framing.
+            //
+            // A *link* rather than the bare coordinate string it used to be, because
+            // the string was only ever useful to someone who already knew to paste it
+            // into this app's search bar — everyone else got five numbers. The link
+            // carries the same five (`place_link::place_param`) and Search still
+            // accepts them either way, so nothing that worked stopped working.
             let look = cam.map(|(_, tf)| {
                 let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
                 (pitch.to_degrees(), yaw.to_degrees())
             });
-            crate::utils::clipboard::set_text(&crate::systems::hud::format_place(
+            crate::utils::clipboard::set_text(&crate::systems::place_link::web_link(
                 lat, lng, alt, look,
             ));
             flash_at.1 = Some(Instant::now());
