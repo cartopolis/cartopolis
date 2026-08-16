@@ -143,6 +143,20 @@ bevy = { workspace = true, features = ["wayland"] }
 # Native-only deps whose crates don't build for wasm (or are meaningless there).
 # Their call sites are cfg-gated to the matching target (ADR-030/033).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Microphone capture for `platform::audio` (see the `audio` feature above).
+# Version-matched to the cpal rodio already resolves, so Cargo unifies to one
+# copy rather than compiling two ALSA backends.
+#
+# **Under plain `not(wasm32)`, and Android is the reason.** It sat with arboard
+# under `not(wasm32) && not(android)` while the phone had no capture arm — and
+# the day that arm was enabled, the crate stopped compiling for
+# aarch64-linux-android with four `unresolved module cpal` errors and nothing
+# anywhere else. Android needs cpal *more* than the desktop does, not less: its
+# host is AAudio, which is the NDK's own C API and pulls no ALSA, no GTK and no
+# C++ (the reasons the neighbours below are desktop-only). `cargo check
+# --workspace` cannot see this — `cartopolis_android` is empty off Android — so
+# it is the target check that says so.
+cpal = { version = "0.17", optional = true }
 # The sim transport (network.rs) + solo sim are tokio/TCP — native only. The web
 # build is Phase-1 Viewer with no sim (ADR-031/033); `OnlineSession`'s channel is
 # futures-channel, so nothing wasm-side needs tokio.
@@ -193,10 +207,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # (`utils::clipboard` has a no-op arm for it).
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 arboard.workspace = true
-# Microphone capture for `platform::audio` (see the `audio` feature above).
-# Version-matched to the cpal rodio already resolves, so Cargo unifies to one
-# copy rather than compiling two ALSA backends.
-cpal = { version = "0.17", optional = true }
 # The file dialog behind `platform::photo` on the desktop — the arm that answers
 # "attach a photo to this place" where there is no camera to point at one.
 #
