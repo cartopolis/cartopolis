@@ -187,7 +187,7 @@ speed, remaining distance and ETA all come off that.
 **☰ ▸ Copy link** copies where you are *and* how you are looking at it, as a link:
 
 ```
-https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45
+https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0
 ```
 
 The five numbers are latitude, longitude, altitude, and the camera's pitch and

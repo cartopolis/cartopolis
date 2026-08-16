@@ -6,7 +6,7 @@ updated: 2026-08-16
 
 # A link to a place opens the app, and what that costs
 
-`https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45` is one link with
+`https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0` is one link with
 two destinations: on an Android phone with the published APK installed it opens
 the app at that camera, and everywhere else it opens the web client, which reads
 the same `?place=` it has read since the launch-place path existed. The whole
@@ -136,9 +136,9 @@ promise.
 ```bash
 # the emulator harness in the android-emulator-on-the-vps memory, then:
 adb shell am start -a android.intent.action.VIEW \
-    -d 'cartopolis://go?place=53.21940,6.56650,120m,-12.5,45'
+    -d 'cartopolis://go?place=53.21940,6.56650,120m,-12.5,45.0'
 adb shell am start -a android.intent.action.VIEW \
-    -d 'https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45'
+    -d 'https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0'
 adb shell pm get-app-links eu.garage44.cartopolis   # verified / not
 ```
 

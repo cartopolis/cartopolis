@@ -871,7 +871,7 @@ pub fn parse_location(input: &str) -> Option<LocationFix> {
 ///   `https://cartopolis.org/go?place=…` App Link. First, because it is an
 ///   instruction for *this* launch in the most literal sense available: someone
 ///   just tapped it.
-/// - **`?place=53.21940,6.56650,120m,-12.5,45`** in the web client's own URL.
+/// - **`?place=53.21940,6.56650,120m,-12.5,45.0`** in the web client's own URL.
 /// - **`CARTO_PLACE`** in the environment on desktop (a system property on
 ///   Android, see [`crate::env_value`]).
 ///

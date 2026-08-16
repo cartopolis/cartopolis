@@ -4,8 +4,8 @@
 //!
 //! | | |
 //! |---|---|
-//! | shared | `https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45` |
-//! | fallback | `cartopolis://go?place=53.21940,6.56650,120m,-12.5,45` |
+//! | shared | `https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0` |
+//! | fallback | `cartopolis://go?place=53.21940,6.56650,120m,-12.5,45.0` |
 //!
 //! The https one is what gets shared: it is an **Android App Link** (verified
 //! against `/.well-known/assetlinks.json`, see `docs/notes/place-links.md`), so on
@@ -46,7 +46,7 @@ pub const LINK_PATH: &str = "go";
 /// (`crate::env_value` → `query_value("CARTO_PLACE")`).
 pub const PLACE_KEY: &str = "place";
 
-/// The place as a link carries it: `53.21940,6.56650,120m,-12.5,45`.
+/// The place as a link carries it: `53.21940,6.56650,120m,-12.5,45.0`.
 ///
 /// The same five numbers a person would write out as
 /// `53.21940, 6.56650, 120m, -12.5°, 45.0°`, and the same parser reads both back —
@@ -218,10 +218,18 @@ mod tests {
         let web = web_link(53.2194, 6.5665, 120.0, Some((-12.5, 45.0)));
         assert_eq!(
             web,
-            "https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45"
+            "https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0"
         );
         assert_groningen(&fix(&web));
 
+        assert_groningen(&fix(
+            "cartopolis://go?place=53.21940,6.56650,120m,-12.5,45.0",
+        ));
+
+        // The angles are written at one decimal, so a whole-degree yaw carries its
+        // `.0`. Nothing depends on that — a hand-typed `45` is the same view — but
+        // the assertions above are on *generated* strings, and the day someone
+        // trims the zero they should be told which two places to look at.
         assert_groningen(&fix("cartopolis://go?place=53.21940,6.56650,120m,-12.5,45"));
     }
 
@@ -232,7 +240,7 @@ mod tests {
     fn both_spellings_mean_the_same_place() {
         let readable = "53.21940, 6.56650, 120m, -12.5°, 45.0°";
         let compact = place_param(53.2194, 6.5665, 120.0, Some((-12.5, 45.0)));
-        assert_eq!(compact, "53.21940,6.56650,120m,-12.5,45");
+        assert_eq!(compact, "53.21940,6.56650,120m,-12.5,45.0");
         assert_eq!(parse_location(readable), parse_location(&compact));
 
         // A place with no camera in it keeps the shorter tail.
