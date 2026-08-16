@@ -67,6 +67,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "proximity voice — VoiceFrame / VoiceData; opaque codec payload fanned out by ChatHub",
     },
+    ProtocolRevision {
+        version: 16,
+        adr: "",
+        summary: "moderation — SetBlocked / BlockedList / ReportUser / ReportAck, and DeleteAccount / AccountDeleted",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -106,6 +111,12 @@ pub enum MessageKind {
     RegionCapacity = 25,
     VoiceFrame = 26,
     VoiceData = 27,
+    SetBlocked = 28,
+    BlockedList = 29,
+    ReportUser = 30,
+    ReportAck = 31,
+    DeleteAccount = 32,
+    AccountDeleted = 33,
 }
 
 impl MessageKind {
@@ -139,6 +150,12 @@ impl MessageKind {
             25 => Some(Self::RegionCapacity),
             26 => Some(Self::VoiceFrame),
             27 => Some(Self::VoiceData),
+            28 => Some(Self::SetBlocked),
+            29 => Some(Self::BlockedList),
+            30 => Some(Self::ReportUser),
+            31 => Some(Self::ReportAck),
+            32 => Some(Self::DeleteAccount),
+            33 => Some(Self::AccountDeleted),
             _ => None,
         }
     }
@@ -620,7 +637,152 @@ pub enum NetMessage {
         payload: Vec<u8>,
         distance_m: Option<f32>,
     },
+    /// Block (`blocked = true`) or unblock a person, by username.
+    ///
+    /// **By username, not by `sender_id`.** An avatar id is per-connection and is
+    /// reused; a block that is worth persisting has to name something that
+    /// survives a reconnect, and the account username is the only stable, unique
+    /// public identity the wire carries (`accounts.username` is `UNIQUE`, and
+    /// `display_name` is a copy of it).
+    ///
+    /// The server answers with a [`NetMessage::BlockedList`] rather than an ack,
+    /// so the client's list is always the server's list — a client that applied
+    /// its own edit optimistically would diverge the moment one was refused.
+    SetBlocked {
+        request_id: u32,
+        username: String,
+        blocked: bool,
+    },
+    /// The full set of people this account blocks. Sent once after the handshake
+    /// and again after every accepted [`NetMessage::SetBlocked`].
+    ///
+    /// Whole list, not a delta: it is a handful of short strings, it makes the
+    /// login and the update path the same code, and a lost delta would leave a
+    /// blocked person audible with nothing to say why.
+    BlockedList {
+        usernames: Vec<String>,
+    },
+    /// Report a person to the operators (App Store guideline 1.2).
+    ///
+    /// `message` is the offending line as the reporter saw it, which is the only
+    /// copy that survives for proximity chat — `Local` is never stored, so
+    /// without it a report about the thing that actually happened arrives with no
+    /// evidence attached. It is also the *unmasked* text where the filter hit,
+    /// which is the point: masking is for the room, not for the operator.
+    ReportUser {
+        request_id: u32,
+        username: String,
+        reason: ReportReason,
+        /// The reporter's own words. May be empty.
+        note: String,
+        /// The reported message, if the report was raised from a chat line.
+        message: Option<String>,
+    },
+    /// Server confirms a report was filed. `accepted = false` means it was
+    /// refused (unknown subject, or reporting yourself) — the client says so
+    /// rather than showing a silent success.
+    ReportAck {
+        request_id: u32,
+        accepted: bool,
+    },
+    /// Delete the signed-in account and everything personal attached to it
+    /// (App Store guideline 5.1.1(v): an app with accounts must offer deletion
+    /// *within the app*).
+    ///
+    /// The password is required again even though the connection is already
+    /// authenticated: this is the one irreversible thing a session token can ask
+    /// for, and a token can be a remembered one from a device somebody else is
+    /// holding.
+    DeleteAccount {
+        request_id: u32,
+        password: String,
+    },
+    /// The account is gone. The server closes the connection immediately after
+    /// sending this, so it is both the receipt and the goodbye.
+    AccountDeleted,
 }
+
+/// Why a person is being reported. A closed list rather than free text: it is
+/// what an operator triages by, and it is the vocabulary the report dialog
+/// offers. `note` carries anything this does not cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReportReason {
+    /// Targeted abuse of a person.
+    Harassment,
+    /// Slurs or attacks on a protected group.
+    HateSpeech,
+    /// Sexual content, or sexual attention that was not asked for.
+    SexualContent,
+    /// A threat of violence, or content suggesting someone is in danger.
+    Threat,
+    /// Flooding, advertising, scams.
+    Spam,
+    /// Anything else; `note` carries it.
+    Other,
+}
+
+impl ReportReason {
+    /// Every reason, in the order the report dialog offers them.
+    pub const ALL: &'static [Self] = &[
+        Self::Harassment,
+        Self::HateSpeech,
+        Self::SexualContent,
+        Self::Threat,
+        Self::Spam,
+        Self::Other,
+    ];
+
+    /// Short label for the UI and for the operator's report list.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Harassment => "Harassment or bullying",
+            Self::HateSpeech => "Hate speech or a slur",
+            Self::SexualContent => "Sexual content",
+            Self::Threat => "Threat or self-harm",
+            Self::Spam => "Spam or a scam",
+            Self::Other => "Something else",
+        }
+    }
+
+    /// Stable string for storage and for the admin API. Parsed back by
+    /// [`Self::from_wire`], so these two must move together.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Harassment => "harassment",
+            Self::HateSpeech => "hate_speech",
+            Self::SexualContent => "sexual_content",
+            Self::Threat => "threat",
+            Self::Spam => "spam",
+            Self::Other => "other",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]; an unrecognised string reads as `Other`
+    /// rather than dropping a report on the floor.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "harassment" => Self::Harassment,
+            "hate_speech" => Self::HateSpeech,
+            "sexual_content" => Self::SexualContent,
+            "threat" => Self::Threat,
+            "spam" => Self::Spam,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Longest report note the server will store, in characters.
+///
+/// Same reasoning as [`MAX_ROOM_LEN`]: the field is a `String` off the wire and
+/// its only other bound is `MAX_FRAME`. Long enough for a paragraph explaining
+/// what happened, short enough that a report table cannot be used as storage.
+pub const MAX_REPORT_NOTE_LEN: usize = 2000;
+
+/// Longest reported-message excerpt the server will store, in characters.
+pub const MAX_REPORT_MESSAGE_LEN: usize = 2000;
 
 /// Severity of a [`NetMessage::ScriptOutput`] line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,6 +826,12 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::RegionCapacity { .. } => MessageKind::RegionCapacity,
         NetMessage::VoiceFrame { .. } => MessageKind::VoiceFrame,
         NetMessage::VoiceData { .. } => MessageKind::VoiceData,
+        NetMessage::SetBlocked { .. } => MessageKind::SetBlocked,
+        NetMessage::BlockedList { .. } => MessageKind::BlockedList,
+        NetMessage::ReportUser { .. } => MessageKind::ReportUser,
+        NetMessage::ReportAck { .. } => MessageKind::ReportAck,
+        NetMessage::DeleteAccount { .. } => MessageKind::DeleteAccount,
+        NetMessage::AccountDeleted => MessageKind::AccountDeleted,
     }
 }
 
@@ -682,6 +850,10 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::GetPrimScript { request_id, .. } => *request_id,
         NetMessage::SetPrimScript { request_id, .. } => *request_id,
         NetMessage::TouchPrim { request_id, .. } => *request_id,
+        NetMessage::SetBlocked { request_id, .. } => *request_id,
+        NetMessage::ReportUser { request_id, .. } => *request_id,
+        NetMessage::ReportAck { request_id, .. } => *request_id,
+        NetMessage::DeleteAccount { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -885,6 +1057,61 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_moderation_app_frames() {
+        for m in [
+            NetMessage::SetBlocked {
+                request_id: 3,
+                username: "loud".into(),
+                blocked: true,
+            },
+            NetMessage::BlockedList {
+                usernames: vec!["loud".into(), "louder".into()],
+            },
+            NetMessage::BlockedList { usernames: vec![] },
+            NetMessage::ReportUser {
+                request_id: 4,
+                username: "loud".into(),
+                reason: ReportReason::Harassment,
+                note: "followed me across three regions".into(),
+                message: Some("the line they sent".into()),
+            },
+            NetMessage::ReportUser {
+                request_id: 5,
+                username: "loud".into(),
+                reason: ReportReason::Other,
+                note: String::new(),
+                message: None,
+            },
+            NetMessage::ReportAck {
+                request_id: 4,
+                accepted: true,
+            },
+            NetMessage::DeleteAccount {
+                request_id: 6,
+                password: "hunter2".into(),
+            },
+            NetMessage::AccountDeleted,
+        ] {
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
+    }
+
+    /// `as_str` is what lands in SQLite and in the admin API, so a reason that
+    /// does not survive the trip silently retypes every stored report as `Other`.
+    #[test]
+    fn every_report_reason_survives_its_stored_form() {
+        for r in ReportReason::ALL {
+            assert_eq!(ReportReason::from_wire(r.as_str()), *r);
+            assert!(!r.label().is_empty());
+        }
+        assert_eq!(
+            ReportReason::from_wire("something we stopped using"),
+            ReportReason::Other
+        );
+    }
+
+    #[test]
     fn roundtrip_voice_app_frames() {
         for m in [
             NetMessage::VoiceFrame {
@@ -972,7 +1199,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 27] = [
+        const ALL: [MessageKind; 33] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1000,6 +1227,12 @@ mod tests {
             RegionCapacity,
             VoiceFrame,
             VoiceData,
+            SetBlocked,
+            BlockedList,
+            ReportUser,
+            ReportAck,
+            DeleteAccount,
+            AccountDeleted,
         ];
         for k in ALL {
             assert_eq!(

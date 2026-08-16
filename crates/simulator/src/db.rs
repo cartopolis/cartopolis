@@ -417,6 +417,177 @@ pub fn recent_chat(conn: &Connection, channel: &str, limit: i64) -> anyhow::Resu
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Blocks and reports (V9). See that migration for why a block is keyed by
+// username and a report keeps its own copy of the message.
+// ---------------------------------------------------------------------------
+
+/// Everyone `blocker` refuses to hear, lowercased.
+pub fn blocked_usernames(conn: &Connection, blocker: &str) -> anyhow::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT blocked_username FROM blocks WHERE blocker_id = ?1 ORDER BY blocked_username",
+    )?;
+    let out = stmt
+        .query_map(rusqlite::params![blocker], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(out)
+}
+
+/// Add or remove one block. Idempotent in both directions — a client that asks
+/// twice gets the same list back rather than an error it cannot act on.
+pub fn set_block(
+    conn: &Connection,
+    blocker: &str,
+    blocked_username: &str,
+    blocked: bool,
+) -> anyhow::Result<()> {
+    if blocked {
+        conn.execute(
+            "INSERT OR IGNORE INTO blocks (blocker_id, blocked_username) VALUES (?1, ?2)",
+            rusqlite::params![blocker, blocked_username],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM blocks WHERE blocker_id = ?1 AND blocked_username = ?2",
+            rusqlite::params![blocker, blocked_username],
+        )?;
+    }
+    Ok(())
+}
+
+/// One filed report, as the admin API serves it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReportRow {
+    pub id: i64,
+    pub reporter_username: Option<String>,
+    pub subject_username: String,
+    pub reason: String,
+    pub note: String,
+    pub message: Option<String>,
+    pub created_at: String,
+    pub resolved: bool,
+    pub resolved_at: Option<String>,
+    pub resolution: Option<String>,
+}
+
+/// File a report. Returns its id, which is what an operator refers to it by.
+pub fn insert_report(
+    conn: &Connection,
+    reporter_id: &str,
+    reporter_username: &str,
+    subject_username: &str,
+    reason: &str,
+    note: &str,
+    message: Option<&str>,
+) -> anyhow::Result<i64> {
+    conn.execute(
+        "INSERT INTO reports (reporter_id, reporter_username, subject_username, reason, note, message) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            reporter_id,
+            reporter_username,
+            subject_username,
+            reason,
+            note,
+            message
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Reports for the operator queue, newest first. `open_only` is the default view:
+/// the queue is the work, and a resolved report is a record.
+pub fn list_reports(
+    conn: &Connection,
+    open_only: bool,
+    limit: i64,
+) -> anyhow::Result<Vec<ReportRow>> {
+    let sql = format!(
+        "SELECT id, reporter_username, subject_username, reason, note, message, created_at, \
+                resolved, resolved_at, resolution \
+         FROM reports {} ORDER BY created_at DESC, id DESC LIMIT ?1",
+        if open_only { "WHERE resolved = 0" } else { "" }
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let out = stmt
+        .query_map(rusqlite::params![limit], |r| {
+            Ok(ReportRow {
+                id: r.get(0)?,
+                reporter_username: r.get(1)?,
+                subject_username: r.get(2)?,
+                reason: r.get(3)?,
+                note: r.get(4)?,
+                message: r.get(5)?,
+                created_at: r.get(6)?,
+                resolved: r.get::<_, i64>(7)? != 0,
+                resolved_at: r.get(8)?,
+                resolution: r.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(out)
+}
+
+/// How many reports are waiting. Cheap enough to put on the health endpoint,
+/// which is where an operator will actually notice it.
+pub fn open_report_count(conn: &Connection) -> anyhow::Result<i64> {
+    Ok(
+        conn.query_row("SELECT COUNT(*) FROM reports WHERE resolved = 0", [], |r| {
+            r.get(0)
+        })?,
+    )
+}
+
+/// Close a report with a note on what was done. `false` = no such report.
+pub fn resolve_report(conn: &Connection, id: i64, resolution: &str) -> anyhow::Result<bool> {
+    let n = conn.execute(
+        "UPDATE reports SET resolved = 1, resolved_at = datetime('now'), resolution = ?2 \
+         WHERE id = ?1",
+        rusqlite::params![id, resolution],
+    )?;
+    Ok(n > 0)
+}
+
+/// Erase the personal traces of a deleted account (guideline 5.1.1(v), and the
+/// plain reading of "delete my account").
+///
+/// Three different answers, on purpose:
+///
+/// - **The blocks it made** go. They are that person's preferences and nobody
+///   else's.
+/// - **The blocks *against* it stay**, which is the reason this function exists
+///   rather than a cascade. Deleting an account is exactly what somebody would do
+///   to shed a block, and the username can be registered again.
+/// - **Chat scrollback is anonymised, not deleted.** Removing one side of a
+///   conversation leaves the other half unintelligible for everyone who took part
+///   in it, and rooms are shared history; the name is the personal datum, so the
+///   name is what goes.
+///
+/// Reports keep their body and lose their reporter, for the same reason: a safety
+/// record about a third party is not the deleted account's data to take with it.
+pub fn erase_account_traces(
+    conn: &Connection,
+    principal: &str,
+    username: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM blocks WHERE blocker_id = ?1",
+        rusqlite::params![principal],
+    )?;
+    conn.execute(
+        "UPDATE chat_messages SET sender_name = ?2 WHERE sender_name = ?1",
+        rusqlite::params![username, DELETED_ACCOUNT_NAME],
+    )?;
+    conn.execute(
+        "UPDATE reports SET reporter_id = NULL, reporter_username = ?2 WHERE reporter_id = ?1",
+        rusqlite::params![principal, DELETED_ACCOUNT_NAME],
+    )?;
+    Ok(())
+}
+
+/// What a deleted account's name is replaced with in shared history.
+pub const DELETED_ACCOUNT_NAME: &str = "[deleted]";
+
 /// Helper: retrieve a prim by id (internal use)  (ADR-017 Phase 2)
 fn select_prim_by_id(conn: &Connection, prim_id: i64) -> anyhow::Result<Option<PrimDto>> {
     let sql = format!("SELECT {PRIM_COLUMNS} FROM prims WHERE id = ?1");

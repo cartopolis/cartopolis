@@ -1038,7 +1038,29 @@ pub struct ConnectAuth {
 pub struct AuthIdentity {
     pub username: Option<String>,
     pub principal_id: Option<uuid::Uuid>,
+    /// Set when the server confirms this account was deleted at its owner's
+    /// request (`NetMessage::AccountDeleted`).
+    ///
+    /// Here rather than on the Settings panel that asked for it, because the
+    /// confirmation arrives on the network system and the disconnect follows
+    /// immediately behind it: without somewhere durable to land, "your account is
+    /// gone" would be indistinguishable from the connection having dropped, which
+    /// is the one reading that would send a person to try signing in again.
+    pub deleted: bool,
+    /// Why the last account-deletion attempt was refused (wrong password, last
+    /// admin). Cleared when the Account tab next asks.
+    pub delete_error: Option<String>,
 }
+
+/// `request_id` the client stamps on [`cartopolis_core::NetMessage::DeleteAccount`].
+///
+/// The wire has no general error channel — a post-handshake `ServerError` is
+/// otherwise ignored by the client, because nothing knew which request it
+/// answered. That is what `request_id` is for, so account deletion picks a
+/// recognisable one and the network system routes the refusal back to the panel
+/// that asked. Any future request needing an answer should do the same rather
+/// than growing a second mechanism.
+pub const DELETE_ACCOUNT_REQUEST: u32 = 0x00DE_1E7E;
 
 #[derive(Resource)]
 pub struct OnlineSession {

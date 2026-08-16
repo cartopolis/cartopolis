@@ -6,7 +6,7 @@
 //! extra tabs with no change to this panel.
 
 use bevy::prelude::*;
-use cartopolis_core::{ChatScope, NetMessage};
+use cartopolis_core::{ChatScope, NetMessage, ReportReason};
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
@@ -25,6 +25,42 @@ pub struct ChatState {
     pub join_input: String,
     /// This client's avatar id (from `ServerHelloAck`), to tag own lines.
     pub my_id: Option<u64>,
+    /// People this account blocks, exactly as the server last reported them
+    /// (`NetMessage::BlockedList`).
+    ///
+    /// **The server's copy, never the client's guess.** The server already
+    /// refuses to deliver a blocked person's messages, so this list is not what
+    /// enforces the block — it is what draws the Blocked list and what hides
+    /// lines that were already on screen when the block was made. Applying an
+    /// edit locally before the server answers would leave the two disagreeing
+    /// whenever one was refused (blocking yourself, say), and the UI would be
+    /// the one that was wrong.
+    pub blocked: Vec<String>,
+    /// The report being composed, if any.
+    pub report: Option<ReportDraft>,
+    /// One-line feedback after a report is acknowledged.
+    pub notice: Option<ChatNotice>,
+}
+
+/// A one-line answer to something the person just did.
+#[derive(Clone)]
+pub struct ChatNotice {
+    pub text: String,
+    /// `true` styles it as a failure. Both outcomes are shown: a report that
+    /// vanishes without acknowledgement is indistinguishable from one nobody will
+    /// read, and the person filing it has every reason to assume the worse.
+    pub error: bool,
+}
+
+/// A report in progress. Held until the dialog is submitted or dismissed.
+pub struct ReportDraft {
+    pub username: String,
+    /// The line that prompted the report, if it was raised from one. Sent along,
+    /// because proximity chat is never stored server-side — without it a report
+    /// about the thing that actually happened arrives with no evidence.
+    pub message: Option<String>,
+    pub reason: ReportReason,
+    pub note: String,
 }
 
 pub struct ChatChannel {
@@ -59,6 +95,9 @@ impl Default for ChatState {
             shout: false,
             join_input: String::new(),
             my_id: None,
+            blocked: Vec::new(),
+            report: None,
+            notice: None,
         }
     }
 }
@@ -75,6 +114,13 @@ impl ChatState {
             lines: Vec::new(),
         });
         self.channels.len() - 1
+    }
+
+    /// Whether this account blocks `name`. Case-insensitive, as the server's own
+    /// comparison is — a block must not be walked around with the shift key.
+    #[must_use]
+    pub fn is_blocked(&self, name: &str) -> bool {
+        self.blocked.iter().any(|b| b.eq_ignore_ascii_case(name))
     }
 
     /// Append an incoming message to its channel (ADR-028 delivery).
@@ -143,6 +189,13 @@ pub fn render_chat_panel(
 
     let mut send_now = false;
     let mut join_now = false;
+    // Collected while the panel draws and acted on after it, because every one of
+    // these mutates `chat` and the closure already holds it borrowed.
+    let mut block_now: Option<String> = None;
+    let mut unblock_now: Option<String> = None;
+    let mut open_report: Option<(String, Option<String>)> = None;
+    let blocked = chat.blocked.clone();
+    let mut dismiss_notice = false;
 
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
@@ -159,6 +212,44 @@ pub fn render_chat_panel(
                     ui.selectable_value(&mut active, i, label);
                 }
             });
+            // A refusal is an error chip; a confirmation is not. They are the same
+            // field because they answer the same question ("did my report go?"),
+            // and styling a success in the error tone would teach people to
+            // ignore the tone.
+            if let Some(notice) = chat.notice.clone() {
+                if notice.error {
+                    dismiss_notice = theme::inline_error(ui, &notice.text);
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        theme::note(ui, &notice.text);
+                        if theme::action_button(ui, "OK").clicked() {
+                            dismiss_notice = true;
+                        }
+                    });
+                }
+            }
+            // Only once there is something in it. An empty "Blocked (0)" header on
+            // every session is chrome that says nothing; the list is a place to
+            // *undo* a block, and until one exists there is nothing to undo.
+            if !blocked.is_empty() {
+                egui::CollapsingHeader::new(format!("Blocked ({})", blocked.len()))
+                    .id_salt("chat_blocked")
+                    .show(ui, |ui| {
+                        for name in &blocked {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(name).color(theme::TEXT));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if theme::action_button(ui, "Unblock").clicked() {
+                                            unblock_now = Some(name.clone());
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+            }
             ui.separator();
             // The composer and the Join row are laid out *first*, from the bottom
             // up, so the history takes whatever is left. Give the scroll area the
@@ -242,16 +333,50 @@ pub fn render_chat_panel(
                     }
                     if let Some(ch) = chat.channels.get(active) {
                         for line in &ch.lines {
+                            // The server stops a blocked person's *new* messages;
+                            // this hides the ones that were already on screen when
+                            // the block was made, which is the half a person
+                            // notices — they blocked someone and the abuse stayed
+                            // where it was.
+                            if chat.is_blocked(&line.sender) {
+                                continue;
+                            }
                             let who = match line.distance {
                                 Some(d) => format!("{} ({:.0} m)", line.sender, d),
                                 None => line.sender.clone(),
                             };
                             ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{who}:"))
-                                        .strong()
-                                        .color(theme::ACCENT_TEXT),
+                                // The name is the handle for everything you can do
+                                // *about* a person, which is why it senses clicks
+                                // at all. It has no click action of its own, so it
+                                // needs no `long_touched` guard — the trap the
+                                // Places rows document applies to a widget that
+                                // both jumps somewhere and opens a menu.
+                                let name = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("{who}:"))
+                                            .strong()
+                                            .color(theme::ACCENT_TEXT),
+                                    )
+                                    .sense(egui::Sense::click()),
                                 );
+                                name.context_menu(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&line.sender)
+                                            .strong()
+                                            .color(theme::CREAM),
+                                    );
+                                    ui.separator();
+                                    if ui.button("Block").clicked() {
+                                        block_now = Some(line.sender.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button("Report…").clicked() {
+                                        open_report =
+                                            Some((line.sender.clone(), Some(line.body.clone())));
+                                        ui.close();
+                                    }
+                                });
                                 ui.label(&line.body);
                             });
                         }
@@ -292,5 +417,141 @@ pub fn render_chat_panel(
             });
         }
         chat.input.clear();
+    }
+
+    if dismiss_notice {
+        chat.notice = None;
+    }
+    for (name, on) in [(block_now, true), (unblock_now, false)] {
+        let Some(username) = name else { continue };
+        let _ = online.intent_tx.unbounded_send(NetMessage::SetBlocked {
+            request_id: 0,
+            username,
+            blocked: on,
+        });
+    }
+    if let Some((username, message)) = open_report {
+        chat.report = Some(ReportDraft {
+            username,
+            message,
+            reason: ReportReason::Harassment,
+            note: String::new(),
+        });
+    }
+
+    render_report_dialog(&mut egui, &mut chat, &online);
+}
+
+/// The report form: who, why, and anything the reporter wants to add.
+///
+/// A `Window` rather than a section of the chat panel, for two reasons. Reporting
+/// is a considered act, and it interrupts — a form that scrolls away with the
+/// backlog is one you lose halfway through writing. And a report is raised from
+/// places other than the chat panel eventually (an avatar's context menu, a
+/// prim's), so it cannot live inside one panel's layout.
+fn render_report_dialog(
+    egui: &mut EguiManager,
+    chat: &mut ChatState,
+    online: &crate::resources::OnlineSession,
+) {
+    let Some(draft) = chat.report.as_mut() else {
+        return;
+    };
+    let mut open = true;
+    let mut submit = false;
+    let mut cancel = false;
+
+    egui::Window::new("Report a person")
+        .collapsible(false)
+        .resizable(false)
+        .default_width(320.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(egui.ui_mut().ctx(), |ui| {
+            ui.label(
+                egui::RichText::new(&draft.username)
+                    .strong()
+                    .color(theme::CREAM),
+            );
+            if let Some(message) = &draft.message {
+                theme::note(ui, &format!("“{message}”"));
+            }
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("What happened?").color(theme::TEXT));
+            for reason in ReportReason::ALL {
+                ui.radio_value(&mut draft.reason, *reason, reason.label());
+            }
+            ui.add_space(6.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.note)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Anything else we should know (optional)"),
+            );
+            theme::note(
+                ui,
+                "Reports go to the people who run this world. Blocking is separate \
+                 and takes effect immediately.",
+            );
+            ui.horizontal(|ui| {
+                submit = theme::action_button(ui, "Send report").clicked();
+                cancel = theme::action_button(ui, "Cancel").clicked();
+            });
+        });
+
+    if submit {
+        let _ = online.intent_tx.unbounded_send(NetMessage::ReportUser {
+            request_id: 0,
+            username: draft.username.clone(),
+            reason: draft.reason,
+            note: draft.note.clone(),
+            message: draft.message.clone(),
+        });
+    }
+    if submit || cancel || !open {
+        chat.report = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_block_is_matched_regardless_of_case() {
+        let mut chat = ChatState::default();
+        chat.blocked = vec!["Loud".into()];
+        assert!(chat.is_blocked("loud"));
+        assert!(chat.is_blocked("LOUD"));
+        assert!(!chat.is_blocked("louder"));
+        assert!(!chat.is_blocked("quiet"));
+    }
+
+    /// The list is whatever the server last said, so an empty `BlockedList`
+    /// clears it rather than being read as "no news".
+    #[test]
+    fn an_empty_list_from_the_server_unblocks_everyone() {
+        let mut chat = ChatState::default();
+        chat.blocked = vec!["loud".into()];
+        chat.blocked = Vec::new();
+        assert!(!chat.is_blocked("loud"));
+    }
+
+    /// Lines already in the scrollback when a block is made must disappear too —
+    /// the server can only withhold what it has not sent yet.
+    #[test]
+    fn blocking_hides_a_line_that_already_arrived() {
+        let mut chat = ChatState::default();
+        chat.receive("local", "loud".into(), "before the block".into(), Some(3.0));
+        let visible = |chat: &ChatState| {
+            chat.channels[0]
+                .lines
+                .iter()
+                .filter(|l| !chat.is_blocked(&l.sender))
+                .count()
+        };
+        assert_eq!(visible(&chat), 1);
+        chat.blocked = vec!["loud".into()];
+        assert_eq!(visible(&chat), 0, "an already-received line stayed visible");
     }
 }

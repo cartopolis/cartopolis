@@ -71,6 +71,8 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/admin/accounts/{id}", patch(update_account))
         .route("/api/admin/accounts/{id}", delete(remove_account))
+        .route("/api/admin/reports", get(list_reports))
+        .route("/api/admin/reports/{id}", patch(resolve_report))
         .with_state(state)
 }
 
@@ -173,10 +175,21 @@ async fn ws_handler(
 
 async fn health(State(state): State<HttpState>) -> Json<serde_json::Value> {
     let avatars = state.world.read().await.avatar_count();
+    // Unauthenticated, so it is a *count* and never the reports themselves. It is
+    // here because "is anybody waiting on a moderation decision?" is a question
+    // an operator's existing monitoring can ask, and a queue nobody polls is how
+    // "timely responses to concerns" quietly stops being true.
+    let open_reports = state
+        .conn
+        .lock()
+        .ok()
+        .and_then(|c| crate::db::open_report_count(&c).ok())
+        .unwrap_or(0);
     Json(json!({
         "status": "ok",
         "protocol_version": cartopolis_core::PROTOCOL_VERSION,
         "avatars": avatars,
+        "open_reports": open_reports,
     }))
 }
 
@@ -497,7 +510,75 @@ async fn remove_account(
             ));
         }
     }
+    // Same erasure the in-app "delete my account" performs — an account deleted
+    // by an operator must not leave more of a person behind than one deleted by
+    // its owner, or the guarantee is a property of which button was pressed.
+    with_db(&state, |c| {
+        crate::db::erase_account_traces(c, &id, &target.username)
+    })?;
     with_db(&state, |c| auth::delete_account(c, &id))?;
-    tracing::info!(%caller, target = %id, "account deleted");
+    // The row is gone, so any token still resolving to it authenticates as
+    // nobody. `set_disabled` can leave a live session standing (it gates the next
+    // handshake); deletion cannot.
+    let revoked = state
+        .sessions
+        .revoke_principal(Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::nil()));
+    tracing::info!(%caller, target = %id, revoked, "account deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Reports (App Store guideline 1.2: "a mechanism to report offensive content
+// and timely responses to concerns")
+// ---------------------------------------------------------------------------
+
+/// The operator's queue. `?all=true` includes resolved reports.
+///
+/// On the admin API rather than the wire for the same reason account management
+/// is: this is an authorisation decision about other people, and putting it on
+/// `NetMessage` would move every client's protocol version whenever the operator
+/// surface changed. The *filing* half is on the wire, because that is a player
+/// action.
+async fn list_reports(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<ReportQuery>,
+) -> ApiResult<Json<Vec<crate::db::ReportRow>>> {
+    require_admin(&state, &headers)?;
+    let rows = with_db(&state, |c| {
+        crate::db::list_reports(c, !q.all, q.limit.unwrap_or(200))
+    })?;
+    Ok(Json(rows))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ReportQuery {
+    #[serde(default)]
+    all: bool,
+    limit: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct ResolveReport {
+    /// What was done about it. Free text, and stored verbatim: the queue is only
+    /// useful if the answer to "was this handled?" is legible a month later.
+    #[serde(default)]
+    resolution: String,
+}
+
+async fn resolve_report(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(body): Json<ResolveReport>,
+) -> ApiResult<StatusCode> {
+    let (caller, _) = require_admin(&state, &headers)?;
+    let ok = with_db(&state, |c| {
+        crate::db::resolve_report(c, id, &body.resolution)
+    })?;
+    if !ok {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no such report".into()));
+    }
+    tracing::info!(%caller, report_id = id, "report resolved");
     Ok(StatusCode::NO_CONTENT)
 }

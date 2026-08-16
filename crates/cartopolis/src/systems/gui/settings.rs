@@ -64,16 +64,18 @@ pub enum SettingsTab {
     General,
     Map,
     Audio,
+    Account,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 3] = [Self::General, Self::Map, Self::Audio];
+    const ALL: [Self; 4] = [Self::General, Self::Map, Self::Audio, Self::Account];
 
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Map => "Map",
             Self::Audio => "Audio",
+            Self::Account => "Account",
         }
     }
 }
@@ -87,6 +89,12 @@ pub struct SettingsState {
     pub mic: Option<AudioInput>,
     /// Highest meter value seen since the test started.
     pub peak: f32,
+    /// The password re-entered to confirm account deletion.
+    ///
+    /// Cleared the moment the request goes out and whenever the panel closes: it
+    /// is the one string in this struct that must not outlive the interaction
+    /// that produced it.
+    pub delete_password: String,
 }
 
 impl SettingsState {
@@ -125,6 +133,8 @@ pub fn render_settings_panel(
     >,
     windows: Query<&Window>,
     mut commands: Commands,
+    mut identity: ResMut<crate::resources::AuthIdentity>,
+    online: Option<Res<crate::resources::OnlineSession>>,
 ) {
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
@@ -141,6 +151,7 @@ pub fn render_settings_panel(
     let mut open = open_before;
     let mut close = false;
     let mut play_tone = false;
+    let mut delete_account = false;
 
     // Edited as plain values and written back only on a real change. Both of
     // these resources are read by `is_changed()` gates — `AppPrefs` will be, once
@@ -179,6 +190,9 @@ pub fn render_settings_panel(
                 SettingsTab::General => general_tab(ui, &mut edited),
                 SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
                 SettingsTab::Audio => play_tone = audio_tab(ui, &mut state),
+                SettingsTab::Account => {
+                    delete_account = account_tab(ui, &mut state, &mut identity, online.is_some());
+                }
             });
     });
 
@@ -199,6 +213,21 @@ pub fn render_settings_panel(
     // hidden panel is the recording-indicator problem the module note describes.
     if !right_panel.is(RightPanel::Settings) && state.mic.is_some() {
         state.stop_mic();
+    }
+    // …and it must drop the typed password, for the same shape of reason.
+    if !right_panel.is(RightPanel::Settings) && !state.delete_password.is_empty() {
+        state.delete_password.clear();
+    }
+
+    if delete_account {
+        if let Some(online) = online {
+            let _ = online
+                .intent_tx
+                .unbounded_send(cartopolis_core::NetMessage::DeleteAccount {
+                    request_id: crate::resources::DELETE_ACCOUNT_REQUEST,
+                    password: std::mem::take(&mut state.delete_password),
+                });
+        }
     }
 
     #[cfg(feature = "audio")]
@@ -316,6 +345,164 @@ fn controls_section(ui: &mut egui::Ui) {
 /// build, not something the user did wrong.
 fn pending(ui: &mut egui::Ui, text: &str) {
     theme::note(ui, text);
+}
+
+/// Where a person reaches the people who run this world.
+///
+/// **Published contact information is a store requirement, not a courtesy**
+/// (App Store guideline 1.2, alongside the filter, the report path and the
+/// block). It is a constant in one place because it is also printed in the About
+/// panel and quoted in `docs/notes/user-safety.md`; three copies would go stale
+/// separately, and the one that matters is the one a reviewer reads.
+///
+/// **This address must exist and be answered before a store submission.** An
+/// unrouted mailbox is worse than none: it satisfies the letter of the guideline
+/// and fails the person using it.
+pub const SAFETY_CONTACT: &str = "safety@cartopolis.org";
+
+/// The safety summary shown in About and in the Account tab.
+///
+/// Both places, deliberately. About is where a reviewer looks; the Account tab is
+/// where a person who has just been harassed looks.
+fn safety_section(ui: &mut egui::Ui) {
+    ui.label(egui::RichText::new("Safety").strong().color(theme::CREAM));
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "Tap or right-click somebody's name in chat to block or report them. \
+                 Blocking is immediate and lasts until you undo it; reports go to the \
+                 people who run this world.",
+            )
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+        )
+        .wrap(),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new("Contact:")
+                .size(theme::SIZE_SUB)
+                .color(theme::TEXT_DIM),
+        );
+        ui.label(
+            egui::RichText::new(SAFETY_CONTACT)
+                .size(theme::SIZE_SUB)
+                .color(theme::ACCENT_TEXT),
+        );
+    });
+}
+
+/// Account: who you are signed in as, the safety summary, and the way out.
+///
+/// Returns `true` when a confirmed deletion should be sent.
+///
+/// **The deletion control is here because a store requires it to be** — an app
+/// that supports account creation must offer deletion from inside the app
+/// (guideline 5.1.1(v)), and until now the only route was the operator's web
+/// admin GUI, which is not "within the app" by any reading.
+fn account_tab(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    identity: &mut crate::resources::AuthIdentity,
+    online: bool,
+) -> bool {
+    if identity.deleted {
+        ui.label(
+            egui::RichText::new("Your account has been deleted.")
+                .strong()
+                .color(theme::CREAM),
+        );
+        theme::note(
+            ui,
+            "Nothing of it remains on the server except shared chat history, which \
+             no longer carries your name.",
+        );
+        return false;
+    }
+
+    match identity.username.clone() {
+        Some(name) => {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Signed in as")
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(egui::RichText::new(name).strong().color(theme::CREAM));
+            });
+        }
+        None => {
+            theme::note(
+                ui,
+                "You are not signed in. Offline, there is no account and nothing \
+                 leaves this device.",
+            );
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.separator();
+    safety_section(ui);
+    ui.separator();
+    ui.add_space(8.0);
+
+    ui.label(
+        egui::RichText::new("Delete this account")
+            .strong()
+            .color(theme::CREAM),
+    );
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "This cannot be undone. The account, its password and its block list \
+                 are erased; anything you said in Global or in a room stays, with your \
+                 name removed from it.",
+            )
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+        )
+        .wrap(),
+    );
+
+    // Signed in, over a live session: the request travels on the wire, so there
+    // is nothing to send while offline and nothing to delete in solo's own world.
+    let can_delete = online && identity.username.is_some();
+    if !can_delete {
+        theme::note(ui, "Sign in to the world holding the account to delete it.");
+        return false;
+    }
+
+    if let Some(error) = identity.delete_error.clone() {
+        if theme::inline_error(ui, &error) {
+            identity.delete_error = None;
+        }
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Type your password to confirm")
+            .size(theme::SIZE_SUB)
+            .color(theme::TEXT_DIM),
+    );
+    ui.add(
+        egui::TextEdit::singleline(&mut state.delete_password)
+            .password(true)
+            .desired_width(f32::INFINITY),
+    );
+    let ready = !state.delete_password.is_empty();
+    ui.add_enabled_ui(ready, |ui| {
+        // Armed twice over: the password, and then a confirm that disarms itself
+        // after a few seconds. This is the one control in the client that
+        // destroys something nobody can restore.
+        theme::confirm_button(
+            ui,
+            egui::Id::new("delete_account_confirm"),
+            "Delete account…",
+            "Delete permanently",
+        )
+    })
+    .inner
+        && ready
 }
 
 /// General: the settings a phone user looks for first.
@@ -729,6 +916,11 @@ pub fn render_about_panel(
                         .color(theme::TEXT_DIM),
                     );
                     ui.add_space(6.0);
+                    ui.separator();
+                    // Above the credits rather than below them: this is the one
+                    // block on the panel somebody may be looking for in a hurry,
+                    // and the licence list is ~130 lines of scrolling.
+                    safety_section(ui);
                     ui.separator();
                     controls_section(ui);
                     ui.separator();
