@@ -244,6 +244,16 @@ slot is 24 compilers on 8 cores, and the load average sat between 8.5 and 11.8
 during an ordinary run — 12.2 on 2026-08-16, with two public services *and* the
 agent containers' own builds on the same silicon.
 
+**A cold job got slower and the queue still got faster.** The first cold run at
+`-j 2` took 2671 s against 1918-2058 s for the cold runs recorded at `-j 3`
+above — call it a third slower per job, though it is not a controlled A/B (a
+different day, a different load, and the runner shares the box). Three slots at
+that rate is still ~15% more throughput than two at the old one, and throughput
+was never the point: what improves is that a pull request now finds a free slot
+while a `main` run holds one. If a *single* job's wall clock ever matters more
+than the queue does, this is the knob that bought the queue and it can be sold
+back.
+
 **Slots and compilers are one budget, and it is six.** The runner went to
 capacity 3 on 2026-08-16 and the per-job count went to 2 in the same change, so
 the peak compiler count did not move. The third slot buys the overlap of the
