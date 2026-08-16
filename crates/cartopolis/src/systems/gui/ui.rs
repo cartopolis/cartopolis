@@ -1016,6 +1016,10 @@ pub fn render_stats_overlay(
     if !dev.show_stats {
         return;
     }
+    // A frame-rate readout that only updates when you move the mouse measures the
+    // frames you caused, which is the opposite of what it is for. See
+    // `EguiManager::animating`.
+    egui.animating();
     // Exponential moving average so the readout is steady, not jittering per frame.
     const ALPHA: f32 = 0.1;
     let dt = time.delta_secs().max(1e-6);

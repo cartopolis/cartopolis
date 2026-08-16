@@ -947,6 +947,10 @@ pub fn render_hud(
     }
 
     let ((h, m, s), is_local) = clock.hms();
+    // The clock ticks and the altitude changes while the camera flies, neither of
+    // which is egui input — without this the readout is frozen at whatever it said
+    // when the pointer last moved. See `EguiManager::animating`.
+    egui.animating();
     let cam = camera.single().ok();
     // Geocentric altitude (the local-y "altitude" is wrong away from the anchor).
     let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
