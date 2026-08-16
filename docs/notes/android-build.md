@@ -326,7 +326,7 @@ two more steps that CI gets for free —
 
 The APK is a *separate* workflow, not a step here, for deploy-web.yml's reason:
 this lane must stay the fast gate on every push, and a link of the whole Bevy
-stack against a runner with capacity 2 is not that.
+stack against a runner with capacity 3 is not that.
 
 **A cheap gate placed first hides every expensive gate behind it**, and this lane
 is where that cost two months of Android releases. `cargo fmt --check` used to be

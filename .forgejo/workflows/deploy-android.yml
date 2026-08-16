@@ -5,7 +5,7 @@ name: Deploy Android
 #
 # Separate from ci.yml for the reason deploy-web.yml is: this is a *link*, thin
 # LTO over the whole Bevy stack, tens of minutes cold against a runner with
-# capacity 2. ci.yml's android lane stays a `cargo check` and remains the gate on
+# capacity 3. ci.yml's android lane stays a `cargo check` and remains the gate on
 # every push; this runs only when `main` moves, plus on demand.
 #
 # There is exactly one APK on disk at a time. The filename is fixed, so each run
@@ -16,7 +16,7 @@ name: Deploy Android
 # commit against the one recorded beside the APK and skips the build entirely
 # when they match. Two reasons, and the second is the one that matters:
 #
-#   * it is 15-25 minutes of a capacity-2 runner to rebuild bytes that already
+#   * it is 15-25 minutes of a capacity-3 runner to rebuild bytes that already
 #     exist, and this workflow is dispatched by hand — by someone who cannot see
 #     from the Actions tab what is currently on the site;
 #   * `VERSION_CODE` is derived from the *run number*, so a second run of the
@@ -29,7 +29,7 @@ name: Deploy Android
 # applied by hand, or an APK that shipped from a bad checkout.
 on:
   # Manual only. This used to run on every push to `main`, which on a
-  # capacity-2 runner meant the APK competed with CI for a slot on every
+  # capacity-3 runner meant the APK competed with CI for a slot on every
   # merge — and a publish is not something you want to happen because a
   # README typo landed. `workflow_dispatch` from the Actions tab, or:
   #   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \

@@ -4,11 +4,11 @@ name: Deploy web
 #
 # Separate from ci.yml on purpose. This job rebuilds std (`-Z build-std`, needed
 # for atomics) and links ~70 MB with LTO, so it is tens of minutes cold against a
-# runner with capacity 2 — attached to the test lanes it would block them on
+# runner with capacity 3 — attached to the test lanes it would block them on
 # every push. Here it runs only when `main` moves, plus on demand.
 on:
   # Manual only. This used to run on every push to `main`, which on a
-  # capacity-2 runner meant the web client competed with CI for a slot on every
+  # capacity-3 runner meant the web client competed with CI for a slot on every
   # merge — and a publish is not something you want to happen because a
   # README typo landed. `workflow_dispatch` from the Actions tab, or:
   #   curl -X POST -H "Authorization: token $FORGEJO_TOKEN" \

@@ -18,9 +18,12 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: "3"
   CARGO_INCREMENTAL: "0"
-  # Same reasoning as ci.yml: capacity 2 on an 8-core box shared with nominatim
-  # and overpass.
-  CARGO_BUILD_JOBS: "3"
+  # Same reasoning as ci.yml: capacity 3 on an 8-core box shared with nominatim,
+  # overpass and the agent containers. On the command line rather than as
+  # `CARGO_BUILD_JOBS`, because `rust-cache` hashes every `CARGO*` variable into
+  # its key and a job count changes no byte of any artifact — see ci.yml's env
+  # block for the cold run that taught us.
+  JOBS: "2"
   RUSTC_WRAPPER: sccache
   SCCACHE_DIR: /sccache
   SCCACHE_CACHE_SIZE: 20G
@@ -52,7 +55,7 @@ jobs:
       # here where it does not for the client (`android-release` exists because
       # that link OOMs) — the simulator has no Bevy under it.
       - name: Build
-        run: cargo build -p cartopolis_simulator --bin simulator --release
+        run: cargo build -j "$JOBS" -p cartopolis_simulator --bin simulator --release
 
       - name: sccache stats
         if: always()
