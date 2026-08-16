@@ -468,6 +468,41 @@ impl Budget {
         }
     }
 
+    /// The frame rate this tier wants to be *presented* at.
+    ///
+    /// Distinct from [`Self::fps_cap`], and the difference is the point.
+    /// `fps_cap` drives `frame_limiter`, a `thread::sleep` that only makes sense
+    /// where the client is racing an unsynchronised presentation mode; it is
+    /// `None` on the phone precisely because Android runs `AutoVsync` and a second
+    /// pacer would beat against the first.
+    ///
+    /// This is the number to *tell the compositor*, which is a different
+    /// conversation: it says "do not run me faster than this", and the platform
+    /// obliges by picking a display mode rather than by us sleeping. Without it a
+    /// 120 Hz panel renders a 30 fps-budgeted scene at 120 and the phone is
+    /// thermally throttled for the privilege.
+    ///
+    /// 60 everywhere else, matching what the limiter would have done.
+    // Its only non-test caller is `report_frame_to_scheduler`'s Android arm, which
+    // is `cfg`-ed away everywhere else — so off the handset the tests below are the
+    // only users, and the workspace's `unused = "deny"` would otherwise fail the
+    // native lane for a method that exists precisely to be called on one target.
+    // Same arrangement as `lib.rs::android_property_name`.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    #[must_use]
+    pub fn target_fps(&self) -> f32 {
+        match self.tier {
+            // Not 30. The phone budget's brief is "whatever it takes to hold ~30 fps
+            // on a Fairphone 4", but that is a floor it aims to clear, not a rate to
+            // pin a better device to — and this is a hint the platform rounds to a
+            // mode it has. Asking for 60 lets a handset that can hold 60 run at 60
+            // and one that cannot fall to its own half-rate, while still telling a
+            // 120 Hz panel not to spend twice the power on frames nobody asked for.
+            Tier::Phone => 60.0,
+            _ => self.fps_cap.unwrap_or(60.0) as f32,
+        }
+    }
+
     /// A streaming ring radius with the tier's bias applied.
     ///
     /// Floored at 1 rather than 0: a radius of 0 is a single tile under the
@@ -716,6 +751,27 @@ mod tests {
                     .cmple(upper.atmosphere_luts.sky_view)
                     .all(),
                 "atmosphere LUTs: {name}"
+            );
+        }
+    }
+
+    /// Every rung asks the compositor for a real rate, including the one that
+    /// deliberately has no `fps_cap`.
+    ///
+    /// The phone's `fps_cap` is `None` because a `thread::sleep` limiter layered on
+    /// `AutoVsync` is two pacers beating against each other — but "do not sleep" and
+    /// "run as fast as the panel will go" are different instructions, and reading
+    /// the first as the second is what leaves a 120 Hz handset rendering a 30
+    /// fps-budgeted scene at 120 until it throttles. `target_fps` is the second
+    /// conversation and must never be zero.
+    #[test]
+    fn every_rung_asks_the_compositor_for_a_rate() {
+        for budget in [Budget::phone(), Budget::balanced(), Budget::desktop()] {
+            let fps = budget.target_fps();
+            assert!(
+                fps >= 30.0 && fps <= 120.0,
+                "{:?} asked for {fps} fps",
+                budget.tier
             );
         }
     }

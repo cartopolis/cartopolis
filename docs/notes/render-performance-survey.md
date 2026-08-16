@@ -84,9 +84,24 @@ operations), `lower_envelope`'s stack machine. tiny-skia's scan conversion — t
 
 Where a loop genuinely was hot, the fix was algorithmic, not SIMD:
 `terrain::bake` hoisted anchor-invariant trig and exploited Mercator separability
-for ~10–30×. The same is true of `collision::blocked`, which still has no spatial
-index despite CLAUDE.md calling it one: a uniform grid is ~100× where SIMD offers
-4–8×.
+for ~10–30×.
+
+### The building colliders do not need a spatial index
+
+`collision::blocked` is a linear scan over every footprint and CLAUDE.md calls the
+structure a "footprint index", which it is not. Both look like an obvious ~100×.
+Do the arithmetic before building one: `blocked` is called **at most ~5 times per
+frame** (`slide` does up to four, `steer_velocity` a couple), each footprint costs
+an AABB test that the first compare usually rejects, and the worst-case patch is
+6,776 buildings — so the whole per-frame cost is on the order of **70 µs**.
+
+A uniform grid has to be rebuilt whenever a source changes, and 3DBAG cells arrive
+several times a second while streaming. Rebuilding ~6,800 footprints into their
+overlapping cells is ~0.5–1 ms, i.e. the index would **cost more on the frames it
+is rebuilt than it saves on the frames it is queried**. It becomes worth building
+only if the query rate rises by an order of magnitude — several colliding agents,
+or a per-vertex query — and the honest trigger is a measurement, not the shape of
+the loop.
 
 ### big_space is not the bottleneck
 
@@ -133,6 +148,28 @@ phone that leaves two cores idle for most of Update. Most clique members early-o
 so the realised cost concentrates in the streamers — but the ceiling is structural
 and no amount of `.after()` tuning moves it.
 
+### Android frame pacing is fixed (2026-08-16)
+
+`fps_cap: None` on the phone meant "do not run a `thread::sleep` limiter on top of
+`AutoVsync`", which is right, and was being read as "run as fast as the panel
+will go", which is not the same instruction. FIFO paces to *the display*, so a
+90/120 Hz handset rendered a 30 fps-budgeted scene at 90/120 and was thermally
+throttled for it — and the ADPF deadline was hardcoded to `1e9/60` regardless, so
+on those same devices every frame was reported comfortably on time and the
+governor never had cause to boost.
+
+`Budget::target_fps` is the number to tell the *compositor*, distinct from
+`fps_cap`, and `platform::android::set_frame_rate` delivers it through
+`ANativeWindow_setFrameRate` — `dlsym`ed from `libandroid.so` for the same reason
+ADPF is, since an API-29 handset is not misconfigured. It is a hint: the platform
+may pick a multiple, or ignore it on a device with no seamless mode switching, so
+it logs what it got. Retried until `native_window()` exists, because that is
+`None` for the first few seconds after `android_main`.
+
+**Unverifiable here.** The emulator is fixed at 60 Hz, so this needs a real
+90/120 Hz device — `adb shell dumpsys SurfaceFlinger | grep -i refresh` plus
+battery temperature.
+
 ### The repeat parses are collapsed (2026-08-16)
 
 `tile_loader::parse_shared` keys a `Weak<TileData>` cache on the **source** tile,
@@ -173,18 +210,25 @@ The decode is memoised; the path building and the bounds scan are not.
   paths inside `async fn`s. `async-io` is in the graph only transitively; making
   it a direct dependency, with the reactor thread that implies on Android, is a
   decision to take on its own.
-- **Android frame pacing.** `fps_cap: None` leaves pacing to FIFO, which paces to
-  *the panel* — so a 90/120 Hz handset renders 2× the frames a 30-tuned scene
-  needs and is then thermally throttled below what a cap would have held. The ADPF
-  deadline in `report_frame_to_scheduler` is hardcoded to 16.6 ms for the same
-  reason. `ANativeWindow_setFrameRate` is reachable through the `dlopen`/`dlsym`
-  machinery `platform::android::perf_hint` already has.
-- **egui runs at `pixels_per_point` ≈ 4.1 on a phone** (2.75 display scale ×
-  1.5 `ui_scale`) while the 3D world runs at 0.5, and it is a *second*
-  full-resolution pass over the swapchain with `LoadOp::Load` — a full tile-memory
-  load and store of the 1080×2340 output, every frame. Clamping ppp is contained;
-  merging the pass into `upscaling` is the larger win and the riskier change.
-  **Do not touch `ui_scale`** — every dp-based layout assumption reads it.
+- **egui is a second full-resolution pass over the swapchain** with `LoadOp::Load`
+  — a full tile-memory load and store of the 1080×2340 output, every frame, purely
+  to composite the UI. Merging it into the `upscaling` pass removes the round trip
+  and is the real win here. It means replacing Bevy's `upscaling` node with a local
+  one that blits and then hands the open `RenderPass` to `egui_wgpu`;
+  `render_scale::make_the_blit_filter` shows `BlitPipeline` is reachable from
+  `RenderStartup`, so the pieces exist. The failure mode is a wgpu validation
+  error, and this tree already knows what that costs — a silent mid-stream quit.
+
+  **Clamping `pixels_per_point` is *not* the cheap version of this**, which is
+  worth stating because it looks like it. egui's ppp is the layout unit and the
+  rasterisation density at once: lowering it from 4.1 to 2.0 does not render the
+  same UI more cheaply, it makes every element physically smaller — i.e. it pays
+  for fill with touch-target size, on the platform where touch targets matter
+  most. Raising `ui_scale` to compensate puts the number straight back, because
+  ppp *is* `display_scale × ui_scale`. There is no "lay out large, rasterise
+  small" mode short of rendering egui to a smaller target and upscaling it, which
+  is exactly what `render_scale` deliberately does not do to the chrome so that
+  text stays crisp.
 - **Nothing prewarms the pipeline cache**, and `StandardMaterial::depth_bias` is
   part of the specialization key, so each of the ~25 depth-bias rungs is a
   distinct shader compile. Adreno compiles run 50–300 ms apiece and geometry whose

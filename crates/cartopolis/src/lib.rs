@@ -2971,14 +2971,28 @@ fn report_frame_to_scheduler(time: Res<Time<Real>>, mut started: Local<bool>) {
     #[cfg(target_os = "android")]
     {
         if !*started {
-            *started = true;
-            // The deadline to aim at. The phone tier leaves pacing to FIFO
-            // (`fps_cap: None`), so the target is the display's own period rather
-            // than a cap of ours — 60 Hz, which is what a Fairphone 4 has.
-            let target = quality::budget()
-                .fps_cap
-                .map_or(1.0e9 / 60.0, |fps| 1.0e9 / fps);
-            platform::android::start_perf_hint(target as i64);
+            // Ask the compositor for the rate we actually want to run at, and aim
+            // ADPF at the same number. Both used to assume 60 Hz.
+            //
+            // That assumption is the whole bug on a modern handset.
+            // `PresentMode::AutoVsync` paces to *the panel*, so on a 90 or 120 Hz
+            // screen a scene budgeted for 30 fps renders two to four times the
+            // frames it needs, heats up, and gets thermally throttled below what a
+            // cap would have held. And the ADPF deadline was `1e9/60` regardless,
+            // so on those same devices every frame was reported comfortably on time
+            // and the governor never had a reason to boost.
+            //
+            // Retried until the surface exists: `native_window()` is `None` for the
+            // first few seconds on Android (winit logs `Creating new window` about
+            // five seconds after `android_main`), so a one-shot at startup would
+            // silently never take.
+            let fps = quality::budget().target_fps();
+            if platform::android::set_frame_rate(fps) {
+                *started = true;
+                let period = (1.0e9 / f64::from(fps)) as i64;
+                platform::android::start_perf_hint(period);
+                platform::android::set_perf_hint_target(period);
+            }
         }
         platform::android::report_frame(time.delta().as_nanos() as i64);
     }
