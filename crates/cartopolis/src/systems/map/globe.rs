@@ -873,11 +873,26 @@ pub fn update_atmosphere_origin(
 /// normal ground play never pays for it or sees it poke through the tiles. At the
 /// same altitude the atmosphere is disabled (see below) so the planet renders lit
 /// against black space instead of washing out or hanging the GPU.
+///
+/// **`AtmosphereSettings` is optional, and that is the whole point.** This system
+/// is the only writer of the globe surface's visibility and of the `HideInSpace`
+/// props, but it started life as the atmosphere-mode switch and kept asking for
+/// the camera's `AtmosphereSettings` by value in its query. `setup_camera` only
+/// inserts that component when the run gets bevy's real atmosphere, so on every
+/// run that takes `sky_dome::SkyMode::Dome` instead — the phone tier, an adapter
+/// with no `FLOAT32_FILTERABLE` (the Adreno 619), `CARTO_SKY_DOME=1` — the query
+/// matched nothing and the system returned before touching a single `Visibility`.
+/// The globe then streamed its tiles, built its meshes and never showed any of
+/// them: from orbit the handset rendered the 150 km ground disc as a flat grey
+/// circle over the anchor, with the globe cloud shell floating above a planet
+/// that was not there. `setup_camera` used to note that this system "no-ops
+/// without it, which is what made dropping it a safe web workaround" — that was
+/// true when the atmosphere was all it did, and silently stopped being true.
 #[allow(clippy::type_complexity)]
 pub fn update_globe_visibility(
     globe: Res<GlobeState>,
     mut camera: Query<
-        (&GridCell, &Transform, &mut AtmosphereSettings),
+        (&GridCell, &Transform, Option<&mut AtmosphereSettings>),
         With<crate::components::FreeCamera>,
     >,
     mut planet: Query<&mut bevy::light::Atmosphere, With<PlanetAtmosphere>>,
@@ -912,7 +927,7 @@ pub fn update_globe_visibility(
     if !globe.ready {
         return;
     }
-    let Ok((cell, tf, mut atmosphere)) = camera.single_mut() else {
+    let Ok((cell, tf, atmosphere)) = camera.single_mut() else {
         return;
     };
     let show_globe = globe.in_space(cell, tf);
@@ -931,16 +946,22 @@ pub fn update_globe_visibility(
     // resources still in flight and hangs the device (`VK_ERROR_DEVICE_LOST`,
     // confirmed via kernel `GPU HANG` logs). Both are chosen once at startup
     // (`setup_camera`, gated by the dev-panel/env flags) and left in place.
-    let (want_mode, want_samples) = if show_globe && space_raymarch() {
-        (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
-    } else {
-        (AtmosphereMode::LookupTexture, GROUND_SKY_SAMPLES)
-    };
-    if atmosphere.rendering_method as u32 != want_mode as u32 {
-        atmosphere.rendering_method = want_mode;
-    }
-    if atmosphere.sky_max_samples != want_samples {
-        atmosphere.sky_max_samples = want_samples;
+    //
+    // Absent on a `SkyMode::Dome` run, which has no atmosphere to switch modes on
+    // — that arm skips this block and goes on to the visibility writes below,
+    // which are the part every tier needs.
+    if let Some(mut atmosphere) = atmosphere {
+        let (want_mode, want_samples) = if show_globe && space_raymarch() {
+            (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
+        } else {
+            (AtmosphereMode::LookupTexture, GROUND_SKY_SAMPLES)
+        };
+        if atmosphere.rendering_method as u32 != want_mode as u32 {
+            atmosphere.rendering_method = want_mode;
+        }
+        if atmosphere.sky_max_samples != want_samples {
+            atmosphere.sky_max_samples = want_samples;
+        }
     }
 
     // Exaggerate the shell's height from orbit (see `SPACE_ATMOSPHERE_THICKNESS`).

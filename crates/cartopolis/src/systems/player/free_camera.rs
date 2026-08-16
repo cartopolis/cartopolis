@@ -760,9 +760,15 @@ pub fn setup_camera(
         ));
         // Bevy 0.19 built-in atmosphere: the camera carries only the render
         // settings; the sky derives from the sun direction + camera altitude
-        // over the planet entity below. `update_globe_visibility` no-ops
-        // without it, which is what made dropping it a safe web workaround —
-        // and what makes restoring it here uneventful.
+        // over the planet entity below.
+        //
+        // This used to add that "`update_globe_visibility` no-ops without it,
+        // which is what made dropping it a safe web workaround". It is not safe
+        // and has not been for a while: that system is now the sole writer of the
+        // globe surface's visibility, so a camera with no `AtmosphereSettings`
+        // meant a planet that streamed every tile and drew none of them. It takes
+        // the component optionally now — see its doc comment. Nothing here may
+        // assume a system "no-ops" because of a component this gate withholds.
         //
         // The LUT sizes are the tier's. Nothing else here is: the sample counts,
         // the aerial-view range and the rendering method stay at Bevy's defaults

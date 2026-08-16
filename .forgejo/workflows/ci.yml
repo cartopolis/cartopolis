@@ -265,6 +265,44 @@ jobs:
               exit 1
             }
 
+      # The same frame on the tier Android actually runs, because the one above
+      # cannot see the phone's scene at all.
+      #
+      # `CARTO_QUALITY=phone` is not a performance variation of the run above — it
+      # takes a different sky (`quality::Budget::sky_dome`), and a different sky
+      # means `setup_camera` inserts no `AtmosphereSettings` on the camera. That
+      # single absent component is what silently deleted the planet: the sole
+      # writer of the globe surface's visibility asked for it by value in its
+      # camera query, matched nothing, and returned before setting a single
+      # `Visibility`. The globe streamed all 228 of its tiles and drew none of
+      # them, leaving the handset a grey ground disc with a cloud shell floating
+      # over it — while this job, one tier up, kept passing `globe_rendered>0`.
+      #
+      # So the assertion is deliberately identical to the one above. What is being
+      # gated is not a new property of the scene; it is that the property already
+      # gated still holds on the tier where nobody is watching. Any future "the
+      # phone doesn't need this component" gate has to survive it.
+      #
+      # No `draws` ceiling here: the phone tier's radius bias and halved per-frame
+      # budgets make its draw count a different number with a different meaning,
+      # and one loose bound per job is enough.
+      - name: Headless scene smoke (orbit, phone tier)
+        if: github.ref == 'refs/heads/main'
+        timeout-minutes: 15
+        env:
+          CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
+          CARTO_QUALITY: phone
+        run: |
+          cargo run --locked -p cartopolis -- \
+            --shot /tmp/orbit_phone.png --dump-state /tmp/orbit_phone.json \
+            --at 53.2194,6.5665,180000 --look=-90,0 \
+            --size 640x360 --settle 2 --wait 60 \
+            --expect 'settled==true' --expect 'globe_rendered>0' || {
+              echo "::error::phone-tier scene smoke failed — the metrics behind it:"
+              cat /tmp/orbit_phone.json 2>/dev/null || echo "(no dump: the run died before it captured)"
+              exit 1
+            }
+
       # Formatting is a convention (d5c301d) and needs a gate or it decays back
       # into per-change churn. `crates/big_space` is excluded on purpose — it is a
       # vendored fork kept diff-comparable with upstream.
