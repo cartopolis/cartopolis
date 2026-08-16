@@ -311,6 +311,40 @@ pub struct AppPrefs {
     /// because this file is hand-editable.
     #[serde(default)]
     pub render_scale: Option<f32>,
+    /// Level for the synthesised soundscape — footsteps, the landing, the wind
+    /// and the driver's turn cues. 1.0 is what the clips are authored at.
+    ///
+    /// A slider rather than a mute, because the complaint that produced it was
+    /// "too loud", not "unwanted": the timbre and the levels were fixed at the
+    /// source (`systems::soundscape`) and this is the remaining half a person
+    /// can only judge on their own device, with their own speaker, over their
+    /// own road noise.
+    #[serde(default = "crate::resources::unit_gain")]
+    pub effects_volume: f32,
+    /// Level for incoming proximity voice. Separate from
+    /// [`Self::effects_volume`] because they are turned down for opposite
+    /// reasons — the soundscape is atmosphere and voice is people talking, and
+    /// the usual want is less of the first and none of the second's loss.
+    #[serde(default = "crate::resources::unit_gain")]
+    pub voice_volume: f32,
+    /// Gain applied to captured microphone audio before it is sent, so a quiet
+    /// headset can be lifted without the operating system's mixer. Judged
+    /// against the meter in Settings ▸ Audio, which shows the *gained* signal
+    /// for that reason.
+    #[serde(default = "crate::resources::unit_gain")]
+    pub mic_gain: f32,
+}
+
+/// Widest a volume or gain preference may be set to.
+///
+/// Above 1.0 for [`AppPrefs::mic_gain`] alone — output levels are authored at
+/// their intended loudness, and a >1 multiplier there would clip the mix rather
+/// than make anything louder.
+pub const MAX_MIC_GAIN: f32 = 4.0;
+
+/// serde's `default` for a level that starts at unity.
+pub(crate) fn unit_gain() -> f32 {
+    1.0
 }
 
 /// serde's `default` for a bool that starts on.
@@ -330,8 +364,41 @@ impl Default for AppPrefs {
             voice_guidance: yes(),
             quality: QualityPreset::default(),
             render_scale: None,
+            effects_volume: unit_gain(),
+            voice_volume: unit_gain(),
+            mic_gain: unit_gain(),
         }
     }
+}
+
+impl AppPrefs {
+    /// The soundscape level, clamped. `user.json` is hand-editable and a
+    /// negative or NaN level would reach `Volume::Linear` unchecked.
+    #[must_use]
+    pub fn effects_gain(&self) -> f32 {
+        clamp_gain(self.effects_volume, 1.0)
+    }
+
+    /// The incoming-voice level, clamped. See [`Self::effects_gain`].
+    #[must_use]
+    pub fn voice_gain(&self) -> f32 {
+        clamp_gain(self.voice_volume, 1.0)
+    }
+
+    /// The capture gain, clamped to [`MAX_MIC_GAIN`].
+    #[must_use]
+    pub fn capture_gain(&self) -> f32 {
+        clamp_gain(self.mic_gain, MAX_MIC_GAIN)
+    }
+}
+
+/// NaN-safe clamp into `0..=max`. `f32::clamp` panics on a NaN bound and
+/// propagates a NaN value; a level read from a file has to survive both.
+fn clamp_gain(v: f32, max: f32) -> f32 {
+    if v.is_nan() {
+        return 1.0;
+    }
+    v.clamp(0.0, max)
 }
 
 /// How `time_of_day` (the sun/moon/fog clock) is driven — a light/dark/auto
@@ -1145,9 +1212,48 @@ mod tests {
             voice_guidance: false,
             quality: QualityPreset::Low,
             render_scale: Some(0.75),
+            effects_volume: 0.4,
+            voice_volume: 0.8,
+            mic_gain: 2.0,
         };
         let text = serde_json::to_string(&prefs).expect("serialises");
         assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);
+    }
+
+    /// The levels are hand-editable and reach `Volume::Linear`, which has no
+    /// opinion about a negative or a NaN. A `user.json` someone typed into must
+    /// not be able to invert the mix or silence it permanently.
+    #[test]
+    fn a_hand_edited_level_is_clamped_rather_than_believed() {
+        let bad = |v: f32| AppPrefs {
+            effects_volume: v,
+            voice_volume: v,
+            mic_gain: v,
+            ..AppPrefs::default()
+        };
+        for v in [-1.0, 0.0, 0.5, 1.0, 99.0] {
+            let p = bad(v);
+            assert!((0.0..=1.0).contains(&p.effects_gain()), "effects at {v}");
+            assert!((0.0..=1.0).contains(&p.voice_gain()), "voice at {v}");
+            assert!(
+                (0.0..=MAX_MIC_GAIN).contains(&p.capture_gain()),
+                "mic at {v}"
+            );
+        }
+        // NaN falls back to unity rather than propagating into the mix, where it
+        // is silence with nothing to say why.
+        assert_eq!(bad(f32::NAN).effects_gain(), 1.0);
+        assert_eq!(bad(f32::NAN).capture_gain(), 1.0);
+    }
+
+    /// A file written before the levels existed must not arrive silent.
+    #[test]
+    fn levels_missing_from_an_older_file_default_to_unity() {
+        let old: AppPrefs =
+            serde_json::from_str(r#"{"units":"metric","keep_screen_on":true}"#).expect("parses");
+        assert_eq!(old.effects_gain(), 1.0);
+        assert_eq!(old.voice_gain(), 1.0);
+        assert_eq!(old.capture_gain(), 1.0);
     }
 
     /// The quality preset's only contract with `crate::quality` is the word it

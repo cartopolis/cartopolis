@@ -2904,6 +2904,7 @@ pub fn play_driver_cues(
     mut commands: Commands,
     mut sources: ResMut<Assets<bevy::audio::AudioSource>>,
     driver: Res<DriverState>,
+    prefs: Res<crate::resources::AppPrefs>,
     mut clips: Local<Option<CueClips>>,
     mut memory: Local<CueMemory>,
 ) {
@@ -2926,7 +2927,10 @@ pub fn play_driver_cues(
         bevy::audio::AudioPlayer(clips.of(cue)),
         bevy::audio::PlaybackSettings {
             mode: bevy::audio::PlaybackMode::Despawn,
-            volume: bevy::audio::Volume::Linear(CUE_VOLUME),
+            // The cues are part of the soundscape the Settings slider governs:
+            // a turn chime at full level over a quietened footstep is the same
+            // complaint arriving from the other direction.
+            volume: bevy::audio::Volume::Linear(CUE_VOLUME * prefs.effects_gain()),
             ..default()
         },
     ));
