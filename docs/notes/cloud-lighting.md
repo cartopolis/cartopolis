@@ -38,6 +38,35 @@ that starts by adding a march through a 3D density field.
    `main::sun_light` and `free_camera::distance_fog` are built from, and the haze
    colour is read straight off the camera's own `DistanceFog`.
 
+   **"Built the same way as" is not the same as "is", and the gap was visible**
+   (2026-08-16). The ambient term survived that clean-up as its own constant —
+   `sky_day = (0.38, 0.44, 0.55)`, assembled out of the right ingredients, in the
+   right shape, next to a comment saying it therefore agreed with the fog. It did
+   not: the fog colour is ~(0.46, 0.52, 0.65) linear, and after the shader's
+   `SKY_FLOOR` an opaque core landed at ~0.15 — under a third of the horizon it
+   was supposed to recede into. On a fully overcast day that is the entire sky, so
+   the phone drew a mid-grey lid butted against a near-white horizon band, with a
+   hard step between them. Both values live in the same post-exposure linear space
+   (bevy's `apply_fog` mixes toward `DistanceFog::color` *after* exposure, and
+   `horizonhaze.wgsl` paints it un-exposed to match), so there was no unit
+   mismatch to explain it — just two different greys. The deck's ambient is now
+   the camera's fog colour itself, floored at a night value (see below).
+
+   The one place cloud and fog must *not* agree is night: a cloud base over a city
+   catches its glow from below, and matching the fog's near-black night colour
+   makes the deck darker than the sky behind it — black holes in the star field.
+   `CLOUD_NIGHT_FLOOR` is that exception, and now the only one.
+
+   **The sky floor has to ride coverage.** A lone cumulus has a dark base: it is
+   optically deep, lit from above, over ground that bounces little back. A solid
+   overcast has a bright one — it is thinner, and it *is* the sky, with no
+   brighter sky beside it to be dark against. One constant cannot be both, and the
+   old single 0.35 was the cumulus answer applied to overcast. `cloud_sky_floor`
+   ramps it over the top of the coverage range (`smoothstep(0.55, 1.0)`), so 30 %
+   cover looks like 10 % cover and only a genuinely closed sky changes character.
+   It is decided on the Rust side and shipped in the previously-unused alpha of
+   `haze_color`: it is a lighting decision, and the shader is where shape lives.
+
 2. **The sun must be extincted to the deck's altitude, not the ground's.**
    `utils::sun::sun_transmittance_at` applies the barometric factor `exp(-h/H)`,
    H = 8500 m. This is why a sunset deck catches pink and gold while the city

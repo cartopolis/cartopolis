@@ -50,8 +50,12 @@
 // aerial perspective. w: high deck height above the camera, in metres.
 @group(3) @binding(5) var<uniform> params2: vec4<f32>;
 // rgb: the colour the deck recedes into with distance — the same fog colour the
-// horizon-haze shell paints, so cloud and sky reach the horizon together.
-// a: unused.
+// horizon-haze shell paints, so cloud and sky reach the horizon together. It is
+// also what `sky_color` is now taken from, which is what stops an overcast deck
+// from meeting the horizon in a step (see `update_clouds`).
+// a: the fraction of `sky_color` an opaque core still receives — low for scattered
+// cumulus (a dark base against a bright sky), high for overcast (the deck *is*
+// the sky). Rust decides it from the coverage; see `cloud_sky_floor`.
 @group(3) @binding(6) var<uniform> haze_color: vec4<f32>;
 
 // Base noise frequency of the low deck: metres⁻¹ in its projected plane.
@@ -125,10 +129,6 @@ const MS_ECCENTRICITY: f32 = 0.5;
 
 // Domain-warp strength, in UV units of the low deck's field.
 const WARP: f32 = 0.28;
-
-// Fraction of the ambient sky a fully opaque core still receives. Cloud bases go
-// dark, but never black — the ground bounces light back up at them.
-const SKY_FLOOR: f32 = 0.35;
 
 // Detail LOD range, in metres of slant range. A pixel's footprint on the cloud
 // plane grows without bound toward the horizon, so the high octaves alias into
@@ -366,8 +366,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // there would cancel exactly the silver lining the phase function just built.
     let powder = 1.0 - exp(-2.0 * od_low);
     let powder_w = clamp(0.5 - 0.5 * cos_theta, 0.0, 1.0);
+    // Cloud bases go dark, but never black — the ground bounces light back up at
+    // them, and an overcast deck is the sky's own light source rather than
+    // something standing in front of it. How dark is `haze_color.a`, above.
+    let sky_floor = haze_color.a;
     let low_rgb = sun_color.rgb * ms * mix(1.0, powder, powder_w)
-        + sky_color.rgb * (SKY_FLOOR + (1.0 - SKY_FLOOR) * (1.0 - shape_low));
+        + sky_color.rgb * (sky_floor + (1.0 - sky_floor) * (1.0 - shape_low));
 
     // The high deck is thin enough that self-shadowing is not a thing it does:
     // phase function and ambient only, no march.
