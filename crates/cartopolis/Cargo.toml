@@ -407,3 +407,9 @@ winresource = "0.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# A throwaway world database for the voice loopback test
+# (`systems::voice::loopback`), which starts a real simulator. Test-only, and
+# already in the tree as the simulator's own dev-dependency.
+tempfile = "3"

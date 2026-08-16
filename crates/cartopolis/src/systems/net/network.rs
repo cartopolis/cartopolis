@@ -31,6 +31,10 @@ pub struct AuthWriteback<'w> {
     user_store: ResMut<'w, UserStore>,
     chat: ResMut<'w, crate::systems::chat::ChatState>,
     script: ResMut<'w, crate::systems::script_editor::ScriptEditorState>,
+    /// Voice arrives on the same mailbox as everything else, so it is decoded
+    /// here rather than in a system of its own — a second drain of one queue
+    /// would race for the messages.
+    voice: ResMut<'w, crate::systems::voice::VoiceState>,
 }
 use crate::systems::avatar::AIRBORNE_EPS;
 use crate::systems::locomotion;
@@ -787,6 +791,18 @@ pub fn apply_network_snapshot(
             } if request_id == crate::resources::DELETE_ACCOUNT_REQUEST => {
                 tracing::warn!(%message, "account deletion refused");
                 auth.identity.delete_error = Some(message);
+            }
+            NetMessage::VoiceData {
+                sender_id,
+                seq,
+                payload,
+                distance_m,
+                ..
+            } => {
+                // `channel` is deliberately ignored: the server only ever fans
+                // voice out on `voice:local` and room channels, and what decides
+                // how loud it is played is `distance_m`, not the channel's name.
+                auth.voice.receive(sender_id, seq, &payload, distance_m);
             }
             NetMessage::BlockedList { usernames } => {
                 auth.chat.blocked = usernames;

@@ -46,7 +46,7 @@ pub use map::{
     tile_source, vegetation, water, weather, world_places,
 };
 pub use nav::{driver, geo_nav, locate, navigation, route_ahead, transit_live, transit_vehicles};
-pub use net::{network, session, user_store};
+pub use net::{network, session, user_store, voice};
 pub use player::{
     avatar, collision, free_camera, gizmo, interact, locomotion, picking, prim_geo, touch,
 };

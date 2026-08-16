@@ -173,6 +173,7 @@ pub fn render_chat_panel(
     mut chat: ResMut<ChatState>,
     online: Option<Res<OnlineSession>>,
     mut right_panel: ResMut<RightPanel>,
+    mut voice: ResMut<crate::systems::voice::VoiceState>,
 ) {
     let Some(online) = online else {
         return;
@@ -284,6 +285,13 @@ pub fn render_chat_panel(
                         join_now = (join.clicked() || entered) && ready;
                     });
                     ui.separator();
+                    // Voice sits with the Local tab and only there: the server
+                    // refuses global voice outright, and a room send would need
+                    // the room this composer is not scoped to.
+                    if is_local {
+                        voice_row(ui, &mut voice);
+                        ui.separator();
+                    }
                     // Shout is a property of the *local* channel only; a room or
                     // the global channel has no distance to shout across.
                     if is_local {
@@ -440,6 +448,108 @@ pub fn render_chat_panel(
     }
 
     render_report_dialog(&mut egui, &mut chat, &online);
+}
+
+/// The voice controls: arm the microphone, hold to talk, and see that it works.
+///
+/// # Why *Hold to talk* is a button and not only a key
+///
+/// A phone has no V key, and the on-screen keyboard is a text field's
+/// affordance — so a push-to-talk bound to the keyboard alone is a feature the
+/// platform this was built for cannot use. The button reads
+/// `is_pointer_button_down_on`, which the touch bridge feeds from a real finger
+/// (`systems::touch` emulates a left button from the primary touch), so one
+/// control serves both.
+///
+/// # Why the meter is here rather than only in Settings
+///
+/// The question a person asks at the moment they first press this is "is it
+/// picking me up?", and the honest answer is a bar that moves. Without it a
+/// muted microphone, a denied permission and a room where nobody is listening
+/// are the same experience: silence.
+fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::VoiceState) {
+    use crate::systems::voice::{VoiceMode, VoiceState};
+
+    if !VoiceState::can_capture() {
+        theme::note(ui, "This build has no microphone support.");
+        return;
+    }
+
+    let mut mode = voice.mode;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Voice").color(theme::TEXT));
+        ui.selectable_value(&mut mode, VoiceMode::Off, "Off");
+        ui.selectable_value(&mut mode, VoiceMode::PushToTalk, "Hold");
+        ui.selectable_value(&mut mode, VoiceMode::Open, "Open mic");
+    });
+    if mode != voice.mode {
+        voice.set_mode(mode);
+    }
+
+    if voice.mode == VoiceMode::Off {
+        return;
+    }
+
+    if let Some(err) = voice.error.clone() {
+        if theme::inline_error(ui, &err) {
+            voice.error = None;
+        }
+        return;
+    }
+
+    if voice.mode == VoiceMode::PushToTalk {
+        // Sized for a thumb rather than a cursor: this is the one control in the
+        // panel that is *held*, and a 20-pixel row is not something anyone holds
+        // accurately while walking.
+        let talk = ui.add_sized(
+            egui::vec2(ui.available_width(), 34.0),
+            egui::Button::new(if voice.transmitting {
+                // U+25CF is in none of the bundled fonts — the same trap the
+                // Settings mic button hit, where it painted a tofu box on the
+                // one control the panel is about. `first_drawable` ends in
+                // something Latin-1 so there is always an answer.
+                format!(
+                    "{}  Talking",
+                    theme::first_drawable(ui.ctx(), &["◉", "◎", "*"])
+                )
+            } else {
+                "Hold to talk  (V)".to_string()
+            }),
+        );
+        // Held, not clicked: a click is an edge and this is a state. The system
+        // that reads the V key ORs into the same flag and neither clears it.
+        if talk.is_pointer_button_down_on() {
+            voice.talk_held = true;
+        }
+    }
+
+    // The meter is the answer to "is it hearing me", so it is shown whenever the
+    // device is armed — including while *not* transmitting, which is what tells
+    // an open-mic user that the gate is closed rather than the microphone dead.
+    let meter = crate::platform::audio::level_to_meter(voice.level);
+    crate::systems::settings::level_bar(ui, meter, 0.0);
+
+    let audible = voice.speakers.len();
+    if audible > 0 {
+        let nearest = voice
+            .speakers
+            .values()
+            .filter_map(|s| s.distance_m)
+            .fold(f32::INFINITY, f32::min);
+        let who = if audible == 1 {
+            "1 person".to_string()
+        } else {
+            format!("{audible} people")
+        };
+        theme::note(
+            ui,
+            &if nearest.is_finite() {
+                format!("Hearing {who} — nearest {nearest:.0} m")
+            } else {
+                format!("Hearing {who}")
+            },
+        );
+    }
 }
 
 /// The report form: who, why, and anything the reporter wants to add.
