@@ -40,7 +40,7 @@ use bevy::audio::{AudioPlayer, AudioSink, AudioSource, PlaybackMode, PlaybackSet
 use bevy::prelude::*;
 
 #[cfg(feature = "audio")]
-use crate::resources::{AvatarState, CameraMode, CameraState};
+use crate::resources::{AppPrefs, AvatarState, CameraMode, CameraState};
 use crate::systems::locomotion;
 #[cfg(feature = "audio")]
 use cartopolis_core::motion;
@@ -58,17 +58,22 @@ const RUN_STEPS_PER_SEC: f32 = 2.5;
 /// Volume of a footstep at a walk and at a sprint. A sprint is not just faster,
 /// it is heavier, and a constant-volume step under an accelerating gait is one of
 /// those things that sounds wrong without being identifiable.
-const STEP_VOLUME_WALK: f32 = 0.18;
-const STEP_VOLUME_SPRINT: f32 = 0.42;
+///
+/// Lowered 2026-08-16 along with the timbre below. These are the *foreground* of
+/// a soundscape that has no other content, and at the old levels a step was as
+/// loud as a chat notification — for something that happens 2–3 times a second
+/// for as long as anyone is moving.
+const STEP_VOLUME_WALK: f32 = 0.10;
+const STEP_VOLUME_SPRINT: f32 = 0.24;
 
 /// Loudest a landing can be, at [`motion::TERMINAL_FALL_SPEED`].
-const LAND_VOLUME_MAX: f32 = 0.7;
+const LAND_VOLUME_MAX: f32 = 0.4;
 /// Below this impact speed a landing makes no separate sound — stepping off a
 /// kerb is a footstep, not an event.
 const LAND_MIN_IMPACT: f32 = 3.0;
 
 /// Wind is silent at rest and reaches this at full flight speed.
-const WIND_VOLUME_MAX: f32 = 0.35;
+const WIND_VOLUME_MAX: f32 = 0.18;
 /// How fast the wind volume follows the speed. Slow: wind has mass, and a gust
 /// that tracks the accelerometer exactly reads as a volume slider.
 const WIND_RATE: f32 = 2.0;
@@ -130,9 +135,13 @@ pub fn play_avatar_sounds(
     camera_state: Res<CameraState>,
     avatar_state: Res<AvatarState>,
     soundscape: Res<Soundscape>,
+    prefs: Res<AppPrefs>,
     mut stride: Local<f32>,
     mut foot: Local<usize>,
 ) {
+    // Read once: a clip's volume is fixed when it is spawned, so a slider moved
+    // mid-stride affects the next step rather than the one already sounding.
+    let gain = prefs.effects_gain();
     // Only in Follow: the other modes decouple the camera from the avatar, and
     // footsteps from an avatar a kilometre away are a poltergeist.
     if camera_state.mode != CameraMode::Avatar {
@@ -149,7 +158,7 @@ pub fn play_avatar_sounds(
             AudioPlayer(soundscape.land.clone()),
             PlaybackSettings {
                 mode: PlaybackMode::Despawn,
-                volume: Volume::Linear(LAND_VOLUME_MAX * t.max(0.25)),
+                volume: Volume::Linear(LAND_VOLUME_MAX * t.max(0.25) * gain),
                 ..default()
             },
         ));
@@ -188,7 +197,7 @@ pub fn play_avatar_sounds(
         AudioPlayer(soundscape.steps[*foot].clone()),
         PlaybackSettings {
             mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(loudness),
+            volume: Volume::Linear(loudness * gain),
             ..default()
         },
     ));
@@ -200,6 +209,7 @@ pub fn update_wind_volume(
     time: Res<Time>,
     camera_state: Res<CameraState>,
     avatar_state: Res<AvatarState>,
+    prefs: Res<AppPrefs>,
     mut wind: Query<&mut AudioSink, With<WindSound>>,
     mut current: Local<f32>,
 ) {
@@ -212,8 +222,12 @@ pub fn update_wind_volume(
     if (target - *current).abs() < 1e-4 {
         *current = target;
     }
+    // The preference scales the *sink*, not the ramp: the ramp is a physical
+    // model of air and has to keep its own state, so a slider moved at speed
+    // must not be smoothed in as though the wind had changed.
+    let gain = prefs.effects_gain();
     for mut sink in wind.iter_mut() {
-        sink.set_volume(Volume::Linear(*current));
+        sink.set_volume(Volume::Linear(*current * gain));
     }
 }
 
@@ -279,22 +293,43 @@ pub mod synth {
         (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
     }
 
-    /// A footstep: a short noise burst through a one-pole low-pass, with a very
-    /// fast attack and a ~90 ms decay. `pitch` shifts the filter cutoff, which is
-    /// what makes the two variants sound like the same shoe on the same stone
-    /// rather than two different objects.
+    /// A footstep: a short noise burst through a **two-pole** low-pass, with a
+    /// very fast attack and a ~70 ms decay. `pitch` shifts the filter cutoff,
+    /// which is what makes the two variants sound like the same shoe on the same
+    /// stone rather than two different objects.
+    ///
+    /// # Why two poles, and why the numbers are measured
+    ///
+    /// This was one pole at `a = 0.28` over 90 ms, and it did not sound like a
+    /// foot. Measured, its zero-crossing rate was **~2.5 kHz** — a bright,
+    /// broadband hiss with a long tail, i.e. a puff of air. Fired two to three
+    /// times a second under a moving avatar it reads as wind rather than as
+    /// walking, which is exactly how it was reported from a phone.
+    ///
+    /// A single pole rolls off at 6 dB/octave, so there is no cutoff low enough
+    /// to darken it that does not also swallow it. The second pole doubles the
+    /// slope; `a = 0.10` then puts the energy around 300–400 Hz — the band a heel
+    /// on stone actually occupies — and `GAIN` puts the peak back where one pole
+    /// had it. The faster decay (`exp(-26 t)` over 70 ms rather than `exp(-9 t)`
+    /// over 90 ms) is the other half: what made it a *gust* was the tail.
     pub fn footstep(pitch: f32) -> Vec<u8> {
-        let len = (SAMPLE_RATE as f32 * 0.09) as usize;
+        /// Two cascaded poles cost roughly `a` in amplitude each; this restores
+        /// the peak rather than being a loudness choice (that is
+        /// [`super::STEP_VOLUME_WALK`]).
+        const GAIN: f32 = 3.0;
+        let len = (SAMPLE_RATE as f32 * 0.07) as usize;
         let mut seed = 0x1234_5678;
         let mut lp = 0.0_f32;
-        let a = (0.28 * pitch).clamp(0.05, 0.9);
+        let mut lp2 = 0.0_f32;
+        let a = (0.10 * pitch).clamp(0.02, 0.9);
         let samples: Vec<i16> = (0..len)
             .map(|i| {
                 let t = i as f32 / len as f32;
                 // Fast attack, exponential decay — a heel then nothing.
-                let env = if t < 0.02 { t / 0.02 } else { (-9.0 * t).exp() };
+                let env = if t < 0.02 { t / 0.02 } else { (-26.0 * t).exp() };
                 lp += a * (noise(&mut seed) - lp);
-                to_i16(lp * env)
+                lp2 += a * (lp - lp2);
+                to_i16(lp2 * GAIN * env)
             })
             .collect();
         wav(&samples)
@@ -359,7 +394,25 @@ pub mod synth {
     /// Wind: two seconds of heavily low-passed noise, cross-faded into itself at
     /// the seam so the loop has no click. A click every two seconds is the single
     /// most noticeable artefact a looping ambience can have.
+    ///
+    /// # The gain is a measurement, and the old one was distortion
+    ///
+    /// This was `lp2 * 6.0`, which is **past full scale**: measured, the clip
+    /// peaked at exactly 1.000 with 1.08 % of its samples hard-clamped by
+    /// [`to_i16`] and an RMS of −8.2 dBFS. Clipping a low-passed rush is what
+    /// turns it into a broadband roar — the harmonics a clamp generates are
+    /// precisely the top end the two poles were there to remove — so the loop
+    /// arrived as a wind *tunnel* however quietly it was then played. Volume
+    /// cannot undo it: the distortion is baked into the asset, and
+    /// [`super::WIND_VOLUME_MAX`] only scales it.
+    ///
+    /// `GAIN` now leaves ~3 dB of headroom (peak ≈ 0.46, RMS ≈ −17 dB) and the
+    /// slower pole takes the rush down to ~120 Hz. The suite asserts the
+    /// headroom, because nothing about the number is self-evident and the
+    /// symptom of losing it is a sound that is wrong rather than absent.
     pub fn wind() -> Vec<u8> {
+        const GAIN: f32 = 2.5;
+        const POLE: f32 = 0.035;
         let len = (SAMPLE_RATE as f32 * 2.0) as usize;
         let fade = (SAMPLE_RATE as f32 * 0.25) as usize;
         let mut seed = 0x0BAD_F00D;
@@ -367,9 +420,9 @@ pub mod synth {
         let mut lp2 = 0.0_f32;
         let raw: Vec<f32> = (0..len + fade)
             .map(|_| {
-                lp += 0.05 * (noise(&mut seed) - lp);
-                lp2 += 0.05 * (lp - lp2); // two poles: a rush, not a hiss
-                lp2 * 6.0
+                lp += POLE * (noise(&mut seed) - lp);
+                lp2 += POLE * (lp - lp2); // two poles: a rush, not a hiss
+                lp2 * GAIN
             })
             .collect();
         let samples: Vec<i16> = (0..len)
@@ -482,6 +535,64 @@ mod tests {
             seam * 4 < peak,
             "seam jump {seam} is large against a peak of {peak}"
         );
+    }
+
+    /// Read a synthesised clip's samples back as `-1..=1` floats.
+    fn samples_of(bytes: &[u8]) -> Vec<f32> {
+        let n = (bytes.len() - 44) / 2;
+        (0..n)
+            .map(|i| f32::from(i16::from_le_bytes([bytes[44 + i * 2], bytes[45 + i * 2]])) / 32767.0)
+            .collect()
+    }
+
+    /// **Nothing may reach full scale.** `to_i16` clamps, and a clamp on a
+    /// low-passed noise bed is not a quiet distortion — it manufactures exactly
+    /// the high harmonics the filter existed to remove, so an overdriven wind
+    /// loop arrives as a roar at *any* playback volume, which is how this was
+    /// reported from a phone. The wind was at peak 1.000 with 1.08 % of its
+    /// samples clamped before 2026-08-16.
+    ///
+    /// Headroom rather than "no clipping": a clip that just touches 1.0 is one
+    /// constant away from clamping again, and this is the test that would say so.
+    #[test]
+    fn no_synthesised_clip_runs_out_of_headroom() {
+        for (name, bytes) in [
+            ("footstep-low", synth::footstep(0.9)),
+            ("footstep-high", synth::footstep(1.15)),
+            ("landing", synth::landing()),
+            ("wind", synth::wind()),
+            ("test tone", synth::test_tone()),
+        ] {
+            let s = samples_of(&bytes);
+            let peak = s.iter().fold(0.0_f32, |a, b| a.max(b.abs()));
+            assert!(
+                peak <= 0.8,
+                "{name} peaks at {peak:.3} — no headroom left before the clamp"
+            );
+            let clamped = s.iter().filter(|v| v.abs() > 0.999).count();
+            assert_eq!(clamped, 0, "{name} has {clamped} clipped samples");
+        }
+    }
+
+    /// A footstep must be *dark*. The zero-crossing rate stands in for a
+    /// spectrum: filtered noise crossing zero 2,500 times a second is a hiss, and
+    /// a hiss repeated two to three times a second under a moving avatar is what
+    /// got reported as wind. A foot on stone lives below ~600 Hz.
+    #[test]
+    fn a_footstep_is_a_thud_not_a_hiss() {
+        for pitch in [0.9, 1.15] {
+            let s = samples_of(&synth::footstep(pitch));
+            let crossings = (1..s.len())
+                .filter(|&i| (s[i] >= 0.0) != (s[i - 1] >= 0.0))
+                .count();
+            let secs = s.len() as f32 / SAMPLE_RATE as f32;
+            let hz = crossings as f32 / secs / 2.0;
+            assert!(hz < 600.0, "footstep({pitch}) crosses at {hz:.0} Hz");
+            // And it has to still be *there*: an over-filtered step is silence
+            // with extra steps.
+            let peak = s.iter().fold(0.0_f32, |a, b| a.max(b.abs()));
+            assert!(peak > 0.2, "footstep({pitch}) is inaudible at {peak:.3}");
+        }
     }
 
     /// The two footsteps differ, or alternating them buys nothing.

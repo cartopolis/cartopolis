@@ -1248,6 +1248,16 @@ fn run_client() {
     // launch, so it wins over the remembered session and is not written back.
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
+    app.init_resource::<systems::voice::VoiceState>();
+    // Voice plays through the output device the soundscape already opened, as a
+    // custom `Decodable` asset. Registering the type is what teaches bevy_audio
+    // to build a rodio source from it; without this an `AudioPlayer<VoiceStream>`
+    // is a component nothing looks at, and voice is silent with nothing logged.
+    #[cfg(feature = "audio")]
+    {
+        use bevy::audio::AddAudioSource;
+        app.add_audio_source::<systems::voice::VoiceStream>();
+    }
     app.init_resource::<systems::script_editor::ScriptEditorState>();
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
@@ -1664,6 +1674,27 @@ fn run_client() {
             systems::interact::handle_interaction_input.before(network::send_network_intent),
         ),
     );
+    // Phase 3b': voice capture. Its own `add_systems` rather than a line in the
+    // tuple above, which is at Bevy's 20-element limit for one call — and two
+    // systems rather than one because the *other* writer of `talk_held` is the
+    // chat panel's Hold-to-talk button, the only way to talk on a phone, so the
+    // key reader must not be the thing that clears a flag it does not own.
+    // Capture reads the panel's press from the frame before: 16 ms of latency on
+    // a control a finger is holding, against threading a frame-order constraint
+    // through the whole panel chain.
+    //
+    // Not behind the `audio` feature. `AudioInput::start` fails cleanly in a
+    // build without it and the failure is shown, which is the honest shape — the
+    // alternative is a Voice control that is simply absent with no explanation.
+    let app = app.add_systems(
+        Update,
+        (
+            systems::voice::read_talk_key,
+            systems::voice::drive_voice_capture
+                .after(systems::voice::read_talk_key)
+                .after(network::apply_network_snapshot),
+        ),
+    );
     // Phase 3c: the soundscape. Its own registration because the whole module is
     // behind the `audio` feature (ALSA headers on Linux — see Cargo.toml), and a
     // `#[cfg]` inside a system tuple would have to be repeated per entry.
@@ -1686,6 +1717,13 @@ fn run_client() {
                 // the screen, which on a phone in a car is the only way it gets
                 // used at all.
                 systems::driver::play_driver_cues.after(systems::driver::drive_driver_mode),
+                // Other people's voices. Here because it spawns `AudioPlayer`s and
+                // is therefore as feature-bound as the rest of this block — the
+                // *receive* half is not: frames are decoded into a ring by the
+                // network drain whatever this build can play, so a no-audio build
+                // still reports who is talking rather than pretending nobody is.
+                systems::voice::update_voice_playback
+                    .after(network::apply_network_snapshot),
             ),
         );
     app

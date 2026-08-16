@@ -25,10 +25,25 @@
 //! so that a meter works even when nothing is consuming audio — which is exactly
 //! the mic-test case, where there is no voice session at all.
 //!
+//! # Android is the desktop arm
+//!
+//! There is no third backend: cpal 0.17's Android host is **AAudio**
+//! (`libaaudio.so`, a plain C API in the platform since API 26 — no `oboe`, no
+//! C++ build) and it implements input as well as output, so the `cpal` arm below
+//! compiles and runs there unchanged. What Android adds is a *permission*:
+//! `RECORD_AUDIO` is `dangerous`, so the manifest entry only makes it
+//! requestable and the app must ask at runtime. [`AudioInput::start`]'s capture
+//! thread does that first through `platform::android::ensure_permission`, which
+//! is why the ask happens off the Bevy schedule — the wait for the system dialog
+//! is up to two minutes and the answer can only be polled.
+//!
+//! A denial is reported through [`AudioInput::error`] like any other failure, so
+//! the Audio settings tab and the voice panel need no Android branch.
+//!
 //! # Verification status
 //!
-//! Neither arm has ever opened a real microphone: the agent container has no
-//! audio device at all (`docs/notes/container-audio.md`). Both arms *compile*,
+//! No arm has ever opened a real microphone here: the agent container has no
+//! audio device at all (`docs/notes/container-audio.md`). Every arm *compiles*,
 //! and the shared DSP is unit-tested.
 //!
 //! The web arm used to carry a second caveat: the shipped web build runs
@@ -51,15 +66,15 @@
 // build `--no-default-features`, and this is what keeps the DSP under test on a
 // host that cannot link ALSA at all.
 //
-// The condition is deliberately the negation of [`AudioInput::available`] and not
-// merely `not(feature = "audio")`. Android has the feature — it plays sound
-// through AAudio — and *still* has no capture arm, so it is the one target where
-// the two differ. Writing this as a feature test alone made turning `audio` on
-// for the phone fail the build with eight dead-code errors under
-// `[workspace.lints.rust] unused = "deny"`: the recurring platform-vs-feature
-// confusion `docs/notes/android-build.md` warns about, arriving from the other
-// direction. Keep the two expressions in step.
-#![cfg_attr(any(not(feature = "audio"), target_os = "android"), allow(dead_code))]
+// This is the negation of [`AudioInput::available`] and must stay so. It used to
+// carry `target_os = "android"` as well, because the phone had the feature and no
+// capture arm — the one target where the two differed. It no longer does (AAudio
+// serves capture through the same cpal arm as the desktop), so the two
+// expressions have converged again. If a target ever has the feature without a
+// backend, both this line and `available` need the same new term: writing it here
+// alone makes the meter lie, and writing it there alone fails the build with
+// dead-code errors under `[workspace.lints.rust] unused = "deny"`.
+#![cfg_attr(not(feature = "audio"), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,6 +112,13 @@ struct Shared {
     device: Mutex<Option<String>>,
     /// Samples seen — lets a caller distinguish "silent" from "not running".
     samples: AtomicU32,
+    /// The device's actual capture rate, once the stream is open; 0 until then.
+    ///
+    /// **Not assumed to be [`VOICE_SAMPLE_RATE`].** A desktop microphone
+    /// commonly runs at 44.1 kHz and a phone's may report 16 kHz, so the encoder
+    /// has to resample from whatever this says — and a consumer that guessed
+    /// would transmit speech at the wrong pitch rather than fail.
+    rate: AtomicU32,
 }
 
 impl Shared {
@@ -108,6 +130,7 @@ impl Shared {
             error: Mutex::new(None),
             device: Mutex::new(None),
             samples: AtomicU32::new(0),
+            rate: AtomicU32::new(0),
         }
     }
 
@@ -191,11 +214,7 @@ pub fn level_to_meter(level: f32) -> f32 {
 /// and [`AudioInput::drain`] for PCM. Dropping it releases the device.
 pub struct AudioInput {
     shared: Arc<Shared>,
-    #[cfg(all(
-        feature = "audio",
-        not(target_arch = "wasm32"),
-        not(target_os = "android")
-    ))]
+    #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
     _thread: Option<std::thread::JoinHandle<()>>,
     #[cfg(all(feature = "audio", target_arch = "wasm32"))]
     _web: Option<web::WebCapture>,
@@ -204,32 +223,34 @@ pub struct AudioInput {
 impl AudioInput {
     /// Whether this build has a capture backend at all.
     ///
-    /// Android is deliberately `false`: it needs its own backend (AAudio/oboe)
-    /// and a runtime permission prompt, and neither is wired. Saying so is the
-    /// `platform::location` contract — report unavailable rather than invent a
-    /// silent, permanently-zero meter.
-    /// Also `false` in a build without the `audio` feature — CI and the agent
+    /// `false` only in a build without the `audio` feature — CI and the agent
     /// container build `--no-default-features`, and a meter that is structurally
     /// pinned at zero should say so rather than look like a dead microphone.
+    /// Saying it is the `platform::location` contract: report unavailable rather
+    /// than invent a silent, permanently-zero meter.
+    ///
+    /// Android used to answer `false` here for want of a backend. It has one now
+    /// — the cpal arm, over AAudio — so the honest answer is the same as the
+    /// desktop's. Note what this still does **not** promise: that a device opens,
+    /// or that the user granted the permission. Those are
+    /// [`AudioInput::error`]'s to report, and a capability test that folded them
+    /// in would have to open a microphone to answer.
     #[must_use]
     pub const fn available() -> bool {
-        cfg!(all(feature = "audio", not(target_os = "android")))
+        cfg!(feature = "audio")
     }
 
     /// Open the default input device and begin capturing.
     ///
     /// Never fails outright — a device that cannot be opened yields a running
     /// `AudioInput` whose [`AudioInput::error`] is `Some`, so the UI has one
-    /// shape to render instead of a `Result` at every call site.
+    /// shape to render instead of a `Result` at every call site. On Android that
+    /// covers a refused permission too.
     #[must_use]
     pub fn start() -> Self {
         let shared = Arc::new(Shared::new());
 
-        #[cfg(all(
-            feature = "audio",
-            not(target_arch = "wasm32"),
-            not(target_os = "android")
-        ))]
+        #[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
         {
             let thread = native::spawn(Arc::clone(&shared));
             return Self {
@@ -247,12 +268,6 @@ impl AudioInput {
         #[cfg(not(feature = "audio"))]
         {
             shared.fail("This build has no audio support (built without the `audio` feature)");
-            Self { shared }
-        }
-
-        #[cfg(all(feature = "audio", target_os = "android"))]
-        {
-            shared.fail("Microphone capture is not implemented on Android yet");
             Self { shared }
         }
     }
@@ -285,11 +300,6 @@ impl AudioInput {
     ///
     /// Returns how many were taken. Voice drains this every frame; the mic test
     /// does not drain at all, which is why the meter is maintained independently.
-    #[expect(
-        dead_code,
-        reason = "the voice send path is the only consumer and lands next; the \
-                  capture side is complete and tested without it"
-    )]
     pub fn drain(&self, out: &mut Vec<i16>, max: usize) -> usize {
         let mut q = self.shared.pcm.lock().unwrap();
         let n = q.len().min(max);
@@ -298,13 +308,23 @@ impl AudioInput {
     }
 
     /// Queued sample count, for diagnostics.
-    #[expect(
-        dead_code,
-        reason = "diagnostic for the voice send path, which lands next"
-    )]
     #[must_use]
     pub fn backlog(&self) -> usize {
         self.shared.pcm.lock().unwrap().len()
+    }
+
+    /// The device's capture rate in Hz, or `None` before the stream is open.
+    ///
+    /// The encoder resamples from this; see [`Shared::rate`] for why it is not
+    /// assumed. `None` rather than a plausible default on purpose — a caller that
+    /// encodes before the device has answered would be transmitting at a guessed
+    /// pitch, and holding one frame is cheaper than sounding wrong.
+    #[must_use]
+    pub fn sample_rate(&self) -> Option<u32> {
+        match self.shared.rate.load(Ordering::Relaxed) {
+            0 => None,
+            hz => Some(hz),
+        }
     }
 }
 
@@ -315,14 +335,10 @@ impl Drop for AudioInput {
 }
 
 // ---------------------------------------------------------------------------
-// Desktop
+// Desktop and Android (cpal: ALSA / CoreAudio / WASAPI / AAudio)
 // ---------------------------------------------------------------------------
 
-#[cfg(all(
-    feature = "audio",
-    not(target_arch = "wasm32"),
-    not(target_os = "android")
-))]
+#[cfg(all(feature = "audio", not(target_arch = "wasm32")))]
 mod native {
     use super::{Shared, VOICE_SAMPLE_RATE};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -339,6 +355,9 @@ mod native {
     }
 
     fn run(shared: &Arc<Shared>) {
+        if !granted(shared) {
+            return;
+        }
         let host = cpal::default_host();
         let Some(device) = host.default_input_device() else {
             shared.fail("No microphone found");
@@ -359,9 +378,13 @@ mod native {
 
         let channels = config.channels() as usize;
         let rate = config.sample_rate();
+        // Published before the stream starts, so the first buffer a consumer sees
+        // already has a rate to resample from.
+        shared.rate.store(rate, Ordering::Relaxed);
         if rate != VOICE_SAMPLE_RATE {
-            // Not fatal: the meter is rate-agnostic. Voice will need a resampler,
-            // which is why the rate is logged rather than silently ignored.
+            // Not fatal, and not rare: 44.1 kHz on a desktop and 16 kHz on a
+            // phone are both ordinary. The meter is rate-agnostic and the voice
+            // encoder resamples from `AudioInput::sample_rate`.
             tracing::info!("microphone runs at {rate} Hz, not {VOICE_SAMPLE_RATE} Hz");
         }
 
@@ -412,6 +435,53 @@ mod native {
         // condvar keeps the shutdown path to one atomic and no extra primitive.
         while !shared.stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Hold the capture thread until the platform has agreed to a microphone.
+    ///
+    /// Only Android has anything to ask: ALSA, CoreAudio and WASAPI grant capture
+    /// at the process level (macOS prompts, but it does so inside
+    /// `build_input_stream` and answers with an error we already report), while
+    /// `RECORD_AUDIO` is a *runtime* grant with a dialog and a wait.
+    ///
+    /// `shared.stop` doubles as the cancel flag, which is what makes closing the
+    /// Settings panel while the dialog is up stop the wait: dropping
+    /// [`super::AudioInput`] sets it, and `ensure_permission` polls it every
+    /// 100 ms. Without that, a two-minute wait outlives the thing that asked for
+    /// it, and the microphone opens behind a panel that is no longer there.
+    fn granted(shared: &Arc<Shared>) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            match crate::platform::android::ensure_permission(
+                crate::platform::android::PERM_RECORD_AUDIO,
+                &shared.stop,
+            ) {
+                Ok(true) => true,
+                // Cancelled, not refused — the owner was dropped while the dialog
+                // was up. Nothing is going to read an error from an `AudioInput`
+                // that no longer exists, and writing "denied" for it would be a
+                // lie sitting in the log.
+                Ok(false) if shared.stop.load(Ordering::Relaxed) => false,
+                Ok(false) => {
+                    // Actionable, because the system dialog does not come back: a
+                    // second refusal is permanent until Settings is visited.
+                    shared.fail(
+                        "Microphone permission denied. Allow it in Android's app settings \
+                         under Permissions ▸ Microphone.",
+                    );
+                    false
+                }
+                Err(e) => {
+                    shared.fail(format!("Could not ask for the microphone permission: {e}"));
+                    false
+                }
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = shared;
+            true
         }
     }
 
@@ -610,6 +680,17 @@ mod web {
         // though its output is discarded — hence this otherwise pointless hop.
         processor.connect_with_audio_node(&ctx.destination())?;
 
+        // What the browser *gave* us, not what was asked for: `sampleRate` is a
+        // hint, and Firefox in particular hands back the device's own rate. The
+        // encoder resamples from this.
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "an AudioContext rate is a positive integer expressed as an f32"
+        )]
+        shared
+            .rate
+            .store(ctx.sample_rate() as u32, std::sync::atomic::Ordering::Relaxed);
         *shared.device.lock().unwrap() = Some("Browser microphone".into());
         LIVE.with(|l| {
             *l.borrow_mut() = Some(Graph {

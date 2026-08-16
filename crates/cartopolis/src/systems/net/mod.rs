@@ -3,6 +3,8 @@
 pub mod network;
 pub mod session;
 pub mod user_store;
+/// Proximity voice: capture, the codec, and the playback of what arrives.
+pub mod voice;
 /// The browser's carrier for the same wire `network` speaks over TCP. Only the
 /// web build has one, and only the web build compiles it.
 #[cfg(target_arch = "wasm32")]

@@ -58,10 +58,24 @@ on native it is ours to solve and to judge on a real machine with a real headset
 
 ## Consequence for how voice gets tested
 
-The highest-value tests need no device at all: Opus framing, sequence handling
-and reordering, resampling, the distance-attenuation curve, jitter-buffer logic
-driven by an injected clock. These are pure functions over buffers and run here
-today — write them first regardless of which tier is chosen.
+The highest-value tests need no device at all: codec framing, sequence handling,
+resampling, the distance-attenuation curve, jitter-buffer bounds. These are pure
+functions over buffers and run here today — write them first regardless of which
+tier is chosen.
+
+**Done, 2026-08-16.** They live in `crates/cartopolis/src/systems/net/voice.rs`,
+and one of them goes further than this note expected: `voice::loopback` starts a
+*real simulator* on a loopback socket and asserts that an encoded frame survives
+the round trip as a waveform. No device is involved at either end — the
+"microphone" is a generated tone and the "speaker" is the jitter ring — so it
+needs none of the three tiers below and still covers the join between the client
+codec and the server's fan-out, which is where voice was actually broken (it did
+not exist).
+
+What remains device-shaped and therefore still untestable here: that a
+microphone opens, that Android's permission dialog appears, and that anything is
+audible. `docs/notes/voice-chat.md` states that plainly rather than letting a
+green suite imply otherwise.
 
 Reach for tier 2 only when a bug is suspected at the device boundary itself, and
 tier 3 only when a test needs to assert on samples that made a full round trip.

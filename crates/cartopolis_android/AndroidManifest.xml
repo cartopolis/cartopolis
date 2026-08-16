@@ -126,6 +126,27 @@
          app" when the intent finds no handler. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- Proximity voice chat, and the mic test in Settings ▸ Audio. Added when
+         `platform::audio` grew its Android arm, on the same rule the location
+         entries above state: a permission the app cannot act on is a prompt that
+         buys the user nothing, so this line and the capture backend land
+         together.
+
+         *Dangerous*, so this only makes it requestable —
+         `platform::android::ensure_permission` does the runtime ask, from the
+         capture thread, and a denial becomes `AudioInput::error` rather than a
+         dead meter. Playback needs nothing: RECORD_AUDIO gates capture only,
+         which is why the soundscape has always worked without it.
+
+         Deliberately **not** here: FOREGROUND_SERVICE / its MICROPHONE type.
+         Voice runs only while the app is on screen — there is no service, and
+         the capture stops with the panel that opened it. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Advisory, as with the GNSS and camera entries: a device with no
+         microphone still installs and simply cannot transmit. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <application
         android:label="Cartopolis"
         android:icon="@mipmap/icon"

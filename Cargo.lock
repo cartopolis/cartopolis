@@ -2306,6 +2306,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "tiff",
  "tokio",
  "tokio-tungstenite 0.30.0",

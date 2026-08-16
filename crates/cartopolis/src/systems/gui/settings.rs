@@ -112,9 +112,14 @@ impl SettingsState {
 }
 
 /// Track the peak while a test runs. Split out so the panel body stays layout.
-fn observe_peak(state: &mut SettingsState) -> Option<(f32, f32)> {
+///
+/// `gain` is [`AppPrefs::capture_gain`], applied here because the meter is the
+/// only place the input gain can be judged — voice transmits the gained signal,
+/// so a meter showing the raw one would have someone calibrate against a number
+/// nobody sends.
+fn observe_peak(state: &mut SettingsState, gain: f32) -> Option<(f32, f32)> {
     let mic = state.mic.as_ref()?;
-    let meter = audio::level_to_meter(mic.level());
+    let meter = audio::level_to_meter((mic.level() * gain).clamp(0.0, 1.0));
     state.peak = state.peak.max(meter);
     Some((meter, state.peak))
 }
@@ -189,7 +194,7 @@ pub fn render_settings_panel(
             .show(ui, |ui| match state.tab {
                 SettingsTab::General => general_tab(ui, &mut edited),
                 SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
-                SettingsTab::Audio => play_tone = audio_tab(ui, &mut state),
+                SettingsTab::Audio => play_tone = audio_tab(ui, &mut state, &mut edited),
                 SettingsTab::Account => {
                     delete_account = account_tab(ui, &mut state, &mut identity, online.is_some());
                 }
@@ -656,7 +661,7 @@ fn render_scale_row(ui: &mut egui::Ui, prefs: &mut AppPrefs, target: Option<UVec
 }
 
 /// The Audio tab body. Returns `true` if the sound test was pressed this frame.
-fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
+fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs) -> bool {
     let mut play_tone = false;
 
     section(ui, "Output");
@@ -682,6 +687,35 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
 
     ui.add_space(10.0);
     ui.separator();
+    section(ui, "Levels");
+    // The clips are authored at the loudness they are meant to have — the
+    // footsteps and the wind were re-cut in 2026-08-16 after a phone reported
+    // them as a wind tunnel — so these start at unity and only ever come down.
+    // What they are for is the half nobody else can judge: a specific speaker, in
+    // a specific car, over a specific amount of road noise.
+    ui.add(
+        egui::Slider::new(&mut prefs.effects_volume, 0.0..=1.0)
+            .text("Sound effects")
+            .show_value(false),
+    );
+    ui.label(
+        egui::RichText::new("Footsteps, wind, landings and the driving turn cues.")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
+    ui.add(
+        egui::Slider::new(&mut prefs.voice_volume, 0.0..=1.0)
+            .text("Voice")
+            .show_value(false),
+    );
+    ui.label(
+        egui::RichText::new("How loudly people nearby are heard, before distance is applied.")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
+
+    ui.add_space(10.0);
+    ui.separator();
     section(ui, "Microphone");
 
     if !AudioInput::available() {
@@ -690,6 +724,20 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
         ui.colored_label(theme::ERROR, unavailable_reason());
         return play_tone;
     }
+
+    // Above the test, because the test is how it is judged: the meter below shows
+    // the *gained* signal, so moving this and watching the bar is the whole
+    // calibration procedure.
+    ui.add(
+        egui::Slider::new(&mut prefs.mic_gain, 0.0..=crate::resources::MAX_MIC_GAIN)
+            .text("Input gain")
+            .show_value(false),
+    );
+    ui.label(
+        egui::RichText::new("Lift a quiet headset. Aim for the middle of the bar while speaking.")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
 
     let running = state.mic.is_some();
     ui.horizontal(|ui| {
@@ -711,7 +759,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
         }
     });
 
-    if let Some((meter, peak)) = observe_peak(state) {
+    if let Some((meter, peak)) = observe_peak(state, prefs.capture_gain()) {
         let mic = state.mic.as_ref().expect("observe_peak proved it is Some");
         if let Some(err) = mic.error() {
             ui.colored_label(theme::ERROR, err);
@@ -733,16 +781,15 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
 
 /// Why capture is unavailable, specifically enough to be actionable.
 ///
-/// **The platform is asked about first, and that order is the fix.** The APK is
-/// built `--no-default-features`, so on Android *both* tests are true — and the
-/// build-flag arm, being first, told every Android user to go and rebuild with a
-/// cargo feature when the truth is that this tree has no Android capture backend
-/// to enable. A message that sends someone to fix the wrong thing is worse than
-/// the generic one it replaced.
+/// The Android arm this used to lead with is gone: the phone has a capture
+/// backend now (`platform::audio`'s cpal arm, over AAudio), so what a phone
+/// reaches here is the *feature* answer or nothing at all. The lesson that put
+/// the platform test first survives in its absence — a message that sends
+/// someone to fix the wrong thing is worse than the generic one it replaced, and
+/// a permission refusal is not this function's business: it arrives as
+/// `AudioInput::error`, beside the meter, where the person can act on it.
 fn unavailable_reason() -> &'static str {
-    if cfg!(target_os = "android") {
-        "Microphone capture is not implemented on Android yet."
-    } else if !cfg!(feature = "audio") {
+    if !cfg!(feature = "audio") {
         "This build has no audio support (built without the `audio` feature)."
     } else {
         "No microphone backend on this platform."
@@ -750,7 +797,11 @@ fn unavailable_reason() -> &'static str {
 }
 
 /// A level meter with a peak-hold tick.
-fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
+///
+/// Shared with the chat panel's voice row rather than redrawn there: the two
+/// answer the same question about the same device, and a second bar with its own
+/// colours is how the chrome drifts (`systems::theme`'s note).
+pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
     let p = ui.painter();
@@ -1013,7 +1064,7 @@ mod tests {
     fn peak_holds_the_maximum_and_resets_with_the_test() {
         let mut state = SettingsState::default();
         // No mic: nothing to observe, and no panic.
-        assert!(observe_peak(&mut state).is_none());
+        assert!(observe_peak(&mut state, 1.0).is_none());
 
         state.peak = 0.6;
         state.stop_mic();
