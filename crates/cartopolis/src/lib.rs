@@ -1101,6 +1101,7 @@ fn run_client() {
         .init_resource::<CameraState>()
         .init_resource::<MouseState>()
         .init_resource::<systems::touch::TouchGestures>()
+        .init_resource::<systems::touch::UiClaimRegions>()
         .init_resource::<systems::tile_loader::TileCache>()
         // A scripted run never sees the server handshake that normally supplies the
         // tile template, and the built-in fallback is the raster OSM basemap — which

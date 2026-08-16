@@ -219,6 +219,60 @@ which removes half of that argument; the other half — that "where am I" is the
 first question and a chest-height camera cannot answer it — is untouched, so the
 opening view stays Earth.
 
+## A hand has several fingers; egui has one pointer (fixed 2026-08-16)
+
+Holding the stick froze the view. Not by a rule anyone wrote — by the shape of
+the two things it was built out of:
+
+- **egui has exactly one pointer**, and `egui_manager::pointer_events` gives it
+  to the first finger down until that finger lifts (any other rule would let the
+  second finger of a pinch drag the UI out from under the first). So a finger
+  landing while the stick's thumb is down reaches egui only as an `Event::Touch`
+  — no `PointerMoved`, no `PointerButton` — and no widget ever hears it.
+- **The world's gate is one boolean for the whole screen.** While a thumb steers
+  the stick, `is_using_pointer()` is true, so `egui_wants_pointer_input()` is
+  true, and every camera gesture stands down — for a finger that is nowhere near
+  a control.
+
+Either one alone is enough to lose the second finger, so both had to go. The
+stick was the case that made it a UX problem rather than a curiosity: it is the
+one control you *hold* continuously, so on a phone it made walking and looking
+mutually exclusive.
+
+**The glass is partitioned, not arbitrated.** `map_osd` publishes the rects it
+laid out into `touch::UiClaimRegions`; `recognize_touch_gestures` claims any
+finger that **lands** inside one and hides it from the gesture recogniser and the
+emulated mouse both. What is left is the map's, so a thumb on the stick plus a
+finger on the map is a one-finger drag (it used to be read as half of a pinch,
+which is why the view also *jittered* if you managed to move at all). The claim
+is decided once, at landing, and held until the finger lifts — a thumb shoved
+past the stick's rim is asking for full throttle, not handing itself to the
+camera, and a map drag that wanders into the corner is not swallowed by the well.
+
+Two consequences to keep in step:
+
+- **`TouchGestures::ui_blocked(egui_wants_pointer)` is what the camera asks**,
+  never `egui_wants_pointer_input()` directly. It is the same verdict except when
+  a claimed finger is down *beside* an unclaimed one, which is precisely the case
+  egui's single pointer answers for the wrong finger. New world-side touch
+  consumers should use it.
+- **The controls read fingers, not responses.** A rate hit-tests
+  `TouchGestures::ui_held` against its own rect, an edge hit-tests
+  `ui_released`, and the stick keeps its finger by id. The egui `Response` stays
+  as the `or` arm — it is the mouse's path and the only one a desktop run has.
+  A new OSD control that only reads its `Response` will work with one finger and
+  quietly stop working when a second is down.
+
+The regions are read one frame late (drawn in `Update`, consumed in `PreUpdate`).
+They are edge-anchored and do not move, so the only stale frame is the one a
+control appears or disappears on. Publishing from the draw is still the right way
+round: a second copy of the anchor arithmetic in `touch.rs` is how a hit area and
+the picture it belongs to drift apart.
+
+Not fixed, and out of the same root: two fingers cannot drive two *egui* widgets
+at once (two panel sliders, say). Only the OSD is partitioned, because only the
+OSD is held down while the other hand does something else.
+
 ## `Button::small()` is not a smaller button
 
 It **zeroes the vertical padding** and drops to the `Small` text style, so the
