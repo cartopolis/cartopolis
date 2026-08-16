@@ -47,6 +47,13 @@
 //! next one, and a single-line `TextEdit` answering it with "lose focus" is not
 //! then fought by a restore that already ran.
 //!
+//! **It lives above `Order::Foreground`, where the rest of the chrome is.** A
+//! keyboard that comes and goes cannot share an order with layers that stay:
+//! `move_to_top` is a flag read by a *stable* sort, so a layer that skips a frame
+//! sorts under everything that didn't and can never climb back. That is what made
+//! every reopened keyboard draw its keys over a sign-in backdrop that was quietly
+//! taking all the taps. [`draw`] has the mechanism.
+//!
 //! **It is an `Area`, not a root-`Ui` panel.** It draws over everything, and a
 //! panel would reserve space in a layout that has already been computed by the
 //! time we run. That also keeps it *out* of the Phase 7b `.chain()`, which is
@@ -450,7 +457,7 @@ pub struct OnScreenKeyboard {
     layer: KeyLayer,
     shift: ShiftState,
     /// Last frame's slab, for [`Self::slab`].
-    slab: Option<egui::Rect>,
+    slab: Option<Slab>,
 }
 
 impl Default for OnScreenKeyboard {
@@ -496,7 +503,7 @@ impl OnScreenKeyboard {
     /// The rect the keyboard occupied on the last frame it drew — the area a
     /// caller must consider unavailable.
     pub fn slab(&self) -> Option<egui::Rect> {
-        self.open.then_some(self.slab).flatten()
+        self.open.then_some(self.slab).flatten().map(|s| s.rect)
     }
 
     /// Apply a key press, returning the egui events it produces.
@@ -610,7 +617,7 @@ fn key_stroke_with(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Even
 /// reads the filter at the very top of the next pass, before any widget has run,
 /// so a `TextEdit` re-locking it during its own draw is a frame too late. Without
 /// this, the first ◀ or ▶ after a restore ejects you from the field.
-fn restore_focus(ctx: &egui::Context, id: egui::Id) {
+pub(crate) fn restore_focus(ctx: &egui::Context, id: egui::Id) {
     ctx.memory_mut(|mem| {
         mem.request_focus(id);
         mem.set_focus_lock_filter(
@@ -642,88 +649,110 @@ pub fn render_onscreen_keyboard(mut egui: ResMut<EguiManager>, mut kb: ResMut<On
     // the `ResMut` borrow for the `inject_events` call at the end.
     let ctx = egui.ctx_mut().clone();
 
-    // The trigger. `text_edit_focused()` and not `egui_wants_keyboard_input()`:
-    // the latter is `memory.focused().is_some()`, true whenever *any* widget
-    // holds focus, which in this client means a keyboard that pops up after
-    // clicking a checkbox (CLAUDE.md, and the same trap that once swallowed WASD).
-    let text_focus = ctx.text_edit_focused();
-    if text_focus {
-        kb.open = true;
-        kb.target = ctx.memory(|m| m.focused());
-    }
-    if !kb.open {
-        kb.slab = None;
-        return;
-    }
-
-    let viewport = ctx.viewport_rect();
-    let min_key_h = MIN_TOUCH_DP
-        / dp_per_point(
-            ui_scale,
-            display_scale,
-            cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
-        );
-    // This frame's rect for the field, which we only have because this system is
-    // ordered after the panels: `read_response` reads the *current* pass.
-    let field = kb
-        .target
-        .and_then(|id| ctx.read_response(id))
-        .map(|r| r.rect);
-    let slab = layout(viewport, min_key_h, field);
-    kb.slab = Some(slab.rect);
-
-    // Was this frame's pointer interaction ours? This is what tells "the field
-    // lost focus because a key was tapped" (put it back) apart from "the field
-    // lost focus because the user went somewhere else" (put the keyboard away),
-    // and it is deliberately not `resp.clicked()` on some key: a finger that
-    // drifts a few points between touch-down and lift produces a *drag*, not a
-    // click, and would otherwise dismiss the keyboard mid-word. `interact_pos`
-    // is the right field of the three — it is seeded from `latest_pos` at the
-    // top of the pass and survives the `PointerGone` a lifting finger sends,
-    // where `press_origin` is already cleared by the release.
-    let pointer_on_slab = ctx
-        .input(|i| {
-            i.pointer
-                .interact_pos()
-                .or_else(|| i.pointer.press_origin())
-        })
-        .is_some_and(|p| slab.rect.contains(p));
-
-    // Read the state out before drawing: a `ResMut` deref inside a `match`
-    // scrutinee lives until the end of the match, and the arms need it mutably.
-    let (layer, shift, target) = (kb.layer, kb.shift, kb.target);
-    let events = match draw(&ctx, &slab, layer, shift) {
-        Some(cap) => kb.press(cap),
-        None => Vec::new(),
-    };
-
-    if !kb.is_open() {
-        // The hide key. Drop the field's focus along with the keyboard, so
-        // tapping the same field again is a fresh focus event and brings the
-        // keyboard back — leaving it focused would make that one field
-        // permanently untypable until you had touched a different one.
-        if let Some(id) = target {
-            ctx.memory_mut(|m| m.surrender_focus(id));
-        }
-        kb.target = None;
-        kb.slab = None;
-        return;
-    }
-
-    if !text_focus {
-        match (pointer_on_slab, target) {
-            (true, Some(id)) => restore_focus(&ctx, id),
-            _ => {
-                kb.open = false;
-                kb.target = None;
-                kb.slab = None;
-                return;
-            }
-        }
-    }
-
+    let events = kb.pass(&ctx, ui_scale, display_scale);
     if !events.is_empty() {
         egui.inject_events(events);
+    }
+}
+
+impl OnScreenKeyboard {
+    /// One pass of the keyboard: draw it, work out what it typed, and hand back
+    /// the events for the caller to inject into the next frame's `RawInput`.
+    ///
+    /// Split from [`render_onscreen_keyboard`] so the whole open → type → close →
+    /// reopen machine can be driven against a real `egui::Context` in a test,
+    /// without Bevy. That is not a convenience: everything hard about this module
+    /// is an interaction with egui's focus and *layer* state across frames, and
+    /// no test of the pure `press` state machine can reach any of it — the bug
+    /// that made every reopened keyboard inert lived entirely there.
+    pub(crate) fn pass(
+        &mut self,
+        ctx: &egui::Context,
+        ui_scale: f32,
+        display_scale: f32,
+    ) -> Vec<egui::Event> {
+        let kb = self;
+        // The trigger. `text_edit_focused()` and not `egui_wants_keyboard_input()`:
+        // the latter is `memory.focused().is_some()`, true whenever *any* widget
+        // holds focus, which in this client means a keyboard that pops up after
+        // clicking a checkbox (CLAUDE.md, and the same trap that once swallowed
+        // WASD).
+        let text_focus = ctx.text_edit_focused();
+        if text_focus {
+            kb.open = true;
+            kb.target = ctx.memory(|m| m.focused());
+        }
+        if !kb.open {
+            kb.slab = None;
+            return Vec::new();
+        }
+
+        let viewport = ctx.viewport_rect();
+        let min_key_h = MIN_TOUCH_DP
+            / dp_per_point(
+                ui_scale,
+                display_scale,
+                cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
+            );
+        // This frame's rect for the field, which we only have because this system
+        // is ordered after the panels: `read_response` reads the *current* pass.
+        let field = kb
+            .target
+            .and_then(|id| ctx.read_response(id))
+            .map(|r| r.rect);
+        let slab = layout(viewport, min_key_h, field);
+        kb.slab = Some(slab);
+
+        // Was this frame's pointer interaction ours? This is what tells "the field
+        // lost focus because a key was tapped" (put it back) apart from "the field
+        // lost focus because the user went somewhere else" (put the keyboard away),
+        // and it is deliberately not `resp.clicked()` on some key: a finger that
+        // drifts a few points between touch-down and lift produces a *drag*, not a
+        // click, and would otherwise dismiss the keyboard mid-word. `interact_pos`
+        // is the right field of the three — it is seeded from `latest_pos` at the
+        // top of the pass and survives the `PointerGone` a lifting finger sends,
+        // where `press_origin` is already cleared by the release.
+        let pointer_on_slab = ctx
+            .input(|i| {
+                i.pointer
+                    .interact_pos()
+                    .or_else(|| i.pointer.press_origin())
+            })
+            .is_some_and(|p| slab.rect.contains(p));
+
+        // Read the state out before drawing: the arms below need `kb` mutably.
+        let (layer, shift, target) = (kb.layer, kb.shift, kb.target);
+        let events = match draw(ctx, &slab, layer, shift) {
+            Some(cap) => kb.press(cap),
+            None => Vec::new(),
+        };
+
+        if !kb.is_open() {
+            // The hide key. Drop the field's focus along with the keyboard, so
+            // tapping the same field again is a fresh focus event and brings the
+            // keyboard back — leaving it focused would make that one field
+            // permanently untypable until you had touched a different one.
+            if let Some(id) = target {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            kb.target = None;
+            kb.slab = None;
+            return Vec::new();
+        }
+
+        if !text_focus {
+            match (pointer_on_slab, target) {
+                (true, Some(id)) => restore_focus(ctx, id),
+                _ => {
+                    kb.open = false;
+                    kb.target = None;
+                    kb.slab = None;
+                    return Vec::new();
+                }
+            }
+        }
+
+        events
     }
 }
 
@@ -736,11 +765,31 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) ->
     let rows = rows(layer);
 
     let inner = egui::Area::new(id)
-        // Above the panels (Background) and the pins (Middle), and level with the
-        // address bar and the sign-in card — which is why `move_to_top` below is
-        // not optional: within one `Order`, layers stack in the order they were
-        // last raised, and the sign-in card raises itself every frame.
-        .order(egui::Order::Foreground)
+        // **Above `Foreground`, where the rest of the app's chrome lives, and
+        // that is not a preference — it is the only place a layer that comes and
+        // goes can survive.**
+        //
+        // `move_to_top` does not mean "put me on top now". It sets a flag that
+        // `Areas::end_pass` consults in a *stable* sort by `(order,
+        // wants_to_be_on_top)`, so two layers that both raise themselves every
+        // frame keep whatever relative order they already had — the call order
+        // within the frame decides nothing. A layer that stops drawing loses the
+        // flag for that frame, sorts below everyone who kept it, and can never
+        // climb back: re-raising only restores the tie, and a stable sort leaves
+        // a tie where it found it.
+        //
+        // The keyboard is exactly that kind of layer, and the sign-in card is
+        // exactly that kind of rival: a full-viewport dim backdrop plus the card,
+        // both `Foreground`, both raised every frame. So the first open worked and
+        // every reopen after it drew a keyboard whose taps went to the backdrop
+        // underneath — keys that paint, highlight nothing and type nothing, with
+        // the rest of the UI perfectly responsive. Being in a *higher* order is
+        // what makes this unconditional: no `Foreground` layer can outrank us
+        // however it was created, including one opened after we were.
+        //
+        // `move_to_top` stays anyway, for the same contest among `Tooltip` layers
+        // (egui puts hover text there, and a long touch produces hover text).
+        .order(egui::Order::Tooltip)
         .fixed_pos(slab.rect.min)
         // We own the geometry; letting egui pull it back inside the content rect
         // would fight the top/bottom flip `layout` just made.
@@ -799,7 +848,7 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) ->
         });
 
     // Keep the keyboard above everything else at this `Order`, every frame.
-    ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, id));
+    ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, id));
     inner.inner
 }
 
@@ -930,6 +979,247 @@ fn paint_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The client's frame loop, minus Bevy: a sign-in card with a text field in
+    /// it, the keyboard drawn after it in the same pass, and a touch bridge that
+    /// produces the events `egui_manager::pointer_events` produces on a phone.
+    ///
+    /// This exists because every bug this module has had lives in the *sequence*
+    /// — focus surrendered by one tap and restored by the next, a layer raised
+    /// after another one, a widget that stopped being drawn — and none of it is
+    /// reachable from a test of the `press` state machine, which is pure by
+    /// design.
+    struct Harness {
+        ctx: egui::Context,
+        kb: OnScreenKeyboard,
+        text: String,
+        /// What the keyboard typed last frame, waiting for the next `RawInput`
+        /// exactly as `EguiManager::injected` holds it.
+        injected: Vec<egui::Event>,
+        screen: egui::Rect,
+        field: egui::Rect,
+        /// Android's touch ids only ever increase, and the bridge keys off them.
+        next_touch: u64,
+        /// How often the card's backdrop has taken a tap. Non-zero after a tap
+        /// on a key means the keyboard is no longer the top layer where it draws.
+        backdrop_clicks: usize,
+        /// Is the card's full-viewport dim drawn? Switchable so a test can make
+        /// the modal appear *after* the keyboard, which is the case that decides
+        /// the `Order` rather than the raise.
+        backdrop: bool,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::systems::theme::install(&ctx);
+            Self {
+                ctx,
+                // Closed, the way a run starts: the field being tapped is what
+                // opens it.
+                kb: OnScreenKeyboard {
+                    open: false,
+                    ..kb()
+                },
+                text: String::new(),
+                injected: Vec::new(),
+                // The phone this was sized for.
+                screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(274.0, 609.0)),
+                field: egui::Rect::NOTHING,
+                next_touch: 1,
+                backdrop_clicks: 0,
+                backdrop: true,
+            }
+        }
+
+        /// One frame: begin the pass with these events, draw the card, run the
+        /// keyboard, end the pass.
+        fn frame(&mut self, mut events: Vec<egui::Event>) {
+            // The injected batch goes after the pointer batch, where
+            // `begin_egui_frame` puts it.
+            events.extend(std::mem::take(&mut self.injected));
+            self.ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(self.screen),
+                events,
+                focused: true,
+                ..Default::default()
+            });
+
+            // The sign-in card's dim backdrop: a full-viewport click-sensing
+            // `Area` at the same `Order` as the card, raised every frame. It is
+            // in the harness because it is the layer that eats the keys when the
+            // keyboard loses its place in the stack — a bug that is invisible
+            // without something covering the slab.
+            let dim_id = egui::Id::new("sign_in_dim");
+            let mut dismissed = false;
+            if self.backdrop {
+                egui::Area::new(dim_id)
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(&self.ctx, |ui| {
+                        let (_, resp) = ui
+                            .allocate_exact_size(self.screen.size(), egui::Sense::click_and_drag());
+                        dismissed = resp.clicked();
+                    });
+                self.ctx
+                    .move_to_top(egui::LayerId::new(egui::Order::Foreground, dim_id));
+            }
+            self.backdrop_clicks += usize::from(dismissed);
+
+            let card_id = egui::Id::new("sign_in_card");
+            let text = &mut self.text;
+            let mut field = egui::Rect::NOTHING;
+            egui::Window::new("sign in")
+                .id(card_id)
+                .order(egui::Order::Foreground)
+                .title_bar(false)
+                .resizable(false)
+                .movable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&self.ctx, |ui| {
+                    ui.set_width(220.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            field = ui
+                                .add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY))
+                                .rect;
+                        });
+                });
+            // The card raises itself every frame; the keyboard has to raise itself
+            // after that or its keys are under the card's layer.
+            self.ctx
+                .move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
+            self.field = field;
+
+            self.injected = self.kb.pass(&self.ctx, 1.5, 2.75);
+            let _ = self.ctx.end_pass();
+        }
+
+        /// A finger down and up at one point, then a quiet frame — the shape
+        /// `pointer_events` emits, including the `PointerGone` that a lifting
+        /// finger sends and the split of press and release across two frames.
+        fn tap(&mut self, pos: egui::Pos2) {
+            let id = egui::TouchId(self.next_touch);
+            self.next_touch += 1;
+            let touch = |phase| egui::Event::Touch {
+                device_id: egui::TouchDeviceId(0),
+                id,
+                phase,
+                pos,
+                force: None,
+            };
+            self.frame(vec![
+                touch(egui::TouchPhase::Start),
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            self.frame(vec![
+                touch(egui::TouchPhase::End),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerGone,
+            ]);
+            // A frame with nothing in it, of which a real run has many.
+            self.frame(Vec::new());
+        }
+
+        /// Where the key carrying `cap` is on the slab the keyboard last drew.
+        fn key_pos(&self, want: Cap) -> egui::Pos2 {
+            let slab = self.kb.slab.expect("the keyboard is not on screen");
+            for (r, row) in rows(self.kb.layer).iter().enumerate() {
+                let used: f32 = row.iter().map(|k| k.units).sum();
+                let mut col = (COLUMNS - used) * 0.5;
+                for key in row {
+                    let rect = slab.key_rect(r, col, key.units);
+                    col += key.units;
+                    if key.cap == want {
+                        return rect.center();
+                    }
+                }
+            }
+            panic!("no {want:?} key on the {:?} layer", self.kb.layer);
+        }
+
+        fn tap_key(&mut self, cap: Cap) {
+            self.tap(self.key_pos(cap));
+        }
+    }
+
+    /// **The bug the phone found:** close the keyboard, tap the field again, and
+    /// the keys draw but type nothing.
+    #[test]
+    fn the_keyboard_types_again_after_being_closed_and_reopened() {
+        let mut h = Harness::new();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+
+        let field = h.field.center();
+        h.tap(field);
+        assert!(
+            h.kb.is_open(),
+            "tapping the field did not open the keyboard"
+        );
+
+        h.tap_key(a());
+        assert_eq!(h.text, "a", "the keyboard did not type on first use");
+
+        h.tap_key(Cap::Hide);
+        assert!(!h.kb.is_open(), "the hide key did not close the keyboard");
+
+        h.tap(field);
+        assert!(h.kb.is_open(), "the keyboard did not come back");
+
+        let backdrop_before = h.backdrop_clicks;
+        h.tap_key(a());
+        assert_eq!(
+            h.backdrop_clicks, backdrop_before,
+            "the tap went to the card's backdrop, not to the key: the keyboard's \
+             layer is no longer on top"
+        );
+        assert_eq!(h.text, "aa", "the reopened keyboard typed nothing");
+    }
+
+    /// The other half of the same bug, and the reason the fix is a higher
+    /// `Order` rather than a more insistent `move_to_top`: a rival layer created
+    /// **after** the keyboard is on top from the moment it exists, and no amount
+    /// of re-raising displaces it. Type into the geo search, then open the
+    /// sign-in card over it, and the keys would go dead without a single one of
+    /// them having been touched.
+    #[test]
+    fn a_modal_opened_over_the_keyboard_does_not_take_its_keys() {
+        let mut h = Harness::new();
+        h.backdrop = false;
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+
+        h.tap(h.field.center());
+        assert!(h.kb.is_open());
+        h.tap_key(a());
+        assert_eq!(h.text, "a");
+
+        // The modal arrives, and it covers the whole viewport.
+        h.backdrop = true;
+        h.frame(Vec::new());
+
+        let backdrop_before = h.backdrop_clicks;
+        h.tap_key(a());
+        assert_eq!(
+            h.backdrop_clicks, backdrop_before,
+            "a modal opened later took the keyboard's taps"
+        );
+        assert_eq!(h.text, "aa", "the keyboard went dead under a new modal");
+    }
 
     fn kb() -> OnScreenKeyboard {
         OnScreenKeyboard {
