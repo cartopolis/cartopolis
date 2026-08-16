@@ -1319,7 +1319,8 @@ pub fn drive_geocode(
 /// the bottom half of the screen and a dropdown anchored to a corner card had
 /// nowhere left to be.
 pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, f64)>) {
-    let field = ui.add(
+    let field = crate::systems::text_touch::field(
+        ui,
         egui::TextEdit::singleline(&mut nav.query)
             .desired_width(ui.available_width())
             .margin(egui::Margin::symmetric(8, 6))

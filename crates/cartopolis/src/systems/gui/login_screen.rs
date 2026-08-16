@@ -547,7 +547,8 @@ fn card_ui(
     if screen.kind == SessionKind::Remote {
         ui.add_space(2.0);
         field(ui, "Server", |ui| {
-            ui.add(
+            crate::systems::text_touch::field(
+                ui,
                 egui::TextEdit::singleline(&mut screen.server)
                     // A bare hostname, because that is now what works and what
                     // the docs hand out. A hint carrying `:4747` taught the one
@@ -557,18 +558,15 @@ fn card_ui(
             );
         });
         field(ui, "User", |ui| {
-            ui.add(
+            crate::systems::text_touch::field(
+                ui,
                 egui::TextEdit::singleline(&mut screen.username)
                     .hint_text("your account name")
                     .desired_width(f32::INFINITY),
             );
         });
         field(ui, "Password", |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut screen.password)
-                    .password(true)
-                    .desired_width(f32::INFINITY),
-            );
+            theme::password_field(ui, &mut screen.password);
         });
         ui.add_space(2.0);
         theme::checkbox(ui, &mut screen.remember, "Remember me on this device")

@@ -1585,6 +1585,123 @@ pub fn checkbox(
     .inner
 }
 
+/// A password field, with the eye that reveals what is in it.
+///
+/// **Why every password field in this client needs one.** A masked field is a
+/// row of dots you cannot proof-read, which is a mild annoyance with a hardware
+/// keyboard and a dead end with a thumb: the two platforms this client runs on
+/// with no system IME type through an on-screen keyboard
+/// ([`crate::systems::onscreen_keyboard`]) with no autocorrect and no key
+/// preview, so a mistyped character is invisible, unlocatable, and answered by a
+/// server that will only say the whole thing was wrong.
+///
+/// The reveal is **per field and per frame-run, never persisted**: it lives in
+/// egui's temporary memory under the field's own id, so it is gone by the next
+/// launch and a second password field on the same screen is not revealed by the
+/// first.
+///
+/// The non-obvious part is the focus restore. Tapping the eye is a click that is
+/// not on the field, and egui answers those by taking the field's focus away
+/// (`SurrenderFocusOn::Clicks`) — which on a phone takes the on-screen keyboard
+/// down with it, so revealing your password would cost you the keyboard you were
+/// typing it with. Putting the focus back has to happen in the same pass, before
+/// the keyboard's own system runs and reads `text_edit_focused()`; every UI
+/// system runs before it, by construction (`lib.rs`, phase 7d).
+pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
+    let eye = close_button_size();
+    let gap = ui.spacing().item_spacing.x;
+    ui.horizontal(|ui| {
+        // The eye is paid for out of the field, not added to the row: these sit
+        // in a labelled two-column layout on a 274 pt phone viewport, and a row
+        // that grows by its own button pushes the field off the card.
+        let width = (ui.available_width() - eye - gap).max(40.0);
+        // Keyed off this row's own `Ui`, not the field's auto-id: the field's id
+        // is only known after it has been shown, and this has to be read before.
+        let id = ui.id().with("password_shown");
+        let shown = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+        let field = crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(text)
+                .password(!shown)
+                .desired_width(width),
+        );
+
+        let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(eye), egui::Sense::click());
+        let ink = if resp.is_pointer_button_down_on() || shown {
+            ACCENT
+        } else {
+            TEXT_DIM
+        };
+        paint_eye(ui.painter(), rect, shown, ink);
+        paint_focus_ring(ui, &resp, rect, false);
+        if resp.clicked() {
+            ui.data_mut(|d| d.insert_temp(id, !shown));
+            // Only when it was ours to lose: tapping the eye of a field nobody is
+            // typing into must not pull focus into it, or the on-screen keyboard
+            // slides up over a card the user was only reading.
+            if field.has_focus() || field.lost_focus() {
+                crate::systems::onscreen_keyboard::restore_focus(ui.ctx(), field.id);
+            }
+        }
+        let _ = resp.on_hover_text(if shown {
+            "Hide the password"
+        } else {
+            "Show the password"
+        });
+        // The *field's* response, not a union with the eye's: callers test it for
+        // `changed()` and `lost_focus()` to know whether the password was edited
+        // or submitted, and a union would answer those for a look at it.
+        field
+    })
+    .inner
+}
+
+/// An eye, painted rather than lettered.
+///
+/// The icon font ([`crate::systems::icons`]) is the right answer for a glyph and
+/// is *not* available for this one: it is subset from a manifest, so
+/// `visibility` / `visibility_off` are not in the shipped file, and putting them
+/// there means re-running `tools/subset-icon-font.py` and committing a new LFS
+/// binary for two characters. So it is drawn, on the same terms as
+/// [`close_button`]'s cross and the on-screen keyboard's select-all band. Add the
+/// icons and delete this the next time that font is re-cut.
+///
+/// Struck through when the password is *hidden*, which is the state the field
+/// starts in — so the mark says what tapping it will do, not what is happening.
+fn paint_eye(p: &egui::Painter, rect: egui::Rect, shown: bool, ink: Color32) {
+    let c = rect.center();
+    let r = rect.width() * 0.30;
+    let stroke = Stroke::new(1.4, ink);
+    // The almond, as two arcs approximated by short segments — epaint has no
+    // quadratic-curve primitive on the simple painter, and a circle would read as
+    // a target rather than an eye.
+    let arc = |up: f32| {
+        let n = 10;
+        let pts: Vec<egui::Pos2> = (0..=n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                let x = c.x + (t - 0.5) * 2.0 * r;
+                // A parabola through (±r, 0) with its apex at 0.62 r.
+                let y = c.y - up * 0.62 * r * (1.0 - (2.0 * t - 1.0).powi(2));
+                egui::pos2(x, y)
+            })
+            .collect();
+        pts
+    };
+    p.add(egui::Shape::line(arc(1.0), stroke));
+    p.add(egui::Shape::line(arc(-1.0), stroke));
+    p.circle_filled(c, r * 0.30, ink);
+    if !shown {
+        p.line_segment(
+            [
+                egui::pos2(c.x - r, c.y + r * 0.7),
+                egui::pos2(c.x + r, c.y - r * 0.7),
+            ],
+            stroke,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

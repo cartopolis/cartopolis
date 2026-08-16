@@ -1655,7 +1655,8 @@ fn endpoint_row(
                 .size(theme::SIZE_SUB)
                 .color(colour),
         );
-        let field = ui.add(
+        let field = crate::systems::text_touch::field(
+            ui,
             egui::TextEdit::singleline(&mut wp.label)
                 .desired_width(waypoint_field_width(ui.available_width()))
                 .hint_text(hint),
