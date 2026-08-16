@@ -1124,7 +1124,12 @@ pub fn update_remote_avatar_animation(
         (Entity, &RemoteAvatar, Option<&mut EmotePlayback>),
         With<RemoteAvatar>,
     >,
-    mut running: Local<std::collections::HashMap<Entity, bool>>,
+    // Whether each remote avatar was running last frame, which is what makes the
+    // walk/run choice hysteretic instead of flapping at the threshold.
+    //
+    // `EntityHashMap` rather than `std::collections::HashMap`: keys are entities,
+    // and SipHash on an `Entity` is a lot of work to hash a pair of integers.
+    mut running: Local<bevy::ecs::entity::EntityHashMap<bool>>,
 ) {
     if online.is_none() {
         return;
@@ -1185,6 +1190,12 @@ pub fn update_remote_avatar_animation(
             }
         }
     }
+    // Forget avatars that have gone. Remote avatars are despawned when they leave
+    // the area of interest or disconnect, and without this their entries stayed
+    // forever — an unbounded leak over a long session on a busy server, and worse
+    // than a leak when Bevy recycles an entity index and hands a freshly-arrived
+    // avatar the walk/run state of whoever used to hold it.
+    running.retain(|entity, _| remote_roots.contains(*entity));
 }
 
 /// Clear the emote edge once every consumer has seen it (this runs after

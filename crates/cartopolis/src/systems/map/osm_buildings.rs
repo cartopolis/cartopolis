@@ -24,7 +24,7 @@ use crate::components::OsmBuildingMesh;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use web_time::Instant;
@@ -159,8 +159,14 @@ struct Coverage {
 
 static COVERAGE: OnceLock<Coverage> = OnceLock::new();
 static COVERAGE_LOD22: OnceLock<Coverage> = OnceLock::new();
-/// Guards the one-time coverage prefetch (see `ensure_coverage_prefetch`).
-static COVERAGE_PREFETCH_STARTED: AtomicBool = AtomicBool::new(false);
+/// A coverage fetch is in flight (see [`ensure_coverage_prefetch`]).
+static COVERAGE_FETCHING: AtomicBool = AtomicBool::new(false);
+/// When the last coverage fetch was started, as `f64` bits; 0 = never.
+static COVERAGE_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+/// Spacing between coverage retries while the 3DBAG host is unreachable. Long
+/// enough not to matter — the answer never changes for a running client, and the
+/// fallback (Overpass footprints) is already on screen while we wait.
+const COVERAGE_RETRY_SECS: f64 = 30.0;
 /// The Layers panel's "3DBAG (NL)" toggle, mirrored in by
 /// `data_layers::apply_feature_toggles` each frame — the coverage predicates are
 /// free functions over statics, out of reach of the `DataLayers` resource. While
@@ -208,7 +214,17 @@ pub(crate) fn buildings_user_enabled() -> bool {
 /// Fetch a 3DBAG coverage manifest via the http seam. A missing/unreachable host
 /// (or an empty tile URL) yields empty coverage, so the client silently uses OSM
 /// buildings everywhere.
-async fn fetch_coverage(sub: &str) -> Coverage {
+/// `None` means *we could not ask* — a transient network failure, which must not
+/// be latched. `Some(empty)` is a real answer: no 3DBAG configured, or a host that
+/// served something unusable.
+///
+/// The distinction is the whole point of the return type. Folding an unreachable
+/// host into the empty coverage made a single failed request at startup disable
+/// 3DBAG buildings for the entire life of the process, silently and
+/// unrecoverably — `coverage_resolved()` reported `true`, every `*_covers` call
+/// answered `false`, and the client spent the session on Overpass footprints with
+/// nothing in the log to say a better source existed.
+async fn fetch_coverage(sub: &str) -> Option<Coverage> {
     let empty = Coverage {
         zoom: CACHE_ZOOM,
         cells: HashSet::new(),
@@ -216,18 +232,21 @@ async fn fetch_coverage(sub: &str) -> Coverage {
     };
     let base = tdbag_url();
     if base.is_empty() {
-        return empty;
+        return Some(empty); // configured off: a definitive "no 3DBAG here"
     }
     let url = format!("{base}{sub}");
     let text = match http::fetch_string(http::Request::get(url.clone())).await {
         Ok(t) => t,
         Err(e) => {
-            tracing::info!(%url, error = %e, "no 3DBAG coverage reachable; using OSM buildings");
-            return empty;
+            tracing::info!(%url, error = %e, "3DBAG coverage unreachable; will retry");
+            return None;
         }
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return empty;
+        // The host answered, with something we cannot read. Retrying would ask the
+        // same question and get the same answer, so this one does latch.
+        tracing::warn!(%url, "3DBAG coverage is not JSON; using OSM buildings");
+        return Some(empty);
     };
     let zoom = json
         .get("zoom")
@@ -252,27 +271,51 @@ async fn fetch_coverage(sub: &str) -> Coverage {
         }
     }
     tracing::info!(sub, cells = cells.len(), zoom, "3DBAG coverage loaded");
-    Coverage {
+    Some(Coverage {
         zoom,
         cells,
         attribution,
-    }
+    })
 }
 
-/// Kick off the one-time async fetch of both coverage manifests. Idempotent and
-/// cheap to call every frame. Until they land, [`tdbag_covers`] / [`lod22_covers`]
-/// report `false`, so the client falls back to Overpass footprints and far
-/// extrusions, then switches to 3DBAG once coverage arrives. This replaces the old
-/// blocking `get_or_init`, which stalled whichever fetch first touched it on the
-/// network (and could not run on wasm at all).
-fn ensure_coverage_prefetch() {
-    if COVERAGE_PREFETCH_STARTED.swap(true, Ordering::Relaxed) {
+/// Fetch both coverage manifests, retrying while the host is unreachable.
+///
+/// Idempotent and cheap to call every frame. Until they land, [`tdbag_covers`] /
+/// [`lod22_covers`] report `false`, so the client falls back to Overpass footprints
+/// and far extrusions, then switches to 3DBAG once coverage arrives. This replaces
+/// the old blocking `get_or_init`, which stalled whichever fetch first touched it
+/// on the network (and could not run on wasm at all).
+///
+/// It used to be strictly one-shot, which paired badly with treating an
+/// unreachable host as "no coverage": one failed request during startup — the
+/// moment a mobile client is least likely to have a working connection — latched
+/// the empty answer into a `OnceLock` and disabled 3DBAG for the process. Retrying
+/// is the other half of `fetch_coverage` returning `Option`.
+fn ensure_coverage_prefetch(now: f64) {
+    if coverage_resolved() || COVERAGE_FETCHING.load(Ordering::Relaxed) {
         return;
     }
+    let last = f64::from_bits(COVERAGE_LAST_ATTEMPT.load(Ordering::Relaxed));
+    if last > 0.0 && now - last < COVERAGE_RETRY_SECS {
+        return;
+    }
+    COVERAGE_FETCHING.store(true, Ordering::Relaxed);
+    COVERAGE_LAST_ATTEMPT.store(now.to_bits(), Ordering::Relaxed);
     IoTaskPool::get()
         .spawn(async {
-            let _ = COVERAGE.set(fetch_coverage("/coverage.json").await);
-            let _ = COVERAGE_LOD22.set(fetch_coverage("/lod22/coverage.json").await);
+            // Each manifest is asked for only while still unanswered, so a run
+            // where one succeeded and the other did not costs one request, not two.
+            if COVERAGE.get().is_none() {
+                if let Some(c) = fetch_coverage("/coverage.json").await {
+                    let _ = COVERAGE.set(c);
+                }
+            }
+            if COVERAGE_LOD22.get().is_none() {
+                if let Some(c) = fetch_coverage("/lod22/coverage.json").await {
+                    let _ = COVERAGE_LOD22.set(c);
+                }
+            }
+            COVERAGE_FETCHING.store(false, Ordering::Relaxed);
         })
         .detach();
 }
@@ -503,9 +546,9 @@ impl Default for OsmBuildings {
                 max_in_flight: overpass_pace().0,
                 min_interval_secs: 0.0,
                 max_attempts: FAR_CELL_MAX_ATTEMPTS,
-                backoff_secs: 0.0,
-                backoff_doublings: 0,
-                cooldown_secs: 0.0,
+                backoff_secs: FAR_CELL_BACKOFF_SECS,
+                backoff_doublings: FAR_CELL_BACKOFF_DOUBLINGS,
+                cooldown_secs: FAR_CELL_RETRY_AFTER_SECS,
                 // This lane owns the shared despawn queue; the 3DBAG one below
                 // never retires anything of its own.
                 despawns_per_frame: MAX_FAR_DESPAWNS_PER_FRAME,
@@ -514,9 +557,9 @@ impl Default for OsmBuildings {
                 max_in_flight: TDBAG_FAR_CONCURRENCY,
                 min_interval_secs: 0.0,
                 max_attempts: FAR_CELL_MAX_ATTEMPTS,
-                backoff_secs: 0.0,
-                backoff_doublings: 0,
-                cooldown_secs: 0.0,
+                backoff_secs: FAR_CELL_BACKOFF_SECS,
+                backoff_doublings: FAR_CELL_BACKOFF_DOUBLINGS,
+                cooldown_secs: FAR_CELL_RETRY_AFTER_SECS,
                 despawns_per_frame: 0,
             }),
             terrain_revision: 0,
@@ -532,6 +575,27 @@ impl Default for OsmBuildings {
 /// that has failed three times is either genuinely empty upstream or the query is
 /// too heavy for it — a fourth try costs a shared endpoint a request to find out.
 const FAR_CELL_MAX_ATTEMPTS: u32 = 3;
+
+/// Wait after a far cell's first failure, doubling [`FAR_CELL_BACKOFF_DOUBLINGS`]
+/// times: 2 s, 4 s, 8 s.
+///
+/// Without it the three attempts above were spent on three consecutive *frames* —
+/// 50 ms — which is not three chances at a flaky endpoint, it is one chance
+/// repeated thrice into the same outage. The reason to stop at three is to spare a
+/// shared endpoint, and a backoff is what actually does that.
+const FAR_CELL_BACKOFF_SECS: f64 = 2.0;
+const FAR_CELL_BACKOFF_DOUBLINGS: u32 = 2;
+
+/// How long an exhausted far cell rests before its attempt count is forgiven.
+///
+/// This used to be 0.0, which `platform::stream::Policy` reads as **never** — so
+/// three 504s during one bad minute at Overpass left a permanent hole in the
+/// buildings for the whole life of the map anchor, healed only by a teleport. The
+/// comment on the attempt cap named 504s-under-load as the expected failure and
+/// then treated them as if they were "absent upstream". A minute is long enough to
+/// be no burden on the endpoint and short enough that a user who looks up from the
+/// map sees the block arrive.
+const FAR_CELL_RETRY_AFTER_SECS: f64 = 60.0;
 
 /// Far cells' entities freed per frame. A far cell is one merged extrusion mesh
 /// plus its window meshes, and a re-anchor retires all `(2·FAR_CELL_RADIUS+1)² =
@@ -715,7 +779,7 @@ pub fn update_buildings(
 ) {
     // Fire the 3DBAG coverage prefetch once (async, off the main thread) — the
     // coverage predicates report "uncovered" until it lands, then upgrade.
-    ensure_coverage_prefetch();
+    ensure_coverage_prefetch(time.elapsed_secs_f64());
 
     let Some((clat, clng, base_zoom)) = stream.geo_anchor() else {
         return;
@@ -744,17 +808,29 @@ pub fn update_buildings(
     let reanchored = osm.far.sync(stream.anchor_generation);
     if reanchored || turned_off || osm.terrain_revision != terrain.revision {
         osm.terrain_revision = terrain.revision;
-        for e in osm.detail_entities.drain(..) {
-            commands.entity(e).despawn();
-        }
-        let retired: Vec<Entity> = osm.far_cells.drain().flat_map(|(_, ents)| ents).collect();
+        // Through the bounded queue, like everything else this lane retires. The
+        // detail patch is one merged multi-megabyte mesh plus its windows, and
+        // freeing it in the same command buffer as the far ring is precisely the
+        // mass-despawn burst `platform::stream` owns a queue to prevent.
+        let mut retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
+        retired.extend(osm.far_cells.drain().flat_map(|(_, ents)| ents));
         osm.far.retire_all(retired);
         osm.buildings.clear();
         colliders.clear_detail();
         osm.last_center = None;
         osm.last_fetch = None;
         osm.in_flight = false;
-        // Orphans both results sinks, so nothing from the old origin leaks through.
+        // Orphans *all three* in-flight sinks, so nothing from the old origin leaks
+        // through. The detail patch's own sink is the one that used to be missed,
+        // and it was the one that mattered most: `far`/`far_tdbag` are reset by
+        // `CellStream::reset`, but `fetch` is a plain `Arc` this module owns, so a
+        // patch baked against the old `ax`/`ay`/`z`/`tile_m` sailed past the
+        // teardown and was applied under the new anchor. The mesh then carried the
+        // old projection while the colliders published beside it were re-projected
+        // with the new one — so the buildings you could see and the buildings you
+        // could walk into were in different places. Replacing the `Arc` is what
+        // `reset` does for the other two, and it costs an allocation per re-anchor.
+        osm.fetch = Arc::default();
         osm.far.reset();
         osm.far_tdbag.reset();
         osm.anchor = None;

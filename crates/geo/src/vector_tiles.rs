@@ -241,6 +241,20 @@ pub const TILE_PX: u32 = 512;
 /// rendered by magnifying the z14 ancestor.
 pub const MAX_SOURCE_ZOOM: u32 = 14;
 
+/// Ceiling on how far [`SubTile::resolve`] will magnify, as a shift.
+///
+/// A saturating bound, not a policy — the client never asks for more than a
+/// handful of levels of overzoom. It exists because `z` arrives from a `TileKey`
+/// that nothing range-checks at that boundary, and the unclamped
+/// `1i64 << (z - MAX_SOURCE_ZOOM)` panics in debug and produces nonsense in
+/// release once `z` reaches 78.
+///
+/// 31 rather than a rounder number because [`SubTile::factor`] is a `u32`: at a
+/// shift of 32 the `factor as u32` narrowing truncates to **zero**, turning an
+/// overflow panic into a silently degenerate sub-tile, which is the worse of the
+/// two failures. This is the largest shift the field can actually hold.
+pub const MAX_OVERZOOM_SHIFT: u32 = 31;
+
 /// How far past its own edge a tile's geometry may legitimately reach, as a
 /// fraction of the layer's extent.
 ///
@@ -303,10 +317,15 @@ impl SubTile {
     /// wrapping, where a truncating divide would pick the tile one to the east.
     #[must_use]
     pub fn resolve(z: u32, x: i64, y: i64) -> ((u32, i64, i64), Self) {
+        // `MAX_OVERZOOM_SHIFT`, not `z - MAX_SOURCE_ZOOM`: `z` reaches here from a
+        // `TileKey`, which is not range-checked at this boundary, and `1i64 << 63`
+        // is a panic in debug and nonsense in release. Clamping keeps an absurd
+        // zoom absurd (the sub-tile is a vanishing speck) instead of a crash on a
+        // network-adjacent input path.
         if z <= MAX_SOURCE_ZOOM {
             return ((z, x, y), Self::WHOLE);
         }
-        let shift = z - MAX_SOURCE_ZOOM;
+        let shift = (z - MAX_SOURCE_ZOOM).min(MAX_OVERZOOM_SHIFT);
         let factor = 1i64 << shift;
         let (sx, sy) = (x >> shift, y >> shift);
         (
@@ -1115,16 +1134,22 @@ fn clip_ring(points: &[[f32; 2]], extent: f32) -> Vec<[f32; 2]> {
 
     // The clip lands successive vertices on the same border point whenever the
     // ring grazes a corner; earcut turns a duplicate into a degenerate ear.
+    /// Two clipped vertices close enough that earcut would see one.
+    fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() <= 1e-5 && (a[1] - b[1]).abs() <= 1e-5
+    }
     let mut out: Vec<[f32; 2]> = Vec::with_capacity(ring.len());
     for p in ring {
-        if out
-            .last()
-            .is_none_or(|q: &[f32; 2]| (p[0] - q[0]).abs() > 1e-5 || (p[1] - q[1]).abs() > 1e-5)
-        {
+        if out.last().is_none_or(|q: &[f32; 2]| !near(p, *q)) {
             out.push(p);
         }
     }
-    while out.len() >= 2 && out[0] == out[out.len() - 1] {
+    // Closing vertex, on the same tolerance the interior dedup above uses. An exact
+    // `==` here left a ring whose ends differ by less than 1e-5 — but not by
+    // nothing — carrying a near-duplicate seam vertex into earcut, which is exactly
+    // the degenerate ear this function exists to prevent, arrived at from the one
+    // direction the loop above cannot see.
+    while out.len() >= 2 && near(out[0], out[out.len() - 1]) {
         out.pop();
     }
     if out.len() < 3 {
@@ -2946,6 +2971,21 @@ mod tests {
         let (src, sub) = SubTile::resolve(12, 100, 200);
         assert_eq!(src, (12, 100, 200));
         assert_eq!(sub, SubTile::WHOLE);
+    }
+
+    /// An absurd zoom stays absurd rather than overflowing the shift.
+    ///
+    /// `z` reaches `resolve` from a `TileKey` nothing range-checks at that
+    /// boundary, and the unclamped `1i64 << (z - MAX_SOURCE_ZOOM)` panics in debug
+    /// the moment `z` reaches 78 — reachable from a malformed tile source, i.e.
+    /// from the network.
+    #[test]
+    fn an_absurd_zoom_clamps_instead_of_overflowing_the_shift() {
+        for z in [78, 100, u32::MAX] {
+            let (src, sub) = SubTile::resolve(z, 1, 1);
+            assert_eq!(src.0, MAX_SOURCE_ZOOM);
+            assert!(sub.factor > 0, "z={z} produced a degenerate sub-tile");
+        }
     }
 
     #[test]

@@ -303,7 +303,11 @@ mod tests {
         );
         for (cell, transform) in samples() {
             let got = grid.global_transform(&cell, &transform).affine();
-            assert_eq!(got, reference(&grid, &cell, &transform), "cell {cell:?}, {transform:?}");
+            assert_eq!(
+                got,
+                reference(&grid, &cell, &transform),
+                "cell {cell:?}, {transform:?}"
+            );
         }
     }
 
@@ -323,7 +327,11 @@ mod tests {
         );
         for (cell, transform) in samples() {
             let got = grid.global_transform(&cell, &transform).affine();
-            assert_eq!(got, reference(&grid, &cell, &transform), "cell {cell:?}, {transform:?}");
+            assert_eq!(
+                got,
+                reference(&grid, &cell, &transform),
+                "cell {cell:?}, {transform:?}"
+            );
         }
     }
 }

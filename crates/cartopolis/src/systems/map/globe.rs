@@ -1065,6 +1065,22 @@ fn spawn_globe_tile(
     IoTaskPool::get()
         .spawn(async move {
             if job_gen != live_gen.load(Ordering::Relaxed) {
+                // Report it, rather than returning bare. Every path out of a
+                // dispatched job owes the stream a result: `CellStream` releases the
+                // in-flight slot when one arrives, so a silent return keys the cell
+                // as permanently in flight and it can never be requested again.
+                //
+                // Today that is harmless, because the only writer of `live_gen`
+                // (`setup_globe`) calls `tiles.reset()` a few lines earlier and reset
+                // clears `in_flight` wholesale. But that makes the correctness of
+                // this function depend on the statement order of another one, with
+                // nothing to say so — and `platform::stream` carries a regression
+                // test for exactly this failure mode on a different path. Pushing
+                // into the old sink is free (reset swapped in a fresh one, so it
+                // goes nowhere); pushing into a live one releases the slot.
+                if let Ok(mut g) = results.lock() {
+                    g.push((key, TileFetch::Cancelled));
+                }
                 return;
             }
             let still_wanted = wanted.lock().map(|w| w.contains(&key)).unwrap_or(true);
