@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod geo;
+pub mod moderation;
 pub mod motion;
 pub mod protocol;
 pub mod script_api;
@@ -13,12 +14,13 @@ pub use geo::{
     ecef_to_geodetic, geodetic_to_ecef, region_index, region_origin, regions_adjacent,
     TangentFrame, REGION_SIZE,
 };
+pub use moderation::Filter;
 pub use protocol::{
     decode_app_frame, decode_message, encode_app_frame, encode_message, message_kind,
     message_request_id, AuthCredential, AvatarStateDto, ChatScope, Emote, EmoteState, GeoAnchor,
     MessageKind, NetMessage, PrimDto, PrimGeometry, PrimSurface, ProtocolRevision, RegionDto,
-    ScriptLevel, TextureEntry, EMOTE_REPLICATE_SECS, MAX_ROOM_LEN, PROTOCOL_HISTORY,
-    PROTOCOL_VERSION,
+    ReportReason, ScriptLevel, TextureEntry, EMOTE_REPLICATE_SECS, MAX_REPORT_MESSAGE_LEN,
+    MAX_REPORT_NOTE_LEN, MAX_ROOM_LEN, PROTOCOL_HISTORY, PROTOCOL_VERSION,
 };
 pub use script_api::{api_in_group, ScriptFn, ScriptGroup, SCRIPT_API, SCRIPT_EVENTS};
 pub use world::{
