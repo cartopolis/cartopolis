@@ -6,7 +6,7 @@ triggers:
   - bumping Bevy, or reading `bevy_pbr::medium` / `ScatteringMedium`
   - considering vendoring or patching `bevy_pbr`
   - "why are there two skies"
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # The sky on a GPU that cannot run bevy's atmosphere
@@ -103,6 +103,38 @@ sky at all**, because it is a bisecting switch and one that quietly substituted 
 different sky would bisect nothing. `CARTO_SKY_DOME=1` is the other direction: it
 forces the fallback on hardware that could run the real thing, which is the only
 way to look at what the phone sees without holding the phone.
+
+## The absent component is a load-bearing fact about the rest of the scene
+
+Choosing the dome does not only change the sky. `free_camera::setup_camera`
+gates the camera's `AtmosphereSettings` on the same answer — because that
+component carries `#[require(Hdr)]` and the doubled main-texture bandwidth is
+most of what the fallback exists to avoid — so a `SkyMode::Dome` run is also a
+run where **that component is not on the camera at all**.
+
+On 2026-08-16 that deleted the planet on Android. `globe::update_globe_visibility`
+is the sole writer of the globe surface's `Visibility` and of the `HideInSpace`
+props, and it asked for `&mut AtmosphereSettings` in its camera query — it began
+life as the atmosphere-mode switch and grew the visibility writes later. With
+nothing matching, it returned before touching a single `Visibility`: the globe
+streamed all 228 of its tiles, built every mesh, and drew none of them. What the
+phone showed from orbit was the 150 km ground disc (a flat grey circle over the
+anchor, normally hidden in space by that same system) with the planet cloud shell
+floating above a world that was not there — read at the time as "no tiles, and
+the clouds look weird". `setup_camera` had a comment asserting the system "no-ops
+without it, which is what made dropping it a safe web workaround"; that was true
+when it was written and stopped being true without anything saying so.
+
+The general rule: **a component this gate withholds may be read by other systems,
+but never required by them.** `Option<&mut AtmosphereSettings>` in the query,
+with the atmosphere work in an `if let`. A required component is a silent
+whole-system opt-out, and it opts out exactly the tier nobody is looking at.
+
+The gate against a repeat is the phone-tier arm of the headless scene smoke
+(`.forgejo/workflows/ci.yml`), which asserts the same `globe_rendered>0` the
+desktop arm does under `CARTO_QUALITY=phone`. It is the same assertion twice on
+purpose: what is being checked is not a new property but that the checked one
+still holds on the unwatched tier.
 
 ## Verification status
 
