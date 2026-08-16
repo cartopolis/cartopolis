@@ -471,6 +471,14 @@ pub struct ShotMetrics {
     /// can be: the harness quiesces the worker pool between the two, so a reading
     /// taken at the shutter is 0 by construction and says nothing.
     pub worker_outstanding: usize,
+    /// Clipmap tiles left out of the draw list because finer, ready ones already
+    /// paint their whole footprint (`map_stream::occluded_by_finer`).
+    ///
+    /// `draws` already shows the *effect*; this shows the mechanism, which is what
+    /// you want when it stops working. The culling is silent by construction — a
+    /// bug that switched it off would cost fill and change no pixel, so nothing
+    /// else in this struct would move enough to notice.
+    pub tiles_occluded: usize,
     pub alt_m: i64,
     /// Space-tier crossfade, 0 (ground) → 1 (deep space). Every ramp rides this.
     pub space_factor: f32,
@@ -564,6 +572,7 @@ pub struct ShotMetrics {
 /// `busy` is `|`-joined rather than comma-joined for the obvious reason.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,\
 draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,\
+tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
@@ -596,7 +605,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -614,6 +623,7 @@ impl ShotMetrics {
             self.tris_tiles,
             self.tris_globe,
             self.worker_outstanding,
+            self.tiles_occluded,
             self.alt_m,
             self.space_factor,
             self.in_space,
@@ -1587,6 +1597,7 @@ pub fn drive_capture(
             tris_tiles: render.tris_tiles,
             tris_globe: render.tris_globe,
             worker_outstanding: progress.worker_outstanding,
+            tiles_occluded: stream.occluded.len(),
             alt_m: globe.altitude_m(cell, tf) as i64,
             space_factor: globe.space_factor(cell, tf),
             in_space: globe.in_space(cell, tf),
@@ -1639,6 +1650,7 @@ pub fn drive_capture(
                     ktris_total = m.tris_total / 1000,
                     ktris_shadow = m.tris_shadow / 1000,
                     worker_outstanding = m.worker_outstanding,
+                    tiles_occluded = m.tiles_occluded,
                     alt_m = m.alt_m,
                     space_factor = format!("{:.3}", m.space_factor),
                     in_space = m.in_space,
@@ -1917,6 +1929,7 @@ mod tests {
             tris_tiles: 0,
             tris_globe: 0,
             worker_outstanding: 0,
+            tiles_occluded: 0,
             alt_m: 1000,
             space_factor: 0.0,
             in_space: false,

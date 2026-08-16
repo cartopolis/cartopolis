@@ -1417,6 +1417,7 @@ fn run_client() {
                     .run_if(systems::data_layers::feature_toggles_changed)
                     .after(systems::osm_buildings::update_buildings)
                     .after(systems::map_stream::update_map_stream)
+                    .after(systems::map_stream::update_tile_occlusion)
                     .after(rendering::spawn_regions),
                 // …and the entities that streamed in *this* frame get the current
                 // state applied unconditionally, because the gate above is closed on
@@ -1526,6 +1527,12 @@ fn run_client() {
             (
                 systems::map_stream::apply_stream_textures
                     .after(systems::map_stream::update_map_stream),
+                // Which clipmap tiles are buried under finer ones, and can be left
+                // out of the draw list. After the textures land, so a tile that
+                // became ready this frame counts this frame; before the visibility
+                // sweep, which is the only thing allowed to act on it.
+                systems::map_stream::update_tile_occlusion
+                    .after(systems::map_stream::apply_stream_textures),
                 // Stand the basemap on the measured ground. After the spawn pass,
                 // so a tile that appeared this frame is lifted in the same frame
                 // it is placed rather than showing flat for one.
