@@ -582,14 +582,18 @@ pub fn render_dev_panel(
                 egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
             );
             if *sky == crate::systems::sky_dome::SkyMode::Dome {
-                ui.label(
-                    egui::RichText::new("↳ analytic sky dome (no FLOAT32_FILTERABLE)").small(),
-                )
-                .on_hover_text(
-                    "This GPU cannot sample bevy's atmosphere LUTs, so the sky is \
-                     drawn by systems::sky_dome instead. CARTO_SKY_DOME=1 forces \
-                     the same on any machine.",
-                );
+                // `»`, not the `↳` this used to draw: the bundled font has no
+                // U+21B3, so that arrow was a tofu box. It escaped
+                // `theme::no_painted_glyph_is_tofu` only because the label it sat
+                // in was long enough to be skipped as prose.
+                ui.label(egui::RichText::new("» analytic sky dome").small())
+                    .on_hover_text(
+                        "The sky is drawn by systems::sky_dome instead of bevy's \
+                         atmosphere — either this GPU cannot sample the atmosphere \
+                         LUTs (no FLOAT32_FILTERABLE) or the render budget spends \
+                         the frame elsewhere. The startup log names which. \
+                         CARTO_SKY_DOME=1 forces the same on any machine.",
+                    );
             }
             ui.separator();
             crate::systems::theme::checkbox(ui, &mut dev.show_stats, "Show stats overlay (FPS)");

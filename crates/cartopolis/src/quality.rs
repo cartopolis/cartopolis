@@ -563,6 +563,86 @@ pub fn is_phone() -> bool {
     budget().tier == Tier::Phone
 }
 
+/// Is this GPU far enough past the handset the phone tier was written for to keep
+/// bevy's real atmosphere?
+///
+/// [`Budget::sky_dome`] is the tier's answer to "should this machine spend a frame
+/// on the sky", and on Android the tier is not measured — [`auto`] answers
+/// `Budget::phone()` for every device there, because the budget has to be resolved
+/// before the renderer exists (`platform::workers` is sized from it, and the
+/// adapter is not known until Bevy has one). So "Android" stands in for "a
+/// Fairphone 4", and every phone inherits a 2021 mid-ranger's settings — which is
+/// the same substitution the tier exists to prevent, made one level up. It showed
+/// up as an Adreno 840 (OnePlus 15, 2026-08-17) rendering the analytic dome, and
+/// the log said `no atmosphere on this adapter` about an adapter that offers
+/// `FLOAT32_FILTERABLE` and could have drawn it.
+///
+/// This is the one part of that tier a run *can* re-measure, because the sky is
+/// decided in `free_camera::setup_camera` where the adapter is in hand. It is
+/// deliberately narrow: it unlocks the sky and nothing else. The rest of the phone
+/// budget — the halved render scale, the per-frame streaming divisors, the
+/// footprint radii — is about fill and main-thread work that a fast GPU does not
+/// excuse, and this device lost its Vulkan device to the startup upload burst
+/// while *already* on the phone tier.
+///
+/// The rule is the model number the driver reports, because that is the only thing
+/// about the device this process can see. Families are matched conservatively and
+/// **an unknown name keeps the tier's answer** — a wrong "yes" is a doubled
+/// framebuffer and a binning stall on a handset that cannot afford either, while a
+/// wrong "no" is a flatter sky:
+///
+/// - **Adreno ≥ 700.** The 7xx/8xx generations are the 2022-and-later flagship
+///   line. The 619 that started all of this is 6xx, and so is every part that
+///   shipped with it.
+/// - **Immortalis-anything.** Arm named its flagship rung rather than numbering
+///   it, so there is no threshold to compare.
+/// - **Mali-G ≥ 700.** G710 opened the current generation; G610 and below are the
+///   mid rungs, and the two-digit G7x parts are the *old* numbering (a G78 is not
+///   a G780).
+/// - **Xclipse ≥ 900.** Samsung's RDNA parts start at 920.
+///
+/// Only the Adreno arm has been seen on real hardware. The others are read off
+/// vendor numbering, not measured, and are the reason the default is "no".
+#[must_use]
+pub fn gpu_affords_atmosphere(adapter_name: &str) -> bool {
+    let name = adapter_name.to_ascii_lowercase();
+    if name.contains("immortalis") {
+        return true;
+    }
+    if let Some(model) = model_number(&name, "adreno") {
+        return model >= 700;
+    }
+    if let Some(model) = model_number(&name, "mali-g") {
+        return model >= 700;
+    }
+    if let Some(model) = model_number(&name, "xclipse") {
+        return model >= 900;
+    }
+    false
+}
+
+/// The first run of digits after `prefix`, if one starts within a few characters
+/// of it.
+///
+/// The bounded skip is the whole point: a driver writes `Adreno (TM) 840`, so the
+/// digits do not follow the family name directly, but an unbounded search would
+/// happily pick a number out of a driver-version suffix on some other vendor's
+/// string and call it a model.
+fn model_number(haystack: &str, prefix: &str) -> Option<u32> {
+    const MAX_GAP: usize = 8;
+    let rest = haystack.split_once(prefix)?.1;
+    let start = rest
+        .char_indices()
+        .take(MAX_GAP)
+        .find(|(_, c)| c.is_ascii_digit())?
+        .0;
+    let digits: String = rest[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
 fn detect(preferred: Option<&str>) -> Budget {
     // An explicit setting wins everywhere, which is the whole point of it: it is
     // how the phone budget gets exercised on a machine that can profile it.
@@ -647,6 +727,34 @@ mod tests {
         // …and the ones that are already small stop rather than reaching 0.
         assert_eq!(phone.radius(2), 1);
         assert_eq!(phone.radius(1), 1);
+    }
+
+    #[test]
+    fn a_flagship_gpu_keeps_the_atmosphere_and_a_mid_ranger_does_not() {
+        // The two devices this has actually run on. The 619's name is why the
+        // fallback exists at all; the 840's is why it needed an exception.
+        assert!(gpu_affords_atmosphere("Adreno (TM) 840"));
+        assert!(!gpu_affords_atmosphere("Adreno (TM) 619"));
+        // The parenthesised `(TM)` is the trap: the model does not follow the
+        // family name, and a naive parse reads the *last* digits of a truncated
+        // window instead (840 → 40, or worse, 84).
+        assert_eq!(model_number("adreno (tm) 840", "adreno"), Some(840));
+
+        assert!(gpu_affords_atmosphere("Mali-G715-Immortalis MC11"));
+        assert!(gpu_affords_atmosphere("Mali-G720"));
+        assert!(!gpu_affords_atmosphere("Mali-G610 MC6"));
+        // Two-digit Mali parts are the *old* numbering, not a small new one.
+        assert!(!gpu_affords_atmosphere("Mali-G78"));
+        assert!(gpu_affords_atmosphere("Samsung Xclipse 940"));
+
+        // An unknown name keeps the tier's answer, which is the conservative one:
+        // a wrong "yes" costs a handset a doubled framebuffer and a binning stall.
+        assert!(!gpu_affords_atmosphere("PowerVR Rogue GE8320"));
+        assert!(!gpu_affords_atmosphere(""));
+        // Nothing off-Android reaches this — those tiers never set `sky_dome` —
+        // but a desktop name must not accidentally answer yes either.
+        assert!(!gpu_affords_atmosphere("NVIDIA GeForce RTX 4070"));
+        assert!(!gpu_affords_atmosphere("llvmpipe (LLVM 15.0.7, 256 bits)"));
     }
 
     #[test]
