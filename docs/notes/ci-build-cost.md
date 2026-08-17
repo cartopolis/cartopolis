@@ -239,6 +239,43 @@ without touching anything that costs build time:
 Not reclaimable: the ~96 GB of docker volumes is mostly `geo_overpass_db` and
 nominatim's database. That is the map services' data, not cache.
 
+**It regrows, and the same three places refill it.** 2026-08-17, from 31 GB free
+on `/data` and 37 GB on `/`, ~13 GB came back:
+
+| reclaimed | what | how it was chosen |
+|-----------|------|-------------------|
+| 8.6 GB | `debug/incremental` in the agents' shared target dir | `find -maxdepth 1 -type d -mtime +2`, **not** a wholesale `rm -rf` — several agents were mid-build in that directory at the time, and a live session's dirs are the ones with a recent mtime |
+| 4.4 GB | six actcache blobs | job names and env hashes no current workflow can generate: `v0-rust-build-test-*` and `v0-rust-check-*` (both jobs deleted from `ci.yml`), and the `baf921c2` / `004b9e23` env generations |
+| ~0 GB | `viberfox-ci:latest`, the pre-rename CI image | unreferenced by all three repos on this instance — but nearly all of its 6.85 GB is layers shared with `cartopolis-ci:latest`, so untagging it freed almost nothing |
+
+Two things that look reclaimable and are not. `catthehacker/ubuntu:act-latest`
+(2.3 GB) is the default image for a job with no `container:`, which is every job
+in `jeroen/codebrew` — this repo's workflows all name `cartopolis-ci` and cartopy
+does too, so it is easy to conclude wrongly that nothing uses it. And the Android
+emulator's SDK under `/data/agent` (5.5 GB) is a standing fixture for testing
+Android behaviour, not a leftover; its cost is RAM, not disk.
+
+**Deleting an actcache blob leaves its row in `bolt.db`**, and there is no delete
+API to do the pair. A dangling row is a failed download that `actions/cache`
+reports as a warning rather than a failure — survivable, but it is a cold run
+nobody ordered, so restrict deletions to keys the current workflows cannot
+generate. Everything else ages out: entries unused for 30 days are GC'd, and
+since PR runs stopped saving (`save-if`) the store only grows on a key change.
+
+## What a third runner slot costs on disk
+
+Almost nothing, which is worth stating because it is the opposite of the memory
+answer. The slot itself is a goroutine. Each *concurrent job* gets a docker
+volume for `/workspace` holding the checkout and its own `target/` — measured
+645 MB, 1.5 GB and 2.2 GB across three jobs in flight on 2026-08-17, peaking
+around 5 GB for a test job that has restored its cache and compiled — and act
+removes the volume when the job ends. The container's own writable layer is
+~200 kB; the 5.39 GB it reports is the shared image.
+
+So disk is not what bounds the slot count. **Memory is**: ~2 GB per job at peak
+against a 23 GB box with no swap, where the emulator holds up to 12 and the agent
+containers 12 more.
+
 The job count exists for the same shared-host reason: one rustc per core per
 slot is 24 compilers on 8 cores, and the load average sat between 8.5 and 11.8
 during an ordinary run — 12.2 on 2026-08-16, with two public services *and* the
