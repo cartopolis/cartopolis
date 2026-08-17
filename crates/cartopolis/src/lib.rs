@@ -1722,8 +1722,7 @@ fn run_client() {
                 // *receive* half is not: frames are decoded into a ring by the
                 // network drain whatever this build can play, so a no-audio build
                 // still reports who is talking rather than pretending nobody is.
-                systems::voice::update_voice_playback
-                    .after(network::apply_network_snapshot),
+                systems::voice::update_voice_playback.after(network::apply_network_snapshot),
             ),
         );
     app
