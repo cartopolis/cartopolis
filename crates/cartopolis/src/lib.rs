@@ -591,7 +591,7 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 fn handle_render_error(
     error: &bevy::render::error_handler::RenderError,
     _main_world: &mut World,
-    _render_world: &mut World,
+    render_world: &mut World,
 ) -> bevy::render::error_handler::RenderErrorPolicy {
     use bevy::render::error_handler::{ErrorType, RenderErrorPolicy};
     use std::sync::atomic::Ordering;
@@ -606,6 +606,7 @@ fn handle_render_error(
                 attempt = spent + 1,
                 "render device lost — rebuilding the renderer"
             );
+            release_window_surfaces(render_world);
             return RenderErrorPolicy::Recover(bevy::render::settings::RenderCreation::Automatic(
                 default(),
             ));
@@ -624,6 +625,49 @@ fn handle_render_error(
         record_render_halt(error);
     }
     RenderErrorPolicy::StopRendering
+}
+
+/// Give the window back before asking for a second renderer, or the rebuild is a
+/// crash instead of a recovery.
+///
+/// `RenderErrorPolicy::Recover` builds a **whole new** wgpu instance, adapter and
+/// device, and the first thing it does with them is create a surface for the
+/// primary window — while the *old* surface is still sitting in the render world's
+/// `WindowSurfaces`, alive and still holding the window. On a desktop compositor
+/// two surfaces on one window is merely wasteful. On Android it is fatal and not
+/// ours to catch: `vkCreateAndroidSurfaceKHR` on an `ANativeWindow` that another
+/// surface has already `native_window_api_connect`-ed answers
+/// `ERROR_NATIVE_WINDOW_IN_USE_KHR`, and wgpu-hal's Android arm is a bare
+/// `.expect("AndroidSurface failed")` — so the recovery from a survivable device
+/// loss aborted the process (`vulkan/instance.rs:485`, wgpu-hal 29.0.4). The
+/// device-loss handling that exists to keep the app alive was killing it.
+///
+/// So the old surface is dropped here, before the handler returns and bevy blocks
+/// on `initialize_renderer`. Dropping it is what disconnects the window:
+/// wgpu-hal's `Surface::drop` destroys the `VkSurfaceKHR`, and libvulkan's
+/// `DestroySurfaceKHR` is where `native_window_api_disconnect` lives.
+///
+/// Two details are load-bearing. The swap-chain textures go **first**: a live
+/// `SurfaceTexture` holds the surface it came from, so leaving one in
+/// `ExtractedWindows` would keep the connection open past the drop below and lose
+/// nothing but the diagnosis. And `WindowSurfaces` is *replaced*, never removed —
+/// `extract_windows` takes it as a plain `ResMut` and runs on this very frame,
+/// immediately after this handler, so a missing resource is a panic one system
+/// later. A default value is the same teardown with the resource still there, and
+/// it clears `configured_windows` too, which is what makes `create_surfaces`
+/// rebuild against the new device.
+fn release_window_surfaces(render_world: &mut World) {
+    use bevy::render::view::{ExtractedWindows, WindowSurfaces};
+
+    if let Some(mut windows) = render_world.get_resource_mut::<ExtractedWindows>() {
+        for window in windows.windows.values_mut() {
+            window.swap_chain_texture_view = None;
+            window.swap_chain_texture = None;
+        }
+    }
+    if render_world.contains_resource::<WindowSurfaces>() {
+        render_world.insert_resource(WindowSurfaces::default());
+    }
 }
 
 /// Leave a halted renderer's explanation where the next launch will find it.
