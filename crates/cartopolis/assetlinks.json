@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "eu.garage44.cartopolis",
+      "sha256_cert_fingerprints": [
+        "07:C1:3A:EA:A5:4C:92:62:30:27:95:66:A9:51:85:38:ED:90:2C:ED:4B:B9:42:93:E3:5F:F3:C9:91:E5:C0:94"
+      ]
+    }
+  }
+]

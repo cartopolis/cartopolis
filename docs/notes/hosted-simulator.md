@@ -1,6 +1,6 @@
 ---
 topic: deployment
-triggers: [deploy-sim.yml, deploy-admin.yml, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin"]
+triggers: [deploy-sim.yml, deploy-admin.yml, deploy-web.yml, http.rs, ws_transport.rs, "web.cartopolis.org", "hosted sim", "public server", caddy, systemd, admin, accounts, "--http-listen", "--create-admin", "/go", well-known]
 updated: 2026-08-13
 ---
 
@@ -14,6 +14,14 @@ and each has a different audience:
 |---|---|---|
 | `wss://cartopolis.org/ws` | **every** client — desktop, Android, browser | the wire (ADR-008/009), one binary WS message per frame, TLS terminated by Caddy |
 | `https://web.cartopolis.org` | operators | the account admin GUI — [`jeroen/cartopy`](https://code.garage44.eu/jeroen/cartopy), a separate repo |
+
+Two more paths on `cartopolis.org` are Caddy routes rather than services, and both
+belong to place links ([place-links.md](place-links.md)): `/go` is rewritten to
+`index.html` so a shared link has something to open, and
+`/.well-known/assetlinks.json` is what an Android phone reads to decide the app
+may handle it. The second is published by `deploy-web.yml` out of the trunk dist —
+`rsync --delete` removes anything under the web root that the build did not
+produce, so a file placed there by hand survives exactly until the next deploy.
 
 **There is no plaintext port.** The simulator's TCP listener is bound to
 `127.0.0.1` and its HTTP listener to the docker0 gateway, so nothing it serves is

@@ -187,6 +187,61 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Links to a place (`systems::place_link`, docs/notes/place-links.md).
+                 Two filters and not one, because they are verified differently and
+                 fail differently.
+
+                 **The https one is an App Link.** `autoVerify` makes Android fetch
+                 https://cartopolis.org/.well-known/assetlinks.json at install time
+                 and check that it names this package *and this signing
+                 certificate*; only then does a tap open the app directly, with no
+                 disambiguation dialog. Two consequences worth knowing before
+                 debugging it: a locally built APK is signed with the per-machine
+                 debug keystore, so verification fails there by design and only the
+                 `cartopolis:` filter below works; and the check is done at install
+                 time, so publishing the JSON *after* installing the app does not
+                 retroactively fix a phone (`pm verify-app-links`, with its
+                 re-verify flag, does — spelled without the leading hyphens for
+                 the reason the version comment at the top of this file gives:
+                 a double hyphen is illegal *inside* an XML comment).
+
+                 **The path is `/go` and not `/`.** A filter matches scheme, host
+                 and path, and never the query — so `?place=` cannot be what
+                 selects the app. Claiming the whole host would send every
+                 cartopolis.org link here including `/apk/`, the page whose entire
+                 job is to hand you this APK in a browser.
+
+                 **The `cartopolis:` filter carries no `autoVerify` and no host
+                 constraint**, because a custom scheme is not verifiable: it is the
+                 fallback for a sideloaded build, and it is what the web page's
+                 "Open in the app" button navigates to. A second app registering
+                 the same scheme would get a chooser dialog, which is the worst
+                 case and is why nothing depends on it alone.
+
+                 BROWSABLE is what makes either reachable from a link at all, and
+                 DEFAULT is what makes an implicit intent match. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- `path`, an *exact* match, and not `pathPrefix="/go"` — which
+                     would claim `/gophers` — nor `/go/`, which would claim a URL
+                     the web client cannot serve: the page resolves Bevy's asset
+                     root relatively, so at `/go/anything` every `assets/…` fetch
+                     would go to `/go/assets/…` and 404. Caddy's site block matches
+                     exactly this one path (`@place path /go`, reproduced in
+                     docs/notes/place-links.md); the two have to agree, or a link
+                     opens the app on a phone and breaks in a browser. -->
+                <data android:scheme="https" android:host="cartopolis.org"
+                      android:path="/go" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cartopolis" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

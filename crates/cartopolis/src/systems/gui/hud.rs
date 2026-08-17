@@ -67,21 +67,12 @@ pub struct HudData {
     pub user: Option<String>,
 }
 
-/// Render a place the way the copy button copies it: "lat, lng, altm, pitch°, yaw°",
-/// with the view dropped when there is no camera to read it from.
-///
-/// One function because this string is a small interchange format — the search
-/// bar and the `?place=` launch URL both parse it back
-/// ([`crate::systems::geo_nav::parse_location`]) — and a format only round-trips
-/// if it has exactly one writer.
-pub fn format_place(lat: f64, lng: f64, alt: f64, look: Option<(f32, f32)>) -> String {
-    match look {
-        Some((pitch, yaw)) => {
-            format!("{lat:.5}, {lng:.5}, {alt:.0}m, {pitch:.1}°, {yaw:.1}°")
-        }
-        None => format!("{lat:.5}, {lng:.5}, {alt:.0}m"),
-    }
-}
+// `format_place` lived here — "53.21940, 6.56650, 120m, -12.5°, 45.0°", the
+// readable spelling the copy button used to write. It has no writer any more:
+// **☰ ▸ Copy link** copies a URL (`systems::place_link`), whose value is the same
+// five numbers without the decoration, and a format with no writer is a format
+// that drifts. `geo_nav::parse_location` still *reads* the readable form, because
+// people have that string in old chat messages and it is what a person types.
 
 /// What the user clicked in the overlay this frame.
 ///
@@ -1069,26 +1060,10 @@ mod tests {
         assert_eq!(format_scale(20_000.0), "20 km");
     }
 
-    /// The copy button's string is only useful if it parses back — this is the
-    /// contract between the ⧉ button, the search bar, and the `?place=` URL.
-    #[test]
-    fn copied_place_parses_back() {
-        use crate::systems::geo_nav::parse_location;
-
-        let text = format_place(53.2194, 6.5665, 120.0, Some((-12.5, 45.0)));
-        assert_eq!(text, "53.21940, 6.56650, 120m, -12.5°, 45.0°");
-        let fix = parse_location(&text).expect("copied place parses");
-        assert!((fix.lat - 53.2194).abs() < 1e-5 && (fix.lng - 6.5665).abs() < 1e-5);
-        assert_eq!(fix.altitude, Some(120.0));
-        assert_eq!(fix.look, Some((-12.5, 45.0)));
-
-        // Southern/western and view-less places too (negatives keep their sign;
-        // no camera means no look angles rather than zeroed ones).
-        let plain = format_place(-33.9249, -18.4241, 1500.0, None);
-        let fix = parse_location(&plain).expect("plain place parses");
-        assert!((fix.lat + 33.9249).abs() < 1e-5 && (fix.lng + 18.4241).abs() < 1e-5);
-        assert_eq!(fix.look, None);
-    }
+    // `copied_place_parses_back` lived here, over `format_place`. Both moved:
+    // the copy button writes a link now, so the round trip it has to survive is
+    // `place_link::web_link` → `place_link::place_from_link`, and the test that
+    // pins it lives beside them.
 
     /// With the globe camera north-up over a part of the planet far from the
     /// anchor, the compass must read 0 — the lock holds that view, so anything
