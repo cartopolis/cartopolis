@@ -38,78 +38,17 @@ pub struct MainMenu {
 /// *available* width would grow the card a little every frame.
 const MENU_WIDTH: f32 = 232.0;
 
-/// Back / Forward / Home — the location history, as three named entries in the
-/// app menu. One function, because it was three glyph buttons in the address bar
-/// as well until that card was retired, and a phone folding them into a menu must
-/// not become a second history.
-///
-/// Returns whether one of them fired, so the caller can close itself.
-fn history_ui(
-    ui: &mut egui::Ui,
-    nav: &mut crate::systems::geo_nav::GeoNavState,
-    home: Option<&crate::systems::user_store::SavedLocation>,
-) -> bool {
-    let mut acted = false;
-    // Icon *and* word, both: these live in a menu, where a row of unlabelled
-    // glyphs would be a puzzle. The glyphs themselves are no longer a gamble —
-    // they come from the bundled subset (`systems::icons`), where every one of
-    // them exists by construction.
-    let label = |glyph: &str, word: &str| format!("{glyph}  {word}");
-    if ui
-        .add_enabled(
-            nav.can_go_back(),
-            egui::Button::new(label(icons::BACK, "Back")),
-        )
-        .on_hover_text("Back to the previous location")
-        .on_disabled_hover_text("No previous location")
-        .clicked()
-    {
-        nav.go_back();
-        acted = true;
-    }
-    if ui
-        .add_enabled(
-            nav.can_go_forward(),
-            egui::Button::new(label(icons::FORWARD, "Forward")),
-        )
-        .on_hover_text("Forward to the next location")
-        .on_disabled_hover_text("No next location")
-        .clicked()
-    {
-        nav.go_forward();
-        acted = true;
-    }
-    // Home, browser-style: jump to the user's saved Home location (Set Home,
-    // below). Disabled until a Home has been saved.
-    if ui
-        .add_enabled(
-            home.is_some(),
-            egui::Button::new(label(icons::HOME, "Home")),
-        )
-        .on_hover_text("Go to your Home location")
-        .on_disabled_hover_text("No Home set — use Set Home below")
-        .clicked()
-    {
-        if let Some(h) = home {
-            nav.pending_teleport = Some(crate::systems::geo_nav::Teleport {
-                lat: h.lat,
-                lng: h.lng,
-                altitude: Some(h.altitude),
-                pose: Some(h.pose.clone()),
-            });
-            acted = true;
-        }
-    }
-    acted
-}
-
 /// The app menu's account entry (`systems::session`), bundled into one parameter
 /// because [`render_main_menu`] would otherwise sit at Bevy's 16-parameter
 /// ceiling — the same reason `network::AuthWriteback` exists.
+///
+/// `session` is a `ResMut` because **Log out happens here**, not on the sign-in
+/// card: it is one entry with one outcome, and routing it through a modal that
+/// then has to be dismissed is three taps for a verb that needs one.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SignInMenu<'w> {
     screen: ResMut<'w, crate::systems::login_screen::LoginScreen>,
-    session: Res<'w, crate::systems::session::SessionState>,
+    session: ResMut<'w, crate::systems::session::SessionState>,
     identity: Res<'w, crate::resources::AuthIdentity>,
 }
 
@@ -140,47 +79,27 @@ pub fn render_main_menu(
     mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
     mut status: ResMut<crate::systems::hud::StatusHud>,
-    mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
     mut camera_state: ResMut<crate::resources::CameraState>,
     mut app_exit: MessageWriter<AppExit>,
     globe: Res<crate::systems::globe::GlobeState>,
-    camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     // Follow mode needs an avatar to follow (logged-in viewer only).
     avatars: Query<(), With<crate::components::Avatar>>,
-    map_anchor: Res<crate::resources::MapAnchor>,
     mut sign_in: SignInMenu,
-    // Written here, read and cleared by `diagnostics::share_diagnostics` — this
-    // system is at Bevy's sixteen-parameter ceiling and the report needs six
-    // sources of its own.
+    // Written here, read and cleared by `diagnostics::share_diagnostics`.
     mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
-    // (set-home, copy) "✔" flash timers. These two actions leave the menu open —
-    // they are the only entries whose whole result is invisible — so they are the
-    // only ones that need to say they happened.
-    mut flash_at: Local<(Option<Instant>, Option<Instant>)>,
 ) {
     let dismissed_by_disc = std::mem::take(&mut menu.toggled);
     if !menu.open {
         return;
     }
 
-    // Where the camera is on Earth, for Set Home and Copy location.
-    let cam = camera.single().ok();
-    let geo = cam
-        .zip(map_anchor.geo)
-        .map(|((cell, tf), anchor)| crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf));
-    let altitude = cam.map(|(cell, tf)| globe.altitude_m(cell, tf));
-    let place = geo.zip(altitude);
-
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let max_height = (egui.viewport_pts().y - bottom - 24.0).max(120.0);
     let ctx = egui.ctx_mut().clone();
     let mut close = false;
-    let mut set_home = false;
-    let mut copy = false;
-    let home_set = flash_at.0.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
-    let copied = flash_at.1.is_some_and(|t| t.elapsed().as_secs_f32() < 1.5);
+    let mut log_out = false;
 
     let area = egui::Area::new(egui::Id::new("main_menu"))
         .order(egui::Order::Foreground)
@@ -226,43 +145,61 @@ pub fn render_main_menu(
                         // Justified, the way egui lays a menu out: every entry
                         // takes the card's full width, so the hit targets line up
                         // and a two-word label does not make a button half the
-                        // size of its neighbour.
+                        // size of its neighbour. The entries themselves are
+                        // `theme::menu_entry` — a line of a list, not a plate;
+                        // see that helper for what a card of full-width buttons
+                        // looked like.
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                            // Where you have been, and how you are looking at it.
-                            if history_ui(ui, &mut nav, store.data.home.as_ref()) {
+                            // **The account is the first entry**, because it is the
+                            // one thing in this card that changes what the app *is*
+                            // rather than what it shows — and because signed out,
+                            // it is the only thing here anybody is looking for.
+                            //
+                            // Signed in it is a single verb. It used to read
+                            // "jeroen · cartopolis.org" and open the sign-in card
+                            // again, where a Sign out button sat beside a Sign in
+                            // one: a modal, to leave.
+                            if sign_in.session.is_online() {
+                                let who = match sign_in.identity.username.as_deref() {
+                                    Some(user) => {
+                                        format!(
+                                            "Signed in as {user} · {}",
+                                            sign_in.session.mode.where_()
+                                        )
+                                    }
+                                    None => {
+                                        format!("Signed in to {}", sign_in.session.mode.where_())
+                                    }
+                                };
+                                if theme::menu_entry(ui, icons::LOGOUT, "Log out")
+                                    .on_hover_text(who)
+                                    .clicked()
+                                {
+                                    log_out = true;
+                                    close = true;
+                                }
+                            } else if theme::menu_entry(ui, icons::KEY, "Sign in…")
+                                .on_hover_text(
+                                    "Share a world with other people on a simulator you can reach",
+                                )
+                                .clicked()
+                            {
+                                sign_in.screen.open = true;
                                 close = true;
                             }
-                            camera_picker_ui(ui, &mut camera_state, !avatars.is_empty(), &globe);
                             ui.separator();
 
-                            // The two location actions. They were in the status HUD,
-                            // which is a *readout* — and is hidden by default now, so
-                            // the only two verbs it carried had to move somewhere a
-                            // reader would find them.
-                            ui.add_enabled_ui(place.is_some(), |ui| {
-                                let home_icon = if home_set { icons::CHECK } else { icons::HOME };
-                                if ui
-                                    .button(format!("{home_icon}  Set Home here"))
-                                    .on_hover_text(
-                                        "Home (above) returns to this spot and this view",
-                                    )
-                                    .clicked()
-                                {
-                                    set_home = true;
-                                }
-                                let copy_icon = if copied { icons::CHECK } else { icons::COPY };
-                                if ui
-                                    .button(format!("{copy_icon}  Copy link"))
-                                    .on_hover_text(
-                                        "Copy a link to this place — position and view. It \
-                                     opens the app on a phone that has it, the web client \
-                                     everywhere else, and pastes into Search here.",
-                                    )
-                                    .clicked()
-                                {
-                                    copy = true;
-                                }
-                            });
+                            // How you are looking at the world. Where you have
+                            // *been* left with the history buttons, for the Search
+                            // panel — Back, Forward and Home are navigation, and
+                            // navigation belongs with the field you navigate from
+                            // (`geo_nav::search_ui`).
+                            close |= camera_picker_ui(
+                                ui,
+                                &mut camera_state,
+                                !avatars.is_empty(),
+                                &globe,
+                            );
                             ui.separator();
 
                             // Panels you *visit* rather than flip: Appearance is a
@@ -280,37 +217,17 @@ pub fn render_main_menu(
                             ] {
                                 // Same glyph the panel's own header wears, so the menu
                                 // entry and the badge it opens are recognisably one thing.
-                                let icon = panel.icon();
-                                if ui
-                                    .selectable_label(
-                                        right_panel.is(panel),
-                                        format!("{icon}  {}", panel.label()),
-                                    )
-                                    .clicked()
+                                if theme::menu_entry_selected(
+                                    ui,
+                                    right_panel.is(panel),
+                                    panel.icon(),
+                                    panel.label(),
+                                )
+                                .clicked()
                                 {
                                     right_panel.toggle(panel);
                                     close = true;
                                 }
-                            }
-                            ui.separator();
-                            // Which world you are in, next to the tools that inspect it.
-                            // It reads as a *place* rather than a verb when there is a
-                            // session, because "sign in" when you already are is the
-                            // wrong question.
-                            let key = icons::KEY;
-                            let account = if sign_in.session.is_online() {
-                                match sign_in.identity.username.as_deref() {
-                                    Some(user) => {
-                                        format!("{key}  {user} · {}", sign_in.session.mode.where_())
-                                    }
-                                    None => format!("{key}  Session"),
-                                }
-                            } else {
-                                format!("{key}  Sign in…")
-                            };
-                            if ui.button(account).clicked() {
-                                sign_in.screen.open = true;
-                                close = true;
                             }
                             ui.separator();
                             // The two things that switch an *instrument* on over
@@ -319,28 +236,34 @@ pub fn render_main_menu(
                             // at the foot of the compass column, where being a
                             // different size was the only thing saying it was a
                             // different kind of control — see `hud`'s module note.
-                            let status_label = if status.open {
-                                "Hide status readout"
-                            } else {
-                                "Status readout"
-                            };
-                            if ui
-                                .button(status_label)
-                                .on_hover_text(
-                                    "Time, position, altitude, and the sun and weather \
-                                     switchers, over the top-right of the map",
-                                )
-                                .clicked()
+                            //
+                            // They carry the accent when they are on rather than
+                            // renaming themselves to "Hide …": a toggle that is
+                            // lit says the same thing in a word less, and it is
+                            // the state the panel entries above already show.
+                            if theme::menu_entry_selected(
+                                ui,
+                                status.open,
+                                icons::ABOUT,
+                                "Status readout",
+                            )
+                            .on_hover_text(
+                                "Time, position, altitude, and the sun and weather \
+                                 switchers, over the top-right of the map",
+                            )
+                            .clicked()
                             {
                                 status.open = !status.open;
                                 close = true;
                             }
-                            let dev_label = if dev_state.open {
-                                "Hide developer tools"
-                            } else {
-                                "Developer tools"
-                            };
-                            if ui.button(dev_label).clicked() {
+                            if theme::menu_entry_selected(
+                                ui,
+                                dev_state.open,
+                                icons::TUNE,
+                                "Developer tools",
+                            )
+                            .clicked()
+                            {
                                 dev_state.open = !dev_state.open;
                                 close = true;
                             }
@@ -351,8 +274,7 @@ pub fn render_main_menu(
                             // It is the only way anything a device knows about
                             // itself gets off that device short of a crash
                             // (`systems::diagnostics`).
-                            if ui
-                                .button("Share diagnostics…")
+                            if theme::menu_entry(ui, icons::COPY, "Share diagnostics…")
                                 .on_hover_text(
                                     "The build, the GPU, the render tier and what the \
                                      avatar is doing, plus this run's log — to the share \
@@ -366,7 +288,7 @@ pub fn render_main_menu(
                                 theme::note(ui, result);
                             }
                             ui.separator();
-                            if ui.button("Exit").clicked() {
+                            if theme::menu_entry(ui, icons::CLEAR, "Exit").clicked() {
                                 app_exit.write(AppExit::Success);
                                 close = true;
                             }
@@ -375,39 +297,8 @@ pub fn render_main_menu(
             });
         });
 
-    if set_home {
-        if let Some(((lat, lng), alt)) = place {
-            // Capture the current view so Home returns to it exactly.
-            store.set_home(
-                lat,
-                lng,
-                alt,
-                crate::systems::geo_nav::CameraPose::capture(&camera_state),
-            );
-            flash_at.0 = Some(Instant::now());
-        }
-    }
-    if copy {
-        if let Some(((lat, lng), alt)) = place {
-            // Copy the view, not just the spot: the look angles come off the live
-            // camera transform (as the dev panel's preset copy does), so they are
-            // right in any camera mode, and following the link back reproduces this
-            // exact framing.
-            //
-            // A *link* rather than the bare coordinate string it used to be, because
-            // the string was only ever useful to someone who already knew to paste it
-            // into this app's search bar — everyone else got five numbers. The link
-            // carries the same five (`place_link::place_param`) and Search still
-            // accepts them either way, so nothing that worked stopped working.
-            let look = cam.map(|(_, tf)| {
-                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
-                (pitch.to_degrees(), yaw.to_degrees())
-            });
-            crate::utils::clipboard::set_text(&crate::systems::place_link::web_link(
-                lat, lng, alt, look,
-            ));
-            flash_at.1 = Some(Instant::now());
-        }
+    if log_out {
+        crate::systems::session::sign_out(&mut sign_in.session, &mut store);
     }
     // Dismiss on a click that landed outside the card — but never on the one that
     // opened it, which is a click outside the card by definition (see
@@ -429,81 +320,98 @@ pub fn render_main_menu(
 }
 
 /// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View whole
-/// Earth"), drawn as a submenu of the main menu. The mode is also Tab-cyclable.
+/// Earth"), drawn **inline** in the main menu. The mode is also Tab-cyclable.
 /// Follow needs an avatar (logged-in viewer only).
+///
+/// It was a `menu_button` carrying the current mode, which cost two things. It
+/// was the last plate left in a card of list rows — `ui.menu_button` *is* a
+/// `Button`, so there is no styling of it that is not a box. And a submenu opens
+/// a second popup beside a card that is already anchored to the bottom edge of a
+/// phone, for a choice between three things that fit in three rows.
+///
+/// Returns whether a mode was picked, so the card can close: changing the camera
+/// is a change to the map, and staying open would hide what you just asked to see.
 pub fn camera_picker_ui(
     ui: &mut egui::Ui,
     camera_state: &mut crate::resources::CameraState,
     has_avatar: bool,
     globe: &crate::systems::globe::GlobeState,
-) {
+) -> bool {
     use crate::resources::CameraMode;
-    // One icon per mode rather than one crosshair for all three: the button is
-    // the only place the current mode is written down, so the picture should say
+    // One icon per mode rather than one crosshair for all three: the row is the
+    // only place the current mode is written down, so the picture should say
     // which it is without reading the word.
-    let label = match camera_state.mode {
-        CameraMode::Avatar => format!("{}  Follow", icons::CAM_FOLLOW),
-        CameraMode::Free => format!("{}  Fly", icons::CAM_FLY),
-        CameraMode::Orbit => format!("{}  Earth", icons::CAM_EARTH),
-    };
-    ui.menu_button(label, |ui| {
-        let mut pick: Option<CameraMode> = None;
-        for (mode, icon, name) in [
+    let mut pick: Option<CameraMode> = None;
+    // **One row, not three.** The three modes are a switcher — the same shape as
+    // the status readout's Auto/Day/Night — and a card anchored to the bottom of a
+    // phone cannot spend three of its ten visible rows on them (it did, and Exit
+    // went below the fold). `theme::chip` is the switcher segment, and unlike a
+    // menu row it is *meant* to be a plate: it shows the position it is in.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (mode, icon, name, hint) in [
             (
                 CameraMode::Avatar,
                 icons::CAM_FOLLOW,
-                "Follow (third-person)",
+                "Follow",
+                "Third-person, behind the avatar",
             ),
-            (CameraMode::Free, icons::CAM_FLY, "Fly (free camera)"),
+            (
+                CameraMode::Free,
+                icons::CAM_FLY,
+                "Fly",
+                "Free camera — fly anywhere",
+            ),
             (
                 CameraMode::Orbit,
                 icons::CAM_EARTH,
-                "Earth (orbit the globe)",
+                "Earth",
+                "Orbit the globe",
             ),
         ] {
             let enabled = has_avatar || mode != CameraMode::Avatar;
             let mut clicked = false;
             ui.add_enabled_ui(enabled, |ui| {
-                clicked = ui
-                    .selectable_label(camera_state.mode == mode, format!("{icon}  {name}"))
-                    .clicked();
+                clicked = theme::chip(
+                    ui,
+                    &format!("{icon} {name}"),
+                    camera_state.mode == mode && enabled,
+                )
+                .on_hover_text(hint)
+                .on_disabled_hover_text("Needs an avatar to follow")
+                .clicked();
             });
             if clicked {
                 pick = Some(mode);
             }
         }
-        // One-click jump to an orbit that frames the whole planet.
-        let mut whole_earth = false;
-        if globe.ready {
-            ui.separator();
-            if ui.button("View whole Earth").clicked() {
-                whole_earth = true;
-            }
-        }
-        if let Some(mode) = pick {
-            // Same entry behaviour as the Tab cycle (restore/seed per mode).
-            crate::systems::free_camera::enter_mode(camera_state, mode);
-            camera_state.mode = mode;
-            ui.close();
-        }
-        if whole_earth {
-            use bevy::math::DVec3;
-            let cs = &mut *camera_state;
-            cs.mode = CameraMode::Orbit;
-            cs.orbit_initialized = true;
-            cs.orbit_has_pose = true;
-            cs.orbit_space = true;
-            cs.orbit_focus = DVec3::ZERO;
-            cs.orbit_distance = globe.radius as f64 * 3.0;
-            cs.orbit_distance_target = cs.orbit_distance;
-            // Over the anchor, slightly north-east; heading 0 so the view arrives
-            // north-up (free_camera derives the up vector from the planet's north
-            // axis and this heading).
-            cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
-            cs.orbit_heading = 0.0;
-            ui.close();
-        }
     });
+    // One-click jump to an orbit that frames the whole planet.
+    let whole_earth =
+        globe.ready && theme::menu_entry(ui, icons::CAM_EARTH, "View whole Earth").clicked();
+
+    if let Some(mode) = pick {
+        // Same entry behaviour as the Tab cycle (restore/seed per mode).
+        crate::systems::free_camera::enter_mode(camera_state, mode);
+        camera_state.mode = mode;
+    }
+    if whole_earth {
+        use bevy::math::DVec3;
+        let cs = &mut *camera_state;
+        cs.mode = CameraMode::Orbit;
+        cs.orbit_initialized = true;
+        cs.orbit_has_pose = true;
+        cs.orbit_space = true;
+        cs.orbit_focus = DVec3::ZERO;
+        cs.orbit_distance = globe.radius as f64 * 3.0;
+        cs.orbit_distance_target = cs.orbit_distance;
+        // Over the anchor, slightly north-east; heading 0 so the view arrives
+        // north-up (free_camera derives the up vector from the planet's north
+        // axis and this heading).
+        cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
+        cs.orbit_heading = 0.0;
+    }
+    pick.is_some() || whole_earth
 }
 
 /// Toggle the AI panel with Ctrl+Shift+A.

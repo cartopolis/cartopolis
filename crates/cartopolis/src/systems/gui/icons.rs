@@ -106,6 +106,13 @@ icons! {
     ABOUT = "\u{e88e}", "info";
 
     // ─── Ordinary actions ────────────────────────────────────────────────────
+    /// The app menu — the dock disc that opens it.
+    ///
+    /// A hamburger, not the app mark. The mark is the brand, and a logo where
+    /// every neighbour is a picture of what it does reads as decoration rather
+    /// than as the fifth button in the row: nothing about it says "there is a
+    /// menu behind this".
+    MENU = "\u{e5d2}", "menu";
     /// History back.
     BACK = "\u{e5c4}", "arrow_back";
     /// History forward.
@@ -116,8 +123,10 @@ icons! {
     CHECK = "\u{e668}", "check";
     /// Copy to the clipboard.
     COPY = "\u{e14d}", "content_copy";
-    /// A session key / token.
+    /// A session key / token — and signing in with one.
     KEY = "\u{e73c}", "key";
+    /// Leave the world and go back to the offline map.
+    LOGOUT = "\u{e9ba}", "logout";
     /// Take a photo, or a screenshot slot.
     CAMERA = "\u{e412}", "photo_camera";
     /// Delete, and the litter bin as a piece of street furniture.

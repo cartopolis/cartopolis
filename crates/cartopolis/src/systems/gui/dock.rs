@@ -15,12 +15,14 @@
 //!
 //! **The row reads outwards from the map.** Search sits at the left end because
 //! it is where a session starts, the panels you navigate between are in the
-//! middle, and the app mark closes the row on the right — one disc that is the
-//! logo, and the way into everything that is not a place: the history, the camera
-//! mode, Set Home, Copy location, Settings, sign-in. That mark used to sit in the
-//! opposite corner as an address-bar card that unfolded a search field, which put
-//! the two most-used controls in the app (search, menu) at the end of a diagonal
-//! from the thumb of anyone holding a phone.
+//! middle, and the menu closes the row on the right — the way into everything
+//! that is not a place: sign-in, the camera mode, Settings, the tools. It was the
+//! app *mark* until the menu grew a hamburger; the history and the two location
+//! actions it also used to reach are in the Search panel now, beside the field
+//! they navigate from. Both of those discs used to sit in the opposite corner as
+//! an address-bar card that unfolded a search field, which put the two most-used
+//! controls in the app at the end of a diagonal from the thumb of anyone holding
+//! a phone.
 //!
 //! **Layers is the one panel that did not come along.** It is the map's own
 //! settings rather than a destination, and it belongs beside the compass and the
@@ -180,9 +182,16 @@ pub fn render_dock(
                             clicked = Some(*panel);
                         }
                     }
-                    // The mark closes the row: the app's own icon, and the way
-                    // into everything that is not a place.
-                    if theme::mark_button(ui, "Menu", menu.open).clicked() {
+                    // The menu closes the row: everything that is not a place.
+                    //
+                    // A hamburger, not the app mark. The mark is the brand, and a
+                    // logo sitting in a row of pictures-of-what-they-do reads as
+                    // decoration — nothing about it said there was a menu behind
+                    // it, which is a problem for the one disc that is the only
+                    // route to Settings, sign-in and Exit.
+                    if theme::round_button(ui, crate::systems::icons::MENU, "Menu", menu.open)
+                        .clicked()
+                    {
                         menu_clicked = true;
                     }
                 });

@@ -4,11 +4,20 @@
 //! simulator is an extension of offline mode, not a different application — the
 //! map streams, the camera flies and the avatar walks with no sim at all — so a
 //! screen that held the world back until you chose would be a loading screen
-//! pretending to be a login. Opening it over the live map instead means "Explore
-//! offline" costs nothing (you are already there), and signing in is something
+//! pretending to be a login. Opening it over the live map instead means staying
+//! offline costs nothing (you are already there), and signing in is something
 //! that happens *to* the world you are looking at rather than before it exists.
 //!
-//! It is reached from the app menu beside Developer tools, not shown on launch:
+//! **It is a form, not a picker.** It used to open on three rows — Explore
+//! offline / Solo simulator / Connect to a server — which asked a first-time user
+//! to choose between three architectures before they had seen anything, and two
+//! of the three answers were "carry on as you are". Offline is now simply where
+//! everybody starts (`SessionPrefs::default`) and is reached by not signing in or
+//! by logging out; solo is a developer path with no button (see `SessionKind`).
+//! What is left is one question — which server, as whom — and the card is that
+//! question.
+//!
+//! It is reached from the top of the app menu, not shown on launch:
 //! the remembered session (`UserStore::data.session`) enters itself, and being
 //! asked to log in every time you open a map is the thing this design most wanted
 //! to avoid. It opens by itself for exactly one reason — a session that failed or
@@ -35,14 +44,13 @@ use crate::resources::AuthIdentity;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::network;
 use crate::systems::session::{
-    can_simulate, can_solo, SessionKind, SessionMode, SessionPrefs, SessionRequest, SessionState,
-    SessionStatus,
+    can_simulate, SessionKind, SessionPrefs, SessionRequest, SessionState, SessionStatus,
 };
 use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
 /// Card width in points, *before* clamping. Wide enough for `user@host:port` on
-/// one line, narrow enough that the mode rows read as a list rather than a table.
+/// one line, narrow enough to read as a form rather than as a dialog box.
 const CARD_W: f32 = 440.0;
 
 /// Margin kept clear around the card, per side.
@@ -62,8 +70,8 @@ const CARD_PAD_Y: i8 = 18;
 /// **A modal that does not fit cannot be panned to.** This `Window` is
 /// `movable(false)`, `resizable(false)` and centre-anchored, so 440 pt of card
 /// plus 44 pt of margins in a 274 pt phone viewport is not "a bit cramped": the
-/// right-hand ~200 pt — including the Sign out button and part of the primary
-/// action — is off the screen with no gesture that can reach it.
+/// right-hand ~200 pt — including part of the primary action — is off the screen
+/// with no gesture that can reach it.
 ///
 /// Floored well below usable for the same reason the address bar's is: on a
 /// viewport narrower than the floor the card is clipped either way, and a
@@ -91,13 +99,16 @@ pub struct LoginScreen {
     /// 0 → 1 while opening. Drives both the backdrop alpha and the card's rise, so
     /// they cannot get out of step.
     anim: f32,
-    kind: SessionKind,
     server: String,
     username: String,
     password: String,
-    /// Keep this server's session token, so it stops asking for the password.
+    /// Keep this server's session token, so it stops asking for the password —
+    /// and, since a remembered session is exactly one that can be entered without
+    /// asking, the same tick is what `SessionPrefs::auto_enter` gets. They were
+    /// two checkboxes ("Remember me on this device" / "Enter this way next time")
+    /// and the combination that made them different — remember the token but ask
+    /// anyway, or auto-enter with no token, which fails — is not one anybody wants.
     remember: bool,
-    auto_enter: bool,
     /// The error already shown. Compared against `SessionState::error` so a *new*
     /// failure opens the screen and an old one does not re-open it every frame.
     error_shown: Option<String>,
@@ -110,12 +121,10 @@ impl Default for LoginScreen {
         Self {
             open: false,
             anim: 0.0,
-            kind: SessionKind::default(),
             server: String::new(),
             username: String::new(),
             password: String::new(),
             remember: true,
-            auto_enter: true,
             error_shown: None,
             awaiting: false,
         }
@@ -138,69 +147,52 @@ impl LoginScreen {
     /// the first frame).
     pub fn from_prefs(prefs: &SessionPrefs) -> Self {
         Self {
-            kind: prefs.kind,
             server: prefs.server.clone(),
             username: prefs.username.clone(),
-            auto_enter: prefs.auto_enter,
+            // A remembered *server* session is the only one that was signed in
+            // to, so it is the only one whose tick means anything here.
+            remember: prefs.kind != SessionKind::Remote || prefs.auto_enter,
             ..Self::default()
         }
     }
 
+    /// What to write back to `user.json` on a successful submit. Always
+    /// [`SessionKind::Remote`] — this card asks one question now, and the answer
+    /// to it is a server.
     fn prefs(&self) -> SessionPrefs {
         SessionPrefs {
-            kind: self.kind,
+            kind: SessionKind::Remote,
             server: self.server.clone(),
             username: self.username.clone(),
-            auto_enter: self.auto_enter,
+            auto_enter: self.remember,
         }
     }
 
     /// What the form currently asks for, or `None` when it is not answerable yet
-    /// (an empty server or user, a mode this build cannot run). Returning `None`
-    /// rather than surfacing a validation error is deliberate: the primary button
-    /// simply does nothing, which is what an empty required field means.
+    /// (an empty server or user). Returning `None` rather than surfacing a
+    /// validation error is deliberate: the primary button simply does nothing,
+    /// which is what an empty required field means.
     ///
     /// **Takes the password**, leaving the field empty: it goes to the network
     /// thread inside an `AuthCredential` and nothing else on this screen — or in
     /// `user.json` — ever wants it again.
     fn build_request(&mut self) -> Option<SessionRequest> {
-        match self.kind {
-            SessionKind::Offline => Some(SessionRequest::Offline),
-            SessionKind::Solo => can_solo().then_some(SessionRequest::Solo { credential: None }),
-            SessionKind::Remote => {
-                let server = normalize_server(&self.server);
-                let username = self.username.trim().to_string();
-                if server.is_empty() || username.is_empty() || !can_simulate() {
-                    return None;
-                }
-                self.server = server.clone();
-                self.username = username.clone();
-                Some(SessionRequest::Remote {
-                    server,
-                    credential: AuthCredential::Password {
-                        username,
-                        password: std::mem::take(&mut self.password),
-                    },
-                    persist_token: self.remember,
-                })
-            }
+        let server = normalize_server(&self.server);
+        let username = self.username.trim().to_string();
+        if server.is_empty() || username.is_empty() || !can_simulate() {
+            return None;
         }
+        self.server = server.clone();
+        self.username = username.clone();
+        Some(SessionRequest::Remote {
+            server,
+            credential: AuthCredential::Password {
+                username,
+                password: std::mem::take(&mut self.password),
+            },
+            persist_token: self.remember,
+        })
     }
-}
-
-/// The modes this build can actually offer, in the order they are shown.
-///
-/// Offline is always here (it is the absence of a sim, so nothing can take it
-/// away); Solo needs the `solo` feature compiled in; Remote is shown even where
-/// it cannot run, disabled, because "not in this build" is real information
-/// about a feature that exists — see the call site.
-fn offered_kinds() -> Vec<SessionKind> {
-    let mut kinds = vec![SessionKind::Offline];
-    if can_solo() {
-        kinds.push(SessionKind::Solo);
-    }
-    kinds.push(SessionKind::Remote);
-    kinds
 }
 
 /// Complete what the person typed into something [`network::resolve_target`] can
@@ -307,18 +299,6 @@ pub fn render_login_screen(
         egui.set_modal(false);
         screen.anim = 0.0;
         return;
-    }
-    // Opening on the mode you are actually in: the card is a switch, and a switch
-    // that shows the wrong position is a lie. Only on the opening frame, or the
-    // rows would fight the user's clicks.
-    if screen.anim == 0.0 && session.mode != SessionMode::Offline {
-        screen.kind = session.mode.kind();
-    }
-    // A remembered mode this build cannot run has no row to show it on, and its
-    // primary button silently does nothing (`build_request` answers `None`).
-    // Offline is the honest fallback — it is what the client is already doing.
-    if screen.kind == SessionKind::Solo && !can_solo() {
-        screen.kind = SessionKind::Offline;
     }
     let dt = time.delta_secs();
     screen.anim = (screen.anim + dt / FADE_S).min(1.0);
@@ -451,12 +431,7 @@ pub fn render_login_screen(
     submit |= enter && !session.status.is_busy();
 
     if sign_out {
-        if let SessionMode::Remote { server } = session.mode.clone() {
-            store.clear_session_token(&server);
-        }
-        screen.kind = SessionKind::Offline;
-        store.set_session_prefs(screen.prefs());
-        session.request(SessionRequest::Offline);
+        crate::systems::session::sign_out(&mut session, &mut store);
         screen.awaiting = true;
         return;
     }
@@ -505,20 +480,34 @@ fn card_ui(
         let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
         theme::paint_mark(ui.painter(), rect.center(), 22.0, 1.0);
         ui.add_space(4.0);
-        ui.vertical(|ui| {
-            ui.add_space(2.0);
-            theme::wordmark_ui(ui, 26.0);
-            ui.label(
-                egui::RichText::new("Choose how you enter the world")
-                    .size(theme::SIZE_SUB)
-                    .color(theme::TEXT_DIM),
-            );
-        });
+        // **The ✕ takes its corner first.** Laid out after the text it was one
+        // more widget in a left-to-right row, so on a phone the wordmark simply
+        // ran under the cross — `wordmark_ui` paints at the size it is given and
+        // no width constraint shrinks it. Right-to-left here means the close
+        // button is placed against the right edge and the text column gets what
+        // is actually left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             // No way out while a connection is in flight — closing the card would
             // hide the only place the outcome is reported.
             ui.add_enabled_ui(!session.status.is_busy(), |ui| {
                 close |= theme::close_button(ui).clicked();
+            });
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.add_space(2.0);
+                // The brand steps down on a narrow card rather than wrapping:
+                // "cartopolis" is one word and half of it on a second line is not
+                // a wordmark.
+                let brand = if ui.available_width() < 150.0 {
+                    21.0
+                } else {
+                    26.0
+                };
+                theme::wordmark_ui(ui, brand);
+                ui.label(
+                    egui::RichText::new("Sign in to share a world with other people")
+                        .size(theme::SIZE_SUB)
+                        .color(theme::TEXT_DIM),
+                );
             });
         });
     });
@@ -527,65 +516,37 @@ fn card_ui(
     status_line(ui, session, identity);
     ui.add_space(10.0);
 
-    // ── Mode rows ────────────────────────────────────────────────────────────
-    //
-    // A mode this build cannot run is **omitted**, not greyed out. The two are
-    // not the same question: `can_simulate()` is false only on the web, where
-    // "Connect to a server" is a real feature waiting on a transport and saying
-    // so is useful — while `can_solo()` is false whenever the `solo` feature is
-    // off, which is the Android and web builds, where an in-process simulator is
-    // not coming and a permanently dead row is just a smaller card for nothing.
-    // It also matters on the one viewport where the card barely fits.
-    for kind in offered_kinds() {
-        let enabled = kind != SessionKind::Remote || can_simulate();
-        if mode_row(ui, screen.kind == kind, kind, enabled).clicked() && enabled {
-            screen.kind = kind;
-        }
-        ui.add_space(6.0);
-    }
-
-    if screen.kind == SessionKind::Remote {
-        ui.add_space(2.0);
-        field(ui, "Server", |ui| {
-            crate::systems::text_touch::field(
-                ui,
-                egui::TextEdit::singleline(&mut screen.server)
-                    // A bare hostname, because that is now what works and what
-                    // the docs hand out. A hint carrying `:4747` taught the one
-                    // shape that cannot reach a TLS sim.
-                    .hint_text("cartopolis.org")
-                    .desired_width(f32::INFINITY),
-            );
-        });
-        field(ui, "User", |ui| {
-            crate::systems::text_touch::field(
-                ui,
-                egui::TextEdit::singleline(&mut screen.username)
-                    .hint_text("your account name")
-                    .desired_width(f32::INFINITY),
-            );
-        });
-        field(ui, "Password", |ui| {
-            theme::password_field(ui, &mut screen.password);
-        });
-        ui.add_space(2.0);
-        theme::checkbox(ui, &mut screen.remember, "Remember me on this device")
-            .on_hover_text("Keep the session token this server issues, so it stops asking");
-    }
-
-    ui.add_space(10.0);
-    theme::checkbox(ui, &mut screen.auto_enter, "Enter this way next time")
-        .on_hover_text("Skip this screen on the next launch");
+    // ── The one question ─────────────────────────────────────────────────────
+    field(ui, "Server", |ui| {
+        crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(&mut screen.server)
+                // A bare hostname, because that is now what works and what
+                // the docs hand out. A hint carrying `:4747` taught the one
+                // shape that cannot reach a TLS sim.
+                .hint_text("cartopolis.org")
+                .desired_width(f32::INFINITY),
+        );
+    });
+    field(ui, "User", |ui| {
+        crate::systems::text_touch::field(
+            ui,
+            egui::TextEdit::singleline(&mut screen.username)
+                .hint_text("your account name")
+                .desired_width(f32::INFINITY),
+        );
+    });
+    field(ui, "Password", |ui| {
+        theme::password_field(ui, &mut screen.password);
+    });
+    ui.add_space(6.0);
+    theme::checkbox(ui, &mut screen.remember, "Stay signed in on this device")
+        .on_hover_text("Keep the session token this server issues, so it stops asking — and come back to this world on the next launch");
     ui.add_space(12.0);
 
     // ── Actions ──────────────────────────────────────────────────────────────
     let busy = session.status.is_busy();
     ui.horizontal(|ui| {
-        let label = match screen.kind {
-            SessionKind::Offline => "Explore offline",
-            SessionKind::Solo => "Start my world",
-            SessionKind::Remote => "Sign in",
-        };
         let width = if session.is_online() {
             ui.available_width() - 108.0
         } else {
@@ -595,12 +556,16 @@ fn card_ui(
             // `theme::primary_button_sized`, not a hand-built filled `Button`:
             // this card and the Route panel's "▶ Driver mode" were the same rank
             // and did not look alike, which is what that helper exists to end.
-            *submit |= theme::primary_button_sized(ui, label, width).clicked();
+            *submit |= theme::primary_button_sized(ui, "Sign in", width).clicked();
         });
+        // The menu's Log out is the ordinary way out (it is one tap, and this
+        // card is not where you go to leave). This stays for the case that opens
+        // the card while a session is up: a failure on a *live* session, where
+        // the choice on screen has to include not retrying.
         if session.is_online() {
             ui.add_enabled_ui(!busy, |ui| {
                 *sign_out |= ui
-                    .add(egui::Button::new("Sign out").min_size(egui::vec2(100.0, 34.0)))
+                    .add(egui::Button::new("Log out").min_size(egui::vec2(100.0, 34.0)))
                     .on_hover_text("Leave this world and go back to the offline map")
                     .clicked();
             });
@@ -655,71 +620,6 @@ fn status_line(ui: &mut egui::Ui, session: &SessionState, identity: &AuthIdentit
                 .color(theme::TEXT),
         );
     });
-}
-
-/// One selectable mode: an accent bar, a title and a line of what it gets you.
-///
-/// Painted rather than assembled from `SelectableLabel`, which is a single line of
-/// text and gives no room for the blurb — and the blurb is the point, since the
-/// difference between these three is not a preference but three different worlds.
-fn mode_row(ui: &mut egui::Ui, selected: bool, kind: SessionKind, enabled: bool) -> egui::Response {
-    const H: f32 = 52.0;
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), H),
-        if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    let hovered = enabled && resp.hovered();
-    let (fill, stroke) = match (selected, hovered) {
-        (true, _) => (theme::SURFACE_HOVER, theme::ACCENT),
-        (false, true) => (theme::SURFACE_RAISED, theme::LINE),
-        (false, false) => (theme::SURFACE_RAISED, theme::OVERLAY_LINE),
-    };
-    let p = ui.painter();
-    p.rect(
-        rect,
-        egui::CornerRadius::same(8),
-        fill,
-        egui::Stroke::new(1.0, stroke),
-        egui::StrokeKind::Inside,
-    );
-    if selected {
-        // The accent bar, inset so it reads as part of the row's own edge.
-        let bar = egui::Rect::from_min_size(
-            rect.left_top() + egui::vec2(1.0, 8.0),
-            egui::vec2(3.0, H - 16.0),
-        );
-        p.rect_filled(bar, egui::CornerRadius::same(2), theme::ACCENT);
-    }
-    let (title, blurb) = if enabled {
-        (theme::CREAM, theme::TEXT_DIM)
-    } else {
-        (theme::TEXT_DIM, theme::TEXT_DIM)
-    };
-    let x = rect.left() + 16.0;
-    p.text(
-        egui::pos2(x, rect.top() + 13.0),
-        egui::Align2::LEFT_CENTER,
-        kind.label(),
-        egui::FontId::proportional(theme::SIZE_BODY),
-        title,
-    );
-    let blurb_text = if enabled {
-        kind.blurb().to_string()
-    } else {
-        "Not available in this build".to_string()
-    };
-    p.text(
-        egui::pos2(x, rect.top() + 34.0),
-        egui::Align2::LEFT_CENTER,
-        blurb_text,
-        egui::FontId::proportional(theme::SIZE_CHIP),
-        blurb,
-    );
-    resp
 }
 
 /// A labelled row in the remote-server form. The label column is fixed so the
@@ -838,27 +738,55 @@ mod tests {
         assert!(card_width(0.0) > 0.0);
     }
 
-    /// Offline is always offered — it is the absence of a simulator, so nothing
-    /// can take it away — and Solo is offered only where it can actually run.
-    #[test]
-    fn only_runnable_modes_are_offered() {
-        let kinds = offered_kinds();
-        assert_eq!(kinds.first(), Some(&SessionKind::Offline));
-        assert!(kinds.contains(&SessionKind::Remote));
-        assert_eq!(kinds.contains(&SessionKind::Solo), can_solo());
-    }
-
     /// The screen is seeded from `user.json` and writes the same shape back, so a
-    /// round trip must not lose a field.
+    /// round trip must not lose a field. `auto_enter` rides the one remaining
+    /// tick, so a remembered session comes back ticked and comes out remembered.
     #[test]
     fn prefs_round_trip_through_the_screen() {
         let prefs = SessionPrefs {
             kind: SessionKind::Remote,
             server: "sim.example.org:4747".into(),
             username: "alice".into(),
-            auto_enter: false,
+            auto_enter: true,
         };
         assert_eq!(LoginScreen::from_prefs(&prefs).prefs(), prefs);
+
+        // Signed in once without staying signed in: the tick comes back clear.
+        let once = SessionPrefs {
+            auto_enter: false,
+            ..prefs.clone()
+        };
+        assert_eq!(LoginScreen::from_prefs(&once).prefs(), once);
+    }
+
+    /// A fresh install starts offline and is never asked about it — the card is
+    /// only ever opened by asking for it, or by a session that failed.
+    #[test]
+    fn a_fresh_install_starts_offline() {
+        assert_eq!(SessionPrefs::default().kind, SessionKind::Offline);
+        assert!(SessionPrefs::default().auto_enter);
+    }
+
+    /// The card submits a *server* session or nothing at all: there is no mode to
+    /// pick any more, so an empty field is the only thing that can refuse.
+    #[test]
+    fn the_card_only_ever_asks_for_a_server() {
+        let mut screen = LoginScreen::default();
+        assert!(screen.build_request().is_none(), "nothing typed yet");
+        screen.server = "cartopolis.org".into();
+        assert!(screen.build_request().is_none(), "no account name");
+        screen.username = "  alice ".into();
+        screen.password = "hunter2".into();
+        let request = screen.build_request().expect("a complete form");
+        assert!(matches!(
+            request,
+            SessionRequest::Remote { ref server, .. } if server == "cartopolis.org"
+        ));
+        assert!(
+            screen.password.is_empty(),
+            "the password goes with the request and is not kept"
+        );
+        assert_eq!(screen.username, "alice", "the trimmed name is kept");
     }
 
     /// The card has to end up in the band the keyboard leaves — this is the one

@@ -920,25 +920,12 @@ pub fn round_button(
     resp.on_hover_text(tooltip)
 }
 
-/// The dock's main-menu disc: [the mark](paint_mark) at [`round_button`]'s size,
-/// so the app's own icon is a button in the same family as the panels beside it.
-///
-/// The mark carries its own accent ring, so the hover and open states are painted
-/// *over* it rather than as a second disc behind it — a button-shaped plate under
-/// a logo that is already a plate reads as two marks stacked.
-pub fn mark_button(ui: &mut egui::Ui, tooltip: &str, selected: bool) -> egui::Response {
-    let size = egui::Vec2::splat(ROUND_BUTTON_SIZE);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let radius = ROUND_BUTTON_SIZE * 0.5 - 1.0;
-    paint_mark(ui.painter(), rect.center(), radius, 1.0);
-    if selected || resp.hovered() {
-        let ring = if selected { CREAM } else { ACCENT_BRIGHT };
-        ui.painter()
-            .circle_stroke(rect.center(), radius - 1.0, Stroke::new(2.0, ring));
-    }
-    paint_focus_ring(ui, &resp, rect, true);
-    resp.on_hover_text(tooltip)
-}
+// The dock's menu disc used to be `mark_button` — [the mark](paint_mark) at
+// [`round_button`]'s size, so the app's own logo was the button that opened the
+// menu. It is an ordinary `round_button` carrying `icons::MENU` now: in a row
+// where every other disc is a picture of what it does, the brand was the one
+// that said nothing about its own contents. `paint_mark` keeps its other two
+// callers (the boot splash and the sign-in card), which is where a logo belongs.
 
 // ─── The map's floating controls ──────────────────────────────────────────────
 //
@@ -1138,6 +1125,118 @@ pub fn action_enabled(
         ui.add_enabled(enabled, egui::Button::new(label))
     })
     .inner
+}
+
+/// The width of a menu entry's icon column. Fixed, so the words line up down the
+/// card whatever the glyphs are — a row of labels each starting where its own
+/// icon happened to end is the thing that makes a list read as a pile.
+const MENU_ICON_COL: f32 = 26.0;
+
+/// One line of the app menu: an icon, a word, and **no box**.
+///
+/// The menu was a stack of `ui.button`s in a justified layout, which egui draws
+/// as full-width plates — a dozen of them, each looking like the primary action
+/// of a dialog, with the four `selectable_label` entries between them drawing
+/// nothing at all. So half the card looked like a form of buttons and half like
+/// a list, and neither half said which entries were *on*.
+///
+/// A menu row is not a button: it is a line of a list you point at. It carries
+/// its highlight on hover and its state in the accent, and that is the whole
+/// visual vocabulary — the same one [`close_button`] uses for a frameless
+/// control, one rung quieter than [`chip`].
+///
+/// Painted rather than assembled from `SelectableLabel` for the reason
+/// [`round_button`] is painted: the icon column has to be a *column*, and a
+/// label containing a glyph and two spaces is not one.
+pub fn menu_entry(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    menu_entry_full(ui, icon, label, false, true)
+}
+
+/// [`menu_entry`] for a row that shows whether the thing it opens is open — the
+/// panels, whose discs in the dock carry the same "this is the live one" accent.
+pub fn menu_entry_selected(
+    ui: &mut egui::Ui,
+    selected: bool,
+    icon: &str,
+    label: &str,
+) -> egui::Response {
+    menu_entry_full(ui, icon, label, selected, true)
+}
+
+/// [`menu_entry`] for a row that is conditionally live — Home with no Home set,
+/// Back at the start of the history.
+pub fn menu_entry_enabled(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    icon: &str,
+    label: &str,
+) -> egui::Response {
+    menu_entry_full(ui, icon, label, false, enabled)
+}
+
+fn menu_entry_full(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    // Full width whatever the layout: these live inside a fixed-width card, and a
+    // row that sized to its own text would put the hover highlight on the words
+    // rather than on the line.
+    let height = row_height().max(ui.spacing().interact_size.y);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let hovered = enabled && resp.hovered();
+    let ink = match (enabled, selected, hovered) {
+        (false, _, _) => TEXT_DIM.gamma_multiply(0.6),
+        (_, true, _) => ACCENT_TEXT,
+        (_, false, true) => CREAM,
+        _ => TEXT,
+    };
+    let p = ui.painter();
+    if hovered || resp.is_pointer_button_down_on() {
+        let fill = if resp.is_pointer_button_down_on() {
+            ACCENT_MUTED
+        } else {
+            SURFACE_HOVER
+        };
+        p.rect_filled(rect, CornerRadius::same(RADIUS_SM), fill);
+    }
+    if selected {
+        // The same inset accent bar the sign-in card's rows wear: it is what says
+        // "this one" without a box round it.
+        let bar = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(1.0, 5.0),
+            egui::vec2(3.0, height - 10.0),
+        );
+        p.rect_filled(bar, CornerRadius::same(2), ACCENT);
+    }
+    let x = rect.left() + 8.0;
+    if !icon.is_empty() {
+        p.text(
+            egui::pos2(x + MENU_ICON_COL * 0.5, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(SIZE_VALUE),
+            ink,
+        );
+    }
+    p.text(
+        egui::pos2(x + MENU_ICON_COL + 4.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(SIZE_BODY),
+        ink,
+    );
+    paint_focus_ring(ui, &resp, rect, false);
+    resp
 }
 
 /// One segment of a switcher — `Auto`/`Day`/`Night`, `Auto`/`Manual`, the

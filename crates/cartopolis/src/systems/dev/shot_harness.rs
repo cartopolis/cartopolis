@@ -1014,6 +1014,16 @@ pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::E
     render_output.force_next_write = true;
 }
 
+/// The two floating cards a `--ui` list can raise, bundled into one parameter:
+/// [`open_scripted_ui`] is at Bevy's sixteen-parameter ceiling, and these two are
+/// the same kind of thing — chrome that opens over the map rather than a panel in
+/// the right-hand slot.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ScriptedCards<'w> {
+    menu: ResMut<'w, crate::systems::ui::MainMenu>,
+    sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+}
+
 /// Open the UI panels named by `--ui` so a scripted capture can document them —
 /// the dev lighting/weather controls, the layers list, the bookmarks or AI
 /// panels — not just the always-on HUD and menu bar. These panels are normally
@@ -1037,7 +1047,7 @@ pub fn open_scripted_ui(
     mut driver: ResMut<crate::systems::driver::DriverState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut status: ResMut<crate::systems::hud::StatusHud>,
-    mut menu: ResMut<crate::systems::ui::MainMenu>,
+    mut cards: ScriptedCards,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     egui: Res<crate::systems::egui_manager::EguiManager>,
     mut done: Local<Option<usize>>,
@@ -1056,11 +1066,16 @@ pub fn open_scripted_ui(
     // The status readout is off by default now (`hud::StatusHud`), so a capture
     // that wants to document it has to ask — `--ui hud`.
     status.open = want("hud");
+    // `--ui signin` opens the sign-in card. It is a modal over everything else,
+    // so it is written before the panels below rather than beside them — and it
+    // is here for the reason `--ui menu` is: a card nothing can screenshot is a
+    // card nobody reviews, and this one is a form that only opens by hand.
+    cards.sign_in.open = want("signin");
     // `--ui menu` opens the app mark's card. It is the one piece of chrome a
     // scripted run could not reach at all, and it is where the entries that left
     // the map now live — Set Home, Copy location and the status readout's own
     // switch. A control nothing can screenshot is a control nobody reviews.
-    menu.open = want("menu");
+    cards.menu.open = want("menu");
     ai.open = want("ai");
     avatar.open = want("avatar");
     layers.panel_open = want("layers");
@@ -1149,6 +1164,7 @@ pub fn open_scripted_ui(
         "route",
         "driver",
         "search",
+        "signin",
         "all",
     ];
     for u in &panels {
