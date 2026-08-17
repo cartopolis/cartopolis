@@ -120,7 +120,7 @@ Client env vars (also read from `.env`):
 | `CARTO_OVERPASS_URL` / `CARTO_NOMINATIM_URL` | Point at your own geo services ([server guide](server.md)) |
 | `CARTO_CACHE_DIR` | Tile/asset cache root (defaults to the workspace root) |
 | `CARTO_USER` / `CARTO_PASSWORD` | Handshake credentials; `--login` and a login file take precedence |
-| `CARTO_PLACE` | Start at `lat,lng,alt,pitch,yaw`, or at a whole `https://cartopolis.org/go?place=…` link — what **☰ ▸ Copy link** writes ([place links](../notes/place-links.md)) |
+| `CARTO_PLACE` | Start at `lat,lng,alt,pitch,yaw`, or at a whole `https://cartopolis.org/go?place=…` link — what **🔍 Search ▸ Copy link** writes ([place links](../notes/place-links.md)) |
 | `CARTO_NO_ATMOSPHERE\|_HAZE\|_ENVMAP\|_OCEAN\|_CLOUDS\|_RAIN\|_SHADOWS\|_SPACE` | Bisect a render problem by removing one layer |
 | `ANTHROPIC_KEY` | AI assistant panel — copy `.env.example` to `.env` |
 

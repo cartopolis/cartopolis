@@ -26,31 +26,28 @@ developer tools. For build/run instructions and system requirements, see the
 cargo run -p cartopolis
 ```
 
-This launches the client in **solo mode**: an in-process sim starts on loopback and
-the client connects to it. Your world is authoritative in that sim and persisted to
-`data/world.db`. To join a live world instead, point it at a running sim server:
+This launches the client **offline**: the streamed map, a local avatar, and no
+simulator — single user, no account, nothing persisted server-side. That is where
+everybody starts, and for looking at the world it is all you need.
+
+To share a world with other people, sign in to a simulator — **☰ ▸ Sign in…**
+opens the card over the live map at any moment. It asks for a server (a bare
+hostname, e.g. `cartopolis.org`; the client adds `wss://` and reaches it over
+TLS), a username and a password. **Stay signed in on this device** keeps the
+session token that server issues, so it stops asking, and comes back to the same
+world on the next launch. Once you are in, **☰ ▸ Log out** is the way back to the
+offline map, with the world still under you.
+
+The same thing can be asked for at launch, for that run only:
 
 ```bash
-cargo run -p cartopolis -- --connect <host:port>
+cargo run -p cartopolis -- --connect <host>
+cargo run -p cartopolis -- --offline     # never enters a session (also what --shot uses)
 ```
 
-Or run with no sim at all — single user, no auth, no persistence (also what `--shot`
-uses):
-
-```bash
-cargo run -p cartopolis -- --offline
-```
-
-None of that is fixed for the run: **☰ ▸ Sign in…** opens the sign-in screen over
-the live map at any moment, and the three choices there are the same three modes.
-Explore offline costs nothing (you are already in it), *Solo simulator* starts the
-local sim and logs you in, and *Connect to a server* takes a `host:port` — a bare
-host gets the standard port `4747` — with a username and password. "Remember me"
-keeps the session token that server issues, so it stops asking; "Enter this way
-next time" skips the screen on the next launch, which is why a fresh install goes
-straight into solo mode without ever showing it. Signing out returns you to the
-offline map with the world still under you. A launch flag overrides all of it for
-that run only.
+There is also a **solo** mode — an in-process sim on loopback, your own world
+persisted to `data/world.db` — which has no button because it is a developer
+path; `--login <file>` with no server enters it.
 
 The world opens at street level, standing on a patch of OpenStreetMap-backed
 ground with imported 3D buildings around you — or where you left off, since the
@@ -101,13 +98,13 @@ and the view transitions from the street, up through a physically-based
 atmosphere, out to a full planetary globe and the black of space — no loading
 screens or separate scenes, thanks to the floating-origin coordinate model.
 
-The camera menu also has a **🌍 View Whole Earth** shortcut once the globe is
-ready, which jumps to an orbit that frames the entire planet.
+The app menu also has a **View whole Earth** entry once the globe is ready, which jumps to an orbit that frames the entire planet.
 
 ### Going somewhere specific
 
-Click the app mark in the top-left corner (or press **Ctrl + L**) to open the
-address bar, then search for a place by name. Each suggestion says what kind of
+Open the **🔍 Search** panel from the dock (or press **Ctrl + L**) and search for
+a place by name. **Back**, **Forward** and **Home** are the row above the field,
+browser-style. Each suggestion says what kind of
 place it is and how far away it is — which is how you tell the Amsterdam down the
 road from the one in Missouri. The world is anchored in real geography, so moving
 the anchor re-streams the ground tiles, buildings, and data layers for wherever
@@ -184,7 +181,8 @@ speed, remaining distance and ETA all come off that.
 
 ### Sharing a place
 
-**☰ ▸ Copy link** copies where you are *and* how you are looking at it, as a link:
+**🔍 Search ▸ Copy link**, at the foot of the panel, copies where you are *and*
+how you are looking at it, as a link:
 
 ```
 https://cartopolis.org/go?place=53.21940,6.56650,120m,-12.5,45.0

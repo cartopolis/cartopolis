@@ -40,10 +40,10 @@ Where the platforms differ, one API hides it (`platform/`).
 cargo run -p cartopolis
 ```
 
-Starts in **solo mode**: an in-process sim runs on loopback and the client connects over the same authenticated path an external server uses. Your world is persisted to `data/world.db`.
+Starts **offline**: the streamed map and a local avatar, no simulator and no account. Sign in to a server from ☰ ▸ Sign in… to share a world with other people.
 
 ```bash
-cargo run -p cartopolis -- --connect <host:port>   # split mode: connect to a live sim
+cargo run -p cartopolis -- --connect <host>        # split mode: connect to a live sim (TLS)
 cargo run -p cartopolis -- --offline               # no sim: single user, no auth or persistence
 cargo run -p cartopolis_simulator                  # the sim server, standalone
 ```

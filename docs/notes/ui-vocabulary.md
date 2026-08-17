@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [theme.rs, dismiss.rs, "design system", palette, contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target"]
-updated: 2026-08-14
+updated: 2026-08-17
 ---
 
 # The UI vocabulary, and the four things that keep breaking it
@@ -147,6 +147,18 @@ decides.** So "a text field had focus when the frame began" is a rung the ladder
 *declines* to act on. Without it, one press blurs the search box and closes the
 panel the box lives in.
 
+## A menu row is not a button
+
+`theme::menu_entry` is the app menu's row: full width, an icon column, a hover
+highlight, the accent when what it opens is open — and no frame. It exists
+because the menu was `ui.button` in a `top_down_justified` layout, which egui
+draws as a full-width plate; a dozen of those read as a form of primary actions
+rather than as a list, and the entries that *were* `selectable_label` drew nothing
+at all, so one card carried two vocabularies and neither said which entries were
+lit. The rank ladder now reads: `primary_button` (one per surface) → `action_button`
+→ `chip` (a switcher segment, which is a plate on purpose) → `menu_entry` → plain
+label.
+
 ## Where the vocabulary is thin
 
 Recorded so the next person does not re-derive it:
@@ -154,8 +166,8 @@ Recorded so the next person does not re-derive it:
 - **There is no toast, snackbar or undo anywhere**, and a toast is the wrong
   shape here — a floating `Area` paints over panels (see `map-chrome.md`), the
   bottom edge belongs to the dock and, on a phone, to the on-screen keyboard.
-  The idiom that works is a 1.5 s glyph swap on the control itself (`ui.rs`'s
-  Set Home / Copy location) for a synchronous act whose result is off-screen, and
+  The idiom that works is a 1.5 s glyph swap on the control itself (the Search
+  panel's Set Home / Copy link) for a synchronous act whose result is off-screen, and
   a status line inside the owning panel for anything that can fail or take time.
   Destructive actions arm in place (`theme::confirm_button`) for the same reason.
 - **The `Layers` panel's order is declaration order, not a decision** — the

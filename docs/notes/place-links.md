@@ -107,7 +107,7 @@ knowing before someone spends an afternoon deciding the JNI call is broken.
 ## What a link carries, and what it does not
 
 Latitude, longitude, altitude, camera pitch and yaw — `place_link::place_param`,
-which is what the ☰ menu's **Copy link** writes and what `geo_nav::parse_location`
+which is what the Search panel's **Copy link** writes and what `geo_nav::parse_location`
 reads. No spaces and no degree signs, so the URL needs no percent-encoding and
 survives a chat client that ends a link at the first space; `place_from_link` still
 accepts the readable `53.21940, 6.56650, 120m, -12.5°, 45.0°` spelling, either
