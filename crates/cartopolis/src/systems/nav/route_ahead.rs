@@ -143,17 +143,20 @@ pub enum AheadKind {
 }
 
 impl AheadKind {
-    /// Preferred glyphs, most wanted first, in the same probe-and-fall-back form
-    /// `routing::Maneuver::icon_candidates` uses — egui ships a thin emoji subset
-    /// and a missing glyph paints an empty box.
-    pub fn icon_candidates(self) -> &'static [&'static str] {
+    /// The badge's icon, out of the bundled subset ([`crate::systems::icons`]).
+    ///
+    /// This was a probe-and-fall-back list of emoji, because the glyph came from
+    /// whatever font stack egui had and half of these had no glyph in it. With
+    /// the icon font shipped there is one answer per kind.
+    pub fn icon(self) -> &'static str {
+        use crate::systems::icons;
         match self {
-            Self::Fuel => &["⛽", "F"],
-            Self::Charging => &["⚡", "E"],
-            Self::Parking => &["🅿", "P"],
-            Self::RestArea => &["☕", "R"],
-            Self::Saved => &["★", "*"],
-            Self::Destination => &["🏁", "⚑", "X"],
+            Self::Fuel => icons::FUEL,
+            Self::Charging => icons::CHARGING,
+            Self::Parking => icons::PARKING,
+            Self::RestArea => icons::DRINK,
+            Self::Saved => icons::BOOKMARK,
+            Self::Destination => icons::FINISH,
         }
     }
 

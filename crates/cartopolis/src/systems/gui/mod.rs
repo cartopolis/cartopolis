@@ -8,6 +8,7 @@ pub mod dismiss;
 pub mod dock;
 pub mod egui_manager;
 pub mod hud;
+pub mod icons;
 pub mod login_screen;
 pub mod map_osd;
 pub mod onscreen_keyboard;

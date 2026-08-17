@@ -10,6 +10,7 @@ use cartopolis_core::{ChatScope, NetMessage, ReportReason};
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::theme;
 
 /// Per-channel scrollback cap on the client.
@@ -207,7 +208,7 @@ pub fn render_chat_panel(
     crate::systems::egui_manager::responsive_right_panel("chat_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut chat_open, |ui| {
             let panel = RightPanel::Chat;
-            close_history = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+            close_history = crate::systems::theme::panel_header(ui, panel.icon(), panel.label());
             ui.horizontal_wrapped(|ui| {
                 for (i, (_key, label)) in tabs.iter().enumerate() {
                     ui.selectable_value(&mut active, i, label);
@@ -504,14 +505,11 @@ fn voice_row(ui: &mut egui::Ui, voice: &mut crate::systems::voice::VoiceState) {
         let talk = ui.add_sized(
             egui::vec2(ui.available_width(), 34.0),
             egui::Button::new(if voice.transmitting {
-                // U+25CF is in none of the bundled fonts — the same trap the
-                // Settings mic button hit, where it painted a tofu box on the
-                // one control the panel is about. `first_drawable` ends in
-                // something Latin-1 so there is always an answer.
-                format!(
-                    "{}  Talking",
-                    theme::first_drawable(ui.ctx(), &["◉", "◎", "*"])
-                )
+                // A microphone, which is what this control is about. It was `◉`
+                // out of a `first_drawable` ladder because U+25CF is in none of
+                // the fonts egui ships — the same trap the Settings mic button
+                // hit — and the bundled icon subset settles it (`systems::icons`).
+                format!("{}  Talking", icons::MIC)
             } else {
                 "Hold to talk  (V)".to_string()
             }),

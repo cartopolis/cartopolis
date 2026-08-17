@@ -51,6 +51,7 @@ use crate::platform::storage;
 use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::osm_buildings::{lat_lng_to_local, overpass_query, MeshData};
 use crate::systems::pois::{extract_pois, tag_str, Feature};
 use crate::systems::theme;
@@ -1398,10 +1399,7 @@ pub fn render_poi_popup(
                             if ui
                                 .add_enabled(
                                     can_open,
-                                    egui::Button::new(format!(
-                                        "Website {}",
-                                        theme::first_drawable(ui.ctx(), &["↗", "»"])
-                                    )),
+                                    egui::Button::new(format!("Website {}", icons::OPEN_EXTERNAL)),
                                 )
                                 .on_disabled_hover_text(NO_BROWSER)
                                 .clicked()
@@ -2148,7 +2146,7 @@ pub fn render_data_layers_panel(
         // footer button because the footer is inside the scroll area, i.e. past
         // the ~900 pt of rows that a blanked map gives you no reason to scroll
         // through.
-        close = crate::systems::theme::panel_header_with(ui, panel.icons(), panel.label(), |ui| {
+        close = crate::systems::theme::panel_header_with(ui, panel.icon(), panel.label(), |ui| {
             if crate::systems::theme::action_button(ui, "Reset")
                 .on_hover_text("Switch every layer back to how it ships")
                 .clicked()
@@ -2179,9 +2177,14 @@ pub fn render_data_layers_panel(
                                 (style.color[2] * 255.0) as u8,
                             );
                             ui.horizontal(|ui| {
-                                // `◎`, not `●` — U+25CF is tofu in the bundled
-                                // stack, so the legend's colour dot was a box.
-                                ui.label(egui::RichText::new("◎").size(theme::SIZE_CHIP).color(c));
+                                // Still a ring, as `◎` was — the icon subset is
+                                // outlined throughout (`icons::DOT`) — but one
+                                // drawn on the same grid as every other icon.
+                                ui.label(
+                                    egui::RichText::new(icons::DOT)
+                                        .size(theme::SIZE_CHIP)
+                                        .color(c),
+                                );
                                 ui.label(egui::RichText::new(*label).size(theme::SIZE_SUB));
                             });
                         }

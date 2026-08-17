@@ -9,6 +9,7 @@ use crate::resources::{
     ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
 };
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::theme;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
@@ -49,24 +50,15 @@ fn history_ui(
     home: Option<&crate::systems::user_store::SavedLocation>,
 ) -> bool {
     let mut acted = false;
-    // The glyph is a *candidate*, not a promise. The bundled font stack turns out
-    // to have almost no emoji at all — `◀`, `▶` and `🏠` are all missing from it,
-    // so these three buttons painted empty boxes for as long as they were
-    // icon-only. `first_drawable` falls through to the word, which is
-    // worse-looking than an icon and infinitely better than a box.
-    let ctx_for_labels = ui.ctx().clone();
-    let label = move |candidates: &[&'static str], word: &'static str| {
-        let glyph = theme::first_drawable(&ctx_for_labels, candidates);
-        if glyph == word {
-            word.to_string()
-        } else {
-            format!("{glyph}  {word}")
-        }
-    };
+    // Icon *and* word, both: these live in a menu, where a row of unlabelled
+    // glyphs would be a puzzle. The glyphs themselves are no longer a gamble —
+    // they come from the bundled subset (`systems::icons`), where every one of
+    // them exists by construction.
+    let label = |glyph: &str, word: &str| format!("{glyph}  {word}");
     if ui
         .add_enabled(
             nav.can_go_back(),
-            egui::Button::new(label(&["◀", "Back"], "Back")),
+            egui::Button::new(label(icons::BACK, "Back")),
         )
         .on_hover_text("Back to the previous location")
         .on_disabled_hover_text("No previous location")
@@ -78,7 +70,7 @@ fn history_ui(
     if ui
         .add_enabled(
             nav.can_go_forward(),
-            egui::Button::new(label(&["▶", "Forward"], "Forward")),
+            egui::Button::new(label(icons::FORWARD, "Forward")),
         )
         .on_hover_text("Forward to the next location")
         .on_disabled_hover_text("No next location")
@@ -92,7 +84,7 @@ fn history_ui(
     if ui
         .add_enabled(
             home.is_some(),
-            egui::Button::new(label(&["🏠", "⌂", "Home"], "Home")),
+            egui::Button::new(label(icons::HOME, "Home")),
         )
         .on_hover_text("Go to your Home location")
         .on_disabled_hover_text("No Home set — use Set Home below")
@@ -244,11 +236,7 @@ pub fn render_main_menu(
                             // the only two verbs it carried had to move somewhere a
                             // reader would find them.
                             ui.add_enabled_ui(place.is_some(), |ui| {
-                                let home_icon = if home_set {
-                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "Set"])
-                                } else {
-                                    theme::first_drawable(ui.ctx(), &["🏠", "⌂", "Home"])
-                                };
+                                let home_icon = if home_set { icons::CHECK } else { icons::HOME };
                                 if ui
                                     .button(format!("{home_icon}  Set Home here"))
                                     .on_hover_text(
@@ -258,11 +246,7 @@ pub fn render_main_menu(
                                 {
                                     set_home = true;
                                 }
-                                let copy_icon = if copied {
-                                    theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"])
-                                } else {
-                                    theme::first_drawable(ui.ctx(), &["📋", "⎘", "Copy"])
-                                };
+                                let copy_icon = if copied { icons::CHECK } else { icons::COPY };
                                 if ui
                                     .button(format!("{copy_icon}  Copy link"))
                                     .on_hover_text(
@@ -292,7 +276,7 @@ pub fn render_main_menu(
                             ] {
                                 // Same glyph the panel's own header wears, so the menu
                                 // entry and the badge it opens are recognisably one thing.
-                                let icon = theme::first_drawable(ui.ctx(), panel.icons());
+                                let icon = panel.icon();
                                 if ui
                                     .selectable_label(
                                         right_panel.is(panel),
@@ -309,7 +293,7 @@ pub fn render_main_menu(
                             // It reads as a *place* rather than a verb when there is a
                             // session, because "sign in" when you already are is the
                             // wrong question.
-                            let key = theme::first_drawable(ui.ctx(), &["🔑", "◎", "@"]);
+                            let key = icons::KEY;
                             let account = if sign_in.session.is_online() {
                                 match sign_in.identity.username.as_deref() {
                                     Some(user) => {
@@ -429,25 +413,34 @@ pub fn camera_picker_ui(
     globe: &crate::systems::globe::GlobeState,
 ) {
     use crate::resources::CameraMode;
+    // One icon per mode rather than one crosshair for all three: the button is
+    // the only place the current mode is written down, so the picture should say
+    // which it is without reading the word.
     let label = match camera_state.mode {
-        // `⌖` rather than `📷`: the camera emoji is not in the bundled stack, and
-        // a crosshair is a fair reading of "which camera am I looking through".
-        CameraMode::Avatar => "⌖ Follow",
-        CameraMode::Free => "⌖ Fly",
-        CameraMode::Orbit => "⌖ Earth",
+        CameraMode::Avatar => format!("{}  Follow", icons::CAM_FOLLOW),
+        CameraMode::Free => format!("{}  Fly", icons::CAM_FLY),
+        CameraMode::Orbit => format!("{}  Earth", icons::CAM_EARTH),
     };
     ui.menu_button(label, |ui| {
         let mut pick: Option<CameraMode> = None;
-        for (mode, name) in [
-            (CameraMode::Avatar, "Follow (third-person)"),
-            (CameraMode::Free, "Fly (free camera)"),
-            (CameraMode::Orbit, "Earth (orbit the globe)"),
+        for (mode, icon, name) in [
+            (
+                CameraMode::Avatar,
+                icons::CAM_FOLLOW,
+                "Follow (third-person)",
+            ),
+            (CameraMode::Free, icons::CAM_FLY, "Fly (free camera)"),
+            (
+                CameraMode::Orbit,
+                icons::CAM_EARTH,
+                "Earth (orbit the globe)",
+            ),
         ] {
             let enabled = has_avatar || mode != CameraMode::Avatar;
             let mut clicked = false;
             ui.add_enabled_ui(enabled, |ui| {
                 clicked = ui
-                    .selectable_label(camera_state.mode == mode, name)
+                    .selectable_label(camera_state.mode == mode, format!("{icon}  {name}"))
                     .clicked();
             });
             if clicked {
@@ -698,10 +691,7 @@ pub fn render_dev_panel(
                 if ui
                     .add_enabled(
                         fix.is_some(),
-                        egui::Button::new(format!(
-                            "{}  Copy as preset",
-                            theme::first_drawable(ui.ctx(), &["📋", "⎘", "·"])
-                        )),
+                        egui::Button::new(format!("{}  Copy as preset", icons::COPY)),
                     )
                     .on_hover_text("Copies this camera as a [[shot]] block for docs/shots.toml")
                     .clicked()
@@ -734,7 +724,7 @@ pub fn render_dev_panel(
                 if ui
                     .button(format!(
                         "{}  Capture slot {}",
-                        theme::first_drawable(ui.ctx(), &["📷", "⌖", "·"]),
+                        icons::CAMERA,
                         shot.next_slot + 1
                     ))
                     .on_hover_text(
@@ -789,7 +779,7 @@ pub fn render_avatar_chooser(
     )
     .show_collapsible(egui.ui_mut(), &mut is_open, |ui| {
         let panel = crate::resources::RightPanel::Appearance;
-        close = theme::panel_header(ui, panel.icons(), panel.label());
+        close = theme::panel_header(ui, panel.icon(), panel.label());
         // Outside the scroll area, so the header and the close button stay put
         // while the body scrolls under them — and so the body is what is
         // reachable on a 609 pt viewport, where these rows overrun the screen.
@@ -1231,10 +1221,7 @@ pub fn render_context_menu(
             // rarer case.
             if let Some((lat, lng)) = context_menu.lat_lng {
                 if ui
-                    .button(format!(
-                        "{}  Route to here",
-                        theme::first_drawable(ui.ctx(), &["🚩", "⚑", "·"])
-                    ))
+                    .button(format!("{}  Route to here", icons::FLAG))
                     .on_hover_text("Set this point as the destination")
                     .clicked()
                 {
@@ -1258,10 +1245,10 @@ pub fn render_context_menu(
 
                 // ── Save the point you pointed at ──
                 //
-                // The same ☆ the corner overlay wears, because it is the same act
+                // The same save-place button the corner overlay wears, because it is the same act
                 // with a different subject: the overlay's saves *where the camera
                 // is*, this saves *where you tapped*. Until now the second one had
-                // to be done by flying there first and then pressing ☆, which on a
+                // to be done by flying there first and then pressing save, which on a
                 // phone means losing the view you were looking at to record a spot
                 // inside it.
                 //
@@ -1270,7 +1257,7 @@ pub fn render_context_menu(
                 // coordinate (`CameraPose::apply`) — a place saved from orbit that
                 // returned you to ground level would be a different place.
                 if let Some(altitude) = camera_altitude {
-                    let star = theme::first_drawable(ui.ctx(), &["☆", "★", "+"]);
+                    let star = icons::BOOKMARK_ADD;
                     if ui
                         .button(format!("{star}  Save this place"))
                         .on_hover_text("Add this point to Places, named by reverse lookup")
@@ -1283,7 +1270,7 @@ pub fn render_context_menu(
                             altitude,
                             crate::systems::geo_nav::CameraPose::capture(&camera_state),
                         );
-                        // Named by the same reverse lookup the ☆ uses, so a place
+                        // Named by the same reverse lookup that button uses, so a place
                         // saved either way lands in the list reading as an address
                         // rather than as six decimals.
                         bookmarks.request_address(id, lat, lng);
@@ -1330,10 +1317,7 @@ pub fn render_context_menu(
                 // `--offline` has no one to store a script or fire a touch.
                 if let Some(session) = online.as_ref() {
                     if ui
-                        .button(format!(
-                            "{}  Edit script…",
-                            theme::first_drawable(ui.ctx(), &["📝", "✎", "·"])
-                        ))
+                        .button(format!("{}  Edit script…", icons::NOTE))
                         .on_hover_text("Write a Luau script that runs on this object")
                         .clicked()
                     {
@@ -1457,7 +1441,7 @@ pub fn render_edit_dialog(
         .frame(dialog_frame(&ctx.style_of(ctx.theme())))
         .show(ctx, |ui| {
             ui.set_max_width(width);
-            if theme::panel_header(ui, &["▤", "◈", "E"], title) {
+            if theme::panel_header(ui, icons::TUNE, title) {
                 dialog_open = false;
             }
             // Tab bar
@@ -1949,7 +1933,7 @@ pub fn render_edit_dialog(
             .frame(dialog_frame(&ctx.style_of(ctx.theme())))
             .show(ctx, |ui| {
                 ui.set_max_width(picker_w);
-                if theme::panel_header(ui, &["▤", "◈", "T"], "Texture library") {
+                if theme::panel_header(ui, icons::PALETTE, "Texture library") {
                     picker_open = false;
                 }
                 egui::ScrollArea::vertical()
