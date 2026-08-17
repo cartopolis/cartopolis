@@ -16,5 +16,6 @@ pub mod place_pins;
 pub mod script_editor;
 pub mod settings;
 pub mod splash;
+pub mod text_touch;
 pub mod theme;
 pub mod ui;

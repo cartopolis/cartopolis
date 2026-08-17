@@ -269,7 +269,10 @@ pub fn render_chat_panel(
                         ui.label("Join room");
                         // Enter submits, as it does in every other field in the
                         // client — this was the one that only took a click.
-                        let field = ui.add(egui::TextEdit::singleline(&mut chat.join_input));
+                        let field = crate::systems::text_touch::field(
+                            ui,
+                            egui::TextEdit::singleline(&mut chat.join_input),
+                        );
                         let entered =
                             field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         // Disabled on an empty field rather than live-and-inert.
@@ -315,7 +318,8 @@ pub fn render_chat_panel(
                         // layout's available *height* is the whole rest of the
                         // panel, and sizing to it grows the single-line field into
                         // a full-height block.
-                        let field = ui.add(
+                        let field = crate::systems::text_touch::field(
+                            ui,
                             egui::TextEdit::singleline(&mut chat.input)
                                 .desired_width(ui.available_width())
                                 .hint_text("Say something…"),

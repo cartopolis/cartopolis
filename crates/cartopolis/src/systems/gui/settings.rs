@@ -490,11 +490,7 @@ fn account_tab(
             .size(theme::SIZE_SUB)
             .color(theme::TEXT_DIM),
     );
-    ui.add(
-        egui::TextEdit::singleline(&mut state.delete_password)
-            .password(true)
-            .desired_width(f32::INFINITY),
-    );
+    theme::password_field(ui, &mut state.delete_password);
     let ready = !state.delete_password.is_empty();
     ui.add_enabled_ui(ready, |ui| {
         // Armed twice over: the password, and then a confirm that disarms itself

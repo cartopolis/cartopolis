@@ -412,7 +412,8 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
         // `desired_width` is the field's *text* width; its frame padding and
         // stroke sit outside that, so they have to come off too.
         let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
-        let field = ui.add(
+        let field = crate::systems::text_touch::field(
+            ui,
             egui::TextEdit::singleline(&mut edit.buf)
                 .id(id)
                 .desired_width((ui.available_width() - margin).max(40.0)),

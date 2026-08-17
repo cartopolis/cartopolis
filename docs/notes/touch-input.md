@@ -1,7 +1,7 @@
 ---
 topic: touch-input
-triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "context_menu", "long_touched"]
-updated: 2026-08-15
+triggers: [touch.rs, egui_manager.rs, free_camera.rs, onscreen_keyboard.rs, text_touch.rs, map_osd.rs, index.html, "touch", "pinch", "mobile", "phone", "tablet", "gesture", "keyboard", "on-screen controls", "thumbstick", "text_edit_focused", "long press", "context_menu", "long_touched", "move_to_top", "Order::Foreground", "layer order", "selection handles", "password", "eye"]
+updated: 2026-08-16
 ---
 
 # Touch is a separate input stream, not a flavour of the mouse
@@ -421,7 +421,7 @@ field genuinely holds focus. Not `egui_wants_keyboard_input()`, which is
 `memory.focused().is_some()` and true for any focused button — the same wrong
 predicate that once swallowed the avatar's movement keys.
 
-Two things about it are not obvious and neither is discoverable from the
+Three things about it are not obvious and none is discoverable from the
 symptom:
 
 **Tapping a key destroys the condition that shows the keyboard.** egui's default
@@ -439,6 +439,32 @@ class of ordering constraint as `place_pins` below — and for the same reason,
 `place_pins` subtracts the keyboard slab from its cull rect, since a pin left
 under the keys is still an interactive `Area` that eats taps meant for them.
 
+**`move_to_top` does not put a layer on top, and a keyboard that closes falls
+through the floor** (found 2026-08-16, on a phone, on the sign-in card). It sets
+a flag that `Areas::end_pass` feeds to a **stable** sort by `(order,
+wants_to_be_on_top)`. Two layers that both raise themselves every frame therefore
+keep whatever relative order they already had — the order of the `move_to_top`
+*calls* within a frame decides nothing, which is the opposite of what the name
+says and of what this module assumed. A layer that stops drawing loses the flag
+for one frame, sorts below everything that kept it, and **can never climb back**:
+re-raising only restores the tie, and a stable sort leaves a tie where it found
+it. Nothing removes a layer from the order list either, so the demotion is
+permanent for the run.
+
+The keyboard is exactly that kind of layer, and the sign-in card is exactly that
+kind of rival: a full-viewport dim backdrop plus the card window, both
+`Foreground`, both raised every frame. So the first open worked and **every
+reopen after it drew a keyboard whose taps went to the backdrop underneath** —
+keys that paint, highlight nothing and type nothing, with the rest of the UI
+perfectly responsive and the field still focused. The fix is to be in a *higher*
+`Order` (`Tooltip`) rather than to raise harder, because that is the only version
+that also survives a rival created *later*: a sign-in card opened while the
+keyboard is already up pushes its layers above ours no matter how often we ask.
+
+The general rule for this client: **an `Order::Foreground` layer that appears and
+disappears cannot be relied on to stay above another one.** `dock`, `hud`,
+`map_osd` and the pins are all permanent, which is why none of them hit this.
+
 Two consequences of the finger, recorded so they are not "simplified" away:
 dismissal keys off the pointer rather than `clicked()`, because a finger that
 drifts a few points produces a drag and a `clicked()` test would close the
@@ -448,12 +474,48 @@ a hard floor computed from the real scale (`ui_scale`, which on Android *is*
 density). That trade is the one every shipping phone keyboard makes, because a
 fingertip contact patch is taller than it is wide.
 
-Unverified on glass, like everything else here.
+## Editing text with a finger: handles, and an eye
+
+egui selects text by dragging across it and is already touch-aware about *when*
+(`allow_drag_to_select` waits for focus, so a first drag scrolls the enclosing
+`ScrollArea` instead of selecting). What it has no notion of is a **handle**. The
+caret is a one-point line and the ends of a selection are nothing at all, so on
+glass you can start a selection and never adjust it, and you can never put the
+caret between two particular characters — a tap is several characters wide. On
+the two platforms with no system IME that leaves "clear it and type it again" as
+the only edit, which is what the sign-in card was reduced to.
+
+`systems::text_touch::field` wraps a `TextEdit` and draws what egui does not: a
+teardrop under the caret, or one under each end of a selection, each a 30 pt drag
+target. It reads the galley and the settled cursor range out of
+`TextEdit::show`'s own output, so a handle is never a frame behind the text it
+points at — `TextEditState::load` cannot do this, because the state holds char
+indices and the finger is aiming at geometry. Two traps: a handle is a widget, so
+a drag that *ends where it started* is a click and egui surrenders the field's
+focus (taking the keyboard down with it) — hence the same `restore_focus` call
+the keys make; and the drag has to aim at the **row**, not at the finger, or a
+drag on a knob hanging below a single-line field clamps to the last character.
+
+Password fields get `theme::password_field`, which is the same wrapper plus a
+painted eye. A masked field is a row of dots you cannot proof-read, which is mild
+with a hardware keyboard and a dead end with a thumb: no autocorrect, no key
+preview, and a server that will only say the whole thing was wrong. The reveal is
+per field and lives in egui's temporary memory, so it never persists. Tapping the
+eye is a click off the field, so it restores focus too — but only if the field
+had it, or tapping the eye of a field nobody is typing into would summon the
+keyboard.
+
+Unverified on glass, like everything else here — except the layer-order bug
+above, which a phone found and a headless `egui::Context` reproduces
+(`onscreen_keyboard`'s `Harness`).
 
 ## Not covered
 
 - **Marquee select** needs Ctrl, which a finger has no way to hold. Unreachable
   on touch by construction; not worth a gesture.
+- **Clipboard keys** on the on-screen keyboard. Ctrl+V has no finger equivalent,
+  and egui's own long-press context menu already offers cut/copy/paste on a
+  focused field.
 - **Three or more fingers** are deliberately inert rather than guessed at.
   Nothing wants a three-finger verb, and picking two of the three would make the
   reading depend on which fingers happened to be lowest-id.

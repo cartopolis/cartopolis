@@ -40,8 +40,8 @@ pub use dev::{
 // group folders use, and the reason the move cost no call-site edits.
 pub use gui::{
     ai_assistant, bookmarks, chat, data_layers, dismiss, dock, egui_manager, hud, icons,
-    login_screen, map_osd, onscreen_keyboard, place_pins, script_editor, settings, splash, theme,
-    ui,
+    login_screen, map_osd, onscreen_keyboard, place_pins, script_editor, settings, splash,
+    text_touch, theme, ui,
 };
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
