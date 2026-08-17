@@ -242,6 +242,20 @@ jobs:
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # And save it even when the job goes red, which is not the usual
+          # default for a good reason that does not apply here: normally a failed
+          # job might have produced junk worth not keeping, but this action caches
+          # *dependencies* — it prunes the workspace crates out before writing —
+          # and a dependency graph does not become wrong because a test did.
+          #
+          # Nothing in this repo gates a merge, so `main` is allowed to be red;
+          # tying the cache to green therefore ties it to something this project
+          # has deliberately decided not to require. The first `main` run under
+          # the new key proved the cost: 909 s of compiling, every one of the 764
+          # tests passed, `cargo fmt` failed on code merged earlier that day, and
+          # the post step logged `Skipping … due to success()`. One formatting
+          # error, and every pull request afterwards would have run cold.
+          cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
       # ALSA headers and the `aarch64-linux-android` std used to be installed here
       # per run and are baked into `cartopolis-ci:latest` now.
       #

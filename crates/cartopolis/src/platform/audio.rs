@@ -688,9 +688,10 @@ mod web {
             clippy::cast_possible_truncation,
             reason = "an AudioContext rate is a positive integer expressed as an f32"
         )]
-        shared
-            .rate
-            .store(ctx.sample_rate() as u32, std::sync::atomic::Ordering::Relaxed);
+        shared.rate.store(
+            ctx.sample_rate() as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         *shared.device.lock().unwrap() = Some("Browser microphone".into());
         LIVE.with(|l| {
             *l.borrow_mut() = Some(Graph {

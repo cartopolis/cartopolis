@@ -235,7 +235,9 @@ impl AdpcmState {
         } else {
             self.predictor += delta;
         }
-        self.predictor = self.predictor.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+        self.predictor = self
+            .predictor
+            .clamp(i32::from(i16::MIN), i32::from(i16::MAX));
         self.index = (self.index + INDEX_TABLE[(code & 0x0f) as usize]).clamp(0, 88);
     }
 }
@@ -882,9 +884,7 @@ pub fn update_voice_playback(
                         // modes would never fire. The retirement above owns the
                         // entity's lifetime.
                         mode: bevy::audio::PlaybackMode::Once,
-                        volume: bevy::audio::Volume::Linear(
-                            attenuation(speaker.distance_m) * gain,
-                        ),
+                        volume: bevy::audio::Volume::Linear(attenuation(speaker.distance_m) * gain),
                         ..default()
                     },
                     VoiceSink(*id),
@@ -1020,7 +1020,8 @@ mod tests {
     /// An unknown codec tag is dropped rather than played as noise.
     #[test]
     fn a_foreign_payload_is_refused() {
-        let mut payload = encode_frame(&tone(FRAME_SAMPLES, 300.0, 0.4), &mut AdpcmState::default());
+        let mut payload =
+            encode_frame(&tone(FRAME_SAMPLES, 300.0, 0.4), &mut AdpcmState::default());
         payload[0] = 99;
         assert!(decode_frame(&payload).is_none(), "unknown tag was decoded");
         assert!(decode_frame(&[]).is_none(), "an empty payload was decoded");
@@ -1092,7 +1093,10 @@ mod tests {
             assert!(a >= MIN_AUDIBLE, "inaudible at {d} m");
             last = a;
         }
-        assert!(attenuation(Some(f32::NAN)) > 0.0, "a NaN must not silence it");
+        assert!(
+            attenuation(Some(f32::NAN)) > 0.0,
+            "a NaN must not silence it"
+        );
     }
 
     /// Gain saturates instead of wrapping. `(x * 4.0) as i16` on a loud sample
@@ -1175,7 +1179,10 @@ mod tests {
         let mut voice = VoiceState::default();
         voice.set_mode(VoiceMode::PushToTalk);
         assert_eq!(voice.mode, VoiceMode::PushToTalk);
-        assert!(voice.mic.is_some(), "arming must open a device to report on");
+        assert!(
+            voice.mic.is_some(),
+            "arming must open a device to report on"
+        );
         voice.set_mode(VoiceMode::Off);
         assert!(voice.mic.is_none(), "the device outlived the mode");
         assert!(!voice.transmitting);
@@ -1247,15 +1254,14 @@ mod loopback {
             let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
             cartopolis_simulator::ensure_account(&conn, "dev", "dev").unwrap();
         }
-        let handle = cartopolis_simulator::serve(std::sync::Arc::new(
-            cartopolis_simulator::SimConfig {
+        let handle =
+            cartopolis_simulator::serve(std::sync::Arc::new(cartopolis_simulator::SimConfig {
                 database_path: db,
                 listen: "127.0.0.1:0".into(),
                 ..cartopolis_simulator::SimConfig::default()
-            },
-        ))
-        .await
-        .unwrap();
+            }))
+            .await
+            .unwrap();
         let addr = handle.local_addr.to_string();
 
         let mut speaker = connect(&addr).await;
@@ -1316,7 +1322,10 @@ mod loopback {
                 ..
             } = decode_app_frame(&bytes).unwrap()
             {
-                assert!(distance_m.is_some(), "proximity voice must carry a distance");
+                assert!(
+                    distance_m.is_some(),
+                    "proximity voice must carry a distance"
+                );
                 voice.receive(sender_id, seq, &payload, distance_m);
                 got += 1;
             }

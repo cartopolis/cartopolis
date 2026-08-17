@@ -326,7 +326,11 @@ pub mod synth {
             .map(|i| {
                 let t = i as f32 / len as f32;
                 // Fast attack, exponential decay — a heel then nothing.
-                let env = if t < 0.02 { t / 0.02 } else { (-26.0 * t).exp() };
+                let env = if t < 0.02 {
+                    t / 0.02
+                } else {
+                    (-26.0 * t).exp()
+                };
                 lp += a * (noise(&mut seed) - lp);
                 lp2 += a * (lp - lp2);
                 to_i16(lp2 * GAIN * env)
@@ -541,7 +545,9 @@ mod tests {
     fn samples_of(bytes: &[u8]) -> Vec<f32> {
         let n = (bytes.len() - 44) / 2;
         (0..n)
-            .map(|i| f32::from(i16::from_le_bytes([bytes[44 + i * 2], bytes[45 + i * 2]])) / 32767.0)
+            .map(|i| {
+                f32::from(i16::from_le_bytes([bytes[44 + i * 2], bytes[45 + i * 2]])) / 32767.0
+            })
             .collect()
     }
 
