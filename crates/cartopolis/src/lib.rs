@@ -441,7 +441,7 @@ const CRASH_LOG_MAX_BYTES: usize = 64 * 1024;
 /// a half-line at the top reads as corruption and invites a reply about the wrong
 /// thing.
 #[cfg(target_os = "android")]
-fn tail_bytes(text: &str, max: usize) -> &str {
+pub(crate) fn tail_bytes(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
@@ -2064,6 +2064,11 @@ fn run_client() {
         // `drive_capture` gets away with it, and misleading for a live log where the
         // interesting moment is the frame the count changes.
         .add_systems(Last, systems::avatar::log_avatar_draw_counts)
+        // Same schedule and the same reason: the report quotes `ViewVisibility`,
+        // which `PostUpdate` writes, so from `Update` it would describe the frame
+        // before the tap.
+        .init_resource::<systems::diagnostics::DiagnosticsRequest>()
+        .add_systems(Last, systems::diagnostics::share_diagnostics)
         // Three systems, one chain, and each position is load-bearing.
         //
         // `report_frame_to_scheduler` runs **before** the limiter: it tells ADPF how
