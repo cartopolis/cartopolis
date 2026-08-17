@@ -151,6 +151,10 @@ pub fn render_main_menu(
     avatars: Query<(), With<crate::components::Avatar>>,
     map_anchor: Res<crate::resources::MapAnchor>,
     mut sign_in: SignInMenu,
+    // Written here, read and cleared by `diagnostics::share_diagnostics` — this
+    // system is at Bevy's sixteen-parameter ceiling and the report needs six
+    // sources of its own.
+    mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
     // (set-home, copy) "✔" flash timers. These two actions leave the menu open —
     // they are the only entries whose whole result is invisible — so they are the
     // only ones that need to say they happened.
@@ -339,6 +343,27 @@ pub fn render_main_menu(
                             if ui.button(dev_label).clicked() {
                                 dev_state.open = !dev_state.open;
                                 close = true;
+                            }
+                            // Next to the developer tools because it is one — but
+                            // above the fold rather than inside the dev panel,
+                            // because the person who needs it is holding a phone
+                            // and reporting a bug, not inspecting the renderer.
+                            // It is the only way anything a device knows about
+                            // itself gets off that device short of a crash
+                            // (`systems::diagnostics`).
+                            if ui
+                                .button("Share diagnostics…")
+                                .on_hover_text(
+                                    "The build, the GPU, the render tier and what the \
+                                     avatar is doing, plus this run's log — to the share \
+                                     sheet on a phone, to the clipboard everywhere else",
+                                )
+                                .clicked()
+                            {
+                                diagnostics.pending = true;
+                            }
+                            if let Some(result) = diagnostics.last.as_deref() {
+                                theme::note(ui, result);
                             }
                             ui.separator();
                             if ui.button("Exit").clicked() {
