@@ -94,6 +94,19 @@ IME is unreachable under NativeActivity (the trade above), so
 `systems::onscreen_keyboard` stands in for it everywhere: address bar, geo
 search, bookmark rename, chat, the AI panel.
 
+**The phone can now hand back what it knows** — ☰ ▸ Share diagnostics…
+(`systems::diagnostics`). Everything needed to diagnose a rendering fault is
+already logged; on a handset that log is in `logcat`, which needs a cable, a
+workstation, `adb` and developer mode, i.e. it is unavailable to exactly the
+person holding the failing device. The menu entry re-measures the live facts —
+build, adapter, tier, sky, and the avatar's holders/meshes/rendered/position —
+and puts them plus this run's log through the same `ACTION_SEND` the crash
+reporter uses. It is deliberately *not* inside the developer panel: the person
+who needs it is reporting a bug, not inspecting a renderer. The live header is
+not a duplicate of the log, either — logd's buffer is a ring and this client is
+chatty, so by the time somebody notices, scrolls and taps, the lines that
+explain it may already have rolled out.
+
 `lib.rs`'s `parse_cli()` hands Android a fixed `--offline`. It cannot call
 `Cli::parse()`: a NativeActivity process is started by the zygote, so the `argv`
 Rust captured belongs to `app_process` and is full of flags clap has never heard
@@ -127,6 +140,34 @@ every capture is of that sheet rather than the map. And a crash report is offere
 only when the last run died *without* a lifecycle event, which is what makes
 "Force stop, then reopen" the way to get a log off a real phone with no cable —
 swiping the app away is a clean suspend and deletes the breadcrumb.
+
+**And it gives you about nine seconds.** SwiftShader aborts the run with
+`egui-wgpu: Tried to update a texture that has not been allocated yet` shortly
+after the first frames, which is long enough for startup, asset loading and the
+first `avatar:` lines and *not* long enough to tap a control and capture the
+result — a launch/tap/screencap sequence loses the race more often than it wins
+it. So the emulator answers "what does the app do on its own", and anything that
+needs the app driven into a state is still a device question.
+
+### What the emulator could not settle: the avatar on a real handset
+
+Worth recording as a **negative** result, because it is the shape of a whole class
+of bug and it is what the diagnostics share below exists for. On 2026-08-16 the
+avatar was reported invisible in Follow mode on a Fairphone-class handset running
+the *published* APK. Three measurements, and none of them reproduced it:
+
+- the **same published artifact** on the emulator logs `avatar: model requested
+  holders = 1` and `avatar: meshes drawn meshes = 10; rendered = 10`;
+- `CARTO_QUALITY=phone --shot --shot-mode avatar` on lavapipe renders the
+  character, so the phone *budget* — the dome sky, `AcesFitted` in-shader
+  tonemapping, `render_scale` 0.5, no bloom, no shadows — is not what hides it;
+- on the device, forcing a rebuild from the appearance chooser changes nothing,
+  and no figure appears at any follow distance out to `AVATAR_CAM_MAX`.
+
+Which leaves the avatar spawned, unmasked and submitted, and the handset's driver
+not drawing it — the avatar being the only **skinned** mesh in the scene, and the
+only one loaded from a glTF. That is a claim about a driver, and neither harness
+here can see one. It is also, precisely, a fact that only the device holds.
 
 ### Running the phone's configuration on a workstation
 
