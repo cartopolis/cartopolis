@@ -9,21 +9,73 @@ name: CI
 # `pull_request`, which meant a branch that had a PR open was compiled *twice
 # from the same commit* — once for `refs/heads/<branch>`, once for
 # `refs/pull/N/head` — and then a third time as the merge commit on `main`. Three
-# full Bevy builds per change on a runner with capacity 2, two of them proving
+# full Bevy builds per change on a runner with capacity 3, two of them proving
 # something the third already proved. `concurrency` cannot collapse them: a
 # branch ref and a PR ref are different strings, so they land in different
 # groups by construction. The only fix is not to start them.
 #
 # The cost is that a branch with no PR gets no CI. That is the intended trade:
 # open the PR, which is where a verdict is actually read.
+#
+# `paths-ignore` because a Markdown change should not compile Bevy. Eight of the
+# forty commits on `main` before 2026-08-16 touched nothing but `docs/` and
+# `*.md`, and each of those bought two full runs — the PR lane and the merge —
+# to prove that prose did not break a renderer. The filter is a *suffix and
+# directory* rule rather than a list of files so a new note needs no edit here,
+# and it deliberately does not cover `assets/`, `crates/`, `Cargo.lock` or
+# `.forgejo/` — anything that can change a byte of the binary still runs.
+#
+# **There is no draft gate here, and it is not an oversight.** Skipping CI on a
+# draft pull request is the obvious way to stop an agent fleet's half-finished
+# branches from taking runner slots, and it was written, tried and removed the
+# same afternoon: Forgejo 16.0.1 fires **no Actions run at all** on the
+# draft→ready transition. Measured on PR #94 — `ready_for_review` was declared in
+# `types`, the title's `WIP:` prefix was removed, the API confirmed `draft:
+# false`, and no run row was created. (Forgejo derives a PR's draft state from
+# that title prefix, so the transition arrives as an `edited` event or as
+# nothing; putting `edited` in `types` would then rebuild the world every time
+# somebody fixed a typo in a description, which is worse than what it fixes.)
+#
+# A gate whose release condition never fires is not a gate, it is a branch that
+# silently never gets a verdict. So the per-push lever is Forgejo's own instead,
+# and it needs nothing here: the `SKIP_WORKFLOW_STRINGS` markers (`[skip` `ci]`
+# and `[ci` `skip]`, on by default) anywhere in the commit message. It is under
+# the pusher's control at the moment of pushing, which a draft flag set an hour
+# earlier is not, and there is no state to get stuck in.
+#
+# It works on a pull-request push, which was confirmed the hard way: a commit
+# whose *body* mentioned the marker while explaining all this was silently not
+# built. The match is a plain substring over the whole message, not a prefix and
+# not a line — so a commit that merely talks about skipping CI skips CI. Split
+# the brackets when writing about it, as above.
+#
+# `types` is likewise left at its defaults — `opened`, `synchronize`, `reopened`.
+# Naming it at all replaces the whole set, and the one addition worth making
+# turned out not to work.
+#
+# `workflow_dispatch` is the override for all of the above, and it is not
+# decoration: the gates below can between them produce a `main` run that compiles
+# nothing, which is fine for a verdict and *not* fine for the cache. rust-cache
+# entries written on `main` are what every pull request restores, so a merge that
+# skips both the suite and the smokes also skips the save — and after a key
+# change (a `Cargo.lock` bump, a toolchain bump, a variable added to `env:`)
+# every PR then runs cold until some later merge happens to touch the client.
+# Dispatching this workflow on `main` runs it whole and re-warms the store.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
 
 # One run per ref: a new push cancels the run its predecessor is still doing.
 #
-# The runner has capacity 2 and a full run is 15-25 minutes. Without this, a PR
+# The runner has capacity 3 and a full run is 15-25 minutes. Without this, a PR
 # pushed three times puts three runs in the queue, two of them testing code
 # nobody is waiting on, and a merge to `main` then waits behind all of them. That
 # is not hypothetical: it is what starved this repo's first APK publish.
@@ -42,13 +94,31 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: "3"
-  # The runner has capacity 2 and the host has 8 cores it does **not** own: the
-  # public nominatim and overpass services live on the same box. Two jobs each
-  # letting cargo default to one rustc per core is 16 compilers on 8 shared cores,
-  # and the load average sat between 8.5 and 11.8 during a normal CI run. Three
-  # apiece leaves two cores for the services and, because the contention was
-  # costing more than the parallelism bought, does not obviously slow a job down.
-  CARGO_BUILD_JOBS: "3"
+  # The job count is `$JOBS` below, on each cargo command line, and **not a
+  # `CARGO_BUILD_JOBS` in this block** — which is where it lived until it was
+  # moved here, one cold run later.
+  #
+  # `Swatinem/rust-cache` hashes every environment variable whose name begins
+  # with `CARGO`, `CC`, `CFLAGS`, `CXX`, `CMAKE` or `RUST` into its key. A job
+  # count is not an input to a single compilation and changes not one byte of the
+  # output, but changing it from 3 to 2 still invalidated the entire store: the
+  # run that did it restored in **1 second** instead of ~70 and rebuilt Bevy from
+  # nothing. Worse, the merge that would have re-saved a warm entry under the new
+  # key touched only `docs/` and `.forgejo/`, so both gates below correctly
+  # skipped every step that compiles — and the cache would have stayed cold for
+  # every pull request until some later merge happened to touch the client.
+  #
+  # So: anything that is a knob rather than a compilation input belongs on the
+  # command line. The variables left in this block are all real inputs (they
+  # change the artifact), and each of them *should* move the key.
+  #
+  # Moving it here does not undo the one-time cost, and the run that proved it
+  # said `No cache found`: *removing* a variable changes the hash exactly as
+  # adding one does, and `main` — which still carries the old file until this
+  # merges — keeps writing under the old key. The store realigns on the first
+  # `main` run that actually compiles under the new one, which is what the
+  # `workflow_dispatch` trigger above exists to guarantee rather than wait for.
+  JOBS: "2"
   # sccache, reading and writing the bind-mounted host directory above. It is the
   # **second** layer, underneath `Swatinem/rust-cache`, and the distinction is
   # worth stating because getting it wrong nearly cost this repo its CI cache.
@@ -92,7 +162,7 @@ jobs:
   # workspace once for the host and runs every suite in it.
   #
   # There is no separate `cargo check --workspace --all-targets` job any more.
-  # It ran in parallel with the tests, which sounds free on a capacity-2 runner
+  # It ran in parallel with the tests, which sounds free on a capacity-3 runner
   # and is not: each job carries its own `rust-cache` key, so the two were two
   # independent cold Bevy builds, and `cargo check` only produces metadata — none
   # of that work is reusable by the codegen the tests need. What it uniquely
@@ -147,12 +217,31 @@ jobs:
           # this job compiles 130-byte LFS pointers into the binary and only
           # finds out at runtime. See `.gitattributes`.
           lfs: true
+          # Two, not the default one, so the scope step below can see the commit's
+          # parents: a merge on `main` has the previous `main` as `HEAD^1` and the
+          # branch that was merged as `HEAD^2`, and both of those questions are
+          # about comparing this commit against them. A depth-1 clone cannot even
+          # name them.
+          fetch-depth: 2
       # The fast path, and it is worth 6× on a warm run: 2058 s cold versus ~320 s
       # restored, measured on consecutive `main` runs 302 and 304. It very nearly
       # got deleted from this file on the evidence of run 302 alone, which was cold
       # for a reason that had nothing to do with the cache — see the env block.
       # Never conclude a cache is broken from a single run; compare two.
+      #
+      # **Restore everywhere, save only on `main`**, which costs nothing and saves
+      # about 90 seconds per pull-request job — measured as the gap between a job's
+      # duration and the sum of its steps, across every green run since 2026-08-05
+      # (PR `test`: 518 s of job against 429 s of steps). That gap is this action's
+      # post step writing a 1.2 GB archive, and a PR-written entry carries a
+      # `writeIsolationKey` of its own ref: no other branch can read it, and the
+      # workspace crates are pruned out of it before it is written, so even a
+      # second push to the same PR gets back only the dependencies `main`'s entry
+      # already had. It was paying tar and zstd for a copy of something it already
+      # has. The host disk was at 82% while it did it.
       - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # ALSA headers and the `aarch64-linux-android` std used to be installed here
       # per run and are baked into `cartopolis-ci:latest` now.
       #
@@ -161,6 +250,70 @@ jobs:
       # Cross-compiling to it is always fine, but this job *runs* what it builds,
       # so a runner older than Haswell would die on an illegal instruction
       # somewhere deep in a test. Fail here instead, with a legible reason.
+      # Two questions worth asking before spending twenty minutes answering them,
+      # and both are answerable from the commit graph alone — no API call, no
+      # token, no state carried between runs.
+      #
+      # **Has this exact tree already been tested?** A merge commit's `HEAD^2` is
+      # the branch head the pull-request lane just compiled. When the branch was
+      # rebased onto current `main` before merging — which this repo's workflow
+      # requires — the merge is a fast-forward in content and `HEAD^{tree}` is
+      # *bit-identical* to `HEAD^2^{tree}`. Running the suite again on that is not
+      # a weaker verdict repeated, it is the same verdict repeated: the same
+      # sources, the same lockfile, the same compiler. Skipping it takes the merge
+      # lane's `cargo test` — 255 to 659 seconds, and the single largest step in
+      # this file — off every ordinary merge.
+      #
+      # What is knowingly given up: the PR run may have been red, and this does
+      # not check. Nothing here gates a merge anyway (`main` is allowed to be red
+      # and there are no required status checks), so the person merging has
+      # already read that verdict; what would be new is a green `main` whose
+      # tests nobody ran, which is why the skip prints the tree and the commit it
+      # is trusting instead of passing silently.
+      #
+      # **Does anything here reach the renderer?** The two scene smokes below cost
+      # 163-568 s and are the only steps that render. A merge that touches only
+      # the simulator, the docs or this file cannot change a frame, so it should
+      # not pay for one. The test is a *deny*-list matched against every changed
+      # path, so the default for an unrecognised path — `assets/`, `crates/geo/`,
+      # `Cargo.lock`, anything new — is to run the smokes. Fail safe, not silent.
+      - name: What is worth running for this commit
+        id: scope
+        # Through the environment rather than interpolated into the script: a ref
+        # is a branch name, and branch names here are generated by agents.
+        env:
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          tested=false
+          render=true
+          # A hand-started run is a request for the whole thing — see the
+          # `workflow_dispatch` note at the top of this file. Both answers are
+          # already the run-everything ones, so this just declines to narrow them.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Dispatched by hand: running every step, gates not consulted."
+            echo "tested=$tested" >> "$GITHUB_OUTPUT"
+            echo "render=$render" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `main` only. On a pull-request ref `HEAD^2` is either absent or the
+          # `main` that was merged *into* the branch, and neither answers the
+          # question this is asking.
+          if [ "$REF" = "refs/heads/main" ] &&
+             [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse -q --verify HEAD^2^{tree} 2>/dev/null)" ]; then
+            tested=true
+            echo "This tree ($(git rev-parse --short HEAD^{tree})) was already compiled and tested"
+            echo "on the pull-request lane at $(git rev-parse --short HEAD^2). Skipping the suite."
+          fi
+          if changed=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) && [ -n "$changed" ]; then
+            if ! printf '%s\n' "$changed" | grep -qvE '^(docs/|crates/simulator/|\.forgejo/|[^/]*\.md$)'; then
+              render=false
+              echo "Nothing outside the simulator, the docs and CI changed. Skipping the scene smokes:"
+              printf '%s\n' "$changed" | sed 's/^/  /'
+            fi
+          fi
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          echo "render=$render" >> "$GITHUB_OUTPUT"
       - name: Runner supports the x86-64-v3 baseline
         run: |
           grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo || {
@@ -205,7 +358,11 @@ jobs:
       # lockfile and nothing anywhere says so. With it, the same situation is a
       # one-line error naming the crate, and picking up a new version stays what it
       # should be: a deliberate `cargo update` in a commit someone reviewed.
-      - run: cargo test --locked --workspace --exclude cartopolis_android
+      #
+      # Skipped when the scope step above found this tree already tested on the
+      # branch it came from — see the reasoning there.
+      - if: steps.scope.outputs.tested != 'true'
+        run: cargo test --locked -j "$JOBS" --workspace --exclude cartopolis_android
 
       # The only check anywhere that renders anything. Everything above proves the
       # code compiles and its units behave; this one launches the app, streams a
@@ -249,12 +406,12 @@ jobs:
       # — something switching the clipmap occlusion culling off, or a tier losing
       # its radius bias — not to pin the exact number.
       - name: Headless scene smoke (orbit)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.scope.outputs.render == 'true'
         timeout-minutes: 15
         env:
           CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
         run: |
-          cargo run --locked -p cartopolis -- \
+          cargo run --locked -j "$JOBS" -p cartopolis -- \
             --shot /tmp/orbit.png --dump-state /tmp/orbit.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -287,13 +444,13 @@ jobs:
       # budgets make its draw count a different number with a different meaning,
       # and one loose bound per job is enough.
       - name: Headless scene smoke (orbit, phone tier)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.scope.outputs.render == 'true'
         timeout-minutes: 15
         env:
           CARTO_TILE_URL: https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}
           CARTO_QUALITY: phone
         run: |
-          cargo run --locked -p cartopolis -- \
+          cargo run --locked -j "$JOBS" -p cartopolis -- \
             --shot /tmp/orbit_phone.png --dump-state /tmp/orbit_phone.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
@@ -340,7 +497,7 @@ jobs:
   #
   # Running them per-PR would have been the stronger gate. It is not worth its
   # price here: each is a cold compile of the whole Bevy stack for a third and
-  # fourth target, on a capacity-2 runner shared with everything else, and
+  # fourth target, on a capacity-3 runner shared with everything else, and
   # **nothing in this repo gates a merge on CI anyway** — `main` is allowed to be
   # red, so a PR lane informs the person merging rather than stopping them. On
   # `main` the same rot is caught within one merge instead of the two months it
@@ -350,7 +507,21 @@ jobs:
   # `docs/notes/container-android-toolchain.md` has the two environment variables.
   targets:
     name: wasm & android targets
-    if: github.ref == 'refs/heads/main'
+    # **After `test`, not beside it**, and that ordering is about the queue rather
+    # than about this job. A `main` run used to hold both of a capacity-3 runner's
+    # slots for its whole length, so an agent's pull request behind it waited for
+    # the longer of the two (one targets job queued 967 s on 2026-08-16). Nobody
+    # waits on a `main` verdict — it is read after the fact — while somebody is
+    # always waiting on a PR, so serialising the lane nobody watches to keep a
+    # slot free for the lane somebody does is the trade worth making. It costs
+    # `main` its own wall clock and nothing else.
+    #
+    # `always()` because a red test run is exactly when this must still report:
+    # these two lanes exist to catch platform rot, and gating them behind the
+    # host suite would hide an Android break behind an unrelated test failure —
+    # the same mistake the `cargo fmt` step at the end of `test` documents.
+    needs: test
+    if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
@@ -408,8 +579,8 @@ jobs:
         #
         # Not fixed, and worth knowing: the three `deploy-*.yml` lanes still mount
         # the `test` job's registry, so a manual dispatch during a `main` run can
-        # still lose this way — the runner has capacity 2, so any two jobs can be
-        # concurrent. They are rare and manual, and four registries to keep warm
+        # still lose this way — the runner has capacity 3, so any three jobs can
+        # be concurrent. They are rare and manual, and four registries to keep warm
         # is a worse trade than an occasional re-run; but if one of them ever
         # fails with a crate that "cannot compile its own source", this is why,
         # and the fix is another copy.
@@ -418,7 +589,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+      # `save-if` for the reason the `test` job's copy states at length: an entry
+      # written by a pull-request run is readable only from the ref that wrote it.
+      # This job is `main`-only today, so the guard changes nothing here — it is
+      # here so that the day someone runs this lane on a PR, it does not quietly
+      # start paying 90 seconds a run for an archive nobody can read.
       - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # No ALSA step here any more, and neither `rustup target add` is needed: the
       # image carries wasm32 for the nightly toolchain and aarch64-linux-android
       # for the default one, which is the toolchain each of the two lanes below
@@ -475,7 +653,7 @@ jobs:
             -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check --locked -p cartopolis --no-default-features --features audio \
+          cargo check --locked -j "$JOBS" -p cartopolis --no-default-features --features audio \
               --target wasm32-unknown-unknown
 
       # A check, not the APK: no link, no aapt2, no signing. That is the cheap half
@@ -534,7 +712,7 @@ jobs:
           rustup target add aarch64-linux-android
           export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android28-clang"
           export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          cargo check --locked -p cartopolis_android --target aarch64-linux-android
+          cargo check --locked -j "$JOBS" -p cartopolis_android --target aarch64-linux-android
       # What the cache actually did, in the job that used it. Without this the only
       # way to know whether sccache is working is to compare wall-clock against a
       # run from another day — which is how `Swatinem/rust-cache` sat here for

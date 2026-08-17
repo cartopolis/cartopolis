@@ -16,8 +16,8 @@ no GPU and cannot render a frame.
 Every previous attempt was a timer and every one was reverted —
 `docs/notes/tile-raster-cost.md` ends with "The benchmarks were reverted, not
 committed — nothing in the tree measures this." That is not a discipline failure,
-it is structural: CI runs two jobs on a shared 8-core VM at `CARGO_BUILD_JOBS=3`,
-so a wall-clock threshold flakes, and a threshold loose enough not to flake is
+it is structural: CI runs up to three jobs on a shared 8-core VM at two cargo
+jobs apiece, so a wall-clock threshold flakes, and a threshold loose enough not to flake is
 loose enough to catch nothing.
 
 Allocation counts have neither problem. **Measured bit-identical over three
