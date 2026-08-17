@@ -40,6 +40,7 @@ use crate::systems::geo_nav::{
     GeoNavState, GeoSuggestion, Teleport,
 };
 use crate::systems::globe::GlobeState;
+use crate::systems::icons;
 use crate::systems::map_stream::MapStream;
 use crate::systems::routing::{
     self, format_distance, format_duration, RoadGraph, Route, RouteError, TravelMode,
@@ -112,33 +113,6 @@ fn marker_color(rgb: [f32; 3]) -> egui::Color32 {
 /// road — then reads as a thin lead-in, not a fat route line through a canal.
 const CONNECTOR_HALF_WIDTH: f32 = 1.0;
 const CONNECTOR_MIN_M: f32 = 4.0;
-
-/// The panel's symbols, resolved against the font that is actually loaded — see
-/// [`theme::first_drawable`] for why nothing here is a hard-coded guess. The
-/// lists lead with the glyphs that probe as present.
-struct Icons {
-    swap: &'static str,
-    pick: &'static str,
-    here: &'static str,
-    clear: &'static str,
-    start: &'static str,
-    finish: &'static str,
-}
-
-impl Icons {
-    fn resolve(ctx: &egui::Context) -> Self {
-        let pick = |candidates: &[&'static str]| theme::first_drawable(ctx, candidates);
-        Self {
-            swap: pick(&["⇅", "⇵", "↕", "⏶⏷", "×"]),
-            // A crosshair is exactly the "aim at the map" affordance anyway.
-            pick: pick(&["⌖", "🖈", "📌", "+"]),
-            here: pick(&["📍", "◎", "○", "o"]),
-            clear: pick(&["✕", "✖", "⨯", "×"]),
-            start: pick(&["⬤", "●", "•", "o"]),
-            finish: pick(&["⚑", "🏁", "◆", "×"]),
-        }
-    }
-}
 
 /// Which end of the route a UI action refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,10 +252,11 @@ impl Default for RouteState {
 /// a name the user chose or a search result already supplied.
 ///
 /// It used to be `"📍 "`, which was the right idea and the wrong character —
-/// U+1F4CD is not in the Body font stack (the ladder at `Icons::here` had
-/// already been falling back past it), so every map-picked endpoint showed an
-/// empty box in front of its coordinates. Latin-1, so it cannot recur; the
-/// `no_painted_glyph_is_tofu` test is what caught it.
+/// U+1F4CD was in no font this app loaded, so every map-picked endpoint showed
+/// an empty box in front of its coordinates. Latin-1, so it cannot recur; the
+/// `no_painted_glyph_is_tofu` test is what caught it. It stays a plain character
+/// rather than becoming an icon: this string is *stored* on the waypoint and
+/// compared against, so it belongs to the data, not to the chrome.
 const PICKED_PREFIX: &str = "· ";
 
 impl RouteState {
@@ -1327,7 +1302,6 @@ pub fn render_route_panel(
 
     let mut open = true;
     let mut actions = PanelActions::default();
-    let icons = Icons::resolve(egui.ctx_mut());
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     let ui_root = egui.ui_mut();
@@ -1335,7 +1309,7 @@ pub fn render_route_panel(
     crate::systems::egui_manager::responsive_right_panel("route_panel", compact, viewport_w, 320.0)
         .show_collapsible(ui_root, &mut open, |ui| {
             let panel = crate::resources::RightPanel::Route;
-            actions.close = theme::panel_header(ui, panel.icons(), panel.label());
+            actions.close = theme::panel_header(ui, panel.icon(), panel.label());
 
             // Travel-mode tabs. Organic Maps puts these above the fields, because
             // the mode changes what a sensible destination even is.
@@ -1343,9 +1317,13 @@ pub fn render_route_panel(
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for mode in TravelMode::ALL {
                     let selected = route.mode == mode;
-                    // The word alone: `TravelMode::icon`'s three emoji are not in
-                    // the font egui installs, so this tab read "□ Car".
-                    let label = mode.label();
+                    // Icon *and* word. These were words alone, because the three
+                    // emoji the mode used to carry were in no font this app
+                    // loaded and the tab read "□ Car"; the bundled subset has a
+                    // car, a bike and a walker, and a mode picker is exactly the
+                    // control a picture serves — it is read at a glance, over and
+                    // over, and the words are short enough to keep beside them.
+                    let label = format!("{}  {}", icons::travel_mode(mode), mode.label());
                     if ui
                         .selectable_label(
                             selected,
@@ -1368,8 +1346,8 @@ pub fn render_route_panel(
             // and left a blank start looking like a required step.
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                start_row(ui, &mut route, here, &icons, &mut actions);
-                endpoint_row(ui, &mut route, Endpoint::To, here, &icons, &mut actions);
+                start_row(ui, &mut route, here, &mut actions);
+                endpoint_row(ui, &mut route, Endpoint::To, here, &mut actions);
             });
 
             if let Some(end) = route.picking {
@@ -1456,12 +1434,9 @@ pub fn render_route_panel(
                             let resp = ui
                                 .horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new(theme::first_drawable(
-                                            ui.ctx(),
-                                            step.maneuver.icon_candidates(),
-                                        ))
-                                        .size(theme::SIZE_VALUE)
-                                        .color(theme::ACCENT_TEXT),
+                                        egui::RichText::new(icons::maneuver(step.maneuver))
+                                            .size(theme::SIZE_VALUE)
+                                            .color(theme::ACCENT_TEXT),
                                     );
                                     ui.vertical(|ui| {
                                         ui.label(
@@ -1545,7 +1520,6 @@ fn start_row(
     ui: &mut egui::Ui,
     route: &mut RouteState,
     here: Option<(f64, f64)>,
-    icons: &Icons,
     actions: &mut PanelActions,
 ) {
     let has_here = here.is_some();
@@ -1553,10 +1527,10 @@ fn start_row(
     // otherwise the row would snap shut mid-word the frame a suggestion arrived.
     let editing = route.from_editing || route.from.coord.is_none();
     if editing {
-        endpoint_row(ui, route, Endpoint::From, here, icons, actions);
+        endpoint_row(ui, route, Endpoint::From, here, actions);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            if theme::action_button(ui, icons.swap)
+            if theme::action_button(ui, icons::SWAP)
                 .on_hover_text("Swap start and destination")
                 .clicked()
             {
@@ -1583,7 +1557,7 @@ fn start_row(
         let label = if route.from.label == HERE_LABEL {
             // Say what it *means*, not what it is called: "My position" in a field
             // is a value, but as a footnote it reads better as the default it is.
-            format!("{} {}", icons.here, HERE_LABEL)
+            format!("{} {}", icons::HERE, HERE_LABEL)
         } else {
             route.from.label.clone()
         };
@@ -1603,7 +1577,7 @@ fn start_row(
             actions.edit_start = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::action_button(ui, icons.swap)
+            if theme::action_button(ui, icons::SWAP)
                 .on_hover_text("Swap start and destination")
                 .clicked()
             {
@@ -1612,7 +1586,7 @@ fn start_row(
             if theme::action_enabled_because(
                 ui,
                 has_here,
-                icons.here,
+                icons::HERE,
                 "No position yet — the map has not placed you",
             )
             .on_hover_text("Start from my position")
@@ -1660,15 +1634,14 @@ fn endpoint_row(
     // Where the viewer is: enables the "use my position" shortcut, and gives the
     // suggestion rows the distance they quote.
     here: Option<(f64, f64)>,
-    icons: &Icons,
     actions: &mut PanelActions,
 ) {
     let has_here = here.is_some();
     let (glyph, colour, hint) = match end {
-        Endpoint::From => (icons.start, marker_color(ROUTE_START_RGB), "Start"),
+        Endpoint::From => (icons::START, marker_color(ROUTE_START_RGB), "Start"),
         // Phrased as the question rather than as a field name: this is the one
         // thing the panel asks for, and "Destination" reads like a form label.
-        Endpoint::To => (icons.finish, marker_color(ROUTE_FINISH_RGB), "Where to?"),
+        Endpoint::To => (icons::FINISH, marker_color(ROUTE_FINISH_RGB), "Where to?"),
     };
     let wp = match end {
         Endpoint::From => &mut route.from,
@@ -1697,10 +1670,10 @@ fn endpoint_row(
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !wp.label.is_empty() && theme::action_button(ui, icons.clear).clicked() {
+            if !wp.label.is_empty() && theme::action_button(ui, icons::CLEAR).clicked() {
                 actions.cleared = Some(end);
             }
-            if theme::action_button(ui, icons.pick)
+            if theme::action_button(ui, icons::PICK_ON_MAP)
                 .on_hover_text("Pick this point on the map")
                 .clicked()
             {
@@ -1709,7 +1682,7 @@ fn endpoint_row(
             if theme::action_enabled_because(
                 ui,
                 has_here,
-                icons.here,
+                icons::HERE,
                 "No position yet — the map has not placed you",
             )
             .on_hover_text("Use my position")
@@ -2015,8 +1988,8 @@ mod tests {
             );
             for step in &route.steps {
                 println!(
-                    "    {} {:<52} {}",
-                    step.maneuver.icon_candidates()[0],
+                    "    {:<14} {:<52} {}",
+                    format!("{:?}", step.maneuver),
                     step.instruction(),
                     format_distance(step.distance_m)
                 );

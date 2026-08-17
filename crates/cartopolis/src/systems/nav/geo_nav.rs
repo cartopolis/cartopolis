@@ -988,9 +988,9 @@ fn bearing_deg(from: (f64, f64), to: (f64, f64)) -> f64 {
 
 /// The 8-point compass name for a bearing.
 ///
-/// A letter and not an arrow glyph on purpose: the loaded font has none of
-/// `← → ↑ ↓ ↖ ↗ ↘ ↙` (see [`theme::first_drawable`]), so a direction drawn as an
-/// arrow would be a row of empty boxes.
+/// A letter and not an arrow on purpose: this is read as part of a sentence
+/// ("820 m NE"), where a rotating arrow would have to be drawn rather than
+/// written, and eight of them in a list read as noise.
 fn compass_point(deg: f64) -> &'static str {
     const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
     POINTS[(((deg + 22.5) % 360.0) / 45.0) as usize % 8]
@@ -1107,18 +1107,15 @@ fn suggestion_row_inner(
         let mut routed = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            // The ⚑ takes the right edge first and the name gets what is genuinely
-            // left. A `truncate()` label asks for everything available, so laid out
-            // the other way round it would push the button clean off the row — the
-            // same rule the Places rows follow.
+            // The route button takes the right edge first and the name gets what
+            // is genuinely left. A `truncate()` label asks for everything
+            // available, so laid out the other way round it would push the button
+            // clean off the row — the same rule the Places rows follow.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if route_action {
-                    // The glyph the Route panel itself wears, so the button and the
-                    // panel it opens are recognisably one thing — and probed rather
-                    // than guessed, because the bundled font has neither 🧭 nor an
-                    // arrow and a guess draws as an empty box (`theme::first_drawable`).
-                    let flag = theme::first_drawable(ui.ctx(), RightPanel::Route.icons());
-                    routed = theme::action_button(ui, flag)
+                    // The icon the Route panel itself wears, so the button and the
+                    // panel it opens are recognisably one thing.
+                    routed = theme::action_button(ui, RightPanel::Route.icon())
                         .on_hover_text("Route here — make this the destination")
                         .clicked();
                 }
@@ -1613,7 +1610,7 @@ pub fn render_search_panel(
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = RightPanel::Search;
-        close = theme::panel_header(ui, panel.icons(), panel.label());
+        close = theme::panel_header(ui, panel.icon(), panel.label());
         search_ui(ui, &mut nav, viewer);
     });
     // A drag on the panel's edge that pulls it shut writes `open = false` and

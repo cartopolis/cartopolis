@@ -144,6 +144,7 @@ use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
+use crate::systems::icons;
 use crate::systems::navigation::RouteState;
 use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
 use crate::systems::routing::{format_distance, format_duration, Maneuver, Route};
@@ -2039,7 +2040,7 @@ pub fn render_driver_hud(
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             let maneuver = step.map_or(Maneuver::Continue, |s| s.maneuver);
-                            ui.label(big(maneuver_glyph(&ctx, maneuver), 34.0, theme::CREAM));
+                            ui.label(big(icons::maneuver(maneuver), 34.0, theme::CREAM));
                             ui.label(big(
                                 &countdown(progress.step_distance_m),
                                 24.0,
@@ -2066,7 +2067,7 @@ pub fn render_driver_hud(
                                 |ui| {
                                     ui.spacing_mut().item_spacing.x = 3.0;
                                     ui.label(
-                                        egui::RichText::new(maneuver_glyph(&ctx, next.maneuver))
+                                        egui::RichText::new(icons::maneuver(next.maneuver))
                                             .size(16.0)
                                             .color(theme::CREAM),
                                     );
@@ -2204,7 +2205,7 @@ pub fn render_driver_hud(
                             ));
                         }
                         ui.add_space(8.0);
-                        route_rail(ui, &ctx, &ahead, progress, rail_height);
+                        route_rail(ui, &ahead, progress, rail_height);
                         // Stop used to live here, and here is exactly where it
                         // could not be relied on — this whole strip stands down
                         // behind a docked panel. It is on the manoeuvre card now.
@@ -2394,13 +2395,7 @@ fn next_step_gap(route: &Route, progress: Progress) -> f64 {
 /// of car parks in one street becomes a legible column rather than one smudge;
 /// anything pushed past the destination cap is dropped and counted, because a
 /// badge drawn over the flag would claim to be the end of the route.
-fn route_rail(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    ahead: &RouteAhead,
-    progress: Progress,
-    height: f32,
-) {
+fn route_rail(ui: &mut egui::Ui, ahead: &RouteAhead, progress: Progress, height: f32) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -2461,7 +2456,7 @@ fn route_rail(
         painter.text(
             c,
             egui::Align2::CENTER_CENTER,
-            probe_glyph(ctx, item.kind.icon_candidates()),
+            item.kind.icon(),
             egui::FontId::proportional(11.0),
             theme::TEXT,
         );
@@ -2487,7 +2482,7 @@ fn route_rail(
     painter.text(
         egui::pos2(x, top),
         egui::Align2::CENTER_CENTER,
-        probe_glyph(ctx, AheadKind::Destination.icon_candidates()),
+        AheadKind::Destination.icon(),
         egui::FontId::proportional(11.0),
         theme::INK,
     );
@@ -2577,19 +2572,6 @@ fn speed_limit_sign(ui: &mut egui::Ui, limit: u16) {
     );
 }
 
-/// First glyph in `candidates` the loaded font actually has — the same probe
-/// [`maneuver_glyph`] does, over an arbitrary list.
-fn probe_glyph(ctx: &egui::Context, candidates: &'static [&'static str]) -> &'static str {
-    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
-    ctx.fonts_mut(|f| {
-        candidates
-            .iter()
-            .copied()
-            .find(|c| f.has_glyphs(&font, c))
-            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
-    })
-}
-
 /// A readout value.
 fn big(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
     egui::RichText::new(text).size(size).strong().color(color)
@@ -2613,13 +2595,6 @@ fn arrival_clock(h: u32, m: u32, remaining_s: f64, local: bool) -> String {
         .rem_euclid(24 * 60);
     let suffix = if local { "" } else { " UTC" };
     format!("{:02}:{:02}{suffix}", mins / 60, mins % 60)
-}
-
-/// The manoeuvre's arrow, resolved against the font that is actually loaded —
-/// egui ships a thin emoji subset and a missing glyph renders as an empty box
-/// (`navigation::Icons` documents the probing this shares).
-fn maneuver_glyph(ctx: &egui::Context, maneuver: Maneuver) -> &'static str {
-    probe_glyph(ctx, maneuver.icon_candidates())
 }
 
 // ─── Audio guidance ──────────────────────────────────────────────────────────

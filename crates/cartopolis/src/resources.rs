@@ -141,41 +141,33 @@ impl RightPanel {
         }
     }
 
-    /// The panel's glyph, as a *preference list* for
-    /// [`crate::systems::theme::first_drawable`].
+    /// The panel's icon, out of the bundled Material Symbols subset
+    /// ([`crate::systems::icons`]).
     ///
-    /// A list because egui's bundled font subset is much thinner than it looks and
-    /// is not something to guess at — the old bottom bar shipped `🧭` for Route,
-    /// `🤖` for the Assistant and `🧍` for Appearance, and all three drew as empty
-    /// boxes for as long as they existed. Every list ends in a character that
-    /// cannot fail.
+    /// This used to be a *preference list* — `["🔍", "⌕", "S"]` — because the
+    /// glyph came from whatever egui's font stack happened to cover and half the
+    /// obvious choices drew as empty boxes. Shipping the icon font retires that
+    /// whole apparatus: the glyph is present by construction, so there is one
+    /// answer and no ladder.
     ///
     /// Lives on the enum rather than in the dock because the dock is no longer the
     /// only place a panel's icon appears: the header wears it too (and Appearance
     /// and the Assistant have no dock button at all, only a menu entry).
     #[must_use]
-    pub fn icons(self) -> &'static [&'static str] {
+    pub fn icon(self) -> &'static str {
+        use crate::systems::icons;
         match self {
-            Self::None => &[" "],
-            Self::Search => &["🔍", "⌕", "S"],
-            Self::Layers => &["🗺", "▤", "◈", "L"],
-            Self::Places => &["★", "☆", "•", "P"],
-            // A destination flag, not a compass rose: `🧭` is not in the font, and
-            // a rose would collide with the actual compass in the corner anyway.
-            Self::Route => &["⚑", "🧭", "➤", "R"],
-            Self::Assistant => &["🤖", "✨", "◎", "AI"],
-            Self::Chat => &["💬", "🗨", "◎", "C"],
-            Self::Appearance => &["🧍", "🙂", "☺", "A"],
-            // A page of text, not a scroll: `📜` draws as a box in the bundled
-            // subset, like every other glyph that was guessed at rather than
-            // checked (see the note above).
-            Self::Script => &["📝", "✎", "▤", "S"],
-            // `⚙` is the obvious one and, like `🧭` and `✕` before it, is not in
-            // the bundled subset — hence the ladder down to a letter.
-            Self::Settings => &["⚙", "⚒", "◈", "S"],
-            // `ⓘ` is not in the bundled subset either; `◎` is one of the few
-            // symbols probing shows the font actually has (see the note above).
-            Self::About => &["ℹ", "ⓘ", "◎", "?"],
+            Self::None => " ",
+            Self::Search => icons::SEARCH,
+            Self::Layers => icons::LAYERS,
+            Self::Places => icons::BOOKMARK,
+            Self::Route => icons::ROUTE,
+            Self::Assistant => icons::ASSISTANT,
+            Self::Chat => icons::CHAT,
+            Self::Appearance => icons::APPEARANCE,
+            Self::Script => icons::SCRIPT,
+            Self::Settings => icons::SETTINGS,
+            Self::About => icons::ABOUT,
         }
     }
 }

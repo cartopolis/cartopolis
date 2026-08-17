@@ -154,11 +154,8 @@ pub fn render_dock(
         menu.open = false;
     }
     let ctx = egui.ctx_mut();
-    let icons: Vec<&'static str> = ENTRIES
-        .iter()
-        .map(|p| theme::first_drawable(ctx, p.icons()))
-        .collect();
-    let layers_icon = theme::first_drawable(ctx, RightPanel::Layers.icons());
+    let icons: Vec<&'static str> = ENTRIES.iter().map(|p| p.icon()).collect();
+    let layers_icon = RightPanel::Layers.icon();
 
     let mut clicked: Option<RightPanel> = None;
     let mut menu_clicked = false;

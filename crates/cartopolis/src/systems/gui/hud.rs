@@ -355,11 +355,13 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
             if let Some(error) = &tracking.error {
                 // Appended rather than replacing: the mode really is on, and a
                 // caption that said only "denied" over a lit button would leave
-                // nothing to explain what the button is still doing. No warning
-                // glyph in front of it — `⚠` is not in the bundled font subset
-                // (`theme::first_drawable`'s inventory), and a tofu box is a worse
-                // sign of trouble than none.
+                // nothing to explain what the button is still doing. The warning
+                // sign in front of it had to wait for the icon font — `⚠` was in
+                // none of the fonts egui ships, and a tofu box is a worse sign of
+                // trouble than none.
                 s.push('\n');
+                s.push_str(crate::systems::icons::WARNING);
+                s.push(' ');
                 s.push_str(error);
             }
             s.push_str("\nClick to stop");

@@ -10,7 +10,8 @@ icons, audio, the `docs/img` screenshots — are in LFS by default (`.gitattribu
 matches by extension, so a new one needs no setup), and four of them (brand font,
 app icon, star catalog, tile fixtures) are `include_bytes!`-ed at compile time —
 without the smudge filter `cargo build` embeds 130-byte pointer files and
-succeeds, then panics at runtime. Same reason every CI job sets `lfs: true`. See
+succeeds, then panics at runtime (the icon font `systems::icons` bundles is a
+fifth). Same reason every CI job sets `lfs: true`. See
 [`assets/README.md`](../../assets/README.md).
 
 ## Prerequisites
@@ -74,7 +75,7 @@ phases in `lib.rs`:
 | `systems/map/` | `map_stream`, `map_geometry`, `tile_loader`, `tile_source`, `rendering`, `globe`, `globe_ocean`, `globe_weather`, `osm_buildings`, `lod22`, `terrain`, `height`, `water`, `vegetation`, `street_furniture`, `street_labels`, `weather` |
 | `systems/nav/` | `navigation`, `route_ahead`, `driver`, `geo_nav`, `transit_live`, `transit_vehicles` |
 | `systems/player/` | `avatar`, `collision`, `free_camera`, `picking`, `gizmo`, `prim_geo` |
-| `systems/gui/` | `egui_manager`, `theme`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
+| `systems/gui/` | `egui_manager`, `theme`, `icons`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
 | `systems/net/` | `network`, `user_store` (plus `../login.rs`, `../solo.rs`) |
 | `systems/dev/` | `shot_harness`, `shot_presets`, `debug`, `desktop_integration`, `window_icon` |
 | `platform/` | `http`, `storage`, `location`, `stream`, `work`, `workers` (native vs wasm behind one API) |

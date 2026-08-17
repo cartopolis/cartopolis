@@ -54,15 +54,19 @@ pub enum InteractKind {
 }
 
 impl InteractKind {
+    /// The icon the prompt wears, out of the bundled subset
+    /// ([`crate::systems::icons`]).
+    ///
+    /// Props used to share one `•`, because there was no font to draw a bench in
+    /// and this call site has no egui `Context` to probe one with. The icon font
+    /// has a picture for each form, so a bench, a bin and a fountain now look
+    /// like what you walked up to.
     #[must_use]
     pub fn glyph(self) -> &'static str {
+        use crate::systems::icons;
         match self {
-            Self::Place { category, .. } => category.glyph(),
-            // `•`, not `🪑` and not `📌`: the bundled font stack has almost no
-            // emoji at all (see `theme::first_drawable`), and this call site has
-            // no `Context` to run a fallback ladder against, so it has to be a
-            // character known to be in the stack.
-            Self::Prop(_) => "•",
+            Self::Place { category, .. } => icons::poi(category),
+            Self::Prop(kind) => icons::furniture(kind),
         }
     }
 

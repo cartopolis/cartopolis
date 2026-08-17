@@ -53,6 +53,8 @@ use egui::{
     Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
 };
 
+use crate::systems::icons;
+
 // ─── Palette ──────────────────────────────────────────────────────────────────
 
 /// Deeper than any of the surface tones: text-edit wells, code blocks, and the
@@ -194,6 +196,32 @@ fn fonts() -> egui::FontDefinitions {
         BRAND_FAMILY.to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(BRAND_TTF)),
     );
+    // The icon face (`systems::icons`). Its codepoints are all private-use, so it
+    // can never shadow a character another font in the stack would have drawn —
+    // which is why it is appended to *every* family rather than kept in one of
+    // its own: an icon has to render wherever a label does, including inside a
+    // heading in the brand family and beside a monospace readout.
+    fonts.font_data.insert(
+        icons::FONT_NAME.to_owned(),
+        std::sync::Arc::new(
+            egui::FontData::from_static(icons::FONT).tweak(egui::FontTweak {
+                // Material Symbols draws on a full em square (advance 1.0 em, ink
+                // from −0.1 to 0.88 em), so at the *same* point size as the text
+                // beside it an icon reads a size too big, sits a touch high, and
+                // raises the row height of every line it appears in. These two
+                // numbers are the whole optical fit — `docs/notes/icon-font.md`
+                // has where they come from and when to re-check them.
+                scale: 1.15,
+                y_offset_factor: 0.03,
+                ..Default::default()
+            }),
+        ),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        if let Some(stack) = fonts.families.get_mut(&family) {
+            stack.push(icons::FONT_NAME.to_owned());
+        }
+    }
     // Prepend to a *copy* of the proportional stack rather than pushing onto it:
     // the brand face wins where it has the glyph, egui's fallbacks cover the rest,
     // and `Proportional` itself is left alone so body text keeps its own face.
@@ -703,41 +731,16 @@ pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
 
 // ─── Glyphs ───────────────────────────────────────────────────────────────────
 
-/// The first of `candidates` the loaded font can actually draw.
-///
-/// egui bundles Ubuntu-Light, NotoEmoji-Regular and emoji-icon-font, and a
-/// character in none of the three renders as an empty box. The union is thinner
-/// than it looks *and* wider than the guesses people make about it, which is why
-/// this is a probe rather than a list anyone maintains by eye.
-///
-/// The inventory below was re-derived from the four cmaps in the `Proportional`
-/// stack on 2026-08-10, and it corrected the previous one in both directions:
-///
-///   - **Missing** (draws as tofu): `⇅ ⬤ ← → ↑ ↓ ↰ ↱ ✕ ✓ 🖈 ● ▲ ▼ ≡ ⌫ ⏎ ⇧ 🧭 🤖 🧍 ⧉ 🪑`.
-///   - **Present**, contrary to the note that used to stand here: `📍 📋 ⎘ ⬆ ⬅ ➡ ⊞
-///     ✔ ☆ ★ 🏠 ☀ 🌙 ☰ ⏵ ⏴ ⏶ ⏷ ⌖ ◎ ○ • ⚑ ↻ ⟲ ▶ ◀ ⚙ 🔍 💬 🗺 📌 …`. An
-///     over-conservative inventory is not free: it sends the next person down a
-///     fallback ladder for a glyph the font has, and `📍` — the obvious mark for
-///     a place pin — spent that whole time declared unavailable.
-///
-/// So no icon in the app is hard-coded to a guess: each is picked from a
-/// preference list whose last entry is Latin-1 and therefore cannot fail. The
-/// test `no_painted_glyph_is_tofu` walks the source and holds every call site to
-/// that rule.
-///
-/// Lives here rather than beside any one panel because the answer depends on
-/// [`fonts`] — change the font stack and every icon list has to be re-probed
-/// against it, from one place.
-pub fn first_drawable(ctx: &egui::Context, candidates: &[&'static str]) -> &'static str {
-    let font = egui::TextStyle::Body.resolve(&ctx.style_of(ctx.theme()));
-    ctx.fonts_mut(|f| {
-        candidates
-            .iter()
-            .copied()
-            .find(|c| f.has_glyphs(&font, c))
-            .unwrap_or_else(|| candidates.last().copied().unwrap_or("?"))
-    })
-}
+// The preference ladder that used to live here — `first_drawable(ctx, &["🔍",
+// "⌕", "S"])`, which probed the loaded font and fell back to a letter — went
+// with the icons it existed for. They come from `systems::icons` now, a font the
+// app ships, so there is nothing left to fall back *to*. What the ladder was
+// working around is still true of egui's own stack, and still applies to any
+// non-Latin-1 character somebody types straight into a label: its coverage is
+// both thinner than it looks and wider than the guesses people make about it
+// (probing the four cmaps on 2026-08-10 found `⇅ ⬤ ← → ↰ ✕ ✓ ⌫ ⏎ ⇧ 🧭 🤖 🧍`
+// missing and `📍 📋 ⬆ ✔ ★ 🏠 ☰ ⌖ ◎ • ⚑ ↻ ▶ ⚙ 🔍 💬 🗺` present). That is what
+// `tests::no_painted_glyph_is_tofu` still walks the source for.
 
 // ─── Shared frames ────────────────────────────────────────────────────────────
 
@@ -1168,7 +1171,7 @@ pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 
 /// The ✕ every panel closes with — **painted, not typed.**
 ///
-/// `✕` is not in the bundled font (see [`first_drawable`]), so every panel that
+/// `✕` is in none of the fonts egui ships, so every panel that
 /// spelled its close button `ui.button("✕")` drew an empty box; the multiplication
 /// sign that survives the probe is a comma-sized cross that reads as a typo at
 /// button size. Two line segments have neither problem: they land on the pixel
@@ -1210,7 +1213,7 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
 /// Painted for the reason the close button is, only more so: *every* vertical
 /// ellipsis is missing from the bundled font. `⋮` (U+22EE), `︙` (U+FE19), `⁝`
 /// (U+205D), `⠇` (braille) and even the horizontal `⋯` all fail
-/// [`first_drawable`]'s probe, so there is no fallback chain to write here —
+/// a probe of the loaded fonts, so there is no fallback chain to write here —
 /// the survivors are `…` and `☰`, and neither of those is this control. Three
 /// dots on the pixel grid have no font subset to depend on.
 ///
@@ -1270,19 +1273,18 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
 /// beneath it), a fill one step up from the panel, and a hairline highlight
 /// along the top edge — the lit edge is what turns a lighter rectangle into a
 /// raised one.
-pub fn panel_header(ui: &mut egui::Ui, icons: &[&'static str], title: &str) -> bool {
-    panel_header_with(ui, icons, title, |_| {})
+pub fn panel_header(ui: &mut egui::Ui, icon: &str, title: &str) -> bool {
+    panel_header_with(ui, icon, title, |_| {})
 }
 
 /// [`panel_header`] plus room for extra actions, laid out right-to-left from the
 /// close button (the Places panel's "+ Folder").
 pub fn panel_header_with(
     ui: &mut egui::Ui,
-    icons: &[&'static str],
+    icon: &str,
     title: &str,
     extra: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let icon = first_drawable(ui.ctx(), icons);
     let avail = ui.available_rect_before_wrap();
     let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), header_height()));
     let radius = CornerRadius::same(RADIUS);
@@ -1982,10 +1984,14 @@ mod tests {
         Some(panel)
     }
 
-    /// No panel may wear a glyph the font cannot draw. [`first_drawable`] only
-    /// promises to fall back to the *last* candidate, so a list whose tail is
-    /// itself missing (`🧭`, `🤖`, `🧍` all were) still renders an empty box — and
-    /// now that the header repeats the dock's icon, one bad list draws tofu twice.
+    /// No panel may wear a glyph the font cannot draw.
+    ///
+    /// Kept after the icon font landed, and narrower than
+    /// `icons::tests::every_icon_has_a_glyph`: that one checks the table, this
+    /// one checks that each panel is actually *wired* to a row of it. A panel
+    /// added with a hand-typed glyph — which is how `🧭`, `🤖` and `🧍` shipped as
+    /// empty boxes, twice over once the header started repeating the dock's icon
+    /// — fails here rather than on somebody's screen.
     #[test]
     fn every_panel_icon_resolves_to_a_glyph_the_font_has() {
         let ctx = egui::Context::default();
@@ -2000,11 +2006,11 @@ mod tests {
                 let mut seen = 0;
                 while let Some(panel) = panel_at(seen) {
                     seen += 1;
-                    let icon = first_drawable(ui.ctx(), panel.icons());
+                    let icon = panel.icon();
                     let font = TextStyle::Body.resolve(ui.style());
                     assert!(
                         ui.ctx().fonts_mut(|f| f.has_glyphs(&font, icon)),
-                        "{}: resolved to {icon:?}, which the font cannot draw",
+                        "{}: wears {icon:?}, which the font cannot draw",
                         panel.label(),
                     );
                 }
@@ -2023,7 +2029,7 @@ mod tests {
     }
 
     /// Every string literal in a file, with comments, `#[cfg(test)]` modules and
-    /// [`first_drawable`] preference lists already accounted for.
+    /// preference lists (see [`literals_of`]) already accounted for.
     ///
     /// Deliberately a 60-line lexer rather than a regex: a regex over Rust source
     /// cannot tell `"//"` inside a string from a comment, and getting *that*
@@ -2136,10 +2142,11 @@ mod tests {
             i += 1;
         }
 
-        // A bracketed run of nothing but string literals is a `first_drawable`
-        // preference list, and its whole point is that the earlier entries may be
-        // missing — only the last one has to resolve. Recognising that here is
-        // what keeps the test from flagging the very mechanism that fixes it.
+        // A bracketed run of nothing but string literals is a preference list —
+        // the shape `first_drawable` took before the icon font retired it, and
+        // one anybody may write again for a non-icon glyph. Its whole point is
+        // that the earlier entries may be missing and only the last has to
+        // resolve, so the scan skips all but the last.
         let mut fallback_only = vec![false; lits.len()];
         let mut k = 0;
         while k < lits.len() {
@@ -2199,29 +2206,7 @@ mod tests {
     /// **Currently empty, and that is the goal state.** All five entries it was
     /// created with were fixed the same day it was written; the const stays so the
     /// next one has an obvious place to be recorded rather than silenced.
-    const KNOWN_TOFU: &[(&str, char, &str)] = &[
-        // `TravelMode::icon`'s three codepoints are the right *intent* for a
-        // car, a bike and a walker, and none of them is in the font egui
-        // installs. They are kept in the table against a future font stack and
-        // are drawn nowhere: the Route panel's tabs render `label()` alone,
-        // because "□ Car" is worse than "Car". Excused, not fixed — if a caller
-        // ever appears, this entry is the argument it has to answer.
-        (
-            "routing.rs",
-            '🚗',
-            "TravelMode::icon — retained intent, no call site",
-        ),
-        (
-            "routing.rs",
-            '🚲',
-            "TravelMode::icon — retained intent, no call site",
-        ),
-        (
-            "routing.rs",
-            '🚶',
-            "TravelMode::icon — retained intent, no call site",
-        ),
-    ];
+    const KNOWN_TOFU: &[(&str, char, &str)] = &[];
 
     /// Walk every `.rs` file under the crate and collect them.
     fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -2240,12 +2225,14 @@ mod tests {
 
     /// **Nothing the app paints may be a glyph the font lacks.**
     ///
-    /// [`first_drawable`] exists to guarantee this and is used at six sites
-    /// against some thirty hard-coded glyphs, so the guarantee held wherever
-    /// somebody remembered it. Two characters were shipping as empty boxes when
-    /// this was written — the HUD's `⧉` copy button and the furniture prompt's
-    /// `🪑` — and neither is visible in a review, a `cargo check` or a screenshot
-    /// nobody happens to take of that corner.
+    /// The icons this rule was written for are gone from the source: they live
+    /// in [`crate::systems::icons`] now, as constants backed by a font the app
+    /// ships, and `icons::tests::every_icon_has_a_glyph` is what checks *those*.
+    /// This test still matters for everything else — a `≈` in a readout, a `°`,
+    /// the next symbol somebody types straight into a label — which is exactly
+    /// the case that shipped broken twice: the HUD's `⧉` copy button and the
+    /// furniture prompt's `🪑`, neither visible in a review, a `cargo check` or a
+    /// screenshot nobody happens to take of that corner.
     ///
     /// So the test does what a reviewer cannot: it reads the source, takes every
     /// short string literal that is not part of a preference list, and asks the
@@ -2255,13 +2242,15 @@ mod tests {
     #[test]
     fn no_painted_glyph_is_tofu() {
         // **Both crates that put a glyph on screen, not just this one.**
-        // `cartopolis_geo` owns two hard-coded icon tables — `PoiCategory::glyph`
-        // and `TravelMode::icon` — whose output is painted straight into the
-        // interact prompt and the route panel. Scanning only this crate's `src`
-        // let `🛍` (Shop) and `🛏` (Lodging) ship as empty boxes for as long as
-        // they existed: the rule was right and its reach stopped at a crate
-        // boundary. `cartopolis_geo` cannot depend on Bevy or egui, so it cannot
-        // host this test — which is exactly why the test has to come to it.
+        // `cartopolis_geo` used to own two hard-coded icon tables —
+        // `PoiCategory::glyph` and `TravelMode::icon` — whose output was painted
+        // straight into the interact prompt and the route panel. Scanning only
+        // this crate's `src` let `🛍` (Shop) and `🛏` (Lodging) ship as empty
+        // boxes for as long as they existed: the rule was right and its reach
+        // stopped at a crate boundary. Those tables moved to `systems::icons`
+        // with the icon font, but the reach is kept — a label written over there
+        // is painted over here just the same, and `cartopolis_geo` cannot depend
+        // on egui, so it cannot host this test itself.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let roots = [manifest.join("src"), manifest.join("../geo/src")];
         let mut files = Vec::new();
@@ -2327,8 +2316,9 @@ mod tests {
                     .collect();
                 assert!(
                     unexcused.is_empty(),
-                    "the font cannot draw these, so they paint as empty boxes — pick them \
-                     with `theme::first_drawable` from a list ending in something Latin-1:\n  {}",
+                    "the font cannot draw these, so they paint as empty boxes — if it is \
+                     an icon, take it from `systems::icons`; otherwise use something \
+                     Latin-1, which every font here covers:\n  {}",
                     unexcused.join("\n  ")
                 );
 

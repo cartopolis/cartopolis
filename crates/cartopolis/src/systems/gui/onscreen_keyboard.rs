@@ -64,6 +64,7 @@
 use bevy::prelude::*;
 
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::theme;
 
 // ─── Platform predicate ───────────────────────────────────────────────────────
@@ -271,7 +272,8 @@ const LETTER_ROWS: [&str; 3] = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 
 /// The symbol layer, as (base, alternate) pairs by position. Deliberately ASCII
 /// throughout: egui's bundled font is Ubuntu-Light plus a thin emoji subset
-/// (`theme::first_drawable` documents how thin), and a `€` or a `¿` that renders
+/// (`systems::icons` documents how thin, and why the icons left it), and a `€`
+/// or a `¿` that renders
 /// as an empty box is worse than not offering it.
 const SYMBOL_ROWS: [(&str, &str); 3] = [
     ("1234567890", "!@#$%^&*()"),
@@ -730,7 +732,7 @@ pub fn render_onscreen_keyboard(mut egui: ResMut<EguiManager>, mut kb: ResMut<On
 /// Draw the slab and return the key that was tapped this frame, if any.
 fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) -> Option<Cap> {
     let id = egui::Id::new("onscreen_keyboard");
-    let glyphs = Glyphs::resolve(ctx);
+    let glyphs = Glyphs::resolve();
     let rows = rows(layer);
 
     let inner = egui::Area::new(id)
@@ -801,12 +803,14 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState) ->
     inner.inner
 }
 
-/// The glyphs the bundled font can actually draw for the non-character keys.
+/// The symbols on the non-character keys, out of the bundled subset
+/// ([`crate::systems::icons`]).
 ///
-/// egui ships Ubuntu-Light plus a thin emoji subset, and `theme::first_drawable`
-/// documents how thin: no `⌫`, no `⇧`, no `←`. Every list here ends in something
-/// Latin-1 (or plain words) so a missing glyph degrades to a legible label
-/// instead of a tofu box on the one control the user cannot get past.
+/// These were preference ladders — `["⌫", "⌦", "del"]` — because egui's own font
+/// stack has no `⌫`, no `⇧` and no `←`, and the fallback on the one control the
+/// user cannot get past had to be a word. The icon font draws all six, so the
+/// struct is a plain table now; it stays a struct so the key layout keeps
+/// reading `g.backspace` rather than naming a module in every cell.
 struct Glyphs {
     backspace: &'static str,
     enter: &'static str,
@@ -817,14 +821,14 @@ struct Glyphs {
 }
 
 impl Glyphs {
-    fn resolve(ctx: &egui::Context) -> Self {
+    fn resolve() -> Self {
         Self {
-            backspace: theme::first_drawable(ctx, &["⌫", "⌦", "del"]),
-            enter: theme::first_drawable(ctx, &["⏎", "↵", "OK"]),
-            shift: theme::first_drawable(ctx, &["⇧", "⏶", "^"]),
-            hide: theme::first_drawable(ctx, &["⌄", "⏷", "v"]),
-            left: theme::first_drawable(ctx, &["◀", "⏴", "<"]),
-            right: theme::first_drawable(ctx, &["▶", "⏵", ">"]),
+            backspace: icons::BACKSPACE,
+            enter: icons::ENTER,
+            shift: icons::SHIFT,
+            hide: icons::HIDE_KEYBOARD,
+            left: icons::CHEVRON_LEFT,
+            right: icons::CHEVRON_RIGHT,
         }
     }
 }
@@ -899,7 +903,7 @@ fn paint_key(
         }
         // Drawn, not lettered: "All" is a translation problem, `⌘A` names a key
         // this device does not have, and the bundled font's symbol coverage is
-        // too thin to gamble a glyph on (`theme::first_drawable`). A selection
+        // too thin to gamble a glyph on (`systems::icons`). A selection
         // band across a line of text is what the key *does*, at any size.
         Cap::SelectAll => {
             let band = rect.shrink2(egui::vec2(rect.width() * 0.22, rect.height() * 0.34));

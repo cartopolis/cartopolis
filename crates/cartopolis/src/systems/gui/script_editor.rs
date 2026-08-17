@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use crate::resources::{OnlineSession, RightPanel};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::theme;
 
 /// Console scrollback, per prim. A script capped at 64 commands a tick fills this
@@ -276,7 +277,7 @@ pub fn render_script_panel(
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = RightPanel::Script;
-        close = theme::panel_header(ui, panel.icons(), panel.label());
+        close = theme::panel_header(ui, panel.icon(), panel.label());
 
         let Some(prim_id) = prim_id else {
             ui.label(
@@ -298,12 +299,14 @@ pub fn render_script_panel(
             // separate unsaved marker rather than one combined state.
             let (dot, tip) = if editor.running {
                 (
-                    // `◎`, not `●`: U+25CF is in none of the four bundled fonts.
-                    "◎ running",
+                    format!("{} running", icons::RUNNING),
                     "the server is running a compiled copy of this script",
                 )
             } else {
-                ("○ stopped", "this prim has no script running")
+                (
+                    format!("{} stopped", icons::STOPPED),
+                    "this prim has no script running",
+                )
             };
             ui.label(egui::RichText::new(dot).color(if editor.running {
                 theme::ACCENT

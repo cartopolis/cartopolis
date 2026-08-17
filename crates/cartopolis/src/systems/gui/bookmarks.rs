@@ -50,6 +50,7 @@ use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{
     nominatim_base_url, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
 };
+use crate::systems::icons;
 use crate::systems::theme;
 use crate::systems::user_store::UserStore;
 
@@ -401,16 +402,13 @@ fn rename_field(ui: &mut egui::Ui, item: Item, edit: &mut Rename) -> bool {
         Item::Folder(id) => egui::Id::new(("folder_rename", id)),
     };
     let mut commit = false;
-    // ✔ takes the right edge first, then the field is sized from what is
+    // The apply button takes the right edge first, then the field is sized from what is
     // genuinely left. Reserving a guessed width for the button instead made the
     // row a few points wider than the panel — and a resizable `Panel` stores its
     // size from its content rect, so the panel grew by that much *every frame*
     // for as long as the field was open.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        commit = ui
-            .button(theme::first_drawable(ui.ctx(), &["✔", "✓", "OK"]))
-            .on_hover_text("Apply")
-            .clicked();
+        commit = ui.button(icons::CHECK).on_hover_text("Apply").clicked();
         // `desired_width` is the field's *text* width; its frame padding and
         // stroke sit outside that, so they have to come off too.
         let margin = 2.0 * ui.spacing().button_padding.x + 4.0;
@@ -502,18 +500,21 @@ pub fn render_bookmarks_panel(
     .show_collapsible(ui_root, &mut open, |ui| {
         let panel = crate::resources::RightPanel::Places;
         // The two add buttons are a row of their own under the header, not header
-        // actions. Both are spelled out — 📁 is not in the bundled icon font and
-        // renders as a tofu box — and two words plus a medallion, a title and a
-        // close button do not fit across a 300 pt panel: the header gave the
-        // buttons the right edge and truncated its own name to "Save…", which is
-        // the one thing in a header nobody can do without.
-        act.close = crate::systems::theme::panel_header(ui, panel.icons(), panel.label());
+        // actions: two words plus a medallion, a title and a close button do not
+        // fit across a 300 pt panel — the header gave the buttons the right edge
+        // and truncated its own name to "Save…", which is the one thing in a
+        // header nobody can do without. They carry their icon *and* their word,
+        // because side by side the word is what tells them apart.
+        act.close = crate::systems::theme::panel_header(ui, panel.icon(), panel.label());
         ui.horizontal(|ui| {
             // Disabled rather than hidden before the world anchor exists: there is
             // nowhere to save *yet*, and a button that comes and goes is harder to
             // find again than one that is greyed.
             if ui
-                .add_enabled(has_place, egui::Button::new("+ Place"))
+                .add_enabled(
+                    has_place,
+                    egui::Button::new(format!("{} Place", icons::BOOKMARK_ADD)),
+                )
                 .on_hover_text("Save where you are now, with this view")
                 .on_disabled_hover_text("No position yet — the world is still loading")
                 .clicked()
@@ -521,7 +522,7 @@ pub fn render_bookmarks_panel(
                 act.new_place = true;
             }
             if ui
-                .button("+ Folder")
+                .button(format!("{} Folder", icons::NEW_FOLDER))
                 .on_hover_text("New folder — drag places into it to group them")
                 .clicked()
             {
@@ -741,12 +742,15 @@ fn folder_row(
                 // Confirmed, unlike its neighbours: this is one 32 pt target
                 // away from Rename, and the row it deletes may be holding a
                 // folded subtree the user cannot currently see.
-                if theme::confirm_button(ui, ui.id().with(("delete_folder", id)), "🗑", "Delete?")
-                {
+                if theme::confirm_button(
+                    ui,
+                    ui.id().with(("delete_folder", id)),
+                    icons::DELETE,
+                    "Delete?",
+                ) {
                     act.delete_folder = Some(id);
                 }
-                let rename_icon = theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"]);
-                if theme::action_button(ui, rename_icon)
+                if theme::action_button(ui, icons::RENAME)
                     .on_hover_text("Rename")
                     .clicked()
                 {
@@ -955,10 +959,9 @@ fn place_menu(
     ui.set_min_width(190.0);
 
     // A saved place is the destination that needs no typing, which is what makes
-    // it the important one on a phone. It wears the Route panel's own glyph
-    // (probed, never guessed — `theme::first_drawable`) so the entry and the panel
-    // it opens read as one thing.
-    let flag = theme::first_drawable(ui.ctx(), crate::resources::RightPanel::Route.icons());
+    // it the important one on a phone. It wears the Route panel's own icon, so
+    // the entry and the panel it opens read as one thing.
+    let flag = crate::resources::RightPanel::Route.icon();
     if ui.button(format!("{flag}  Route here")).clicked() {
         act.route = Some((name.to_string(), lat, lng));
         ui.close();
@@ -1004,23 +1007,14 @@ fn place_menu(
     if ui
         .add_enabled(
             can_update,
-            egui::Button::new(format!(
-                "{}  Update to the current view",
-                theme::first_drawable(ui.ctx(), &["🔄", "↻", "·"])
-            )),
+            egui::Button::new(format!("{}  Update to the current view", icons::REFRESH)),
         )
         .clicked()
     {
         act.update = Some(id);
         ui.close();
     }
-    if ui
-        .button(format!(
-            "{}  Rename",
-            theme::first_drawable(ui.ctx(), &["✏", "✎", "Aa"])
-        ))
-        .clicked()
-    {
+    if ui.button(format!("{}  Rename", icons::RENAME)).clicked() {
         *editing = Some(Rename {
             item: Item::Place(id),
             buf: name.to_string(),

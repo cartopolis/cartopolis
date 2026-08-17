@@ -281,11 +281,10 @@ pub fn render_interaction_prompt(
                     {
                         acted = true;
                     }
-                    // Probed, not guessed, and the Route panel's own glyph — see
-                    // `theme::first_drawable` and `RightPanel::icons`.
-                    let flag = theme::first_drawable(ui.ctx(), RightPanel::Route.icons());
+                    // The Route panel's own icon, so the button and the panel it
+                    // opens read as one thing.
                     if ui
-                        .button(flag)
+                        .button(RightPanel::Route.icon())
                         .on_hover_text("Route here — make this the destination")
                         .clicked()
                     {

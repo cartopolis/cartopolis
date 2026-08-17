@@ -55,6 +55,7 @@ use bevy::prelude::*;
 use crate::platform::audio::{self, AudioInput};
 use crate::resources::{AppPrefs, QualityPreset, RightPanel, SunMode, Units};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::theme;
 
 /// Which tab of the Settings panel is showing.
@@ -176,7 +177,7 @@ pub fn render_settings_panel(
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = RightPanel::Settings;
-        close = theme::panel_header(ui, panel.icons(), panel.label());
+        close = theme::panel_header(ui, panel.icon(), panel.label());
 
         ui.horizontal_wrapped(|ui| {
             for tab in SettingsTab::ALL {
@@ -672,10 +673,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     if ui
         .add_enabled(
             cfg!(feature = "audio"),
-            egui::Button::new(format!(
-                "{}  Sound test",
-                theme::first_drawable(ui.ctx(), &["▶", "►", "·"])
-            )),
+            egui::Button::new(format!("{}  Sound test", icons::PLAY)),
         )
         .clicked()
     {
@@ -743,11 +741,9 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut SettingsState, prefs: &mut AppPrefs)
     ui.horizontal(|ui| {
         if ui
             .button(if running {
-                "■  Stop"
+                format!("{}  Stop", icons::STOP)
             } else {
-                // `◎`, not `●`: U+25CF is in none of the four bundled fonts and
-                // painted an empty box on the one control this panel is about.
-                "◎  Test microphone"
+                format!("{}  Test microphone", icons::MIC)
             })
             .clicked()
         {
@@ -936,7 +932,7 @@ pub fn render_about_panel(
     crate::systems::egui_manager::responsive_right_panel("about_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             let panel = RightPanel::About;
-            close = theme::panel_header(ui, panel.icons(), panel.label());
+            close = theme::panel_header(ui, panel.icon(), panel.label());
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {

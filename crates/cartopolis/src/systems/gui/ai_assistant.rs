@@ -301,7 +301,7 @@ pub fn render_ai_panel(
     crate::systems::egui_manager::responsive_right_panel("ai_panel", compact, viewport_w, 320.0)
         .show_collapsible(egui.ui_mut(), &mut open, |ui| {
             let panel = crate::resources::RightPanel::Assistant;
-            close = theme::panel_header(ui, panel.icons(), panel.label());
+            close = theme::panel_header(ui, panel.icon(), panel.label());
 
             if config.api_key.is_none() {
                 ui.colored_label(theme::WARN, "Set ANTHROPIC_API_KEY in .env to enable.");

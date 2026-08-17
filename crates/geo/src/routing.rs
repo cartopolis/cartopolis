@@ -174,21 +174,6 @@ impl TravelMode {
         }
     }
 
-    #[must_use]
-    /// **Tofu, all three, in the font egui actually ships** — see
-    /// `PoiCategory::glyph` for the measurement. Kept rather than deleted
-    /// because the codepoints are the right *intent* and a future font stack may
-    /// carry them; the one call site (the Route panel's travel-mode tabs) draws
-    /// `label()` alone now, since a tab reading "Car" needs no help and a tab
-    /// reading "□ Car" is worse than one reading "Car".
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::Car => "🚗",
-            Self::Bike => "🚲",
-            Self::Foot => "🚶",
-        }
-    }
-
     /// Fastest speed the mode can reach anywhere, in m/s. The A* heuristic divides
     /// the straight-line distance by this; anything *higher* than the real maximum
     /// keeps the heuristic admissible (never over-estimates), so this errs upward.
@@ -1627,25 +1612,11 @@ impl Maneuver {
         }
     }
 
-    /// Arrow glyphs for the turn list, best first.
-    ///
-    /// A list rather than one glyph because the panel's font may not have the nice
-    /// one — `navigation::first_drawable` picks the first it can actually draw, and
-    /// the last entry is ASCII so it always can. A terminal (the `solves_a_real_route`
-    /// check) just takes the head.
-    #[must_use]
-    pub fn icon_candidates(self) -> &'static [&'static str] {
-        match self {
-            Self::Depart => &["⬤", "●", "•", "o"],
-            Self::Continue => &["⬆", "↑", "^"],
-            Self::SlightLeft => &["↖", "⬉", "<"],
-            Self::Left | Self::SharpLeft => &["↰", "⬅", "←", "<"],
-            Self::SlightRight => &["↗", "⬈", ">"],
-            Self::Right | Self::SharpRight => &["↱", "➡", "→", ">"],
-            Self::UTurn => &["↻", "↩", "U"],
-            Self::Arrive => &["⚑", "🏁", "◆", "x"],
-        }
-    }
+    // The arrow each of these is drawn with lives in the client
+    // (`cartopolis::systems::icons::maneuver`), not here: it is a codepoint in a
+    // font that crate bundles, and this one has no business knowing which. What
+    // belongs here is the *distinction* — a sharp left is not a left — and that
+    // is what the enum carries.
 }
 
 /// Why a route could not be produced. Each variant maps to a message the planner
