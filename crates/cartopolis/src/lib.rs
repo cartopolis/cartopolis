@@ -1290,14 +1290,23 @@ fn run_client() {
         // memory versus 4096² for a barely-perceptible near-shadow softness at this
         // scene's cascade distances.
         //
-        // Halved again on the phone tier, which is not the same trade. There
-        // shadows are off by default (`quality::Budget::shadows`), so this is what
-        // a user who switches them back on pays: 1024² is a soft shadow on a
-        // 540-px-wide render target, and 4 MB of depth rather than 16 MB on a
-        // device where GPU memory is the same memory the 71 MB module is living
-        // in.
+        // Halved below the desktop rung, which is not the same trade: 1024² is 4 MB
+        // of depth per cascade rather than 16, on machines where GPU memory is the
+        // same memory the module is living in.
+        //
+        // **`tier < Desktop`, not `is_phone()`.** It was the latter, which read as
+        // "a handset gets the small one" right up until Android moved off the phone
+        // rung — at which point every handset silently took a workstation's 2048²
+        // across three cascades and two lights, in a change whose commit message
+        // listed the fields it was moving and did not know about this one. A test
+        // keyed on the *bottom* rung says nothing about the middle; the ladder is
+        // ordered precisely so that a threshold can be written against it.
         .insert_resource(DirectionalLightShadowMap {
-            size: if quality::is_phone() { 1024 } else { 2048 },
+            size: if quality::budget().tier < quality::Tier::Desktop {
+                1024
+            } else {
+                2048
+            },
         });
 
     // Connection mode (ADR-016, and `systems::session` for the runtime half):
