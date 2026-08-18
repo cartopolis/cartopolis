@@ -913,14 +913,11 @@ impl SurfaceGroup {
     #[must_use]
     pub fn base_color(self) -> [f32; 3] {
         let rgb = match self {
-            // Not where water's colour comes from, and never reached: `map_geometry`
-            // builds a `WaterMaterial` for any cell holding a water mesh and takes
-            // that branch for every one of them, shading toggle or not, so this
-            // function only ever sees the other groups. Kept because the match is
-            // exhaustive and this is the honest fallback anyway — `palette::WATER`
-            // is *tuned* to the tone `water::WATER_ALBEDO` shades to, so a water
-            // sheet that somehow arrived here would still land the right colour
-            // rather than panic in the middle of a tile stream.
+            // Water's colour when the shading toggle is *off*: `map_geometry`
+            // builds a `WaterMaterial` only for shaded water, and falls back to
+            // this plain branch otherwise. `palette::WATER` is *tuned* to the
+            // tone `water::WATER_ALBEDO` shades to, so the two paths land on
+            // the same colour and toggling the shading does not step the sea.
             Self::Water => palette::WATER,
             Self::Forest => palette::FOREST,
             Self::Grass => palette::GRASS,
@@ -1005,9 +1002,9 @@ impl SurfaceGroup {
     ///
     /// Widening the ladder is safe at every range precisely because the unit is
     /// proportional to the primitive's own depth: the apparent world-space shift is
-    /// `1.19e-7 · bias · z`, so water's 64 units read as ~4 cm at 5 km and ~40 µm
-    /// at 10 m. It cannot punch through a building, which is separated by metres of
-    /// honest depth.
+    /// `1.19e-7 · bias · z`, so water's 256 units (rung 4 × the 64-unit step) read
+    /// as ~15 cm at 5 km and ~150 µm at 10 m. It cannot punch through a building,
+    /// which is separated by metres of honest depth.
     ///
     /// `bias.slope_scale` stays 0 — `StandardMaterial` exposes only `constant`, and
     /// reaching the other field would mean wrapping every group in an
@@ -1427,16 +1424,18 @@ const JUNCTION_EXTEND_MAX: f32 = 12.0;
 ///
 /// Stepping each feature up by a fraction of a millimetre makes the winner
 /// deterministic. The step has to clear the depth buffer's resolution at ground
-/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the 10 mm window
-/// `SurfaceGroup::y_offset` documents — at [`ROAD_LAYERS`] rungs the ladder is
-/// under 1.5 mm tall, so roads stay below the buildings' base at y = 0.
-const ROAD_LAYER_STEP: f32 = 6.0e-5;
+/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the window between
+/// the road sheet's `y_offset` (−1.5 mm) and the buildings' base at y = 0 — at
+/// [`ROAD_LAYERS`] rungs the ladder tops out at 1.44 mm, still under the
+/// buildings.
+const ROAD_LAYER_STEP: f32 = 4.0e-5;
 
 /// How many rungs the [`ROAD_LAYER_STEP`] ladder has. The ladder is *ordered*, not
 /// arbitrary (see [`road_rung`]), so which of two overlapping features wins is a
 /// property of the roads rather than of the order the tile happened to store them
-/// in — and the same two roads resolve the same way in the neighbouring tile.
-const ROAD_LAYERS: u32 = 20;
+/// in. Sized to the ceiling: `ROAD_LAYERS * ROAD_LAYER_STEP` must stay under the
+/// 1.5 mm between the road sheet and the buildings' base.
+const ROAD_LAYERS: u32 = 36;
 
 /// Rungs reserved at the top of the ladder for bridge decks.
 const BRIDGE_LAYERS: u32 = 4;
@@ -1444,7 +1443,15 @@ const BRIDGE_LAYERS: u32 = 4;
 /// Tie-breaking rungs within one width band.
 const ROAD_TIE_LAYERS: u32 = 4;
 
-/// Which rung of the [`ROAD_LAYER_STEP`] ladder a feature draws on.
+/// Width-band thresholds (metres) for [`road_rung`]: a road's band is the count
+/// of thresholds at or below its width. 2 m steps where the urban network is
+/// dense-packed — service 4, living street 6, residential 7, tertiary 9 all land
+/// in different bands now, where the old single 6 m band held all of them —
+/// and coarser above 10 m, where within-class widths barely vary and the band
+/// only needs to keep a primary under a motorway.
+const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
+
+/// Which rung of the [`ROAD_LAYER_STEP`] ladder a line draws on.
 ///
 /// Two rules, in order:
 ///
@@ -1455,19 +1462,40 @@ const ROAD_TIE_LAYERS: u32 = 4;
 /// * Otherwise the **wider road wins**, which is the same rule
 ///   [`SurfaceGroup::depth_rung`] applies between classes, continued inside one:
 ///   the through road keeps an unbroken surface and the side road disappears
-///   under it, rather than slicing its kerb lines across the junction.
+///   under it, rather than slicing its kerb lines across the junction. Bands are
+///   [`ROAD_WIDTH_BANDS`] — 2 m wide through the urban range, so roads that land
+///   in one band really are the same width; a residential street (7 m) no longer
+///   ties with a secondary (11 m).
 ///
-/// Features that tie on both fall back to their index in the tile, which is only a
-/// deterministic shuffle — but two roads of the same width that also overlap are
-/// two halves of the same junction, where either winner reads the same.
-fn road_rung(width_m: f32, bridge: bool, feature_index: usize) -> u32 {
-    let tie = feature_index as u32 % ROAD_TIE_LAYERS;
+/// Lines that tie on both fall back to `tie_seed`, a **hash of the line's own
+/// endpoints** (see `line_tie_seed`), not its index in the tile. The index was a
+/// per-tile shuffle with two real failure modes: a Shortbread `MultiLineString`
+/// whose parts cross each other gave every part the same index — a guaranteed
+/// exact-coplanar z-fight (measured at up to 37 % self-overlap within a class at
+/// a single junction) — and 1 in 4 same-band crossings collided anyway. A
+/// geometry hash decorrelates both. It is still not stable across a tile seam
+/// (each tile clips its own copy of a shared street, so no whole-line function
+/// can be), but a junction lives inside one tile far more often than on a seam.
+fn road_rung(width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
+    let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
         return ROAD_LAYERS - BRIDGE_LAYERS + tie;
     }
-    // 0: paths and service roads, 1: streets, 2: main roads, 3: motorways.
-    let band = ((width_m / 6.0) as u32).min((ROAD_LAYERS - BRIDGE_LAYERS) / ROAD_TIE_LAYERS - 1);
+    let band = ROAD_WIDTH_BANDS.iter().filter(|t| width_m >= **t).count() as u32;
     band * ROAD_TIE_LAYERS + tie
+}
+
+/// Tie-break seed for one linestring: a mix of its endpoint coordinates, so two
+/// crossing lines almost never share a rung even when they share a feature (a
+/// merged `MultiLineString`), a width band and a tile.
+fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
+    let mut h: u64 = 0x9E37_79B9_7F4A_7C15;
+    for v in [head[0], head[1], tail[0], tail[1]] {
+        h ^= u64::from(v.to_bits());
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 29;
+    }
+    h
 }
 
 /// Miter limit: how far a join may push the **outer** corner out relative to the
@@ -1533,8 +1561,6 @@ pub fn tessellate_roads(
             continue;
         };
         let bridge = flag_of(feature, "bridge");
-        // This feature's rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`).
-        let y = road_rung(half * 2.0, bridge, fi) as f32 * ROAD_LAYER_STEP;
 
         let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
             Some(i) => i,
@@ -1563,6 +1589,10 @@ pub fn tessellate_roads(
             let (Some(head), Some(tail)) = (pts.first().copied(), pts.last().copied()) else {
                 continue;
             };
+            // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
+            // *linestring*, so the crossing parts of one merged feature separate.
+            let y = road_rung(half * 2.0, bridge, line_tie_seed(head, tail)) as f32
+                * ROAD_LAYER_STEP;
             for run in clip_polyline(&pts, 0.0, extent) {
                 // Only the run holding an *original* end of the line can be at a
                 // junction; the rest begin and end at the tile border, where the
@@ -3468,21 +3498,89 @@ mod tests {
     #[test]
     fn overlapping_road_features_are_separated_in_depth() {
         // Ribbons overlap at every junction and tile seam; equal heights there
-        // z-fight, which is the flicker along a joint. Successive features must
-        // land on different rungs, and the whole ladder must stay inside the
-        // millimetre window `SurfaceGroup::y_offset` leaves under the buildings.
-        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("tessellate");
-        let heights: std::collections::BTreeSet<u32> = meshes
-            .iter()
-            .flat_map(|m| {
-                m.positions
-                    .iter()
-                    .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
-            })
-            .collect();
+        // z-fight, which is the flicker along a joint. The old form of this test
+        // only asserted "more than one height exists", which stayed green while
+        // a quarter of same-band crossings were exactly coplanar. This one
+        // rasterises each class's ribbons per *rung* and counts the pixels a
+        // single rung covers twice — the coplanar area, i.e. the z-fight area —
+        // as a fraction of all covered pixels.
+        //
+        // The floor is not zero: a ribbon legitimately meets itself along
+        // shared triangle edges and in the bevel corner fills, and a hash
+        // tie-break still collides at 1-in-4 for same-band crossings. The bound
+        // is calibrated against the fixture (2.24% measured after the ladder
+        // rework) to catch a regression to index-correlated or single-rung
+        // behaviour, not to demand geometric perfection.
+        const PX: usize = 600;
+        let tile_m = 1000.0f32;
+        let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
+        let mut covered = 0usize;
+        let mut coplanar = 0usize;
+        for m in &meshes {
+            // One coverage grid per rung actually present in this class.
+            let rungs: std::collections::BTreeSet<u32> = m
+                .positions
+                .iter()
+                .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
+                .collect();
+            let mut any = vec![false; PX * PX];
+            let mut doubled = vec![false; PX * PX];
+            for rung in rungs {
+                let mut own = vec![0u8; PX * PX];
+                for tri in m.indices.chunks_exact(3) {
+                    let v0 = m.positions[tri[0] as usize];
+                    if (v0[1] / ROAD_LAYER_STEP).round() as u32 != rung {
+                        continue;
+                    }
+                    let p: Vec<[f32; 2]> = tri
+                        .iter()
+                        .map(|i| {
+                            let v = m.positions[*i as usize];
+                            [v[0] / tile_m * PX as f32, v[2] / tile_m * PX as f32]
+                        })
+                        .collect();
+                    let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                        - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                    if area.abs() < 1e-9 {
+                        continue;
+                    }
+                    let x0 = p.iter().map(|q| q[0]).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
+                    let x1 = p.iter().map(|q| q[0]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0) as usize;
+                    let y0 = p.iter().map(|q| q[1]).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
+                    let y1 = p.iter().map(|q| q[1]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0) as usize;
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                            let w0 = ((p[1][0] - p[0][0]) * (py - p[0][1])
+                                - (px - p[0][0]) * (p[1][1] - p[0][1]))
+                                / area;
+                            let w1 = ((px - p[0][0]) * (p[2][1] - p[0][1])
+                                - (p[2][0] - p[0][0]) * (py - p[0][1]))
+                                / area;
+                            if w0 >= 0.0 && w1 >= 0.0 && w0 + w1 <= 1.0 {
+                                own[y * PX + x] = own[y * PX + x].saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                for (i, c) in own.iter().enumerate() {
+                    if *c > 0 {
+                        any[i] = true;
+                    }
+                    if *c > 1 {
+                        doubled[i] = true;
+                    }
+                }
+            }
+            covered += any.iter().filter(|b| **b).count();
+            coplanar += doubled.iter().filter(|b| **b).count();
+        }
+        let frac = coplanar as f32 / covered.max(1) as f32;
+        println!("coplanar-overlap: {coplanar}/{covered} px = {:.2}%", frac * 100.0);
         assert!(
-            heights.len() > 1,
-            "every road at one height — overlaps would z-fight"
+            frac < 0.05,
+            "{:.1}% of covered road pixels are coplanar-overlapped (z-fight area)",
+            frac * 100.0
         );
         let top = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
         assert!(
@@ -3742,8 +3840,8 @@ mod tests {
         // buildings' base that `SurfaceGroup::y_offset` documents.
         for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
             for bridge in [false, true] {
-                for fi in 0..40 {
-                    let rung = road_rung(width, bridge, fi);
+                for seed in 0u64..40 {
+                    let rung = road_rung(width, bridge, seed);
                     assert!(rung < ROAD_LAYERS, "rung {rung} is off the ladder");
                 }
             }
