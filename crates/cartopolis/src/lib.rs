@@ -756,10 +756,16 @@ fn run_client() {
     // it spawns the Web Workers that keep tile decoding off the render thread.
     // One core is left for the main thread, which still renders and fetches.
     //
-    // …and on a phone, rather more than one. `available_parallelism` counts the
-    // Fairphone 4's 8 cores without saying that 6 of them are efficiency cores
-    // sharing a thermal envelope with the render thread and the compositor, so
-    // the honest ceiling is well under the count (`Budget::worker_cap`).
+    // …and on a phone, historically rather more than one: `available_parallelism`
+    // counted the Fairphone 4's 8 cores without saying that 6 of them were
+    // efficiency cores sharing a thermal envelope with the render thread and the
+    // compositor, so the honest ceiling was well under the count.
+    //
+    // That reasoning retired with the device (2026-08-18). The handset this is
+    // developed against now is 2 prime + 6 performance Oryon cores with no
+    // efficiency cores at all, and `auto()` puts Android on `Budget::balanced`,
+    // whose `worker_cap` is `None` — so the cap below is once again only what a
+    // deliberately-selected `phone` tier asks for.
     let workers = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(1))
         .unwrap_or(4)
@@ -960,6 +966,47 @@ fn run_client() {
                     // a cap back on this without moving the tile jobs back too.
                     max_threads: usize::MAX,
                     percent: 0.45,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                // **Bevy's parallel system executor, and without this floor a
+                // handset gets exactly one thread for it.**
+                //
+                // `create_default_pools` sizes the three pools *in order*, each
+                // taking from what the last one left, and
+                // `get_number_of_threads` applies `min(remaining)` *before*
+                // `clamp(min_threads, max_threads)`. Run that on the 8 cores an
+                // Android device reports: io wants 0.30 × 8 = 2 but its floor
+                // above lifts it to **4**, leaving 4; async_compute wants
+                // 0.45 × 8 = 3.6 → 4, taking all of it and leaving **0**; and
+                // compute — whose default policy is `percent: 1.0`, i.e.
+                // "whatever is left over" — gets `min(8, 0) = 0`, clamped up to
+                // its default floor of **1**.
+                //
+                // One thread for `ComputeTaskPool` means no two Update systems
+                // ever overlap: transform propagation, `check_visibility`, every
+                // `par_iter`, and all eight panel systems run strictly serially,
+                // on the platform with the least headroom. It is not a tuning
+                // loss, it is the parallel executor being switched off by
+                // arithmetic, and it was invisible because the widths above were
+                // measured on a 22-core box where they resolve to io=7,
+                // async=10, compute=5 and the bug cannot appear. Measured on an
+                // 8-core host, reading `/proc/<pid>/task/*/comm`: **1** compute
+                // thread without this floor, **3** with it.
+                //
+                // A floor rather than re-cutting the percentages, because those
+                // two were measured (see the block above) and this is the case
+                // they were not measured on. It changes nothing where there is
+                // slack — the workstation still lands on 5 — and on an 8-core
+                // handset it buys 3 at the cost of nominally oversubscribing by
+                // 3, which the io threads pay for by blocking on sockets rather
+                // than burning a core. Note the tile jobs are **not** in any of
+                // these pools any more (`platform::workers`), so the real
+                // contention is smaller than the totals suggest.
+                compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: 3,
+                    max_threads: usize::MAX,
+                    percent: 1.0,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
                 },
