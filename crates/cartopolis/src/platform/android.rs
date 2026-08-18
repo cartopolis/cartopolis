@@ -399,16 +399,21 @@ pub fn set_perf_hint_target(target_nanos: i64) {
     perf_hint::set_target(target_nanos);
 }
 
-/// Ask the compositor to run this window at a given frame rate.
+/// Tell the compositor what frame rate this window wants, or that it has no
+/// preference.
 ///
-/// **A frame cap is a performance answer on a handset, not a concession**, and
-/// this is the one the platform actually honours. `PresentMode::AutoVsync` paces
-/// to *the display's* refresh rate, so on a 90 or 120 Hz panel a scene budgeted
-/// for 30 renders two to four times the frames it needs — and the phone answers
-/// that by heating up and being thermally throttled below what a cap would have
-/// held comfortably. Nothing in this client told the display otherwise.
+/// **`0.0` means "you choose", and it is what the client passes.** The NDK defines
+/// it as *"the app will accept the system's choice of display frame rate"*, and
+/// the system is the only party in this conversation that knows the panel's modes,
+/// its thermal state and what else is on screen. This used to pass a hard 60 —
+/// which is a real answer to a real problem (a scene budgeted for 30 renders four
+/// times over on a 120 Hz panel and is throttled for it) built out of a number
+/// nobody could check. On the 120 Hz handset this client targets it pinned the
+/// display to half its rate. See `lib.rs::report_frame_to_scheduler`.
 ///
-/// `ANativeWindow_setFrameRate` is a *hint*: the platform may still choose a
+/// A non-zero rate is still honoured, for a caller that has measured one.
+///
+/// `ANativeWindow_setFrameRate` is a *hint* either way: the platform may choose a
 /// multiple of what is asked for, and on a device with no seamless refresh-rate
 /// switching it may do nothing at all. That is why this reports what it did.
 ///
@@ -447,7 +452,11 @@ pub fn set_frame_rate(fps: f32) -> bool {
         let set: SetFrameRate = std::mem::transmute(ptr);
         let rc = set(window.ptr().as_ptr().cast(), fps, COMPATIBILITY_DEFAULT);
         if rc == 0 {
-            tracing::info!(fps, "asked the compositor for a frame rate");
+            if fps == 0.0 {
+                tracing::info!("left the frame rate to the compositor — the panel decides");
+            } else {
+                tracing::info!(fps, "asked the compositor for a frame rate");
+            }
             true
         } else {
             tracing::info!(fps, rc, "the compositor refused the frame rate hint");

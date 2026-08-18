@@ -3168,34 +3168,223 @@ fn advance_day_cycle(time: Res<Time>, mut dev: ResMut<DevPanelState>) {
     not(target_os = "android"),
     allow(unused_variables, unused_mut, clippy::needless_pass_by_value)
 )]
-fn report_frame_to_scheduler(time: Res<Time<Real>>, mut started: Local<bool>) {
+fn report_frame_to_scheduler(
+    time: Res<Time<Real>>,
+    mut started: Local<bool>,
+    mut cadence: Local<Cadence>,
+) {
     #[cfg(target_os = "android")]
     {
         if !*started {
-            // Ask the compositor for the rate we actually want to run at, and aim
-            // ADPF at the same number. Both used to assume 60 Hz.
+            // **Let the display decide the rate, and aim ADPF at what it decided.**
             //
-            // That assumption is the whole bug on a modern handset.
-            // `PresentMode::AutoVsync` paces to *the panel*, so on a 90 or 120 Hz
-            // screen a scene budgeted for 30 fps renders two to four times the
-            // frames it needs, heats up, and gets thermally throttled below what a
-            // cap would have held. And the ADPF deadline was `1e9/60` regardless,
-            // so on those same devices every frame was reported comfortably on time
-            // and the governor never had a reason to boost.
+            // This used to ask for a hard 60, out of a real concern: FIFO paces to
+            // *the panel*, so on a 90 or 120 Hz screen a scene budgeted for 30 fps
+            // renders two to four times the frames it needs and is thermally
+            // throttled for the privilege. The mistake was answering that concern
+            // with a number nobody could check. 60 is not a property of any display
+            // — it is a property of the desktop the tier table was written on — and
+            // on a 120 Hz LTPO handset asking for it is worse than asking for
+            // nothing: the panel is pinned to half its rate, and it is pinned there
+            // by a constant this codebase could not have derived from anything the
+            // device said.
+            //
+            // A capability cannot be *read* here — winit's Android backend answers
+            // `None` for the refresh rate outright and fabricates a 60 in
+            // `video_modes` (see `quality::Capabilities`), so bevy's `Monitor` knows
+            // nothing on this platform. So it is *handed back*: `0.0` is
+            // `ANativeWindow_setFrameRate`'s documented "the app will accept the
+            // system's choice of display frame rate". The compositor knows the
+            // panel's modes, the thermal state and what every other surface on
+            // screen is asking for, and it is the only party here that does.
+            //
+            // ADPF then wants a deadline, and it must be the one we are *actually*
+            // being paced to rather than the one we asked for — so it is measured
+            // (`measured_period_ns`) instead of divided out of a constant. A hint
+            // aimed at 16.6 ms on a panel presenting every 8.3 ms reports every
+            // frame as comfortably early and the governor never boosts, which is
+            // the bug this had before in the other direction.
             //
             // Retried until the surface exists: `native_window()` is `None` for the
             // first few seconds on Android (winit logs `Creating new window` about
             // five seconds after `android_main`), so a one-shot at startup would
             // silently never take.
-            let fps = quality::budget().target_fps();
-            if platform::android::set_frame_rate(fps) {
+            const PLATFORMS_CHOICE: f32 = 0.0;
+            if platform::android::set_frame_rate(PLATFORMS_CHOICE) {
                 *started = true;
-                let period = (1.0e9 / f64::from(fps)) as i64;
+                // Seeded from the tier so the session opens with *a* deadline; the
+                // measurement below replaces it within a second or so.
+                let period = (1.0e9 / f64::from(quality::budget().target_fps())) as i64;
                 platform::android::start_perf_hint(period);
                 platform::android::set_perf_hint_target(period);
             }
         }
+        if let Some(period) = cadence.observe(time.delta()) {
+            tracing::info!(
+                hz = 1.0e9 / period as f64,
+                "display cadence measured — re-aiming the performance hint"
+            );
+            platform::android::set_perf_hint_target(period);
+        }
         platform::android::report_frame(time.delta().as_nanos() as i64);
+    }
+}
+
+/// How often the display actually presents, measured from the frames it gives us.
+///
+/// **The panel's rate is not readable on the platform that needs it.** winit's
+/// Android backend returns `None` from `refresh_rate_millihertz` and fabricates a
+/// 60 in `video_modes` (see `quality::Capabilities`), so bevy's `Monitor` cannot
+/// answer, and there is no NDK call for it either. But it can be *observed*: under
+/// a vsync-paced swapchain a frame can never be presented faster than the panel
+/// refreshes, so the shortest interval seen over a window of frames **is** the
+/// panel period.
+///
+/// The minimum rather than the mean, and that is the whole point. A mean is the
+/// rate we *achieved*, which is a statement about our own frame cost — and it is
+/// precisely what ADPF exists to compare against the deadline, so feeding it back
+/// in as the deadline makes the governor's test vacuous. The minimum is a property
+/// of the display.
+///
+/// Re-measured every window rather than latched, because an LTPO panel changes
+/// mode underneath a running app; the report is throttled to changes that actually
+/// matter so a jittery window does not have the governor chasing itself.
+#[derive(Default)]
+struct Cadence {
+    shortest_ns: i64,
+    frames: u32,
+    reported_ns: i64,
+}
+
+impl Cadence {
+    /// Frames per measurement window. Two seconds at 60 Hz, one at 120 — long
+    /// enough that a single hitch cannot set the minimum, short enough to follow a
+    /// mode switch.
+    const WINDOW: u32 = 120;
+    /// A panel that presented faster than this is not a panel; it is a frame bevy
+    /// clamped, a resumed app catching up, or a zero delta on the first frame.
+    const FLOOR_NS: i64 = 1_000_000;
+
+    /// Feed one frame's wall-clock delta; answers `Some(period_ns)` on the frames
+    /// where the measurement is both complete and materially different from the
+    /// last one reported.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn observe(&mut self, delta: Duration) -> Option<i64> {
+        let delta = i64::try_from(delta.as_nanos()).unwrap_or(i64::MAX);
+        if delta >= Self::FLOOR_NS {
+            self.shortest_ns = if self.shortest_ns == 0 {
+                delta
+            } else {
+                self.shortest_ns.min(delta)
+            };
+        }
+        self.frames += 1;
+        if self.frames < Self::WINDOW {
+            return None;
+        }
+        self.frames = 0;
+        let measured = std::mem::take(&mut self.shortest_ns);
+        if measured == 0 {
+            return None;
+        }
+        // Within an eighth of the last answer is the same answer. Without this a
+        // window whose minimum lands one vsync out re-aims the governor every two
+        // seconds, forever.
+        if (measured - self.reported_ns).abs() * 8 < self.reported_ns {
+            return None;
+        }
+        self.reported_ns = measured;
+        Some(measured)
+    }
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::Cadence;
+    use std::time::Duration;
+
+    fn run(c: &mut Cadence, frames: u32, ms: f64) -> Option<i64> {
+        let mut last = None;
+        for _ in 0..frames {
+            if let Some(p) = c.observe(Duration::from_secs_f64(ms / 1000.0)) {
+                last = Some(p);
+            }
+        }
+        last
+    }
+
+    /// A 120 Hz panel is measured as 120, not as the 60 the code used to assume.
+    #[test]
+    fn a_steady_panel_is_measured_at_its_own_rate() {
+        let mut c = Cadence::default();
+        let period = run(&mut c, Cadence::WINDOW, 1000.0 / 120.0).expect("a full window answers");
+        assert!(
+            (period - 8_333_333).abs() < 100_000,
+            "measured {period} ns, expected ~8.33 ms"
+        );
+    }
+
+    /// The *minimum*, so our own slow frames never masquerade as the display's
+    /// rate. A run that mostly renders at 30 fps on a 120 Hz panel is still being
+    /// presented every 8.3 ms — reporting 33 ms would tell the governor the app is
+    /// meeting a deadline it is in fact missing by four vsyncs.
+    #[test]
+    fn a_slow_app_does_not_slow_the_measured_display() {
+        let mut c = Cadence::default();
+        let mut reported = None;
+        for i in 0..Cadence::WINDOW {
+            // One frame in four makes the vsync; the rest miss three of them.
+            let ms = if i % 4 == 0 { 1000.0 / 120.0 } else { 33.0 };
+            if let Some(p) = c.observe(Duration::from_secs_f64(ms / 1000.0)) {
+                reported = Some(p);
+            }
+        }
+        let period = reported.expect("a full window answers");
+        assert!(
+            period < 12_000_000,
+            "measured {period} ns, expected ~8.33 ms"
+        );
+    }
+
+    /// Nothing is reported until a window is complete, and an unchanged answer is
+    /// not re-reported — a governor that is re-aimed every two seconds forever is
+    /// worse than one aimed once.
+    #[test]
+    fn a_stable_rate_is_reported_once() {
+        let mut c = Cadence::default();
+        assert!(run(&mut c, Cadence::WINDOW - 1, 1000.0 / 60.0).is_none());
+        assert!(run(&mut c, 1, 1000.0 / 60.0).is_some());
+        assert!(run(&mut c, Cadence::WINDOW * 3, 1000.0 / 60.0).is_none());
+    }
+
+    /// …but a real mode switch is followed. An LTPO panel drops to 60 on its own,
+    /// and a deadline still aimed at 8.3 ms reports every frame as late.
+    #[test]
+    fn a_mode_switch_is_followed() {
+        let mut c = Cadence::default();
+        run(&mut c, Cadence::WINDOW, 1000.0 / 120.0).expect("the first answer");
+        let period = run(&mut c, Cadence::WINDOW, 1000.0 / 60.0).expect("the panel changed mode");
+        assert!(
+            (period - 16_666_666).abs() < 200_000,
+            "measured {period} ns, expected ~16.7 ms"
+        );
+    }
+
+    /// A zero delta is bevy's first frame, not a 1000 Hz display.
+    #[test]
+    fn an_impossible_frame_is_not_a_display_rate() {
+        let mut c = Cadence::default();
+        for i in 0..Cadence::WINDOW {
+            let d = if i == 7 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64(1.0 / 60.0)
+            };
+            c.observe(d);
+        }
+        // The window closed inside the loop; the answer it produced is the 60, and
+        // reporting it again here would mean the zero had won.
+        assert!(run(&mut c, Cadence::WINDOW, 1000.0 / 60.0).is_none());
     }
 }
 
@@ -3210,18 +3399,33 @@ fn frame_limiter(
     let _ = (&mut deadline, &mut period);
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // **Nothing paces a swapchain that already paces itself.**
+        //
+        // FIFO blocks on acquire, so it is a clock; a `thread::sleep` to a deadline
+        // measured at the *other* end of the pipeline is a second clock, and two
+        // clocks beat against each other — alternating judder on a device with
+        // headroom to spare, plus a main thread that looks idle to Linux EAS at
+        // exactly the moment the tile workers look busy.
+        //
+        // This was a `Budget::fps_cap` of `None` on the phone rung, with the whole
+        // argument written on the field. Then Android moved to the balanced rung,
+        // which carries `Some(60.0)`, and the guard silently stopped applying to the
+        // only platform it was written for — a 120 Hz handset ran a sleep limiter
+        // under FIFO. **The rule was attached to a tier, and a tier is a judgement
+        // about a class of machine; this is a property of the surface in front of
+        // us.** So it is asked of the window (`quality::Capabilities::vsync_paced`)
+        // and the tier cannot lose it again.
+        //
+        // `None` — before `setup_camera` has run — falls through to the tier, which
+        // is right: those are the first frames, there is no swapchain yet, and the
+        // conservative answer is the one that caps.
+        if quality::capabilities().is_some_and(|c| c.vsync_paced) {
+            return;
+        }
         let period = *period.get_or_insert_with(|| {
             // The tier's answer, with `CARTO_FPS_CAP` still overriding it — a
             // debugging knob has to win over a default to be useful, and lifting
             // the cap is how headroom gets measured at all.
-            //
-            // The tier answers `None` on the phone, which is not "uncapped" so much
-            // as "already paced": Android runs `PresentMode::AutoVsync`, and a
-            // sleep-based limiter layered on FIFO is two pacers timing from
-            // different points in the pipeline, which beats against itself. It also
-            // made the main thread look idle to the Linux scheduler on a
-            // 2-big-6-little SoC whose tile workers look busy — the wrong signal
-            // for deciding which of them gets a fast core.
             //
             // Through `env_value`, not `std::env::var`: on Android the former maps
             // to the `debug.carto.*` system properties and the latter reads an

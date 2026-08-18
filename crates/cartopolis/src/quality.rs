@@ -950,10 +950,19 @@ mod tests {
 
     /// The phone leaves pacing to the presentation mode; the others cap.
     ///
-    /// Not a taste question. Android runs `PresentMode::AutoVsync` (FIFO, which
-    /// blocks on acquire), so a sleep-based limiter on top is a second pacer
-    /// timing from a different point in the pipeline — the standard way to get
-    /// alternating 60/30 judder on a device with headroom to spare.
+    /// Not a taste question. A FIFO swapchain blocks on acquire, so it is already a
+    /// clock, and a sleep-based limiter on top is a second one timing from a
+    /// different point in the pipeline — the standard way to get alternating judder
+    /// on a device with headroom to spare.
+    ///
+    /// **This assertion is no longer what enforces that**, and the demotion is the
+    /// point. It only ever described the *rungs*, so when Android moved from `phone`
+    /// to `balanced` on 2026-08-18 the rule stopped applying to the only platform it
+    /// was written for and this test went on passing, green, describing a preset
+    /// nothing selected. `lib.rs::frame_limiter` now asks the window instead
+    /// ([`Capabilities::vsync_paced`]), which cannot be lost by changing a rung.
+    /// What is left here is the tier's *preference* for a machine that presents
+    /// without a vsync — keep it consistent, but do not mistake it for the guard.
     #[test]
     fn the_phone_leaves_frame_pacing_to_vsync() {
         assert_eq!(Budget::phone().fps_cap, None);
