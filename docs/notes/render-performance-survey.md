@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs]
-updated: 2026-08-16
+triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool]
+updated: 2026-08-18
 ---
 
 # Where the frames go, and where they do not
@@ -148,6 +148,25 @@ phone that leaves two cores idle for most of Update. Most clique members early-o
 so the realised cost concentrates in the streamers — but the ceiling is structural
 and no amount of `.after()` tuning moves it.
 
+**And until 2026-08-18 the realised figure was 1-way, for an unrelated reason.**
+`ComputeTaskPool` *is* Bevy's parallel system executor, and its width is not
+configured anywhere — `create_default_pools` sizes io, then async_compute, then
+compute, each from the last one's remainder, and `get_number_of_threads` applies
+`min(remaining)` **before** `clamp(min_threads, max_threads)`. On the 8 cores an
+Android device reports, `lib.rs`'s override resolved to io = 4 (its floor beating
+its 0.30 share), async_compute = 4 (0.45 × 8 rounded up, taking the rest), and
+compute = `min(8, 0)` clamped up to its default floor of **1**. Measured by
+reading `/proc/<pid>/task/*/comm` on an 8-core host: 1 compute thread before the
+fix, 3 after.
+
+Two things worth keeping from that. It was invisible for months because the io
+and async widths were measured on a 22-core box, where the same policies give
+io=7, async=10, compute=5 and the failure cannot occur — a pool width that is
+*derived* rather than declared needs a device with the awkward core count to
+falsify it. And it is why the diagnostics report now prints all three widths: the
+next person to move a percentage here has no other way to see what they did on
+hardware they do not own.
+
 ### Android frame pacing is fixed (2026-08-16)
 
 `fps_cap: None` on the phone meant "do not run a `thread::sleep` limiter on top of
@@ -284,12 +303,93 @@ unreachable on Android" is true only of switches read through raw
 `std::env::var`; anything going through `env_flag`/`env_value` is reachable, and
 `CARTO_FPS_CAP` was moved onto that path on 2026-08-16.
 
-## The engine constraint behind the draw-count work
+## The engine constraint behind the draw-count work — **lapsed 2026-08-18**
 
 `bevy_render`'s `gpu_preprocessing` excludes **Adreno ≤ 730 (except 720) and Mali
 drivers below 48** from GPU preprocessing entirely — `GpuPreprocessingMode::None`.
-The Fairphone 4's Adreno 619 is in that bucket. So on the target device there is
-no indirect draw, no GPU culling and no cross-mesh batching: every mesh is a
-CPU-issued draw with its own bind group. That is why `draws` is a first-class
-metric here rather than a proxy for triangles, and why it is a main-thread number
-as much as a GPU one.
+The Fairphone 4's Adreno 619 was in that bucket, so on the then-target device
+there was no indirect draw, no GPU culling and no cross-mesh batching: every mesh
+was a CPU-issued draw with its own bind group. That is why `draws` became a
+first-class metric here rather than a proxy for triangles, and why it was a
+main-thread number as much as a GPU one.
+
+**The filter is unchanged; the device is not.** `bevy_render/src/lib.rs:531-545`
+strips the literal prefix `"Adreno (TM) "` and parses the digits, and the test at
+`batching/gpu_preprocessing.rs:1333` is `model != 720 && model <= 730`. An Adreno
+840 fails it and lands in the *supported* branch — so GPU culling, indirect draw,
+cross-mesh batching and GPU bin unpacking are all live on the current target, and
+with them the Bevy 0.19 rendering wins that are downstream of them. Note the
+filter also fails open: if Qualcomm changes the string, `strip_prefix` returns
+`None` and the device is treated as supported.
+
+Two consequences for anyone reading the draw-count sections above:
+
+- `draws` is still worth measuring, but it is no longer *the* number. On a part
+  that batches, what matters is how many distinct **batch sets** the draws fall
+  into — `pipeline + material bind group + mesh asset` — which is why the
+  material-sharing work (one handle per building lane, one per surface group)
+  buys more than the draw count alone suggests.
+- Whether it collapses further depends on **bindless**, which `StandardMaterial`
+  declares (`#[bindless(index_table(range(0..31)))]`) and which engages only if
+  the driver reports `TEXTURE_BINDING_ARRAY | BUFFER_BINDING_ARRAY` and enough
+  binding-array sampler slots. If it is live, the 224 per-tile materials and the
+  160 per-label materials stop mattering on their own. That is a log line
+  (`RUST_LOG=bevy_render=debug`, "Configured wgpu adapter Features"), not a
+  guess, and it should be read before anyone builds a tile atlas or a texture
+  array to solve a problem the driver may already have solved.
+
+## The target device, and what it voids
+
+Until 2026-08-18 the Android target was a **Fairphone 4** — Adreno 619, 512 KiB
+of on-chip tile memory, ~17 GB/s, 2 performance + 6 efficiency cores. It is now a
+**OnePlus 15**: Snapdragon 8 Elite Gen 5, **Adreno 840**, **18 MB** of tile memory
+(Qualcomm's own a8xx kernel enablement series states the figure), ~85 GB/s
+LPDDR5X, and 2 prime + 6 performance Oryon cores with no efficiency cores at all.
+Older phones are explicitly out of scope.
+
+Three arguments in `quality.rs` were built on the old numbers and do not survive
+the change, which is why `auto()` now puts Android on `Budget::balanced`:
+
+- **The tile budget that ruled out `Hdr`.** At the panel's 2772×1272, RGBA8 +
+  D32 is 2 bins and `Rgba16Float` + D32 is 3, against 39 and 58 on the 619. HDR
+  is affordable, and it also moves tonemapping out of every mesh fragment back
+  into one pass.
+- **The fill scarcity that halved the render scale.** Still a real cost — tile
+  memory does not make fragments free — but against ~5× the bandwidth and a far
+  faster GPU, and a point-sampled 2× upscale was the most visible quality cost in
+  the app.
+- **The 2-big-6-little thermal envelope** behind `worker_cap: Some(3)`. There are
+  no little cores.
+
+**One field does not come up with the rung**, and it is the one this device has
+actually broken: `upload_bytes_per_frame`. It is `None` on every rung above the
+phone, on the sound reasoning that those rungs describe machines whose uploads
+cross a much wider bus and none of which has lost a device to streaming — but a
+handset on the balanced rung is neither case, and this handset lost its Vulkan
+device to a cold-start burst *while on the phone budget*. So `auto()` takes
+`balanced` and keeps the 4 MB ceiling explicitly. Note the same change raises the
+pressure on it: 512 px tile rasters are 4× the texture bytes of 256, and
+`radius_bias: 0` nearly doubles the tile count. With the ceiling kept that is
+fill latency; without it, it is the burst again.
+
+One prediction made from a desk was **wrong**, and it is worth recording as
+wrong: FP32 linear filtering was assumed to be a standing Adreno architectural
+gap, so the flagship was expected to lack `FLOAT32_FILTERABLE` and to keep the
+analytic dome. The device reports the feature. It was the *tier*, not the
+adapter, that was vetoing the sky — which is what `gpu_affords_atmosphere` was
+added to fix on 2026-08-17, and what taking the balanced rung now moots for
+Android. The general lesson is the one the tier itself is about: a vendor-family
+generalisation is not a measurement, and this file should not have carried one.
+
+Two of the chipset's headline features are
+structurally unreachable rather than merely unused: Bevy 0.19 contains no
+reference to `EXPERIMENTAL_MESH_SHADER` (wgpu 29 exposes it; the engine has no
+draw path), and the explicit 18 MB tile heap is `VK_QCOM_tile_memory_heap`, which
+wgpu 29 does not support at all — the memory is reachable only as implicit GMEM.
+
+**Measurement is harder on this device, not easier.** `dumpsys gfxinfo` is
+useless for a Vulkan NativeActivity surface, AGI's whitelist does not include it,
+and there is no workstation in the loop — so the shareable report
+(`systems::dev::diagnostics`) is the primary instrument, and since 2026-08-18 it
+carries frame time, draws, the triangle split and the three task-pool widths for
+that reason.
