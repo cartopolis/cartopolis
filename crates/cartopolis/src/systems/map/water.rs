@@ -252,7 +252,12 @@ fn sea_state(wind_ms: f32) -> (Vec4, Vec4, Vec4) {
     let dir = CLOUD_WIND.normalize_or(Vec2::X);
     (
         Vec4::new(
-            // Steepness: a flat sheen when still, a properly rippled surface in wind.
+            // Steepness, and the shader renders it as a *slope* — the normal's
+            // tilt scales with this number and with nothing else. It must ramp
+            // hard with the wind on its own: the wavelength below also grows
+            // with the wind, and an earlier shader that divided the slope by
+            // the wavelength cancelled the two ramps into a near-constant
+            // (calm→gale changed the picture by barely 2×, i.e. a flat sheet).
             0.06_f32.lerp(0.55, sea),
             // Dominant wavelength grows with fetch — short chop → long swell.
             6.0_f32.lerp(26.0, sea),
@@ -344,6 +349,22 @@ mod tests {
         assert!(gale_wave.z > calm_wave.z, "speed");
         assert!(gale_surface.w > calm_surface.w, "foam");
         assert!(gale_wind.z > calm_wind.z, "chop");
+    }
+
+    #[test]
+    fn the_rendered_slope_ramps_hard_with_the_wind() {
+        // `wave.x` is the rendered slope directly (`water.wgsl` keeps no
+        // wavenumber in the gradient), so this ratio *is* the visible
+        // calm→gale contrast. The sibling test above only asserts the knobs
+        // move in the same direction — it stayed green while an extra `k` in
+        // the shader cancelled steepness against wavelength and the sea
+        // rendered as a flat sheet. Guard the ramp itself.
+        let calm = sea_state(0.0).0.x;
+        let gale = sea_state(FULL_SEA_WIND).0.x;
+        assert!(
+            gale / calm >= 5.0,
+            "calm {calm} → gale {gale} must be a real ramp"
+        );
     }
 
     #[test]
