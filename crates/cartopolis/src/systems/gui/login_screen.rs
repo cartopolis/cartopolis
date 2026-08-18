@@ -17,11 +17,19 @@
 //! What is left is one question — which server, as whom — and the card is that
 //! question.
 //!
-//! It is reached from the top of the app menu, not shown on launch:
-//! the remembered session (`UserStore::data.session`) enters itself, and being
-//! asked to log in every time you open a map is the thing this design most wanted
-//! to avoid. It opens by itself for exactly one reason — a session that failed or
-//! dropped — because that is the only time the app has a question it cannot answer.
+//! **The app menu is the only thing that opens it, and a live session is the only
+//! thing that closes it.** It is reached from the top of that menu, never shown on
+//! launch: the remembered session (`UserStore::data.session`) enters itself, and
+//! being asked to log in every time you open a map is the thing this design most
+//! wanted to avoid. It used to raise itself over the map whenever a session failed
+//! or dropped, which made a modal an *event* — a card the app pushed in front of
+//! you, mid-flight, for something you had not asked about — so a failed sign-in
+//! now reports itself in the menu it was started from (`ui::render_main_menu`),
+//! next to the entry that offers to try again. A failure on a card that is still
+//! open still lands on that card: the question is up, so the answer belongs there.
+//!
+//! Leaving is likewise the menu's, not this card's (`session::sign_out`): one
+//! entry, one outcome, and no modal to dismiss afterwards.
 //!
 //! Drawn as a floating `Area` plus a `Window`, both pinned to the top of
 //! `Order::Foreground` every frame with `move_to_top`. That is what puts it above
@@ -109,9 +117,6 @@ pub struct LoginScreen {
     /// and the combination that made them different — remember the token but ask
     /// anyway, or auto-enter with no token, which fails — is not one anybody wants.
     remember: bool,
-    /// The error already shown. Compared against `SessionState::error` so a *new*
-    /// failure opens the screen and an old one does not re-open it every frame.
-    error_shown: Option<String>,
     /// A request is in flight and this card is waiting to see how it lands.
     awaiting: bool,
 }
@@ -125,7 +130,6 @@ impl Default for LoginScreen {
             username: String::new(),
             password: String::new(),
             remember: true,
-            error_shown: None,
             awaiting: false,
         }
     }
@@ -141,6 +145,21 @@ impl LoginScreen {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.awaiting
+    }
+
+    /// The one rule that closes this card: a live session.
+    ///
+    /// A method rather than two lines in the system so it can be checked without a
+    /// renderer — and because "closed" has to mean the same thing for a sign-in
+    /// this card issued and for one that arrived from anywhere else (startup's
+    /// auto-enter, `--connect`). It is deliberately not conditioned on `awaiting`:
+    /// the card asks which server, as whom, and being *in* a world is the answer to
+    /// that question however you got there.
+    fn settle(&mut self, session: &SessionState) {
+        if session.is_online() {
+            self.awaiting = false;
+            self.open = false;
+        }
     }
 
     /// Seed the fields from the remembered session (called once at startup, before
@@ -272,18 +291,13 @@ pub fn render_login_screen(
     splash: Res<crate::systems::splash::BootSplash>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
 ) {
-    // A session that failed or dropped is the one thing that opens this by itself:
-    // the client has just fallen back to offline and the user did not ask it to.
-    if session.error.is_some() && session.error != screen.error_shown {
-        screen.error_shown = session.error.clone();
-        // Only the *arrival* replays the animation; a failure reported onto a card
-        // that is already up must not make it flicker.
-        screen.anim = if screen.open { screen.anim } else { 0.0 };
-        screen.open = true;
-    }
-    if session.error.is_none() {
-        screen.error_shown = None;
-    }
+    // **A live session closes this card, whoever opened it and whoever started the
+    // sign-in.** Not only the request this card issued: a startup auto-enter that
+    // lands, or a `--connect` that comes up while the card is up, has answered the
+    // one question the card exists to ask, and a form still asking it over a world
+    // you are already in is a modal with nothing to submit. Tested by
+    // `an_online_session_closes_the_card`.
+    screen.settle(&session);
 
     // Tell the keyboard gate before anything can early-out, so the flag falls back
     // to false the frame the screen closes.
@@ -381,7 +395,6 @@ pub fn render_login_screen(
             color: dim(theme::INK, 0.55 * t),
         });
     let mut submit = false;
-    let mut sign_out = false;
     let mut close = dismissed;
     egui::Window::new("sign in")
         .id(card_id)
@@ -406,14 +419,7 @@ pub fn render_login_screen(
                 .max_height(card_h)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    close |= card_ui(
-                        ui,
-                        &mut screen,
-                        &session,
-                        &identity,
-                        &mut submit,
-                        &mut sign_out,
-                    );
+                    close |= card_ui(ui, &mut screen, &session, &identity, &mut submit);
                 });
         });
     ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, card_id));
@@ -430,30 +436,26 @@ pub fn render_login_screen(
     let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
     submit |= enter && !session.status.is_busy();
 
-    if sign_out {
-        crate::systems::session::sign_out(&mut session, &mut store);
-        screen.awaiting = true;
-        return;
-    }
     if submit {
         if let Some(request) = screen.build_request() {
             store.set_session_prefs(screen.prefs());
             session.request(request);
             // Stay open while it connects: the spinner, and any rejection, belong
-            // on this card. It dismisses itself below once the session is up.
+            // on this card. `settle` closes it at the top of the frame the session
+            // comes up.
             screen.awaiting = true;
             return;
         }
     }
     // Dismiss on arrival, not on the click: a sign-in that is still authenticating
     // has not happened yet, and closing over it would leave the user looking at a
-    // map with no way to find out whether they got in.
+    // map with no way to find out whether they got in. Arrival is handled at the
+    // top of this system — so all that is left here is the other outcome, a
+    // request that came back offline, whose reason is now on the card in front of
+    // the person who asked for it.
     if screen.awaiting {
-        if session.status == SessionStatus::Online || session.status == SessionStatus::Offline {
+        if !session.status.is_busy() {
             screen.awaiting = false;
-            if session.error.is_none() {
-                screen.open = false;
-            }
         }
         return;
     }
@@ -469,7 +471,6 @@ fn card_ui(
     session: &SessionState,
     identity: &AuthIdentity,
     submit: &mut bool,
-    sign_out: &mut bool,
 ) -> bool {
     let mut close = false;
 
@@ -546,30 +547,16 @@ fn card_ui(
 
     // ── Actions ──────────────────────────────────────────────────────────────
     let busy = session.status.is_busy();
-    ui.horizontal(|ui| {
-        let width = if session.is_online() {
-            ui.available_width() - 108.0
-        } else {
-            ui.available_width()
-        };
-        ui.add_enabled_ui(!busy, |ui| {
-            // `theme::primary_button_sized`, not a hand-built filled `Button`:
-            // this card and the Route panel's "▶ Driver mode" were the same rank
-            // and did not look alike, which is what that helper exists to end.
-            *submit |= theme::primary_button_sized(ui, "Sign in", width).clicked();
-        });
-        // The menu's Log out is the ordinary way out (it is one tap, and this
-        // card is not where you go to leave). This stays for the case that opens
-        // the card while a session is up: a failure on a *live* session, where
-        // the choice on screen has to include not retrying.
-        if session.is_online() {
-            ui.add_enabled_ui(!busy, |ui| {
-                *sign_out |= ui
-                    .add(egui::Button::new("Log out").min_size(egui::vec2(100.0, 34.0)))
-                    .on_hover_text("Leave this world and go back to the offline map")
-                    .clicked();
-            });
-        }
+    // One verb, the card's full width. There used to be a "Log out" beside it,
+    // for the case where a failure on a live session raised this card over a world
+    // you were still in — a case that no longer exists now that nothing but the app
+    // menu opens the card and a live session closes it. Leaving is that menu's
+    // (`session::sign_out`): one entry, one tap, no modal to dismiss afterwards.
+    ui.add_enabled_ui(!busy, |ui| {
+        // `theme::primary_button_sized`, not a hand-built filled `Button`: this
+        // card and the Route panel's "▶ Driver mode" were the same rank and did
+        // not look alike, which is what that helper exists to end.
+        *submit |= theme::primary_button_sized(ui, "Sign in", ui.available_width()).clicked();
     });
 
     if busy {
@@ -759,8 +746,77 @@ mod tests {
         assert_eq!(LoginScreen::from_prefs(&once).prefs(), once);
     }
 
+    /// **Signing in closes the card.** Whoever opened it and whoever started the
+    /// sign-in: `awaiting` is the request *this* card issued, and a session that
+    /// came up from startup's auto-enter or from `--connect` answers the same
+    /// question, so it cannot be the condition.
+    /// A session in a given state, with an optional reason on it. `SessionState`
+    /// keeps its link and its solo handle private, so it is built and then written
+    /// rather than struct-literalled.
+    fn session(status: SessionStatus, error: Option<&str>) -> SessionState {
+        let mut session = SessionState::default();
+        session.status = status;
+        session.error = error.map(str::to_string);
+        session
+    }
+
+    #[test]
+    fn an_online_session_closes_the_card() {
+        let online = session(SessionStatus::Online, None);
+
+        // The ordinary path: submitted here, waiting on the handshake.
+        let mut screen = LoginScreen {
+            open: true,
+            awaiting: true,
+            ..LoginScreen::default()
+        };
+        screen.settle(&online);
+        assert!(!screen.open, "a live session left the form on screen");
+        assert!(!screen.awaiting);
+
+        // Opened from the menu, signed in from somewhere else.
+        let mut watching = LoginScreen {
+            open: true,
+            ..LoginScreen::default()
+        };
+        watching.settle(&online);
+        assert!(!watching.open);
+
+        // An error left over from an earlier attempt is not a reason to stay up:
+        // it is stale the moment a session comes up behind it.
+        let mut after_a_failure = LoginScreen {
+            open: true,
+            awaiting: true,
+            ..LoginScreen::default()
+        };
+        after_a_failure.settle(&session(
+            SessionStatus::Online,
+            Some("sim.example: rejected"),
+        ));
+        assert!(!after_a_failure.open);
+    }
+
+    /// The other outcomes leave it up: mid-handshake there is nothing to report
+    /// yet, and a rejection has to be readable by the person who asked for it.
+    #[test]
+    fn anything_short_of_a_session_leaves_the_card_up() {
+        for status in [
+            SessionStatus::Connecting,
+            SessionStatus::Authenticating,
+            SessionStatus::Offline,
+        ] {
+            let mut screen = LoginScreen {
+                open: true,
+                awaiting: true,
+                ..LoginScreen::default()
+            };
+            screen.settle(&session(status.clone(), Some("sim.example: no")));
+            assert!(screen.open, "{status:?} closed the card");
+        }
+    }
+
     /// A fresh install starts offline and is never asked about it — the card is
-    /// only ever opened by asking for it, or by a session that failed.
+    /// only ever opened from the app menu.
     #[test]
     fn a_fresh_install_starts_offline() {
         assert_eq!(SessionPrefs::default().kind, SessionKind::Offline);

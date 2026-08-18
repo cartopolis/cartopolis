@@ -1385,7 +1385,7 @@ fn run_client() {
     app.init_resource::<systems::script_editor::ScriptEditorState>();
     app.init_resource::<resources::RightPanel>();
     app.init_resource::<systems::session::SessionState>();
-    let mut screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
+    let screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
     // The web build used to be excluded here outright — it was the Phase-1 viewer
     // with no transport to a sim at all. It has one now (a WebSocket carrier), so
     // it takes this path like any other build. What it still cannot do is *solo*:
@@ -1397,36 +1397,41 @@ fn run_client() {
     if !(cli.offline || scripted) {
         use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
-        // `Ok` = enter this; `Err(true)` = ask; `Err(false)` = stay offline
-        // because that is what was chosen last time.
+        // `Some` = enter this; `None` = open onto the offline map, which is where
+        // everybody starts. **Startup never raises the sign-in card** — that is
+        // the app menu's, and only the app menu's (`systems::login_screen`). A
+        // launch that has nothing to enter has no question either: offline is a
+        // world, not a waiting room, and a modal in front of it on the first frame
+        // is the loading-screen-pretending-to-be-a-login that this design exists to
+        // avoid. What a *failed* entry owes the user is the reason, and that is in
+        // the menu beside the entry that offers to try again.
         let request = match cli.connect.clone().or(login.server.clone()) {
-            Some(server) => Ok(SessionRequest::Remote {
+            Some(server) => Some(SessionRequest::Remote {
                 server,
                 credential: login.credential,
                 persist_token: true,
             }),
             // A `--login` with no server names the account solo logs in as.
-            None if cli.login.is_some() => Ok(SessionRequest::Solo {
+            None if cli.login.is_some() => Some(SessionRequest::Solo {
                 credential: Some(login.credential),
             }),
-            None if !session_prefs.auto_enter => Err(true),
+            None if !session_prefs.auto_enter => None,
             None => match session_prefs.kind {
-                SessionKind::Offline => Err(false),
+                SessionKind::Offline => None,
                 // A remembered solo session on a build with no solo: stay offline
-                // silently. `Err(false)` and not `Err(true)` — the user did not
-                // choose this here, so opening the sign-in screen would be asking
-                // them about a decision they made on another machine.
-                SessionKind::Solo if !systems::session::can_solo() => Err(false),
-                SessionKind::Solo => Ok(SessionRequest::Solo { credential: None }),
-                // A remembered server with no address is not a session; ask.
-                SessionKind::Remote if session_prefs.server.is_empty() => Err(true),
-                SessionKind::Remote => Ok(SessionRequest::Remote {
+                // silently — the user did not choose this here, so it is not
+                // something to bring up on this machine.
+                SessionKind::Solo if !systems::session::can_solo() => None,
+                SessionKind::Solo => Some(SessionRequest::Solo { credential: None }),
+                // A remembered server with no address is not a session.
+                SessionKind::Remote if session_prefs.server.is_empty() => None,
+                SessionKind::Remote => Some(SessionRequest::Remote {
                     server: session_prefs.server.clone(),
                     // Remembered sessions ride the persisted token. The fallback
                     // credential is this username with no password, which the
-                    // server rejects — and a rejection opens the sign-in screen
-                    // with the reason on it, which is the honest outcome for a
-                    // token that has expired.
+                    // server rejects — and the rejection is reported in the app
+                    // menu beside "Sign in…", which is the honest outcome for a
+                    // token that has expired without a modal over the map.
                     credential: cartopolis_core::AuthCredential::Password {
                         username: session_prefs.username.clone(),
                         password: String::new(),
@@ -1435,14 +1440,10 @@ fn run_client() {
                 }),
             },
         };
-        match request {
-            Ok(request) => app
-                .world_mut()
+        if let Some(request) = request {
+            app.world_mut()
                 .resource_mut::<systems::session::SessionState>()
-                .request(request),
-            // Offer the choice rather than dropping the user into a world they
-            // did not pick.
-            Err(ask) => screen.open = ask,
+                .request(request);
         }
     }
     app.insert_resource(screen);

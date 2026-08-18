@@ -48,11 +48,26 @@ fails. One tick writes both.
 ## Rejected: showing it on launch
 
 A viewer that asks who you are before it will draw a map is a worse map. The
-remembered session (`UserStore::data.session`) enters itself, the screen lives in
-the app menu beside Developer tools, and it opens by itself for exactly one
-reason: a session that failed or dropped, which is the only moment the app has a
-question it cannot answer. A CLI flag still wins over the file — a flag is an
-instruction for this launch and is never written back.
+remembered session (`UserStore::data.session`) enters itself and the screen lives
+in the app menu beside Developer tools. A CLI flag still wins over the file — a
+flag is an instruction for this launch and is never written back.
+
+**Since 2026-08-18 the card opens from that menu entry and from nothing else, and
+a live session is the only thing that closes it.** It used to raise itself
+whenever a session failed or dropped, and `lib.rs` opened it on a launch with
+nothing to enter — a modal the app pushed in front of you, mid-flight, for a
+question you had not asked, and on the first frame the loading-screen-pretending-
+to-be-a-login this whole design rejects. What a failure owes the user is the
+*reason*, not a form: `ui::render_main_menu` prints `SessionState::error` under
+the account entry, next to the "Sign in…" that offers to try again. A failure
+arriving on a card that is already up still lands on the card — the question is
+open, so the answer belongs there.
+
+Closing on `session.is_online()` rather than on the card's own `awaiting` flag is
+deliberate for the same reason the opening rule is one place: a sign-in that
+arrives from startup's auto-enter or from `--connect` answers the card's one
+question exactly as a submit here does, and a form still asking it over a world
+you are already in has nothing left to submit.
 
 `SessionPrefs::default()` used to be Solo + `auto_enter`, i.e. a fresh install
 booted straight into an in-process simulator with a SQLite database, for somebody

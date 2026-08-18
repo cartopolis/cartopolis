@@ -229,7 +229,10 @@ pub const fn can_solo() -> bool {
 }
 
 /// Leave the world and go back to the offline map — the app menu's **Log out**,
-/// and the sign-in card's Sign out.
+/// which is the only place it is offered. The sign-in card had one too, for the
+/// case where a failure raised that card over a session that was still live; the
+/// card is opened from this same menu now and closes the moment a session comes
+/// up, so that case is gone and leaving is one entry with one outcome.
 ///
 /// Three things happen together and it is the *together* that matters, which is
 /// why they are here rather than at each call site. The remembered token for this

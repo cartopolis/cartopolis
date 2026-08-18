@@ -187,6 +187,19 @@ pub fn render_main_menu(
                                 sign_in.screen.open = true;
                                 close = true;
                             }
+                            // **Why a session failure is reported here.** The
+                            // sign-in card used to raise itself whenever one
+                            // arrived — a modal the app pushed in front of you,
+                            // mid-flight, for a question you had not asked. It
+                            // opens from the entry above and from nowhere else
+                            // now, so the reason a remembered session did not
+                            // come up, or a live one dropped, lands next to the
+                            // entry that offers to try again. Losing it entirely
+                            // would leave a client that silently fell back to
+                            // the offline map with nothing anywhere saying why.
+                            if let Some(error) = &sign_in.session.error {
+                                theme::note(ui, error);
+                            }
                             ui.separator();
 
                             // How you are looking at the world. Where you have
