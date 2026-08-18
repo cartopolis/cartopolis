@@ -1213,6 +1213,40 @@ fn run_client() {
         })
         .init_resource::<StatsState>()
         .init_resource::<resources::ScreenshotState>()
+        // The tier's ceiling on bytes uploaded to the GPU per frame, and the only
+        // bound in this client that is measured in bytes rather than in items —
+        // see `quality::Budget::upload_bytes_per_frame` for why a count of builds
+        // was never the quantity that decides whether a mobile driver survives the
+        // frame. `None` (every tier but the phone) is bevy's default and inserts a
+        // resource that throttles nothing.
+        .insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame {
+            // `CARTO_UPLOAD_KB` overrides the tier, and `0` means no ceiling at
+            // all. It is here because this is a number nobody can pick from a
+            // desk: the frame budget it protects belongs to a device none of the
+            // people changing it are holding, and the only honest way to set it is
+            // for whoever has the phone to try two values. On Android that reaches
+            // the process as `setprop debug.carto.upload_kb` (see `env_value`),
+            // which is the one platform where the tier's own answer is otherwise
+            // final.
+            max_bytes: match env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
+                Some(0) => None,
+                Some(kb) => Some(kb * 1024),
+                // **Never in a scripted capture**, whatever the tier says, and this
+                // is not a convenience — a throttled run photographs a partly
+                // uploaded world. The settle test watches the *streamers*, and this
+                // budget defers work that is already past them: everything has been
+                // fetched, meshed and handed over, so every streamer is quiet while
+                // bevy still holds meshes for later frames. Measured with
+                // `CARTO_QUALITY=phone` over Groningen (2026-08-18): the same
+                // viewpoint captured with the budget on was missing the city
+                // centre's buildings and reported `settled=true`, which is the
+                // failure mode this project cares about most — a green run that
+                // documents something untrue. The README set and the `scene-smoke`
+                // gate both read these captures.
+                None if scripted => None,
+                None => quality::budget().upload_bytes_per_frame,
+            },
+        })
         .init_resource::<systems::osm_buildings::OsmBuildings>()
         .init_resource::<systems::lod22::Lod22Buildings>()
         .init_resource::<systems::collision::BuildingColliders>()
@@ -2091,6 +2125,14 @@ fn run_client() {
                 frame_stats,
             ),
         )
+        // In `Last`, not `Update`, and the placement is load-bearing — see
+        // `measure_uploads` for both halves of why (a mesh's data is gone after
+        // extraction, and this is where the frame's assets are all present and
+        // all still readable). Registered on every tier, unlike `log_render_cost`
+        // above: it holds two message readers and two `Res<Assets<_>>`, matches no
+        // archetypes at all, and the phone is the platform whose bursts it names.
+        .add_systems(Last, systems::upload_meter::measure_uploads)
+        .init_resource::<systems::upload_meter::UploadMeter>()
         // Drawn over everything until the first tiles are up. Mirrors the
         // splash in index.html, which covers the wasm load this cannot.
         .init_resource::<systems::splash::BootSplash>()
@@ -2343,6 +2385,7 @@ mod android_property_tests {
             "CARTO_RENDER_COST",
             "CARTO_TILE_URL",
             "CARTO_PLACE",
+            "CARTO_UPLOAD_KB",
         ] {
             let mapped = android_property_name(name);
             assert!(mapped.len() <= 31, "{mapped} is {} bytes", mapped.len());
@@ -3268,6 +3311,7 @@ fn frame_time_watchdog(
     meshes: Res<Assets<Mesh>>,
     images: Res<Assets<Image>>,
     materials: Res<Assets<StandardMaterial>>,
+    uploads: Res<systems::upload_meter::UploadMeter>,
     globe: Res<systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut census: Local<f32>,
@@ -3290,6 +3334,12 @@ fn frame_time_watchdog(
             meshes = meshes.len(),
             images = images.len(),
             materials = materials.len(),
+            // The counts above say how much exists; these say how much was handed
+            // over *this frame*, which is the term that decides a command-buffer
+            // timeout and the one every previous report had to guess at.
+            upload_kb = uploads.frame_kb(),
+            upload_peak_kb = uploads.peak_kb(),
+            upload_peak_asset_kb = uploads.peak_asset_kb(),
             "slow frame — GPU may be nearing its command-buffer timeout (TDR)"
         );
     }
@@ -3303,6 +3353,11 @@ fn frame_time_watchdog(
             meshes = meshes.len(),
             images = images.len(),
             materials = materials.len(),
+            // The worst frame of the last ten seconds' worth of streaming, so a
+            // burst that happened between two hitches still reaches the log.
+            upload_peak_kb = uploads.peak_kb(),
+            upload_peak_asset_kb = uploads.peak_asset_kb(),
+            upload_total_mb = uploads.total_bytes / (1024 * 1024),
             "asset census"
         );
     }

@@ -275,6 +275,38 @@ pub struct Budget {
     /// assert it on all of them).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fps_cap: Option<f64>,
+    /// Ceiling on the bytes of `Image` and `Mesh` data bevy uploads to the GPU in
+    /// one frame (`RenderAssetBytesPerFrame`), or `None` for "as fast as they
+    /// arrive".
+    ///
+    /// **The bound this codebase was missing.** Every streamer here is already
+    /// per-frame-bounded — the flat tiles, the globe tiles, the LoD2.2 cells, the
+    /// OSM detail patches all cap how many *items* they finalise per frame, and
+    /// CLAUDE.md states the rule. But the items differ in size by orders of
+    /// magnitude: a 256² tile mip chain is ~350 kB and a LoD2.2 cell is a whole
+    /// z14 triangle soup, so a count of two can be 700 kB or 40 MB. The quantity
+    /// that decides whether a tiler's command buffer survives the frame is the
+    /// byte count, and nothing was bounding it — which is how a cold start could
+    /// hand the driver a burst that lost the device (an Adreno 840, 2026-08-17,
+    /// five seconds into a first run; the same failure mode as the Intel iGPU
+    /// entry in CLAUDE.md).
+    ///
+    /// It **defers, it does not drop**: bevy re-queues what does not fit and
+    /// uploads it next frame, so a low ceiling costs fill *latency* — the map
+    /// takes longer to sharpen — and never content. That is the trade, and it is
+    /// the right way round for a handset: a map that fills over three seconds is a
+    /// map, and a lost device is a black screen and a crash report.
+    ///
+    /// `None` above the phone, and not out of generosity: a workstation's uploads
+    /// are the same bytes over a bus with an order of magnitude more of them, the
+    /// burst has never cost a desktop run a device, and a throttle there would slow
+    /// `cargo shots` for nothing. This is one of the few fields where the phone rung
+    /// is not simply a smaller number than the rungs above it.
+    ///
+    /// Measure before changing it: `systems::upload_meter` reports the frame that
+    /// queues the most, in the same units, in the `slow frame` line and as
+    /// `upload_peak_kb` in `--dump-state`.
+    pub upload_bytes_per_frame: Option<usize>,
 }
 
 /// Sizes for the four LUTs bevy_pbr's atmosphere rebuilds every frame.
@@ -323,6 +355,23 @@ impl AtmosphereLuts {
     }
 }
 
+/// The phone tier's per-frame GPU upload ceiling.
+///
+/// **Sized against a measurement** (2026-08-18, `systems::upload_meter`, a cold
+/// cache over Groningen at 1,678 m with `CARTO_QUALITY=phone`): the opening view
+/// queued ~215 MB of mesh and texture data in about three and a half seconds, one
+/// LoD2.2 cell per frame, the largest of them 63 MB in a single frame. 4 MB is
+/// ~240 MB/s at 60 fps — enough that the map still fills in about a second, and
+/// two orders of magnitude below the burst that lost an Adreno 840 its device.
+///
+/// It is a *soft* limit in bevy's sense: one whole asset is always written even if
+/// it exceeds the budget, so uploads can never stall on an asset nothing will ever
+/// have room for. The real per-frame worst case is therefore this plus the largest
+/// single asset — which is why `lod22::MAX_CELL_MESH_BYTES` exists and why
+/// `ShotMetrics::upload_peak_asset_kb` is the column to watch. Neither number means
+/// much without the other.
+const PHONE_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
+
 impl Budget {
     /// The settings the rest of the codebase is written against.
     pub(crate) const fn desktop() -> Self {
@@ -353,6 +402,7 @@ impl Budget {
             tile_px: crate::systems::vector_tiles::TILE_PX,
             render_scale: 1.0,
             fps_cap: Some(60.0),
+            upload_bytes_per_frame: None,
         }
     }
 
@@ -403,6 +453,13 @@ impl Budget {
             // resolution-limited, and this rung's brief is to keep the picture.
             render_scale: 1.0,
             fps_cap: Some(60.0),
+            // Unbounded, like the rung above: an iGPU's uploads cross a bus with
+            // an order of magnitude more bandwidth than a handset's, and no
+            // desktop or laptop run on record has lost its device to a streaming
+            // burst. (The Intel iGPU loss CLAUDE.md documents was mesh *churn* —
+            // uploads and despawns together — and its guards are the streamers'
+            // own caps.)
+            upload_bytes_per_frame: None,
         }
     }
 
@@ -461,6 +518,7 @@ impl Budget {
             // longer mean the same number of pixels, and that is the honest position:
             // one of them pays for its upscale and the other does not.
             render_scale: 0.5,
+            upload_bytes_per_frame: Some(PHONE_UPLOAD_BYTES_PER_FRAME),
             // Leave pacing to FIFO. See the field's own comment: a sleep-based
             // limiter layered on vsync is a judder source, not a saving, and the
             // handset is the platform that runs `AutoVsync`.

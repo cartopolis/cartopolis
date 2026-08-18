@@ -560,6 +560,27 @@ pub struct ShotMetrics {
     /// ~2 m), and a field with relief in it that something downstream isn't using.
     pub terrain_ready: bool,
     pub terrain_relief_m: f32,
+    /// The largest single frame's worth of GPU uploads over the whole run, in kB
+    /// (`systems::upload_meter`).
+    ///
+    /// A run-wide high-water mark rather than a reading at the shutter, and that
+    /// is the point: by the time a capture settles, the streaming burst that would
+    /// have cost a handset its device is minutes past, and every other column here
+    /// describes the calm after it. This is the only column that remembers the
+    /// worst moment.
+    ///
+    /// Machine-independent — it counts bytes the client queued, which is the same
+    /// arithmetic on lavapipe as on an Adreno — so unlike the frame times it is a
+    /// column `--expect` may gate on.
+    pub upload_peak_kb: usize,
+    /// The largest *single* asset the run queued, in kB.
+    ///
+    /// The column to gate on, and the one [`crate::systems::lod22::MAX_CELL_MESH_BYTES`]
+    /// is answerable for: a frame's total can be spread by bevy's upload budget,
+    /// and a single asset cannot be — it is written whole or not at all. Before the
+    /// LoD2.2 cells were cut into pieces this read 64,892 over Groningen; the
+    /// ceiling is 8,192 now.
+    pub upload_peak_asset_kb: usize,
     /// The capture ran on a CPU rasteriser (Mesa lavapipe in a container or CI)
     /// rather than a GPU. Geometry, placement, culling and UI layout are the same
     /// picture either way; the tone-mapped sky is not, so a colour or lighting
@@ -577,7 +598,7 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
-terrain_ready,terrain_relief_m,software_renderer";
+terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,software_renderer";
 
 /// The avatar's contribution to [`ShotMetrics`].
 ///
@@ -605,7 +626,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -650,6 +671,8 @@ impl ShotMetrics {
             self.height_patches,
             self.terrain_ready,
             self.terrain_relief_m,
+            self.upload_peak_kb,
+            self.upload_peak_asset_kb,
             self.software_renderer,
         )
     }
@@ -1376,6 +1399,9 @@ pub fn drive_capture(
         // harness schedules against is deliberately the *virtual* clock — see
         // `ShotProgress::frame_time` for why the two must not be confused.
         Res<Time<Real>>,
+        // The run's worst upload frame, which is a high-water mark and therefore
+        // the one metric here that describes a moment other than the shutter.
+        Res<crate::systems::upload_meter::UploadMeter>,
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1654,6 +1680,8 @@ pub fn drive_capture(
             height_patches: readouts.2.fetched,
             terrain_ready: readouts.3.is_ready(),
             terrain_relief_m: readouts.3.range_m.1 - readouts.3.range_m.0,
+            upload_peak_kb: readouts.12.peak_kb(),
+            upload_peak_asset_kb: readouts.12.peak_asset_kb(),
             software_renderer: readouts.8.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
         };
         // One line, but its *level* carries whether the shot is trustworthy: a
@@ -1697,6 +1725,8 @@ pub fn drive_capture(
                     height_patches = m.height_patches,
                     terrain_ready = m.terrain_ready,
                     terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
+                    upload_peak_kb = m.upload_peak_kb,
+                    upload_peak_asset_kb = m.upload_peak_asset_kb,
                     software_renderer = m.software_renderer,
                     "shot state"
                 )
@@ -1980,6 +2010,8 @@ mod tests {
             height_patches: 0,
             terrain_ready: false,
             terrain_relief_m: 0.0,
+            upload_peak_kb: 0,
+            upload_peak_asset_kb: 0,
             software_renderer: true,
         }
     }
