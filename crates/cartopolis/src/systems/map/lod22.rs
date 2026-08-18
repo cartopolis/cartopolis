@@ -590,12 +590,10 @@ fn build_lod22_from_text(
         let (wall, roof_tile) = building_palette(blat, blng);
         let wall = [wall[0], wall[1], wall[2], 1.0];
         let roof_tile = [roof_tile[0], roof_tile[1], roof_tile[2], 1.0];
-        let flat = [
-            FLAT_ROOF_COLOR[0],
-            FLAT_ROOF_COLOR[1],
-            FLAT_ROOF_COLOR[2],
-            1.0,
-        ];
+        // `FLAT_ROOF_COLOR` is authored in sRGB; vertex colours multiply in
+        // linear space (same exit rule as `building_palette`).
+        let flat_lin = crate::systems::scatter::srgb_to_linear_f32(FLAT_ROOF_COLOR);
+        let flat = [flat_lin[0], flat_lin[1], flat_lin[2], 1.0];
 
         // World-XZ position of each vertex (before the cell offset); the hull of
         // these is the building's footprint no-go polygon.

@@ -37,6 +37,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::scatter::srgb_to_linear_f32;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the
@@ -373,7 +374,8 @@ pub(crate) fn building_palette(lat: f64, lng: f64) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed((lat, lng));
     let wall = jitter(palette_color((lat, lng)), seed, 0.12);
     let roof = jitter(default_roof("yes", seed), seed.rotate_left(17), 0.12);
-    (wall, roof)
+    // Same sRGB→linear exit as `derive_colors` — these feed vertex colours too.
+    (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
 }
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
@@ -1720,6 +1722,32 @@ impl MeshData {
         }
     }
 
+    /// [`MeshData::quad_facing`] with a colour per corner (the wall base-darkening
+    /// gradient). Corner colours travel with their vertices when the winding flips.
+    pub(crate) fn quad_facing_graded(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        d: Vec3,
+        colors: [[f32; 4]; 4],
+        outward: Vec3,
+    ) {
+        let (verts, cols) = if (b - a).cross(c - a).dot(outward) < 0.0 {
+            ([d, c, b, a], [colors[3], colors[2], colors[1], colors[0]])
+        } else {
+            ([a, b, c, d], colors)
+        };
+        let n = (verts[1] - verts[0])
+            .cross(verts[2] - verts[0])
+            .normalize_or_zero();
+        let ia = self.vertex(verts[0], n, cols[0]);
+        let ib = self.vertex(verts[1], n, cols[1]);
+        let ic = self.vertex(verts[2], n, cols[2]);
+        let id = self.vertex(verts[3], n, cols[3]);
+        self.indices.extend_from_slice(&[ia, ib, ic, ia, ic, id]);
+    }
+
     /// Finalise into a `Mesh` (or `None` if empty).
     ///
     /// `RENDER_WORLD` only, for the same reason `tile_loader::TILE_TEXTURE_USAGE`
@@ -2007,12 +2035,13 @@ fn push_building_lod(
             perp = -perp;
         }
         // Wound to face `perp` so far walls back-face cull too (see `quad_facing`).
-        bld.quad_facing(
+        let base = wall_base_tone(wall, height);
+        bld.quad_facing_graded(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, height, b.y),
             Vec3::new(a.x, height, a.y),
-            wall,
+            [base, base, wall, wall],
             Vec3::new(perp.x, 0.0, perp.y),
         );
 
@@ -2089,12 +2118,13 @@ fn push_building(
         // Wound to face `perp`, so the wall can be back-face culled. (A vertical
         // quad's derived flat normal is exactly ±perp, so this is identical to the
         // explicit normal this used to push — just with the winding fixed too.)
-        bld.quad_facing(
+        let base = wall_base_tone(wall, wall_h);
+        bld.quad_facing_graded(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, wall_h, b.y),
             Vec3::new(a.x, wall_h, a.y),
-            wall,
+            [base, base, wall, wall],
             Vec3::new(perp.x, 0.0, perp.y),
         );
 
@@ -2141,6 +2171,20 @@ fn push_building(
             }
         }
     }
+}
+
+/// Ground-contact darkening for a wall: the bottom vertices carry a darker tone
+/// that interpolates back to the wall colour at the eaves — a fake ambient-
+/// occlusion band, since nothing in the scene computes real AO and an untouched
+/// extrusion meets the flat ground with no contact shadow at all. The strength
+/// is scaled down for tall façades (the gradient spans the whole wall, and a
+/// constant base tone would wash a tower's lower storeys with what should be a
+/// ground-contact effect).
+fn wall_base_tone(wall: [f32; 4], wall_h: f32) -> [f32; 4] {
+    const STRENGTH: f32 = 0.25;
+    const SPAN_M: f32 = 6.0;
+    let d = 1.0 - STRENGTH * (SPAN_M / wall_h.max(SPAN_M)).min(1.0);
+    [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
 }
 
 /// Emit a grid of window quads on one wall face (proud of the wall), routing each
@@ -2616,7 +2660,11 @@ fn derive_colors(tags: Option<&serde_json::Value>, ring0: (f64, f64)) -> ([f32; 
         .or_else(|| tag_str(tags, "roof:material").and_then(roof_material_color))
         .unwrap_or_else(|| default_roof(btype, seed));
     let roof = jitter(roof_base, seed.rotate_left(17), 0.12);
-    (wall, roof)
+    // The tables above (and OSM `*:colour` tags) are authored in sRGB, but these
+    // values become mesh vertex colours, which multiply the material's white
+    // `base_color` in linear space — convert here, at the single exit, or every
+    // wall displays a stop too bright and terracotta reads as salmon.
+    (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
 }
 
 /// Default roof tone for a building type without `roof:*` tags: flat grey for
