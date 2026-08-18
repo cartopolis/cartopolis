@@ -45,17 +45,17 @@ pub struct SessionPrefs {
     pub server: String,
     #[serde(default)]
     pub username: String,
-    /// Enter this mode on the next launch without asking. Default `true` with a
-    /// default `kind` of [`SessionKind::Solo`], which is exactly the behaviour
-    /// this client had before there was a sign-in screen — a fresh install still
-    /// boots straight into solo mode.
+    /// Enter this mode on the next launch without asking. Default `true` against
+    /// a default `kind` of [`SessionKind::Offline`], which is what makes a fresh
+    /// install open straight onto the map: offline is where everybody starts, so
+    /// there is nothing to ask about until somebody asks to sign in.
     pub auto_enter: bool,
 }
 
 impl Default for SessionPrefs {
     fn default() -> Self {
         Self {
-            kind: SessionKind::Solo,
+            kind: SessionKind::Offline,
             server: String::new(),
             username: String::new(),
             auto_enter: true,
@@ -64,37 +64,26 @@ impl Default for SessionPrefs {
 }
 
 /// A mode without its address — the serialisable, comparable part of
-/// [`SessionMode`], and what the sign-in screen's three rows select between.
+/// [`SessionMode`].
+///
+/// **Only two of these are anything a person chooses**, and the sign-in card
+/// offers neither as a *mode*: offline is where the app starts and signing in is
+/// the one verb, so the card is a form for [`Self::Remote`] and nothing else. It
+/// used to be a three-row picker, which asked everybody to make an architecture
+/// decision — "solo simulator" against "connect to a server" — before they had
+/// seen the map. [`Self::Solo`] survives as a developer path (`--login` with no
+/// server, `crates/cartopolis/src/solo.rs`) and as a mode a `user.json` written
+/// by an older build may still name; nothing in the UI can enter it.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     /// No sim at all: the streamed map and a local avatar, single user.
+    #[default]
     Offline,
     /// An in-process sim on loopback (the `solo` feature).
-    #[default]
     Solo,
     /// An external sim over TCP.
     Remote,
-}
-
-impl SessionKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Offline => "Explore offline",
-            Self::Solo => "Solo simulator",
-            Self::Remote => "Connect to a server",
-        }
-    }
-
-    /// One line under the label in the sign-in screen: what picking this *gets*
-    /// you, in terms of the world rather than the architecture.
-    pub fn blurb(self) -> &'static str {
-        match self {
-            Self::Offline => "The map, and you. Nothing is saved, nobody else is here.",
-            Self::Solo => "Your own world on this machine — objects, chat and a saved avatar.",
-            Self::Remote => "Share a world with other people on a simulator you can reach.",
-        }
-    }
 }
 
 /// The mode the client is actually in.
@@ -123,14 +112,6 @@ pub enum SessionMode {
 }
 
 impl SessionMode {
-    pub fn kind(&self) -> SessionKind {
-        match self {
-            Self::Offline => SessionKind::Offline,
-            Self::Solo => SessionKind::Solo,
-            Self::Remote { .. } => SessionKind::Remote,
-        }
-    }
-
     /// Where the session lives, for a status line. Solo's ephemeral loopback port
     /// is noise to a user, so it reads as the machine instead.
     pub fn where_(&self) -> String {
@@ -245,6 +226,28 @@ pub const fn can_simulate() -> bool {
 
 pub const fn can_solo() -> bool {
     cfg!(feature = "solo") && !cfg!(target_arch = "wasm32")
+}
+
+/// Leave the world and go back to the offline map — the app menu's **Log out**,
+/// and the sign-in card's Sign out.
+///
+/// Three things happen together and it is the *together* that matters, which is
+/// why they are here rather than at each call site. The remembered token for this
+/// server is dropped (a log-out that leaves a token behind signs you straight back
+/// in on the next launch, which is not a log-out); the remembered mode becomes
+/// offline for the same reason; and only then is the session torn down. Written
+/// as a free function rather than a method because it spans the two resources —
+/// `SessionState` knows the server, `UserStore` holds the token.
+pub fn sign_out(session: &mut SessionState, store: &mut UserStore) {
+    if let SessionMode::Remote { server } = session.mode.clone() {
+        store.clear_session_token(&server);
+    }
+    let prefs = SessionPrefs {
+        kind: SessionKind::Offline,
+        ..store.data.session.clone()
+    };
+    store.set_session_prefs(prefs);
+    session.request(SessionRequest::Offline);
 }
 
 /// Apply session requests, poll a booting solo sim, and watch a live link.
@@ -590,12 +593,16 @@ mod tests {
         assert!(app.world().resource::<SessionState>().request.is_none());
     }
 
-    /// A fresh install must behave exactly like the client did before there was a
-    /// sign-in screen: straight into solo mode, no click required.
+    /// **A fresh install opens onto the map and asks nothing.** It used to boot
+    /// into solo — the behaviour the client had before there was a sign-in screen
+    /// — which meant a first launch silently started a database-backed simulator
+    /// for somebody who had come to look at a map. `auto_enter` stays true, and on
+    /// an offline kind that means "enter offline without asking", which is the
+    /// only reading of it that leaves the sign-in card closed.
     #[test]
-    fn default_prefs_boot_into_solo() {
+    fn default_prefs_boot_offline_without_asking() {
         let prefs = SessionPrefs::default();
-        assert_eq!(prefs.kind, SessionKind::Solo);
+        assert_eq!(prefs.kind, SessionKind::Offline);
         assert!(prefs.auto_enter);
     }
 
@@ -617,13 +624,44 @@ mod tests {
     }
 
     #[test]
-    fn mode_reports_its_kind_and_place() {
+    fn mode_reports_where_it_is() {
         let remote = SessionMode::Remote {
             server: "sim.example:4747".into(),
         };
-        assert_eq!(remote.kind(), SessionKind::Remote);
         assert_eq!(remote.where_(), "sim.example:4747");
-        assert_eq!(SessionMode::Offline.kind(), SessionKind::Offline);
+        assert_eq!(SessionMode::Offline.where_(), "no simulator");
+    }
+
+    /// **Logging out has to drop the token as well as the session**, or the next
+    /// launch signs itself straight back in with it — which is not a log-out, it
+    /// is a reconnect with an extra step.
+    #[test]
+    fn logging_out_forgets_the_session_it_was_in() {
+        let mut store = UserStore::default();
+        store.set_session_prefs(SessionPrefs {
+            kind: SessionKind::Remote,
+            server: "sim.example".into(),
+            username: "alice".into(),
+            auto_enter: true,
+        });
+        store.set_session_token("sim.example", "a-token");
+        let mut session = SessionState {
+            mode: SessionMode::Remote {
+                server: "sim.example".into(),
+            },
+            status: SessionStatus::Online,
+            ..SessionState::default()
+        };
+
+        sign_out(&mut session, &mut store);
+
+        assert!(matches!(session.request, Some(SessionRequest::Offline)));
+        assert_eq!(store.data.session.kind, SessionKind::Offline);
+        assert_eq!(store.session_token("sim.example"), None);
+        // The address and the name stay: the sign-in card comes back prefilled,
+        // which is the whole reason they are remembered separately from the token.
+        assert_eq!(store.data.session.server, "sim.example");
+        assert_eq!(store.data.session.username, "alice");
     }
 
     #[test]

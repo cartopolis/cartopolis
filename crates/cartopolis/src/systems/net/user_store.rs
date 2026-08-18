@@ -428,7 +428,13 @@ pub const FOLDER_PALETTE: [[f32; 3]; 8] = [
 
 /// The persistent user store. Mutate `data` and set `dirty`; the autosave
 /// system writes it out (and always on exit).
-#[derive(Resource)]
+///
+/// `Default` is a store that has never been read or written — `last_written`
+/// empty, so the first autosave writes. It exists for tests in *other* modules
+/// (`session::sign_out`'s, which spans this resource and `SessionState`); nothing
+/// in the app constructs one this way, since `load` is what a real store comes
+/// from.
+#[derive(Resource, Default)]
 pub struct UserStore {
     pub data: UserData,
     pub dirty: bool,

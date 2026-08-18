@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, chat.rs, splash.rs, theme.rs, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud"]
-updated: 2026-08-14
+updated: 2026-08-17
 ---
 
 # The map chrome
@@ -78,23 +78,42 @@ Layers went the other way, to a disc in the **top-left corner** above the compas
 settings rather than a destination, which is the same thing the compass, the
 locate button and the ⓘ toggle under it are.
 
-The mark disc is the app's own icon, so the way into "everything else" is the
-logo — the affordance the corner card had, on the edge a thumb reaches. The card
-it opens is anchored to the bottom centre rather than to the disc, because the
-dock's width depends on whether there is a session (Chat comes and goes) and a
-card measured from the disc would move under a menu that should not move.
+The menu disc closes the row. It was the app's own **mark** at first — the way
+into "everything else" being the logo, which is the affordance the corner card
+had — and that was wrong for one reason: in a row where every other disc is a
+picture of what it does, a logo is decoration, and nothing about it said there
+was a menu behind it. It carries `icons::MENU` since 2026-08-17; the mark is
+still the splash's and the sign-in card's, where a brand belongs. The card it
+opens is anchored to the bottom centre rather than to the disc, because the dock's
+width depends on whether there is a session (Chat comes and goes) and a card
+measured from the disc would move under a menu that should not move.
 
-**One menu on every viewport.** Everything the compact layout used to fold away
-lives in it permanently: Back / Forward / Home, the camera mode, Set Home, Copy
-location, Appearance, the Assistant, Settings, About, the account, developer
-tools, Exit. A menu whose contents depend on the window width is two menus.
+**One menu on every viewport**, and it holds what has nowhere else to be: the
+account (first, and a single **Log out** once there is a session), the camera
+mode, Appearance, the Assistant, Settings, About, the status readout, developer
+tools, diagnostics, Exit. A menu whose contents depend on the window width is two
+menus.
+
+**What left it, and why.** Back / Forward / Home and Set Home / Copy link went to
+the **Search panel** — a history belongs beside the field you navigate with, and
+both view actions name the place that field just took you to. The menu had become
+half a navigator, two taps from the address bar it was a history of.
+
+**The entries are list rows, not buttons** (`theme::menu_entry`). Justified
+`ui.button`s draw a full-width plate each, so the card read as a stack of primary
+actions — with the four `selectable_label` panel entries between them drawing no
+frame at all, i.e. two visual vocabularies in one card and neither of them saying
+which entries were *on*. A row highlights on hover and carries its state in the
+accent. The one deliberate plate left is the camera switcher, which is three
+`theme::chip`s on one line: it is a switcher, chips are what this app's switchers
+look like, and three list rows for it pushed Exit below the fold.
 
 ### Consequences worth knowing
 
 - **The status readout is off by default** (`hud::StatusHud`). It is an
   instrument panel — clock, position, altitude, the sun and weather switchers —
   and the two *verbs* it carried have gone where their results appear: ☆ into the
-  Places panel, Set Home and Copy location into the main menu. The ⓘ disc at the
+  Places panel, Set Home and Copy link into the Search panel. The ⓘ disc at the
   foot of the top-left column brings it back. The column is measured, not pinned:
   the locate button above it only exists when there is an avatar.
 - **`dock::reserved_top` / `reserved_bottom` are the two edges** everything else

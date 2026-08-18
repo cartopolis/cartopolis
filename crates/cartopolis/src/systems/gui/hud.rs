@@ -69,7 +69,7 @@ pub struct HudData {
 
 // `format_place` lived here — "53.21940, 6.56650, 120m, -12.5°, 45.0°", the
 // readable spelling the copy button used to write. It has no writer any more:
-// **☰ ▸ Copy link** copies a URL (`systems::place_link`), whose value is the same
+// **Search ▸ Copy link** copies a URL (`systems::place_link`), whose value is the same
 // five numbers without the decoration, and a format with no writer is a format
 // that drifts. `geo_nav::parse_location` still *reads* the readable form, because
 // people have that string in old chat messages and it is what a person types.

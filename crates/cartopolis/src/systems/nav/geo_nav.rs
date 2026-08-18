@@ -32,6 +32,7 @@ use crate::components::Avatar;
 use crate::platform::http;
 use crate::resources::{AvatarState, CameraMode, CameraState, RightPanel};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::icons;
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::navigation::{Endpoint, RouteState};
 use crate::systems::theme;
@@ -1304,6 +1305,127 @@ pub fn drive_geocode(
 
 // ─── The Search panel ────────────────────────────────────────────────────────
 
+/// Back / Forward / Home — the location history, as a browser's toolbar row above
+/// the field it belongs to.
+///
+/// **These were three named entries at the top of the app menu**, which put the
+/// history two taps away from the address it is a history *of* and left the menu
+/// carrying half a navigator. A back button belongs beside the thing you navigate
+/// with, and here it is one row: three glyphs, no words, at the same rank as the
+/// route panel's own icon actions.
+///
+/// Returns whether one of them fired, so the panel can drop a stale suggestion
+/// list — the hits on screen answer a query about where you *were*.
+fn history_row(
+    ui: &mut egui::Ui,
+    nav: &mut GeoNavState,
+    home: Option<&crate::systems::user_store::SavedLocation>,
+) -> bool {
+    let mut acted = false;
+    ui.horizontal(|ui| {
+        if theme::action_enabled(ui, nav.can_go_back(), icons::BACK)
+            .on_hover_text("Back to the previous location")
+            .on_disabled_hover_text("No previous location")
+            .clicked()
+        {
+            nav.go_back();
+            acted = true;
+        }
+        if theme::action_enabled(ui, nav.can_go_forward(), icons::FORWARD)
+            .on_hover_text("Forward to the next location")
+            .on_disabled_hover_text("No next location")
+            .clicked()
+        {
+            nav.go_forward();
+            acted = true;
+        }
+        if theme::action_enabled(ui, home.is_some(), icons::HOME)
+            .on_hover_text("Go to your Home location")
+            .on_disabled_hover_text("No Home set — use Set Home here, below")
+            .clicked()
+        {
+            if let Some(h) = home {
+                nav.pending_teleport = Some(Teleport {
+                    lat: h.lat,
+                    lng: h.lng,
+                    altitude: Some(h.altitude),
+                    pose: Some(h.pose.clone()),
+                });
+                acted = true;
+            }
+        }
+    });
+    acted
+}
+
+/// What the two actions at the foot of the Search panel ask for.
+///
+/// They were in the app menu, one separator below the history, and they came here
+/// with it: both name *this view* — the one the field above navigated to — and
+/// neither has anything to do with the settings and tools the menu is otherwise
+/// made of. `Copy link` is also the exact inverse of the field it now sits under,
+/// since what it writes is what Search accepts back.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum ViewAction {
+    SetHome,
+    CopyLink,
+}
+
+/// The foot of the panel: Set Home here, Copy link.
+///
+/// `done` is the action that fired within the last flash window, so the row that
+/// fired can show a ✔ — these are the two verbs in the app whose whole result is
+/// invisible (a preference written, a string on the clipboard), and both leave the
+/// panel open.
+fn view_actions_ui(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    done: Option<ViewAction>,
+) -> Option<ViewAction> {
+    let mut fired = None;
+    // Its own top-down block, because the caller draws this **first, in a
+    // bottom-up layout**: the results list above is an `auto_shrink([false,
+    // false])` `ScrollArea`, which takes every point of height that is left, so
+    // anything laid out after it is off the bottom of the panel. Without the
+    // block, a bottom-up parent would also stack these three in reverse.
+    ui.vertical(|ui| {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_enabled_ui(enabled, |ui| {
+            let home_icon = if done == Some(ViewAction::SetHome) {
+                icons::CHECK
+            } else {
+                icons::HOME
+            };
+            if theme::menu_entry_enabled(ui, enabled, home_icon, "Set Home here")
+                .on_hover_text("Home (above) returns to this spot and this view")
+                .clicked()
+            {
+                fired = Some(ViewAction::SetHome);
+            }
+            let copy_icon = if done == Some(ViewAction::CopyLink) {
+                icons::CHECK
+            } else {
+                icons::COPY
+            };
+            if theme::menu_entry_enabled(ui, enabled, copy_icon, "Copy link")
+                .on_hover_text(
+                    "Copy a link to this place — position and view. It opens the app on a \
+                 phone that has it, the web client everywhere else, and pastes into the \
+                 field above.",
+                )
+                .clicked()
+            {
+                fired = Some(ViewAction::CopyLink);
+            }
+        });
+        // The panel's own bottom edge is the screen's on a phone, and a row
+        // flush against it reads as cut off.
+        ui.add_space(6.0);
+    });
+    fired
+}
+
 /// Draw the search field and its results. `viewer` is where the camera is on
 /// Earth, used to say how far away each hit is; `None` before the world anchor
 /// exists, and the rows simply omit the distance.
@@ -1573,6 +1695,14 @@ pub fn render_search_panel(
     globe: Res<crate::systems::globe::GlobeState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     map_anchor: Res<crate::resources::MapAnchor>,
+    // Home and the two view actions came here from the app menu, and they bring
+    // their two resources with them: the saved Home lives in `user.json`, and
+    // Set Home records the camera pose alongside the coordinate.
+    mut store: ResMut<crate::systems::user_store::UserStore>,
+    camera_state: Res<CameraState>,
+    // Which view action last fired, and when — the ✔ flash. A `Local`, like the
+    // one the app menu kept for the same two entries.
+    mut flash: Local<Option<(ViewAction, Instant)>>,
 ) {
     let ctrl = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
     if ctrl && keyboard.just_pressed(KeyCode::KeyL) {
@@ -1593,16 +1723,21 @@ pub fn render_search_panel(
         return;
     }
 
-    // Where the camera is on Earth, for the hits' "how far away is this" line.
-    let viewer = camera
-        .single()
-        .ok()
+    // Where the camera is on Earth, for the hits' "how far away is this" line —
+    // and, with the altitude beside it, for the two view actions at the foot.
+    let cam = camera.single().ok();
+    let viewer = cam
         .zip(map_anchor.geo)
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
+    let place = viewer.zip(cam.map(|(cell, tf)| globe.altitude_m(cell, tf)));
 
     let compact = egui.compact();
     let viewport_w = egui.viewport_pts().x;
     let mut close = false;
+    let done = flash
+        .filter(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
+        .map(|(action, _)| action);
+    let mut fired = None;
     crate::systems::egui_manager::responsive_right_panel(
         "search_panel",
         compact,
@@ -1612,8 +1747,52 @@ pub fn render_search_panel(
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
         let panel = RightPanel::Search;
         close = theme::panel_header(ui, panel.icon(), panel.label());
+        if history_row(ui, &mut nav, store.data.home.as_ref()) {
+            nav.close_suggestions();
+        }
+        // The foot **reserves its space before the body is laid out**, which is
+        // what a nested `TopBottomPanel` is for. The results list is an
+        // `auto_shrink([false, false])` `ScrollArea` and takes every point of
+        // height left to it, so two rows drawn after it are simply off the bottom
+        // of the panel (they were), and a bottom-up layout around both puts them
+        // over the top of it instead.
+        egui::Panel::bottom("search_view_actions")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                fired = view_actions_ui(ui, place.is_some(), done);
+            });
         search_ui(ui, &mut nav, viewer);
     });
+    match (fired, place) {
+        (Some(ViewAction::SetHome), Some(((lat, lng), alt))) => {
+            // Capture the current view so Home returns to it exactly.
+            store.set_home(lat, lng, alt, CameraPose::capture(&camera_state));
+            *flash = Some((ViewAction::SetHome, Instant::now()));
+        }
+        (Some(ViewAction::CopyLink), Some(((lat, lng), alt))) => {
+            // Copy the view, not just the spot: the look angles come off the live
+            // camera transform (as the dev panel's preset copy does), so they are
+            // right in any camera mode, and following the link back reproduces
+            // this exact framing.
+            //
+            // A *link* rather than the bare coordinate string it used to be,
+            // because the string was only ever useful to someone who already knew
+            // to paste it into this app's search bar — everyone else got five
+            // numbers. The link carries the same five
+            // (`place_link::place_param`) and the field above still accepts them
+            // either way, so nothing that worked stopped working.
+            let look = cam.map(|(_, tf)| {
+                let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                (pitch.to_degrees(), yaw.to_degrees())
+            });
+            crate::utils::clipboard::set_text(&crate::systems::place_link::web_link(
+                lat, lng, alt, look,
+            ));
+            *flash = Some((ViewAction::CopyLink, Instant::now()));
+        }
+        _ => {}
+    }
     // A drag on the panel's edge that pulls it shut writes `open = false` and
     // never touches the header, so a panel that consults only its ✕ reopens on
     // the next frame — the slot still says it is the active panel. Both are the

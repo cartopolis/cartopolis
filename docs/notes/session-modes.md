@@ -1,7 +1,7 @@
 ---
 topic: session
 triggers: [session.rs, login_screen.rs, solo.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
-updated: 2026-08-10
+updated: 2026-08-17
 ---
 
 # Run modes are a runtime state, not a launch-time fork
@@ -22,8 +22,28 @@ choose — was rejected because it makes the first frame after "Enter" an empty
 blue void: tiles have not started streaming, so the screen the login was hiding
 is replaced by a worse one. It also has to exist *twice*, since going offline
 again mid-session needs the same runtime path anyway. The screen is therefore a
-modal over the running offline world, and "Explore offline" is a dismissal rather
-than a load.
+modal over the running offline world, and dismissing it is not a load — you were
+already offline, which is why the card no longer offers "offline" as a *choice*
+at all (below).
+
+## The card asks one question, and offline is not one of the answers
+
+It opened on three rows — Explore offline / Solo simulator / Connect to a server —
+which asked a first-time user to pick an architecture before they had seen a map,
+and two of the three answers were "carry on as you are". Since 2026-08-17 it is a
+form for a *server*: address, user, password, one tick. Offline is where everybody
+starts (`SessionPrefs::default()` is `Offline` + `auto_enter`, so a fresh install
+opens onto the map and is asked nothing) and is reached again by **☰ ▸ Log out**,
+which is a single menu entry rather than a button inside the modal you would have
+to open first. `SessionKind::Solo` survives as a developer path with no UI —
+`--login` with no server — and as a kind an older `user.json` may still name;
+`lib.rs` still honours a remembered one.
+
+The two tick-boxes became one for the same reason. "Remember me on this device"
+and "Enter this way next time" were separately settable, and the combinations that
+made them different are both broken: a remembered token that still asks, or an
+auto-enter with no token, which reaches the server with an empty password and
+fails. One tick writes both.
 
 ## Rejected: showing it on launch
 
@@ -31,10 +51,13 @@ A viewer that asks who you are before it will draw a map is a worse map. The
 remembered session (`UserStore::data.session`) enters itself, the screen lives in
 the app menu beside Developer tools, and it opens by itself for exactly one
 reason: a session that failed or dropped, which is the only moment the app has a
-question it cannot answer. `SessionPrefs::default()` is Solo + `auto_enter`, so a
-fresh install boots straight into solo mode exactly as it did before any of this
-existed, and a CLI flag still wins over the file — a flag is an instruction for
-this launch and is never written back.
+question it cannot answer. A CLI flag still wins over the file — a flag is an
+instruction for this launch and is never written back.
+
+`SessionPrefs::default()` used to be Solo + `auto_enter`, i.e. a fresh install
+booted straight into an in-process simulator with a SQLite database, for somebody
+who had come to look at a map. It is Offline + `auto_enter` now, which reads as
+"enter offline without asking" and is the only default that leaves the card shut.
 
 **Except where solo does not exist.** Solo is a cargo feature, and the APK is
 built `--no-default-features` because nothing cross-compiles `rusqlite` for
