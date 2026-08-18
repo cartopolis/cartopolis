@@ -6,4 +6,5 @@ pub mod diagnostics;
 pub mod render_census;
 pub mod shot_harness;
 pub mod shot_presets;
+pub mod upload_meter;
 pub mod window_icon;
