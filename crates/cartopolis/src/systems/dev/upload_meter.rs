@@ -211,8 +211,8 @@ fn mesh_bytes(mesh: &Mesh) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::mesh::PrimitiveTopology;
     use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::PrimitiveTopology;
 
     /// The meter's arithmetic is bevy's, and the test states it in numbers so a
     /// bevy upgrade that changes the vertex layout shows up here rather than as a
@@ -226,14 +226,14 @@ mod tests {
         // Position and normal are 3×f32 each = 24 B per vertex, over four vertices.
         mesh.insert_attribute(
             Mesh::ATTRIBUTE_POSITION,
-            vec![[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [
-                0.0, 1.0, 0.0,
-            ]],
+            vec![
+                [0.0f32, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
         );
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_NORMAL,
-            vec![[0.0f32, 0.0, 1.0]; 4],
-        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 0.0, 1.0]; 4]);
         mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2, 0, 2, 3]));
         assert_eq!(mesh_bytes(&mesh), Some(4 * 24 + 6 * 4));
     }
@@ -246,10 +246,7 @@ mod tests {
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            vec![[0.0f32, 0.0, 0.0]; 3],
-        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
         assert_eq!(mesh_bytes(&mesh), Some(3 * 12));
     }
 

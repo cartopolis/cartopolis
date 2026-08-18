@@ -148,7 +148,11 @@ struct Bldg {
 /// nothing downstream — not the one-cell-per-frame cap here, not bevy's upload
 /// budget, which always writes at least one whole asset — can spread an upload
 /// that arrives as a single asset.
-type Lod22Build = (GridCell, Vec<Mesh>, Vec<crate::systems::collision::Footprint>);
+type Lod22Build = (
+    GridCell,
+    Vec<Mesh>,
+    Vec<crate::systems::collision::Footprint>,
+);
 
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
 /// streamer: a worker builds one cell at a time; cells are kept while in range.
@@ -469,11 +473,8 @@ pub fn update_lod22(
     // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
     // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
     // change is the directional lights' `num_cascades` — see CLAUDE.md.
-    let snapshot: Vec<((i64, i64), Vec<Entity>)> = lod
-        .cells
-        .iter()
-        .map(|(&k, v)| (k, v.clone()))
-        .collect();
+    let snapshot: Vec<((i64, i64), Vec<Entity>)> =
+        lod.cells.iter().map(|(&k, v)| (k, v.clone())).collect();
     for ((cx, cy), entities) in snapshot {
         let near = (cx - ccx).abs().max((cy - ccy).abs()) <= SHADOW_RADIUS;
         let off = lod.no_shadow.contains(&(cx, cy));

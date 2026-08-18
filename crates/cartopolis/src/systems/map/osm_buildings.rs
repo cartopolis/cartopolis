@@ -2868,7 +2868,11 @@ mod tests {
         // 40 B a vertex plus 4 B an index: a limit of 4 kB is ~28 triangles, so
         // this splits into a double-figure number of pieces.
         let pieces = buf.into_meshes(4 * 1024);
-        assert!(pieces.len() > 5, "expected a real split, got {}", pieces.len());
+        assert!(
+            pieces.len() > 5,
+            "expected a real split, got {}",
+            pieces.len()
+        );
 
         let mut seen: Vec<[Vec3; 3]> = Vec::new();
         for mesh in &pieces {
