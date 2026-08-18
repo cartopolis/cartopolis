@@ -182,6 +182,26 @@ pub struct MapStream {
     /// whole session, so every `--shot` sat out its full `--wait` instead of
     /// capturing once the map went quiet.
     tiles: CellStream<TileKey, Option<DecodedTile>>,
+    /// How many times a tile that was **already loaded** has been armed for
+    /// fetching again, cumulative for the process.
+    ///
+    /// This exists because the device log could not distinguish two very
+    /// different worlds. `update_map_stream` calls `tiles.request` for every
+    /// desired key each frame, loaded or not, and the burst line below fires
+    /// whenever any of them was newly armed — so a log full of "tile fetches
+    /// queued" is either a cold ring filling once (fine) or the same 224 tiles
+    /// being re-fetched forever (~40-140 ms of scan conversion each, on a worker
+    /// pool three threads wide, plus a fresh `Image` and `StandardMaterial`
+    /// minted per arrival in `apply_stream_textures`). Both look identical from
+    /// outside, and a four-minute capture over a stationary camera showed the
+    /// line 30-60 times a second with `loaded` pinned at 224.
+    ///
+    /// Non-zero and climbing while the camera is still is the second world, and
+    /// the cause is upstream of here: either the desired set's `.round()`-ed
+    /// centres flickering across a level boundary, or `forget` (which clears the
+    /// failure history) re-arming keys faster than the attempt budget can retire
+    /// them. Flat is the first world, and then the burst line is only noise.
+    requeues: u64,
     /// The live anchor generation a fetch task compares against (main thread
     /// stores, task loads) — a re-anchor's stale in-flight fetches drop themselves.
     gen_shared: Arc<AtomicU32>,
@@ -311,6 +331,7 @@ impl Default for MapStream {
             pending_reanchor: None,
             current_zoom: 0,
             loaded: HashMap::new(),
+            requeues: 0,
             tiles: CellStream::new(Policy {
                 max_in_flight: TILE_MAX_IN_FLIGHT,
                 min_interval_secs: 0.0,
@@ -867,8 +888,15 @@ pub fn update_map_stream(
         // `CellStream::request` de-dups and is also the retry pump — a failed tile
         // waits out `FETCH_RETRY_SECS` and stops being offered once its attempts
         // are spent, so there is no second retry loop.
-        stream.tiles.request(key, now);
+        let armed = stream.tiles.request(key, now);
         if stream.loaded.contains_key(&key) {
+            // Armed a tile we already hold: see `MapStream::requeues`. The fetch
+            // itself is left alone deliberately — this is an instrument, not a
+            // guard, and suppressing the re-fetch here would hide the cause while
+            // changing behaviour.
+            if armed {
+                stream.requeues += 1;
+            }
             continue;
         }
         let Some(quad) = stream.quads.get(&key.z).cloned() else {
@@ -931,8 +959,18 @@ pub fn update_map_stream(
     }
     // Terse fetch accounting: one line per burst, not per tile (served from the
     // byte cache when already seen; only new tiles hit the network).
+    //
+    // `debug!`, not `info!`, and the level is the point. This fires once per
+    // frame per burst, which on a device is 30-60 lines a second for minutes —
+    // and `cartopolis=info` is a build-time filter on Android (`RUST_LOG` is
+    // unreachable there), so it swamped the one log a user can actually send:
+    // a four-minute capture was ~90% this line, and the LOD change, the scatter
+    // cap and the avatar counts had to be found between the repeats. What is
+    // worth reporting steadily is the *aggregate*, which the `tile fill` line
+    // below now carries — including `requeued`, the number that says whether
+    // these bursts are a ring filling or the same ring refetching.
     if queued > 0 {
-        tracing::info!(
+        tracing::debug!(
             queued,
             finest_zoom = stream.current_zoom,
             "tile fetches queued"
@@ -995,6 +1033,7 @@ pub fn apply_stream_textures(
             in_flight = stream.tiles.in_flight(),
             awaiting_upload = tiles.iter().count(),
             loaded = stream.loaded.len(),
+            requeued = stream.requeues,
             "tile fill"
         );
     }
