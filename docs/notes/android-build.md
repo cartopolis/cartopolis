@@ -657,14 +657,19 @@ without. A pause/resume is the ordinary way for an Android app to lose its
 surface, and a system dialog is the ordinary way to be paused, so *any* GPU error
 that a dialog provoked cost the entire session.
 
-`lib.rs::handle_render_error` now answers by kind. `DeviceLost` — the error wgpu
-delivers through its own device-lost callback, and the one that is plausibly
-transient — rebuilds the renderer through `RenderCreation::Automatic`, twice at
-most (`MAX_RENDER_RECOVERIES`; a device that has genuinely gone answers every
-attempt the same way and an uncapped loop is a flat battery). `Validation` and
-`OutOfMemory` still halt, for the reason the earlier note gives: they recur the
-instant rendering resumes, and `Ignore` on a handheld screen is a strobe. A halt
-is now **written to `crash_report_path()`**, so the next launch hands it to the
+`lib.rs::handle_render_error` answered by kind for a fortnight: `DeviceLost` — the
+error wgpu delivers through its own device-lost callback, and the one that is
+plausibly transient — rebuilt the renderer through `RenderCreation::Automatic`,
+twice at most, while `Validation` and `OutOfMemory` halted (they recur the instant
+rendering resumes, and `Ignore` on a handheld screen is a strobe).
+
+**That recovery was removed on 2026-08-18, because it never once worked and it
+aborted the process both times it ran.** See "The recovery that could not be
+written" below. Every kind halts now. The trade is stated rather than hidden: a
+transient device loss costs the session instead of being ridden out — but it costs
+a *restart*, where recovering cost a *crash*.
+
+A halt is **written to `crash_report_path()`**, so the next launch hands it to the
 share sheet exactly as a panic — which is the whole point, and is how
 `FLOAT32_FILTERABLE` was named in one round trip. It is also logged once rather
 than once per frame; bevy calls the handler on every extract for as long as the
@@ -1089,19 +1094,38 @@ E BufferQueueProducer: ... connect: already connected (cur=1 req=1)
 E vulkan  : native_window_api_connect() failed: Invalid argument (-22)
 ```
 
-`lib.rs::release_window_surfaces` now drops the old surface before the handler
-returns. Dropping is what disconnects the window — wgpu-hal's `Surface::drop`
-destroys the `VkSurfaceKHR` and libvulkan's `DestroySurfaceKHR` is where
-`native_window_api_disconnect` lives. Two details are load-bearing and are
-documented at the function: the swap-chain textures go first (a live
-`SurfaceTexture` holds its surface open past the drop), and `WindowSurfaces` is
-*replaced with a default*, never removed, because `extract_windows` takes it as a
-plain `ResMut` and runs on the very next system — a removed resource is a panic
-one frame later, in a different place, about something else.
+The fix was `lib.rs::release_window_surfaces`: drop the old surface before the
+handler returns, since dropping is what disconnects the window (wgpu-hal's
+`Surface::drop` destroys the `VkSurfaceKHR`, and libvulkan's `DestroySurfaceKHR`
+is where `native_window_api_disconnect` lives).
 
-So the general rule for this handler: **a `Recover` must first give back
-everything the new renderer is about to ask for.** Anything else holding a device
-or a window across a rebuild is the next instance of this bug.
+## The recovery that could not be written (2026-08-18)
+
+**That fix swapped one abort for another, and the second one is the lesson.** With
+the surface released first, the *next* run on the same device died one layer down:
+
+```
+E ... Caught DeviceLost error: Unknown Device is lost
+W ... render device lost — rebuilding the renderer  attempt = 1
+F ... Abort message: 'Trying to destroy a SwapchainAcquireSemaphore that is still
+      in use by a SurfaceTexture'
+      wgpu-hal-29.0.4/src/vulkan/swapchain/native.rs:359
+```
+
+Both aborts are a `panic!`/`expect` inside wgpu-hal, on the render thread, and
+neither is ours to catch. The reason there is no third attempt is that the shape
+is wrong, not the details: **the error handler runs inside the render schedule,
+mid-frame**, and a swapchain image acquired for that frame is still referenced by
+bevy's view targets and by wgpu's own presentation state. There is no point in
+there at which a surface can be torn down safely. "Give back everything the new
+renderer is about to ask for" — the rule the previous section ended with — turns
+out not to be satisfiable from where the handler stands. Deferring the rebuild to
+a frame boundary is what would work, and that is upstream's job:
+`RenderErrorPolicy::Recover` is supposed to *be* that affordance.
+
+So `DeviceLost` halts like every other kind, and the halt writes the report. If
+bevy or wgpu grow a recovery that survives an Android surface, `handle_render_error`
+is the function to revisit — and the way to know it works is the device.
 
 **The second finding from the same report: the phone tier is a stand-in for a
 device, and this device was not it.** The startup log showed `no atmosphere on

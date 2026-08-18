@@ -528,27 +528,12 @@ fn offer_last_crash() {
     }
 }
 
-/// How many times the renderer may be rebuilt from scratch before the app stops
-/// trying.
-///
-/// A cap, not a policy: a device that has genuinely gone (a driver reset that
-/// takes the GPU with it, a phone that has decided this process may not have one)
-/// answers every attempt the same way, and an uncapped loop would spend the
-/// battery re-initialising wgpu forever. Two is enough to cross a *transient* —
-/// the one this exists for is the Android pause/resume that a system dialog
-/// causes, where the surface goes away underneath a frame in flight.
-const MAX_RENDER_RECOVERIES: u32 = 2;
-
-/// Rebuild attempts spent so far. A `RenderErrorHandler` is a bare `fn` pointer
-/// with no captured state and no `&mut self`, so the counter has to live out
-/// here.
-static RENDER_RECOVERIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Set once the renderer has been halted for good, so the halt is logged and
 /// recorded once rather than on every frame for the rest of the run.
 static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// What to do about a `RenderError`. **Never end the app**, and — this is the part
-/// that changed — do not always freeze it either.
+/// What to do about a `RenderError`. **Never end the app** — halt the renderer,
+/// keep the process alive, and leave an explanation the next launch can share.
 ///
 /// Bevy's default handler writes `AppExit::error()` on any `RenderError`, and its
 /// own comment calls that overzealous. It cost this project a day: the first phone
@@ -557,29 +542,46 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// inside libc on the way out, so there was no Rust panic, no exit message, and a
 /// crash report that could only say "the process was killed".
 ///
-/// `StopRendering` was the answer to that and it kept the log flowing, but it is
-/// **terminal**: bevy leaves the render state `Errored` and never draws again, so
-/// the app the user is holding is a still photograph of the last good frame that
-/// answers no input. That is indistinguishable from a hang, and it is what a
-/// phone reports as "it froze, I had to restart it". Applying that to *every*
-/// error class meant one lost surface — the ordinary consequence of a system
-/// dialog pausing an Android activity — cost the whole session.
+/// `StopRendering` is **terminal**: bevy leaves the render state `Errored` and
+/// never draws again, so the app the user is holding is a still photograph of the
+/// last good frame that answers no input. That is a poor outcome and it is
+/// deliberately the one taken here, for every error class, including `DeviceLost`.
 ///
-/// So the answer is by kind:
+/// ## Why `DeviceLost` is no longer recovered
 ///
-/// - **`DeviceLost`** is the one bevy's recovery path exists for (it is delivered
-///   by wgpu's own `set_device_lost_callback`), and it is the one that is
-///   plausibly transient: the device came back, our handles did not. Rebuild, up
-///   to [`MAX_RENDER_RECOVERIES`], with `RenderCreation::Automatic` — the same
-///   thing `RenderPlugin`'s default builds the renderer with at startup, so
-///   recovery lands on the configuration the app already had rather than on a
-///   second, divergent one.
-/// - **`Validation`** is a bug in how we drive wgpu and it recurs the moment
-///   rendering resumes. Rebuilding cannot fix it and would loop; `Ignore` would
-///   resume straight into it, and bevy's own warning on that variant is rapid
-///   flashing, which is not a thing to do to a handheld screen. Halt.
-/// - **`OutOfMemory`** likewise: the scene that would not fit is still the scene.
-///   Halt rather than thrash a device that is already short.
+/// It was, for a fortnight, on the sound reasoning that a lost device is the one
+/// plausibly-transient error — wgpu delivers it from its own
+/// `set_device_lost_callback`, and an Android pause/resume can take a surface out
+/// from under a frame in flight. `RenderErrorPolicy::Recover` exists for exactly
+/// that. **It never once worked on the device, and it aborted the process both
+/// times it ran** (Adreno 840, OnePlus 15):
+///
+/// - 2026-08-17: `Recover` built a second wgpu instance and asked it for a surface
+///   on an `ANativeWindow` the *old* surface still held, and wgpu-hal's Android arm
+///   answers that with a bare `.expect` —
+///   `AndroidSurface failed: ERROR_NATIVE_WINDOW_IN_USE_KHR`, SIGABRT.
+/// - 2026-08-18: the fix for that dropped the old surface first, from inside the
+///   handler. Which trips the assertion one layer down —
+///   `Trying to destroy a SwapchainAcquireSemaphore that is still in use by a
+///   SurfaceTexture` (`wgpu-hal-29.0.4/src/vulkan/swapchain/native.rs:359`),
+///   SIGABRT again.
+///
+/// Both are `panic!`/`expect` inside wgpu-hal, on the render thread, and neither is
+/// ours to catch. The second one is the deeper lesson: this handler runs **inside
+/// the render schedule, mid-frame**, and a swapchain image acquired for that frame
+/// is still referenced by bevy's view targets and by wgpu's own presentation state.
+/// There is no point in there at which a surface can be torn down safely, so
+/// "release the surface first" is not a fix with a bug in it — it is the wrong
+/// shape. Doing this properly means deferring the rebuild to a frame boundary,
+/// which is upstream's job (`RenderErrorPolicy::Recover` is supposed to *be* that
+/// affordance) and not something to reimplement from the error handler.
+///
+/// So the policy is one line again, and the trade is stated rather than hidden: a
+/// transient device loss now costs the session instead of being ridden out. It
+/// costs a **restart**, where recovering cost a **crash**, and a frozen picture
+/// that explains itself is strictly better than an abort that does not. If bevy or
+/// wgpu grow a recovery that survives an Android surface, this is the function to
+/// revisit — and the way to know it works is the device, not this file.
 ///
 /// **A halt is recorded, not just logged.** The point of the whole crash-reporter
 /// apparatus is that a phone has no cable; a frozen picture with the explanation
@@ -591,27 +593,9 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 fn handle_render_error(
     error: &bevy::render::error_handler::RenderError,
     _main_world: &mut World,
-    render_world: &mut World,
+    _render_world: &mut World,
 ) -> bevy::render::error_handler::RenderErrorPolicy {
-    use bevy::render::error_handler::{ErrorType, RenderErrorPolicy};
     use std::sync::atomic::Ordering;
-
-    let recoverable = matches!(error.ty, ErrorType::DeviceLost);
-    if recoverable {
-        let spent = RENDER_RECOVERIES.fetch_add(1, Ordering::Relaxed);
-        if spent < MAX_RENDER_RECOVERIES {
-            tracing::warn!(
-                kind = ?error.ty,
-                description = %error.description,
-                attempt = spent + 1,
-                "render device lost — rebuilding the renderer"
-            );
-            release_window_surfaces(render_world);
-            return RenderErrorPolicy::Recover(bevy::render::settings::RenderCreation::Automatic(
-                default(),
-            ));
-        }
-    }
 
     // `swap` rather than a load-then-store: this is reached every frame from here
     // on, and the report and the log line are for the *first* one.
@@ -619,55 +603,11 @@ fn handle_render_error(
         tracing::error!(
             kind = ?error.ty,
             description = %error.description,
-            recoveries = RENDER_RECOVERIES.load(Ordering::Relaxed),
             "render error — halting the renderer, keeping the app alive"
         );
         record_render_halt(error);
     }
-    RenderErrorPolicy::StopRendering
-}
-
-/// Give the window back before asking for a second renderer, or the rebuild is a
-/// crash instead of a recovery.
-///
-/// `RenderErrorPolicy::Recover` builds a **whole new** wgpu instance, adapter and
-/// device, and the first thing it does with them is create a surface for the
-/// primary window — while the *old* surface is still sitting in the render world's
-/// `WindowSurfaces`, alive and still holding the window. On a desktop compositor
-/// two surfaces on one window is merely wasteful. On Android it is fatal and not
-/// ours to catch: `vkCreateAndroidSurfaceKHR` on an `ANativeWindow` that another
-/// surface has already `native_window_api_connect`-ed answers
-/// `ERROR_NATIVE_WINDOW_IN_USE_KHR`, and wgpu-hal's Android arm is a bare
-/// `.expect("AndroidSurface failed")` — so the recovery from a survivable device
-/// loss aborted the process (`vulkan/instance.rs:485`, wgpu-hal 29.0.4). The
-/// device-loss handling that exists to keep the app alive was killing it.
-///
-/// So the old surface is dropped here, before the handler returns and bevy blocks
-/// on `initialize_renderer`. Dropping it is what disconnects the window:
-/// wgpu-hal's `Surface::drop` destroys the `VkSurfaceKHR`, and libvulkan's
-/// `DestroySurfaceKHR` is where `native_window_api_disconnect` lives.
-///
-/// Two details are load-bearing. The swap-chain textures go **first**: a live
-/// `SurfaceTexture` holds the surface it came from, so leaving one in
-/// `ExtractedWindows` would keep the connection open past the drop below and lose
-/// nothing but the diagnosis. And `WindowSurfaces` is *replaced*, never removed —
-/// `extract_windows` takes it as a plain `ResMut` and runs on this very frame,
-/// immediately after this handler, so a missing resource is a panic one system
-/// later. A default value is the same teardown with the resource still there, and
-/// it clears `configured_windows` too, which is what makes `create_surfaces`
-/// rebuild against the new device.
-fn release_window_surfaces(render_world: &mut World) {
-    use bevy::render::view::{ExtractedWindows, WindowSurfaces};
-
-    if let Some(mut windows) = render_world.get_resource_mut::<ExtractedWindows>() {
-        for window in windows.windows.values_mut() {
-            window.swap_chain_texture_view = None;
-            window.swap_chain_texture = None;
-        }
-    }
-    if render_world.contains_resource::<WindowSurfaces>() {
-        render_world.insert_resource(WindowSurfaces::default());
-    }
+    bevy::render::error_handler::RenderErrorPolicy::StopRendering
 }
 
 /// Leave a halted renderer's explanation where the next launch will find it.
@@ -684,12 +624,12 @@ fn record_render_halt(error: &bevy::render::error_handler::RenderError) {
         "cartopolis {} ({})\nabi: {}\nThe renderer was halted by a {:?} error and the \
          picture is frozen from here on; the process itself is still running. This is not \
          a crash — it is the deliberate response to a GPU error we cannot resume through. \
-         Rebuild attempts spent: {}.\nerror: {}\n",
+         Restart the app. See `handle_render_error` for why a rebuild is not attempted.\n\
+         error: {}\n",
         env!("CARGO_PKG_VERSION"),
         option_env!("CARTO_BUILD_SHA").unwrap_or("unknown build"),
         std::env::consts::ARCH,
         error.ty,
-        RENDER_RECOVERIES.load(std::sync::atomic::Ordering::Relaxed),
         error.description,
     );
     let _ = std::fs::write(crash_report_path(), report);
@@ -1340,8 +1280,8 @@ fn run_client() {
         // Space background: the atmosphere skybox covers this everywhere in the local
         // view, but it's hidden from orbit (ADR-025), so the sky reads as black space.
         .insert_resource(ClearColor(Color::BLACK))
-        // A render error is answered by kind: rebuild the renderer, or halt it —
-        // never by ending the app. See `handle_render_error`.
+        // A render error halts the renderer and records why — never ends the app,
+        // and never rebuilds it. See `handle_render_error`.
         .insert_resource(bevy::render::error_handler::RenderErrorHandler(
             handle_render_error,
         ))
