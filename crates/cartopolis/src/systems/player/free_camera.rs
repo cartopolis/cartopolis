@@ -564,6 +564,12 @@ pub fn setup_camera(
     dev: Res<crate::resources::DevPanelState>,
     adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
     render_device: Res<bevy::render::renderer::RenderDevice>,
+    // The *requested* present mode, which is the one that decides whether anything
+    // else may pace the loop — see `quality::Capabilities::vsync_paced`. Read off
+    // the window rather than off `cfg!(target_os = …)` so a platform that changes
+    // its mind (or a `--shot` run, which has no window at all) cannot leave a
+    // second pacer running behind it.
+    primary_window: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     // Follow's own parameters are still seeded — they are what Tab lands on —
     // but the *opening* camera is Earth mode at altitude (see `seed_start_view`).
@@ -636,6 +642,20 @@ pub fn setup_camera(
              to the analytic sky dome"
         );
     }
+    // Every capability question this run can ask, asked once and recorded, because
+    // several places downstream have to get the *same* answer.
+    crate::quality::init_capabilities(crate::quality::Capabilities {
+        float32_filterable,
+        vsync_paced: matches!(
+            primary_window.iter().next().map(|w| w.present_mode),
+            Some(
+                bevy::window::PresentMode::AutoVsync
+                    | bevy::window::PresentMode::Fifo
+                    | bevy::window::PresentMode::FifoRelaxed
+            )
+        ),
+    });
+
     // Which sky this run gets, decided once and recorded, because three places
     // downstream have to make the *same* choice (`systems::sky_dome::SkyMode`).
     // `CARTO_NO_ATMOSPHERE` and the dev-panel toggle still mean no sky at all —
@@ -644,52 +664,46 @@ pub fn setup_camera(
     // fallback on hardware that could run the real thing, which is the only way to
     // look at what the phone sees without holding the phone.
     //
-    // `budget.sky_dome` is the tier's own answer, and it is a *separate* question
-    // from `float32_filterable` above even though both land here. That one is
-    // "could this adapter run bevy's atmosphere at all"; this one is "should this
-    // machine spend a frame on it". A Mali that has the feature was previously
-    // handed the full atmosphere on the strength of being able to run it — the
-    // substitution of "can" for "should" a tier exists to prevent. See the field.
-    //
-    // …and the tier's answer is itself overridable by the adapter, because on
-    // Android the tier was never measured: `quality::auto()` answers `phone()` for
-    // every device there (the budget is resolved before a renderer exists), so a
-    // 2026 flagship inherited a Fairphone 4's sky. `gpu_affords_atmosphere` is the
-    // one part of that this run can re-measure now the adapter is in hand, and it
-    // unlocks the sky alone — the rest of the phone budget is about fill and
-    // main-thread work that a fast GPU does not excuse.
-    let gpu_affords_sky = crate::quality::gpu_affords_atmosphere(&adapter.name);
+    // **The tier gets no say here any more, and that is the fix.** There used to be
+    // a `Budget::sky_dome` beside the capability test — the tier's separate answer
+    // to "should this machine *spend* a frame on the sky" — and the two were argued
+    // for at length as different questions. They are, but only one of them could be
+    // answered honestly: the budget is resolved before a renderer exists, so on
+    // Android `sky_dome` meant "this is a Fairphone 4" for every handset ever made.
+    // The patch for that was `gpu_affords_atmosphere`, a table of GPU families
+    // (Adreno >= 700, Mali-G >= 700, Xclipse >= 900) — which is the same guess one
+    // level down, wrong by default for every part not on the list. Both are gone.
+    // The adapter is asked whether it can filter a float32 texture, and if it can,
+    // it gets the sky it can draw. A device that should not spend the frame is put
+    // on a lower rung deliberately (Settings ▸ Map, `CARTO_QUALITY`), which is a
+    // person deciding rather than a table guessing.
     let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let want_atmosphere = want_sky
-        && float32_filterable
-        && (!budget.sky_dome || gpu_affords_sky)
-        && !crate::env_flag("CARTO_SKY_DOME");
-    // Logged where the answer is *changed*, not where the test is made: a line
-    // claiming the atmosphere was kept on a run that then has no sky at all
-    // (`CARTO_NO_ATMOSPHERE`, the dev toggle) is the same kind of confident
-    // half-truth that sent the report this exists for to the wrong place.
-    if budget.sky_dome && want_atmosphere {
-        tracing::info!(
-            adapter = %adapter.name,
-            "GPU is well past the handset the phone tier was written for — keeping \
-             bevy's atmosphere rather than the dome"
-        );
-    } else if want_sky && !want_atmosphere && float32_filterable {
-        tracing::info!(
-            adapter = %adapter.name,
-            budget_says_dome = budget.sky_dome,
-            "sky dome by choice, not by capability — this adapter could run bevy's \
-             atmosphere"
-        );
-    }
+    let want_atmosphere = want_sky && float32_filterable && !crate::env_flag("CARTO_SKY_DOME");
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
-    commands.insert_resource(if want_atmosphere {
+    let sky = if want_atmosphere {
         crate::systems::sky_dome::SkyMode::Atmosphere
     } else if want_sky {
         crate::systems::sky_dome::SkyMode::Dome
     } else {
         crate::systems::sky_dome::SkyMode::None
-    });
+    };
+    // **Unconditional, and it was not before.** The two lines this replaces each
+    // fired only when the answer was *changed* from the tier's, on the reasoning
+    // that an unchanged answer is not news. It is news when the sky is black: a
+    // handset on the balanced rung took neither branch, so on the one platform with
+    // no terminal to check, the log said nothing whatsoever about which sky had been
+    // chosen — and `SkyMode::None` (the dev toggle, or a `debug.carto.no_atmosphere`
+    // left set by an earlier bisect, which survives until the phone reboots) is
+    // indistinguishable from a broken atmosphere without it.
+    tracing::info!(
+        ?sky,
+        adapter = %adapter.name,
+        float32_filterable,
+        forced_dome = crate::env_flag("CARTO_SKY_DOME"),
+        no_atmosphere = !dev.atmosphere_enabled || crate::env_flag("CARTO_NO_ATMOSPHERE"),
+        "sky chosen"
+    );
+    commands.insert_resource(sky);
 
     commands.spawn_big_space(Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD), |root| {
         // The root must carry Visibility: renderable children inherit it, and a

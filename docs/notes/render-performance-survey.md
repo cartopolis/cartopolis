@@ -376,10 +376,16 @@ One prediction made from a desk was **wrong**, and it is worth recording as
 wrong: FP32 linear filtering was assumed to be a standing Adreno architectural
 gap, so the flagship was expected to lack `FLOAT32_FILTERABLE` and to keep the
 analytic dome. The device reports the feature. It was the *tier*, not the
-adapter, that was vetoing the sky — which is what `gpu_affords_atmosphere` was
-added to fix on 2026-08-17, and what taking the balanced rung now moots for
-Android. The general lesson is the one the tier itself is about: a vendor-family
-generalisation is not a measurement, and this file should not have carried one.
+adapter, that was vetoing the sky.
+
+The fix for that was itself a vendor-family generalisation — a table of GPU model
+numbers, `gpu_affords_atmosphere` — and it survived one day before being deleted
+along with `Budget::sky_dome` (2026-08-18). The sky is now decided by asking the
+adapter, through `quality::Capabilities`. So the lesson landed twice in two days
+and is worth stating flatly: **a vendor-family generalisation is not a
+measurement**, this file should not have carried one, and neither should the fix
+for it. Where a capability can be queried, query it; where it cannot, let a person
+choose a rung.
 
 Two of the chipset's headline features are
 structurally unreachable rather than merely unused: Bevy 0.19 contains no

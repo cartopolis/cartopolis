@@ -1132,20 +1132,30 @@ device, and this device was not it.** The startup log showed `no atmosphere on
 this adapter — drawing the analytic sky dome instead` on a GPU that offers
 `FLOAT32_FILTERABLE` and could have drawn the real one. Both halves were wrong.
 The *cause* was `quality::Budget::sky_dome`, not the adapter — `quality::auto()`
-answers `Budget::phone()` for every Android device, because the budget must be
+answered `Budget::phone()` for every Android device, because the budget must be
 resolved before a renderer exists (`platform::workers` is sized from it), so
-"Android" silently means "a Fairphone 4". And the *message* asserted the one
+"Android" silently meant "a Fairphone 4". And the *message* asserted the one
 reason it was not, which sent the report chasing a missing feature the device has.
 
-`quality::gpu_affords_atmosphere` is the narrow fix: at `setup_camera`, where the
-adapter is finally in hand, a GPU the driver names as generations past that
-handset (Adreno ≥ 700, Immortalis, Mali-G ≥ 700, Xclipse ≥ 900; an unknown name
-keeps the tier's answer) lifts the tier's veto on the sky and nothing else. The
-rest of the phone budget — the halved render scale, the per-frame streaming
-divisors, the reduced radii — is about fill and main-thread work that a fast GPU
-does not excuse, and this device lost its Vulkan device to the startup burst while
-*already* on that budget. The dome's own log line no longer names a reason;
-`setup_camera` logs the one that applied.
+The first fix was `quality::gpu_affords_atmosphere`, a table of GPU families
+(Adreno ≥ 700, Immortalis, Mali-G ≥ 700, Xclipse ≥ 900) consulted at
+`setup_camera` to lift the tier's veto. **It lasted a day, and it was the same
+mistake one level down**: a guess about hardware nobody in the loop owns, wrong by
+default for every part not on the list, needing an edit per device. Both it and
+`Budget::sky_dome` were deleted on 2026-08-18. The adapter is asked whether it can
+filter a float32 texture, and if it can, it gets the sky it can draw
+(`quality::Capabilities`). A machine that *should not* spend the frame is put on a
+lower rung deliberately — Settings ▸ Map, or `CARTO_QUALITY` — which is a person
+deciding rather than a table guessing.
+
+The rule that came out of it, and the reason `Capabilities` is a type rather than
+three call sites: **if a question can be asked of the device, ask it; if it can
+only be judged, it belongs in `Budget` and a person may override it.** The sky is
+the worked example. Frame pacing is the second: `frame_limiter` skips itself when
+the *window* reports a vsync-paced present mode, rather than when the tier says
+`fps_cap: None` — which is how the guard came to be silently lost when Android
+moved from the phone rung to the balanced one, with the test that was supposed to
+protect it still passing, because it tested the rung.
 
 Only the Adreno arm of that table comes from hardware. The rest is vendor
 numbering, which is why the default is "keep the tier's answer".
