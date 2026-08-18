@@ -1621,6 +1621,14 @@ fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
     h
 }
 
+/// The across-road `u` span a junction stub samples: a column of plain road
+/// surface clear of every class's markings (the nearest marking edge is at
+/// u = 0.037 on a motorway and the wheel tracks start at 0.215 on a minor
+/// road). A stub carrying the full cross-section ruled its kerb lines and
+/// centre dash across the road being joined; a stub carrying only surface
+/// tone reads as the open tarmac a real junction is.
+const STUB_PLAIN_U: (f32, f32) = (0.06, 0.16);
+
 /// Miter limit: how far a join may push the **outer** corner out relative to the
 /// half-width before it is bevelled off instead. Unbounded miters spike to
 /// infinity at a hairpin, which OSM has plenty of (motorway sliproads,
@@ -1714,18 +1722,36 @@ pub fn tessellate_roads(
             };
             // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
             // *linestring*, so the crossing parts of one merged feature separate.
-            let y = road_rung(half * 2.0, bridge, line_tie_seed(head, tail)) as f32
-                * ROAD_LAYER_STEP;
+            let y =
+                road_rung(half * 2.0, bridge, line_tie_seed(head, tail)) as f32 * ROAD_LAYER_STEP;
+            // The line's outward direction at each end (tile units — uniform
+            // scale, so angles match the metre frame), for the crossing-angle
+            // term in `junction_extent`.
+            let out_dir = |from: [f32; 2], to: [f32; 2]| -> [f32; 2] {
+                let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+                let len = dx.hypot(dy);
+                if len > 1e-6 {
+                    [dx / len, dy / len]
+                } else {
+                    [0.0, 0.0]
+                }
+            };
+            let head_out = (pts.len() >= 2).then(|| out_dir(pts[1], pts[0]));
+            let tail_out = (pts.len() >= 2).then(|| out_dir(pts[pts.len() - 2], tail));
             for run in clip_polyline(&pts, 0.0, extent) {
                 // Only the run holding an *original* end of the line can be at a
                 // junction; the rest begin and end at the tile border, where the
                 // neighbour's copy of the same street abuts this one exactly and
                 // an extension would draw the same tarmac twice.
                 let ext_head = (run.first() == Some(&head))
-                    .then(|| junction_extent(&nodes, head, fi))
+                    .then_some(head_out)
+                    .flatten()
+                    .map(|d| junction_extent(&nodes, head, fi, d))
                     .unwrap_or(0.0);
                 let ext_tail = (run.last() == Some(&tail))
-                    .then(|| junction_extent(&nodes, tail, fi))
+                    .then_some(tail_out)
+                    .flatten()
+                    .map(|d| junction_extent(&nodes, tail, fi, d))
                     .unwrap_or(0.0);
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
@@ -1977,8 +2003,8 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
 ///
 /// Keys are tile units; the half-widths are metres, which is what the ribbon
 /// builder works in.
-fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32)>> {
-    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32)>> = HashMap::new();
+fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> {
+    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> = HashMap::new();
     for (fi, feature) in features.iter().enumerate() {
         let Some((_, half)) = drawn_street(feature) else {
             continue;
@@ -1989,15 +2015,34 @@ fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32)>> 
             Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
             _ => continue,
         }
-        for c in lines.iter().flat_map(|ls| ls.0.iter()) {
-            if !c.x.is_finite() || !c.y.is_finite() {
-                continue;
-            }
-            let at = nodes.entry(node_key([c.x, c.y])).or_default();
-            // One entry per feature: a way that doubles back through its own node
-            // is not a junction with itself.
-            if !at.iter().any(|(o, _)| *o == fi) {
-                at.push((fi, half));
+        for ls in &lines {
+            let n = ls.0.len();
+            for (j, c) in ls.0.iter().enumerate() {
+                if !c.x.is_finite() || !c.y.is_finite() {
+                    continue;
+                }
+                // The road's direction through this node (sign-free — only the
+                // crossing *angle* is ever read), from whichever adjacent
+                // segment exists.
+                let (ax, ay) = if j + 1 < n {
+                    (ls.0[j + 1].x - c.x, ls.0[j + 1].y - c.y)
+                } else if j > 0 {
+                    (c.x - ls.0[j - 1].x, c.y - ls.0[j - 1].y)
+                } else {
+                    (0.0, 0.0)
+                };
+                let len = ax.hypot(ay);
+                let d = if len > 1e-6 && len.is_finite() {
+                    [ax / len, ay / len]
+                } else {
+                    [0.0, 0.0]
+                };
+                let at = nodes.entry(node_key([c.x, c.y])).or_default();
+                // One entry per feature: a way that doubles back through its own
+                // node is not a junction with itself.
+                if !at.iter().any(|(o, _, _)| *o == fi) {
+                    at.push((fi, half, d));
+                }
             }
         }
     }
@@ -2008,22 +2053,39 @@ fn node_key(p: [f32; 2]) -> (i32, i32) {
     (p[0].round() as i32, p[1].round() as i32)
 }
 
-/// How far past `end` the feature's ribbon has to run to fill the junction there,
-/// in metres: the half-width of the **widest other road** meeting at that node, so
-/// the stub reaches its far kerb and stops. `0.0` where nothing else meets — a
-/// dead end keeps a square end on the ground instead of a flap of tarmac reaching
-/// into the field beyond it.
+/// Angles flatter than this against the joined road stop lengthening the stub.
+/// `half / sin θ` is the honest distance to the far kerb of a road crossed at
+/// θ, but as θ → 0 the two roads are merging rather than crossing and the
+/// "far kerb" runs away along them — a merge wants no stub at all, and the cap
+/// plus this floor (≈20°) keeps a slip-road join from painting a spear of
+/// tarmac down the carriageway it joins.
+const MIN_JUNCTION_SIN: f32 = 0.35;
+
+/// How far past `end` the feature's ribbon has to run to fill the junction
+/// there, in metres: for each **other** road meeting at that node, its
+/// half-width over the sine of the crossing angle — the distance to its far
+/// kerb along *this* road's own direction — and the largest of those wins.
+/// Plain `half` (what this used to return) is only right at 90°: a road
+/// crossed at 30° left a notch on the acute side while overshooting on the
+/// obtuse one. `0.0` where nothing else meets — a dead end keeps a square end
+/// on the ground instead of a flap of tarmac reaching into the field beyond it.
 fn junction_extent(
-    nodes: &HashMap<(i32, i32), Vec<(usize, f32)>>,
+    nodes: &HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>>,
     end: [f32; 2],
     feature_index: usize,
+    out_dir: [f32; 2],
 ) -> f32 {
     nodes
         .get(&node_key(end))
         .map(|at| {
             at.iter()
-                .filter(|(fi, _)| *fi != feature_index)
-                .map(|(_, half)| *half)
+                .filter(|(fi, _, _)| *fi != feature_index)
+                .map(|(_, half, d)| {
+                    let sin = (out_dir[0] * d[1] - out_dir[1] * d[0])
+                        .abs()
+                        .max(MIN_JUNCTION_SIN);
+                    *half / sin
+                })
                 .fold(0.0, f32::max)
         })
         .unwrap_or(0.0)
@@ -2090,28 +2152,11 @@ fn ribbon(
         return;
     }
 
-    // Stubs past each end, to fill the notch at a junction.
     let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let len = dx.hypot(dy).max(1e-6);
         [dx / len, dy / len]
     };
-    if extend[0] > 0.0 {
-        let head = dir(pts[1], pts[0]);
-        let first = pts[0];
-        pts.insert(
-            0,
-            [
-                first[0] + head[0] * extend[0],
-                first[1] + head[1] * extend[0],
-            ],
-        );
-    }
-    if extend[1] > 0.0 {
-        let tail = dir(pts[pts.len() - 2], pts[pts.len() - 1]);
-        let last = pts[pts.len() - 1];
-        pts.push([last[0] + tail[0] * extend[1], last[1] + tail[1] * extend[1]]);
-    }
 
     let seg_len =
         |i: usize| -> f32 { (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1]) };
@@ -2248,6 +2293,62 @@ fn ribbon(
             push_triangle_up(positions, indices, a0, b0, b1);
             push_triangle_up(positions, indices, a0, b1, a1);
         }
+    }
+
+    // Junction stubs, as standalone quads rather than extra strip points, for
+    // two reasons. They sample [`STUB_PLAIN_U`] — a marking-free column of the
+    // class texture — so the kerb lines and centre dashes *break* at the
+    // junction instead of being ruled straight across the road being joined,
+    // ending in a hard white T at its far kerb (the single most wrong-looking
+    // thing about the old junctions). And a standalone quad reuses the strip's
+    // own butt-end coordinates (the ends are unmitred: `d_out == d_in` there),
+    // so the seam is watertight by construction.
+    let total = travelled;
+    let mut stub = |end: [f32; 2], d: [f32; 2], len: f32, v0: f32| {
+        let n = [-d[1], d[0]];
+        let far = [end[0] + d[0] * len, end[1] + d[1] * len];
+        let v1 = v0 + len / tex_len_m;
+        let base = positions.len() as u32;
+        let corners = [
+            (
+                [end[0] + n[0] * half, end[1] + n[1] * half],
+                STUB_PLAIN_U.0,
+                v0,
+            ),
+            (
+                [end[0] - n[0] * half, end[1] - n[1] * half],
+                STUB_PLAIN_U.1,
+                v0,
+            ),
+            (
+                [far[0] - n[0] * half, far[1] - n[1] * half],
+                STUB_PLAIN_U.1,
+                v1,
+            ),
+            (
+                [far[0] + n[0] * half, far[1] + n[1] * half],
+                STUB_PLAIN_U.0,
+                v1,
+            ),
+        ];
+        for (p, u, v) in corners {
+            positions.push([p[0], y, p[1]]);
+            uvs.push([u, v]);
+        }
+        push_triangle_up(positions, indices, base, base + 1, base + 2);
+        push_triangle_up(positions, indices, base, base + 2, base + 3);
+    };
+    if extend[0] > 0.0 {
+        stub(pts[0], dir(pts[1], pts[0]), extend[0], 0.0);
+    }
+    if extend[1] > 0.0 {
+        let last = pts.len() - 1;
+        stub(
+            pts[last],
+            dir(pts[last - 1], pts[last]),
+            extend[1],
+            total / tex_len_m,
+        );
     }
 }
 
@@ -2994,7 +3095,8 @@ mod tests {
             (palette::PAPER & 0xFF) as u8,
         );
         let inked = |size: u32| {
-            let rgba = render_mvt_sized(&tile, SubTile::WHOLE, size, NOMINAL_Z14_TILE_M).expect("render");
+            let rgba =
+                render_mvt_sized(&tile, SubTile::WHOLE, size, NOMINAL_Z14_TILE_M).expect("render");
             assert_eq!(rgba.len() as u32, size * size * 4, "wrong buffer size");
             let n = rgba
                 .chunks_exact(4)
@@ -3196,8 +3298,10 @@ mod tests {
             (8, 0, 0),
         ] {
             let sub = SubTile { factor, x, y };
-            let culled = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, true).expect("culled render");
-            let full = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false).expect("unculled render");
+            let culled = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, true)
+                .expect("culled render");
+            let full = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false)
+                .expect("unculled render");
             assert_eq!(
                 culled.len(),
                 full.len(),
@@ -3229,7 +3333,8 @@ mod tests {
             for (label, cull) in [("cull ", true), ("full ", false)] {
                 let t0 = std::time::Instant::now();
                 for &sub in &subs {
-                    render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, cull).expect("render");
+                    render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, cull)
+                        .expect("render");
                 }
                 let dt = t0.elapsed();
                 println!(
@@ -3667,10 +3772,30 @@ mod tests {
                     if area.abs() < 1e-9 {
                         continue;
                     }
-                    let x0 = p.iter().map(|q| q[0]).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
-                    let x1 = p.iter().map(|q| q[0]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0) as usize;
-                    let y0 = p.iter().map(|q| q[1]).fold(f32::MAX, f32::min).floor().max(0.0) as usize;
-                    let y1 = p.iter().map(|q| q[1]).fold(f32::MIN, f32::max).ceil().min(PX as f32 - 1.0) as usize;
+                    let x0 = p
+                        .iter()
+                        .map(|q| q[0])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize;
+                    let x1 = p
+                        .iter()
+                        .map(|q| q[0])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize;
+                    let y0 = p
+                        .iter()
+                        .map(|q| q[1])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize;
+                    let y1 = p
+                        .iter()
+                        .map(|q| q[1])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize;
                     for y in y0..=y1 {
                         for x in x0..=x1 {
                             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
@@ -3699,7 +3824,10 @@ mod tests {
             coplanar += doubled.iter().filter(|b| **b).count();
         }
         let frac = coplanar as f32 / covered.max(1) as f32;
-        println!("coplanar-overlap: {coplanar}/{covered} px = {:.2}%", frac * 100.0);
+        println!(
+            "coplanar-overlap: {coplanar}/{covered} px = {:.2}%",
+            frac * 100.0
+        );
         assert!(
             frac < 0.05,
             "{:.1}% of covered road pixels are coplanar-overlapped (z-fight area)",
