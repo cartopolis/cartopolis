@@ -585,6 +585,38 @@ pub struct StatsState {
     pub frame_ms: f32,
 }
 
+/// The last completed one-second window of frame timing, for the shareable
+/// diagnostics report.
+///
+/// **Why this is not [`StatsState`].** That one is an EMA written from `ui.rs`,
+/// so it only exists while the dev overlay is being drawn — on a handset, where
+/// the overlay is usually closed and there is no terminal to read `CARTO_FPS_LOG`
+/// from, it is never written at all. This is written unconditionally by
+/// `lib.rs::frame_stats` from the same accumulator that feeds the `frame stats`
+/// log line, so `systems::dev::diagnostics` can report a real frame time in a
+/// report the user taps once and sends.
+///
+/// A phone has no `adb`, no environment variable and no profiler that supports
+/// its GPU. The report is the whole instrument, so the numbers have to be in it.
+///
+/// Zeroed until the first second has elapsed; the report says so rather than
+/// printing a confident 0 fps.
+#[derive(Resource, Default)]
+pub struct FrameStats {
+    /// Frames completed in the last whole second.
+    pub fps: u32,
+    /// Mean frame time over that second, in milliseconds.
+    pub mean_ms: f32,
+    /// The single worst frame in that second — the number a hitch shows up in,
+    /// and the one a mean hides.
+    pub worst_ms: f32,
+    /// Standard deviation of frame time over the window. A high jitter beside a
+    /// healthy mean is the signature of a pacing problem rather than a load one.
+    pub jitter_ms: f32,
+    /// False until a full second has been accumulated.
+    pub sampled: bool,
+}
+
 #[derive(Resource, Default)]
 pub struct GameState {
     pub selected_prim_id: Option<i64>,

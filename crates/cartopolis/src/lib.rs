@@ -990,9 +990,7 @@ fn run_client() {
                 // loss, it is the parallel executor being switched off by
                 // arithmetic, and it was invisible because the widths above were
                 // measured on a 22-core box where they resolve to io=7,
-                // async=10, compute=5 and the bug cannot appear. Measured on an
-                // 8-core host, reading `/proc/<pid>/task/*/comm`: **1** compute
-                // thread without this floor, **3** with it.
+                // async=10, compute=5 and the bug cannot appear.
                 //
                 // A floor rather than re-cutting the percentages, because those
                 // two were measured (see the block above) and this is the case
@@ -1259,6 +1257,7 @@ fn run_client() {
             ..default()
         })
         .init_resource::<StatsState>()
+        .init_resource::<resources::FrameStats>()
         .init_resource::<resources::ScreenshotState>()
         // The tier's ceiling on bytes uploaded to the GPU per frame, and the only
         // bound in this client that is measured in bytes rather than in items —
@@ -3324,13 +3323,19 @@ fn frame_stats(
     // (elapsed_s, frames, worst_ms, sum_ms, sum_ms_sq)
     mut acc: Local<(f32, u32, f32, f32, f32)>,
     mut enabled: Local<Option<bool>>,
+    mut stats: ResMut<crate::resources::FrameStats>,
 ) {
     // Through `env_flag`, not `std::env` directly, so `?fps_log` reaches it on the
     // web — where a number for "how slow is slow" is harder to come by than
     // anywhere else, there being no external profiler to point at the tab.
-    if !*enabled.get_or_insert_with(|| env_flag("CARTO_FPS_LOG")) {
-        return;
-    }
+    //
+    // **The flag gates the log line, not the accumulation.** Five adds and a max
+    // per frame cost nothing measurable, and the resource they feed is the only
+    // frame time a handset can report: there is no `adb` on the phone this client
+    // targets, so `systems::dev::diagnostics` — a report the user taps and sends
+    // — has to carry the number, and it cannot if the accumulator is switched off
+    // by an environment variable that platform does not have.
+    let logging = *enabled.get_or_insert_with(|| env_flag("CARTO_FPS_LOG"));
     let ms = time.delta_secs() * 1000.0;
     acc.0 += time.delta_secs();
     acc.1 += 1;
@@ -3341,13 +3346,23 @@ fn frame_stats(
         let n = acc.1.max(1) as f32;
         let mean = acc.3 / n;
         let var = (acc.4 / n - mean * mean).max(0.0);
-        tracing::info!(
-            fps = (acc.1 as f32 / acc.0) as u32,
-            mean_frame_ms = mean as u32,
-            worst_frame_ms = acc.2 as u32,
-            jitter_ms = var.sqrt() as u32,
-            "frame stats"
-        );
+        let fps = (acc.1 as f32 / acc.0) as u32;
+        *stats = crate::resources::FrameStats {
+            fps,
+            mean_ms: mean,
+            worst_ms: acc.2,
+            jitter_ms: var.sqrt(),
+            sampled: true,
+        };
+        if logging {
+            tracing::info!(
+                fps,
+                mean_frame_ms = mean as u32,
+                worst_frame_ms = acc.2 as u32,
+                jitter_ms = var.sqrt() as u32,
+                "frame stats"
+            );
+        }
         *acc = (0.0, 0, 0.0, 0.0, 0.0);
     }
 }

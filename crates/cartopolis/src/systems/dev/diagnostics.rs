@@ -70,6 +70,23 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     readout: AvatarReadout<'w, 's>,
     camera_state: Res<'w, CameraState>,
     avatar_state: Res<'w, AvatarState>,
+    /// The last whole second of frame timing, accumulated unconditionally by
+    /// `lib.rs::frame_stats`.
+    ///
+    /// The report had no performance number in it at all until 2026-08-18, which
+    /// left it describing a device's *configuration* while saying nothing about
+    /// whether that configuration was working. On the phone this client targets
+    /// there is no `adb`, no environment variable and no GPU profiler that
+    /// supports the part — so a report the user taps and sends is the only
+    /// instrument, and it has to carry the number.
+    frame: Res<'w, crate::resources::FrameStats>,
+    /// Draw and triangle counts for the frame the report is composed on.
+    ///
+    /// `counts()` resolves every mesh handle, so it is a real hitch on a dense
+    /// scene — which is exactly why it belongs *here*, on a once-per-tap path,
+    /// rather than on the five-second `log_render_cost` timer that is switched
+    /// off on handsets for that cost.
+    census: crate::systems::render_census::RenderCensus<'w, 's>,
     store: Res<'w, crate::systems::user_store::UserStore>,
     sky: Option<Res<'w, crate::systems::sky_dome::SkyMode>>,
     adapter: Option<Res<'w, bevy::render::renderer::RenderAdapterInfo>>,
@@ -171,6 +188,60 @@ fn compose(s: &DiagnosticsSources) -> String {
             limits.max_texture_dimension_2d,
         ));
     }
+
+    // The performance block. Placed directly under `quality:` because the two are
+    // read together: the tier says what was asked for, this says what it cost.
+    //
+    // `worst` beside `mean` on purpose — a hitch is invisible in a mean, and a
+    // streaming app's characteristic failure is a good average with a 300 ms
+    // frame every time a cell lands. `jitter` separates a pacing problem (high
+    // jitter, healthy mean) from a load one.
+    //
+    // `draws` is here rather than triangles alone because it is the number that
+    // decides cost on a mobile GPU Bevy excludes from GPU preprocessing — see
+    // `render_census::RenderCounts::draws`. On a part that *is* included the two
+    // diverge, and knowing which side of that line a device fell on is most of
+    // the diagnosis.
+    let c = s.census.counts();
+    out.push_str("\nperf: ");
+    if s.frame.sampled {
+        out.push_str(&format!(
+            "{} fps (mean {:.1} ms, worst {:.1} ms, jitter {:.1} ms)\n",
+            s.frame.fps, s.frame.mean_ms, s.frame.worst_ms, s.frame.jitter_ms,
+        ));
+    } else {
+        // Never a confident `0 fps`: the first whole second has not elapsed, which
+        // is a different fact from a stalled renderer and must not read as one.
+        out.push_str("(no full second sampled yet)\n");
+    }
+    out.push_str(&format!(
+        "  draws {} | tris {} total, {} shadow-casting, {} buildings, {} lod22, {} tiles, {} globe\n",
+        c.draws, c.tris_total, c.tris_shadow, c.tris_buildings, c.tris_lod22, c.tris_tiles,
+        c.tris_globe,
+    ));
+    out.push_str(&format!(
+        "  workers {} wide, {} jobs outstanding\n",
+        crate::platform::workers::worker_count(),
+        crate::platform::workers::outstanding(),
+    ));
+    // The four pool widths, and `compute` is the one to read.
+    //
+    // `ComputeTaskPool` *is* Bevy's parallel system executor, and its width is
+    // not configured directly — it is whatever the io and async_compute policies
+    // leave over (`lib.rs`'s `TaskPoolPlugin` override has the arithmetic). That
+    // made it possible for it to resolve to **one thread** on an 8-core handset,
+    // serialising every Update system, while the same settings gave a 22-core
+    // workstation five and looked entirely healthy. A width that is derived
+    // rather than declared has to be reported, or the next person to change a
+    // percentage here has no way to see what they did on hardware they do not
+    // own.
+    out.push_str(&format!(
+        "  pools: compute {} | io {} | async {} (of {} cores)\n",
+        bevy::tasks::ComputeTaskPool::get().thread_num(),
+        bevy::tasks::IoTaskPool::get().thread_num(),
+        bevy::tasks::AsyncComputeTaskPool::get().thread_num(),
+        std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get),
+    ));
 
     // The avatar block, and the order is the diagnosis. `holders = 0` is "no model
     // was ever asked for"; `meshes = 0` with holders is "the glTF did not load";
