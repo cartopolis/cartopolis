@@ -68,8 +68,16 @@ use crate::systems::vector_tiles::{StreetLabelLine, DEPTH_BIAS_STEP};
 /// the ground is **foreshortened**: at the 30° pitch a city view is usually flown
 /// at, a label loses half its height to the projection. Sized for a plan view it
 /// reads as a squashed smear from anywhere else.
-const HEIGHT_BANDS: [(f32, f32); 4] =
-    [(150.0, 7.0), (400.0, 11.0), (800.0, 18.0), (f32::MAX, 28.0)];
+/// The lowest band exists for the walking/driving range: at 45 m of altitude a
+/// 7 m glyph fills a quarter of the frame and reads as a nameplate stuck to
+/// the road, not as cartography.
+const HEIGHT_BANDS: [(f32, f32); 5] = [
+    (60.0, 3.5),
+    (150.0, 7.0),
+    (400.0, 11.0),
+    (800.0, 18.0),
+    (f32::MAX, 28.0),
+];
 
 /// Ground radius around the view centre that labels are chosen for.
 ///
@@ -132,10 +140,12 @@ const YAW_REPLACE: f32 = 0.35;
 /// sets the on-screen size; this only decides how much detail the texture holds.
 const GLYPH_PX: f32 = 40.0;
 
-/// Halo radius in texture pixels. Wide relative to the stroke: a label on the
+/// Halo radius in texture pixels. Wide relative to the stroke — a label on the
 /// ground is read through a foreshortening projection at a dozen pixels, and a
-/// hairline outline disappears in the first mip level.
-const HALO_PX: i32 = 4;
+/// hairline outline disappears in the first mip level — but not the 10 % of
+/// glyph height it used to be, which up close read as text printed on a white
+/// plate rather than a halo.
+const HALO_PX: i32 = 3;
 
 /// Ink and halo, off the shared palette ([`theme::INK`] over [`theme::LABEL_HALO`])
 /// so a name on the map and a label in the chrome are the same near-black on the
