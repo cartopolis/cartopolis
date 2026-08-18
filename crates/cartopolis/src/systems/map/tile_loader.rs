@@ -11,6 +11,16 @@ use crate::platform::work::Dispatcher;
 use crate::systems::vector_tiles;
 pub use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
 
+/// Ground edge of a tile in metres at its own centre latitude — what
+/// `render_mvt_sized` needs to convert real carriageway widths into pixels and
+/// pick its style band.
+fn source_ground_m(key: TileKey) -> f32 {
+    use cartopolis_core::world::{tile_to_lat_lng, tile_to_meters};
+    let (north, _) = tile_to_lat_lng(key.x, key.y, key.z);
+    let (south, _) = tile_to_lat_lng(key.x, key.y + 1, key.z);
+    tile_to_meters(key.z, (north + south) / 2.0) as f32
+}
+
 /// Number of concurrent tile fetch+decode tasks (was the background worker count).
 const TILE_WORKERS: usize = 3;
 
@@ -344,7 +354,8 @@ impl TilePayload {
             TilePayload::Vector { bytes, sub, source } => {
                 let tile = parse_shared(source, &bytes)?;
                 let rgba =
-                    vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
+                    vector_tiles::render_mvt_sized(&tile, sub, size, source_ground_m(source))
+                        .map_err(|e| e.to_string())?;
                 image::RgbaImage::from_raw(size, size, rgba)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())
             }
@@ -498,7 +509,8 @@ impl GlobeTilePayload {
                 // `Reader` over this body.
                 let tile = parse_shared(source, &bytes)?;
                 let pixels =
-                    vector_tiles::render_mvt_sized(&tile, sub, size).map_err(|e| e.to_string())?;
+                    vector_tiles::render_mvt_sized(&tile, sub, size, source_ground_m(source))
+                        .map_err(|e| e.to_string())?;
                 let mut rgba = image::RgbaImage::from_raw(size, size, pixels)
                     .ok_or_else(|| "rendered tile had the wrong buffer size".to_string())?;
                 match vector_tiles::ocean_mask_sized(&tile, sub, size) {

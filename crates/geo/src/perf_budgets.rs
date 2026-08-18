@@ -24,7 +24,7 @@
 //! ```
 
 use crate::perf::{self, Cost};
-use crate::vector_tiles::{SubTile, TileData};
+use crate::vector_tiles::{SubTile, TileData, NOMINAL_Z14_TILE_M};
 
 /// The tile every measurement in `docs/notes/tile-raster-cost.md` was taken on:
 /// 495 KB of Groningen at z14, 8,552 buildings and 95 streets.
@@ -118,9 +118,9 @@ fn rasterising_a_dense_tile_costs_the_same_at_both_raster_sizes() {
     warm(&tile);
 
     let (_, small) =
-        Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256));
+        Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M));
     let (_, large) =
-        Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 512));
+        Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 512, NOMINAL_Z14_TILE_M));
 
     perf::within(small, RENDER_DENSE_ALLOCS, "render_mvt_sized 256²");
     perf::within(large, RENDER_DENSE_ALLOCS, "render_mvt_sized 512²");
@@ -172,10 +172,10 @@ fn an_overzoomed_sub_tile_submits_far_fewer_paths_than_the_whole_tile() {
     warm(&tile);
 
     let (_, whole_paths, _) =
-        perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256));
+        perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, 256, NOMINAL_Z14_TILE_M));
 
     let (_, sub_paths, _) =
-        perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256));
+        perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M));
 
     assert!(
         whole_paths > 0 && sub_paths > 0,
@@ -274,12 +274,12 @@ fn print_tile_pipeline_cost() {
 
         for px in [256_u32, 512] {
             let (_, cost) =
-                Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, px));
+                Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SubTile::WHOLE, px, NOMINAL_Z14_TILE_M));
             println!("{}", cost.line(&format!("  render {px}² ({label})")));
         }
 
         let (_, cost) =
-            Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256));
+            Cost::measure(|| crate::vector_tiles::render_mvt_sized(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M));
         println!(
             "{}",
             cost.line(&format!("  render 256² 1/64 sub ({label})"))
@@ -294,7 +294,7 @@ fn print_tile_pipeline_cost() {
         ("sub 1/64 (f8, 3,3)", SUB_1_64),
     ] {
         let (_, paths, points) =
-            perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, sub, 256));
+            perf::paths::measure(|| crate::vector_tiles::render_mvt_sized(&tile, sub, 256, NOMINAL_Z14_TILE_M));
         println!("{label:<34} {paths:>9} paths  {points:>9} points");
     }
     println!();

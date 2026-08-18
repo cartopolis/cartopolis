@@ -410,6 +410,15 @@ pub mod palette {
     pub const SAND: u32 = 0xE6_DC_C2;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
+    /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
+    /// [`INDUSTRIAL`] sit within a few counts of [`GRASS`] on purpose — streets
+    /// and buildings carry the figure there — but from ~z12 out those are
+    /// sub-pixel, the land layer is all that is left, and a whole province
+    /// rendered as one near-uniform green sheet with no visible cities. These are
+    /// the same land uses a hue step warmer and darker, used by the far style
+    /// band (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
+    pub const RESIDENTIAL_FAR: u32 = 0xDE_D4_C2;
+    pub const INDUSTRIAL_FAR: u32 = 0xD6_D1_CA;
     pub const SITE: u32 = 0xE3_E0_D5;
     pub const BUILDING: u32 = 0xD3_CC_C0;
     pub const BUILDING_EDGE: u32 = 0xBE_B5_A6;
@@ -524,24 +533,54 @@ const PAINT_ORDER: &[(&str, Draw)] = &[
     ),
 ];
 
-/// Road class → (width in px, fill colour, casing colour). Widths are at the source
-/// tile's scale and are multiplied by the overzoom factor, so a street keeps its
-/// real-world width as you magnify past z14 instead of thinning to a hair.
-fn street_style(kind: &str) -> (f32, u32, u32) {
-    match kind {
-        "motorway" | "trunk" => (5.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
-        "primary" => (4.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
-        "secondary" => (3.5, palette::ROAD_FILL, palette::ROAD_CASING),
-        "tertiary" => (3.0, palette::ROAD_FILL, palette::ROAD_CASING),
+/// A street's raster style: (width in px at the source tile's own scale, fill
+/// colour, casing colour). The px width is multiplied by the overzoom factor
+/// downstream, so a street keeps its real-world width as you magnify past z14
+/// instead of thinning to a hair.
+///
+/// The width is the **real carriageway width** ([`road_width_m`], the same
+/// number the 3D ribbons are built from) converted to source-tile pixels, with a
+/// per-class *floor* in pixels. At z14 the real width dominates and the painted
+/// road agrees with the textured ribbon drawn 1.5 mm above it — the old fixed px
+/// widths were 1–2 m wider per side, which put a pale halo around every dark
+/// ribbon and pale round blobs at every junction corner. At z10 the real width
+/// is far below a pixel and the floor takes over, which is what keeps the road
+/// hierarchy legible on a zoomed-out map. One `max()`, two regimes, no band
+/// switch to pop at.
+fn street_style(feature: &Feature, source_m: f32) -> (f32, u32, u32) {
+    let kind = kind_of(feature).unwrap_or("");
+    let (floor_px, fill, case) = match kind {
+        "motorway" | "trunk" => (3.5, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
+        "primary" => (3.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
+        "secondary" => (2.5, palette::ROAD_FILL, palette::ROAD_CASING),
+        "tertiary" => (2.2, palette::ROAD_FILL, palette::ROAD_CASING),
         "residential" | "unclassified" | "living_street" => {
-            (2.5, palette::ROAD_FILL, palette::ROAD_CASING)
+            (1.8, palette::ROAD_FILL, palette::ROAD_CASING)
         }
-        "service" => (1.6, palette::ROAD_FILL, palette::ROAD_CASING),
-        "rail" | "light_rail" | "subway" | "tram" => (1.4, palette::RAIL, palette::RAIL),
+        "service" => (1.0, palette::ROAD_FILL, palette::ROAD_CASING),
+        "rail" | "light_rail" | "subway" | "tram" => (1.2, palette::RAIL, palette::RAIL),
         "pedestrian" | "footway" | "path" | "track" | "cycleway" | "steps" => {
-            (1.0, palette::PATH, palette::PATH)
+            (0.8, palette::PATH, palette::PATH)
         }
-        _ => (2.0, palette::ROAD_FILL, palette::ROAD_CASING),
+        _ => (1.5, palette::ROAD_FILL, palette::ROAD_CASING),
+    };
+    let flags = StreetFlags {
+        oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+        link: flag_of(feature, "link"),
+    };
+    let real_px = road_width_m(kind, flags) * TILE_PX as f32 / source_m.max(1.0);
+    (real_px.max(floor_px), fill, case)
+}
+
+/// The OSM `layer` value of a feature (Shortbread carries it on `streets`), or 0.
+/// Vertical order for the raster paint: a flyover strokes over what it crosses.
+fn layer_of(feature: &Feature) -> i64 {
+    match feature.properties.as_ref().and_then(|p| p.get("layer")) {
+        Some(Value::Int(v) | Value::SInt(v)) => *v,
+        Some(Value::UInt(v)) => *v as i64,
+        Some(Value::Float(v)) => *v as i64,
+        Some(Value::Double(v)) => *v as i64,
+        _ => 0,
     }
 }
 
@@ -562,12 +601,24 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
     }
 }
 
+/// Ground edge, in metres, of a z14 tile at Dutch latitudes — the nominal
+/// `source_m` for a caller (or test) rendering without knowing its tile's real
+/// ground size. Street widths drawn from this are exact at z14 over the
+/// Netherlands and merely approximate elsewhere, which is what they always were.
+pub const NOMINAL_Z14_TILE_M: f32 = 1465.0;
+
+/// Displayed ground metres per tile above which the raster switches to the far
+/// style: minor streets and paths are dropped and built-up land uses darken
+/// (`palette::RESIDENTIAL_FAR`) so a city reads from the air. A z12 tile at
+/// Dutch latitudes shows ~5.9 km, z13 ~2.9 km; the threshold sits between them.
+const FAR_STYLE_TILE_M: f32 = 5_000.0;
+
 /// Render an MVT tile body to a `TILE_PX × TILE_PX` RGBA8 buffer.
 ///
 /// `sub` selects the magnified sub-rectangle for overzoomed requests; pass
 /// [`SubTile::WHOLE`] to draw the source tile as-is.
 pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
-    render_mvt_sized(tile, sub, TILE_PX)
+    render_mvt_sized(tile, sub, TILE_PX, NOMINAL_Z14_TILE_M)
 }
 
 /// [`render_mvt`] at an arbitrary edge length, for a consumer whose tiles are
@@ -583,10 +634,20 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
 /// **Every stroke width is in pixels**, so they are scaled by `size / TILE_PX`:
 /// without that, halving the raster doubles the apparent width of every road and
 /// casing, since the texture is stretched over the same ground either way.
-pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<u8>, String> {
+///
+/// `source_m` is the **source tile's** ground edge in metres — what turns the
+/// real carriageway widths into pixels ([`street_style`]) and decides the far
+/// style band ([`FAR_STYLE_TILE_M`]). A caller that does not know it can pass
+/// [`NOMINAL_Z14_TILE_M`].
+pub fn render_mvt_sized(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
-    render_mvt_culled(tile, sub, size, sub.factor > 1)
+    render_mvt_culled(tile, sub, size, source_m, sub.factor > 1)
 }
 
 /// [`render_mvt_sized`] with the off-screen-feature cull switchable, so a test can
@@ -595,6 +656,7 @@ fn render_mvt_culled(
     tile: &TileData,
     sub: SubTile,
     size: u32,
+    source_m: f32,
     cull: bool,
 ) -> Result<Vec<u8>, String> {
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
@@ -612,6 +674,10 @@ fn render_mvt_culled(
     // Width multiplier: the overzoom magnification, times the raster's own scale
     // against the size the widths below are authored at.
     let wf = f * px / TILE_PX as f32;
+    // The displayed region's ground size decides the style band: past
+    // `FAR_STYLE_TILE_M` this raster is a map read from the air, not a street's
+    // own texture, and it styles for legibility instead of fidelity.
+    let far_style = source_m / f > FAR_STYLE_TILE_M;
 
     let mut paint = Paint {
         anti_alias: true,
@@ -649,7 +715,33 @@ fn render_mvt_culled(
             (sub.y + 1) as f32 * extent / f,
         );
 
-        for feature in features {
+        // The two `streets` passes draw in **attribute order, not tile order**:
+        // OSM `layer` first (a flyover paints over what it crosses), bridges
+        // above their own layer, wider roads over narrower. Encoder order put a
+        // residential fill over a motorway's whenever the tile happened to store
+        // it later. Tunnels are dropped outright — the geometry path already
+        // refuses them (`drawn_street`), and the raster painting them left a
+        // pale band ruled straight across every junction the tunnel passes
+        // under, with nothing above it to cover it.
+        let street_order: Option<Vec<&Feature>> = matches!(draw, Draw::Streets { .. }).then(|| {
+            let mut v: Vec<&Feature> = features
+                .iter()
+                .filter(|feat| !flag_of(feat, "tunnel"))
+                .collect();
+            v.sort_by(|a, b| {
+                layer_of(a)
+                    .cmp(&layer_of(b))
+                    .then(flag_of(a, "bridge").cmp(&flag_of(b, "bridge")))
+                    .then(
+                        street_style(a, source_m)
+                            .0
+                            .total_cmp(&street_style(b, source_m).0),
+                    )
+            });
+            v
+        });
+
+        let mut draw_feature = |feature: &Feature| {
             let kind = kind_of(feature);
             // Bounds once per feature, reused by whichever arm draws it. tiny-skia
             // has no early-out of its own: `fill_path` clones and transforms the
@@ -676,24 +768,31 @@ fn render_mvt_culled(
             match draw {
                 Draw::Fill(rgb) => {
                     if !visible(0.0) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*rgb);
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::FillByKind { default, kinds } => {
                     if !visible(0.0) {
-                        continue;
+                        return;
                     }
-                    let rgb = kind
+                    let mut rgb = kind
                         .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
+                    if far_style {
+                        rgb = match kind {
+                            Some("residential") => palette::RESIDENTIAL_FAR,
+                            Some("industrial") | Some("commercial") => palette::INDUSTRIAL_FAR,
+                            _ => rgb,
+                        };
+                    }
                     paint.shader = shader(rgb);
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::Line { color, width } => {
                     if !visible(width * wf * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*color);
                     stroke_geometry(
@@ -706,7 +805,7 @@ fn render_mvt_culled(
                 }
                 Draw::Outline { color, width } => {
                     if !visible(width * wf * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*color);
                     stroke_geometry(
@@ -718,19 +817,43 @@ fn render_mvt_culled(
                     );
                 }
                 Draw::Streets { casing } => {
-                    let (w, fill, case) = street_style(kind.unwrap_or(""));
+                    // Past the far threshold the minor network is sub-pixel
+                    // noise that greys the whole town; drop it and let the
+                    // hierarchy read.
+                    if far_style
+                        && matches!(
+                            kind,
+                            Some(
+                                "service"
+                                    | "track"
+                                    | "footway"
+                                    | "path"
+                                    | "cycleway"
+                                    | "steps"
+                                    | "pedestrian"
+                            )
+                        )
+                    {
+                        return;
+                    }
+                    let (w, fill, case) = street_style(feature, source_m);
                     let (color, width) = if *casing {
-                        (case, (w + 1.2) * wf)
+                        (case, (w + 0.5) * wf)
                     } else {
                         (fill, w * wf)
                     };
                     if !visible(width * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(color);
                     stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width);
                 }
             }
+        };
+
+        match &street_order {
+            Some(list) => list.iter().for_each(|feat| draw_feature(feat)),
+            None => features.iter().for_each(&mut draw_feature),
         }
     }
 
@@ -2871,7 +2994,7 @@ mod tests {
             (palette::PAPER & 0xFF) as u8,
         );
         let inked = |size: u32| {
-            let rgba = render_mvt_sized(&tile, SubTile::WHOLE, size).expect("render");
+            let rgba = render_mvt_sized(&tile, SubTile::WHOLE, size, NOMINAL_Z14_TILE_M).expect("render");
             assert_eq!(rgba.len() as u32, size * size * 4, "wrong buffer size");
             let n = rgba
                 .chunks_exact(4)
@@ -3073,8 +3196,8 @@ mod tests {
             (8, 0, 0),
         ] {
             let sub = SubTile { factor, x, y };
-            let culled = render_mvt_culled(&tile, sub, TILE_PX, true).expect("culled render");
-            let full = render_mvt_culled(&tile, sub, TILE_PX, false).expect("unculled render");
+            let culled = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, true).expect("culled render");
+            let full = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false).expect("unculled render");
             assert_eq!(
                 culled.len(),
                 full.len(),
@@ -3106,7 +3229,7 @@ mod tests {
             for (label, cull) in [("cull ", true), ("full ", false)] {
                 let t0 = std::time::Instant::now();
                 for &sub in &subs {
-                    render_mvt_culled(&tile, sub, TILE_PX, cull).expect("render");
+                    render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, cull).expect("render");
                 }
                 let dt = t0.elapsed();
                 println!(
