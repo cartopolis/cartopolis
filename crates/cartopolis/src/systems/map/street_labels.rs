@@ -49,7 +49,6 @@ use crate::components::FreeCamera;
 use crate::components::StreetLabelSign;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use bevy::asset::RenderAssetUsages;
-use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use big_space::prelude::{BigSpace, Grid, GridCell};
@@ -768,7 +767,7 @@ fn label_image(level0: Vec<u8>, w: u32, h: u32) -> Image {
     );
     image.texture_descriptor.mip_level_count = levels;
     image.data = Some(data);
-    image.sampler = ImageSampler::linear();
+    image.sampler = crate::systems::tile_loader::ground_sampler();
     image
 }
 

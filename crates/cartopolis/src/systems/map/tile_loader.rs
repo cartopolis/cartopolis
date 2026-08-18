@@ -1,7 +1,7 @@
 use crate::resources::OsmTileUrlTemplate;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy_image::{Image, ImageSampler};
+use bevy_image::{Image, ImageSampler, ImageSamplerDescriptor};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +10,22 @@ use bevy::tasks::IoTaskPool;
 use crate::platform::work::Dispatcher;
 use crate::systems::vector_tiles;
 pub use cartopolis_core::{tile_source_kind, TileKey, TileSourceKind};
+
+/// Linear sampler with anisotropic filtering, for any texture lying in the
+/// ground plane. The map is viewed at grazing angles almost all of the time,
+/// and there an isotropic mip lookup keys the level off the *worst* axis —
+/// blurring the far half of every frame into flat grey long before distance
+/// justifies it. The generated road surface has had this since it landed
+/// (`map_geometry::road_surface_image`, whose comment carries the finding);
+/// the map tiles underneath it, the globe's tiles and the street-label quads
+/// were still plain `linear()`, so the roads stayed legible while the ground
+/// they lie on dissolved.
+pub(crate) fn ground_sampler() -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        anisotropy_clamp: 8,
+        ..ImageSamplerDescriptor::linear()
+    })
+}
 
 /// Ground edge of a tile in metres at its own centre latitude — what
 /// `render_mvt_sized` needs to convert real carriageway widths into pixels and
@@ -586,7 +602,7 @@ pub fn load_region_tiles(
                     tile.mip_count,
                     bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
                     TILE_TEXTURE_USAGE,
-                    ImageSampler::linear(),
+                    ground_sampler(),
                 );
                 let handle = images.add(bevy_image);
                 if let Ok(mut handles) = tile_cache.handles.lock() {

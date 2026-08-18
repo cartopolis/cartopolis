@@ -29,7 +29,7 @@ use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy::tasks::IoTaskPool;
-use bevy_image::{Image, ImageSampler};
+use bevy_image::Image;
 use big_space::prelude::{BigSpace, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
@@ -1272,7 +1272,7 @@ pub fn update_globe_tiles(
             tile.mip_count,
             TextureFormat::Rgba8UnormSrgb,
             crate::systems::tile_loader::TILE_TEXTURE_USAGE,
-            ImageSampler::linear(),
+            crate::systems::tile_loader::ground_sampler(),
         );
         let texture = images.add(image);
 
