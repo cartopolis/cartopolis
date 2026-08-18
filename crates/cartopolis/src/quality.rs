@@ -970,6 +970,32 @@ mod tests {
         assert!(Budget::desktop().fps_cap.is_some());
     }
 
+    /// No rung may permit a single asset larger than its own frame upload budget.
+    ///
+    /// The two are the same quantity seen from opposite ends, and nothing but this
+    /// test connects them. `RenderAssetBytesPerFrame` always writes at least one
+    /// *whole* asset per frame so that uploads can never stall — so a mesh above
+    /// the budget is a frame above the budget, and the throttle that exists to
+    /// prevent exactly that quietly does not apply. They drifted to 8 MB against
+    /// 4 MB, which is how an Adreno 840 was handed a 6 MB asset on 2026-08-18 and
+    /// lost its device with the budget switched on and apparently working.
+    #[test]
+    fn no_rung_permits_an_asset_larger_than_its_own_frame() {
+        for (name, budget) in [
+            ("phone", Budget::phone()),
+            ("balanced", Budget::balanced()),
+            ("desktop", Budget::desktop()),
+        ] {
+            let Some(per_frame) = budget.upload_bytes_per_frame else {
+                continue;
+            };
+            assert!(
+                crate::systems::lod22::max_cell_mesh_bytes_for(&budget) <= per_frame,
+                "{name}: a cell may be larger than the whole frame's budget"
+            );
+        }
+    }
+
     /// Only 1× and 4× are portable (see `Budget::msaa`), so **no** rung may ask for
     /// anything else — not just the phone. A middle tier that quietly asked for 2×
     /// would render nothing at all on an adapter that refuses it, and the only
