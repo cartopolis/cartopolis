@@ -2660,6 +2660,12 @@ pub const SHORE_FIELD_PX: u32 = 1024;
 /// canals and harbour basins the near-field treatment is for.
 pub const SHORE_MAX_DIST_M: f32 = 60.0;
 
+/// Apron of texels rasterised around the shore field so banks just across the
+/// tile border are seen by the distance transform. Sized to the ground the MVT
+/// buffer actually carries: Shortbread encodes a 64/4096-of-extent buffer, and
+/// `1024 / 64 = 16` texels covers exactly that.
+pub const SHORE_FIELD_PAD: u32 = SHORE_FIELD_PX / 64;
+
 /// A tile's distance-to-shore field: `SHORE_FIELD_PX²` bytes, 0 at the bank and
 /// 255 at [`SHORE_MAX_DIST_M`] or beyond, in the same tile-local frame as
 /// [`tessellate_surfaces`]' output (origin north-west, +x east, +y south).
@@ -2680,16 +2686,27 @@ pub struct ShoreField {
 /// swell, colour the shallows and lap a foam line against the bank — the three
 /// things that separate "a blue surface with waves on it" from water in a place.
 ///
-/// Distances are measured only against land **inside this tile**. That is not an
-/// approximation of the truth, it *is* the truth for the interior: in MVT, land
-/// is the absence of a water polygon. It only overestimates within a tile's
-/// width of the border, where the nearest bank may sit in the neighbouring tile
-/// — which is why nothing is padded around the raster. Treating the border as
-/// land instead (the obvious padding) would draw a shoreline straight down the
-/// middle of every river that crosses a tile edge.
+/// Distances are measured against land inside this tile **and its MVT buffer**.
+/// For the interior that is simply the truth: in MVT, land is the absence of a
+/// water polygon. Near the border it used to overestimate badly — the raster
+/// stopped at the tile edge, so a bank two metres into the neighbouring tile
+/// was invisible, the border strip saturated to "open water", and the shallow
+/// tint (the most visible thing the field drives) stepped in a straight line
+/// down every z14 cell edge. The tile's geometry already runs past the edge
+/// into the buffer zone (that is what `clip_ring` exists to cut off), so
+/// rasterising a [`SHORE_FIELD_PAD`]-texel apron around the field and cropping
+/// it away after the transform makes the border strip truthful out to the
+/// buffer's reach (~23 m at z14 — past `SHALLOW_M` and the foam band) for one
+/// extra fill and a 6 % larger transform. Note the apron pads with the
+/// *neighbour's actual geometry*, not with land: padding with land (the
+/// obvious trick) would draw a shoreline straight down the middle of every
+/// river that crosses a tile edge.
 pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreField>, String> {
     let size = SHORE_FIELD_PX;
-    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    let pad = SHORE_FIELD_PAD;
+    let psize = size + 2 * pad;
+    let mut pixmap =
+        Pixmap::new(psize, psize).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
         anti_alias: false,
         shader: Shader::SolidColor(tiny_skia::Color::WHITE),
@@ -2702,7 +2719,8 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
             continue;
         }
         let extent = TileData::extent(meta);
-        let transform = Transform::from_scale(size as f32 / extent, size as f32 / extent);
+        let s = size as f32 / extent;
+        let transform = Transform::from_row(s, 0.0, 0.0, s, pad as f32, pad as f32);
         for feature in tile.features(meta) {
             if area_path(&feature.geometry).is_some() {
                 any_water = true;
@@ -2719,24 +2737,26 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
     // "Unreached" is a large *finite* distance, not infinity: the envelope below
     // subtracts one sample's value from another's, and ∞ − ∞ is a NaN that
     // quietly poisons a whole scanline. Two texel-grids is past any real answer
-    // (nothing inside the field can be further than `size` from a seed) while
+    // (nothing inside the field can be further than `psize` from a seed) while
     // staying exactly representable in f32.
-    let unreached = (2 * size) as f32;
-    let n = (size * size) as usize;
+    let unreached = (2 * psize) as f32;
+    let n = (psize * psize) as usize;
     let mut sq = vec![0.0f32; n];
     for (d, px) in sq.iter_mut().zip(pixmap.pixels()) {
         *d = if px.alpha() > 127 { unreached } else { 0.0 };
     }
-    squared_distance_transform(&mut sq, size as usize);
+    squared_distance_transform(&mut sq, psize as usize);
 
+    // Crop the apron away: the shader's frame is the tile proper.
     let m_per_texel = tile_m / size as f32;
-    let data = sq
-        .iter()
-        .map(|d2| {
+    let mut data = Vec::with_capacity((size * size) as usize);
+    for y in pad..pad + size {
+        let row = &sq[(y * psize + pad) as usize..(y * psize + pad + size) as usize];
+        data.extend(row.iter().map(|d2| {
             let m = d2.sqrt() * m_per_texel;
             (m / SHORE_MAX_DIST_M).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8
-        })
-        .collect();
+        }));
+    }
     Ok(Some(ShoreField { size, data }))
 }
 
