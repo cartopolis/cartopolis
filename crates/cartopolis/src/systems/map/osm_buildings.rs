@@ -37,6 +37,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::scatter::srgb_to_linear_f32;
 use cartopolis_core::world::{lat_lng_to_tile, tile_to_lat_lng, tile_to_meters};
 
 /// Fixed grid zoom at which building data is fetched + cached. Independent of the
@@ -373,7 +374,8 @@ pub(crate) fn building_palette(lat: f64, lng: f64) -> ([f32; 3], [f32; 3]) {
     let seed = color_seed((lat, lng));
     let wall = jitter(palette_color((lat, lng)), seed, 0.12);
     let roof = jitter(default_roof("yes", seed), seed.rotate_left(17), 0.12);
-    (wall, roof)
+    // Same sRGB→linear exit as `derive_colors` — these feed vertex colours too.
+    (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
 }
 
 /// Roof form from OSM `roof:shape` (Simple 3D Buildings).
@@ -414,8 +416,12 @@ struct BuiltPatch {
     buildings: Vec<Building>,
     /// BigSpace cell the mesh vertices are relative to.
     patch_cell: GridCell,
-    /// Full-detail buildings around the camera.
-    detail: Option<Mesh>,
+    /// Full-detail buildings around the camera, split into byte-bounded
+    /// pieces: the merged patch was the largest single asset the client could
+    /// make (a 70 MB single-frame upload was measured over a dense city), and
+    /// Bevy's upload budget writes whole assets, so only a pre-split can
+    /// spread it over frames.
+    detail: Vec<Mesh>,
     /// Window quads per glow bucket (indexes `WINDOW_GLOW_MULT`).
     windows: [Option<Mesh>; 4],
 }
@@ -530,10 +536,13 @@ impl OsmBuildings {
     /// height is a guess that can poke through the real BAG roof). Forgetting the
     /// cell in both lanes lets the far tier re-fetch it (disk-cached) when the real
     /// mesh later goes out of range.
-    pub(crate) fn evict_far_cell(&mut self, commands: &mut Commands, cell: (i64, i64)) {
-        for e in self.far_cells.remove(&cell).unwrap_or_default() {
-            commands.entity(e).despawn();
-        }
+    /// Through the far lane's bounded despawn queue, not `commands.despawn`:
+    /// this is called from inside the LoD2.2 build loop, and freeing a far
+    /// cell's meshes in the same command buffer as an up-to-8 MB upload is the
+    /// exact churn shape the queue exists to forbid.
+    pub(crate) fn evict_far_cell(&mut self, cell: (i64, i64)) {
+        let entities = self.far_cells.remove(&cell).unwrap_or_default();
+        self.far.retire_all(entities);
         self.far.forget(&cell);
         self.far_tdbag.forget(&cell);
     }
@@ -1026,7 +1035,9 @@ pub fn update_buildings(
                         BuiltPatch {
                             buildings,
                             patch_cell,
-                            detail: bld.into_mesh(),
+                            // Same byte cap as a LoD2.2 cell — the two lanes'
+                            // pieces should stress the uploader equally.
+                            detail: bld.into_meshes(crate::systems::lod22::max_cell_mesh_bytes()),
                             windows: wins.map(MeshData::into_mesh),
                         }
                     });
@@ -1424,12 +1435,13 @@ fn spawn_detail_patch(
     osm: &mut OsmBuildings,
     root: Entity,
     patch_cell: GridCell,
-    detail: Option<Mesh>,
+    detail: Vec<Mesh>,
     windows: [Option<Mesh>; 4],
 ) {
-    // Building mesh: one white material, per-vertex wall/roof colours. Cached on
-    // `OsmBuildings` and shared with the far lane — see `building_material`.
-    if let Some(mesh) = detail {
+    // Building meshes (byte-bounded pieces of the merged patch): one white
+    // material, per-vertex wall/roof colours. Cached on `OsmBuildings` and
+    // shared with the far lane — see `building_material`.
+    if !detail.is_empty() {
         let material = osm
             .building_material
             .get_or_insert_with(|| {
@@ -1442,18 +1454,20 @@ fn spawn_detail_patch(
                 })
             })
             .clone();
-        let entity = commands
-            .spawn((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material),
-                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                patch_cell,
-                ChildOf(root),
-                OsmBuildingMesh,
-                crate::components::HideInSpace,
-            ))
-            .id();
-        osm.detail_entities.push(entity);
+        for mesh in detail {
+            let entity = commands
+                .spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                    patch_cell,
+                    ChildOf(root),
+                    OsmBuildingMesh,
+                    crate::components::HideInSpace,
+                ))
+                .id();
+            osm.detail_entities.push(entity);
+        }
     }
 
     // Window meshes: dark glass by day; per-bucket emissive faded in at night by
@@ -1718,6 +1732,32 @@ impl MeshData {
         } else {
             self.quad(a, b, c, d, color);
         }
+    }
+
+    /// [`MeshData::quad_facing`] with a colour per corner (the wall base-darkening
+    /// gradient). Corner colours travel with their vertices when the winding flips.
+    pub(crate) fn quad_facing_graded(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        d: Vec3,
+        colors: [[f32; 4]; 4],
+        outward: Vec3,
+    ) {
+        let (verts, cols) = if (b - a).cross(c - a).dot(outward) < 0.0 {
+            ([d, c, b, a], [colors[3], colors[2], colors[1], colors[0]])
+        } else {
+            ([a, b, c, d], colors)
+        };
+        let n = (verts[1] - verts[0])
+            .cross(verts[2] - verts[0])
+            .normalize_or_zero();
+        let ia = self.vertex(verts[0], n, cols[0]);
+        let ib = self.vertex(verts[1], n, cols[1]);
+        let ic = self.vertex(verts[2], n, cols[2]);
+        let id = self.vertex(verts[3], n, cols[3]);
+        self.indices.extend_from_slice(&[ia, ib, ic, ia, ic, id]);
     }
 
     /// Finalise into a `Mesh` (or `None` if empty).
@@ -2007,12 +2047,13 @@ fn push_building_lod(
             perp = -perp;
         }
         // Wound to face `perp` so far walls back-face cull too (see `quad_facing`).
-        bld.quad_facing(
+        let base = wall_base_tone(wall, height);
+        bld.quad_facing_graded(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, height, b.y),
             Vec3::new(a.x, height, a.y),
-            wall,
+            [base, base, wall, wall],
             Vec3::new(perp.x, 0.0, perp.y),
         );
 
@@ -2089,12 +2130,13 @@ fn push_building(
         // Wound to face `perp`, so the wall can be back-face culled. (A vertical
         // quad's derived flat normal is exactly ±perp, so this is identical to the
         // explicit normal this used to push — just with the winding fixed too.)
-        bld.quad_facing(
+        let base = wall_base_tone(wall, wall_h);
+        bld.quad_facing_graded(
             Vec3::new(a.x, 0.0, a.y),
             Vec3::new(b.x, 0.0, b.y),
             Vec3::new(b.x, wall_h, b.y),
             Vec3::new(a.x, wall_h, a.y),
-            wall,
+            [base, base, wall, wall],
             Vec3::new(perp.x, 0.0, perp.y),
         );
 
@@ -2141,6 +2183,20 @@ fn push_building(
             }
         }
     }
+}
+
+/// Ground-contact darkening for a wall: the bottom vertices carry a darker tone
+/// that interpolates back to the wall colour at the eaves — a fake ambient-
+/// occlusion band, since nothing in the scene computes real AO and an untouched
+/// extrusion meets the flat ground with no contact shadow at all. The strength
+/// is scaled down for tall façades (the gradient spans the whole wall, and a
+/// constant base tone would wash a tower's lower storeys with what should be a
+/// ground-contact effect).
+fn wall_base_tone(wall: [f32; 4], wall_h: f32) -> [f32; 4] {
+    const STRENGTH: f32 = 0.25;
+    const SPAN_M: f32 = 6.0;
+    let d = 1.0 - STRENGTH * (SPAN_M / wall_h.max(SPAN_M)).min(1.0);
+    [wall[0] * d, wall[1] * d, wall[2] * d, wall[3]]
 }
 
 /// Emit a grid of window quads on one wall face (proud of the wall), routing each
@@ -2616,7 +2672,11 @@ fn derive_colors(tags: Option<&serde_json::Value>, ring0: (f64, f64)) -> ([f32; 
         .or_else(|| tag_str(tags, "roof:material").and_then(roof_material_color))
         .unwrap_or_else(|| default_roof(btype, seed));
     let roof = jitter(roof_base, seed.rotate_left(17), 0.12);
-    (wall, roof)
+    // The tables above (and OSM `*:colour` tags) are authored in sRGB, but these
+    // values become mesh vertex colours, which multiply the material's white
+    // `base_color` in linear space — convert here, at the single exit, or every
+    // wall displays a stop too bright and terracotta reads as salmon.
+    (srgb_to_linear_f32(wall), srgb_to_linear_f32(roof))
 }
 
 /// Default roof tone for a building type without `roof:*` tags: flat grey for

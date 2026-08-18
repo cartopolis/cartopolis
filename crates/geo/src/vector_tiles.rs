@@ -410,6 +410,15 @@ pub mod palette {
     pub const SAND: u32 = 0xE6_DC_C2;
     pub const RESIDENTIAL: u32 = 0xE6_E1_D8;
     pub const INDUSTRIAL: u32 = 0xE0_DC_D8;
+    /// Built-up land as read from altitude. Up close, [`RESIDENTIAL`] and
+    /// [`INDUSTRIAL`] sit within a few counts of [`GRASS`] on purpose — streets
+    /// and buildings carry the figure there — but from ~z12 out those are
+    /// sub-pixel, the land layer is all that is left, and a whole province
+    /// rendered as one near-uniform green sheet with no visible cities. These are
+    /// the same land uses a hue step warmer and darker, used by the far style
+    /// band (`FAR_STYLE_TILE_M`) so a town reads as a town from the air.
+    pub const RESIDENTIAL_FAR: u32 = 0xDE_D4_C2;
+    pub const INDUSTRIAL_FAR: u32 = 0xD6_D1_CA;
     pub const SITE: u32 = 0xE3_E0_D5;
     pub const BUILDING: u32 = 0xD3_CC_C0;
     pub const BUILDING_EDGE: u32 = 0xBE_B5_A6;
@@ -524,24 +533,54 @@ const PAINT_ORDER: &[(&str, Draw)] = &[
     ),
 ];
 
-/// Road class → (width in px, fill colour, casing colour). Widths are at the source
-/// tile's scale and are multiplied by the overzoom factor, so a street keeps its
-/// real-world width as you magnify past z14 instead of thinning to a hair.
-fn street_style(kind: &str) -> (f32, u32, u32) {
-    match kind {
-        "motorway" | "trunk" => (5.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
-        "primary" => (4.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
-        "secondary" => (3.5, palette::ROAD_FILL, palette::ROAD_CASING),
-        "tertiary" => (3.0, palette::ROAD_FILL, palette::ROAD_CASING),
+/// A street's raster style: (width in px at the source tile's own scale, fill
+/// colour, casing colour). The px width is multiplied by the overzoom factor
+/// downstream, so a street keeps its real-world width as you magnify past z14
+/// instead of thinning to a hair.
+///
+/// The width is the **real carriageway width** ([`road_width_m`], the same
+/// number the 3D ribbons are built from) converted to source-tile pixels, with a
+/// per-class *floor* in pixels. At z14 the real width dominates and the painted
+/// road agrees with the textured ribbon drawn 1.5 mm above it — the old fixed px
+/// widths were 1–2 m wider per side, which put a pale halo around every dark
+/// ribbon and pale round blobs at every junction corner. At z10 the real width
+/// is far below a pixel and the floor takes over, which is what keeps the road
+/// hierarchy legible on a zoomed-out map. One `max()`, two regimes, no band
+/// switch to pop at.
+fn street_style(feature: &Feature, source_m: f32) -> (f32, u32, u32) {
+    let kind = kind_of(feature).unwrap_or("");
+    let (floor_px, fill, case) = match kind {
+        "motorway" | "trunk" => (3.5, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
+        "primary" => (3.0, palette::MOTORWAY_FILL, palette::MOTORWAY_CASING),
+        "secondary" => (2.5, palette::ROAD_FILL, palette::ROAD_CASING),
+        "tertiary" => (2.2, palette::ROAD_FILL, palette::ROAD_CASING),
         "residential" | "unclassified" | "living_street" => {
-            (2.5, palette::ROAD_FILL, palette::ROAD_CASING)
+            (1.8, palette::ROAD_FILL, palette::ROAD_CASING)
         }
-        "service" => (1.6, palette::ROAD_FILL, palette::ROAD_CASING),
-        "rail" | "light_rail" | "subway" | "tram" => (1.4, palette::RAIL, palette::RAIL),
+        "service" => (1.0, palette::ROAD_FILL, palette::ROAD_CASING),
+        "rail" | "light_rail" | "subway" | "tram" => (1.2, palette::RAIL, palette::RAIL),
         "pedestrian" | "footway" | "path" | "track" | "cycleway" | "steps" => {
-            (1.0, palette::PATH, palette::PATH)
+            (0.8, palette::PATH, palette::PATH)
         }
-        _ => (2.0, palette::ROAD_FILL, palette::ROAD_CASING),
+        _ => (1.5, palette::ROAD_FILL, palette::ROAD_CASING),
+    };
+    let flags = StreetFlags {
+        oneway: flag_of(feature, "oneway") || flag_of(feature, "oneway_reverse"),
+        link: flag_of(feature, "link"),
+    };
+    let real_px = road_width_m(kind, flags) * TILE_PX as f32 / source_m.max(1.0);
+    (real_px.max(floor_px), fill, case)
+}
+
+/// The OSM `layer` value of a feature (Shortbread carries it on `streets`), or 0.
+/// Vertical order for the raster paint: a flyover strokes over what it crosses.
+fn layer_of(feature: &Feature) -> i64 {
+    match feature.properties.as_ref().and_then(|p| p.get("layer")) {
+        Some(Value::Int(v) | Value::SInt(v)) => *v,
+        Some(Value::UInt(v)) => *v as i64,
+        Some(Value::Float(v)) => *v as i64,
+        Some(Value::Double(v)) => *v as i64,
+        _ => 0,
     }
 }
 
@@ -562,12 +601,24 @@ pub(crate) fn kind_of(feature: &Feature) -> Option<&str> {
     }
 }
 
+/// Ground edge, in metres, of a z14 tile at Dutch latitudes — the nominal
+/// `source_m` for a caller (or test) rendering without knowing its tile's real
+/// ground size. Street widths drawn from this are exact at z14 over the
+/// Netherlands and merely approximate elsewhere, which is what they always were.
+pub const NOMINAL_Z14_TILE_M: f32 = 1465.0;
+
+/// Displayed ground metres per tile above which the raster switches to the far
+/// style: minor streets and paths are dropped and built-up land uses darken
+/// (`palette::RESIDENTIAL_FAR`) so a city reads from the air. A z12 tile at
+/// Dutch latitudes shows ~5.9 km, z13 ~2.9 km; the threshold sits between them.
+const FAR_STYLE_TILE_M: f32 = 5_000.0;
+
 /// Render an MVT tile body to a `TILE_PX × TILE_PX` RGBA8 buffer.
 ///
 /// `sub` selects the magnified sub-rectangle for overzoomed requests; pass
 /// [`SubTile::WHOLE`] to draw the source tile as-is.
 pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
-    render_mvt_sized(tile, sub, TILE_PX)
+    render_mvt_sized(tile, sub, TILE_PX, NOMINAL_Z14_TILE_M)
 }
 
 /// [`render_mvt`] at an arbitrary edge length, for a consumer whose tiles are
@@ -583,10 +634,20 @@ pub fn render_mvt(tile: &TileData, sub: SubTile) -> Result<Vec<u8>, String> {
 /// **Every stroke width is in pixels**, so they are scaled by `size / TILE_PX`:
 /// without that, halving the raster doubles the apparent width of every road and
 /// casing, since the texture is stretched over the same ground either way.
-pub fn render_mvt_sized(tile: &TileData, sub: SubTile, size: u32) -> Result<Vec<u8>, String> {
+///
+/// `source_m` is the **source tile's** ground edge in metres — what turns the
+/// real carriageway widths into pixels ([`street_style`]) and decides the far
+/// style band ([`FAR_STYLE_TILE_M`]). A caller that does not know it can pass
+/// [`NOMINAL_Z14_TILE_M`].
+pub fn render_mvt_sized(
+    tile: &TileData,
+    sub: SubTile,
+    size: u32,
+    source_m: f32,
+) -> Result<Vec<u8>, String> {
     // Cull only when overzooming: at `factor == 1` the window is the whole tile,
     // so every feature passes and the bounds scan is pure overhead.
-    render_mvt_culled(tile, sub, size, sub.factor > 1)
+    render_mvt_culled(tile, sub, size, source_m, sub.factor > 1)
 }
 
 /// [`render_mvt_sized`] with the off-screen-feature cull switchable, so a test can
@@ -595,6 +656,7 @@ fn render_mvt_culled(
     tile: &TileData,
     sub: SubTile,
     size: u32,
+    source_m: f32,
     cull: bool,
 ) -> Result<Vec<u8>, String> {
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
@@ -612,6 +674,10 @@ fn render_mvt_culled(
     // Width multiplier: the overzoom magnification, times the raster's own scale
     // against the size the widths below are authored at.
     let wf = f * px / TILE_PX as f32;
+    // The displayed region's ground size decides the style band: past
+    // `FAR_STYLE_TILE_M` this raster is a map read from the air, not a street's
+    // own texture, and it styles for legibility instead of fidelity.
+    let far_style = source_m / f > FAR_STYLE_TILE_M;
 
     let mut paint = Paint {
         anti_alias: true,
@@ -649,7 +715,33 @@ fn render_mvt_culled(
             (sub.y + 1) as f32 * extent / f,
         );
 
-        for feature in features {
+        // The two `streets` passes draw in **attribute order, not tile order**:
+        // OSM `layer` first (a flyover paints over what it crosses), bridges
+        // above their own layer, wider roads over narrower. Encoder order put a
+        // residential fill over a motorway's whenever the tile happened to store
+        // it later. Tunnels are dropped outright — the geometry path already
+        // refuses them (`drawn_street`), and the raster painting them left a
+        // pale band ruled straight across every junction the tunnel passes
+        // under, with nothing above it to cover it.
+        let street_order: Option<Vec<&Feature>> = matches!(draw, Draw::Streets { .. }).then(|| {
+            let mut v: Vec<&Feature> = features
+                .iter()
+                .filter(|feat| !flag_of(feat, "tunnel"))
+                .collect();
+            v.sort_by(|a, b| {
+                layer_of(a)
+                    .cmp(&layer_of(b))
+                    .then(flag_of(a, "bridge").cmp(&flag_of(b, "bridge")))
+                    .then(
+                        street_style(a, source_m)
+                            .0
+                            .total_cmp(&street_style(b, source_m).0),
+                    )
+            });
+            v
+        });
+
+        let mut draw_feature = |feature: &Feature| {
             let kind = kind_of(feature);
             // Bounds once per feature, reused by whichever arm draws it. tiny-skia
             // has no early-out of its own: `fill_path` clones and transforms the
@@ -676,24 +768,31 @@ fn render_mvt_culled(
             match draw {
                 Draw::Fill(rgb) => {
                     if !visible(0.0) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*rgb);
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::FillByKind { default, kinds } => {
                     if !visible(0.0) {
-                        continue;
+                        return;
                     }
-                    let rgb = kind
+                    let mut rgb = kind
                         .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
+                    if far_style {
+                        rgb = match kind {
+                            Some("residential") => palette::RESIDENTIAL_FAR,
+                            Some("industrial") | Some("commercial") => palette::INDUSTRIAL_FAR,
+                            _ => rgb,
+                        };
+                    }
                     paint.shader = shader(rgb);
                     fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
                 }
                 Draw::Line { color, width } => {
                     if !visible(width * wf * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*color);
                     stroke_geometry(
@@ -706,7 +805,7 @@ fn render_mvt_culled(
                 }
                 Draw::Outline { color, width } => {
                     if !visible(width * wf * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(*color);
                     stroke_geometry(
@@ -718,19 +817,43 @@ fn render_mvt_culled(
                     );
                 }
                 Draw::Streets { casing } => {
-                    let (w, fill, case) = street_style(kind.unwrap_or(""));
+                    // Past the far threshold the minor network is sub-pixel
+                    // noise that greys the whole town; drop it and let the
+                    // hierarchy read.
+                    if far_style
+                        && matches!(
+                            kind,
+                            Some(
+                                "service"
+                                    | "track"
+                                    | "footway"
+                                    | "path"
+                                    | "cycleway"
+                                    | "steps"
+                                    | "pedestrian"
+                            )
+                        )
+                    {
+                        return;
+                    }
+                    let (w, fill, case) = street_style(feature, source_m);
                     let (color, width) = if *casing {
-                        (case, (w + 1.2) * wf)
+                        (case, (w + 0.5) * wf)
                     } else {
                         (fill, w * wf)
                     };
                     if !visible(width * 0.5) {
-                        continue;
+                        return;
                     }
                     paint.shader = shader(color);
                     stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width);
                 }
             }
+        };
+
+        match &street_order {
+            Some(list) => list.iter().for_each(|feat| draw_feature(feat)),
+            None => features.iter().for_each(&mut draw_feature),
         }
     }
 
@@ -891,6 +1014,13 @@ pub enum SurfaceGroup {
     /// A road ribbon. Textured rather than flat-coloured — see
     /// [`road_texture`](crate::road_texture).
     Road(RoadClass),
+    /// The pale kerb band under a [`Self::Road`]: the same centre line extruded
+    /// [`ROAD_CASING_M`] wider, flat-coloured, half a depth rung below its own
+    /// fill so it shows only as an edge. The raster basemap has always cased its
+    /// streets; the geometry path drew bare tarmac, so flying *down* into the
+    /// vector ring removed cartographic structure instead of adding it — dark
+    /// ribbons lying edgeless on the ground.
+    RoadCasing(RoadClass),
     /// A bridge deck: the structure's own surface, standing at its measured
     /// height (`systems::height`) rather than lying in the coplanar ground stack.
     /// Above everything else on the ground, because that is what a bridge is.
@@ -913,14 +1043,11 @@ impl SurfaceGroup {
     #[must_use]
     pub fn base_color(self) -> [f32; 3] {
         let rgb = match self {
-            // Not where water's colour comes from, and never reached: `map_geometry`
-            // builds a `WaterMaterial` for any cell holding a water mesh and takes
-            // that branch for every one of them, shading toggle or not, so this
-            // function only ever sees the other groups. Kept because the match is
-            // exhaustive and this is the honest fallback anyway — `palette::WATER`
-            // is *tuned* to the tone `water::WATER_ALBEDO` shades to, so a water
-            // sheet that somehow arrived here would still land the right colour
-            // rather than panic in the middle of a tile stream.
+            // Water's colour when the shading toggle is *off*: `map_geometry`
+            // builds a `WaterMaterial` only for shaded water, and falls back to
+            // this plain branch otherwise. `palette::WATER` is *tuned* to the
+            // tone `water::WATER_ALBEDO` shades to, so the two paths land on
+            // the same colour and toggling the shading does not step the sea.
             Self::Water => palette::WATER,
             Self::Forest => palette::FOREST,
             Self::Grass => palette::GRASS,
@@ -929,6 +1056,12 @@ impl SurfaceGroup {
             // Roads carry their surface in a texture; tinting it would only fight
             // the paint values chosen there, so the material multiplies by white.
             Self::Road(_) => 0xFF_FF_FF,
+            // Same colours the raster path cases with, so the two pipelines'
+            // streets keep matching at the ring edge.
+            Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
+                palette::MOTORWAY_CASING
+            }
+            Self::RoadCasing(_) => palette::ROAD_CASING,
             Self::BridgeDeck => palette::BRIDGE_DECK,
             // Vertex colours multiply this, and they are centred on 1.0 — so the
             // palette entry stays the one place the canopy tone is written down.
@@ -976,6 +1109,14 @@ impl SurfaceGroup {
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
             Self::Road(_) => -0.0015,
+            // One ladder step below the fills' base plane, so every casing lies
+            // geometrically under every fill — the raster path's
+            // all-casings-then-all-fills rule expressed in depth. The casing
+            // ladder is compressed to stay inside this one step
+            // (`CASING_LADDER_SCALE`); same-class casings that overlap are the
+            // same colour, so their sub-resolution fight is invisible, and
+            // cross-class order is settled by [`Self::depth_bias`].
+            Self::RoadCasing(_) => -0.0015 - ROAD_LAYER_STEP,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
             // A bridge deck is the same kind of thing: it carries its own height,
@@ -1005,9 +1146,9 @@ impl SurfaceGroup {
     ///
     /// Widening the ladder is safe at every range precisely because the unit is
     /// proportional to the primitive's own depth: the apparent world-space shift is
-    /// `1.19e-7 · bias · z`, so water's 64 units read as ~4 cm at 5 km and ~40 µm
-    /// at 10 m. It cannot punch through a building, which is separated by metres of
-    /// honest depth.
+    /// `1.19e-7 · bias · z`, so water's 256 units (rung 4 × the 64-unit step) read
+    /// as ~15 cm at 5 km and ~150 µm at 10 m. It cannot punch through a building,
+    /// which is separated by metres of honest depth.
     ///
     /// `bias.slope_scale` stays 0 — `StandardMaterial` exposes only `constant`, and
     /// reaching the other field would mean wrapping every group in an
@@ -1030,6 +1171,11 @@ impl SurfaceGroup {
             // ground: ribbons genuinely overlap at every junction, and equal
             // biases there would z-fight in exactly the places you look at. The
             // order is the road hierarchy, so a motorway crosses a service road.
+            // A casing sits half a rung (32 depth ULPs) under its own fill:
+            // above every narrower class's *fill*, so a major road's kerb band
+            // still covers a path it crosses, and below its own tarmac, so it
+            // reads as an edge and never over-paints the markings.
+            Self::RoadCasing(class) => Self::Road(class).depth_rung() - 0.5,
             Self::Road(RoadClass::Path) => 5.0,
             Self::Road(RoadClass::Minor) => 6.0,
             Self::Road(RoadClass::Major) => 7.0,
@@ -1427,16 +1573,18 @@ const JUNCTION_EXTEND_MAX: f32 = 12.0;
 ///
 /// Stepping each feature up by a fraction of a millimetre makes the winner
 /// deterministic. The step has to clear the depth buffer's resolution at ground
-/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the 10 mm window
-/// `SurfaceGroup::y_offset` documents — at [`ROAD_LAYERS`] rungs the ladder is
-/// under 1.5 mm tall, so roads stay below the buildings' base at y = 0.
-const ROAD_LAYER_STEP: f32 = 6.0e-5;
+/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the window between
+/// the road sheet's `y_offset` (−1.5 mm) and the buildings' base at y = 0 — at
+/// [`ROAD_LAYERS`] rungs the ladder tops out at 1.44 mm, still under the
+/// buildings.
+const ROAD_LAYER_STEP: f32 = 4.0e-5;
 
 /// How many rungs the [`ROAD_LAYER_STEP`] ladder has. The ladder is *ordered*, not
 /// arbitrary (see [`road_rung`]), so which of two overlapping features wins is a
 /// property of the roads rather than of the order the tile happened to store them
-/// in — and the same two roads resolve the same way in the neighbouring tile.
-const ROAD_LAYERS: u32 = 20;
+/// in. Sized to the ceiling: `ROAD_LAYERS * ROAD_LAYER_STEP` must stay under the
+/// 1.5 mm between the road sheet and the buildings' base.
+const ROAD_LAYERS: u32 = 36;
 
 /// Rungs reserved at the top of the ladder for bridge decks.
 const BRIDGE_LAYERS: u32 = 4;
@@ -1444,7 +1592,15 @@ const BRIDGE_LAYERS: u32 = 4;
 /// Tie-breaking rungs within one width band.
 const ROAD_TIE_LAYERS: u32 = 4;
 
-/// Which rung of the [`ROAD_LAYER_STEP`] ladder a feature draws on.
+/// Width-band thresholds (metres) for [`road_rung`]: a road's band is the count
+/// of thresholds at or below its width. 2 m steps where the urban network is
+/// dense-packed — service 4, living street 6, residential 7, tertiary 9 all land
+/// in different bands now, where the old single 6 m band held all of them —
+/// and coarser above 10 m, where within-class widths barely vary and the band
+/// only needs to keep a primary under a motorway.
+const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
+
+/// Which rung of the [`ROAD_LAYER_STEP`] ladder a line draws on.
 ///
 /// Two rules, in order:
 ///
@@ -1455,20 +1611,60 @@ const ROAD_TIE_LAYERS: u32 = 4;
 /// * Otherwise the **wider road wins**, which is the same rule
 ///   [`SurfaceGroup::depth_rung`] applies between classes, continued inside one:
 ///   the through road keeps an unbroken surface and the side road disappears
-///   under it, rather than slicing its kerb lines across the junction.
+///   under it, rather than slicing its kerb lines across the junction. Bands are
+///   [`ROAD_WIDTH_BANDS`] — 2 m wide through the urban range, so roads that land
+///   in one band really are the same width; a residential street (7 m) no longer
+///   ties with a secondary (11 m).
 ///
-/// Features that tie on both fall back to their index in the tile, which is only a
-/// deterministic shuffle — but two roads of the same width that also overlap are
-/// two halves of the same junction, where either winner reads the same.
-fn road_rung(width_m: f32, bridge: bool, feature_index: usize) -> u32 {
-    let tie = feature_index as u32 % ROAD_TIE_LAYERS;
+/// Lines that tie on both fall back to `tie_seed`, a **hash of the line's own
+/// endpoints** (see `line_tie_seed`), not its index in the tile. The index was a
+/// per-tile shuffle with two real failure modes: a Shortbread `MultiLineString`
+/// whose parts cross each other gave every part the same index — a guaranteed
+/// exact-coplanar z-fight (measured at up to 37 % self-overlap within a class at
+/// a single junction) — and 1 in 4 same-band crossings collided anyway. A
+/// geometry hash decorrelates both. It is still not stable across a tile seam
+/// (each tile clips its own copy of a shared street, so no whole-line function
+/// can be), but a junction lives inside one tile far more often than on a seam.
+fn road_rung(width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
+    let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
         return ROAD_LAYERS - BRIDGE_LAYERS + tie;
     }
-    // 0: paths and service roads, 1: streets, 2: main roads, 3: motorways.
-    let band = ((width_m / 6.0) as u32).min((ROAD_LAYERS - BRIDGE_LAYERS) / ROAD_TIE_LAYERS - 1);
+    let band = ROAD_WIDTH_BANDS.iter().filter(|t| width_m >= **t).count() as u32;
     band * ROAD_TIE_LAYERS + tie
 }
+
+/// Tie-break seed for one linestring: a mix of its endpoint coordinates, so two
+/// crossing lines almost never share a rung even when they share a feature (a
+/// merged `MultiLineString`), a width band and a tile.
+fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
+    let mut h: u64 = 0x9E37_79B9_7F4A_7C15;
+    for v in [head[0], head[1], tail[0], tail[1]] {
+        h ^= u64::from(v.to_bits());
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 29;
+    }
+    h
+}
+
+/// The across-road `u` span a junction stub samples: a column of plain road
+/// surface clear of every class's markings (the nearest marking edge is at
+/// u = 0.037 on a motorway and the wheel tracks start at 0.215 on a minor
+/// road). A stub carrying the full cross-section ruled its kerb lines and
+/// centre dash across the road being joined; a stub carrying only surface
+/// tone reads as the open tarmac a real junction is.
+const STUB_PLAIN_U: (f32, f32) = (0.06, 0.16);
+
+/// How far a [`SurfaceGroup::RoadCasing`] ribbon reaches past its fill on each
+/// side, in metres — a kerb-and-verge band, not a second road.
+const ROAD_CASING_M: f32 = 0.75;
+
+/// Compression of the casing ribbons' copy of the anti-z-fight ladder, so the
+/// whole casing ladder fits inside the single [`ROAD_LAYER_STEP`] that
+/// [`SurfaceGroup::RoadCasing`]'s `y_offset` reserves under the fills' plane.
+/// Casings keep *a* deterministic order among themselves while every one of
+/// them stays geometrically below every fill.
+const CASING_LADDER_SCALE: f32 = 1.0 / 64.0;
 
 /// Miter limit: how far a join may push the **outer** corner out relative to the
 /// half-width before it is bevelled off instead. Unbounded miters spike to
@@ -1526,24 +1722,29 @@ pub fn tessellate_roads(
     let scale = tile_m / extent;
     let nodes = street_nodes(&features);
 
-    let mut builders: Vec<(RoadClass, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    let slot_for = |builders: &mut Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)>,
+                    group: SurfaceGroup| {
+        match builders.iter().position(|(g, _, _, _)| *g == group) {
+            Some(i) => i,
+            None => {
+                builders.push((group, Vec::new(), Vec::new(), Vec::new()));
+                builders.len() - 1
+            }
+        }
+    };
 
     for (fi, feature) in features.iter().enumerate() {
         let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
         let bridge = flag_of(feature, "bridge");
-        // This feature's rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`).
-        let y = road_rung(half * 2.0, bridge, fi) as f32 * ROAD_LAYER_STEP;
+        // Kerbed classes get a casing ribbon under the fill; paths and rails
+        // have no kerb to draw.
+        let cased = !matches!(class, RoadClass::Path | RoadClass::Rail);
 
-        let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
-            Some(i) => i,
-            None => {
-                builders.push((class, Vec::new(), Vec::new(), Vec::new()));
-                builders.len() - 1
-            }
-        };
-        let (_, positions, uvs, indices) = &mut builders[slot];
+        let slot = slot_for(&mut builders, SurfaceGroup::Road(class));
+        let casing_slot = cased.then(|| slot_for(&mut builders, SurfaceGroup::RoadCasing(class)));
 
         let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
         match &feature.geometry {
@@ -1563,16 +1764,38 @@ pub fn tessellate_roads(
             let (Some(head), Some(tail)) = (pts.first().copied(), pts.last().copied()) else {
                 continue;
             };
+            // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
+            // *linestring*, so the crossing parts of one merged feature separate.
+            let y =
+                road_rung(half * 2.0, bridge, line_tie_seed(head, tail)) as f32 * ROAD_LAYER_STEP;
+            // The line's outward direction at each end (tile units — uniform
+            // scale, so angles match the metre frame), for the crossing-angle
+            // term in `junction_extent`.
+            let out_dir = |from: [f32; 2], to: [f32; 2]| -> [f32; 2] {
+                let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+                let len = dx.hypot(dy);
+                if len > 1e-6 {
+                    [dx / len, dy / len]
+                } else {
+                    [0.0, 0.0]
+                }
+            };
+            let head_out = (pts.len() >= 2).then(|| out_dir(pts[1], pts[0]));
+            let tail_out = (pts.len() >= 2).then(|| out_dir(pts[pts.len() - 2], tail));
             for run in clip_polyline(&pts, 0.0, extent) {
                 // Only the run holding an *original* end of the line can be at a
                 // junction; the rest begin and end at the tile border, where the
                 // neighbour's copy of the same street abuts this one exactly and
                 // an extension would draw the same tarmac twice.
                 let ext_head = (run.first() == Some(&head))
-                    .then(|| junction_extent(&nodes, head, fi))
+                    .then_some(head_out)
+                    .flatten()
+                    .map(|d| junction_extent(&nodes, head, fi, d))
                     .unwrap_or(0.0);
                 let ext_tail = (run.last() == Some(&tail))
-                    .then(|| junction_extent(&nodes, tail, fi))
+                    .then_some(tail_out)
+                    .flatten()
+                    .map(|d| junction_extent(&nodes, tail, fi, d))
                     .unwrap_or(0.0);
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
@@ -1593,16 +1816,48 @@ pub fn tessellate_roads(
                     } else {
                         [0.0, 0.0]
                     };
-                    ribbon(
-                        &part,
-                        half,
-                        y,
-                        class.texture_length_m(),
-                        extend,
-                        positions,
-                        uvs,
-                        indices,
-                    );
+                    {
+                        let (_, positions, uvs, indices) = &mut builders[slot];
+                        ribbon(
+                            &part,
+                            half,
+                            y,
+                            class.texture_length_m(),
+                            extend,
+                            positions,
+                            uvs,
+                            indices,
+                        );
+                    }
+                    if let Some(cs) = casing_slot {
+                        // The casing wraps the fill's stub ends too, so the
+                        // kerb band runs around the junction mouth instead of
+                        // stopping square at it. Its ladder copy is compressed
+                        // under the fills' plane — see `CASING_LADDER_SCALE`.
+                        let ext = [
+                            if extend[0] > 0.0 {
+                                extend[0] + ROAD_CASING_M
+                            } else {
+                                0.0
+                            },
+                            if extend[1] > 0.0 {
+                                extend[1] + ROAD_CASING_M
+                            } else {
+                                0.0
+                            },
+                        ];
+                        let (_, positions, uvs, indices) = &mut builders[cs];
+                        ribbon(
+                            &part,
+                            half + ROAD_CASING_M,
+                            y * CASING_LADDER_SCALE,
+                            class.texture_length_m(),
+                            ext,
+                            positions,
+                            uvs,
+                            indices,
+                        );
+                    }
                 }
             }
         }
@@ -1611,8 +1866,8 @@ pub fn tessellate_roads(
     Ok(builders
         .into_iter()
         .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
-        .map(|(class, positions, uvs, indices)| SurfaceMesh {
-            group: SurfaceGroup::Road(class),
+        .map(|(group, positions, uvs, indices)| SurfaceMesh {
+            group,
             positions,
             uvs,
             indices,
@@ -1824,8 +2079,8 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
 ///
 /// Keys are tile units; the half-widths are metres, which is what the ribbon
 /// builder works in.
-fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32)>> {
-    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32)>> = HashMap::new();
+fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> {
+    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> = HashMap::new();
     for (fi, feature) in features.iter().enumerate() {
         let Some((_, half)) = drawn_street(feature) else {
             continue;
@@ -1836,15 +2091,34 @@ fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32)>> 
             Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
             _ => continue,
         }
-        for c in lines.iter().flat_map(|ls| ls.0.iter()) {
-            if !c.x.is_finite() || !c.y.is_finite() {
-                continue;
-            }
-            let at = nodes.entry(node_key([c.x, c.y])).or_default();
-            // One entry per feature: a way that doubles back through its own node
-            // is not a junction with itself.
-            if !at.iter().any(|(o, _)| *o == fi) {
-                at.push((fi, half));
+        for ls in &lines {
+            let n = ls.0.len();
+            for (j, c) in ls.0.iter().enumerate() {
+                if !c.x.is_finite() || !c.y.is_finite() {
+                    continue;
+                }
+                // The road's direction through this node (sign-free — only the
+                // crossing *angle* is ever read), from whichever adjacent
+                // segment exists.
+                let (ax, ay) = if j + 1 < n {
+                    (ls.0[j + 1].x - c.x, ls.0[j + 1].y - c.y)
+                } else if j > 0 {
+                    (c.x - ls.0[j - 1].x, c.y - ls.0[j - 1].y)
+                } else {
+                    (0.0, 0.0)
+                };
+                let len = ax.hypot(ay);
+                let d = if len > 1e-6 && len.is_finite() {
+                    [ax / len, ay / len]
+                } else {
+                    [0.0, 0.0]
+                };
+                let at = nodes.entry(node_key([c.x, c.y])).or_default();
+                // One entry per feature: a way that doubles back through its own
+                // node is not a junction with itself.
+                if !at.iter().any(|(o, _, _)| *o == fi) {
+                    at.push((fi, half, d));
+                }
             }
         }
     }
@@ -1855,22 +2129,39 @@ fn node_key(p: [f32; 2]) -> (i32, i32) {
     (p[0].round() as i32, p[1].round() as i32)
 }
 
-/// How far past `end` the feature's ribbon has to run to fill the junction there,
-/// in metres: the half-width of the **widest other road** meeting at that node, so
-/// the stub reaches its far kerb and stops. `0.0` where nothing else meets — a
-/// dead end keeps a square end on the ground instead of a flap of tarmac reaching
-/// into the field beyond it.
+/// Angles flatter than this against the joined road stop lengthening the stub.
+/// `half / sin θ` is the honest distance to the far kerb of a road crossed at
+/// θ, but as θ → 0 the two roads are merging rather than crossing and the
+/// "far kerb" runs away along them — a merge wants no stub at all, and the cap
+/// plus this floor (≈20°) keeps a slip-road join from painting a spear of
+/// tarmac down the carriageway it joins.
+const MIN_JUNCTION_SIN: f32 = 0.35;
+
+/// How far past `end` the feature's ribbon has to run to fill the junction
+/// there, in metres: for each **other** road meeting at that node, its
+/// half-width over the sine of the crossing angle — the distance to its far
+/// kerb along *this* road's own direction — and the largest of those wins.
+/// Plain `half` (what this used to return) is only right at 90°: a road
+/// crossed at 30° left a notch on the acute side while overshooting on the
+/// obtuse one. `0.0` where nothing else meets — a dead end keeps a square end
+/// on the ground instead of a flap of tarmac reaching into the field beyond it.
 fn junction_extent(
-    nodes: &HashMap<(i32, i32), Vec<(usize, f32)>>,
+    nodes: &HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>>,
     end: [f32; 2],
     feature_index: usize,
+    out_dir: [f32; 2],
 ) -> f32 {
     nodes
         .get(&node_key(end))
         .map(|at| {
             at.iter()
-                .filter(|(fi, _)| *fi != feature_index)
-                .map(|(_, half)| *half)
+                .filter(|(fi, _, _)| *fi != feature_index)
+                .map(|(_, half, d)| {
+                    let sin = (out_dir[0] * d[1] - out_dir[1] * d[0])
+                        .abs()
+                        .max(MIN_JUNCTION_SIN);
+                    *half / sin
+                })
                 .fold(0.0, f32::max)
         })
         .unwrap_or(0.0)
@@ -1937,28 +2228,11 @@ fn ribbon(
         return;
     }
 
-    // Stubs past each end, to fill the notch at a junction.
     let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let len = dx.hypot(dy).max(1e-6);
         [dx / len, dy / len]
     };
-    if extend[0] > 0.0 {
-        let head = dir(pts[1], pts[0]);
-        let first = pts[0];
-        pts.insert(
-            0,
-            [
-                first[0] + head[0] * extend[0],
-                first[1] + head[1] * extend[0],
-            ],
-        );
-    }
-    if extend[1] > 0.0 {
-        let tail = dir(pts[pts.len() - 2], pts[pts.len() - 1]);
-        let last = pts[pts.len() - 1];
-        pts.push([last[0] + tail[0] * extend[1], last[1] + tail[1] * extend[1]]);
-    }
 
     let seg_len =
         |i: usize| -> f32 { (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1]) };
@@ -2095,6 +2369,62 @@ fn ribbon(
             push_triangle_up(positions, indices, a0, b0, b1);
             push_triangle_up(positions, indices, a0, b1, a1);
         }
+    }
+
+    // Junction stubs, as standalone quads rather than extra strip points, for
+    // two reasons. They sample [`STUB_PLAIN_U`] — a marking-free column of the
+    // class texture — so the kerb lines and centre dashes *break* at the
+    // junction instead of being ruled straight across the road being joined,
+    // ending in a hard white T at its far kerb (the single most wrong-looking
+    // thing about the old junctions). And a standalone quad reuses the strip's
+    // own butt-end coordinates (the ends are unmitred: `d_out == d_in` there),
+    // so the seam is watertight by construction.
+    let total = travelled;
+    let mut stub = |end: [f32; 2], d: [f32; 2], len: f32, v0: f32| {
+        let n = [-d[1], d[0]];
+        let far = [end[0] + d[0] * len, end[1] + d[1] * len];
+        let v1 = v0 + len / tex_len_m;
+        let base = positions.len() as u32;
+        let corners = [
+            (
+                [end[0] + n[0] * half, end[1] + n[1] * half],
+                STUB_PLAIN_U.0,
+                v0,
+            ),
+            (
+                [end[0] - n[0] * half, end[1] - n[1] * half],
+                STUB_PLAIN_U.1,
+                v0,
+            ),
+            (
+                [far[0] - n[0] * half, far[1] - n[1] * half],
+                STUB_PLAIN_U.1,
+                v1,
+            ),
+            (
+                [far[0] + n[0] * half, far[1] + n[1] * half],
+                STUB_PLAIN_U.0,
+                v1,
+            ),
+        ];
+        for (p, u, v) in corners {
+            positions.push([p[0], y, p[1]]);
+            uvs.push([u, v]);
+        }
+        push_triangle_up(positions, indices, base, base + 1, base + 2);
+        push_triangle_up(positions, indices, base, base + 2, base + 3);
+    };
+    if extend[0] > 0.0 {
+        stub(pts[0], dir(pts[1], pts[0]), extend[0], 0.0);
+    }
+    if extend[1] > 0.0 {
+        let last = pts.len() - 1;
+        stub(
+            pts[last],
+            dir(pts[last - 1], pts[last]),
+            extend[1],
+            total / tex_len_m,
+        );
     }
 }
 
@@ -2330,6 +2660,12 @@ pub const SHORE_FIELD_PX: u32 = 1024;
 /// canals and harbour basins the near-field treatment is for.
 pub const SHORE_MAX_DIST_M: f32 = 60.0;
 
+/// Apron of texels rasterised around the shore field so banks just across the
+/// tile border are seen by the distance transform. Sized to the ground the MVT
+/// buffer actually carries: Shortbread encodes a 64/4096-of-extent buffer, and
+/// `1024 / 64 = 16` texels covers exactly that.
+pub const SHORE_FIELD_PAD: u32 = SHORE_FIELD_PX / 64;
+
 /// A tile's distance-to-shore field: `SHORE_FIELD_PX²` bytes, 0 at the bank and
 /// 255 at [`SHORE_MAX_DIST_M`] or beyond, in the same tile-local frame as
 /// [`tessellate_surfaces`]' output (origin north-west, +x east, +y south).
@@ -2350,16 +2686,26 @@ pub struct ShoreField {
 /// swell, colour the shallows and lap a foam line against the bank — the three
 /// things that separate "a blue surface with waves on it" from water in a place.
 ///
-/// Distances are measured only against land **inside this tile**. That is not an
-/// approximation of the truth, it *is* the truth for the interior: in MVT, land
-/// is the absence of a water polygon. It only overestimates within a tile's
-/// width of the border, where the nearest bank may sit in the neighbouring tile
-/// — which is why nothing is padded around the raster. Treating the border as
-/// land instead (the obvious padding) would draw a shoreline straight down the
-/// middle of every river that crosses a tile edge.
+/// Distances are measured against land inside this tile **and its MVT buffer**.
+/// For the interior that is simply the truth: in MVT, land is the absence of a
+/// water polygon. Near the border it used to overestimate badly — the raster
+/// stopped at the tile edge, so a bank two metres into the neighbouring tile
+/// was invisible, the border strip saturated to "open water", and the shallow
+/// tint (the most visible thing the field drives) stepped in a straight line
+/// down every z14 cell edge. The tile's geometry already runs past the edge
+/// into the buffer zone (that is what `clip_ring` exists to cut off), so
+/// rasterising a [`SHORE_FIELD_PAD`]-texel apron around the field and cropping
+/// it away after the transform makes the border strip truthful out to the
+/// buffer's reach (~23 m at z14 — past `SHALLOW_M` and the foam band) for one
+/// extra fill and a 6 % larger transform. Note the apron pads with the
+/// *neighbour's actual geometry*, not with land: padding with land (the
+/// obvious trick) would draw a shoreline straight down the middle of every
+/// river that crosses a tile edge.
 pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreField>, String> {
     let size = SHORE_FIELD_PX;
-    let mut pixmap = Pixmap::new(size, size).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    let pad = SHORE_FIELD_PAD;
+    let psize = size + 2 * pad;
+    let mut pixmap = Pixmap::new(psize, psize).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
         anti_alias: false,
         shader: Shader::SolidColor(tiny_skia::Color::WHITE),
@@ -2372,7 +2718,8 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
             continue;
         }
         let extent = TileData::extent(meta);
-        let transform = Transform::from_scale(size as f32 / extent, size as f32 / extent);
+        let s = size as f32 / extent;
+        let transform = Transform::from_row(s, 0.0, 0.0, s, pad as f32, pad as f32);
         for feature in tile.features(meta) {
             if area_path(&feature.geometry).is_some() {
                 any_water = true;
@@ -2389,24 +2736,26 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
     // "Unreached" is a large *finite* distance, not infinity: the envelope below
     // subtracts one sample's value from another's, and ∞ − ∞ is a NaN that
     // quietly poisons a whole scanline. Two texel-grids is past any real answer
-    // (nothing inside the field can be further than `size` from a seed) while
+    // (nothing inside the field can be further than `psize` from a seed) while
     // staying exactly representable in f32.
-    let unreached = (2 * size) as f32;
-    let n = (size * size) as usize;
+    let unreached = (2 * psize) as f32;
+    let n = (psize * psize) as usize;
     let mut sq = vec![0.0f32; n];
     for (d, px) in sq.iter_mut().zip(pixmap.pixels()) {
         *d = if px.alpha() > 127 { unreached } else { 0.0 };
     }
-    squared_distance_transform(&mut sq, size as usize);
+    squared_distance_transform(&mut sq, psize as usize);
 
+    // Crop the apron away: the shader's frame is the tile proper.
     let m_per_texel = tile_m / size as f32;
-    let data = sq
-        .iter()
-        .map(|d2| {
+    let mut data = Vec::with_capacity((size * size) as usize);
+    for y in pad..pad + size {
+        let row = &sq[(y * psize + pad) as usize..(y * psize + pad + size) as usize];
+        data.extend(row.iter().map(|d2| {
             let m = d2.sqrt() * m_per_texel;
             (m / SHORE_MAX_DIST_M).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8
-        })
-        .collect();
+        }));
+    }
     Ok(Some(ShoreField { size, data }))
 }
 
@@ -2841,7 +3190,8 @@ mod tests {
             (palette::PAPER & 0xFF) as u8,
         );
         let inked = |size: u32| {
-            let rgba = render_mvt_sized(&tile, SubTile::WHOLE, size).expect("render");
+            let rgba =
+                render_mvt_sized(&tile, SubTile::WHOLE, size, NOMINAL_Z14_TILE_M).expect("render");
             assert_eq!(rgba.len() as u32, size * size * 4, "wrong buffer size");
             let n = rgba
                 .chunks_exact(4)
@@ -3043,8 +3393,10 @@ mod tests {
             (8, 0, 0),
         ] {
             let sub = SubTile { factor, x, y };
-            let culled = render_mvt_culled(&tile, sub, TILE_PX, true).expect("culled render");
-            let full = render_mvt_culled(&tile, sub, TILE_PX, false).expect("unculled render");
+            let culled = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, true)
+                .expect("culled render");
+            let full = render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, false)
+                .expect("unculled render");
             assert_eq!(
                 culled.len(),
                 full.len(),
@@ -3076,7 +3428,8 @@ mod tests {
             for (label, cull) in [("cull ", true), ("full ", false)] {
                 let t0 = std::time::Instant::now();
                 for &sub in &subs {
-                    render_mvt_culled(&tile, sub, TILE_PX, cull).expect("render");
+                    render_mvt_culled(&tile, sub, TILE_PX, NOMINAL_Z14_TILE_M, cull)
+                        .expect("render");
                 }
                 let dt = t0.elapsed();
                 println!(
@@ -3468,21 +3821,118 @@ mod tests {
     #[test]
     fn overlapping_road_features_are_separated_in_depth() {
         // Ribbons overlap at every junction and tile seam; equal heights there
-        // z-fight, which is the flicker along a joint. Successive features must
-        // land on different rungs, and the whole ladder must stay inside the
-        // millimetre window `SurfaceGroup::y_offset` leaves under the buildings.
-        let meshes = tessellate_roads(GRONINGEN_Z14, 1000.0, &[]).expect("tessellate");
-        let heights: std::collections::BTreeSet<u32> = meshes
+        // z-fight, which is the flicker along a joint. The old form of this test
+        // only asserted "more than one height exists", which stayed green while
+        // a quarter of same-band crossings were exactly coplanar. This one
+        // rasterises each class's ribbons per *rung* and counts the pixels a
+        // single rung covers twice — the coplanar area, i.e. the z-fight area —
+        // as a fraction of all covered pixels.
+        //
+        // The floor is not zero: a ribbon legitimately meets itself along
+        // shared triangle edges and in the bevel corner fills, and a hash
+        // tie-break still collides at 1-in-4 for same-band crossings. The bound
+        // is calibrated against the fixture (2.24% measured after the ladder
+        // rework) to catch a regression to index-correlated or single-rung
+        // behaviour, not to demand geometric perfection.
+        const PX: usize = 600;
+        let tile_m = 1000.0f32;
+        let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
+        let mut covered = 0usize;
+        let mut coplanar = 0usize;
+        // Casing ribbons are exempt: their ladder is deliberately compressed
+        // below rung resolution (`CASING_LADDER_SCALE`), and a z-fight between
+        // two patches of the same flat colour cannot be seen.
+        for m in meshes
             .iter()
-            .flat_map(|m| {
-                m.positions
-                    .iter()
-                    .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
-            })
-            .collect();
+            .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
+        {
+            // One coverage grid per rung actually present in this class.
+            let rungs: std::collections::BTreeSet<u32> = m
+                .positions
+                .iter()
+                .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
+                .collect();
+            let mut any = vec![false; PX * PX];
+            let mut doubled = vec![false; PX * PX];
+            for rung in rungs {
+                let mut own = vec![0u8; PX * PX];
+                for tri in m.indices.chunks_exact(3) {
+                    let v0 = m.positions[tri[0] as usize];
+                    if (v0[1] / ROAD_LAYER_STEP).round() as u32 != rung {
+                        continue;
+                    }
+                    let p: Vec<[f32; 2]> = tri
+                        .iter()
+                        .map(|i| {
+                            let v = m.positions[*i as usize];
+                            [v[0] / tile_m * PX as f32, v[2] / tile_m * PX as f32]
+                        })
+                        .collect();
+                    let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                        - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                    if area.abs() < 1e-9 {
+                        continue;
+                    }
+                    let x0 = p
+                        .iter()
+                        .map(|q| q[0])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize;
+                    let x1 = p
+                        .iter()
+                        .map(|q| q[0])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize;
+                    let y0 = p
+                        .iter()
+                        .map(|q| q[1])
+                        .fold(f32::MAX, f32::min)
+                        .floor()
+                        .max(0.0) as usize;
+                    let y1 = p
+                        .iter()
+                        .map(|q| q[1])
+                        .fold(f32::MIN, f32::max)
+                        .ceil()
+                        .min(PX as f32 - 1.0) as usize;
+                    for y in y0..=y1 {
+                        for x in x0..=x1 {
+                            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                            let w0 = ((p[1][0] - p[0][0]) * (py - p[0][1])
+                                - (px - p[0][0]) * (p[1][1] - p[0][1]))
+                                / area;
+                            let w1 = ((px - p[0][0]) * (p[2][1] - p[0][1])
+                                - (p[2][0] - p[0][0]) * (py - p[0][1]))
+                                / area;
+                            if w0 >= 0.0 && w1 >= 0.0 && w0 + w1 <= 1.0 {
+                                own[y * PX + x] = own[y * PX + x].saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                for (i, c) in own.iter().enumerate() {
+                    if *c > 0 {
+                        any[i] = true;
+                    }
+                    if *c > 1 {
+                        doubled[i] = true;
+                    }
+                }
+            }
+            covered += any.iter().filter(|b| **b).count();
+            coplanar += doubled.iter().filter(|b| **b).count();
+        }
+        let frac = coplanar as f32 / covered.max(1) as f32;
+        println!(
+            "coplanar-overlap: {coplanar}/{covered} px = {:.2}%",
+            frac * 100.0
+        );
         assert!(
-            heights.len() > 1,
-            "every road at one height — overlaps would z-fight"
+            frac < 0.05,
+            "{:.1}% of covered road pixels are coplanar-overlapped (z-fight area)",
+            frac * 100.0
         );
         let top = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
         assert!(
@@ -3742,8 +4192,8 @@ mod tests {
         // buildings' base that `SurfaceGroup::y_offset` documents.
         for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
             for bridge in [false, true] {
-                for fi in 0..40 {
-                    let rung = road_rung(width, bridge, fi);
+                for seed in 0u64..40 {
+                    let rung = road_rung(width, bridge, seed);
                     assert!(rung < ROAD_LAYERS, "rung {rung} is off the ladder");
                 }
             }
@@ -3919,8 +4369,18 @@ mod tests {
             "a city tile should yield several road classes, got {}",
             meshes.len()
         );
+        assert!(
+            meshes
+                .iter()
+                .any(|m| matches!(m.group, SurfaceGroup::RoadCasing(_))),
+            "kerbed classes must emit their casing band"
+        );
         for m in &meshes {
-            assert!(matches!(m.group, SurfaceGroup::Road(_)), "{:?}", m.group);
+            assert!(
+                matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)),
+                "{:?}",
+                m.group
+            );
             assert_eq!(
                 m.uvs.len(),
                 m.positions.len(),

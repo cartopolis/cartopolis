@@ -75,7 +75,10 @@ const SHALLOW_M: f32 = 22.0;
 const SHALLOW_TINT: vec3<f32> = vec3<f32>(1.5, 2.1, 1.7);
 
 /// Half-width of the foam line against the bank, in metres, at full sea.
-const SHORE_FOAM_M: f32 = 2.6;
+/// Must stay comfortably above one shore-field texel (~1.4 m at z14): the field
+/// is the only thing that can place the line, and a band narrower than its own
+/// sampling grid simply never shows (measured: no bright band at all at 2.6 m).
+const SHORE_FOAM_M: f32 = 4.0;
 
 const TAU: f32 = 6.2831853;
 
@@ -166,12 +169,20 @@ fn waves_at(p: vec2<f32>, t: f32, cut: f32, shelter: f32) -> Waves {
             } else {
                 height_hi += w * shaped;
             }
-            grad += dir * (w * d_shaped * k);
+            // No `* k` here: `wave.x` is a *slope* (each octave's real-world
+            // amplitude is steepness/k, so the k cancels out of the gradient).
+            // With the k left in, the rendered slope was steepness/wavelength —
+            // and `sea_state` raises steepness and wavelength together, so dead
+            // calm to a gale changed the visible water by barely 2× and the sea
+            // measured as a flat sheet (open-water luminance σ < 1/255).
+            grad += dir * (w * d_shaped);
             visible += w;
         }
-        // A steeper amplitude roll-off (0.62 and below) lets the fundamental
-        // dominate, and one dominant direction is exactly what reads as
-        // corduroy; 0.72 keeps the higher octaves in the mix.
+        // Per-octave slope roll-off (the gradient above has no k in it, so the
+        // amplitude weight *is* the slope weight). A steeper roll-off (0.62 and
+        // below) lets the fundamental dominate, and one dominant direction is
+        // exactly what reads as corduroy; 0.72 keeps the higher octaves in the
+        // mix without letting the finest one turn the normal into noise.
         amp *= 0.72;
         k *= 1.83;
         dir = vec2<f32>(
@@ -265,7 +276,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // in and out along the bank instead of tracing a constant offset, and it
     // survives a dead calm (a wet edge is always there) while growing with the
     // sea. `w.detail` retires it with the rest of the fine detail at distance.
-    let lap = SHORE_FOAM_M * (0.35 + 0.65 * wind.z) * (0.55 + 0.9 * w.height_hi);
+    // Clamped to two shore-field texels: below that the band falls between the
+    // samples of the very field that draws it, and no wind setting can help.
+    let texel_m = field.z / f32(textureDimensions(shore_field).x);
+    let lap = max(
+        SHORE_FOAM_M * (0.55 + 0.45 * wind.z) * (0.55 + 0.9 * w.height_hi),
+        2.0 * texel_m,
+    );
     let shore_foam = w.detail * (0.30 + 0.55 * wind.z) * (1.0 - smoothstep(0.0, lap, shore_m));
 
     let foam = clamp(max(crest_foam, shore_foam), 0.0, 1.0);

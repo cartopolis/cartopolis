@@ -430,7 +430,7 @@ jobs:
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
             --expect 'settled==true' --expect 'globe_rendered>0' \
-            --expect 'draws<=200' || {
+            --expect 'draws<=200' --expect 'upload_peak_asset_kb<=8192' || {
               echo "::error::scene smoke failed — the metrics behind it:"
               cat /tmp/orbit.json 2>/dev/null || echo "(no dump: the run died before it captured)"
               exit 1
@@ -468,7 +468,8 @@ jobs:
             --shot /tmp/orbit_phone.png --dump-state /tmp/orbit_phone.json \
             --at 53.2194,6.5665,180000 --look=-90,0 \
             --size 640x360 --settle 2 --wait 60 \
-            --expect 'settled==true' --expect 'globe_rendered>0' || {
+            --expect 'settled==true' --expect 'globe_rendered>0' \
+            --expect 'upload_peak_asset_kb<=8192' || {
               echo "::error::phone-tier scene smoke failed — the metrics behind it:"
               cat /tmp/orbit_phone.json 2>/dev/null || echo "(no dump: the run died before it captured)"
               exit 1

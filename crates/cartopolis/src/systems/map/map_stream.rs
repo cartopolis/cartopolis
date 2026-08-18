@@ -20,7 +20,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy::tasks::IoTaskPool;
-use bevy_image::{Image, ImageSampler};
+use bevy_image::Image;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
@@ -1080,7 +1080,7 @@ pub fn apply_stream_textures(
                     decoded.mip_count,
                     TextureFormat::Rgba8UnormSrgb,
                     crate::systems::tile_loader::TILE_TEXTURE_USAGE,
-                    ImageSampler::linear(),
+                    crate::systems::tile_loader::ground_sampler(),
                 );
                 let handle = images.add(bevy_image);
                 let mat = materials.add(StandardMaterial {

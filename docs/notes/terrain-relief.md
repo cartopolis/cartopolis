@@ -135,8 +135,13 @@ neighbour — and a T-junction on a slope is a crack you can see the sky through
 
 Not everything is refined, and the exceptions are about kind, not cost:
 
-* **Water is level.** One height for the whole body (the median over its vertices);
-  displacing a lake per-vertex tips it on its side.
+* **Water is level.** One height for the whole *cell*, not the whole body — every
+  water polygon in a tile is merged into one `SurfaceMesh` before the levelling
+  sees it, so a hillside pond and the canal below share the cell's median height,
+  and a river crossing a cell edge can step against its own continuation.
+  Per-body levelling would need the tessellator to keep bodies apart (or tag
+  their vertex ranges); until then this is the honest description. Displacing a
+  lake per-vertex would tip it on its side, which is why the median exists at all.
 * **A bridge deck is straight.** Same treatment as water, for the opposite reason: the
   ground dipping into a valley is exactly what a viaduct does *not* do.
 * **Buildings step, they do not shear.** One height per footprint. 3DBAG vertices are

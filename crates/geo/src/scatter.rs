@@ -782,15 +782,28 @@ pub fn tone_multiplier() -> [f32; 3] {
 }
 
 pub fn srgb_to_linear_rgb(rgb: u32) -> [f32; 3] {
-    let ch = |shift: u32| {
-        let s = ((rgb >> shift) & 0xFF) as f32 / 255.0;
-        if s <= 0.040_45 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    };
+    let ch = |shift: u32| srgb_channel_to_linear(((rgb >> shift) & 0xFF) as f32 / 255.0);
     [ch(16), ch(8), ch(0)]
+}
+
+/// [`srgb_to_linear_rgb`] for a colour already unpacked to `[f32; 3]` sRGB
+/// components — the building colour tables are authored that way. Vertex colours
+/// multiply the material's `base_color` in **linear** space, so a table value fed
+/// through unconverted displays a stop too bright (near-white walls, salmon roofs).
+pub fn srgb_to_linear_f32(c: [f32; 3]) -> [f32; 3] {
+    [
+        srgb_channel_to_linear(c[0]),
+        srgb_channel_to_linear(c[1]),
+        srgb_channel_to_linear(c[2]),
+    ]
+}
+
+fn srgb_channel_to_linear(s: f32) -> f32 {
+    if s <= 0.040_45 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 pub fn mix(a: u32, b: u32, t: f32) -> [f32; 3] {
