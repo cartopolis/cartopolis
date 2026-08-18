@@ -1014,6 +1014,13 @@ pub enum SurfaceGroup {
     /// A road ribbon. Textured rather than flat-coloured — see
     /// [`road_texture`](crate::road_texture).
     Road(RoadClass),
+    /// The pale kerb band under a [`Self::Road`]: the same centre line extruded
+    /// [`ROAD_CASING_M`] wider, flat-coloured, half a depth rung below its own
+    /// fill so it shows only as an edge. The raster basemap has always cased its
+    /// streets; the geometry path drew bare tarmac, so flying *down* into the
+    /// vector ring removed cartographic structure instead of adding it — dark
+    /// ribbons lying edgeless on the ground.
+    RoadCasing(RoadClass),
     /// A bridge deck: the structure's own surface, standing at its measured
     /// height (`systems::height`) rather than lying in the coplanar ground stack.
     /// Above everything else on the ground, because that is what a bridge is.
@@ -1049,6 +1056,12 @@ impl SurfaceGroup {
             // Roads carry their surface in a texture; tinting it would only fight
             // the paint values chosen there, so the material multiplies by white.
             Self::Road(_) => 0xFF_FF_FF,
+            // Same colours the raster path cases with, so the two pipelines'
+            // streets keep matching at the ring edge.
+            Self::RoadCasing(RoadClass::Motorway | RoadClass::Carriageway) => {
+                palette::MOTORWAY_CASING
+            }
+            Self::RoadCasing(_) => palette::ROAD_CASING,
             Self::BridgeDeck => palette::BRIDGE_DECK,
             // Vertex colours multiply this, and they are centred on 1.0 — so the
             // palette entry stays the one place the canopy tone is written down.
@@ -1096,6 +1109,14 @@ impl SurfaceGroup {
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
             Self::Road(_) => -0.0015,
+            // One ladder step below the fills' base plane, so every casing lies
+            // geometrically under every fill — the raster path's
+            // all-casings-then-all-fills rule expressed in depth. The casing
+            // ladder is compressed to stay inside this one step
+            // (`CASING_LADDER_SCALE`); same-class casings that overlap are the
+            // same colour, so their sub-resolution fight is invisible, and
+            // cross-class order is settled by [`Self::depth_bias`].
+            Self::RoadCasing(_) => -0.0015 - ROAD_LAYER_STEP,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
             // A bridge deck is the same kind of thing: it carries its own height,
@@ -1150,6 +1171,11 @@ impl SurfaceGroup {
             // ground: ribbons genuinely overlap at every junction, and equal
             // biases there would z-fight in exactly the places you look at. The
             // order is the road hierarchy, so a motorway crosses a service road.
+            // A casing sits half a rung (32 depth ULPs) under its own fill:
+            // above every narrower class's *fill*, so a major road's kerb band
+            // still covers a path it crosses, and below its own tarmac, so it
+            // reads as an edge and never over-paints the markings.
+            Self::RoadCasing(class) => Self::Road(class).depth_rung() - 0.5,
             Self::Road(RoadClass::Path) => 5.0,
             Self::Road(RoadClass::Minor) => 6.0,
             Self::Road(RoadClass::Major) => 7.0,
@@ -1629,6 +1655,17 @@ fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
 /// tone reads as the open tarmac a real junction is.
 const STUB_PLAIN_U: (f32, f32) = (0.06, 0.16);
 
+/// How far a [`SurfaceGroup::RoadCasing`] ribbon reaches past its fill on each
+/// side, in metres — a kerb-and-verge band, not a second road.
+const ROAD_CASING_M: f32 = 0.75;
+
+/// Compression of the casing ribbons' copy of the anti-z-fight ladder, so the
+/// whole casing ladder fits inside the single [`ROAD_LAYER_STEP`] that
+/// [`SurfaceGroup::RoadCasing`]'s `y_offset` reserves under the fills' plane.
+/// Casings keep *a* deterministic order among themselves while every one of
+/// them stays geometrically below every fill.
+const CASING_LADDER_SCALE: f32 = 1.0 / 64.0;
+
 /// Miter limit: how far a join may push the **outer** corner out relative to the
 /// half-width before it is bevelled off instead. Unbounded miters spike to
 /// infinity at a hairpin, which OSM has plenty of (motorway sliproads,
@@ -1685,22 +1722,29 @@ pub fn tessellate_roads(
     let scale = tile_m / extent;
     let nodes = street_nodes(&features);
 
-    let mut builders: Vec<(RoadClass, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    let slot_for = |builders: &mut Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)>,
+                    group: SurfaceGroup| {
+        match builders.iter().position(|(g, _, _, _)| *g == group) {
+            Some(i) => i,
+            None => {
+                builders.push((group, Vec::new(), Vec::new(), Vec::new()));
+                builders.len() - 1
+            }
+        }
+    };
 
     for (fi, feature) in features.iter().enumerate() {
         let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
         let bridge = flag_of(feature, "bridge");
+        // Kerbed classes get a casing ribbon under the fill; paths and rails
+        // have no kerb to draw.
+        let cased = !matches!(class, RoadClass::Path | RoadClass::Rail);
 
-        let slot = match builders.iter().position(|(c, _, _, _)| *c == class) {
-            Some(i) => i,
-            None => {
-                builders.push((class, Vec::new(), Vec::new(), Vec::new()));
-                builders.len() - 1
-            }
-        };
-        let (_, positions, uvs, indices) = &mut builders[slot];
+        let slot = slot_for(&mut builders, SurfaceGroup::Road(class));
+        let casing_slot = cased.then(|| slot_for(&mut builders, SurfaceGroup::RoadCasing(class)));
 
         let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
         match &feature.geometry {
@@ -1772,16 +1816,48 @@ pub fn tessellate_roads(
                     } else {
                         [0.0, 0.0]
                     };
-                    ribbon(
-                        &part,
-                        half,
-                        y,
-                        class.texture_length_m(),
-                        extend,
-                        positions,
-                        uvs,
-                        indices,
-                    );
+                    {
+                        let (_, positions, uvs, indices) = &mut builders[slot];
+                        ribbon(
+                            &part,
+                            half,
+                            y,
+                            class.texture_length_m(),
+                            extend,
+                            positions,
+                            uvs,
+                            indices,
+                        );
+                    }
+                    if let Some(cs) = casing_slot {
+                        // The casing wraps the fill's stub ends too, so the
+                        // kerb band runs around the junction mouth instead of
+                        // stopping square at it. Its ladder copy is compressed
+                        // under the fills' plane — see `CASING_LADDER_SCALE`.
+                        let ext = [
+                            if extend[0] > 0.0 {
+                                extend[0] + ROAD_CASING_M
+                            } else {
+                                0.0
+                            },
+                            if extend[1] > 0.0 {
+                                extend[1] + ROAD_CASING_M
+                            } else {
+                                0.0
+                            },
+                        ];
+                        let (_, positions, uvs, indices) = &mut builders[cs];
+                        ribbon(
+                            &part,
+                            half + ROAD_CASING_M,
+                            y * CASING_LADDER_SCALE,
+                            class.texture_length_m(),
+                            ext,
+                            positions,
+                            uvs,
+                            indices,
+                        );
+                    }
                 }
             }
         }
@@ -1790,8 +1866,8 @@ pub fn tessellate_roads(
     Ok(builders
         .into_iter()
         .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
-        .map(|(class, positions, uvs, indices)| SurfaceMesh {
-            group: SurfaceGroup::Road(class),
+        .map(|(group, positions, uvs, indices)| SurfaceMesh {
+            group,
             positions,
             uvs,
             indices,
@@ -3744,7 +3820,13 @@ mod tests {
         let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
         let mut covered = 0usize;
         let mut coplanar = 0usize;
-        for m in &meshes {
+        // Casing ribbons are exempt: their ladder is deliberately compressed
+        // below rung resolution (`CASING_LADDER_SCALE`), and a z-fight between
+        // two patches of the same flat colour cannot be seen.
+        for m in meshes
+            .iter()
+            .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
+        {
             // One coverage grid per rung actually present in this class.
             let rungs: std::collections::BTreeSet<u32> = m
                 .positions
@@ -4268,8 +4350,18 @@ mod tests {
             "a city tile should yield several road classes, got {}",
             meshes.len()
         );
+        assert!(
+            meshes
+                .iter()
+                .any(|m| matches!(m.group, SurfaceGroup::RoadCasing(_))),
+            "kerbed classes must emit their casing band"
+        );
         for m in &meshes {
-            assert!(matches!(m.group, SurfaceGroup::Road(_)), "{:?}", m.group);
+            assert!(
+                matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)),
+                "{:?}",
+                m.group
+            );
             assert_eq!(
                 m.uvs.len(),
                 m.positions.len(),
