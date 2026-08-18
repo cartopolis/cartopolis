@@ -1447,8 +1447,13 @@ pub fn camera_controls(
             let right = rotation_quat * Vec3::X;
 
             // Flatten to horizontal plane for WASD movement
-            let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize();
-            let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize();
+            // `normalize_or_zero`, not `normalize`: at a pitch of exactly ±90°
+            // the horizontal projection is the zero vector, and a NaN here
+            // poisons the transform and every metric derived from it for the
+            // rest of the run. The pose paths clamp the pitch (`CameraPose::
+            // apply`), so this is the belt to that suspender.
+            let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+            let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
 
             let base_speed = if keyboard_input.pressed(KeyCode::ShiftLeft)
                 || keyboard_input.pressed(KeyCode::ShiftRight)

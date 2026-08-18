@@ -2705,8 +2705,7 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
     let size = SHORE_FIELD_PX;
     let pad = SHORE_FIELD_PAD;
     let psize = size + 2 * pad;
-    let mut pixmap =
-        Pixmap::new(psize, psize).ok_or_else(|| "pixmap alloc failed".to_string())?;
+    let mut pixmap = Pixmap::new(psize, psize).ok_or_else(|| "pixmap alloc failed".to_string())?;
     let paint = Paint {
         anti_alias: false,
         shader: Shader::SolidColor(tiny_skia::Color::WHITE),

@@ -1040,8 +1040,19 @@ pub fn update_data_layers(
         }
     }
 
-    // Apply completed cells.
-    let done = dl.cells.take_results();
+    // Apply completed cells — bounded per frame, like every other streamer.
+    // This was the last one that drained its whole results sink in one frame:
+    // after a teleport that is dozens of mesh uploads and hundreds of entity
+    // spawns in one command buffer, the burst shape the per-frame caps exist
+    // to forbid. The overflow goes back through `defer`, exactly as the globe
+    // handles its own build cap — nothing is dropped, and the deferred cells
+    // keep counting against the stream's concurrency bound.
+    const MAX_CELL_APPLIES_PER_FRAME: usize = 4;
+    let mut done = dl.cells.take_results();
+    if done.len() > MAX_CELL_APPLIES_PER_FRAME {
+        let overflow = done.split_off(MAX_CELL_APPLIES_PER_FRAME);
+        dl.cells.defer(overflow);
+    }
     for (key, built) in done {
         let (li, cell) = (key.0, (key.1, key.2));
         match built {

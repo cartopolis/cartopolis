@@ -596,7 +596,18 @@ impl CameraPose {
             "earth" => CameraMode::Orbit,
             _ => return,
         };
-        cs.free_camera_rotation = Vec2::new(self.free_rotation[0], self.free_rotation[1]);
+        // Clamp the pitch away from exactly ±90°: there the horizontal forward
+        // vector is zero and `camera_controls`' `normalize()` turns the camera
+        // frame to NaN — which a scripted shot reports as a black capture with
+        // exit 0, since the interactive clamp only runs on *input* and a pose
+        // written by the shot harness (whose manifest default is precisely
+        // −90) or a saved bookmark never passes through it. Half a degree off
+        // nadir is visually still nadir.
+        let pitch_max = std::f32::consts::FRAC_PI_2 - 0.01;
+        cs.free_camera_rotation = Vec2::new(
+            self.free_rotation[0].clamp(-pitch_max, pitch_max),
+            self.free_rotation[1],
+        );
         cs.azimuth = self.azimuth;
         cs.pitch = self.pitch;
         cs.distance = self.distance;

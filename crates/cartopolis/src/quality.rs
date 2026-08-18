@@ -487,15 +487,12 @@ impl Budget {
             // up. The chrome is untouched at the full panel resolution, so what
             // this softens is the map and nothing that carries text.
             //
-            // Exactly a half rather than the 0.7 this started at, and the reason is
-            // the blit rather than the budget. Bevy's `upscaling` samples through a
-            // `NonFiltering` sampler (`systems::render_scale` has the detail), so
-            // the upscale is point-sampled: 1/2 expands every rendered pixel into a
-            // clean 2×2 block, while 0.7 spreads an irregular "duplicate every third
-            // column" cadence across the screen that crawls whenever the camera
-            // moves. A non-integer step is only worth having once that sampler is
-            // `Linear` — which is why the test below pins the reciprocal, not the
-            // pixel count.
+            // Exactly a half rather than the 0.7 this started at. Historically
+            // that was forced — Bevy's `upscaling` blit point-sampled, so only an
+            // integer reciprocal upscaled cleanly. `render_scale` has since
+            // swapped the blit to a `Filtering` sampler (the scale is a user
+            // slider now, and every position must look right), so 1/2 is merely
+            // the cheapest of the good-looking scales rather than the only one.
             //
             // This is now deliberately *below* the 1.3 Mpx ceiling `index.html`
             // enforces for the web phone tier, where the upscale is a CSS transform

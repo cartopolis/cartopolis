@@ -130,7 +130,7 @@ const MAX_CELL_MESH_BYTES: usize = 8 * 1024 * 1024;
 /// stops the pair drifting again — the previous version of this comment ended with
 /// "revisit this together, on the device; neither number means much without the
 /// other", which is exactly the kind of instruction nobody is there to follow.
-fn max_cell_mesh_bytes() -> usize {
+pub(crate) fn max_cell_mesh_bytes() -> usize {
     max_cell_mesh_bytes_for(crate::quality::budget())
 }
 
@@ -458,7 +458,7 @@ pub fn update_lod22(
                 // coverage manifest loaded, or while the 3DBAG toggle was off.
                 // Evict it now that the real mesh is up, or both tiers render
                 // stacked (see `OsmBuildings::evict_far_cell`).
-                osm.evict_far_cell(&mut commands, c);
+                osm.evict_far_cell(c);
                 tracing::info!(
                     cell = ?c,
                     live = lod.cells.len(),

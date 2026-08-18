@@ -416,8 +416,12 @@ struct BuiltPatch {
     buildings: Vec<Building>,
     /// BigSpace cell the mesh vertices are relative to.
     patch_cell: GridCell,
-    /// Full-detail buildings around the camera.
-    detail: Option<Mesh>,
+    /// Full-detail buildings around the camera, split into byte-bounded
+    /// pieces: the merged patch was the largest single asset the client could
+    /// make (a 70 MB single-frame upload was measured over a dense city), and
+    /// Bevy's upload budget writes whole assets, so only a pre-split can
+    /// spread it over frames.
+    detail: Vec<Mesh>,
     /// Window quads per glow bucket (indexes `WINDOW_GLOW_MULT`).
     windows: [Option<Mesh>; 4],
 }
@@ -532,10 +536,13 @@ impl OsmBuildings {
     /// height is a guess that can poke through the real BAG roof). Forgetting the
     /// cell in both lanes lets the far tier re-fetch it (disk-cached) when the real
     /// mesh later goes out of range.
-    pub(crate) fn evict_far_cell(&mut self, commands: &mut Commands, cell: (i64, i64)) {
-        for e in self.far_cells.remove(&cell).unwrap_or_default() {
-            commands.entity(e).despawn();
-        }
+    /// Through the far lane's bounded despawn queue, not `commands.despawn`:
+    /// this is called from inside the LoD2.2 build loop, and freeing a far
+    /// cell's meshes in the same command buffer as an up-to-8 MB upload is the
+    /// exact churn shape the queue exists to forbid.
+    pub(crate) fn evict_far_cell(&mut self, cell: (i64, i64)) {
+        let entities = self.far_cells.remove(&cell).unwrap_or_default();
+        self.far.retire_all(entities);
         self.far.forget(&cell);
         self.far_tdbag.forget(&cell);
     }
@@ -1028,7 +1035,9 @@ pub fn update_buildings(
                         BuiltPatch {
                             buildings,
                             patch_cell,
-                            detail: bld.into_mesh(),
+                            // Same byte cap as a LoD2.2 cell — the two lanes'
+                            // pieces should stress the uploader equally.
+                            detail: bld.into_meshes(crate::systems::lod22::max_cell_mesh_bytes()),
                             windows: wins.map(MeshData::into_mesh),
                         }
                     });
@@ -1426,12 +1435,13 @@ fn spawn_detail_patch(
     osm: &mut OsmBuildings,
     root: Entity,
     patch_cell: GridCell,
-    detail: Option<Mesh>,
+    detail: Vec<Mesh>,
     windows: [Option<Mesh>; 4],
 ) {
-    // Building mesh: one white material, per-vertex wall/roof colours. Cached on
-    // `OsmBuildings` and shared with the far lane — see `building_material`.
-    if let Some(mesh) = detail {
+    // Building meshes (byte-bounded pieces of the merged patch): one white
+    // material, per-vertex wall/roof colours. Cached on `OsmBuildings` and
+    // shared with the far lane — see `building_material`.
+    if !detail.is_empty() {
         let material = osm
             .building_material
             .get_or_insert_with(|| {
@@ -1444,18 +1454,20 @@ fn spawn_detail_patch(
                 })
             })
             .clone();
-        let entity = commands
-            .spawn((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material),
-                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                patch_cell,
-                ChildOf(root),
-                OsmBuildingMesh,
-                crate::components::HideInSpace,
-            ))
-            .id();
-        osm.detail_entities.push(entity);
+        for mesh in detail {
+            let entity = commands
+                .spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                    patch_cell,
+                    ChildOf(root),
+                    OsmBuildingMesh,
+                    crate::components::HideInSpace,
+                ))
+                .id();
+            osm.detail_entities.push(entity);
+        }
     }
 
     // Window meshes: dark glass by day; per-bucket emissive faded in at night by
