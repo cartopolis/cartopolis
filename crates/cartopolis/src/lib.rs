@@ -756,10 +756,16 @@ fn run_client() {
     // it spawns the Web Workers that keep tile decoding off the render thread.
     // One core is left for the main thread, which still renders and fetches.
     //
-    // …and on a phone, rather more than one. `available_parallelism` counts the
-    // Fairphone 4's 8 cores without saying that 6 of them are efficiency cores
-    // sharing a thermal envelope with the render thread and the compositor, so
-    // the honest ceiling is well under the count (`Budget::worker_cap`).
+    // …and on a phone, historically rather more than one: `available_parallelism`
+    // counted the Fairphone 4's 8 cores without saying that 6 of them were
+    // efficiency cores sharing a thermal envelope with the render thread and the
+    // compositor, so the honest ceiling was well under the count.
+    //
+    // That reasoning retired with the device (2026-08-18). The handset this is
+    // developed against now is 2 prime + 6 performance Oryon cores with no
+    // efficiency cores at all, and `auto()` puts Android on `Budget::balanced`,
+    // whose `worker_cap` is `None` — so the cap below is once again only what a
+    // deliberately-selected `phone` tier asks for.
     let workers = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(1))
         .unwrap_or(4)
@@ -960,6 +966,45 @@ fn run_client() {
                     // a cap back on this without moving the tile jobs back too.
                     max_threads: usize::MAX,
                     percent: 0.45,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                // **Bevy's parallel system executor, and without this floor a
+                // handset gets exactly one thread for it.**
+                //
+                // `create_default_pools` sizes the three pools *in order*, each
+                // taking from what the last one left, and
+                // `get_number_of_threads` applies `min(remaining)` *before*
+                // `clamp(min_threads, max_threads)`. Run that on the 8 cores an
+                // Android device reports: io wants 0.30 × 8 = 2 but its floor
+                // above lifts it to **4**, leaving 4; async_compute wants
+                // 0.45 × 8 = 3.6 → 4, taking all of it and leaving **0**; and
+                // compute — whose default policy is `percent: 1.0`, i.e.
+                // "whatever is left over" — gets `min(8, 0) = 0`, clamped up to
+                // its default floor of **1**.
+                //
+                // One thread for `ComputeTaskPool` means no two Update systems
+                // ever overlap: transform propagation, `check_visibility`, every
+                // `par_iter`, and all eight panel systems run strictly serially,
+                // on the platform with the least headroom. It is not a tuning
+                // loss, it is the parallel executor being switched off by
+                // arithmetic, and it was invisible because the widths above were
+                // measured on a 22-core box where they resolve to io=7,
+                // async=10, compute=5 and the bug cannot appear.
+                //
+                // A floor rather than re-cutting the percentages, because those
+                // two were measured (see the block above) and this is the case
+                // they were not measured on. It changes nothing where there is
+                // slack — the workstation still lands on 5 — and on an 8-core
+                // handset it buys 3 at the cost of nominally oversubscribing by
+                // 3, which the io threads pay for by blocking on sockets rather
+                // than burning a core. Note the tile jobs are **not** in any of
+                // these pools any more (`platform::workers`), so the real
+                // contention is smaller than the totals suggest.
+                compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: 3,
+                    max_threads: usize::MAX,
+                    percent: 1.0,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
                 },
@@ -1212,6 +1257,7 @@ fn run_client() {
             ..default()
         })
         .init_resource::<StatsState>()
+        .init_resource::<resources::FrameStats>()
         .init_resource::<resources::ScreenshotState>()
         // The tier's ceiling on bytes uploaded to the GPU per frame, and the only
         // bound in this client that is measured in bytes rather than in items —
@@ -3277,13 +3323,19 @@ fn frame_stats(
     // (elapsed_s, frames, worst_ms, sum_ms, sum_ms_sq)
     mut acc: Local<(f32, u32, f32, f32, f32)>,
     mut enabled: Local<Option<bool>>,
+    mut stats: ResMut<crate::resources::FrameStats>,
 ) {
     // Through `env_flag`, not `std::env` directly, so `?fps_log` reaches it on the
     // web — where a number for "how slow is slow" is harder to come by than
     // anywhere else, there being no external profiler to point at the tab.
-    if !*enabled.get_or_insert_with(|| env_flag("CARTO_FPS_LOG")) {
-        return;
-    }
+    //
+    // **The flag gates the log line, not the accumulation.** Five adds and a max
+    // per frame cost nothing measurable, and the resource they feed is the only
+    // frame time a handset can report: there is no `adb` on the phone this client
+    // targets, so `systems::dev::diagnostics` — a report the user taps and sends
+    // — has to carry the number, and it cannot if the accumulator is switched off
+    // by an environment variable that platform does not have.
+    let logging = *enabled.get_or_insert_with(|| env_flag("CARTO_FPS_LOG"));
     let ms = time.delta_secs() * 1000.0;
     acc.0 += time.delta_secs();
     acc.1 += 1;
@@ -3294,13 +3346,23 @@ fn frame_stats(
         let n = acc.1.max(1) as f32;
         let mean = acc.3 / n;
         let var = (acc.4 / n - mean * mean).max(0.0);
-        tracing::info!(
-            fps = (acc.1 as f32 / acc.0) as u32,
-            mean_frame_ms = mean as u32,
-            worst_frame_ms = acc.2 as u32,
-            jitter_ms = var.sqrt() as u32,
-            "frame stats"
-        );
+        let fps = (acc.1 as f32 / acc.0) as u32;
+        *stats = crate::resources::FrameStats {
+            fps,
+            mean_ms: mean,
+            worst_ms: acc.2,
+            jitter_ms: var.sqrt(),
+            sampled: true,
+        };
+        if logging {
+            tracing::info!(
+                fps,
+                mean_frame_ms = mean as u32,
+                worst_frame_ms = acc.2 as u32,
+                jitter_ms = var.sqrt() as u32,
+                "frame stats"
+            );
+        }
         *acc = (0.0, 0, 0.0, 0.0, 0.0);
     }
 }

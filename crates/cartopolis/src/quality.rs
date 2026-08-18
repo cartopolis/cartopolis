@@ -22,7 +22,10 @@
 //!    phone budget reproducible on a workstation.
 //! 2. On the web, `<html data-quality>`, written by the detection in
 //!    `index.html` before the module is fetched.
-//! 3. Otherwise the platform: Android is a phone, everything else is not.
+//! 3. Otherwise the platform. Android takes [`Budget::balanced`] and everything
+//!    else [`Budget::desktop`] — note that *no* platform auto-detects to
+//!    [`Budget::phone`] any more; see `auto()` for why, and reach it through
+//!    Settings or `CARTO_QUALITY=phone` when a device needs it.
 //!
 //! **The browser detects, not this module**, and the split is deliberate.
 //! Deciding here would mean re-deriving in Rust what the page already had to know
@@ -469,6 +472,13 @@ impl Budget {
     /// written to was "whatever it takes to hold ~30 fps on a Fairphone 4", and
     /// each of these was chosen because it buys frame time rather than because it
     /// was the least missed.
+    ///
+    /// **Nothing auto-detects to this rung any more** (2026-08-18): the Fairphone
+    /// 4 is no longer a supported device and `auto()` takes [`Self::balanced`] on
+    /// Android. It is reached deliberately — Settings ▸ Map ▸ Battery saver,
+    /// `CARTO_QUALITY=phone`, or `?quality=phone` on the web, where `index.html`
+    /// still detects it — and every comment below should be read as describing
+    /// the floor rather than the handset.
     pub(crate) const fn phone() -> Self {
         Self {
             tier: Tier::Phone,
@@ -762,9 +772,73 @@ fn html_quality_attr() -> Option<String> {
         .get_attribute("data-quality")
 }
 
+/// A handset, and since 2026-08-18 that means [`Budget::balanced`] rather than
+/// [`Budget::phone`].
+///
+/// **This is a target change, not a re-tuning.** Every number in `phone()` was
+/// chosen against a Fairphone 4 — its own doc says the brief was "whatever it
+/// takes to hold ~30 fps on a Fairphone 4" — and that device is no longer
+/// supported. The phone this client is developed against now is a Snapdragon 8
+/// Elite Gen 5 (Adreno 840): 18 MB of on-chip tile memory against the 619's
+/// 512 KiB, ~5× the memory bandwidth, and eight performance cores with no
+/// efficiency cores at all. Three of the arguments `phone()` is built from are
+/// therefore void on it — the tile budget that rules out `Hdr`, the fill
+/// scarcity that halves the render scale, and the 2-big-6-little thermal
+/// envelope that caps the worker pool.
+///
+/// `Balanced` is not a new rung invented for this; it is the rung whose own
+/// documentation already describes the device — *"an integrated GPU, a thin
+/// laptop, **or a handset good enough to want more than the floor**"*. Taking it
+/// changes render scale 0.5 → 1.0, the tile raster 256 → 512 px, the clipmap
+/// back to its full 424 tiles, the per-frame build budgets back to undivided,
+/// the worker pool off its cap, and turns the detail layers, shadows and bloom
+/// on.
+///
+/// **Deliberately not adapter-aware, because it cannot be.** `init` runs at the
+/// top of `run()`, before a render device exists — `platform::workers` is sized
+/// from the result — so this function has no adapter to ask. That is also why it
+/// is safe to ask for `sky_dome: false` here: `free_camera::setup_camera` still
+/// substitutes the dome on any adapter that cannot run bevy's atmosphere, so a
+/// device that cannot have it still gets the dome; it is simply not this module
+/// that decides so.
+///
+/// This supersedes the narrower [`gpu_affords_atmosphere`] path for Android in
+/// the common case — that function exists to lift the *phone* tier's sky veto
+/// once an adapter is known, and a rung that never vetoed the sky has nothing
+/// for it to lift. It stays exactly as load-bearing as before for a device
+/// deliberately put back on `phone`, and for the wasm and desktop rungs.
+///
+/// `phone()` remains reachable, and is what a device that cannot hold this
+/// should be put on: Settings ▸ Map ▸ Battery saver, or `CARTO_QUALITY=phone`.
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 fn auto() -> Budget {
-    Budget::phone()
+    Budget {
+        // **The one thing that does not come up with the rung, and it is not
+        // caution — it is the only failure this device has actually produced.**
+        //
+        // On 2026-08-17 an Adreno 840 lost its Vulkan device five seconds into a
+        // cold start, handed ~215 MB of mesh and texture data in three and a half
+        // seconds, *while already on the phone budget*. `upload_bytes_per_frame`
+        // is the guard written for it, and it is `None` on every rung above the
+        // phone — reasonably, since those rungs describe machines whose uploads
+        // cross a bus with an order of magnitude more bandwidth and no desktop run
+        // has ever lost a device to streaming.
+        //
+        // A handset on the balanced rung is neither of the cases that field was
+        // written for. Taking `balanced` wholesale would have silently deleted the
+        // burst guard from the only hardware known to need it, and it would have
+        // done so in the same change that *raises* the pressure on it: 512 px tile
+        // rasters are four times the texture bytes of 256, and `radius_bias: 0`
+        // nearly doubles the tile count. With the ceiling kept, that extra volume
+        // costs fill latency — the map sharpens a little later — rather than a
+        // black screen and a crash report.
+        //
+        // Revisit this together, on the device, with `systems::upload_meter`'s
+        // `upload_peak_kb` beside `lod22::MAX_CELL_MESH_BYTES`; neither number
+        // means much without the other. Not from a desk.
+        upload_bytes_per_frame: Some(PHONE_UPLOAD_BYTES_PER_FRAME),
+        ..Budget::balanced()
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
