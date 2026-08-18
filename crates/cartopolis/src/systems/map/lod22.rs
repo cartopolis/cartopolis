@@ -88,6 +88,25 @@ pub fn lod22_radius() -> i64 {
 }
 /// Cap on cell meshes uploaded per frame (iGPU device-loss guard — see module doc).
 const MAX_BUILDS_PER_FRAME: usize = 1;
+/// Largest mesh a single cell may produce; past this the cell's triangles are cut
+/// into several ([`MeshData::into_meshes`]).
+///
+/// **Measured, not chosen for roundness** (2026-08-18, `systems::upload_meter`, a
+/// cold cache over Groningen at 1,678 m on the phone tier): the nine cells of the
+/// opening view queued 5.8, 5.5, 17, 17.4, 8.3, 24.7, 31.7, 14, 25.8 and **63.4
+/// MB**, one cell per frame, ~215 MB over about three and a half seconds. Each of
+/// those was one asset, so each was one frame's upload however the streamers were
+/// capped — and a burst like that on a mobile driver is the documented way this
+/// client loses the GPU (an Adreno 840 did, five seconds into a first run, on
+/// 2026-08-17).
+///
+/// 8 MB rather than something smaller because every extra piece is an extra draw
+/// call with its own bind group, on the platform where Bevy issues those from the
+/// CPU. At 8 MB the measured set above becomes one piece for six of the nine cells
+/// and eight for the worst — about twenty extra draws for the opening view, against
+/// a burst cut by a factor of eight. Lower it if a device still hitches on a dense
+/// cell; the cost of doing so is visible in `ShotMetrics::draws`.
+const MAX_CELL_MESH_BYTES: usize = 8 * 1024 * 1024;
 /// A roof triangle whose |normal.y| exceeds this reads as flat → grey; steeper
 /// faces get the tiled-roof tone. So flat commercial roofs and pitched houses
 /// colour correctly from the real geometry.
@@ -120,9 +139,16 @@ struct Bldg {
     t: Vec<(usize, usize, usize, u8)>,
 }
 
-/// A built cell: its BigSpace grid cell, the merged mesh, and one footprint
-/// polygon per building (world-XZ, for avatar collision).
-type Lod22Build = (GridCell, Mesh, Vec<crate::systems::collision::Footprint>);
+/// A built cell: its BigSpace grid cell, the merged mesh **in byte-bounded
+/// pieces** ([`MAX_CELL_MESH_BYTES`]), and one footprint polygon per building
+/// (world-XZ, for avatar collision).
+///
+/// A `Vec<Mesh>` rather than the single merged mesh this used to be, because one
+/// cell is not one size: the dense central cell of Groningen measured 63 MB, and
+/// nothing downstream — not the one-cell-per-frame cap here, not bevy's upload
+/// budget, which always writes at least one whole asset — can spread an upload
+/// that arrives as a single asset.
+type Lod22Build = (GridCell, Vec<Mesh>, Vec<crate::systems::collision::Footprint>);
 
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
 /// streamer: a worker builds one cell at a time; cells are kept while in range.
@@ -133,8 +159,10 @@ pub struct Lod22Buildings {
     /// Requested/failed bookkeeping, the results sink, the concurrency bound, the
     /// bounded despawn queue and the anchor generation (`platform::stream`).
     stream: CellStream<(i64, i64), Result<Option<Lod22Build>, String>>,
-    /// Spawned cell entities, despawned when out of range.
-    cells: HashMap<(i64, i64), Entity>,
+    /// Spawned cell entities, despawned when out of range — one per mesh piece a
+    /// cell was cut into ([`MAX_CELL_MESH_BYTES`]), which for most cells is still
+    /// exactly one.
+    cells: HashMap<(i64, i64), Vec<Entity>>,
     /// Cells currently marked `NotShadowCaster` (beyond `SHADOW_RADIUS`), so the
     /// shadow-LOD pass only issues a command when a cell actually crosses the
     /// boundary rather than every frame.
@@ -216,7 +244,7 @@ pub fn update_lod22(
     let reanchored = lod.stream.sync(stream.anchor_generation);
     if reanchored || lod.terrain_revision != terrain.revision {
         lod.terrain_revision = terrain.revision;
-        let retired: Vec<Entity> = lod.cells.drain().map(|(_, e)| e).collect();
+        let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -236,7 +264,7 @@ pub fn update_lod22(
     let enabled = crate::systems::osm_buildings::buildings_user_enabled()
         && crate::systems::osm_buildings::tdbag_user_enabled();
     if lod.enabled_was && !enabled {
-        let retired: Vec<Entity> = lod.cells.drain().map(|(_, e)| e).collect();
+        let retired: Vec<Entity> = lod.cells.drain().flat_map(|(_, e)| e).collect();
         lod.stream.retire_all(retired);
         colliders.clear_lod22();
         lod.no_shadow.clear();
@@ -343,7 +371,7 @@ pub fn update_lod22(
     lod.stream.defer(deferred);
     for (c, built) in done {
         match built {
-            Ok(Some((grid_cell, mesh, footprints))) => {
+            Ok(Some((grid_cell, pieces, footprints))) => {
                 colliders.set_cell(c, footprints);
                 let material = lod
                     .material
@@ -361,26 +389,43 @@ pub fn update_lod22(
                         })
                     })
                     .clone();
-                let e = commands
-                    .spawn((
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(material),
-                        Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                        grid_cell,
-                        ChildOf(root),
-                        Lod22Mesh,
-                        HideInSpace,
-                    ))
-                    .id();
+                // One entity per piece, flat under the same root rather than a
+                // parent with children: every consumer below — the shadow-LOD
+                // toggle, `HideInSpace`, the despawn queue — acts per mesh entity,
+                // and a parent would mean each of them learning to walk children
+                // for a hierarchy with nothing else to do. A cell that fits in one
+                // piece is bit-identical to what this spawned before.
+                let entities: Vec<Entity> = pieces
+                    .into_iter()
+                    .map(|mesh| {
+                        commands
+                            .spawn((
+                                Mesh3d(meshes.add(mesh)),
+                                MeshMaterial3d(material.clone()),
+                                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                                grid_cell,
+                                ChildOf(root),
+                                Lod22Mesh,
+                                HideInSpace,
+                            ))
+                            .id()
+                    })
+                    .collect();
+                let pieces = entities.len();
                 // Shadow-caster state is set by the shadow-LOD pass below.
-                lod.cells.insert(c, e);
+                lod.cells.insert(c, entities);
                 lod.stream.succeeded(&c);
                 // The far tier may already hold this cell — queued before the
                 // coverage manifest loaded, or while the 3DBAG toggle was off.
                 // Evict it now that the real mesh is up, or both tiers render
                 // stacked (see `OsmBuildings::evict_far_cell`).
                 osm.evict_far_cell(&mut commands, c);
-                tracing::info!(cell = ?c, live = lod.cells.len(), "lod22 cell rendered");
+                tracing::info!(
+                    cell = ?c,
+                    live = lod.cells.len(),
+                    pieces,
+                    "lod22 cell rendered"
+                );
             }
             // Empty cell; stays requested so it isn't re-queried.
             Ok(None) => lod.stream.succeeded(&c),
@@ -410,8 +455,10 @@ pub fn update_lod22(
         .copied()
         .collect();
     for c in stale {
-        if let Some(e) = lod.cells.remove(&c) {
-            lod.stream.retire(e);
+        if let Some(entities) = lod.cells.remove(&c) {
+            for e in entities {
+                lod.stream.retire(e);
+            }
         }
         colliders.remove_cell(c);
         lod.no_shadow.remove(&c);
@@ -422,15 +469,26 @@ pub fn update_lod22(
     // when a cell crosses the boundary (tracked in `no_shadow`), so a stationary
     // camera issues no commands. This is a mesh-level toggle; the forbidden runtime
     // change is the directional lights' `num_cascades` — see CLAUDE.md.
-    let snapshot: Vec<((i64, i64), Entity)> = lod.cells.iter().map(|(&k, &v)| (k, v)).collect();
-    for ((cx, cy), e) in snapshot {
+    let snapshot: Vec<((i64, i64), Vec<Entity>)> = lod
+        .cells
+        .iter()
+        .map(|(&k, v)| (k, v.clone()))
+        .collect();
+    for ((cx, cy), entities) in snapshot {
         let near = (cx - ccx).abs().max((cy - ccy).abs()) <= SHADOW_RADIUS;
         let off = lod.no_shadow.contains(&(cx, cy));
+        // The whole cell crosses the boundary at once — it is one cell's worth of
+        // geometry however many pieces it was cut into — so the `no_shadow` set
+        // stays keyed by cell and the commands fan out over its entities.
         if near && off {
-            commands.entity(e).remove::<bevy::light::NotShadowCaster>();
+            for e in entities {
+                commands.entity(e).remove::<bevy::light::NotShadowCaster>();
+            }
             lod.no_shadow.remove(&(cx, cy));
         } else if !near && !off {
-            commands.entity(e).insert(bevy::light::NotShadowCaster);
+            for e in entities {
+                commands.entity(e).insert(bevy::light::NotShadowCaster);
+            }
             lod.no_shadow.insert((cx, cy));
         }
     }
@@ -541,7 +599,8 @@ fn build_lod22_from_text(
             buf.tri(a, bb, c, color);
         }
     }
-    Ok(buf.into_mesh().map(|m| (grid_cell, m, footprints)))
+    let pieces = buf.into_meshes(MAX_CELL_MESH_BYTES);
+    Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints)))
 }
 
 /// Cache key for a LoD2.2 cell (its own namespace under the cache root).

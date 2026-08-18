@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url]
-updated: 2026-08-15
+updated: 2026-08-17
 ---
 
 # The Android app is a manifest, a `.so` and the assets directory
@@ -1055,3 +1055,80 @@ Two things about the wake lock are inference and need the device to settle:
   after the call.** It proves the lock was taken; it does not prove the display
   obeyed it. Watch the screen for thirty seconds of driving — that is the
   measurement, and it is the only one that counts here.
+
+## The recovery *was* the crash, and the tier was a stand-in (Adreno 840, 2026-08-17)
+
+A new phone — a OnePlus on Android 16, Adreno 840, i.e. two GPU generations past
+the Fairphone 4 everything above was written against — reported this on launch:
+
+```
+panic: AndroidSurface failed: ERROR_NATIVE_WINDOW_IN_USE_KHR
+at: wgpu-hal-29.0.4/src/vulkan/instance.rs:485:69
+```
+
+The panic is not the fault. Seven seconds into a cold start, with the first
+tiles still uploading, the Adreno driver lost the device — the mass mesh/texture
+churn this project already documents, on a device fast enough to queue more of it
+per frame. `handle_render_error` did exactly what the section above added it for:
+`DeviceLost`, attempt 1, rebuild the renderer. **That rebuild is what aborted the
+process.**
+
+`RenderErrorPolicy::Recover` builds a whole new wgpu instance, adapter and device,
+and the first thing bevy does with them is create a surface for the primary
+window — while the *old* surface is still in the render world's `WindowSurfaces`,
+alive and still holding that window. On a desktop compositor two surfaces on one
+window is merely wasteful, and that is why this shipped. On Android it cannot
+work: `vkCreateAndroidSurfaceKHR` on an `ANativeWindow` another surface has
+`native_window_api_connect`-ed answers `ERROR_NATIVE_WINDOW_IN_USE_KHR`, wgpu-hal's
+Android arm is a bare `.expect("AndroidSurface failed")`, and the abort is
+unreachable from our error handling. The driver says so plainly one line earlier
+in logcat, which is the line to look for:
+
+```
+E BufferQueueProducer: ... connect: already connected (cur=1 req=1)
+E vulkan  : native_window_api_connect() failed: Invalid argument (-22)
+```
+
+`lib.rs::release_window_surfaces` now drops the old surface before the handler
+returns. Dropping is what disconnects the window — wgpu-hal's `Surface::drop`
+destroys the `VkSurfaceKHR` and libvulkan's `DestroySurfaceKHR` is where
+`native_window_api_disconnect` lives. Two details are load-bearing and are
+documented at the function: the swap-chain textures go first (a live
+`SurfaceTexture` holds its surface open past the drop), and `WindowSurfaces` is
+*replaced with a default*, never removed, because `extract_windows` takes it as a
+plain `ResMut` and runs on the very next system — a removed resource is a panic
+one frame later, in a different place, about something else.
+
+So the general rule for this handler: **a `Recover` must first give back
+everything the new renderer is about to ask for.** Anything else holding a device
+or a window across a rebuild is the next instance of this bug.
+
+**The second finding from the same report: the phone tier is a stand-in for a
+device, and this device was not it.** The startup log showed `no atmosphere on
+this adapter — drawing the analytic sky dome instead` on a GPU that offers
+`FLOAT32_FILTERABLE` and could have drawn the real one. Both halves were wrong.
+The *cause* was `quality::Budget::sky_dome`, not the adapter — `quality::auto()`
+answers `Budget::phone()` for every Android device, because the budget must be
+resolved before a renderer exists (`platform::workers` is sized from it), so
+"Android" silently means "a Fairphone 4". And the *message* asserted the one
+reason it was not, which sent the report chasing a missing feature the device has.
+
+`quality::gpu_affords_atmosphere` is the narrow fix: at `setup_camera`, where the
+adapter is finally in hand, a GPU the driver names as generations past that
+handset (Adreno ≥ 700, Immortalis, Mali-G ≥ 700, Xclipse ≥ 900; an unknown name
+keeps the tier's answer) lifts the tier's veto on the sky and nothing else. The
+rest of the phone budget — the halved render scale, the per-frame streaming
+divisors, the reduced radii — is about fill and main-thread work that a fast GPU
+does not excuse, and this device lost its Vulkan device to the startup burst while
+*already* on that budget. The dome's own log line no longer names a reason;
+`setup_camera` logs the one that applied.
+
+Only the Adreno arm of that table comes from hardware. The rest is vendor
+numbering, which is why the default is "keep the tier's answer".
+
+**Still open, and the more important half:** the device loss itself. A cold start
+at 1.7 km altitude uploaded ~174 tiles and, in the run before it, spent five
+consecutive seconds at ~1,010 ms per frame with `dequeueBuffer timed out` on every
+one. The recovery being survivable is not the same as the burst being affordable;
+`docs/notes/headless-shots-software-renderer.md` and the churn entry in CLAUDE.md
+are where that thread continues.

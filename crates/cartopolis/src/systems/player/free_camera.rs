@@ -650,9 +650,38 @@ pub fn setup_camera(
     // machine spend a frame on it". A Mali that has the feature was previously
     // handed the full atmosphere on the strength of being able to run it — the
     // substitution of "can" for "should" a tier exists to prevent. See the field.
+    //
+    // …and the tier's answer is itself overridable by the adapter, because on
+    // Android the tier was never measured: `quality::auto()` answers `phone()` for
+    // every device there (the budget is resolved before a renderer exists), so a
+    // 2026 flagship inherited a Fairphone 4's sky. `gpu_affords_atmosphere` is the
+    // one part of that this run can re-measure now the adapter is in hand, and it
+    // unlocks the sky alone — the rest of the phone budget is about fill and
+    // main-thread work that a fast GPU does not excuse.
+    let gpu_affords_sky = crate::quality::gpu_affords_atmosphere(&adapter.name);
     let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let want_atmosphere =
-        want_sky && float32_filterable && !budget.sky_dome && !crate::env_flag("CARTO_SKY_DOME");
+    let want_atmosphere = want_sky
+        && float32_filterable
+        && (!budget.sky_dome || gpu_affords_sky)
+        && !crate::env_flag("CARTO_SKY_DOME");
+    // Logged where the answer is *changed*, not where the test is made: a line
+    // claiming the atmosphere was kept on a run that then has no sky at all
+    // (`CARTO_NO_ATMOSPHERE`, the dev toggle) is the same kind of confident
+    // half-truth that sent the report this exists for to the wrong place.
+    if budget.sky_dome && want_atmosphere {
+        tracing::info!(
+            adapter = %adapter.name,
+            "GPU is well past the handset the phone tier was written for — keeping \
+             bevy's atmosphere rather than the dome"
+        );
+    } else if want_sky && !want_atmosphere && float32_filterable {
+        tracing::info!(
+            adapter = %adapter.name,
+            budget_says_dome = budget.sky_dome,
+            "sky dome by choice, not by capability — this adapter could run bevy's \
+             atmosphere"
+        );
+    }
     let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
     commands.insert_resource(if want_atmosphere {
         crate::systems::sky_dome::SkyMode::Atmosphere

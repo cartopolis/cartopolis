@@ -40,6 +40,17 @@
 //! which is the only way to look at it without the phone. `CARTO_NO_ATMOSPHERE`
 //! keeps its meaning of *no sky at all* — it is a bisecting switch, and a switch
 //! that silently swapped one sky for another would not bisect anything.
+//!
+//! **The refusal is not the only way to get here.** `quality::Budget::sky_dome`
+//! also chooses this shell on a machine that *could* run the atmosphere and should
+//! not spend the frame on it, and on Android that budget is not measured — every
+//! device there gets the phone tier, because it is resolved before a renderer
+//! exists. So a flagship handset ended up here on a technicality (an Adreno 840,
+//! 2026-08-17, whose only fault was running Android), and the fix is
+//! `quality::gpu_affords_atmosphere`: the tier's veto is lifted for a GPU the
+//! driver names as being generations past the one this budget was written for.
+//! When reading a report, take the reason from `setup_camera`'s log line and not
+//! from the presence of this module.
 
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
@@ -268,10 +279,13 @@ pub fn setup_sky_dome(
     if *sky != SkyMode::Dome {
         return;
     }
-    info!(
-        "no atmosphere on this adapter — drawing the analytic sky dome instead \
-         (systems::sky_dome)"
-    );
+    // Deliberately says *that* the dome was chosen, not why: there are three
+    // reasons (no `FLOAT32_FILTERABLE`, the render budget, `CARTO_SKY_DOME`) and
+    // `setup_camera` logs the one that applied a few lines earlier. This line used
+    // to assert the first of them unconditionally, which sent one report chasing a
+    // missing adapter feature on a phone that had it and had merely been tiered
+    // down (Adreno 840, 2026-08-17).
+    info!("drawing the analytic sky dome (systems::sky_dome); setup_camera logged which reason");
     // Shading is per-pixel from the view direction, so the subdivision only
     // decides how round the shell is; `ico(3)` is 1,280 triangles and dips 0.15 %
     // inside its own radius, which is the number that has to stay clear of the
