@@ -1721,6 +1721,94 @@ impl MeshData {
         mesh.insert_indices(Indices::U32(self.indices));
         Some(mesh)
     }
+
+    /// The same geometry, as one or more meshes none of which exceeds
+    /// `max_bytes` of vertex and index data.
+    ///
+    /// **Why a size limit is a different thing from a per-frame build cap.** Every
+    /// streamer here already bounds how many *items* it finalises per frame, and
+    /// `lod22` is the strictest of them at one cell — but a merged LoD2.2 cell is
+    /// one asset of unbounded size, and the dense central cell of Groningen
+    /// measures **63 MB** (2026-08-18, `upload_meter`, phone tier at 1,678 m). A
+    /// cap of one item per frame is no cap at all when the item is that. It is also
+    /// past what any throttle downstream can help with: bevy's
+    /// `RenderAssetBytesPerFrame` always writes at least one whole asset per frame
+    /// so uploads cannot stall, so a single 63 MB mesh is a single 63 MB frame
+    /// whatever the budget says. Splitting it is what gives the budget something to
+    /// spread.
+    ///
+    /// The split is by triangle, with vertices re-indexed per chunk, so each chunk
+    /// is a self-contained mesh and no vertex is shared across a boundary. That
+    /// duplicates the vertices that straddle one — a few per cut, against tens of
+    /// thousands per chunk — and it keeps the dedup that
+    /// [`MeshData::with_dedup`] did before ever getting here. Triangles are cut in
+    /// buffer order rather than spatially: a spatial split would give tighter
+    /// bounding volumes for culling, and would mean sorting a million triangles on
+    /// a worker thread for a cell the camera is usually inside anyway.
+    ///
+    /// **This costs draw calls, and that is the trade.** Each chunk is its own
+    /// draw with its own bind group, on a platform where Bevy excludes older Adreno
+    /// and Mali from GPU preprocessing entirely — so `max_bytes` should stay large
+    /// enough that a typical cell is one or two chunks and only the dense ones
+    /// split. `lod22::MAX_CELL_MESH_BYTES` is where that number is chosen.
+    pub(crate) fn into_meshes(self, max_bytes: usize) -> Vec<Mesh> {
+        if self.indices.is_empty() {
+            return Vec::new();
+        }
+        // Position + normal + colour, matching the three attributes below, and the
+        // index that points at them. The same arithmetic `RenderMesh::byte_len`
+        // uses, which is what makes `max_bytes` comparable with the upload budget.
+        const VERTEX_BYTES: usize = 12 + 12 + 16;
+        const INDEX_BYTES: usize = 4;
+        let total = self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES;
+        if total <= max_bytes {
+            return self.into_mesh().into_iter().collect();
+        }
+
+        // Whole triangles per chunk. Worst case every vertex is unique to its
+        // triangle, so budget for that rather than for the average — a chunk that
+        // overshoots the budget it was split to serve is the one outcome this must
+        // not have.
+        let per_triangle = 3 * (VERTEX_BYTES + INDEX_BYTES);
+        let triangles_per_chunk = (max_bytes / per_triangle).max(1);
+        let mut meshes = Vec::new();
+        // Remap by old index, allocated once for the whole cell and cleared per
+        // chunk by walking that chunk's own indices. A `HashMap` would do, but the
+        // table is one bounds-checked write per vertex against a hash per *index*,
+        // and there are three times as many of those; re-allocating it per chunk
+        // would put an O(vertices × chunks) memset on a worker thread, which for
+        // the cell that motivated this is 1.2 M × 8.
+        let mut remap = vec![u32::MAX; self.positions.len()];
+        for triangles in self.indices.chunks(triangles_per_chunk * 3) {
+            let mut positions = Vec::new();
+            let mut normals = Vec::new();
+            let mut colors = Vec::new();
+            let mut indices = Vec::with_capacity(triangles.len());
+            for &old in triangles {
+                let slot = &mut remap[old as usize];
+                if *slot == u32::MAX {
+                    *slot = positions.len() as u32;
+                    positions.push(self.positions[old as usize]);
+                    normals.push(self.normals[old as usize]);
+                    colors.push(self.colors[old as usize]);
+                }
+                indices.push(*slot);
+            }
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            mesh.insert_indices(Indices::U32(indices));
+            meshes.push(mesh);
+            for &old in triangles {
+                remap[old as usize] = u32::MAX;
+            }
+        }
+        meshes
+    }
 }
 
 /// Oriented bounding box of a footprint in a (u, v) basis (min-area over edges).
@@ -2723,6 +2811,93 @@ fn num_from_value(v: &serde_json::Value) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every triangle survives a split, in the same order and at the same
+    /// coordinates.
+    ///
+    /// The re-indexing is the part that can go silently wrong: a chunk that
+    /// remapped one vertex incorrectly draws a building stretched across the cell
+    /// and nothing reports it, so the check is on the *reconstructed triangles*
+    /// rather than on the vertex or index counts.
+    #[test]
+    fn splitting_a_cell_preserves_its_triangles() {
+        let mut buf = MeshData::with_dedup();
+        // Enough distinct triangles to force several chunks at a small limit.
+        let triangles: Vec<[Vec3; 3]> = (0..300)
+            .map(|i| {
+                let f = i as f32;
+                [
+                    Vec3::new(f, 0.0, 0.0),
+                    Vec3::new(f + 0.5, 1.0, 0.0),
+                    Vec3::new(f + 1.0, 0.0, 0.7),
+                ]
+            })
+            .collect();
+        for t in &triangles {
+            buf.tri(t[0], t[1], t[2], [1.0, 0.0, 0.0, 1.0]);
+        }
+
+        // 40 B a vertex plus 4 B an index: a limit of 4 kB is ~28 triangles, so
+        // this splits into a double-figure number of pieces.
+        let pieces = buf.into_meshes(4 * 1024);
+        assert!(pieces.len() > 5, "expected a real split, got {}", pieces.len());
+
+        let mut seen: Vec<[Vec3; 3]> = Vec::new();
+        for mesh in &pieces {
+            let bytes = mesh_upload_bytes(mesh);
+            assert!(
+                bytes <= 4 * 1024,
+                "a piece is {bytes} B, over the limit it was split to"
+            );
+            let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+                bevy::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
+                other => panic!("unexpected position format: {other:?}"),
+            };
+            let indices: Vec<u32> = match mesh.indices().unwrap() {
+                Indices::U32(v) => v.clone(),
+                Indices::U16(v) => v.iter().map(|&i| u32::from(i)).collect(),
+            };
+            assert_eq!(indices.len() % 3, 0, "a piece ends mid-triangle");
+            for tri in indices.chunks(3) {
+                let vertex = |i: u32| {
+                    let p = positions[i as usize];
+                    Vec3::new(p[0], p[1], p[2])
+                };
+                seen.push([vertex(tri[0]), vertex(tri[1]), vertex(tri[2])]);
+            }
+        }
+        assert_eq!(seen.len(), triangles.len(), "lost or duplicated triangles");
+        assert_eq!(seen, triangles, "a triangle moved");
+    }
+
+    /// A cell that already fits stays exactly one mesh — the common case, and the
+    /// one where extra draw calls would be paid for nothing.
+    #[test]
+    fn a_small_cell_is_not_split() {
+        let mut buf = MeshData::with_dedup();
+        buf.tri(Vec3::ZERO, Vec3::X, Vec3::Z, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(buf.into_meshes(8 * 1024 * 1024).len(), 1);
+    }
+
+    /// An empty cell produces nothing rather than an empty mesh, matching what
+    /// `into_mesh` answered before the split existed (`lod22` reads it as "this
+    /// cell has no buildings", and an empty mesh would be a draw call for none).
+    #[test]
+    fn an_empty_cell_produces_no_mesh() {
+        assert!(MeshData::with_dedup().into_meshes(1024).is_empty());
+    }
+
+    /// The same arithmetic `RenderMesh::byte_len` and `systems::upload_meter` use,
+    /// restated for the assertion above so a piece's measured size is the size the
+    /// upload budget will see.
+    fn mesh_upload_bytes(mesh: &Mesh) -> usize {
+        let vertex_size: usize = mesh
+            .attributes()
+            .map(|(attribute, _)| attribute.format.size() as usize)
+            .sum();
+        let index_bytes = mesh.get_index_buffer_bytes().map_or(0, <[u8]>::len);
+        vertex_size * mesh.count_vertices() + index_bytes
+    }
 
     /// Every triangle of a closed building solid must be wound so its face normal
     /// points *away* from the solid's interior — that invariant is what makes
