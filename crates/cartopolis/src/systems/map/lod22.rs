@@ -106,7 +106,42 @@ const MAX_BUILDS_PER_FRAME: usize = 1;
 /// and eight for the worst — about twenty extra draws for the opening view, against
 /// a burst cut by a factor of eight. Lower it if a device still hitches on a dense
 /// cell; the cost of doing so is visible in `ShotMetrics::draws`.
+///
+/// This is the **ceiling on the ceiling**; the effective value is
+/// [`max_cell_mesh_bytes`], which is never above the frame's own upload budget.
 const MAX_CELL_MESH_BYTES: usize = 8 * 1024 * 1024;
+
+/// The largest mesh a cell may produce on *this* run.
+///
+/// **The two numbers this is made of are meaningless apart, and they had drifted.**
+/// `quality::Budget::upload_bytes_per_frame` says how many bytes a frame may hand
+/// the GPU, and its own doc points here: bevy's `RenderAssetBytesPerFrame` always
+/// writes at least one *whole* asset per frame so uploads can never stall, so an
+/// asset bigger than the budget **is** a frame bigger than the budget, and the
+/// throttle cannot do anything about it. That made the constant above a promise
+/// about the same quantity — and at 8 MB against a 4 MB budget it was promising
+/// twice what the budget allowed. The device agreed: the OnePlus 15 log of
+/// 2026-08-18 reports `peak_asset_kb = 6103` and loses its Vulkan device a second
+/// later.
+///
+/// So the cap is *derived* rather than chosen: whichever of the two is smaller. A
+/// dense cell is cut into more pieces on a machine that asked for a byte budget,
+/// and into the same pieces as before on one that did not. Deriving it is what
+/// stops the pair drifting again — the previous version of this comment ended with
+/// "revisit this together, on the device; neither number means much without the
+/// other", which is exactly the kind of instruction nobody is there to follow.
+fn max_cell_mesh_bytes() -> usize {
+    max_cell_mesh_bytes_for(crate::quality::budget())
+}
+
+/// [`max_cell_mesh_bytes`] for an arbitrary budget, so `quality`'s test can assert
+/// the relationship on every rung rather than only on the one this run resolved to.
+pub(crate) fn max_cell_mesh_bytes_for(budget: &crate::quality::Budget) -> usize {
+    budget
+        .upload_bytes_per_frame
+        .unwrap_or(MAX_CELL_MESH_BYTES)
+        .min(MAX_CELL_MESH_BYTES)
+}
 /// A roof triangle whose |normal.y| exceeds this reads as flat → grey; steeper
 /// faces get the tiled-roof tone. So flat commercial roofs and pitched houses
 /// colour correctly from the real geometry.
@@ -600,7 +635,7 @@ fn build_lod22_from_text(
             buf.tri(a, bb, c, color);
         }
     }
-    let pieces = buf.into_meshes(MAX_CELL_MESH_BYTES);
+    let pieces = buf.into_meshes(max_cell_mesh_bytes());
     Ok((!pieces.is_empty()).then_some((grid_cell, pieces, footprints)))
 }
 

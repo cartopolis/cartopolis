@@ -159,28 +159,6 @@ pub struct Budget {
     /// How far the sun's cascades reach, in metres. The moon's is fixed and
     /// shorter; it is only ever a night-time fill light.
     pub shadow_distance_m: f32,
-    /// Take `systems::sky_dome`'s analytic sky even on hardware that could run
-    /// bevy_pbr's real one.
-    ///
-    /// The dome already exists as a *capability* fallback — an Adreno 619 has no
-    /// `FLOAT32_FILTERABLE`, bevy's atmosphere would fail bind-group validation,
-    /// and `free_camera::setup_camera` substitutes the dome. That decision is
-    /// rightly made on the adapter. This is the separate, *budget* decision the
-    /// same code was making by accident: a Mali that does support the feature was
-    /// handed the full atmosphere on the grounds that it could run it, which is
-    /// exactly the "can" for "should" substitution a tier exists to stop.
-    ///
-    /// What the atmosphere costs a handset, beyond its own sky pass: four LUTs
-    /// recomputed every frame (halved, but four), and `AtmosphereSettings`'
-    /// `#[require(Hdr)]`, which makes the main texture `Rgba16Float` — 8 B/px of
-    /// colour at 1080×2340, enough to overrun a tiler's on-chip tile budget and
-    /// make the driver bin the pass into more tiles and re-issue every draw for
-    /// each. The `msaa` field above already carries that argument at length; this
-    /// is the same argument applied to its cause rather than its symptom.
-    ///
-    /// The dome is ~20 instructions per fragment with no LUT, no compute pass and
-    /// no float32 texture. On a 5.7" screen it is a flatter sky, not a missing one.
-    pub sky_dome: bool,
     /// Tonemapping curve for the main pass.
     ///
     /// A cost question only on a tier with no `Hdr` camera, which is most of what
@@ -397,7 +375,6 @@ impl Budget {
             atmosphere_luts: AtmosphereLuts::bevy_defaults(),
             shadow_cascades: 4,
             shadow_distance_m: 3000.0,
-            sky_dome: false,
             // The camera is `Hdr` here (atmosphere + bloom), so this is one
             // full-screen pass and the LUT is worth its fidelity.
             tonemapping: Tonemapping::TonyMcMapface,
@@ -448,7 +425,6 @@ impl Budget {
             shadow_cascades: 3,
             shadow_distance_m: 1500.0,
             // This rung's brief is to keep the picture, and the sky is most of it.
-            sky_dome: false,
             tonemapping: Tonemapping::TonyMcMapface,
             space_raymarch: false,
             tile_px: crate::systems::vector_tiles::TILE_PX,
@@ -497,7 +473,6 @@ impl Budget {
             // the horizon.
             shadow_cascades: 2,
             shadow_distance_m: 800.0,
-            sky_dome: true,
             // No atmosphere and no bloom means no `Hdr`, which means the curve
             // runs per fragment rather than once — so it must not sample a LUT.
             tonemapping: Tonemapping::AcesFitted,
@@ -631,84 +606,77 @@ pub fn is_phone() -> bool {
     budget().tier == Tier::Phone
 }
 
-/// Is this GPU far enough past the handset the phone tier was written for to keep
-/// bevy's real atmosphere?
+/// What this run's hardware and window actually report.
 ///
-/// [`Budget::sky_dome`] is the tier's answer to "should this machine spend a frame
-/// on the sky", and on Android the tier is not measured — [`auto`] answers
-/// `Budget::phone()` for every device there, because the budget has to be resolved
-/// before the renderer exists (`platform::workers` is sized from it, and the
-/// adapter is not known until Bevy has one). So "Android" stands in for "a
-/// Fairphone 4", and every phone inherits a 2021 mid-ranger's settings — which is
-/// the same substitution the tier exists to prevent, made one level up. It showed
-/// up as an Adreno 840 (OnePlus 15, 2026-08-17) rendering the analytic dome, and
-/// the log said `no atmosphere on this adapter` about an adapter that offers
-/// `FLOAT32_FILTERABLE` and could have drawn it.
+/// [`Budget`] answers *"how much frame may this class of machine spend"*, which is
+/// a judgement about a class and has to be made before a renderer exists —
+/// `platform::workers` is sized from it. This answers the different question
+/// *"what can **this** machine do"*, from the adapter, the device and the window,
+/// and it is therefore only available once Bevy has all three
+/// (`free_camera::setup_camera`, which is where [`init_capabilities`] is called).
 ///
-/// This is the one part of that tier a run *can* re-measure, because the sky is
-/// decided in `free_camera::setup_camera` where the adapter is in hand. It is
-/// deliberately narrow: it unlocks the sky and nothing else. The rest of the phone
-/// budget — the halved render scale, the per-frame streaming divisors, the
-/// footprint radii — is about fill and main-thread work that a fast GPU does not
-/// excuse, and this device lost its Vulkan device to the startup upload burst
-/// while *already* on the phone tier.
+/// **Everything here is measured. Nothing here is a name, a platform or a model
+/// number.** That rule is the point of the type and it was learned twice. A
+/// `cfg!(target_os = "android")` meant "a Fairphone 4" until a OnePlus 15 arrived
+/// and inherited a 2021 mid-ranger's sky; the fix for *that* was a table of GPU
+/// families (`Adreno >= 700`, `Mali-G >= 700`, `Xclipse >= 900`) which is the same
+/// substitution one level down — a guess about hardware nobody in the loop owns,
+/// wrong by default for every part not on the list, and needing an edit for each
+/// new one. An adapter that can filter a 32-bit float texture says so, and asking
+/// is one line.
 ///
-/// The rule is the model number the driver reports, because that is the only thing
-/// about the device this process can see. Families are matched conservatively and
-/// **an unknown name keeps the tier's answer** — a wrong "yes" is a doubled
-/// framebuffer and a binning stall on a handset that cannot afford either, while a
-/// wrong "no" is a flatter sky:
-///
-/// - **Adreno ≥ 700.** The 7xx/8xx generations are the 2022-and-later flagship
-///   line. The 619 that started all of this is 6xx, and so is every part that
-///   shipped with it.
-/// - **Immortalis-anything.** Arm named its flagship rung rather than numbering
-///   it, so there is no threshold to compare.
-/// - **Mali-G ≥ 700.** G710 opened the current generation; G610 and below are the
-///   mid rungs, and the two-digit G7x parts are the *old* numbering (a G78 is not
-///   a G780).
-/// - **Xclipse ≥ 900.** Samsung's RDNA parts start at 920.
-///
-/// Only the Adreno arm has been seen on real hardware. The others are read off
-/// vendor numbering, not measured, and are the reason the default is "no".
-#[must_use]
-pub fn gpu_affords_atmosphere(adapter_name: &str) -> bool {
-    let name = adapter_name.to_ascii_lowercase();
-    if name.contains("immortalis") {
-        return true;
-    }
-    if let Some(model) = model_number(&name, "adreno") {
-        return model >= 700;
-    }
-    if let Some(model) = model_number(&name, "mali-g") {
-        return model >= 700;
-    }
-    if let Some(model) = model_number(&name, "xclipse") {
-        return model >= 900;
-    }
-    false
+/// So: if a question can be *asked* of the device, it belongs here. If it can only
+/// be *judged* — is this scene worth the fill it costs — it belongs in [`Budget`].
+#[derive(bevy::ecs::resource::Resource, Clone, Copy, Debug)]
+pub struct Capabilities {
+    /// `FLOAT32_FILTERABLE`, and with it bevy_pbr's real atmosphere.
+    ///
+    /// Bevy 0.19 bakes each `ScatteringMedium` into `Rgba32Float` lookup textures
+    /// read through a *filtering* sampler, which wgpu permits only on an adapter
+    /// that offers this. Without it the bind group fails validation and takes the
+    /// whole app down, so `systems::sky_dome` stands in — see
+    /// `docs/notes/sky-without-an-atmosphere.md`.
+    pub float32_filterable: bool,
+    /// The presentation mode already blocks on the display's own cadence.
+    ///
+    /// True for FIFO and its relatives, which is what `PresentMode::AutoVsync`
+    /// resolves to. **A second pacer on top of one of these is a bug, not a
+    /// saving**: `lib.rs::frame_limiter` sleeps the main thread to a deadline it
+    /// measures from a different point in the pipeline than the swapchain does,
+    /// and two clocks beating against each other is the standard way to get
+    /// alternating judder on a device with headroom to spare. Reading it off the
+    /// window rather than off the platform is what stops that rule from having to
+    /// be restated for every new target.
+    pub vsync_paced: bool,
 }
 
-/// The first run of digits after `prefix`, if one starts within a few characters
-/// of it.
+static CAPABILITIES: OnceLock<Capabilities> = OnceLock::new();
+
+/// Record what the adapter, device and window turned out to be. Called once, from
+/// `free_camera::setup_camera`.
 ///
-/// The bounded skip is the whole point: a driver writes `Adreno (TM) 840`, so the
-/// digits do not follow the family name directly, but an unbounded search would
-/// happily pick a number out of a driver-version suffix on some other vendor's
-/// string and call it a model.
-fn model_number(haystack: &str, prefix: &str) -> Option<u32> {
-    const MAX_GAP: usize = 8;
-    let rest = haystack.split_once(prefix)?.1;
-    let start = rest
-        .char_indices()
-        .take(MAX_GAP)
-        .find(|(_, c)| c.is_ascii_digit())?
-        .0;
-    let digits: String = rest[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+/// Idempotent like [`init`], and for the same reason: a second call from a test
+/// harness or a second camera should be a no-op rather than a panic.
+pub fn init_capabilities(caps: Capabilities) {
+    if CAPABILITIES.set(caps).is_ok() {
+        tracing::info!(
+            float32_filterable = caps.float32_filterable,
+            vsync_paced = caps.vsync_paced,
+            "device capabilities measured"
+        );
+    }
+}
+
+/// What this run's device reports, or `None` before the renderer exists.
+///
+/// `Option`, deliberately, and callers must handle it rather than defaulting: the
+/// systems that read this run in `Last` from frame one, while `setup_camera` is a
+/// `Startup` system, so there genuinely are frames with no answer yet. Inventing
+/// one here would be the same "a class of machine stands in for the machine" this
+/// type exists to remove.
+#[must_use]
+pub fn capabilities() -> Option<Capabilities> {
+    CAPABILITIES.get().copied()
 }
 
 fn detect(preferred: Option<&str>) -> Budget {
@@ -796,17 +764,12 @@ fn html_quality_attr() -> Option<String> {
 ///
 /// **Deliberately not adapter-aware, because it cannot be.** `init` runs at the
 /// top of `run()`, before a render device exists — `platform::workers` is sized
-/// from the result — so this function has no adapter to ask. That is also why it
-/// is safe to ask for `sky_dome: false` here: `free_camera::setup_camera` still
-/// substitutes the dome on any adapter that cannot run bevy's atmosphere, so a
-/// device that cannot have it still gets the dome; it is simply not this module
-/// that decides so.
-///
-/// This supersedes the narrower [`gpu_affords_atmosphere`] path for Android in
-/// the common case — that function exists to lift the *phone* tier's sky veto
-/// once an adapter is known, and a rung that never vetoed the sky has nothing
-/// for it to lift. It stays exactly as load-bearing as before for a device
-/// deliberately put back on `phone`, and for the wasm and desktop rungs.
+/// from the result — so this function has no adapter to ask. Anything that *can*
+/// be asked of the device is not decided here at all: it belongs in
+/// [`Capabilities`], which is resolved once there is an adapter, a device and a
+/// window to ask. The sky is the worked example — this function used to carry a
+/// `sky_dome` field guessing at it, and the guess was wrong on the first flagship
+/// that ran the app.
 ///
 /// `phone()` remains reachable, and is what a device that cannot hold this
 /// should be put on: Settings ▸ Map ▸ Battery saver, or `CARTO_QUALITY=phone`.
@@ -859,34 +822,6 @@ mod tests {
         // …and the ones that are already small stop rather than reaching 0.
         assert_eq!(phone.radius(2), 1);
         assert_eq!(phone.radius(1), 1);
-    }
-
-    #[test]
-    fn a_flagship_gpu_keeps_the_atmosphere_and_a_mid_ranger_does_not() {
-        // The two devices this has actually run on. The 619's name is why the
-        // fallback exists at all; the 840's is why it needed an exception.
-        assert!(gpu_affords_atmosphere("Adreno (TM) 840"));
-        assert!(!gpu_affords_atmosphere("Adreno (TM) 619"));
-        // The parenthesised `(TM)` is the trap: the model does not follow the
-        // family name, and a naive parse reads the *last* digits of a truncated
-        // window instead (840 → 40, or worse, 84).
-        assert_eq!(model_number("adreno (tm) 840", "adreno"), Some(840));
-
-        assert!(gpu_affords_atmosphere("Mali-G715-Immortalis MC11"));
-        assert!(gpu_affords_atmosphere("Mali-G720"));
-        assert!(!gpu_affords_atmosphere("Mali-G610 MC6"));
-        // Two-digit Mali parts are the *old* numbering, not a small new one.
-        assert!(!gpu_affords_atmosphere("Mali-G78"));
-        assert!(gpu_affords_atmosphere("Samsung Xclipse 940"));
-
-        // An unknown name keeps the tier's answer, which is the conservative one:
-        // a wrong "yes" costs a handset a doubled framebuffer and a binning stall.
-        assert!(!gpu_affords_atmosphere("PowerVR Rogue GE8320"));
-        assert!(!gpu_affords_atmosphere(""));
-        // Nothing off-Android reaches this — those tiers never set `sky_dome` —
-        // but a desktop name must not accidentally answer yes either.
-        assert!(!gpu_affords_atmosphere("NVIDIA GeForce RTX 4070"));
-        assert!(!gpu_affords_atmosphere("llvmpipe (LLVM 15.0.7, 256 bits)"));
     }
 
     #[test]
@@ -964,9 +899,6 @@ mod tests {
                 "shadow_distance_m: {name}"
             );
             assert!(lower.msaa.samples() <= upper.msaa.samples(), "msaa: {name}");
-            // The analytic dome is the cheap sky, so a rung may only *gain* the
-            // real atmosphere as it goes up — this one inverts like the biases.
-            assert!(lower.sky_dome || !upper.sky_dome, "sky_dome: {name}");
             // A LUT tonemapper is the expensive one, and it is only affordable on
             // a rung whose camera is `Hdr` — where the curve is one pass rather
             // than per fragment. Tying the two together here is what stops a
@@ -1018,15 +950,50 @@ mod tests {
 
     /// The phone leaves pacing to the presentation mode; the others cap.
     ///
-    /// Not a taste question. Android runs `PresentMode::AutoVsync` (FIFO, which
-    /// blocks on acquire), so a sleep-based limiter on top is a second pacer
-    /// timing from a different point in the pipeline — the standard way to get
-    /// alternating 60/30 judder on a device with headroom to spare.
+    /// Not a taste question. A FIFO swapchain blocks on acquire, so it is already a
+    /// clock, and a sleep-based limiter on top is a second one timing from a
+    /// different point in the pipeline — the standard way to get alternating judder
+    /// on a device with headroom to spare.
+    ///
+    /// **This assertion is no longer what enforces that**, and the demotion is the
+    /// point. It only ever described the *rungs*, so when Android moved from `phone`
+    /// to `balanced` on 2026-08-18 the rule stopped applying to the only platform it
+    /// was written for and this test went on passing, green, describing a preset
+    /// nothing selected. `lib.rs::frame_limiter` now asks the window instead
+    /// ([`Capabilities::vsync_paced`]), which cannot be lost by changing a rung.
+    /// What is left here is the tier's *preference* for a machine that presents
+    /// without a vsync — keep it consistent, but do not mistake it for the guard.
     #[test]
     fn the_phone_leaves_frame_pacing_to_vsync() {
         assert_eq!(Budget::phone().fps_cap, None);
         assert!(Budget::balanced().fps_cap.is_some());
         assert!(Budget::desktop().fps_cap.is_some());
+    }
+
+    /// No rung may permit a single asset larger than its own frame upload budget.
+    ///
+    /// The two are the same quantity seen from opposite ends, and nothing but this
+    /// test connects them. `RenderAssetBytesPerFrame` always writes at least one
+    /// *whole* asset per frame so that uploads can never stall — so a mesh above
+    /// the budget is a frame above the budget, and the throttle that exists to
+    /// prevent exactly that quietly does not apply. They drifted to 8 MB against
+    /// 4 MB, which is how an Adreno 840 was handed a 6 MB asset on 2026-08-18 and
+    /// lost its device with the budget switched on and apparently working.
+    #[test]
+    fn no_rung_permits_an_asset_larger_than_its_own_frame() {
+        for (name, budget) in [
+            ("phone", Budget::phone()),
+            ("balanced", Budget::balanced()),
+            ("desktop", Budget::desktop()),
+        ] {
+            let Some(per_frame) = budget.upload_bytes_per_frame else {
+                continue;
+            };
+            assert!(
+                crate::systems::lod22::max_cell_mesh_bytes_for(&budget) <= per_frame,
+                "{name}: a cell may be larger than the whole frame's budget"
+            );
+        }
     }
 
     /// Only 1× and 4× are portable (see `Budget::msaa`), so **no** rung may ask for

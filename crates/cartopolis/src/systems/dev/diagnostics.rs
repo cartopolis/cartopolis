@@ -171,9 +171,19 @@ fn compose(s: &DiagnosticsSources) -> String {
         None => out.push_str("adapter: (no render adapter — headless)\n"),
     }
     out.push_str(&format!(
-        "quality: {:?} (render scale {:.2}, msaa {:?}, shadows {}, sky_dome {})\n",
-        budget.tier, budget.render_scale, budget.msaa, budget.shadows, budget.sky_dome,
+        "quality: {:?} (render scale {:.2}, msaa {:?}, shadows {})\n",
+        budget.tier, budget.render_scale, budget.msaa, budget.shadows,
     ));
+    // What the tier *asked for* is above; what the device *answered* is here, and
+    // the two are separate lines because confusing them is what this whole seam
+    // exists to stop (`quality::Capabilities`).
+    match crate::quality::capabilities() {
+        Some(c) => out.push_str(&format!(
+            "capabilities: float32_filterable {}, vsync-paced {}\n",
+            c.float32_filterable, c.vsync_paced,
+        )),
+        None => out.push_str("capabilities: (no renderer yet)\n"),
+    }
     match s.sky.as_deref() {
         Some(mode) => out.push_str(&format!("sky: {mode:?}\n")),
         None => out.push_str("sky: (not decided yet)\n"),

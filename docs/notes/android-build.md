@@ -657,14 +657,19 @@ without. A pause/resume is the ordinary way for an Android app to lose its
 surface, and a system dialog is the ordinary way to be paused, so *any* GPU error
 that a dialog provoked cost the entire session.
 
-`lib.rs::handle_render_error` now answers by kind. `DeviceLost` — the error wgpu
-delivers through its own device-lost callback, and the one that is plausibly
-transient — rebuilds the renderer through `RenderCreation::Automatic`, twice at
-most (`MAX_RENDER_RECOVERIES`; a device that has genuinely gone answers every
-attempt the same way and an uncapped loop is a flat battery). `Validation` and
-`OutOfMemory` still halt, for the reason the earlier note gives: they recur the
-instant rendering resumes, and `Ignore` on a handheld screen is a strobe. A halt
-is now **written to `crash_report_path()`**, so the next launch hands it to the
+`lib.rs::handle_render_error` answered by kind for a fortnight: `DeviceLost` — the
+error wgpu delivers through its own device-lost callback, and the one that is
+plausibly transient — rebuilt the renderer through `RenderCreation::Automatic`,
+twice at most, while `Validation` and `OutOfMemory` halted (they recur the instant
+rendering resumes, and `Ignore` on a handheld screen is a strobe).
+
+**That recovery was removed on 2026-08-18, because it never once worked and it
+aborted the process both times it ran.** See "The recovery that could not be
+written" below. Every kind halts now. The trade is stated rather than hidden: a
+transient device loss costs the session instead of being ridden out — but it costs
+a *restart*, where recovering cost a *crash*.
+
+A halt is **written to `crash_report_path()`**, so the next launch hands it to the
 share sheet exactly as a panic — which is the whole point, and is how
 `FLOAT32_FILTERABLE` was named in one round trip. It is also logged once rather
 than once per frame; bevy calls the handler on every extract for as long as the
@@ -1089,39 +1094,68 @@ E BufferQueueProducer: ... connect: already connected (cur=1 req=1)
 E vulkan  : native_window_api_connect() failed: Invalid argument (-22)
 ```
 
-`lib.rs::release_window_surfaces` now drops the old surface before the handler
-returns. Dropping is what disconnects the window — wgpu-hal's `Surface::drop`
-destroys the `VkSurfaceKHR` and libvulkan's `DestroySurfaceKHR` is where
-`native_window_api_disconnect` lives. Two details are load-bearing and are
-documented at the function: the swap-chain textures go first (a live
-`SurfaceTexture` holds its surface open past the drop), and `WindowSurfaces` is
-*replaced with a default*, never removed, because `extract_windows` takes it as a
-plain `ResMut` and runs on the very next system — a removed resource is a panic
-one frame later, in a different place, about something else.
+The fix was `lib.rs::release_window_surfaces`: drop the old surface before the
+handler returns, since dropping is what disconnects the window (wgpu-hal's
+`Surface::drop` destroys the `VkSurfaceKHR`, and libvulkan's `DestroySurfaceKHR`
+is where `native_window_api_disconnect` lives).
 
-So the general rule for this handler: **a `Recover` must first give back
-everything the new renderer is about to ask for.** Anything else holding a device
-or a window across a rebuild is the next instance of this bug.
+## The recovery that could not be written (2026-08-18)
+
+**That fix swapped one abort for another, and the second one is the lesson.** With
+the surface released first, the *next* run on the same device died one layer down:
+
+```
+E ... Caught DeviceLost error: Unknown Device is lost
+W ... render device lost — rebuilding the renderer  attempt = 1
+F ... Abort message: 'Trying to destroy a SwapchainAcquireSemaphore that is still
+      in use by a SurfaceTexture'
+      wgpu-hal-29.0.4/src/vulkan/swapchain/native.rs:359
+```
+
+Both aborts are a `panic!`/`expect` inside wgpu-hal, on the render thread, and
+neither is ours to catch. The reason there is no third attempt is that the shape
+is wrong, not the details: **the error handler runs inside the render schedule,
+mid-frame**, and a swapchain image acquired for that frame is still referenced by
+bevy's view targets and by wgpu's own presentation state. There is no point in
+there at which a surface can be torn down safely. "Give back everything the new
+renderer is about to ask for" — the rule the previous section ended with — turns
+out not to be satisfiable from where the handler stands. Deferring the rebuild to
+a frame boundary is what would work, and that is upstream's job:
+`RenderErrorPolicy::Recover` is supposed to *be* that affordance.
+
+So `DeviceLost` halts like every other kind, and the halt writes the report. If
+bevy or wgpu grow a recovery that survives an Android surface, `handle_render_error`
+is the function to revisit — and the way to know it works is the device.
 
 **The second finding from the same report: the phone tier is a stand-in for a
 device, and this device was not it.** The startup log showed `no atmosphere on
 this adapter — drawing the analytic sky dome instead` on a GPU that offers
 `FLOAT32_FILTERABLE` and could have drawn the real one. Both halves were wrong.
 The *cause* was `quality::Budget::sky_dome`, not the adapter — `quality::auto()`
-answers `Budget::phone()` for every Android device, because the budget must be
+answered `Budget::phone()` for every Android device, because the budget must be
 resolved before a renderer exists (`platform::workers` is sized from it), so
-"Android" silently means "a Fairphone 4". And the *message* asserted the one
+"Android" silently meant "a Fairphone 4". And the *message* asserted the one
 reason it was not, which sent the report chasing a missing feature the device has.
 
-`quality::gpu_affords_atmosphere` is the narrow fix: at `setup_camera`, where the
-adapter is finally in hand, a GPU the driver names as generations past that
-handset (Adreno ≥ 700, Immortalis, Mali-G ≥ 700, Xclipse ≥ 900; an unknown name
-keeps the tier's answer) lifts the tier's veto on the sky and nothing else. The
-rest of the phone budget — the halved render scale, the per-frame streaming
-divisors, the reduced radii — is about fill and main-thread work that a fast GPU
-does not excuse, and this device lost its Vulkan device to the startup burst while
-*already* on that budget. The dome's own log line no longer names a reason;
-`setup_camera` logs the one that applied.
+The first fix was `quality::gpu_affords_atmosphere`, a table of GPU families
+(Adreno ≥ 700, Immortalis, Mali-G ≥ 700, Xclipse ≥ 900) consulted at
+`setup_camera` to lift the tier's veto. **It lasted a day, and it was the same
+mistake one level down**: a guess about hardware nobody in the loop owns, wrong by
+default for every part not on the list, needing an edit per device. Both it and
+`Budget::sky_dome` were deleted on 2026-08-18. The adapter is asked whether it can
+filter a float32 texture, and if it can, it gets the sky it can draw
+(`quality::Capabilities`). A machine that *should not* spend the frame is put on a
+lower rung deliberately — Settings ▸ Map, or `CARTO_QUALITY` — which is a person
+deciding rather than a table guessing.
+
+The rule that came out of it, and the reason `Capabilities` is a type rather than
+three call sites: **if a question can be asked of the device, ask it; if it can
+only be judged, it belongs in `Budget` and a person may override it.** The sky is
+the worked example. Frame pacing is the second: `frame_limiter` skips itself when
+the *window* reports a vsync-paced present mode, rather than when the tier says
+`fps_cap: None` — which is how the guard came to be silently lost when Android
+moved from the phone rung to the balanced one, with the test that was supposed to
+protect it still passing, because it tested the rung.
 
 Only the Adreno arm of that table comes from hardware. The rest is vendor
 numbering, which is why the default is "keep the tier's answer".

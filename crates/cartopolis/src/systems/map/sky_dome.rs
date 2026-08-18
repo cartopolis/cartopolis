@@ -41,16 +41,20 @@
 //! keeps its meaning of *no sky at all* — it is a bisecting switch, and a switch
 //! that silently swapped one sky for another would not bisect anything.
 //!
-//! **The refusal is not the only way to get here.** `quality::Budget::sky_dome`
-//! also chooses this shell on a machine that *could* run the atmosphere and should
-//! not spend the frame on it, and on Android that budget is not measured — every
-//! device there gets the phone tier, because it is resolved before a renderer
-//! exists. So a flagship handset ended up here on a technicality (an Adreno 840,
-//! 2026-08-17, whose only fault was running Android), and the fix is
-//! `quality::gpu_affords_atmosphere`: the tier's veto is lifted for a GPU the
-//! driver names as being generations past the one this budget was written for.
-//! When reading a report, take the reason from `setup_camera`'s log line and not
-//! from the presence of this module.
+//! **The refusal is now the *only* way to get here**, and it took two attempts to
+//! arrive at that. A `quality::Budget::sky_dome` used to choose this shell on a
+//! machine that could run the atmosphere and should not spend the frame on it —
+//! which is a fair distinction and an unanswerable question, because the budget is
+//! resolved before a renderer exists and so on Android it meant "this is a
+//! Fairphone 4" for every handset. A flagship ended up here on that technicality
+//! (an Adreno 840, 2026-08-17, whose only fault was running Android). The patch
+//! was a table of GPU families; the fix, on 2026-08-18, was deleting both and
+//! asking the adapter (`quality::Capabilities::float32_filterable`). A device that
+//! should not spend the frame is now put on a lower rung by a person, which is a
+//! decision somebody can be wrong about out loud.
+//!
+//! When reading a report, take the reason from `setup_camera`'s `sky chosen` log
+//! line and not from the presence of this module.
 
 use bevy::light::light_consts::lux::RAW_SUNLIGHT;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
