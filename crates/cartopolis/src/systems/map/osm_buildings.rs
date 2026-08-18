@@ -470,11 +470,25 @@ pub struct OsmBuildings {
     /// Spawned far-cell mesh entities (buildings + windows), despawned when out
     /// of range.
     far_cells: HashMap<(i64, i64), Vec<Entity>>,
-    /// Shared material for all far-cell building meshes.
-    far_material: Option<Handle<StandardMaterial>>,
-    /// Per-bucket window materials shared by all far cells; their emissive is
-    /// driven by `update_window_glow` through the cells' `WindowGlow` entities.
-    far_window_materials: Option<[Handle<StandardMaterial>; 4]>,
+    /// Shared material for every building mesh this module spawns — far cells
+    /// **and** the detail patch.
+    ///
+    /// The detail patch used to call `materials.add` on each rebuild while the
+    /// far lane, 250 lines below, correctly cached. Since a rebuild fires on the
+    /// `DETAIL_REFETCH_COOLDOWN` (2 s) whenever you are under `DETAIL_FREEZE_ALT`,
+    /// that was five `StandardMaterial`s — a bind group and a uniform each —
+    /// created and dropped every two seconds for as long as anyone walked around
+    /// a city. Sharing one handle also puts both lanes in the same batch set,
+    /// which is what lets them merge into one draw on a GPU that batches.
+    building_material: Option<Handle<StandardMaterial>>,
+    /// Per-bucket window materials shared by every window mesh, far or detail;
+    /// their emissive is driven by `update_window_glow` through the cells'
+    /// `WindowGlow` entities.
+    ///
+    /// Safe to share across the two lanes because that system writes emissive
+    /// *per bucket*: two entities holding the same handle also hold the same
+    /// `WindowGlow` multiplier, so the second write is the first one repeated.
+    window_materials: Option<[Handle<StandardMaterial>; 4]>,
     /// Per-building data for the current patch, retained so an individual building
     /// can later be hit-tested and converted to an editable prim (ADR-020/021).
     buildings: Vec<Building>,
@@ -564,8 +578,8 @@ impl Default for OsmBuildings {
             }),
             terrain_revision: 0,
             far_cells: HashMap::new(),
-            far_material: None,
-            far_window_materials: None,
+            building_material: None,
+            window_materials: None,
             buildings: Vec::new(),
         }
     }
@@ -1153,7 +1167,7 @@ pub fn update_buildings(
             match built {
                 Ok(Some((grid_cell, mesh, windows))) => {
                     let material = osm
-                        .far_material
+                        .building_material
                         .get_or_insert_with(|| {
                             materials.add(StandardMaterial {
                                 base_color: Color::WHITE,
@@ -1186,7 +1200,7 @@ pub fn update_buildings(
                     // Window meshes: same recipe as the detail patch, but the four
                     // bucket materials are shared across every far cell.
                     let win_mats = osm
-                        .far_window_materials
+                        .window_materials
                         .get_or_insert_with(|| {
                             std::array::from_fn(|_| {
                                 materials.add(StandardMaterial {
@@ -1413,15 +1427,21 @@ fn spawn_detail_patch(
     detail: Option<Mesh>,
     windows: [Option<Mesh>; 4],
 ) {
-    // Building mesh: one white material, per-vertex wall/roof colours.
+    // Building mesh: one white material, per-vertex wall/roof colours. Cached on
+    // `OsmBuildings` and shared with the far lane — see `building_material`.
     if let Some(mesh) = detail {
-        let material = materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 0.95,
-            double_sided: !BACKFACE_CULL,
-            cull_mode: building_cull_mode(),
-            ..default()
-        });
+        let material = osm
+            .building_material
+            .get_or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    perceptual_roughness: 0.95,
+                    double_sided: !BACKFACE_CULL,
+                    cull_mode: building_cull_mode(),
+                    ..default()
+                })
+            })
+            .clone();
         let entity = commands
             .spawn((
                 Mesh3d(meshes.add(mesh)),
@@ -1438,18 +1458,26 @@ fn spawn_detail_patch(
 
     // Window meshes: dark glass by day; per-bucket emissive faded in at night by
     // `update_window_glow`, so windows vary (off / dim / bright) across buildings.
+    let win_mats = osm
+        .window_materials
+        .get_or_insert_with(|| {
+            std::array::from_fn(|_| {
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.07, 0.09, 0.13),
+                    emissive: LinearRgba::BLACK,
+                    perceptual_roughness: 0.25,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                })
+            })
+        })
+        .clone();
     for (i, w) in windows.into_iter().enumerate() {
         let Some(mesh) = w else {
             continue;
         };
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.07, 0.09, 0.13),
-            emissive: LinearRgba::BLACK,
-            perceptual_roughness: 0.25,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        });
+        let material = win_mats[i].clone();
         let entity = commands
             .spawn((
                 Mesh3d(meshes.add(mesh)),
