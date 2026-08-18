@@ -526,13 +526,29 @@ impl UserStore {
     /// Silent by construction. Any failure here means "no preference", which is
     /// the correct answer for a missing, unreadable or older file, and the real
     /// load a moment later is what reports it.
+    ///
+    /// **It must not deserialise [`UserData`], and that is not a performance
+    /// point.** This function is called as the *argument* to `quality::init`, so
+    /// it runs before the tier is set — and `LayerPrefs`' five detail flags carry
+    /// `#[serde(default = "detail_default")]`, which calls `quality::budget()`,
+    /// which initialises the process-wide `OnceLock` from `detect(None)`. A
+    /// `user.json` whose `layers` object is missing any one of those keys
+    /// therefore *decided the tier* before `init` was reached; `init`'s
+    /// `BUDGET.set()` then failed, and because its log line sits inside that
+    /// guard, the whole thing was silent — no `render budget resolved`, and the
+    /// user's Settings choice discarded on the one platform that has no
+    /// environment variable to override it with. Reading through
+    /// [`serde_json::Value`] touches no `#[serde(default)]` on any other field,
+    /// which is the property that matters here.
     #[must_use]
     pub fn preferred_quality() -> Option<&'static str> {
         let bytes =
             crate::platform::storage::read_now(crate::platform::storage::Namespace::Data, USER_KEY)
                 .ready()?;
-        let data: UserData = serde_json::from_slice(&bytes).ok()?;
-        data.settings.quality.as_env_word()
+        let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let preset: crate::resources::QualityPreset =
+            serde_json::from_value(json.get("settings")?.get("quality")?.clone()).ok()?;
+        preset.as_env_word()
     }
 
     pub fn load() -> Self {
