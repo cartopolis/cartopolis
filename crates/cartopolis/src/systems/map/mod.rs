@@ -10,6 +10,7 @@ pub mod map_stream;
 pub mod osm_buildings;
 pub mod render_scale;
 pub mod rendering;
+pub mod sky;
 pub mod sky_dome;
 pub mod street_furniture;
 pub mod street_labels;

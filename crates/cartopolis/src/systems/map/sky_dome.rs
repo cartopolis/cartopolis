@@ -207,7 +207,8 @@ pub fn sky_dome_params(hours: f32, decl_rad: f32, altitude_m: f32) -> SkyDomePar
     // …taken the rest of the way to zero before the shell is hidden, so that the
     // hide is not a cut (see SKY_DOME_MAX_ALT).
     let fade = 1.0 - sun::smoothstep(SKY_DOME_FADE_ALT, SKY_DOME_MAX_ALT, altitude_m);
-    let source = tint * (RAW_SUNLIGHT * crate::SUN_SCALE * day * fade / std::f32::consts::PI);
+    let source =
+        tint * (RAW_SUNLIGHT * crate::systems::sky::SUN_SCALE * day * fade / std::f32::consts::PI);
 
     SkyDomeParams {
         rayleigh: rayleigh * column,
@@ -379,7 +380,9 @@ pub fn update_sky_dome(
         // The disc is drawn at exactly the size bevy's `SunDisk` would have drawn
         // it, so a device that gains the real atmosphere does not gain a
         // different sun with it.
-        mat.mie = p.aerosol.extend((crate::SUN_DISK_ANGULAR_SIZE * 0.5).cos());
+        mat.mie = p
+            .aerosol
+            .extend((crate::systems::sky::SUN_DISK_ANGULAR_SIZE * 0.5).cos());
         mat.source = p.source.extend(0.0);
         mat.night = p.night.extend(0.0);
     }

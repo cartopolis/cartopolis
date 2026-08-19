@@ -35,9 +35,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
+use crate::systems::sky::CLOUD_WIND;
 use crate::systems::vector_tiles::{self, ShoreField};
 use crate::systems::weather::WeatherState;
-use crate::CLOUD_WIND;
 
 /// Albedo of the water body itself — dark, because nearly everything you see
 /// looking at water is *reflected*, not scattered back out of it.
