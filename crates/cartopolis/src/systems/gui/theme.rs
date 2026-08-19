@@ -689,6 +689,24 @@ pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32
 pub const WORDMARK_HEAD: &str = "carto";
 pub const WORDMARK_TAIL: &str = "polis";
 
+/// The tail's orange — [`ACCENT`] itself, the brand colour off the logo.
+///
+/// **Named rather than written at each of the three sites, because they had
+/// already drifted.** This was [`ACCENT_TEXT`] (`#FFA470`) here while
+/// `index.html`'s `#wordmark b` carried `#FF9457`, so the name was painted in two
+/// different colours on the two halves of one startup screen — and neither was
+/// the orange beside it: the mark's ring and the loader's progress bar are plain
+/// `#FD6012`. On the splash the wordmark sits directly above both, and a
+/// lightened accent next to the real one reads as pink rather than as brand.
+///
+/// [`ACCENT_TEXT`] exists because plain [`ACCENT`] is 4.9:1 on [`SURFACE`] and
+/// small type wants more; that argument does not reach display type. The wordmark
+/// is [`SPLASH_WORDMARK`] (40 pt) on the splash and no smaller on the sign-in
+/// card, which is far above the 18.66 pt where 3:1 is the bar — so 4.9:1 is a
+/// comfortable margin here, not a borrowed one. Keep small accent labels on
+/// [`ACCENT_TEXT`]; this constant is for the name.
+pub const WORDMARK_TAIL_COLOR: Color32 = ACCENT;
+
 /// Paint the wordmark centred on `center` at `size` points, faded by `alpha`.
 ///
 /// Laid out as two galleys and placed from their combined width, because
@@ -700,13 +718,13 @@ pub fn paint_wordmark(p: &egui::Painter, center: egui::Pos2, size: f32, alpha: f
     };
     let font = FontId::new(size, brand_family());
     let head = p.layout_no_wrap(WORDMARK_HEAD.to_owned(), font.clone(), a(CREAM));
-    let tail = p.layout_no_wrap(WORDMARK_TAIL.to_owned(), font, a(ACCENT_TEXT));
+    let tail = p.layout_no_wrap(WORDMARK_TAIL.to_owned(), font, a(WORDMARK_TAIL_COLOR));
     let total = head.size().x + tail.size().x;
     let left = center.x - total * 0.5;
     let top = center.y - head.size().y * 0.5;
     let head_w = head.size().x;
     p.galley(egui::pos2(left, top), head, a(CREAM));
-    p.galley(egui::pos2(left + head_w, top), tail, a(ACCENT_TEXT));
+    p.galley(egui::pos2(left + head_w, top), tail, a(WORDMARK_TAIL_COLOR));
 }
 
 /// [`paint_wordmark`] for a laid-out row rather than a painter — the sign-in
@@ -724,7 +742,7 @@ pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
         ui.label(
             egui::RichText::new(WORDMARK_TAIL)
                 .font(font)
-                .color(ACCENT_TEXT),
+                .color(WORDMARK_TAIL_COLOR),
         );
     });
 }
@@ -2455,6 +2473,46 @@ mod tests {
     /// *loaded font stack* whether each non-Latin-1 character in it has a glyph.
     /// Latin-1 is exempt because Ubuntu-Light covers it and a `°` or a `·` is not
     /// a guess anyone is making.
+    /// The name is painted in one orange on both halves of the startup screen.
+    ///
+    /// `systems::splash` and `index.html`'s loader are one screen handed over
+    /// mid-load, and the module doc has said "change one and change the other"
+    /// since they were built. They drifted anyway, silently and in the way that
+    /// rule cannot catch: the Rust side used `ACCENT_TEXT` (`#FFA470`) and the CSS
+    /// used `#FF9457`, two different lightened accents, neither of them the plain
+    /// `#FD6012` of the mark's ring right above them and the progress bar right
+    /// below. Nobody sees the handover as a colour change — the wordmark simply
+    /// reads pink on a screen whose every other orange is the brand's.
+    ///
+    /// Reading the real `index.html` rather than restating the hex here: a
+    /// constant copied into a test is a second place to drift, and this is a test
+    /// about two places already having done that.
+    #[test]
+    fn the_wordmark_is_one_orange_on_both_splashes() {
+        assert_eq!(
+            WORDMARK_TAIL_COLOR, ACCENT,
+            "the wordmark tail is the brand accent"
+        );
+        let css = format!(
+            "#{:02x}{:02x}{:02x}",
+            WORDMARK_TAIL_COLOR.r(),
+            WORDMARK_TAIL_COLOR.g(),
+            WORDMARK_TAIL_COLOR.b()
+        );
+        let loader = include_str!("../../../index.html");
+        let rule = loader
+            .split("#wordmark b {")
+            .nth(1)
+            .expect("index.html still styles the wordmark tail")
+            .split('}')
+            .next()
+            .expect("`#wordmark b` rule is closed");
+        assert!(
+            rule.to_ascii_lowercase().contains(&css),
+            "index.html paints the wordmark tail {rule:?}, but the app paints it {css}"
+        );
+    }
+
     #[test]
     fn no_painted_glyph_is_tofu() {
         // **Both crates that put a glyph on screen, not just this one.**
