@@ -31,18 +31,23 @@ use crate::systems;
 use crate::utils;
 use crate::utils::sun::sun_direction;
 
-pub(crate) fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
+pub(crate) fn setup_sky(
+    mut commands: Commands,
+    dev: Res<DevPanelState>,
+    prefs: Res<resources::AppPrefs>,
+) {
     // The built-in atmosphere derives the sky from the sun's `DirectionalLight`
     // direction and the camera position, so there's no atmosphere model to poke
     // here — we just spawn the sun/moon lights. `AmbientLight` is a per-camera
     // component now (set in setup_camera, driven by apply_day_night_cycle).
-    spawn_sun_light(&mut commands, &dev);
+    let shadows = prefs.shadows_on();
+    spawn_sun_light(&mut commands, &dev, shadows);
 
     // Moonlight is a second, shadow-casting directional light. It only exists while
     // it actually contributes (moon up at night); `manage_moon_light` spawns and
     // despawns it so its 4 shadow cascades aren't rendered through the whole day.
     if moon_light_wanted(&dev) {
-        spawn_moon_light(&mut commands, &dev);
+        spawn_moon_light(&mut commands, &dev, shadows);
     }
 }
 
@@ -75,7 +80,7 @@ pub(crate) fn shadow_cascades() -> usize {
     platform_max.min(quality::budget().shadow_cascades)
 }
 
-pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
+pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
     let (sun_color, illuminance) =
         sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
@@ -83,7 +88,7 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: sun_color,
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled && !env_flag("CARTO_NO_SHADOWS"),
+            shadow_maps_enabled: shadows && !env_flag("CARTO_NO_SHADOWS"),
             ..default()
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
@@ -130,7 +135,7 @@ pub(crate) fn moon_light_wanted(dev: &DevPanelState) -> bool {
 /// Spawn the moon's directional light with its shadow cascades. Perceptually
 /// blue-gray, with a shorter shadow range than the sun — moon shadows only need to
 /// read up close.
-pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
+pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let illuminance = MOONLIGHT_ILLUMINANCE
         * moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad)
@@ -139,7 +144,7 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled && !env_flag("CARTO_NO_SHADOWS"),
+            shadow_maps_enabled: shadows && !env_flag("CARTO_NO_SHADOWS"),
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
@@ -172,32 +177,38 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
 pub(crate) fn manage_lights(
     mut commands: Commands,
     dev: Res<DevPanelState>,
+    // Shadows are a *preference* now (Settings ▸ Graphics), so this system's
+    // change gate has to watch both resources — with `dev.is_changed()` alone,
+    // flipping the checkbox did nothing until the clock or the weather next moved.
+    prefs: Res<resources::AppPrefs>,
     sun: Query<Entity, With<SunLight>>,
     moon: Query<Entity, With<MoonLight>>,
     mut last_shadows: Local<Option<bool>>,
 ) {
-    if !dev.is_changed() {
+    if !dev.is_changed() && !prefs.is_changed() {
         return;
     }
     // A shadow-toggle flip (not the first run, where setup_sky already spawned
     // the lights correctly) respawns both lights with the new shadow state.
-    let prev = last_shadows.replace(dev.shadows_enabled);
-    let shadows_flipped = prev.is_some() && prev != Some(dev.shadows_enabled);
+    let shadows = prefs.shadows_on();
+    let prev = last_shadows.replace(shadows);
+    let shadows_flipped = prev.is_some() && prev != Some(shadows);
 
     if shadows_flipped {
         for e in sun.iter() {
             commands.entity(e).despawn();
         }
-        spawn_sun_light(&mut commands, &dev);
+        spawn_sun_light(&mut commands, &dev, shadows);
         for e in moon.iter() {
             commands.entity(e).despawn();
         }
         if moon_light_wanted(&dev) {
-            spawn_moon_light(&mut commands, &dev);
+            spawn_moon_light(&mut commands, &dev, shadows);
         }
     } else {
         match (moon_light_wanted(&dev), moon.single()) {
-            (true, Err(_)) => spawn_moon_light(&mut commands, &dev), // wanted but absent
+            // wanted but absent
+            (true, Err(_)) => spawn_moon_light(&mut commands, &dev, shadows),
             (false, Ok(entity)) => {
                 commands.entity(entity).despawn(); // present but no longer wanted
             }

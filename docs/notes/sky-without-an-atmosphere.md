@@ -6,7 +6,8 @@ triggers:
   - bumping Bevy, or reading `bevy_pbr::medium` / `ScatteringMedium`
   - considering vendoring or patching `bevy_pbr`
   - "why are there two skies"
-updated: 2026-08-16
+  - choosing a sky from Settings ▸ Graphics (`AppPrefs::sky`)
+updated: 2026-08-19
 ---
 
 # The sky on a GPU that cannot run bevy's atmosphere
@@ -52,8 +53,9 @@ Two details worth pinning, because both have already been got wrong once:
 or `Rgba16Float` without `STORAGE_BINDING` — which merely log a warning and skip
 the plugin. Those are *not* what happens here: our own gate fires first. If a
 device ever hits one of those instead, the symptom is the same black sky and
-`SkyMode` will still say `Atmosphere`, which is the one case the dev-panel
-readout would lie about.
+`SkyMode` will still say `Atmosphere`, which is the one case the Settings ▸
+Graphics readout would lie about — it reports the sky that was *chosen*, and a
+plugin that skipped itself after the choice is invisible to it.
 
 ## What the fallback is
 
@@ -101,8 +103,18 @@ model, and at that point the honest move is to fix bevy's instead.
 It is also *not* what `CARTO_NO_ATMOSPHERE` selects. That flag still means **no
 sky at all**, because it is a bisecting switch and one that quietly substituted a
 different sky would bisect nothing. `CARTO_SKY_DOME=1` is the other direction: it
-forces the fallback on hardware that could run the real thing, which is the only
-way to look at what the phone sees without holding the phone.
+forces the fallback on hardware that could run the real thing.
+
+**Since 2026-08-19 that direction is also a setting** — Settings ▸ Graphics ▸ Sky
+(Automatic / Full atmosphere / Simple), stored as `AppPrefs::sky` and read once by
+`setup_camera` beside the capability test. The env flag stays, and the two are not
+redundant: a flag is per-launch and reaches a scripted capture, while the setting
+persists and is the only one of the pair a phone can reach at all. Note the
+asymmetry the code enforces — asking for `Simple` always works, asking for `Full`
+still has to pass `FLOAT32_FILTERABLE`, because the alternative to refusing is the
+bind-group validation failure that takes the whole app down. The tab reports which
+sky the run actually got, and why, for the same reason this file exists: on the
+platform where it matters there is no log to read.
 
 ## The absent component is a load-bearing fact about the rest of the scene
 

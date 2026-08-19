@@ -464,10 +464,6 @@ pub fn render_dev_panel(
     camera: Query<(&big_space::prelude::GridCell, &Transform), With<crate::components::FreeCamera>>,
     mut copied_at: Local<Option<Instant>>,
     map_anchor: Res<crate::resources::MapAnchor>,
-    // Which sky this run actually got. The checkbox below says what was *asked*
-    // for, and on a device whose adapter refused the atmosphere the two differ —
-    // which, without this line, is a thing you can only learn from `logcat`.
-    sky: Res<crate::systems::sky_dome::SkyMode>,
 ) {
     if !dev.open {
         return;
@@ -580,36 +576,19 @@ pub fn render_dev_panel(
                 );
             });
             ui.separator();
-            ui.label("Render features");
-            crate::systems::theme::checkbox(ui, &mut dev.shadows_enabled, "Shadows (sun + moon)");
-            // Atmosphere / env-map IBL can't be hot-swapped — removing those
-            // components at runtime hangs the GPU on this stack — so they apply at
-            // startup only (a live flip needs a relaunch to take effect).
-            crate::systems::theme::checkbox(
-                ui,
-                &mut dev.atmosphere_enabled,
-                "Atmosphere (restart)",
+            // The render features — shadows, the sky, env-map IBL and the stats
+            // overlay — live in **Settings ▸ Graphics** now. They are not
+            // developer questions: they are what a phone gives up first, and what
+            // a device with a hostile driver most needs to change. Here they were
+            // also unpersisted, so every "restart to apply" toggle reverted on the
+            // restart meant to apply it.
+            ui.label(
+                egui::RichText::new(
+                    "Shadows, sky and the stats overlay are in Settings ▸ Graphics.",
+                )
+                .small()
+                .color(crate::systems::theme::TEXT_DIM),
             );
-            ui.add_enabled(
-                dev.atmosphere_enabled,
-                egui::Checkbox::new(&mut dev.envmap_enabled, "Env-map IBL (restart)"),
-            );
-            if *sky == crate::systems::sky_dome::SkyMode::Dome {
-                // `»`, not the `↳` this used to draw: the bundled font has no
-                // U+21B3, so that arrow was a tofu box. It escaped
-                // `theme::no_painted_glyph_is_tofu` only because the label it sat
-                // in was long enough to be skipped as prose.
-                ui.label(egui::RichText::new("» analytic sky dome").small())
-                    .on_hover_text(
-                        "The sky is drawn by systems::sky_dome instead of bevy's \
-                         atmosphere — either this GPU cannot sample the atmosphere \
-                         LUTs (no FLOAT32_FILTERABLE) or the render budget spends \
-                         the frame elsewhere. The startup log names which. \
-                         CARTO_SKY_DOME=1 forces the same on any machine.",
-                    );
-            }
-            ui.separator();
-            crate::systems::theme::checkbox(ui, &mut dev.show_stats, "Show stats overlay (FPS)");
             ui.separator();
             ui.label("README screenshots");
             // The documentation set is generated from the remembered camera
@@ -941,18 +920,18 @@ pub fn suppress_egui_for_screenshot(
 }
 
 /// Toggleable performance overlay (top-left, below the menu bar): smoothed FPS,
-/// frame time, and live entity count. Enabled from the dev panel's "Show stats
-/// overlay" checkbox — off by default. The FPS/frame-time smoothing lives in
-/// [`StatsState`] (not `DevPanelState`) so updating it every frame doesn't
-/// re-trigger the day/night lighting recompute.
+/// frame time, and live entity count. Switched on from Settings ▸ Graphics — off
+/// by default. The FPS/frame-time smoothing lives in [`StatsState`] (not in the
+/// preference) so updating it every frame doesn't re-trigger the day/night
+/// lighting recompute.
 pub fn render_stats_overlay(
     mut egui: ResMut<EguiManager>,
-    dev: Res<crate::resources::DevPanelState>,
+    prefs: Res<crate::resources::AppPrefs>,
     time: Res<Time<Real>>,
     mut stats: ResMut<crate::resources::StatsState>,
     entities: Query<()>,
 ) {
-    if !dev.show_stats {
+    if !prefs.show_stats {
         return;
     }
     // A frame-rate readout that only updates when you move the mouse measures the
