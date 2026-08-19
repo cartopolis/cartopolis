@@ -77,6 +77,10 @@ const FETCH_RETRY_SECS: f64 = 3.0;
 ///
 /// 8 matches `map_geometry::SURFACE_MAX_IN_FLIGHT` and the `platform::workers` pool
 /// ceiling, so every worker stays fed while the decoded backlog stays around 11 MB.
+/// That 11 MB is the same number the *upload* side had to stop handing over in one
+/// frame — see `apply_stream_textures`, where the count is now paired with a byte
+/// ceiling, because a bound in items says nothing about the quantity a driver
+/// actually chokes on.
 const TILE_MAX_IN_FLIGHT: usize = 8;
 /// Max ground tiles to despawn per frame — the mass-*despawn* twin of
 /// `MAX_UPLOADS_PER_FRAME`. A zoom-out steps the LOD zoom down and retires the
@@ -1052,7 +1056,59 @@ pub fn apply_stream_textures(
     const MAX_UPLOADS_PER_FRAME: usize = 8;
     let uploads = crate::quality::budget().per_frame(MAX_UPLOADS_PER_FRAME);
     let mut ready = stream.tiles.take_results();
-    let deferred = ready.split_off(ready.len().min(uploads));
+
+    // …and the same bound in **bytes**, which is the one that decides whether a
+    // mobile driver survives the frame.
+    //
+    // The count above is not a byte budget and never was, and on this rung the two
+    // are not close. A finished tile at `tile_px = 512` is a fixed-size RGBA8 mip
+    // chain — 1,365 kB every time, since the raster size is the tier's, not the
+    // content's — so `8` is not "eight tiles' worth", it is *always* 10.9 MB. On
+    // 2026-08-19 an Adreno 840 was measured queueing exactly that from a cold start
+    // (`frame_kb = 10922`, repeatedly) against a 4 MB frame budget, and the same
+    // figure reproduces here headlessly on `CARTO_QUALITY=android`. CLAUDE.md's
+    // rule — bound it in bytes, not only in items — was written for `lod22` and
+    // applied there; this is the streamer that dominates startup, and it was still
+    // counting items.
+    //
+    // The backlog is the damage, and it is arithmetic rather than inference: bevy
+    // writes ~4 MB of what it is handed and re-queues the rest, so a frame that
+    // queues 10.9 MB adds ~7 MB to a pending queue that only drains at 4, for as
+    // long as tiles keep landing — with every deferred tile's decoded mip chain
+    // resident behind it. What that cost the device is the weaker claim and is left
+    // as one: the same run went to 2-second frames, `dequeueBuffer` timeouts and a
+    // lost Vulkan device, which is consistent with this and not proven by it.
+    //
+    // `quality::upload_ceiling` and not the `RenderAssetBytesPerFrame` resource,
+    // and the difference is one rule: that resource carries the scripted-capture
+    // exemption, which belongs to *bevy's* budget and not to this one. A deferred
+    // bevy write is invisible to a settle test that watches streamers; a deferred
+    // tile is a streamer, counted by `awaiting_upload` and waited on as
+    // `map_tiles`. Inheriting the exemption meant a `--shot` run measured a code
+    // path the handset never takes — which is how the first version of this fix
+    // read as doing nothing. `None` — every rung above the phone — leaves this
+    // exactly as it was.
+    //
+    // **Always at least one tile**, whatever the ceiling says. A tile larger than
+    // the whole frame's budget must still be uploaded or it is deferred forever
+    // and the map never fills — the same "one whole asset per frame" rule bevy
+    // itself uses, and for the same reason.
+    let ceiling = crate::quality::upload_ceiling();
+    let mut take = 0usize;
+    let mut queued = 0usize;
+    for (_, outcome) in ready.iter() {
+        if take >= uploads {
+            break;
+        }
+        let cost = outcome.as_ref().map_or(0, |tile| tile.data.len());
+        if take > 0 && ceiling.is_some_and(|max| queued + cost > max) {
+            break;
+        }
+        take += 1;
+        queued += cost;
+    }
+
+    let deferred = ready.split_off(take);
     stream.tiles.defer(deferred);
     for (key, outcome) in ready {
         // Retired before its fetch landed: the entity is gone, so nobody will ever

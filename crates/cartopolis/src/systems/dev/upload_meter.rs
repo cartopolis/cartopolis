@@ -102,6 +102,22 @@ impl UploadMeter {
 /// *before* the crash it explains rather than only in the frame that dies.
 const NOTABLE_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
+/// A *single* asset at or above this says which asset it was.
+///
+/// The peak-asset number has been in every report since this module existed, and
+/// it has never said **what** it was — so a 13.8 MB asset (measured over
+/// Groningen on 2026-08-19, and reproducible) could be read off the log without
+/// anyone being able to name its producer, which is the difference between a
+/// finding and a fact. It is the one quantity no throttle downstream can act on:
+/// bevy's `RenderAssetBytesPerFrame` always writes one whole asset per frame so
+/// uploads cannot stall, so an asset over the budget *is* a frame over the budget.
+///
+/// Set to the phone rung's own `upload_bytes_per_frame`, because that is the
+/// number it has to be under. Logged per occurrence rather than once: the same
+/// producer firing every few seconds and one bad asset at startup are different
+/// bugs, and a once-only line cannot tell them apart.
+const OVERSIZE_ASSET_BYTES: usize = 4 * 1024 * 1024;
+
 /// Sum this frame's new image and mesh bytes into [`UploadMeter`].
 ///
 /// **Runs in `Last`, and has to.** A mesh whose `RenderAssetUsages` omits
@@ -143,6 +159,18 @@ pub fn measure_uploads(
             .get(id)
             .and_then(|image| image.data.as_ref().map(Vec::len))
             .unwrap_or(0);
+        if asset >= OVERSIZE_ASSET_BYTES {
+            let size = images.get(id).map(|i| i.texture_descriptor.size);
+            tracing::warn!(
+                kind = "image",
+                asset_kb = asset / 1024,
+                width = size.map(|s| s.width).unwrap_or(0),
+                height = size.map(|s| s.height).unwrap_or(0),
+                layers = size.map(|s| s.depth_or_array_layers).unwrap_or(0),
+                "single asset above the frame upload budget — no per-frame throttle \
+                 can spread this one (bevy always writes one whole asset)"
+            );
+        }
         meter.peak_asset_bytes = meter.peak_asset_bytes.max(asset);
         bytes += asset;
     }
@@ -156,6 +184,20 @@ pub fn measure_uploads(
         };
         match mesh_bytes(mesh) {
             Some(n) => {
+                if n >= OVERSIZE_ASSET_BYTES {
+                    tracing::warn!(
+                        kind = "mesh",
+                        asset_kb = n / 1024,
+                        vertices = mesh
+                            .try_attributes()
+                            .ok()
+                            .and_then(|mut a| a.next().map(|(_, v)| v.len()))
+                            .unwrap_or(0),
+                        indices = mesh.indices().map_or(0, bevy::mesh::Indices::len),
+                        "single asset above the frame upload budget — no per-frame throttle \
+                         can spread this one (bevy always writes one whole asset)"
+                    );
+                }
                 meter.peak_asset_bytes = meter.peak_asset_bytes.max(n);
                 bytes += n;
             }
