@@ -66,6 +66,30 @@ const MAX_VISIBLE_S: f32 = 18.0;
 /// counted in the budget above rather than added to it.
 const FADE_S: f32 = 0.6;
 
+/// How long the logo, wordmark and motto take to fade *up* at launch.
+///
+/// **The backdrop is not part of it, and that is the whole design.**
+/// [`theme::SURFACE`] is painted opaque from the first frame, because what is
+/// behind this layer is the 3D view with nothing streamed into it yet — fading
+/// the panel itself in would open the app on a flash of empty void and then hide
+/// it again, which is worse than no transition at all. So the slate is there
+/// instantly and the *content* arrives on it.
+///
+/// Inside [`min_visible_s`] rather than added to it: the splash's total hold is
+/// unchanged, and the marks simply spend the first half-second arriving instead
+/// of being there already. Shorter than [`FADE_S`] on purpose — an entrance that
+/// takes as long as an exit reads as a stutter on a cold start, where the frames
+/// are the most expensive ones of the run.
+const FADE_IN_S: f32 = 0.45;
+
+/// Smoothstep. Both fades run through it so the entrance and the exit are the
+/// same motion in opposite directions; a linear ramp starts and stops abruptly at
+/// exactly the two moments anyone is looking at it.
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[derive(Resource, Default)]
 pub struct BootSplash {
     elapsed: f32,
@@ -105,7 +129,9 @@ pub fn boot_splash(
         splash.fading = Some(FADE_S);
     }
 
-    let alpha = match splash.fading {
+    // The dismissal fade, which takes the backdrop with it — this is the layer
+    // lifting off the world.
+    let backdrop = match splash.fading {
         None => 1.0,
         Some(left) => {
             let left = left - dt;
@@ -114,9 +140,14 @@ pub fn boot_splash(
                 splash.finished = true;
                 return;
             }
-            left / FADE_S
+            ease(left / FADE_S)
         }
     };
+    // …and the entrance fade, which the backdrop is deliberately not part of (see
+    // `FADE_IN_S`). Multiplied rather than chosen between, so a splash dismissed
+    // before it has finished arriving — a warm start with `min_visible_s` at the
+    // floor — fades out from wherever it had got to instead of snapping to full.
+    let content = backdrop * ease(splash.elapsed / FADE_IN_S);
 
     // The area to fill, in the points egui lays out in — which are the window's
     // own only while `EguiManager::ui_scale` is 1.0. Reading `Window::width()`
@@ -139,19 +170,19 @@ pub fn boot_splash(
         return;
     }
     let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), viewport);
-    let a = |v: f32| (v * alpha * 255.0) as u8;
-    // Every colour here is a brand constant faded by the dismissal alpha, so the
-    // splash and the UI it uncovers are painted from the same palette.
-    let fade =
-        |c: egui::Color32, v: f32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a(v));
+    // Every colour here is a brand constant faded by one of the two alphas above,
+    // so the splash and the UI it uncovers are painted from the same palette.
+    let fade = |c: egui::Color32, alpha: f32, v: f32| {
+        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (v * alpha * 255.0) as u8)
+    };
 
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
-    painter.rect_filled(rect, 0.0, fade(theme::SURFACE, 1.0));
+    painter.rect_filled(rect, 0.0, fade(theme::SURFACE, backdrop, 1.0));
 
     let c = rect.center();
     // 84 pt of radius — the 168 pt square the logo image used to occupy.
-    theme::paint_mark(&painter, egui::pos2(c.x, c.y - 104.0), 84.0, alpha);
+    theme::paint_mark(&painter, egui::pos2(c.x, c.y - 104.0), 84.0, content);
     // Cream `carto`, accent `polis` — the account GUI's split (see
     // `theme::WORDMARK_HEAD`). The brand family is bound because
     // `EguiManager::default` installed the theme before this context's first
@@ -161,13 +192,13 @@ pub fn boot_splash(
         &painter,
         egui::pos2(c.x, c.y + 24.0),
         theme::SPLASH_WORDMARK,
-        alpha,
+        content,
     );
     painter.text(
         egui::pos2(c.x, c.y + 66.0),
         egui::Align2::CENTER_CENTER,
         MOTTO,
         egui::FontId::proportional(theme::SPLASH_MOTTO),
-        fade(theme::TEXT_DIM, 0.9),
+        fade(theme::TEXT_DIM, content, 0.9),
     );
 }

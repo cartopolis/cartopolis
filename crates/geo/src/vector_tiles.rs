@@ -1359,6 +1359,7 @@ pub(crate) fn clipped_rings(
 #[derive(Debug, Clone)]
 pub struct SurfaceMesh {
     pub group: SurfaceGroup,
+    // (see `VERTEX_BYTES` below for what one of these costs on the GPU)
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     /// Texture coordinates, **empty for the flat-coloured area surfaces** (their
@@ -1378,14 +1379,45 @@ pub struct SurfaceMesh {
     pub colors: Vec<[f32; 4]>,
 }
 
+/// What one vertex of a finished [`SurfaceMesh`] costs on the GPU.
+///
+/// Position (12) + normal (12) + UV (8) + linear RGBA (16). Every one of those is
+/// present by the time the mesh reaches the GPU **even when the fields above are
+/// left empty**, because `map_geometry::build_mesh` fills the gaps — a
+/// straight-up normal, a planar UV, an opaque white. So this is the real figure
+/// and not a lower bound, and it agrees with what `systems::upload_meter` measures
+/// off bevy's `RenderMesh::byte_len` (48 B/vertex, checked against a capture).
+///
+/// It lives in this crate, which may not depend on bevy, because it is a fact
+/// about this struct rather than about the renderer. The *limit* a mesh is cut to
+/// is the caller's to supply — that one is a frame budget and belongs to
+/// `quality`.
+pub const VERTEX_BYTES: usize = 12 + 12 + 8 + 16;
+/// Indices are `u32`, always — a planted cell runs well past 65 k vertices.
+pub const INDEX_BYTES: usize = 4;
+
+/// What this many vertices and indices will cost to upload.
+#[must_use]
+pub fn mesh_upload_bytes(vertices: usize, indices: usize) -> usize {
+    vertices * VERTEX_BYTES + indices * INDEX_BYTES
+}
+
 /// Tessellate a tile's area layers into one mesh per [`SurfaceGroup`].
 ///
 /// `tile_m` is the tile's ground size in metres, so the output is directly in world
 /// units. Only water and landuse are handled here — buildings deliberately are not,
 /// because 3DBAG (ADR-027) and the Overpass detail patches (ADR-022) already supply
 /// them in 3D, and they are ~75% of a tile's triangles.
-pub fn tessellate_surfaces(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
+pub fn tessellate_surfaces(
+    tile: &TileData,
+    tile_m: f32,
+    max_bytes: Option<usize>,
+) -> Result<Vec<SurfaceMesh>, String> {
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
+    // Groups that filled up and were cut loose mid-tile. They keep their slot in
+    // `builders` (emptied), so later features of the same group carry on
+    // accumulating into a fresh buffer rather than reopening a finished one.
+    let mut full: Vec<SurfaceMesh> = Vec::new();
 
     for meta in tile.layers() {
         // (layer, fixed group) — `land` resolves its group per feature instead.
@@ -1423,20 +1455,47 @@ pub fn tessellate_surfaces(tile: &TileData, tile_m: f32) -> Result<Vec<SurfaceMe
                 }
                 _ => {}
             }
+
+            // Cut the group loose once it is over the frame's upload budget, at
+            // this feature boundary. **After** the feature rather than before it:
+            // unlike a tree, a polygon's vertex count is not known until it has
+            // been tessellated, so the choice is to overshoot by one feature or to
+            // guess. Overshooting by one is bounded and correct; a whole cell's
+            // worth is what this exists to stop.
+            //
+            // A single feature larger than the budget still goes as one mesh —
+            // splitting it would mean splitting a triangle fan across meshes, and
+            // bevy writes one whole asset per frame regardless, so there would be
+            // nothing to gain.
+            if max_bytes.is_some_and(|max| mesh_upload_bytes(positions.len(), indices.len()) >= max)
+            {
+                full.push(SurfaceMesh {
+                    group,
+                    positions: std::mem::take(positions),
+                    indices: std::mem::take(indices),
+                    uvs: Vec::new(),
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                });
+            }
         }
     }
 
-    Ok(builders
+    Ok(full
         .into_iter()
-        .filter(|(_, p, i)| !p.is_empty() && !i.is_empty())
-        .map(|(group, positions, indices)| SurfaceMesh {
-            group,
-            positions,
-            indices,
-            uvs: Vec::new(),
-            normals: Vec::new(),
-            colors: Vec::new(),
-        })
+        .chain(
+            builders
+                .into_iter()
+                .filter(|(_, p, i)| !p.is_empty() && !i.is_empty())
+                .map(|(group, positions, indices)| SurfaceMesh {
+                    group,
+                    positions,
+                    indices,
+                    uvs: Vec::new(),
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                }),
+        )
         .collect())
 }
 
@@ -1713,6 +1772,7 @@ pub fn tessellate_roads(
     tile: &TileData,
     tile_m: f32,
     decks: &[BridgeDeck],
+    max_bytes: Option<usize>,
 ) -> Result<Vec<SurfaceMesh>, String> {
     let Some(meta) = tile.layer("streets") else {
         return Ok(Vec::new());
@@ -1723,6 +1783,9 @@ pub fn tessellate_roads(
     let nodes = street_nodes(&features);
 
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    // Groups cut loose mid-tile, over the frame's upload budget. See the sweep at
+    // the bottom of the feature loop.
+    let mut full: Vec<SurfaceMesh> = Vec::new();
     let slot_for = |builders: &mut Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)>,
                     group: SurfaceGroup| {
         match builders.iter().position(|(g, _, _, _)| *g == group) {
@@ -1861,19 +1924,47 @@ pub fn tessellate_roads(
                 }
             }
         }
+
+        // One sweep per feature, over every group rather than the one just
+        // touched: a single street writes into two builders (its surface and its
+        // casing), so checking only the last would leave the other to grow.
+        //
+        // The cut is after the feature, not before it — a ribbon's vertex count is
+        // not known until it has been laid — so the bound is "the ceiling plus at
+        // most one feature", which is what `scatter`'s test asserts. A road cell
+        // over Groningen was 4.2 MB in one mesh (2026-08-19); one feature is a
+        // street.
+        if let Some(max) = max_bytes {
+            for (group, positions, uvs, indices) in &mut builders {
+                if mesh_upload_bytes(positions.len(), indices.len()) >= max {
+                    full.push(SurfaceMesh {
+                        group: *group,
+                        positions: std::mem::take(positions),
+                        uvs: std::mem::take(uvs),
+                        indices: std::mem::take(indices),
+                        normals: Vec::new(),
+                        colors: Vec::new(),
+                    });
+                }
+            }
+        }
     }
 
-    Ok(builders
+    Ok(full
         .into_iter()
-        .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
-        .map(|(group, positions, uvs, indices)| SurfaceMesh {
-            group,
-            positions,
-            uvs,
-            indices,
-            normals: Vec::new(),
-            colors: Vec::new(),
-        })
+        .chain(
+            builders
+                .into_iter()
+                .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
+                .map(|(group, positions, uvs, indices)| SurfaceMesh {
+                    group,
+                    positions,
+                    uvs,
+                    indices,
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                }),
+        )
         .collect())
 }
 
@@ -2981,7 +3072,7 @@ mod bytes {
     }
 
     pub fn tessellate_surfaces(bytes: &[u8], tile_m: f32) -> Result<Vec<SurfaceMesh>, String> {
-        super::tessellate_surfaces(&TileData::parse(bytes)?, tile_m)
+        super::tessellate_surfaces(&TileData::parse(bytes)?, tile_m, None)
     }
 
     pub fn tessellate_roads(
@@ -2989,7 +3080,7 @@ mod bytes {
         tile_m: f32,
         decks: &[BridgeDeck],
     ) -> Result<Vec<SurfaceMesh>, String> {
-        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks)
+        super::tessellate_roads(&TileData::parse(bytes)?, tile_m, decks, None)
     }
 
     pub fn tessellate_bridges(bytes: &[u8], tile_m: f32) -> Result<Vec<BridgeDeck>, String> {
@@ -3055,11 +3146,11 @@ mod tests {
             }
         };
         same(
-            &super::tessellate_surfaces(&tile, tile_m).unwrap(),
+            &super::tessellate_surfaces(&tile, tile_m, None).unwrap(),
             &tessellate_surfaces(GRONINGEN_Z14, tile_m).unwrap(),
         );
         same(
-            &super::tessellate_roads(&tile, tile_m, &[]).unwrap(),
+            &super::tessellate_roads(&tile, tile_m, &[], None).unwrap(),
             &tessellate_roads(GRONINGEN_Z14, tile_m, &[]).unwrap(),
         );
         assert_eq!(

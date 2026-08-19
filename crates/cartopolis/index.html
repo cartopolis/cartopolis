@@ -424,6 +424,23 @@
         align-items: center;
         gap: 0.35rem;
         margin-bottom: 0.6rem;
+        /* The entrance half of `systems::splash`'s pair of fades, at its
+           `FADE_IN_S`. On `#brand` and not on `#loader`, for the same reason the
+           Rust side keeps its backdrop opaque: the slate must be there on the
+           first painted frame, or the page opens on a flash of whatever is
+           behind it. `both` holds the from-state before the animation starts, so
+           there is no unstyled first frame at full opacity. */
+        animation: brand-in 0.45s ease both;
+      }
+      @keyframes brand-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      /* An entrance is decoration; someone who has asked for less motion has said
+         they do not want it. The fade-out stays — it is how the loader gets out
+         of the way — but it is a plain opacity change, not movement. */
+      @media (prefers-reduced-motion: reduce) {
+        #brand { animation: none; }
       }
       #logo {
         /* 168 px is the Bevy splash's own mark size (an 84 pt radius). The `vh`
@@ -445,9 +462,15 @@
       }
       /* Cream `carto`, accent `polis` — `theme::WORDMARK_HEAD` here, and the
          account GUI's `.app-header .wordmark b` over in `jeroen/cartopy`. Three
-         surfaces, one way of writing the name. */
+         surfaces, one way of writing the name.
+
+         `#fd6012` is `theme::WORDMARK_TAIL_COLOR` (= `theme::ACCENT`), and the
+         same orange as the mark's ring and `#bar` below. This said `#ff9457`
+         while the Rust side said `#ffa470` — two lightened accents, neither of
+         them the one they sit next to, which is how the name came to read pink
+         on a screen whose every other orange is this one. */
       #wordmark b {
-        color: #ff9457;
+        color: #fd6012;
         font-weight: 600;
       }
       #motto {

@@ -597,6 +597,40 @@ pub fn budget() -> &'static Budget {
     BUDGET.get_or_init(|| detect(None))
 }
 
+/// How many bytes a frame may hand the GPU, with `CARTO_UPLOAD_KB` folded in.
+///
+/// One resolution of the question, read by both consumers: bevy's
+/// `RenderAssetBytesPerFrame` (via `lib.rs`) and `map_stream`'s own tile cap. They
+/// are the queue and the drain of the same pipe, and a version of this where they
+/// disagree is one where the streamer hands over more than the renderer can write
+/// and the backlog grows without bound — which is what it did.
+///
+/// `0` means no ceiling, which is how a run opts out entirely.
+///
+/// **The scripted-capture exemption is deliberately not here.** It belongs to
+/// bevy's budget alone and `lib.rs` applies it there: a deferred *bevy write* is
+/// invisible to a settle test that watches streamers, so a throttled capture can
+/// photograph a half-uploaded world and call itself settled. A deferred *tile* is
+/// the opposite — it sits in `MapStream`, `awaiting_upload` counts it and the
+/// settle test blocks on `map_tiles` — so the tile cap can be honoured in a
+/// capture, and has to be, or the harness measures a code path the device does not
+/// run.
+/// Memoised, because the callers are hot: `map_stream` asks once a frame and
+/// `scatter` once a cell, while `env_value` is a system-property read on Android
+/// and a query-string parse on the web. The answer cannot change during a run —
+/// same reason [`BUDGET`] is a `OnceLock`.
+#[must_use]
+pub fn upload_ceiling() -> Option<usize> {
+    static CEILING: OnceLock<Option<usize>> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        match crate::env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
+            Some(0) => None,
+            Some(kb) => Some(kb * 1024),
+            None => budget().upload_bytes_per_frame,
+        }
+    })
+}
+
 /// Shorthand for the common `budget().tier == Tier::Phone` test.
 #[must_use]
 pub fn is_phone() -> bool {
@@ -710,6 +744,13 @@ fn parse(value: &str) -> Option<Budget> {
     match value.trim().to_ascii_lowercase().as_str() {
         "phone" | "low" | "mobile" => Some(Budget::phone()),
         "balanced" | "medium" => Some(Budget::balanced()),
+        // The rung Android resolves to, by name, on every platform — so the
+        // handset's real budget can be run on a machine that can profile it.
+        // `balanced` is **not** a substitute for it: it has no upload ceiling at
+        // all, which is exactly the field a handset's cold start turns on. Naming
+        // it is what stopped `CARTO_QUALITY=balanced CARTO_UPLOAD_KB=4096` from
+        // being a thing anyone had to know.
+        "android" | "handset" => Some(android_budget()),
         "desktop" | "high" => Some(Budget::desktop()),
         _ => None,
     }
@@ -772,6 +813,22 @@ fn html_quality_attr() -> Option<String> {
 /// should be put on: Settings ▸ Map ▸ Battery saver, or `CARTO_QUALITY=phone`.
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 fn auto() -> Budget {
+    android_budget()
+}
+
+/// The rung a handset actually runs: [`Budget::balanced`] with the burst guard kept.
+///
+/// **Its own function, and compiled on every target, because the tests could not
+/// see it.** This was an inline struct literal inside a `cfg(target_os =
+/// "android")` `auto()`, so it existed only in the Android build — while
+/// `no_rung_permits_an_asset_larger_than_its_own_frame`, the test written
+/// precisely to stop a single asset from exceeding the frame budget, iterates
+/// `phone`/`balanced`/`desktop` and `continue`s on a `None` ceiling. `balanced`
+/// has a `None` ceiling. So the one configuration that has a ceiling *and* a
+/// handset behind it was the one configuration nothing checked, on a host where it
+/// did not compile. Every number below is unchanged; only its reachability is.
+#[must_use]
+pub(crate) fn android_budget() -> Budget {
     Budget {
         // **The one thing that does not come up with the rung, and it is not
         // caution — it is the only failure this device has actually produced.**
@@ -981,6 +1038,11 @@ mod tests {
         for (name, budget) in [
             ("phone", Budget::phone()),
             ("balanced", Budget::balanced()),
+            // The rung a handset actually resolves to, and the only one with both
+            // a ceiling and a device behind it. It was absent here for as long as
+            // it was an inline literal in a `cfg`-gated `auto()` — see
+            // `android_budget`.
+            ("android", android_budget()),
             ("desktop", Budget::desktop()),
         ] {
             let Some(per_frame) = budget.upload_bytes_per_frame else {

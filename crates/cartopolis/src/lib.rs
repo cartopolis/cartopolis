@@ -392,7 +392,7 @@ fn install_android_panic_hook() {
             payload,
             location.as_deref().unwrap_or("<unknown>"),
         );
-        let _ = std::fs::write(crash_report_path(), report);
+        record_fatal(&report);
         previous(info);
     }));
 }
@@ -421,6 +421,42 @@ fn run_breadcrumb_path() -> std::path::PathBuf {
 #[cfg(target_os = "android")]
 fn crash_report_path() -> std::path::PathBuf {
     utils::cache::app_data_root().join("last-crash.txt")
+}
+
+/// Record a fatal event for the next launch, **keeping the first one**.
+///
+/// Both writers into this file — [`install_android_panic_hook`] and
+/// [`record_render_halt`] — used a plain `fs::write`, so the last one to fire won.
+/// That is exactly the wrong way round, because these events are not independent:
+/// a halted renderer is a state the process then keeps running in, and the panic
+/// that eventually comes out of it is a *consequence*. The OnePlus 15 log of
+/// 2026-08-19 is the worked example. The device was lost at 09:32:30 and the halt
+/// wrote the report that says so; the app ran on with a dead renderer for twenty
+/// seconds; the user swiped it away at 09:32:50, wgpu tore down a swapchain that
+/// still had a `SurfaceTexture` outstanding and panicked — and *that* overwrote
+/// the file. The report handed to the share sheet therefore named
+/// `SwapchainAcquireSemaphore`, a wgpu-internal assertion at teardown, and said
+/// nothing about the device loss that had caused every bit of it. Two people then
+/// read the wrong stack.
+///
+/// So: first write wins the top of the file, and anything after it is appended
+/// under a rule. Appending rather than discarding because the later event is still
+/// evidence — it is just not the *cause*, and a report is read from the top.
+///
+/// Safe as a within-run rule because `offer_last_crash` removes this file during
+/// startup: if it exists, this run put it there.
+#[cfg(target_os = "android")]
+fn record_fatal(report: &str) {
+    use std::io::Write;
+
+    let path = crash_report_path();
+    if path.exists() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&path) {
+            let _ = write!(f, "\n--- and then, downstream of the above ---\n{report}");
+        }
+        return;
+    }
+    let _ = std::fs::write(&path, report);
 }
 
 /// How much of the log excerpt a crash report may carry.
@@ -632,7 +668,7 @@ fn record_render_halt(error: &bevy::render::error_handler::RenderError) {
         error.ty,
         error.description,
     );
-    let _ = std::fs::write(crash_report_path(), report);
+    record_fatal(&report);
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1214,9 +1250,12 @@ fn run_client() {
             // the process as `setprop debug.carto.upload_kb` (see `env_value`),
             // which is the one platform where the tier's own answer is otherwise
             // final.
+            // `quality::upload_ceiling` resolves the tier and `CARTO_UPLOAD_KB`
+            // together — one answer, shared with `map_stream`'s tile cap, which is
+            // the queue feeding this drain. Only the scripted exemption below is
+            // this consumer's alone.
             max_bytes: match env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
-                Some(0) => None,
-                Some(kb) => Some(kb * 1024),
+                Some(_) => quality::upload_ceiling(),
                 // **Never in a scripted capture**, whatever the tier says, and this
                 // is not a convenience — a throttled run photographs a partly
                 // uploaded world. The settle test watches the *streamers*, and this
@@ -1230,7 +1269,7 @@ fn run_client() {
                 // documents something untrue. The README set and the `scene-smoke`
                 // gate both read these captures.
                 None if scripted => None,
-                None => quality::budget().upload_bytes_per_frame,
+                None => quality::upload_ceiling(),
             },
         })
         .init_resource::<systems::osm_buildings::OsmBuildings>()
