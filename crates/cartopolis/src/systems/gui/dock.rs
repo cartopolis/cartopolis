@@ -120,7 +120,7 @@ pub fn reserved_top() -> f32 {
 /// Draw the dock and the layers disc, and route clicks into the (mutually
 /// exclusive) panel slot.
 pub fn render_dock(
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     mut right_panel: ResMut<RightPanel>,
     mut menu: ResMut<crate::systems::ui::MainMenu>,
     online: Option<Res<OnlineSession>>,
@@ -155,7 +155,7 @@ pub fn render_dock(
         // map behind either of them.
         menu.open = false;
     }
-    let ctx = egui.ctx_mut();
+    let ctx = egui.ctx();
     let icons: Vec<&'static str> = ENTRIES.iter().map(|p| p.icon()).collect();
     let layers_icon = RightPanel::Layers.icon();
 

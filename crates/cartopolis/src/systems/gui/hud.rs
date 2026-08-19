@@ -524,7 +524,7 @@ fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved
 /// already at Bevy's 16-parameter ceiling.
 #[allow(clippy::too_many_arguments)]
 pub fn render_map_controls(
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     mut camera_state: ResMut<CameraState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -606,7 +606,7 @@ pub fn render_map_controls(
                     theme::touch_layout() || touch.ever(),
                 ),
             );
-            scale_bar_overlay(egui.ctx_mut(), metres, pts, reserved);
+            scale_bar_overlay(egui.ctx(), metres, pts, reserved);
         }
     }
 
@@ -621,7 +621,7 @@ pub fn render_map_controls(
             caption: Some(driver.orientation.label()),
             hover: "Change the map orientation (heading up / north up / 3D)",
         };
-        if compass_overlay(egui.ctx_mut(), heading, &cfg) {
+        if compass_overlay(egui.ctx(), heading, &cfg) {
             driver.orientation = driver.orientation.next();
         }
         return;
@@ -644,7 +644,7 @@ pub fn render_map_controls(
             "Lock the view north-up"
         },
     };
-    if compass_overlay(egui.ctx_mut(), heading, &cfg) {
+    if compass_overlay(egui.ctx(), heading, &cfg) {
         // Toggle the lock; engaging it also eases the view back to north (the lock
         // holds it there from then on).
         camera_state.orbit_north_lock = !locked;
@@ -666,7 +666,7 @@ pub fn render_map_controls(
             LocateState::Off
         };
         let hover = locate_hover(state, &tracking);
-        if locate_overlay(egui.ctx_mut(), column + theme::OSD_GAP, state, &hover) {
+        if locate_overlay(egui.ctx(), column + theme::OSD_GAP, state, &hover) {
             match state {
                 // Recenter *and* orient: snap the rig onto the avatar (the same
                 // proven path Tab / the Camera menu use), then hand it to
@@ -909,7 +909,7 @@ fn space_view_heading(tf: &Transform, north: Vec3) -> Option<f32> {
 /// Draw the status overlay and apply its copy / bookmark actions.
 #[allow(clippy::too_many_arguments)]
 pub fn render_hud(
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     mut clock: ResMut<WorldClock>,
     mut dev: ResMut<crate::resources::DevPanelState>,
     mut weather: ResMut<crate::systems::weather::WeatherState>,
@@ -980,7 +980,7 @@ pub fn render_hud(
         user: identity.username.clone(),
     };
 
-    let actions = hud_area(egui.ctx_mut(), &data);
+    let actions = hud_area(egui.ctx(), &data);
 
     if actions.toggle_utc {
         clock.show_utc = !clock.show_utc;

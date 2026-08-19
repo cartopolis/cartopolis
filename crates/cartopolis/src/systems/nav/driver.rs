@@ -1902,7 +1902,7 @@ const PILL_BOTTOM: f32 = 62.0;
 /// resolution `hud::render_map_controls` reached for the status box. The manoeuvre
 /// card, the compass and the speed pill are all clear of that edge and stay.
 pub fn render_driver_hud(
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     mut driver: ResMut<DriverState>,
     route: Res<RouteState>,
     ahead: Res<RouteAhead>,
@@ -1951,7 +1951,7 @@ pub fn render_driver_hud(
     // over the trip and ended the trip instead. Stop is still on the manoeuvre
     // card, which is always drawn — a touch device has no Escape key, and that
     // was already the real exit.
-    let ctx = egui.ctx_mut().clone();
+    let ctx = egui.ctx().clone();
     let panel = |fill: egui::Color32| {
         egui::Frame::NONE
             .fill(fill)

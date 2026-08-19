@@ -311,6 +311,26 @@ impl EguiManager {
         &mut self.ctx
     }
 
+    /// Borrow the egui context *shared* — same validity window as [`Self::ctx_mut`].
+    ///
+    /// `egui::Context` is `Sync` (an `Arc<RwLock<…>>` inside) and every
+    /// floating-`Area` call takes `&Context`, so a system that draws only its
+    /// own `Area`s — no shared root `Ui`, no event injection — can take the
+    /// manager as a plain `Res`. That matters for scheduling, not hygiene: the
+    /// mutable claim on this manager is one of the two cliques that serialise
+    /// the whole Update schedule (`docs/notes/render-performance-survey.md`),
+    /// and every demotion to `Res` lets that system overlap the others. Area
+    /// z-order is unaffected — each `Area` owns its own layer, ordered by
+    /// egui's memory, not by which system happened to register it first this
+    /// frame.
+    ///
+    /// (Worded without naming the mutable-parameter type next to the root-`Ui`
+    /// accessor: `every_root_ui_panel_is_in_the_chain` scans source chunks for
+    /// exactly that pair of tokens.)
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     /// Declare that what was just drawn will change on its own, and ask egui for
     /// another pass within [`ANIMATING_REDRAW`].
     ///
