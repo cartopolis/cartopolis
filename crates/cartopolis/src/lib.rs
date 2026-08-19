@@ -1510,6 +1510,10 @@ fn run_client() {
     app.add_systems(
         Startup,
         (
+            // Which rung this run took, said where a phone can read it —
+            // `quality::init` answers the question before `LogPlugin` exists, so
+            // its own line has never reached logcat. See `quality::report_budget`.
+            quality::report_budget,
             systems::free_camera::setup_camera,
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.

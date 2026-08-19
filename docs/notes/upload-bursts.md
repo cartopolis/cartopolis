@@ -1,7 +1,7 @@
 ---
 topic: upload-bursts
-triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset]
-updated: 2026-08-18
+triggers: [device lost, DEVICE_LOST, TDR, command buffer timeout, upload, upload_meter, RenderAssetBytesPerFrame, upload_bytes_per_frame, MAX_CELL_MESH_BYTES, lod22, streaming burst, churn, "slow frame", peak_asset, resident, residency, gpu_resident_kb, handset_guarded, tile_px, out of memory, allocation]
+updated: 2026-08-19
 ---
 
 # A per-frame cap on *items* is not a cap on bytes
@@ -91,3 +91,76 @@ stall. `upload_peak_kb` (frame) and `upload_peak_asset_kb` (single asset) ride i
 `--csv` / `--dump-state`, so `--expect 'upload_peak_asset_kb<=8192'` is available
 as a gate; the frame column is deliberately *not* one, since with the budget on it
 describes the queue rather than the upload.
+
+
+## The other half: a rate is not a total (2026-08-19)
+
+Everything above bounds how fast bytes are handed over. It says nothing about how
+many are **held**, and on 2026-08-19 an Adreno 840 lost its device *with the 4 MB
+ceiling in force*, three seconds into a cold start. It could not have been the
+burst: deferring an upload changes when a tile arrives, never whether it stays,
+and a driver refusing an allocation is failing on the total.
+
+`UploadMeter::resident_bytes` is that number — every live `Image` and `Mesh` by
+the same `byte_len` arithmetic, maintained by difference so a removal takes its own
+contribution back off. It rides in the `slow frame` line and the ten-second census
+as `resident_mb`, and in `--csv` / `--dump-state` as `gpu_resident_kb` (and
+`gpu_resident_peak_kb`). Like the columns beside it, it counts asset bytes and is
+therefore machine-independent — a legitimate `--expect` gate.
+
+It is **not** a VRAM figure: no render targets, shadow maps, atmosphere LUTs,
+swapchain images, pipeline memory or allocator overhead. It is the streamed content
+this client creates and drops, which is the term this code controls.
+
+Groningen at 150 m, warm cache, `--dump-state`:
+
+| configuration | resident | draws | settled |
+|---|---|---|---|
+| the handset rung as shipped 2026-08-18 | **991 MB** | 695 | 45.1 s (hit the cap) |
+| + `tile_px` 256 | 567 MB | 695 | 27.3 s |
+| + `radius_bias` 1 (what ships now) | **371 MB** | 527 | 15.7 s |
+| `Budget::phone`, for scale | 307 MB | 225 | 12.9 s |
+
+A gigabyte arrived by accident. Moving Android to `balanced` on 2026-08-18 took
+`tile_px` 256 → 512 — four times the texture bytes of each of the clipmap's 424
+tiles, 424 MB by itself — and `radius_bias` 1 → 0, which adds tiles and LoD2.2
+cells, the other half of the total. Both are *memory* costs, in a change reasoned
+about entirely in fill and frame time. `quality::handset_guarded` caps both on
+every rung a handset can reach, and leaves everything that decides the picture
+(shadows, bloom, detail layers, render scale) to the rung.
+
+**The frame times in that table are lavapipe's** and belong to the container; the
+byte and draw columns are exact. And 991 → 371 MB is measured while "and therefore
+the device survives" is not — no harness here can lose a Vulkan device.
+
+## The guard a settings screen could delete
+
+`quality::Budget::upload_bytes_per_frame` was kept for the handset in
+`android_budget()`, i.e. on the rung `auto()` picks. Settings ▸ Graphics ▸ Detail
+does not go through `auto()`: it writes a `QualityPreset`, which `quality::parse`
+turns into `Budget::balanced()` / `Budget::desktop()` **verbatim** — and those have
+no ceiling. Choosing "Balanced" or "Full detail" on a phone therefore deleted the
+one guard written for phones, from the screen that exists to help a struggling
+device.
+
+Two reports from the same phone five minutes apart show it, and the tell is the
+largest single asset, since `lod22::max_cell_mesh_bytes` derives its cut from that
+field: `peak_asset_kb` 4,095 on `Auto`, 7,920 on an explicit rung, with eleven
+`single asset above the frame upload budget` lines the first run never printed.
+
+The fix is that the guards belong to the **machine**: `detect` passes every answer
+through `handset_guarded` on Android, whatever chose it. `CARTO_UPLOAD_KB` still
+overrides the ceiling downstream (`0` = none), so the one person who can A/B it —
+whoever holds the device — keeps that.
+
+Two things made this expensive to find, and both are fixed:
+
+- **The resolved rung had never appeared in an Android log.** `quality::init` runs
+  at the top of `run()`, before `DefaultPlugins` installs `LogPlugin`, and on
+  Android that is the only thing writing to logcat. The tier had to be *inferred*
+  from `peak_asset_kb`. `quality::report_budget` is a `Startup` system that says it
+  again where a phone can read it, with `chose=` naming which of the three answers
+  won and `upload_kb=` the ceiling actually in force.
+- **A rule that only exists in the Android build is a rule no test can see.** This
+  is the second time (`android_budget` was the first): `handset_guarded` is
+  compiled on every target and `detect` reaches it through `cfg!`, not `#[cfg]`.
