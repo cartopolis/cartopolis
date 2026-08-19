@@ -638,25 +638,40 @@ fn graphics_tab(
     ui.add_space(8.0);
     ui.separator();
     section(ui, "Lighting");
-    tri_state(
-        ui,
-        &mut prefs.shadows,
-        crate::quality::budget().shadows,
-        "Shadows",
-    );
+    // A startup switch beats the preference at the spawn site, so the row has to
+    // say so. Without this the checkbox reads "on" over a scene with no shadows
+    // in it — which is precisely the failure the old dev-panel seeding was
+    // written to avoid, reintroduced one layer up. Disabled rather than hidden:
+    // the point is that the setting still exists and something else is holding
+    // it.
+    let shadows_forced_off = crate::env_flag("CARTO_NO_SHADOWS");
+    ui.add_enabled_ui(!shadows_forced_off, |ui| {
+        tri_state(
+            ui,
+            &mut prefs.shadows,
+            crate::quality::budget().shadows,
+            "Shadows",
+        );
+    });
     ui.label(
-        egui::RichText::new(
-            "Sun and moon shadow maps. Applies immediately — the lights are respawned.",
-        )
+        egui::RichText::new(if shadows_forced_off {
+            "Forced off for this run by CARTO_NO_SHADOWS."
+        } else {
+            "Sun and moon shadow maps. Applies immediately — the lights are respawned."
+        })
         .small()
         .color(theme::TEXT_DIM),
     );
 
     ui.add_space(6.0);
-    // Only meaningful with the full atmosphere: the cubemap is baked *from* it,
-    // and a `Simple` run has nothing to bake. Disabling the row rather than hiding
-    // it keeps the reason visible — a control that vanishes reads as a bug.
-    let ibl_possible = sky != Some(crate::systems::sky_dome::SkyMode::Dome);
+    // Two things can hold this one down, so they are reported separately rather
+    // than collapsed into one disabled state with a single reason: the cubemap is
+    // baked *from* the atmosphere, so a `Simple` run has nothing to bake, and the
+    // startup switch overrides the preference at the same site the shadow one
+    // does. A control that vanishes reads as a bug, so both arms disable and
+    // explain instead.
+    let ibl_forced_off = crate::env_flag("CARTO_NO_ENVMAP");
+    let ibl_possible = sky != Some(crate::systems::sky_dome::SkyMode::Dome) && !ibl_forced_off;
     ui.add_enabled_ui(ibl_possible, |ui| {
         tri_state(
             ui,
@@ -666,7 +681,9 @@ fn graphics_tab(
         );
     });
     ui.label(
-        egui::RichText::new(if ibl_possible {
+        egui::RichText::new(if ibl_forced_off {
+            "Forced off for this run by CARTO_NO_ENVMAP."
+        } else if ibl_possible {
             "Lights shadowed faces with the sky and gives water something to \
              reflect. Costs a cubemap re-baked every frame. Takes effect at the \
              next start."

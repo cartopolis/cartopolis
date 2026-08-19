@@ -565,8 +565,15 @@ impl<'de> serde::Deserialize<'de> for SunMode {
     }
 }
 
-/// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
-/// exposes a day/night slider that drives the sun, and a distance-fog slider.
+/// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel).
+///
+/// **Scene authoring only**: the clock, the season, the weather and the capture
+/// slots. What this machine spends on the picture — shadows, the sky, sky
+/// reflections, the stats overlay — moved to [`AppPrefs`] and Settings ▸
+/// Graphics, because a keyboard chord is not a control on a handset and because
+/// nothing here is persisted. Keep that line: a render setting added back to this
+/// struct is one nobody on a phone can reach and one that will not survive the
+/// restart it asks for.
 #[derive(Resource)]
 pub struct DevPanelState {
     pub open: bool,
