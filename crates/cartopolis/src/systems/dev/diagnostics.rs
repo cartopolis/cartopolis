@@ -198,6 +198,25 @@ fn compose(s: &DiagnosticsSources) -> String {
             limits.max_texture_dimension_2d,
         ));
     }
+    // Whether the pipelines behind the picture actually built. `sky: Atmosphere`
+    // above is a *decision*; a driver that then rejects the atmosphere's shaders
+    // leaves that line true and the sky black, with the only evidence a
+    // creation-time log line that has long scrolled out of logd's ring. This is
+    // the line that catches it (`systems::pipeline_health`).
+    match crate::systems::pipeline_health::snapshot() {
+        Some(h) => {
+            out.push_str(&format!(
+                "pipelines: {} ready, {} building, {} errored\n",
+                h.ready,
+                h.building,
+                h.errored.len(),
+            ));
+            for e in &h.errored {
+                out.push_str(&format!("  pipeline error: {e}\n"));
+            }
+        }
+        None => out.push_str("pipelines: (not measured yet)\n"),
+    }
 
     // The performance block. Placed directly under `quality:` because the two are
     // read together: the tier says what was asked for, this says what it cost.

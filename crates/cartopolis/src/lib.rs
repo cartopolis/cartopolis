@@ -1075,6 +1075,29 @@ fn run_client() {
         // must be disabled or big_space errors at startup.
         .disable::<bevy::transform::TransformPlugin>();
 
+    // `CARTO_NO_DUAL_SOURCE=1`: run the renderer without `DUAL_SOURCE_BLENDING`,
+    // the way every Adreno and most Malis do (Qualcomm has never shipped
+    // `dualSrcBlend`). bevy_pbr's atmosphere sky pass has a single-output fallback
+    // for exactly that case, and this container's lavapipe — like every desktop
+    // GPU — offers the feature, so the fallback is otherwise unreachable here.
+    // A bisecting switch in the `CARTO_NO_*` family: it reproduces the phone's
+    // blend path on a machine that can screenshot it.
+    let default_plugins = if env_flag("CARTO_NO_DUAL_SOURCE") {
+        default_plugins.set(bevy::render::RenderPlugin {
+            render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+                bevy::render::settings::WgpuSettings {
+                    disabled_features: Some(
+                        bevy::render::settings::WgpuFeatures::DUAL_SOURCE_BLENDING,
+                    ),
+                    ..default()
+                },
+            )),
+            ..default()
+        })
+    } else {
+        default_plugins
+    };
+
     // Loaded before the app is built, not inside the chain below, because the
     // remembered session in it decides which world this launch enters (and seeds
     // the sign-in screen) — see the connection-mode block further down.
@@ -1137,6 +1160,11 @@ fn run_client() {
         // ordering that keeps the interface at full resolution while the world
         // scales.
         .add_plugins(systems::render_scale::RenderScalePlugin)
+        // Watches the render app's `PipelineCache` for pipelines that failed to
+        // build, for the diagnostics report — a failed pipeline is otherwise a
+        // silently skipped pass and one startup-time log line (its module header
+        // has the Adreno case this was built for).
+        .add_plugins(systems::pipeline_health::PipelineHealthPlugin)
         // The atmosphere is Bevy 0.19's built-in bevy_pbr Atmosphere (added by
         // PbrPlugin); it's attached as a component to the camera in setup_camera.
         .add_plugins(MaterialPlugin::<systems::data_layers::PinHeadMaterial>::default())
@@ -2405,6 +2433,9 @@ mod android_property_tests {
             "CARTO_NO_OCEAN",
             "CARTO_NO_SHADOWS",
             "CARTO_NO_SPACE_RAYMARCH",
+            "CARTO_NO_DUAL_SOURCE",
+            "CARTO_GROUND_RAYMARCH",
+            "CARTO_ATMO_EARTH_RADIUS",
             "CARTO_FPS_LOG",
             "CARTO_FPS_CAP",
             "CARTO_QUALITY",
