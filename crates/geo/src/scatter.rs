@@ -617,20 +617,62 @@ fn dominant_angle(rings: &[Vec<[f32; 2]>]) -> f32 {
 
 // ─── Meshing ─────────────────────────────────────────────────────────────────
 
-/// Turn scattered instances into merged [`SurfaceMesh`]es — at most one canopy
-/// mesh and one trunk mesh per cell, whatever the tree count.
+/// Turn scattered instances into merged [`SurfaceMesh`]es — canopies and trunks,
+/// each cut into pieces no larger than `max_bytes`.
+///
+/// **It used to be exactly one canopy mesh per cell, whatever the tree count, and
+/// that is what made it the largest single asset in the app.** A cell is planted
+/// up to [`MAX_TREES_PER_CELL`], each canopy is an 18-vertex ball, and at the cap
+/// that is one ~6 MB mesh — measured at `peak_asset_kb = 6103` on an Adreno 840
+/// on 2026-08-19 and reproduced headlessly. A single asset is the one quantity a
+/// per-frame upload budget cannot help with: bevy's `RenderAssetBytesPerFrame`
+/// always writes one *whole* asset per frame so uploads can never stall, so an
+/// asset over the budget **is** a frame over the budget. `lod22` learned this and
+/// cuts its cells up; this is the same cut for the other producer that reaches
+/// that size.
+///
+/// `max_bytes` is `None` on every rung without an upload ceiling, which restores
+/// the old single-mesh behaviour exactly. It is the caller's number rather than a
+/// constant here because it is the *frame's* budget, and this crate cannot see
+/// `quality` (it may not depend on bevy).
+///
+/// A piece is never empty and a single tree is never split: the cut is taken
+/// *between* trees, so the worst case is one tree's worth over the limit rather
+/// than a canopy with no trunk or a ball missing a face.
 #[must_use]
-pub fn build_vegetation_meshes(trees: &[TreeInstance]) -> Vec<SurfaceMesh> {
+pub fn build_vegetation_meshes(
+    trees: &[TreeInstance],
+    max_bytes: Option<usize>,
+) -> Vec<SurfaceMesh> {
     if trees.is_empty() {
         return Vec::new();
     }
     let unit = unit_canopy();
     let deep = tone_multiplier();
 
+    // What one more tree adds, so the check below is "would this one overflow"
+    // rather than "has it already", which would let every piece finish over the
+    // limit it exists to stay under.
+    let canopy_step = unit.verts.len() * VERTEX_BYTES + unit.indices.len() * INDEX_BYTES;
+    const TRUNK_STEP: usize = 16 * VERTEX_BYTES + 24 * INDEX_BYTES;
+
+    let mut out = Vec::new();
     let mut canopy = MeshBuf::default();
     let mut trunk = MeshBuf::default();
 
     for t in trees {
+        // Flush before adding, and only when there is something to flush — a piece
+        // has to hold at least one tree or a cap below `canopy_step` would emit
+        // empty meshes forever.
+        if let Some(max) = max_bytes {
+            if canopy.bytes() + canopy_step > max && !canopy.positions.is_empty() {
+                out.push(std::mem::take(&mut canopy).finish(SurfaceGroup::Canopy));
+            }
+            if trunk.bytes() + TRUNK_STEP > max && !trunk.positions.is_empty() {
+                out.push(std::mem::take(&mut trunk).finish(SurfaceGroup::Trunk));
+            }
+        }
+
         // Crown occupies the top 70% of the tree; the trunk carries the rest.
         let crown_bottom = t.height * 0.30;
         let ry = (t.height - crown_bottom) * 0.5;
@@ -667,12 +709,16 @@ pub fn build_vegetation_meshes(trees: &[TreeInstance]) -> Vec<SurfaceMesh> {
         }
     }
 
-    let mut out = vec![canopy.finish(SurfaceGroup::Canopy)];
+    if !canopy.positions.is_empty() {
+        out.push(canopy.finish(SurfaceGroup::Canopy));
+    }
     if !trunk.positions.is_empty() {
         out.push(trunk.finish(SurfaceGroup::Trunk));
     }
     out
 }
+
+use crate::vector_tiles::{INDEX_BYTES, VERTEX_BYTES};
 
 #[derive(Default)]
 struct MeshBuf {
@@ -683,6 +729,11 @@ struct MeshBuf {
 }
 
 impl MeshBuf {
+    /// What this buffer will cost to upload, in the units the frame budget is in.
+    fn bytes(&self) -> usize {
+        self.positions.len() * VERTEX_BYTES + self.indices.len() * INDEX_BYTES
+    }
+
     fn finish(self, group: SurfaceGroup) -> SurfaceMesh {
         SurfaceMesh {
             group,
@@ -1098,7 +1149,7 @@ mod tests {
     #[test]
     fn builds_merged_meshes_with_normals_and_colours() {
         let trees = scatter_vegetation(&fixture(), 1472.0, 3).expect("scatter");
-        let meshes = build_vegetation_meshes(&trees);
+        let meshes = build_vegetation_meshes(&trees, None);
         assert!(!meshes.is_empty());
         // One mesh per group, never one per tree — this is the device-loss guard.
         assert!(meshes.len() <= 2, "{} meshes for one cell", meshes.len());
@@ -1116,7 +1167,7 @@ mod tests {
 
     #[test]
     fn empty_scatter_builds_nothing() {
-        assert!(build_vegetation_meshes(&[]).is_empty());
+        assert!(build_vegetation_meshes(&[], None).is_empty());
     }
 
     /// The unit canopy is the per-tree cost multiplier — if it silently grows, so
@@ -1128,6 +1179,154 @@ mod tests {
         assert_eq!(u.indices.len(), 32 * 3);
     }
 
+    /// No piece of a planted cell exceeds the frame's upload budget.
+    ///
+    /// The property that matters, because bevy writes one *whole* asset per frame
+    /// whatever the budget says — so a single mesh over the limit is a frame over
+    /// the limit and the throttle upstream simply does not apply. A full cell used
+    /// to be one ~6 MB canopy mesh; at the phone rung's 4 MB ceiling every piece
+    /// must now be under it.
+    ///
+    /// Asserted with the trees kept: `sum(pieces) == one big mesh`, so this cannot
+    /// be passed by planting fewer trees, which is the failure mode that would
+    /// otherwise look like a fix.
+    #[test]
+    fn a_planted_cell_is_cut_into_uploadable_pieces() {
+        const CEILING: usize = 4 * 1024 * 1024;
+        let trees = scatter_vegetation(&fixture(), 1472.0, 42).expect("scatter");
+        assert!(!trees.is_empty(), "the fixture plants something");
+
+        let whole = build_vegetation_meshes(&trees, None);
+        let split = build_vegetation_meshes(&trees, Some(CEILING));
+
+        for m in &split {
+            let bytes = m.positions.len() * VERTEX_BYTES + m.indices.len() * INDEX_BYTES;
+            assert!(
+                bytes <= CEILING,
+                "{:?} piece is {bytes} B, over the {CEILING} B frame budget",
+                m.group
+            );
+        }
+        let verts = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.positions.len()).sum::<usize>();
+        let tris = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.indices.len()).sum::<usize>();
+        assert_eq!(verts(&split), verts(&whole), "cutting dropped vertices");
+        assert_eq!(tris(&split), tris(&whole), "cutting dropped triangles");
+    }
+
+    /// The tessellated ground obeys the same ceiling, and keeps every triangle.
+    ///
+    /// The other producer that reached asset sizes a frame budget cannot spread —
+    /// 4.2–4.6 MB per cell over Groningen, measured 2026-08-19. Its cut is taken
+    /// after a feature rather than before one (a polygon's vertex count is not
+    /// known until it is tessellated), so the bound it can promise is "under the
+    /// ceiling plus one feature" — asserted as such rather than pretending to the
+    /// strict bound the tree cut manages.
+    #[test]
+    fn tessellated_surfaces_are_cut_to_the_upload_ceiling() {
+        use crate::vector_tiles::{mesh_upload_bytes, tessellate_surfaces};
+
+        let tile = fixture();
+        let whole = tessellate_surfaces(&tile, 1472.0, None).expect("tessellate");
+        let biggest = whole
+            .iter()
+            .map(|m| mesh_upload_bytes(m.positions.len(), m.indices.len()))
+            .max()
+            .expect("the fixture tessellates to something");
+        // Derived from the fixture rather than a round number, so this keeps
+        // testing the cut if the fixture is ever replaced with a lighter tile.
+        let ceiling = biggest / 2;
+
+        let split = tessellate_surfaces(&tile, 1472.0, Some(ceiling)).expect("tessellate");
+        assert!(
+            split.len() > whole.len(),
+            "half the largest group ({biggest} B) must have cut something"
+        );
+        for m in &split {
+            let bytes = mesh_upload_bytes(m.positions.len(), m.indices.len());
+            assert!(
+                bytes <= ceiling + biggest,
+                "{:?} piece is {bytes} B, past the ceiling by more than one feature",
+                m.group
+            );
+        }
+
+        let verts = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.positions.len()).sum::<usize>();
+        let tris = |ms: &[SurfaceMesh]| ms.iter().map(|m| m.indices.len()).sum::<usize>();
+        assert_eq!(verts(&split), verts(&whole), "cutting dropped vertices");
+        assert_eq!(tris(&split), tris(&whole), "cutting dropped triangles");
+    }
+
+    /// And so does the road ribbon, which is the one that was actually 4.2 MB.
+    ///
+    /// Worth its own test rather than a second half of the one above: roads carry
+    /// UVs (the surfaces do not), and a cut that dropped or misaligned them would
+    /// show up as road markings sliding off the carriageway rather than as
+    /// anything the vertex and triangle totals would catch — so the UV count is
+    /// asserted alongside them.
+    #[test]
+    fn tessellated_roads_are_cut_to_the_upload_ceiling() {
+        use crate::vector_tiles::{mesh_upload_bytes, tessellate_roads};
+
+        let tile = fixture();
+        let whole = tessellate_roads(&tile, 1472.0, &[], None).expect("roads");
+        let biggest = whole
+            .iter()
+            .map(|m| mesh_upload_bytes(m.positions.len(), m.indices.len()))
+            .max()
+            .expect("the fixture has streets");
+        let ceiling = biggest / 2;
+
+        let split = tessellate_roads(&tile, 1472.0, &[], Some(ceiling)).expect("roads");
+        assert!(
+            split.len() > whole.len(),
+            "half the largest group ({biggest} B) must have cut something"
+        );
+        for m in &split {
+            let bytes = mesh_upload_bytes(m.positions.len(), m.indices.len());
+            assert!(
+                bytes <= ceiling + biggest,
+                "{:?} piece is {bytes} B, past the ceiling by more than one feature",
+                m.group
+            );
+            assert_eq!(
+                m.uvs.len(),
+                m.positions.len(),
+                "{:?} piece lost its UVs in the cut",
+                m.group
+            );
+        }
+
+        let sum =
+            |ms: &[SurfaceMesh], f: fn(&SurfaceMesh) -> usize| ms.iter().map(f).sum::<usize>();
+        assert_eq!(
+            sum(&split, |m| m.positions.len()),
+            sum(&whole, |m| m.positions.len()),
+            "cutting dropped vertices"
+        );
+        assert_eq!(
+            sum(&split, |m| m.indices.len()),
+            sum(&whole, |m| m.indices.len()),
+            "cutting dropped triangles"
+        );
+    }
+
+    /// A ceiling below one tree still terminates, with one tree to a piece.
+    ///
+    /// The degenerate end of the rule above: a piece must hold at least one tree or
+    /// the flush-before-add loop emits empty meshes forever. Worth its own test
+    /// because the guard for it is an `&& !is_empty()` that reads as belt-and-braces
+    /// and is not.
+    #[test]
+    fn a_ceiling_below_one_tree_still_terminates() {
+        let trees = scatter_vegetation(&fixture(), 1472.0, 42).expect("scatter");
+        let split = build_vegetation_meshes(&trees[..8], Some(1));
+        assert!(!split.is_empty());
+        assert!(
+            split.iter().all(|m| !m.positions.is_empty()),
+            "no piece may be empty"
+        );
+    }
+
     /// What a real cell actually costs. `cargo test -p cartopolis_geo
     /// dump_vegetation_cost -- --ignored --nocapture`.
     #[test]
@@ -1135,7 +1334,7 @@ mod tests {
     fn dump_vegetation_cost() {
         let tile_m = 1472.0;
         let trees = scatter_vegetation(&fixture(), tile_m, 42).expect("scatter");
-        let meshes = build_vegetation_meshes(&trees);
+        let meshes = build_vegetation_meshes(&trees, None);
         println!("trees            : {}", trees.len());
         println!(
             "per km²          : {:.0}",

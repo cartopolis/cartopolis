@@ -615,13 +615,20 @@ pub fn budget() -> &'static Budget {
 /// settle test blocks on `map_tiles` — so the tile cap can be honoured in a
 /// capture, and has to be, or the harness measures a code path the device does not
 /// run.
+/// Memoised, because the callers are hot: `map_stream` asks once a frame and
+/// `scatter` once a cell, while `env_value` is a system-property read on Android
+/// and a query-string parse on the web. The answer cannot change during a run —
+/// same reason [`BUDGET`] is a `OnceLock`.
 #[must_use]
 pub fn upload_ceiling() -> Option<usize> {
-    match crate::env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
-        Some(0) => None,
-        Some(kb) => Some(kb * 1024),
-        None => budget().upload_bytes_per_frame,
-    }
+    static CEILING: OnceLock<Option<usize>> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        match crate::env_value("CARTO_UPLOAD_KB").and_then(|v| v.parse::<usize>().ok()) {
+            Some(0) => None,
+            Some(kb) => Some(kb * 1024),
+            None => budget().upload_bytes_per_frame,
+        }
+    })
 }
 
 /// Shorthand for the common `budget().tier == Tier::Phone` test.

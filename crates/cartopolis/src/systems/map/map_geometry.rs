@@ -282,6 +282,11 @@ fn spawn_geometry_task(
     // on wasm `IoTaskPool` runs on the main thread, so every MVT decode, earcut,
     // road raster, vegetation scatter and shore field landed on the frame loop.
     // Awaiting the fetch there is free; the rest is what a core is for.
+    // Resolved here rather than inside the worker: `quality::upload_ceiling` is
+    // memoised, but reading it on the frame that *spawns* the task keeps the
+    // worker closure free of anything that could touch a system property or a
+    // `OnceLock` race on a platform where this is the first caller.
+    let mesh_bytes = crate::quality::upload_ceiling();
     IoTaskPool::get()
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
@@ -305,7 +310,7 @@ fn spawn_geometry_task(
                         crate::systems::tile_loader::parse_shared(key, &bytes)
                     });
                 let outcome = match parsed {
-                    Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m) {
+                    Ok(tile) => match vector_tiles::tessellate_surfaces(&tile, tile_m, mesh_bytes) {
                         Ok(mut meshes) => {
                             // Decks first: the road tessellation needs them, since a
                             // bridge-flagged street's own span belongs to the deck
@@ -321,7 +326,7 @@ fn spawn_geometry_task(
                             // differ only in being lines, so they ride along here
                             // rather than running a second streamer over the same
                             // tiles.
-                            match vector_tiles::tessellate_roads(&tile, tile_m, &decks) {
+                            match vector_tiles::tessellate_roads(&tile, tile_m, &decks, mesh_bytes) {
                                 Ok(roads) => meshes.extend(roads),
                                 Err(e) => {
                                     tracing::warn!(cell = ?cell, error = %e, "road tessellation failed");
@@ -335,7 +340,10 @@ fn spawn_geometry_task(
                             if wants.trees {
                                 match scatter::scatter_vegetation(&tile, tile_m, veg_seed(cell)) {
                                     Ok(trees) => {
-                                        meshes.extend(scatter::build_vegetation_meshes(&trees));
+                                        meshes.extend(scatter::build_vegetation_meshes(
+                                            &trees,
+                                            mesh_bytes,
+                                        ));
                                     }
                                     Err(e) => {
                                         tracing::warn!(cell = ?cell, error = %e, "vegetation scatter failed");
