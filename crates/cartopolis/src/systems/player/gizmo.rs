@@ -291,19 +291,22 @@ pub fn handle_gizmo_interaction(
                 // ADR-029: persist the new position as an absolute geo anchor.
                 if let Some(geo) = crate::systems::prim_geo::geo_for(cell, transform, &map_anchor) {
                     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
-                    session.send("update prim", NetMessage::UpdatePrim {
-                        request_id: generate_request_id(),
-                        prim_id: prim.id,
-                        position: transform.translation,
-                        rotation: Vec3::new(rx, ry, rz),
-                        scale: transform.scale,
-                        color: edit_dialog.color,
-                        texture_id: edit_dialog.texture_id.clone(),
-                        name: edit_dialog.name.clone(),
-                        surface: edit_dialog.surface,
-                        geometry: edit_dialog.geometry(),
-                        geo,
-                    });
+                    session.send(
+                        "update prim",
+                        NetMessage::UpdatePrim {
+                            request_id: generate_request_id(),
+                            prim_id: prim.id,
+                            position: transform.translation,
+                            rotation: Vec3::new(rx, ry, rz),
+                            scale: transform.scale,
+                            color: edit_dialog.color,
+                            texture_id: edit_dialog.texture_id.clone(),
+                            name: edit_dialog.name.clone(),
+                            surface: edit_dialog.surface,
+                            geometry: edit_dialog.geometry(),
+                            geo,
+                        },
+                    );
                 }
             }
             gizmo_state.active_axis = None;
@@ -377,19 +380,22 @@ pub fn handle_gizmo_interaction(
         if let Some(ref session) = online_session {
             // ADR-029: reproject the dragged position back to an absolute geo anchor.
             if let Some(geo) = crate::systems::prim_geo::geo_for(cell, &transform, &map_anchor) {
-                session.send("update prim", NetMessage::UpdatePrim {
-                    request_id: generate_request_id(),
-                    prim_id: prim.id,
-                    position: transform.translation,
-                    rotation: Vec3::new(rx, ry, rz),
-                    scale: transform.scale,
-                    color: edit_dialog.color,
-                    texture_id: edit_dialog.texture_id.clone(),
-                    name: edit_dialog.name.clone(),
-                    surface: edit_dialog.surface,
-                    geometry: edit_dialog.geometry(),
-                    geo,
-                });
+                session.send(
+                    "update prim",
+                    NetMessage::UpdatePrim {
+                        request_id: generate_request_id(),
+                        prim_id: prim.id,
+                        position: transform.translation,
+                        rotation: Vec3::new(rx, ry, rz),
+                        scale: transform.scale,
+                        color: edit_dialog.color,
+                        texture_id: edit_dialog.texture_id.clone(),
+                        name: edit_dialog.name.clone(),
+                        surface: edit_dialog.surface,
+                        geometry: edit_dialog.geometry(),
+                        geo,
+                    },
+                );
             }
         }
     }

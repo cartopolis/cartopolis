@@ -585,20 +585,23 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            session.send("create prim", NetMessage::CreatePrim {
-                request_id: 0,
-                region_id,
-                name: prim_name.clone(),
-                position: pos,
-                rotation: Vec3::ZERO,
-                scale,
-                color,
-                texture_id,
-                shape: shape_str,
-                surface: PrimSurface::default(),
-                geometry: geom.geometry(),
-                geo,
-            });
+            session.send(
+                "create prim",
+                NetMessage::CreatePrim {
+                    request_id: 0,
+                    region_id,
+                    name: prim_name.clone(),
+                    position: pos,
+                    rotation: Vec3::ZERO,
+                    scale,
+                    color,
+                    texture_id,
+                    shape: shape_str,
+                    surface: PrimSurface::default(),
+                    geometry: geom.geometry(),
+                    geo,
+                },
+            );
             format!("Created '{}' (sent to server)", prim_name)
         }
 
@@ -659,19 +662,22 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(new_pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            session.send("update prim", NetMessage::UpdatePrim {
-                request_id: 0,
-                prim_id,
-                position: new_pos,
-                rotation: Vec3::ZERO,
-                scale: new_scale,
-                color: new_color,
-                texture_id: new_texture_id,
-                name: new_name,
-                surface: cur_surface,
-                geometry: new_geom.geometry(),
-                geo,
-            });
+            session.send(
+                "update prim",
+                NetMessage::UpdatePrim {
+                    request_id: 0,
+                    prim_id,
+                    position: new_pos,
+                    rotation: Vec3::ZERO,
+                    scale: new_scale,
+                    color: new_color,
+                    texture_id: new_texture_id,
+                    name: new_name,
+                    surface: cur_surface,
+                    geometry: new_geom.geometry(),
+                    geo,
+                },
+            );
             format!("Updated prim {} (sent to server)", prim_id)
         }
 
@@ -684,10 +690,13 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            session.send("delete prim", NetMessage::DeletePrim {
-                request_id: 0,
-                prim_id,
-            });
+            session.send(
+                "delete prim",
+                NetMessage::DeletePrim {
+                    request_id: 0,
+                    prim_id,
+                },
+            );
             format!("Deleted prim {} (sent to server)", prim_id)
         }
 

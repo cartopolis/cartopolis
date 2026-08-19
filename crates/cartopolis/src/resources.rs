@@ -1177,7 +1177,10 @@ impl OnlineSession {
         match self.intent_tx.unbounded_send(msg) {
             Ok(()) => true,
             Err(_) => {
-                tracing::warn!(what, "not sent: the connection is gone, so this change will not reach the server");
+                tracing::warn!(
+                    what,
+                    "not sent: the connection is gone, so this change will not reach the server"
+                );
                 false
             }
         }

@@ -244,10 +244,13 @@ pub fn render_script_panel(
     // The source request is made from here rather than from the context menu, so
     // there is one place that knows how to fill the buffer.
     if let (true, Some(prim_id)) = (editor.needs_fetch, editor.prim_id) {
-        online.send("get prim script", NetMessage::GetPrimScript {
-            request_id: 0,
-            prim_id,
-        });
+        online.send(
+            "get prim script",
+            NetMessage::GetPrimScript {
+                request_id: 0,
+                prim_id,
+            },
+        );
         editor.needs_fetch = false;
     }
 
@@ -437,26 +440,35 @@ pub fn render_script_panel(
     };
     if save {
         let source = editor.source.clone();
-        online.send("set prim script", NetMessage::SetPrimScript {
-            request_id: 0,
-            prim_id,
-            source,
-        });
+        online.send(
+            "set prim script",
+            NetMessage::SetPrimScript {
+                request_id: 0,
+                prim_id,
+                source,
+            },
+        );
     }
     if stop {
         // Storing an empty script *is* removing it — one code path on the server,
         // and one less thing that can disagree about whether a prim has a script.
         editor.source.clear();
-        online.send("set prim script", NetMessage::SetPrimScript {
-            request_id: 0,
-            prim_id,
-            source: String::new(),
-        });
+        online.send(
+            "set prim script",
+            NetMessage::SetPrimScript {
+                request_id: 0,
+                prim_id,
+                source: String::new(),
+            },
+        );
     }
     if touch {
-        online.send("touch prim", NetMessage::TouchPrim {
-            request_id: 0,
-            prim_id,
-        });
+        online.send(
+            "touch prim",
+            NetMessage::TouchPrim {
+                request_id: 0,
+                prim_id,
+            },
+        );
     }
 }
