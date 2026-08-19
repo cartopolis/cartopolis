@@ -452,7 +452,41 @@ pub(crate) fn overcast_lighting(overcast: f32) -> (f32, f32) {
 pub(crate) struct StarSky;
 
 /// Global brightness multiplier for the star field.
+///
+/// Calibrated on the **ground at night**, and that is the whole of why the next
+/// constant exists.
 pub(crate) const STAR_BRIGHTNESS: f32 = 3.5;
+
+/// What the star field is multiplied by in the space tier, to undo the exposure
+/// that tier deliberately holds.
+///
+/// [`STAR_BRIGHTNESS`] is judged against the ground's *night* exposure, which is
+/// [`DAY_EXPOSURE_EV100`] lifted by [`NIGHT_EXPOSURE_LIFT`] — the eye adaptation
+/// that makes a night scene read. The space tier has no local clock to adapt to
+/// (the lit half of the planet is in full daylight whatever the time is at the
+/// anchor), so `apply_day_night_cycle` pins it at the *day* exposure
+/// ([`SPACE_EXPOSURE_STOPS`]). Stars therefore arrive `NIGHT_EXPOSURE_LIFT` stops
+/// under the exposure they were tuned for, and a stop is a factor of two.
+///
+/// Measured before the fix (2026-08-19, orbit at 5,000 km on the balanced tier):
+/// of 120,000 sky pixels, **78 exceeded luminance 32/255 and none reached 128**.
+/// The field was rendering correctly and was simply below the threshold of a
+/// screen — reported from a phone as "there are no stars", and reproducible on
+/// the desktop the moment anyone counted pixels instead of looking.
+///
+/// Derived from the constant rather than typed as a number, so it stays correct
+/// if either exposure constant moves. It is a compensation, not a taste knob:
+/// the stars end up as bright *relative to their exposure* as they are at night
+/// on the ground, which is where they were judged.
+///
+/// A function rather than a `const` only because `f32::exp2` is not `const fn`.
+/// Writing the `4.0` out by hand instead would be the drift this is built to
+/// avoid — the number is only correct while `NIGHT_EXPOSURE_LIFT` is 2.0.
+#[must_use]
+pub(crate) fn space_star_exposure_compensation() -> f32 {
+    // A stop is a factor of two in luminance, so undoing N stops is 2^N.
+    NIGHT_EXPOSURE_LIFT.exp2()
+}
 
 /// Star-shell radius: beyond all world geometry (so buildings and the ground
 /// occlude stars) but inside the far plane and the atmosphere skybox faces.
@@ -1326,9 +1360,15 @@ pub(crate) fn update_star_sky(
     // Above the atmosphere there is no daylight to drown them: the stars are out
     // whatever the clock at the anchor says, and no fog can veil them. Without
     // this the space view was an unlit black void whenever it was daytime below.
+    //
+    // In space that factor also carries the exposure compensation: this tier
+    // holds the *day* exposure while `STAR_BRIGHTNESS` was judged against the
+    // ground's night one, so an uncompensated field is two stops under and
+    // measures at 78 pixels out of 120,000 above luminance 32 — present, and
+    // invisible on a screen. See `space_star_exposure_compensation`.
     let elevation = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     let night = match space_shell {
-        Some(_) => 1.0,
+        Some(_) => space_star_exposure_compensation(),
         None => ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0),
     };
     // Fog is opaque to starlight long before it swallows the city: veil the star
