@@ -611,7 +611,30 @@ pub fn apply_network_snapshot(
     let Some(mb) = mailbox else {
         return;
     };
-    while let Ok(msg) = mb.lock_rx().try_recv() {
+    // Drain first, then apply, so stale snapshots can be coalesced. After a
+    // frame hitch the backlog holds one 20 Hz snapshot per missed tick, each a
+    // full-state replacement — only the newest carries information, and
+    // applying the stale ones (entity despawn/respawn on the first, a remote-
+    // avatar sync per repeat) lengthens the very hitch that built the backlog,
+    // which then rebuilds it. Everything that is not a snapshot still applies
+    // in arrival order; dropping a snapshot that a later snapshot supersedes
+    // cannot reorder anything a client observes.
+    let mut batch: Vec<NetMessage> = Vec::new();
+    {
+        let rx = mb.lock_rx();
+        while let Ok(msg) = rx.try_recv() {
+            batch.push(msg);
+        }
+    }
+    let last_snapshot = batch
+        .iter()
+        .rposition(|m| matches!(m, NetMessage::WorldSnapshot { .. }));
+    let mut skipped: u32 = 0;
+    for (i, msg) in batch.into_iter().enumerate() {
+        if matches!(msg, NetMessage::WorldSnapshot { .. }) && Some(i) != last_snapshot {
+            skipped += 1;
+            continue;
+        }
         match msg {
             NetMessage::ServerHelloAck {
                 your_avatar_id,
@@ -742,10 +765,13 @@ pub fn apply_network_snapshot(
                             && !texture_cache.pending.contains(&entry.id)
                         {
                             texture_cache.pending.insert(entry.id.clone());
-                            let _ = sess.intent_tx.unbounded_send(NetMessage::TextureRequest {
-                                request_id: 0,
-                                texture_id: entry.id.clone(),
-                            });
+                            sess.send(
+                                "texture request",
+                                NetMessage::TextureRequest {
+                                    request_id: 0,
+                                    texture_id: entry.id.clone(),
+                                },
+                            );
                         }
                     }
                 }
@@ -866,6 +892,9 @@ pub fn apply_network_snapshot(
             _ => {}
         }
     }
+    if skipped > 0 {
+        tracing::debug!(skipped, "coalesced stale world snapshots");
+    }
 }
 
 /// Updates authoritative position and replicated yaw. Does not touch [`AvatarState::online_tank_yaw`]
@@ -937,13 +966,17 @@ fn sync_remote_avatar_entities(
         commands.entity(e).despawn();
     }
 
+    // One pass to index, one lookup per snapshot row — the inner rescan per row
+    // was O(avatars × remote entities) at snapshot rate.
+    let by_id: std::collections::HashMap<u64, Entity> =
+        remote_query.iter().map(|(e, r)| (r.sim_id, e)).collect();
     for a in avatars {
         if Some(a.id) == local_id {
             continue;
         }
         let mut found = false;
-        for (_, mut r) in remote_query.iter_mut() {
-            if r.sim_id == a.id {
+        if let Some(&entity) = by_id.get(&a.id) {
+            if let Ok((_, mut r)) = remote_query.get_mut(entity) {
                 r.net_position = a.position;
                 r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
                 // Fire only on a sequence we haven't seen: the sim re-sends a live
@@ -956,7 +989,6 @@ fn sync_remote_avatar_entities(
                     }
                 }
                 found = true;
-                break;
             }
         }
         if !found {

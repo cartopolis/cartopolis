@@ -47,12 +47,23 @@ async fn main() -> anyhow::Result<()> {
         "simulator"
     );
 
-    let handle = serve(config).await?;
+    let mut handle = serve(config).await?;
     tracing::info!(addr = %handle.local_addr, "simulator ready");
 
     // Hold the handle so the server keeps running until Ctrl-C; on exit it drops
-    // and the accept/tick tasks are aborted.
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("shutting down");
-    Ok(())
+    // and the accept/tick tasks are aborted. Supervised, not merely held: a
+    // background task ending (tick loop most of all) is a server that looks
+    // healthy and serves a frozen world, so it becomes a non-zero exit and a
+    // systemd restart rather than a mystery.
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => {
+            r?;
+            tracing::info!("shutting down");
+            Ok(())
+        }
+        e = handle.task_ended() => {
+            tracing::error!("{e:#}");
+            Err(e)
+        }
+    }
 }

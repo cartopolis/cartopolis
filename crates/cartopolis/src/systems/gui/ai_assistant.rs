@@ -289,20 +289,13 @@ pub fn render_ai_panel(
     config: Res<AiConfig>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
 ) {
-    let open_before = right_panel.is(crate::resources::RightPanel::Assistant);
-    let mut open = open_before;
-    // Hoisted out of the draw closure, where it was the only panel in the client
-    // writing its own slot mid-frame — every other one collects a `close` and
-    // acts after `show_collapsible` returns.
-    let mut close = false;
-
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    crate::systems::egui_manager::responsive_right_panel("ai_panel", compact, viewport_w, 320.0)
-        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            let panel = crate::resources::RightPanel::Assistant;
-            close = theme::panel_header(ui, panel.icon(), panel.label());
-
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        crate::resources::RightPanel::Assistant,
+        "ai_panel",
+        320.0,
+        |ui| {
             if config.api_key.is_none() {
                 ui.colored_label(theme::WARN, "Set ANTHROPIC_API_KEY in .env to enable.");
                 return;
@@ -364,14 +357,8 @@ pub fn render_ai_panel(
                     state.pending_send = true;
                 }
             });
-        });
-    // A drag on the panel's edge that pulls it shut writes `open = false` and
-    // never touches the header, so a panel that consults only its ✕ reopens on
-    // the next frame — the slot still says it is the active panel. Both are the
-    // same request.
-    if close || (open_before && !open) {
-        *right_panel = crate::resources::RightPanel::None;
-    }
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -585,20 +572,23 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::CreatePrim {
-                request_id: 0,
-                region_id,
-                name: prim_name.clone(),
-                position: pos,
-                rotation: Vec3::ZERO,
-                scale,
-                color,
-                texture_id,
-                shape: shape_str,
-                surface: PrimSurface::default(),
-                geometry: geom.geometry(),
-                geo,
-            });
+            session.send(
+                "create prim",
+                NetMessage::CreatePrim {
+                    request_id: 0,
+                    region_id,
+                    name: prim_name.clone(),
+                    position: pos,
+                    rotation: Vec3::ZERO,
+                    scale,
+                    color,
+                    texture_id,
+                    shape: shape_str,
+                    surface: PrimSurface::default(),
+                    geometry: geom.geometry(),
+                    geo,
+                },
+            );
             format!("Created '{}' (sent to server)", prim_name)
         }
 
@@ -659,19 +649,22 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(new_pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
-                request_id: 0,
-                prim_id,
-                position: new_pos,
-                rotation: Vec3::ZERO,
-                scale: new_scale,
-                color: new_color,
-                texture_id: new_texture_id,
-                name: new_name,
-                surface: cur_surface,
-                geometry: new_geom.geometry(),
-                geo,
-            });
+            session.send(
+                "update prim",
+                NetMessage::UpdatePrim {
+                    request_id: 0,
+                    prim_id,
+                    position: new_pos,
+                    rotation: Vec3::ZERO,
+                    scale: new_scale,
+                    color: new_color,
+                    texture_id: new_texture_id,
+                    name: new_name,
+                    surface: cur_surface,
+                    geometry: new_geom.geometry(),
+                    geo,
+                },
+            );
             format!("Updated prim {} (sent to server)", prim_id)
         }
 
@@ -684,10 +677,13 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::DeletePrim {
-                request_id: 0,
-                prim_id,
-            });
+            session.send(
+                "delete prim",
+                NetMessage::DeletePrim {
+                    request_id: 0,
+                    prim_id,
+                },
+            );
             format!("Deleted prim {} (sent to server)", prim_id)
         }
 

@@ -179,7 +179,6 @@ pub fn render_chat_panel(
     let Some(online) = online else {
         return;
     };
-    let mut close_history = false;
 
     let tabs: Vec<(String, String)> = chat
         .channels
@@ -199,16 +198,14 @@ pub fn render_chat_panel(
     let blocked = chat.blocked.clone();
     let mut dismiss_notice = false;
 
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-
     // --- Chat history as an animated right panel (mutually exclusive slot). ---
-    let chat_open_before = right_panel.is(RightPanel::Chat);
-    let mut chat_open = chat_open_before;
-    crate::systems::egui_manager::responsive_right_panel("chat_panel", compact, viewport_w, 320.0)
-        .show_collapsible(egui.ui_mut(), &mut chat_open, |ui| {
-            let panel = RightPanel::Chat;
-            close_history = crate::systems::theme::panel_header(ui, panel.icon(), panel.label());
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        RightPanel::Chat,
+        "chat_panel",
+        320.0,
+        |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (i, (_key, label)) in tabs.iter().enumerate() {
                     ui.selectable_value(&mut active, i, label);
@@ -395,25 +392,21 @@ pub fn render_chat_panel(
                         }
                     }
                 });
-        });
-
-    // A drag on the panel's edge that pulls it shut writes `open = false` and
-    // never touches the header, so a panel that consults only its ✕ reopens on
-    // the next frame — the slot still says it is the active panel. Both are the
-    // same request. (`data_layers` and About were already written this way.)
-    if close_history || (chat_open_before && !chat_open) {
-        *right_panel = RightPanel::None;
-    }
+        },
+    );
 
     chat.active = active;
 
     if join_now {
         let room = chat.join_input.trim().to_string();
         let key = format!("room:{room}");
-        let _ = online.intent_tx.unbounded_send(NetMessage::ChatSubscribe {
-            room: room.clone(),
-            join: true,
-        });
+        online.send(
+            "chat subscribe",
+            NetMessage::ChatSubscribe {
+                room: room.clone(),
+                join: true,
+            },
+        );
         let idx = chat.channel_index(&key);
         chat.active = idx;
         chat.join_input.clear();
@@ -423,11 +416,14 @@ pub fn render_chat_panel(
         if let Some((key, _)) = tabs.get(active) {
             let scope = scope_for(key, chat.shout);
             let body = chat.input.trim().to_string();
-            let _ = online.intent_tx.unbounded_send(NetMessage::ChatSend {
-                request_id: 0,
-                scope,
-                body,
-            });
+            online.send(
+                "chat send",
+                NetMessage::ChatSend {
+                    request_id: 0,
+                    scope,
+                    body,
+                },
+            );
         }
         chat.input.clear();
     }
@@ -437,11 +433,14 @@ pub fn render_chat_panel(
     }
     for (name, on) in [(block_now, true), (unblock_now, false)] {
         let Some(username) = name else { continue };
-        let _ = online.intent_tx.unbounded_send(NetMessage::SetBlocked {
-            request_id: 0,
-            username,
-            blocked: on,
-        });
+        online.send(
+            "set blocked",
+            NetMessage::SetBlocked {
+                request_id: 0,
+                username,
+                blocked: on,
+            },
+        );
     }
     if let Some((username, message)) = open_report {
         chat.report = Some(ReportDraft {
@@ -612,13 +611,16 @@ fn render_report_dialog(
         });
 
     if submit {
-        let _ = online.intent_tx.unbounded_send(NetMessage::ReportUser {
-            request_id: 0,
-            username: draft.username.clone(),
-            reason: draft.reason,
-            note: draft.note.clone(),
-            message: draft.message.clone(),
-        });
+        online.send(
+            "report user",
+            NetMessage::ReportUser {
+                request_id: 0,
+                username: draft.username.clone(),
+                reason: draft.reason,
+                note: draft.note.clone(),
+                message: draft.message.clone(),
+            },
+        );
     }
     if submit || cancel || !open {
         chat.report = None;

@@ -303,7 +303,7 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 /// the cheaper half of the trade: inverting either link would move the camera or
 /// the driver tick to answer a translation control that cannot feel it.
 pub fn render_map_osd(
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     mut osd: ResMut<OsdInput>,
     mut regions: ResMut<crate::systems::touch::UiClaimRegions>,
     mut stick_finger: Local<Option<u64>>,
@@ -335,7 +335,7 @@ pub fn render_map_osd(
         let flying = avatar_state.is_flying;
         let ui_scale = egui.ui_scale();
         let fingers = Fingers::new(&touch, ui_scale);
-        let ctx = egui.ctx_mut();
+        let ctx = egui.ctx();
         match cluster {
             Cluster::Fly => {
                 next.climb =

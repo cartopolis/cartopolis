@@ -33,8 +33,8 @@ pub mod net;
 pub mod player;
 
 pub use dev::{
-    debug, desktop_integration, diagnostics, render_census, shot_harness, shot_presets,
-    upload_meter, window_icon,
+    debug, desktop_integration, diagnostics, frame_pacing, render_census, shot_harness,
+    shot_presets, upload_meter, window_icon,
 };
 // `geo` is its own crate now (crates/geo). Re-exported here so client code keeps
 // writing `systems::vector_tiles` — the same separation of filing from naming the
@@ -46,7 +46,7 @@ pub use gui::{
 };
 pub use map::{
     globe, globe_ocean, globe_weather, height, lod22, map_geometry, map_stream, osm_buildings,
-    render_scale, rendering, sky_dome, street_furniture, street_labels, terrain, tile_loader,
+    render_scale, rendering, sky, sky_dome, street_furniture, street_labels, terrain, tile_loader,
     tile_source, vegetation, water, weather, world_places,
 };
 pub use nav::{

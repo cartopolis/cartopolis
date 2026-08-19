@@ -230,6 +230,52 @@ pub fn responsive_right_panel(
     }
 }
 
+/// One right-hand panel, the whole dance: the slot check, the collapsible show,
+/// the header with its ✕, and the close handling after the body returns.
+///
+/// This sequence was repeated near-verbatim in eleven panel systems, and it
+/// carries an invariant that only a comment used to defend (see the note that
+/// was in `ai_assistant`): a panel must *collect* its close and write the slot
+/// **after** `show_collapsible` returns, never mid-frame from inside the draw
+/// closure. The other half is the last line: a drag on the panel's edge that
+/// pulls it shut writes `open = false` and never touches the header, so a panel
+/// that consults only its ✕ reopens on the next frame — the slot still says it
+/// is the active panel. Both are the same request. Absorbing the dance here
+/// makes both rules structural.
+///
+/// The body runs only while the panel is expanding or expanded (egui skips it
+/// collapsed), so per-frame work belongs inside it. A panel that needs extra
+/// header widgets (the Layers panel's Reset) still writes the dance by hand.
+pub fn right_panel(
+    egui: &mut EguiManager,
+    slot: &mut crate::resources::RightPanel,
+    which: crate::resources::RightPanel,
+    id: &'static str,
+    wide_width: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let open_before = slot.is(which);
+    let mut open = open_before;
+    let mut close = false;
+    let compact = egui.compact();
+    let viewport_w = egui.viewport_pts().x;
+    responsive_right_panel(id, compact, viewport_w, wide_width).show_collapsible(
+        egui.ui_mut(),
+        &mut open,
+        |ui| {
+            close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
+            body(ui);
+        },
+    );
+    // Returned so a panel with teardown of its own (the search panel drops its
+    // suggestion popup and its focus claim) can hook the same moment.
+    let closed = close || (open_before && !open);
+    if closed {
+        *slot = crate::resources::RightPanel::None;
+    }
+    closed
+}
+
 impl Default for EguiManager {
     fn default() -> Self {
         let ctx = egui::Context::default();
@@ -309,6 +355,26 @@ impl EguiManager {
     /// windows/areas (`egui::Window`, `egui::Area`), which still take `&Context`.
     pub fn ctx_mut(&mut self) -> &mut egui::Context {
         &mut self.ctx
+    }
+
+    /// Borrow the egui context *shared* — same validity window as [`Self::ctx_mut`].
+    ///
+    /// `egui::Context` is `Sync` (an `Arc<RwLock<…>>` inside) and every
+    /// floating-`Area` call takes `&Context`, so a system that draws only its
+    /// own `Area`s — no shared root `Ui`, no event injection — can take the
+    /// manager as a plain `Res`. That matters for scheduling, not hygiene: the
+    /// mutable claim on this manager is one of the two cliques that serialise
+    /// the whole Update schedule (`docs/notes/render-performance-survey.md`),
+    /// and every demotion to `Res` lets that system overlap the others. Area
+    /// z-order is unaffected — each `Area` owns its own layer, ordered by
+    /// egui's memory, not by which system happened to register it first this
+    /// frame.
+    ///
+    /// (Worded without naming the mutable-parameter type next to the root-`Ui`
+    /// accessor: `every_root_ui_panel_is_in_the_chain` scans source chunks for
+    /// exactly that pair of tokens.)
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
     }
 
     /// Declare that what was just drawn will change on its own, and ask egui for
@@ -2077,7 +2143,13 @@ mod tests {
                 // A *system* that draws into the root `Ui` takes the manager
                 // mutably; helpers like `responsive_right_panel` take plain
                 // arguments and only build a widget, so they order nothing.
-                if !chunk.contains("ui_mut()") || !chunk.contains("ResMut<EguiManager>") {
+                // A call to `egui_manager::right_panel(` is the same act one
+                // level up — the helper calls `ui_mut()` on the system's behalf,
+                // so a panel using it still composes into the shared layer and
+                // still needs its place in the chain.
+                let draws_root_ui =
+                    chunk.contains("ui_mut()") || chunk.contains("egui_manager::right_panel(");
+                if !draws_root_ui || !chunk.contains("ResMut<EguiManager>") {
                     continue;
                 }
                 let name = chunk

@@ -1021,20 +1021,34 @@ pub fn sync_avatar_animations(
     avatars: Query<Entity, Or<(With<Avatar>, With<RemoteAvatar>)>>,
     children: Query<&Children>,
     mut players: Query<&mut AnimationPlayer>,
-    // Reused across frames and avatars. A preset avatar — all four slots from one
-    // style — resolves to a *single* holder, which is the common case and the one
-    // that leaves here having done nothing; it should not also cost two heap
-    // allocations per frame for the privilege.
-    mut holder_players: Local<Vec<Entity>>,
+    // The resolved player entities per avatar. `iter_descendants` walks the
+    // avatar's *entire* spawned scene — armature and every bone — and the set
+    // it finds only changes on respawn (appearance change) or while a holder's
+    // scene is still streaming in, so walking it per avatar per frame paid
+    // (remote avatars × skeleton nodes) for an answer that almost never moves.
+    // The cache is valid while every cached player is alive and there is one
+    // player per holder (holders are the avatar's direct children; each scene
+    // binds exactly one `AnimationPlayer` once ready). A respawn despawns the
+    // old holders, which kills the cached entities and forces the re-walk; a
+    // scene still loading keeps the counts unequal, so it re-walks until every
+    // holder's player exists — the same behaviour the uncached walk had.
+    mut cache: Local<bevy::ecs::entity::EntityHashMap<Vec<Entity>>>,
     mut seeks: Local<Vec<(AnimationNodeIndex, f32)>>,
 ) {
+    cache.retain(|&e, _| avatars.contains(e));
     for avatar in avatars.iter() {
-        holder_players.clear();
-        holder_players.extend(
-            children
+        let holder_count = children.get(avatar).map(|c| c.len()).unwrap_or(0);
+        let valid = cache
+            .get(&avatar)
+            .is_some_and(|v| v.len() == holder_count && v.iter().all(|&e| players.contains(e)));
+        if !valid {
+            let found: Vec<Entity> = children
                 .iter_descendants(avatar)
-                .filter(|&e| players.get(e).is_ok()),
-        );
+                .filter(|&e| players.contains(e))
+                .collect();
+            cache.insert(avatar, found);
+        }
+        let holder_players = &cache[&avatar];
         if holder_players.len() < 2 {
             continue;
         }

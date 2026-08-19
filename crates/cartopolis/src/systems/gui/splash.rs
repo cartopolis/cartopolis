@@ -110,7 +110,7 @@ impl BootSplash {
 /// Draw the splash until the first map tiles are up, then fade it out.
 pub fn boot_splash(
     mut splash: ResMut<BootSplash>,
-    mut egui: ResMut<EguiManager>,
+    egui: Res<EguiManager>,
     time: Res<Time<Real>>,
     stream: Res<MapStream>,
     window: Query<&Window, With<PrimaryWindow>>,
@@ -155,7 +155,7 @@ pub fn boot_splash(
     // rect by that factor on a phone, and since everything below is placed
     // relative to its centre, the wordmark walks off the bottom-right corner.
     let viewport = egui.viewport_pts();
-    let ctx = egui.ctx_mut();
+    let ctx = egui.ctx();
 
     // A foreground layer painted directly, rather than a window or a panel: this
     // covers everything, takes no input, and needs no layout.

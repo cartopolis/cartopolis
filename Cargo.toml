@@ -84,8 +84,6 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_state",
     "bevy_window",
     "bevy_winit",
-    "custom_cursor",
-    "jpeg",
     "multi_threaded",
     "png",
     "std",
@@ -110,6 +108,15 @@ bevy = { version = "0.19", default-features = false, features = [
     # * `default_font` is `bevy_text?/default_font`, and `bevy_text` is not enabled
     #   either — the UI is egui, which carries its own font (`systems::theme`). A
     #   pure no-op.
+    #
+    # Two more went on 2026-08-19, by the same audit:
+    #
+    # * `custom_cursor` — zero hits for `CustomCursor`/`CursorIcon` in the client
+    #   (the `cursor` matches are all `egui::text::CCursor`).
+    # * `jpeg` — bevy_image's JPEG decoder for `asset_server.load`, and no image
+    #   in this tree goes through the asset server at all: tiles, photos and the
+    #   window icon decode via the `image` crate directly, and the glTFs embed
+    #   PNG. The place-photo JPEGs are encoded/decoded by `image` too.
     # NOTE: the Linux-only `wayland` windowing feature is added per-target in
     # crates/cartopolis/Cargo.toml so macOS/Windows never resolve the wayland stack.
 ] }
@@ -162,6 +169,16 @@ tokio = { version = "1.42", features = [
     "io-util",
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
+# One version for the whole workspace, and 0.29 on purpose: axum 0.8's `ws`
+# feature resolves tokio-tungstenite 0.29, and the client naming 0.30 compiled
+# seven packages twice (tungstenite, sha1, digest, block-buffer, crypto-common,
+# cpufeatures and itself). The rustls/webpki-roots reasoning is at the client's
+# use site.
+tokio-tungstenite = { version = "0.29", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = { version = "2.9", features = ["gzip"] }
@@ -221,6 +238,19 @@ codegen-units = 1
 incremental = false
 debug = false
 panic = "abort"
+
+# The deployed simulator's profile (`deploy-sim.yml`). One deliberate difference
+# from `release`: panics unwind. `release`'s `panic = "abort"` is a client-side
+# trade (drops unwind tables and landing pads from a Bevy binary), but the server
+# built with it has no per-connection isolation at all — every connection runs in
+# its own tokio task precisely so one client's failure costs that client alone,
+# and abort turns any panic reachable from one client's input into a
+# process-wide outage for every session. With unwind, tokio catches the panic at
+# the task boundary, `net::AvatarGuard` retires the avatar on the way out, and
+# `SimHandle::task_ended` turns a dead *critical* task into a supervised exit.
+[profile.sim-release]
+inherits = "release"
+panic = "unwind"
 
 # The web build's working profile (ADR-033), and the reason it is not `dev`:
 # that profile optimises *dependencies* and leaves this crate at opt-level 1, which
