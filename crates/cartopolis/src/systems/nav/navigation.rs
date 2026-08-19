@@ -1300,17 +1300,18 @@ pub fn render_route_panel(
         };
     }
 
-    let mut open = true;
     let mut actions = PanelActions::default();
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    let ui_root = egui.ui_mut();
-
-    crate::systems::egui_manager::responsive_right_panel("route_panel", compact, viewport_w, 320.0)
-        .show_collapsible(ui_root, &mut open, |ui| {
-            let panel = crate::resources::RightPanel::Route;
-            actions.close = theme::panel_header(ui, panel.icon(), panel.label());
-
+    // Through the shared helper — which also fixed a real bug: the ✕ here wrote
+    // `actions.close`, and nothing ever read that field, so the route panel's
+    // close button silently did nothing (dead_code cannot flag a written-only
+    // field). The helper owns the header and the slot write now.
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        crate::resources::RightPanel::Route,
+        "route_panel",
+        320.0,
+        |ui| {
             // Travel-mode tabs. Organic Maps puts these above the fields, because
             // the mode changes what a sensible destination even is.
             ui.horizontal(|ui| {
@@ -1462,7 +1463,8 @@ pub fn render_route_panel(
                         }
                     });
             }
-        });
+        },
+    );
 
     let drive = actions.drive;
     apply_actions(actions, &mut route, &mut nav, here);
@@ -1471,22 +1473,13 @@ pub fn render_route_panel(
     if drive && route.route.is_some() {
         driver.enter();
         *right_panel = RightPanel::None;
-        return;
     }
-    if !open {
-        actions_close(&mut right_panel);
-    }
-}
-
-fn actions_close(right_panel: &mut RightPanel) {
-    *right_panel = RightPanel::None;
 }
 
 /// What the panel's widgets asked for this frame. Collected rather than applied
 /// inline because the widgets borrow `route` while they draw.
 #[derive(Default)]
 struct PanelActions {
-    close: bool,
     swap: bool,
     clear: bool,
     frame: bool,

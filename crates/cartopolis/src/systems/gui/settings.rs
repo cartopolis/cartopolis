@@ -142,8 +142,6 @@ pub fn render_settings_panel(
     mut identity: ResMut<crate::resources::AuthIdentity>,
     online: Option<Res<crate::resources::OnlineSession>>,
 ) {
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
     // sentence without numbers rather than inventing a resolution.
@@ -153,9 +151,6 @@ pub fn render_settings_panel(
             w.resolution.physical_height(),
         )
     });
-    let open_before = right_panel.is(RightPanel::Settings);
-    let mut open = open_before;
-    let mut close = false;
     let mut play_tone = false;
     let mut delete_account = false;
 
@@ -169,51 +164,43 @@ pub fn render_settings_panel(
     let mut edited = *prefs;
     let mut sun_mode = dev.sun_mode;
 
-    crate::systems::egui_manager::responsive_right_panel(
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        RightPanel::Settings,
         "settings_panel",
-        compact,
-        viewport_w,
         320.0,
-    )
-    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-        let panel = RightPanel::Settings;
-        close = theme::panel_header(ui, panel.icon(), panel.label());
-
-        ui.horizontal_wrapped(|ui| {
-            for tab in SettingsTab::ALL {
-                ui.selectable_value(&mut state.tab, tab, tab.label());
-            }
-        });
-        ui.separator();
-
-        // Every tab is a list that can outgrow a phone's 609 pt of viewport, and
-        // a `Panel` clips rather than scrolls (the Layers panel had lost its last
-        // ten rows to exactly this). The header stays outside, so the close
-        // button cannot scroll away.
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| match state.tab {
-                SettingsTab::General => general_tab(ui, &mut edited),
-                SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
-                SettingsTab::Audio => play_tone = audio_tab(ui, &mut state, &mut edited),
-                SettingsTab::Account => {
-                    delete_account = account_tab(ui, &mut state, &mut identity, online.is_some());
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for tab in SettingsTab::ALL {
+                    ui.selectable_value(&mut state.tab, tab, tab.label());
                 }
             });
-    });
+            ui.separator();
+
+            // Every tab is a list that can outgrow a phone's 609 pt of viewport, and
+            // a `Panel` clips rather than scrolls (the Layers panel had lost its last
+            // ten rows to exactly this). The header stays outside, so the close
+            // button cannot scroll away.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match state.tab {
+                    SettingsTab::General => general_tab(ui, &mut edited),
+                    SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
+                    SettingsTab::Audio => play_tone = audio_tab(ui, &mut state, &mut edited),
+                    SettingsTab::Account => {
+                        delete_account =
+                            account_tab(ui, &mut state, &mut identity, online.is_some());
+                    }
+                });
+        },
+    );
 
     if edited != *prefs {
         *prefs = edited;
     }
     if sun_mode != dev.sun_mode {
         dev.sun_mode = sun_mode;
-    }
-    // A drag on the panel's edge that pulls it shut writes `open = false` and
-    // never touches the header, so a panel that consults only its ✕ reopens on
-    // the next frame — the slot still says it is the active panel. Both are the
-    // same request. (`data_layers` and About were already written this way.)
-    if close || (open_before && !open) {
-        *right_panel = RightPanel::None;
     }
     // Closing the panel must release the microphone: leaving it open behind a
     // hidden panel is the recording-indicator problem the module note describes.
@@ -913,23 +900,22 @@ pub fn render_about_panel(
     mut right_panel: ResMut<RightPanel>,
     mut notices: Local<Option<Vec<Notice>>>,
 ) {
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
     // Called unconditionally, open or not: `show_collapsible` drives the
     // slide-out animation and keeps the shared root `Ui`'s auto-id stream the
     // same either way (`skip_ahead_auto_ids`), so an early return on a closed
     // panel shifts every id after it in the chain.
-    let open_before = right_panel.is(RightPanel::About);
-    let mut open = open_before;
+    //
     // Parsed once per process, not once per frame: it is ~130 lines of static
     // text and the answer cannot change while the binary runs.
     let notices = notices.get_or_insert_with(|| parse_notices(THIRD_PARTY));
-    let mut close = false;
 
-    crate::systems::egui_manager::responsive_right_panel("about_panel", compact, viewport_w, 320.0)
-        .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-            let panel = RightPanel::About;
-            close = theme::panel_header(ui, panel.icon(), panel.label());
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        RightPanel::About,
+        "about_panel",
+        320.0,
+        |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1021,14 +1007,8 @@ pub fn render_about_panel(
                         ui.separator();
                     }
                 });
-        });
-
-    // `open` is only written back by egui when the panel is dragged shut, so the
-    // `open_before` guard matters: without it this would clear whichever *other*
-    // panel is showing, every frame.
-    if close || (open_before && !open) {
-        *right_panel = RightPanel::None;
-    }
+        },
+    );
 }
 
 /// What this binary is, in one line: the platform it was built for, the profile,

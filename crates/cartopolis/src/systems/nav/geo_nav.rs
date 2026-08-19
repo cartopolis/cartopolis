@@ -1725,9 +1725,7 @@ pub fn render_search_panel(
     if nav.focus_search {
         *right_panel = RightPanel::Search;
     }
-    let open_before = right_panel.is(RightPanel::Search);
-    let mut open = open_before;
-    if !open {
+    if !right_panel.is(RightPanel::Search) {
         // No field on screen → it can hold no focus, and nothing is listening for
         // the Enter that submits it.
         nav.search_has_focus = false;
@@ -1742,39 +1740,35 @@ pub fn render_search_panel(
         .map(|((cell, tf), anchor)| camera_geo(anchor, &globe, cell, tf));
     let place = viewer.zip(cam.map(|(cell, tf)| globe.altitude_m(cell, tf)));
 
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    let mut close = false;
     let done = flash
         .filter(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
         .map(|(action, _)| action);
     let mut fired = None;
-    crate::systems::egui_manager::responsive_right_panel(
+    let closed = crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        RightPanel::Search,
         "search_panel",
-        compact,
-        viewport_w,
         320.0,
-    )
-    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-        let panel = RightPanel::Search;
-        close = theme::panel_header(ui, panel.icon(), panel.label());
-        if history_row(ui, &mut nav, store.data.home.as_ref()) {
-            nav.close_suggestions();
-        }
-        // The foot **reserves its space before the body is laid out**, which is
-        // what a nested `TopBottomPanel` is for. The results list is an
-        // `auto_shrink([false, false])` `ScrollArea` and takes every point of
-        // height left to it, so two rows drawn after it are simply off the bottom
-        // of the panel (they were), and a bottom-up layout around both puts them
-        // over the top of it instead.
-        egui::Panel::bottom("search_view_actions")
-            .frame(egui::Frame::NONE)
-            .show_separator_line(false)
-            .show(ui, |ui| {
-                fired = view_actions_ui(ui, place.is_some(), done);
-            });
-        search_ui(ui, &mut nav, viewer);
-    });
+        |ui| {
+            if history_row(ui, &mut nav, store.data.home.as_ref()) {
+                nav.close_suggestions();
+            }
+            // The foot **reserves its space before the body is laid out**, which is
+            // what a nested `TopBottomPanel` is for. The results list is an
+            // `auto_shrink([false, false])` `ScrollArea` and takes every point of
+            // height left to it, so two rows drawn after it are simply off the bottom
+            // of the panel (they were), and a bottom-up layout around both puts them
+            // over the top of it instead.
+            egui::Panel::bottom("search_view_actions")
+                .frame(egui::Frame::NONE)
+                .show_separator_line(false)
+                .show(ui, |ui| {
+                    fired = view_actions_ui(ui, place.is_some(), done);
+                });
+            search_ui(ui, &mut nav, viewer);
+        },
+    );
     match (fired, place) {
         (Some(ViewAction::SetHome), Some(((lat, lng), alt))) => {
             // Capture the current view so Home returns to it exactly.
@@ -1804,12 +1798,7 @@ pub fn render_search_panel(
         }
         _ => {}
     }
-    // A drag on the panel's edge that pulls it shut writes `open = false` and
-    // never touches the header, so a panel that consults only its ✕ reopens on
-    // the next frame — the slot still says it is the active panel. Both are the
-    // same request. (`data_layers` and About were already written this way.)
-    if close || (open_before && !open) {
-        *right_panel = RightPanel::None;
+    if closed {
         nav.search_has_focus = false;
         nav.close_suggestions();
     }

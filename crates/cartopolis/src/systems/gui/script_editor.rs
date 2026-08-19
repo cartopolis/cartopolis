@@ -262,172 +262,167 @@ pub fn render_script_panel(
         .and_then(|id| prims.iter().find(|p| p.id == id))
         .and_then(|p| editor.budgets.get(&p.region_id).copied());
 
-    let mut close = false;
     let mut save = false;
     let mut stop = false;
     let mut touch = false;
     let mut clear_console = false;
     let mut insert_template = false;
 
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    let mut open = true;
-    crate::systems::egui_manager::responsive_right_panel(
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        RightPanel::Script,
         "script_panel",
-        compact,
-        viewport_w,
         420.0,
-    )
-    .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-        let panel = RightPanel::Script;
-        close = theme::panel_header(ui, panel.icon(), panel.label());
-
-        let Some(prim_id) = prim_id else {
-            ui.label(
-                egui::RichText::new("Right-click a prim and choose Edit script.")
-                    .color(theme::TEXT_DIM),
-            );
-            return;
-        };
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new(&prim_name)
-                    .strong()
-                    .color(theme::ACCENT_TEXT),
-            );
-            ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::TEXT_DIM));
-            // "Running" is the server's word for "I hold a compiled instance",
-            // which is not the same as "the source in this box" — hence the
-            // separate unsaved marker rather than one combined state.
-            let (dot, tip) = if editor.running {
-                (
-                    format!("{} running", icons::RUNNING),
-                    "the server is running a compiled copy of this script",
-                )
-            } else {
-                (
-                    format!("{} stopped", icons::STOPPED),
-                    "this prim has no script running",
-                )
-            };
-            ui.label(egui::RichText::new(dot).color(if editor.running {
-                theme::ACCENT
-            } else {
-                theme::TEXT_DIM
-            }))
-            .on_hover_text(tip);
-            if editor.is_dirty() {
-                ui.label(egui::RichText::new("• unsaved").color(theme::AMBER));
-            }
-        });
-
-        if let Some(b) = budget {
-            ui.label(
-                egui::RichText::new(format!(
-                    "region: {} / {} scripts · {} / {} prims · {} KiB each",
-                    b.scripts_used,
-                    b.scripts_max,
-                    b.prims_used,
-                    b.prims_max,
-                    b.script_memory_bytes / 1024
-                ))
-                .color(theme::TEXT_DIM)
-                .small(),
-            )
-            .on_hover_text(
-                "What this region has left. Scripts and prims are budgeted per region, \
-                 and every script gets its own memory ceiling.",
-            );
-        }
-        ui.separator();
-
-        // Laid out bottom-up: the console takes a fixed share and the code area
-        // gets the rest, so output arriving while you type never displaces the
-        // line you are typing.
-        egui::Panel::bottom("script_console")
-            .show_separator_line(false)
-            .frame(egui::Frame::NONE.outer_margin(egui::Margin {
-                top: 6,
-                ..Default::default()
-            }))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Emphasised only while there is something to save: a Save
-                    // button that always shouts stops meaning anything.
-                    let save_label = if editor.is_dirty() {
-                        egui::RichText::new("Save & run").strong()
-                    } else {
-                        egui::RichText::new("Save & run")
-                    };
-                    save = ui
-                        .button(save_label)
-                        .on_hover_text("Store the script and (re)start it — saving is a restart")
-                        .clicked();
-                    // Confirmed: this deletes the script off the server and
-                    // empties the buffer, and it sits between Save and Touch.
-                    stop = theme::confirm_button(
-                        ui,
-                        ui.id().with("stop_script"),
-                        "Stop",
-                        "Remove the script?",
-                    );
-                    touch = ui
-                        .button("Touch")
-                        .on_hover_text("Fire on_touch, as if you had clicked the prim")
-                        .clicked();
-                });
-                ui.horizontal(|ui| {
-                    theme::section(ui, "Console");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        clear_console = theme::action_button(ui, "Clear").clicked();
-                    });
-                });
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .max_height(140.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for line in editor.console.iter().filter(|l| l.prim_id == prim_id) {
-                            ui.label(
-                                egui::RichText::new(&line.text)
-                                    .monospace()
-                                    .small()
-                                    .color(level_color(line.level)),
-                            );
-                        }
-                    });
-            });
-
-        if !editor.fetched {
-            ui.label(egui::RichText::new("Loading…").color(theme::TEXT_DIM));
-            return;
-        }
-
-        reference_ui(ui);
-
-        if editor.source.is_empty() {
-            insert_template = ui
-                .button("Start from a template")
-                .on_hover_text("Fill the editor with a script that shows every handler")
-                .clicked();
-        }
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut editor.source)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(18)
-                        .hint_text("function on_touch(id, name)\n    vf.say(\"hi \" .. name)\nend"),
+        |ui| {
+            let Some(prim_id) = prim_id else {
+                ui.label(
+                    egui::RichText::new("Right-click a prim and choose Edit script.")
+                        .color(theme::TEXT_DIM),
                 );
-            });
-    });
+                return;
+            };
 
-    if close || !open {
-        *right_panel = RightPanel::None;
-    }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(&prim_name)
+                        .strong()
+                        .color(theme::ACCENT_TEXT),
+                );
+                ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::TEXT_DIM));
+                // "Running" is the server's word for "I hold a compiled instance",
+                // which is not the same as "the source in this box" — hence the
+                // separate unsaved marker rather than one combined state.
+                let (dot, tip) = if editor.running {
+                    (
+                        format!("{} running", icons::RUNNING),
+                        "the server is running a compiled copy of this script",
+                    )
+                } else {
+                    (
+                        format!("{} stopped", icons::STOPPED),
+                        "this prim has no script running",
+                    )
+                };
+                ui.label(egui::RichText::new(dot).color(if editor.running {
+                    theme::ACCENT
+                } else {
+                    theme::TEXT_DIM
+                }))
+                .on_hover_text(tip);
+                if editor.is_dirty() {
+                    ui.label(egui::RichText::new("• unsaved").color(theme::AMBER));
+                }
+            });
+
+            if let Some(b) = budget {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "region: {} / {} scripts · {} / {} prims · {} KiB each",
+                        b.scripts_used,
+                        b.scripts_max,
+                        b.prims_used,
+                        b.prims_max,
+                        b.script_memory_bytes / 1024
+                    ))
+                    .color(theme::TEXT_DIM)
+                    .small(),
+                )
+                .on_hover_text(
+                    "What this region has left. Scripts and prims are budgeted per region, \
+                 and every script gets its own memory ceiling.",
+                );
+            }
+            ui.separator();
+
+            // Laid out bottom-up: the console takes a fixed share and the code area
+            // gets the rest, so output arriving while you type never displaces the
+            // line you are typing.
+            egui::Panel::bottom("script_console")
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.outer_margin(egui::Margin {
+                    top: 6,
+                    ..Default::default()
+                }))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Emphasised only while there is something to save: a Save
+                        // button that always shouts stops meaning anything.
+                        let save_label = if editor.is_dirty() {
+                            egui::RichText::new("Save & run").strong()
+                        } else {
+                            egui::RichText::new("Save & run")
+                        };
+                        save = ui
+                            .button(save_label)
+                            .on_hover_text(
+                                "Store the script and (re)start it — saving is a restart",
+                            )
+                            .clicked();
+                        // Confirmed: this deletes the script off the server and
+                        // empties the buffer, and it sits between Save and Touch.
+                        stop = theme::confirm_button(
+                            ui,
+                            ui.id().with("stop_script"),
+                            "Stop",
+                            "Remove the script?",
+                        );
+                        touch = ui
+                            .button("Touch")
+                            .on_hover_text("Fire on_touch, as if you had clicked the prim")
+                            .clicked();
+                    });
+                    ui.horizontal(|ui| {
+                        theme::section(ui, "Console");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            clear_console = theme::action_button(ui, "Clear").clicked();
+                        });
+                    });
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .max_height(140.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for line in editor.console.iter().filter(|l| l.prim_id == prim_id) {
+                                ui.label(
+                                    egui::RichText::new(&line.text)
+                                        .monospace()
+                                        .small()
+                                        .color(level_color(line.level)),
+                                );
+                            }
+                        });
+                });
+
+            if !editor.fetched {
+                ui.label(egui::RichText::new("Loading…").color(theme::TEXT_DIM));
+                return;
+            }
+
+            reference_ui(ui);
+
+            if editor.source.is_empty() {
+                insert_template = ui
+                    .button("Start from a template")
+                    .on_hover_text("Fill the editor with a script that shows every handler")
+                    .clicked();
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut editor.source)
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(18)
+                            .hint_text(
+                                "function on_touch(id, name)\n    vf.say(\"hi \" .. name)\nend",
+                            ),
+                    );
+                });
+        },
+    );
+
     if clear_console {
         editor.console.clear();
     }

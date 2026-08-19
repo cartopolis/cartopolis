@@ -283,7 +283,6 @@ fn flatten(store: &UserStore, parent: Option<u64>, depth: usize, out: &mut Vec<R
 /// borrowed immutably there) and applied afterwards.
 #[derive(Default)]
 struct Actions {
-    close: bool,
     new_folder: bool,
     /// Save where the camera is now as a place. It was the status HUD's ☆, which
     /// is a strange place for it to have been: the HUD is a readout, it is hidden
@@ -461,7 +460,6 @@ pub fn render_bookmarks_panel(
     if !open_before {
         return;
     }
-    let mut open = open_before;
 
     // Current location + view, for the per-place "update to here" action.
     let current = camera
@@ -481,9 +479,6 @@ pub fn render_bookmarks_panel(
     let mut rows = Vec::new();
     flatten(&store, None, 0, &mut rows);
 
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    let ui_root = egui.ui_mut();
     let mut act = Actions::default();
     let mut editing = bookmarks.editing.take();
     // Taken out and put back for the same reason `editing` is: the draw closure
@@ -492,186 +487,184 @@ pub fn render_bookmarks_panel(
     let capturing_for = bookmarks.capture.as_ref().map(|c| c.place);
     let photo_error = bookmarks.photo_error.clone();
 
-    crate::systems::egui_manager::responsive_right_panel(
+    crate::systems::egui_manager::right_panel(
+        &mut egui,
+        &mut right_panel,
+        crate::resources::RightPanel::Places,
         "bookmarks_panel",
-        compact,
-        viewport_w,
         300.0,
-    )
-    .show_collapsible(ui_root, &mut open, |ui| {
-        let panel = crate::resources::RightPanel::Places;
-        // The two add buttons are a row of their own under the header, not header
-        // actions: two words plus a medallion, a title and a close button do not
-        // fit across a 300 pt panel — the header gave the buttons the right edge
-        // and truncated its own name to "Save…", which is the one thing in a
-        // header nobody can do without. They carry their icon *and* their word,
-        // because side by side the word is what tells them apart.
-        act.close = crate::systems::theme::panel_header(ui, panel.icon(), panel.label());
-        ui.horizontal(|ui| {
-            // Disabled rather than hidden before the world anchor exists: there is
-            // nowhere to save *yet*, and a button that comes and goes is harder to
-            // find again than one that is greyed.
-            if ui
-                .add_enabled(
-                    has_place,
-                    egui::Button::new(format!("{} Place", icons::BOOKMARK_ADD)),
-                )
-                .on_hover_text("Save where you are now, with this view")
-                .on_disabled_hover_text("No position yet — the world is still loading")
-                .clicked()
-            {
-                act.new_place = true;
-            }
-            if ui
-                .button(format!("{} Folder", icons::NEW_FOLDER))
-                .on_hover_text("New folder — drag places into it to group them")
-                .clicked()
-            {
-                act.new_folder = true;
-            }
-        });
-        // A capture puts the camera (or a file dialog) in front of everything, so
-        // this strip is only seen on the way back — which is exactly when "did
-        // that work?" is the question. It is also the only place the capture can
-        // be abandoned: on Android nothing tells us the user pressed Back.
-        if let Some(place) = capturing_for {
-            ui.add_space(4.0);
+        |ui| {
+            // The two add buttons are a row of their own under the header, not header
+            // actions: two words plus a medallion, a title and a close button do not
+            // fit across a 300 pt panel — the header gave the buttons the right edge
+            // and truncated its own name to "Save…", which is the one thing in a
+            // header nobody can do without. They carry their icon *and* their word,
+            // because side by side the word is what tells them apart.
             ui.horizontal(|ui| {
-                ui.spinner();
-                let waiting = rows
-                    .iter()
-                    .find_map(|row| match row {
-                        Row::Place { id, name, .. } if *id == place => Some(name.as_str()),
-                        _ => None,
-                    })
-                    .unwrap_or("this place");
-                ui.label(
-                    egui::RichText::new(format!("Waiting for a photo for {waiting}…"))
-                        .size(12.0)
-                        .color(theme::TEXT_DIM),
-                );
-                if theme::action_button(ui, "Cancel").clicked() {
-                    act.cancel_photo = true;
+                // Disabled rather than hidden before the world anchor exists: there is
+                // nowhere to save *yet*, and a button that comes and goes is harder to
+                // find again than one that is greyed.
+                if ui
+                    .add_enabled(
+                        has_place,
+                        egui::Button::new(format!("{} Place", icons::BOOKMARK_ADD)),
+                    )
+                    .on_hover_text("Save where you are now, with this view")
+                    .on_disabled_hover_text("No position yet — the world is still loading")
+                    .clicked()
+                {
+                    act.new_place = true;
+                }
+                if ui
+                    .button(format!("{} Folder", icons::NEW_FOLDER))
+                    .on_hover_text("New folder — drag places into it to group them")
+                    .clicked()
+                {
+                    act.new_folder = true;
                 }
             });
-        }
-        if let Some(message) = &photo_error {
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
+            // A capture puts the camera (or a file dialog) in front of everything, so
+            // this strip is only seen on the way back — which is exactly when "did
+            // that work?" is the question. It is also the only place the capture can
+            // be abandoned: on Android nothing tells us the user pressed Back.
+            if let Some(place) = capturing_for {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    let waiting = rows
+                        .iter()
+                        .find_map(|row| match row {
+                            Row::Place { id, name, .. } if *id == place => Some(name.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or("this place");
+                    ui.label(
+                        egui::RichText::new(format!("Waiting for a photo for {waiting}…"))
+                            .size(12.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                    if theme::action_button(ui, "Cancel").clicked() {
+                        act.cancel_photo = true;
+                    }
+                });
+            }
+            if let Some(message) = &photo_error {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(message.as_str())
+                            .size(12.0)
+                            .color(theme::WARN),
+                    );
+                    if theme::action_button(ui, "Dismiss").clicked() {
+                        act.dismiss_photo_error = true;
+                    }
+                });
+            }
+            if rows.is_empty() {
+                ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(message.as_str())
-                        .size(12.0)
-                        .color(theme::WARN),
-                );
-                if theme::action_button(ui, "Dismiss").clicked() {
-                    act.dismiss_photo_error = true;
-                }
-            });
-        }
-        if rows.is_empty() {
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(
-                    "No places yet — \"+ Place\" saves where you are now, and \
+                    egui::RichText::new(
+                        "No places yet — \"+ Place\" saves where you are now, and \
                      \"+ Folder\" makes somewhere to sort them into.",
-                )
-                .size(13.0)
-                .color(theme::TEXT_DIM),
-            );
-        }
-        egui::ScrollArea::vertical()
-            // `auto_shrink` defaults to true on both axes, which sizes the
-            // area to its content: on a short list the scrollbar lands in the
-            // middle of the panel and the rows do not fill the width the panel
-            // was docked at. Every other panel in the client says this; these
-            // two were written before it was the house rule.
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for row in &rows {
-                    ui.add_space(2.0);
-                    match row {
-                        Row::Folder {
-                            id,
-                            depth,
-                            name,
-                            color,
-                            collapsed,
-                            count,
-                        } => {
-                            folder_row(
-                                ui,
-                                &mut act,
-                                &mut editing,
-                                *id,
-                                *depth,
+                    )
+                    .size(13.0)
+                    .color(theme::TEXT_DIM),
+                );
+            }
+            egui::ScrollArea::vertical()
+                // `auto_shrink` defaults to true on both axes, which sizes the
+                // area to its content: on a short list the scrollbar lands in the
+                // middle of the panel and the rows do not fill the width the panel
+                // was docked at. Every other panel in the client says this; these
+                // two were written before it was the house rule.
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for row in &rows {
+                        ui.add_space(2.0);
+                        match row {
+                            Row::Folder {
+                                id,
+                                depth,
                                 name,
-                                *color,
-                                *collapsed,
-                                *count,
-                            );
-                        }
-                        Row::Place {
-                            id,
-                            depth,
-                            name,
-                            color,
-                            lat,
-                            lng,
-                            altitude,
-                            photo,
-                        } => {
-                            place_row(
-                                ui,
-                                &mut act,
-                                &mut editing,
-                                &mut thumbs,
-                                *id,
-                                *depth,
+                                color,
+                                collapsed,
+                                count,
+                            } => {
+                                folder_row(
+                                    ui,
+                                    &mut act,
+                                    &mut editing,
+                                    *id,
+                                    *depth,
+                                    name,
+                                    *color,
+                                    *collapsed,
+                                    *count,
+                                );
+                            }
+                            Row::Place {
+                                id,
+                                depth,
                                 name,
-                                *color,
-                                (*lat, *lng, *altitude),
-                                photo.as_deref(),
-                                current.is_some(),
-                            );
+                                color,
+                                lat,
+                                lng,
+                                altitude,
+                                photo,
+                            } => {
+                                place_row(
+                                    ui,
+                                    &mut act,
+                                    &mut editing,
+                                    &mut thumbs,
+                                    *id,
+                                    *depth,
+                                    name,
+                                    *color,
+                                    (*lat, *lng, *altitude),
+                                    photo.as_deref(),
+                                    current.is_some(),
+                                );
+                            }
                         }
                     }
-                }
-                // Somewhere to drop a row to get it *out* of a folder. Only while a
-                // drag is live — an always-present strip is just clutter, and the
-                // tree has no other empty space to aim at once it fills the panel.
-                if egui::DragAndDrop::has_payload_of_type::<Item>(ui.ctx()) {
-                    ui.add_space(6.0);
-                    let (rect, response) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 26.0),
-                        egui::Sense::hover(),
-                    );
-                    let hot = response.contains_pointer();
-                    let stroke =
-                        egui::Stroke::new(1.0, if hot { theme::ACCENT } else { theme::LINE });
-                    ui.painter().rect_stroke(
-                        rect.shrink(1.0),
-                        4.0,
-                        stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "drop here for the top level",
-                        egui::FontId::proportional(12.0),
-                        stroke.color,
-                    );
-                    if let Some(item) = response.dnd_release_payload::<Item>() {
-                        act.drop = Some((*item, None));
+                    // Somewhere to drop a row to get it *out* of a folder. Only while a
+                    // drag is live — an always-present strip is just clutter, and the
+                    // tree has no other empty space to aim at once it fills the panel.
+                    if egui::DragAndDrop::has_payload_of_type::<Item>(ui.ctx()) {
+                        ui.add_space(6.0);
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 26.0),
+                            egui::Sense::hover(),
+                        );
+                        let hot = response.contains_pointer();
+                        let stroke =
+                            egui::Stroke::new(1.0, if hot { theme::ACCENT } else { theme::LINE });
+                        ui.painter().rect_stroke(
+                            rect.shrink(1.0),
+                            4.0,
+                            stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "drop here for the top level",
+                            egui::FontId::proportional(12.0),
+                            stroke.color,
+                        );
+                        if let Some(item) = response.dnd_release_payload::<Item>() {
+                            act.drop = Some((*item, None));
+                        }
                     }
-                }
-            });
-    });
+                });
+        },
+    );
     bookmarks.editing = editing;
     bookmarks.photo_textures = thumbs;
     drag_ghost(&egui.ctx, &rows);
 
-    let close = act.close;
     if act.new_place {
         if let Some((lat, lng, alt, pose)) = current.clone() {
             let id = store.add_bookmark(PLACEHOLDER_NAME.to_string(), lat, lng, alt, pose);
@@ -682,11 +675,6 @@ pub fn render_bookmarks_panel(
     }
     apply_photo_actions(&mut bookmarks, &mut store, &act);
     apply(&mut store, &mut nav, act.update.zip(current), act);
-
-    // ✕, or the panel dragged/collapsed shut by its own resize handle.
-    if close || (open_before && !open) {
-        *right_panel = crate::resources::RightPanel::None;
-    }
 }
 
 /// One folder row: fold arrow, colour swatch (the pin colour of everything in
