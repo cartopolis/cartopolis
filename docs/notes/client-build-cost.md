@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
 triggers: [slow build, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental]
-updated: 2026-08-06
+updated: 2026-08-19
 ---
 
 # Where the client's build time actually goes
@@ -157,6 +157,20 @@ A remaining tier (`terrain`, `height`, `route_ahead`, `collision`, `tile_source`
 split the same way. Not done, and worth weighing rather than assuming: the build
 win from the first two splits is already banked, so the third is mostly about
 where code lives.
+
+## The crate-root module was its own chokepoint (fixed 2026-08-19)
+
+One lever this note's crate-split analysis never listed: **module splitting
+inside the crate**. `codegen-units` partitions CGUs by module, and `lib.rs`
+carried ~2,600 lines of sky/weather/frame-pacing implementation in the crate
+*root* — the same partition as all 35 `add_systems` calls and 12
+`MaterialPlugin` instantiations, i.e. the densest generic-instantiation site in
+the workspace. Tuning one cloud constant re-codegened all of it. That block is
+`systems/map/sky.rs` + `systems/dev/frame_pacing.rs` now (registration stayed
+in `lib.rs`), which — unlike a crate split — *adds* intra-crate codegen
+parallelism instead of trading it away. Not re-measured with `--timings` yet;
+the mechanism is the same one the `codegen-units = 256` paragraph above
+documents.
 
 ## Not measured
 

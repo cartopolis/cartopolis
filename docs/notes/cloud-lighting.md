@@ -35,7 +35,7 @@ that starts by adding a march through a 3D density field.
    own palette it will drift from the sky, and ours did: `update_clouds` used to
    hand-author `lit_color` / `shadow_color` as CPU-side lerps sitting next to
    Bevy's physical atmosphere. They now come from `utils::sun`, which is also what
-   `main::sun_light` and `free_camera::distance_fog` are built from, and the haze
+   `sky::sun_light` and `free_camera::distance_fog` are built from, and the haze
    colour is read straight off the camera's own `DistanceFog`.
 
    **"Built the same way as" is not the same as "is", and the gap was visible**
