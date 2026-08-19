@@ -22,6 +22,16 @@
 //! measure here — the queue is what the client controls, and the spreading is what
 //! the budget does about it.
 //!
+//! **And what it all adds up to.** [`UploadMeter::resident_bytes`] carries the
+//! other half: the bytes of streamed content alive *right now*, maintained by
+//! difference so a removal takes its own contribution back off. A rate and a total
+//! fail differently — a burst times out a command buffer, a total exhausts an
+//! allocator — and until a report carries both, the two are indistinguishable
+//! afterwards. They can move in opposite directions: the per-frame ceiling
+//! (`quality::Budget::upload_bytes_per_frame`) flattens the first and does nothing
+//! at all about the second, since deferring an upload changes when the tile
+//! arrives and not whether it stays.
+//!
 //! **What it is not.** Not a GPU measurement. It says nothing about pipeline
 //! compilation, binning or overdraw, and a frame can hang on any of those with
 //! this reading at zero. It is one term of the budget, and the one that was dark.
@@ -59,6 +69,37 @@ pub struct UploadMeter {
     /// `lod22::MAX_CELL_MESH_BYTES` exists to hold it down, and this is what says
     /// whether it did.
     pub peak_asset_bytes: usize,
+    /// What the streamed content **currently occupies**, as opposed to what it
+    /// queued: every live `Image` and `Mesh`, by the same `byte_len` arithmetic.
+    ///
+    /// **The other half of the device-loss question, and it was dark too.** The
+    /// fields above bound a *rate* — how much a frame hands over — and a rate that
+    /// is safe every frame still arrives somewhere: 424 flat tiles at the balanced
+    /// rung's 512 px raster are ~565 MB of texture whether they are uploaded in one
+    /// frame or in three hundred. A driver that refuses an allocation, or an
+    /// Android low-memory kill, is a failure of the total and not of the burst, and
+    /// the two are told apart by watching this number rather than [`Self::peak_kb`]
+    /// — an upload peak that stays flat while this climbs is a residency problem
+    /// and no throttle will help it.
+    ///
+    /// Maintained by difference (`Added`/`Modified` add, `Removed` subtracts), so
+    /// it needs the sizes below and cannot be a running sum.
+    ///
+    /// **It is not a VRAM figure.** It counts the streamed content this client
+    /// creates and drops — tiles, cells, buildings, the route ribbon — and nothing
+    /// else: no render targets, shadow maps, atmosphere LUTs, swapchain images or
+    /// pipeline memory, and no allocator overhead. It is the term this code
+    /// controls, which is the only term worth reporting.
+    pub resident_bytes: usize,
+    /// The high-water mark of [`Self::resident_bytes`], which is the number a
+    /// report needs: a run that peaks at 900 MB and settles at 300 has already
+    /// asked the driver for 900.
+    pub peak_resident_bytes: usize,
+    /// What each live asset contributed, so a `Removed` can subtract exactly what
+    /// its `Added` added. Bevy hands out no size with a removal message, and
+    /// re-deriving one is impossible — by then the asset is gone.
+    images: bevy::platform::collections::HashMap<AssetId<Image>, usize>,
+    meshes: bevy::platform::collections::HashMap<AssetId<Mesh>, usize>,
     /// Meshes this run whose bytes could not be counted because bevy had already
     /// moved the data to the render world.
     ///
@@ -90,6 +131,31 @@ impl UploadMeter {
     #[must_use]
     pub fn peak_asset_kb(&self) -> usize {
         self.peak_asset_bytes / 1024
+    }
+
+    /// What the streamed content occupies right now, in kB.
+    #[must_use]
+    pub fn resident_kb(&self) -> usize {
+        self.resident_bytes / 1024
+    }
+
+    /// The most it has ever occupied, in kB.
+    #[must_use]
+    pub fn peak_resident_kb(&self) -> usize {
+        self.peak_resident_bytes / 1024
+    }
+
+    /// Fold one asset's new size into the residency, returning nothing and
+    /// tolerating everything: a `Modified` replaces the previous figure, a first
+    /// sighting adds, and a size that arrives smaller than what was subtracted
+    /// saturates rather than wrapping.
+    ///
+    /// `usize` arithmetic on a difference is the one way this gauge could lie
+    /// loudly — an underflow would report ~18 exabytes resident and send the next
+    /// reader after a leak that does not exist.
+    fn account(resident: &mut usize, peak: &mut usize, previous: Option<usize>, now: usize) {
+        *resident = resident.saturating_sub(previous.unwrap_or(0)) + now;
+        *peak = (*peak).max(*resident);
     }
 }
 
@@ -149,7 +215,19 @@ pub fn measure_uploads(
     meshes: Res<Assets<Mesh>>,
 ) {
     let mut bytes = 0usize;
+    // Taken apart so the residency bookkeeping can borrow the two counters and the
+    // size map at once; `meter` is put back together at the end of each loop body.
+    let (mut resident, mut peak_resident) = (meter.resident_bytes, meter.peak_resident_bytes);
     for event in image_events.read() {
+        // A removal is the only way residency ever comes *down*, and it carries no
+        // size — hence the map. Handled before the add/modify filter below because
+        // that filter drops it.
+        if let AssetEvent::Removed { id } = *event {
+            // A removal is the same bookkeeping with a new size of zero.
+            let previous = meter.images.remove(&id);
+            UploadMeter::account(&mut resident, &mut peak_resident, previous, 0);
+            continue;
+        }
         let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
             continue;
         };
@@ -173,9 +251,17 @@ pub fn measure_uploads(
         }
         meter.peak_asset_bytes = meter.peak_asset_bytes.max(asset);
         bytes += asset;
+        let previous = meter.images.insert(id, asset);
+        UploadMeter::account(&mut resident, &mut peak_resident, previous, asset);
     }
     let mut unmeasured = 0usize;
     for event in mesh_events.read() {
+        if let AssetEvent::Removed { id } = *event {
+            // A removal is the same bookkeeping with a new size of zero.
+            let previous = meter.meshes.remove(&id);
+            UploadMeter::account(&mut resident, &mut peak_resident, previous, 0);
+            continue;
+        }
         let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
             continue;
         };
@@ -200,11 +286,15 @@ pub fn measure_uploads(
                 }
                 meter.peak_asset_bytes = meter.peak_asset_bytes.max(n);
                 bytes += n;
+                let previous = meter.meshes.insert(id, n);
+                UploadMeter::account(&mut resident, &mut peak_resident, previous, n);
             }
             None => unmeasured += 1,
         }
     }
     meter.unmeasured_meshes += unmeasured;
+    meter.resident_bytes = resident;
+    meter.peak_resident_bytes = peak_resident;
 
     meter.frame_bytes = bytes;
     meter.peak_frame_bytes = meter.peak_frame_bytes.max(bytes);
@@ -290,6 +380,42 @@ mod tests {
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
         assert_eq!(mesh_bytes(&mesh), Some(3 * 12));
+    }
+
+    /// Residency goes back down, which is the whole difference between it and the
+    /// totals above — and a removal is the same bookkeeping with a new size of
+    /// zero, which is why both paths call one function.
+    #[test]
+    fn residency_is_given_back_when_an_asset_is_dropped() {
+        let (mut resident, mut peak) = (0usize, 0usize);
+        // Two tiles land.
+        UploadMeter::account(&mut resident, &mut peak, None, 400_000);
+        UploadMeter::account(&mut resident, &mut peak, None, 600_000);
+        assert_eq!(resident, 1_000_000);
+        // One is rewritten in place — the map's re-anchor path does exactly this,
+        // and counting the new size without subtracting the old is how a gauge
+        // like this comes to report a leak that is not there.
+        UploadMeter::account(&mut resident, &mut peak, Some(600_000), 100_000);
+        assert_eq!(resident, 500_000);
+        // The other is despawned.
+        UploadMeter::account(&mut resident, &mut peak, Some(400_000), 0);
+        assert_eq!(resident, 100_000);
+        // The high-water mark remembers the worst of it.
+        assert_eq!(peak, 1_000_000);
+    }
+
+    /// An unmatched removal saturates rather than wrapping.
+    ///
+    /// It should not happen — every removal subtracts a size this module recorded
+    /// itself — but `usize` underflow here would report ~18 exabytes resident and
+    /// send the next person reading a crash report after a leak that does not
+    /// exist. A diagnostic's failure mode has to be quiet, not spectacular.
+    #[test]
+    fn an_unmatched_removal_cannot_underflow() {
+        let (mut resident, mut peak) = (1_000usize, 1_000usize);
+        UploadMeter::account(&mut resident, &mut peak, Some(9_000), 0);
+        assert_eq!(resident, 0);
+        assert_eq!(peak, 1_000);
     }
 
     /// The peak is a high-water mark and never falls back with a quiet frame; the

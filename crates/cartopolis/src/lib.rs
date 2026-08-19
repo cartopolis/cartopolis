@@ -621,7 +621,7 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 fn handle_render_error(
     error: &bevy::render::error_handler::RenderError,
     _main_world: &mut World,
-    _render_world: &mut World,
+    render_world: &mut World,
 ) -> bevy::render::error_handler::RenderErrorPolicy {
     use std::sync::atomic::Ordering;
 
@@ -634,8 +634,72 @@ fn handle_render_error(
             "render error — halting the renderer, keeping the app alive"
         );
         record_render_halt(error);
+        release_halted_frame(render_world);
     }
     bevy::render::error_handler::RenderErrorPolicy::StopRendering
+}
+
+/// Give back the swapchain image the halted frame was holding.
+///
+/// **A halt is terminal, and until now it also left the app unable to be put in
+/// the background.** `StopRendering` skips the whole `Render` schedule from here
+/// on, and *presenting* is a system inside it (`renderer::render_system`), so the
+/// image `prepare_windows` acquired for the frame that failed is never presented
+/// and never dropped — it just sits in `ExtractedWindows`, with views of it in
+/// each `ViewTarget` and in `ViewTargetAttachments`, which the same halt stops
+/// anything from clearing. Extraction keeps running, so the moment Android
+/// suspends and `bevy_winit` removes the window's `RawHandleWrapper`,
+/// `extract_windows` drops the surface — and wgpu-hal's swapchain teardown is an
+/// `Arc::into_inner(…).expect("Trying to destroy a SwapchainAcquireSemaphore that
+/// is still in use by a SurfaceTexture")`. SIGABRT, on the render thread, out of
+/// our reach. That is the 2026-08-19 OnePlus 15 report: device lost at 23:38:15,
+/// frozen picture as designed, then an abort at 23:38:40 the instant the app was
+/// backgrounded.
+///
+/// So the frame is released here, once, at the halt. **This is not the recovery
+/// that was tried and abandoned twice** (`docs/notes/android-build.md`): nothing
+/// is rebuilt and the surface is not touched — the surface's *tenant* is evicted,
+/// which is the one thing that has to happen before somebody else tears it down.
+/// Every holder must go together or the release is a no-op: an `Arc` kept by a
+/// stale `ViewTarget` is as good as the one in the window.
+///
+/// Safe to do from inside the render schedule precisely because rendering is over:
+/// every system that reads a `ViewTarget` lives in the schedule this policy stops.
+///
+/// **Verified against the crash report and the sources, not against the device.**
+/// No harness here loses a Vulkan device — lavapipe does not, and the VPS emulator
+/// is SwiftShader — so what is confirmed is the mechanism (bevy 0.19's present
+/// lives in the gated schedule; wgpu-hal 29 asserts on an outstanding acquire
+/// semaphore) and not the outcome. The measurement is a phone: halt the renderer,
+/// background the app, and look for a tombstone that no longer arrives.
+fn release_halted_frame(render_world: &mut World) {
+    use bevy::render::view::{ViewTarget, ViewTargetAttachments};
+
+    let mut released = 0usize;
+    if let Some(mut windows) = render_world.get_resource_mut::<bevy::render::view::ExtractedWindows>()
+    {
+        for window in windows.windows.values_mut() {
+            released += usize::from(window.swap_chain_texture.is_some());
+            window.swap_chain_texture = None;
+            window.swap_chain_texture_view = None;
+        }
+    }
+    if let Some(mut attachments) = render_world.get_resource_mut::<ViewTargetAttachments>() {
+        attachments.clear();
+    }
+    let views: Vec<Entity> = render_world
+        .query_filtered::<Entity, With<ViewTarget>>()
+        .iter(render_world)
+        .collect();
+    for view in &views {
+        render_world.entity_mut(*view).remove::<ViewTarget>();
+    }
+    tracing::warn!(
+        frames = released,
+        views = views.len(),
+        "released the halted frame's swapchain image — a suspend after this must not \
+         abort in wgpu's swapchain teardown"
+    );
 }
 
 /// Leave a halted renderer's explanation where the next launch will find it.
@@ -1510,6 +1574,10 @@ fn run_client() {
     app.add_systems(
         Startup,
         (
+            // Which rung this run took, said where a phone can read it —
+            // `quality::init` answers the question before `LogPlugin` exists, so
+            // its own line has never reached logcat. See `quality::report_budget`.
+            quality::report_budget,
             systems::free_camera::setup_camera,
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.

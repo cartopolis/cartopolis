@@ -1166,3 +1166,65 @@ consecutive seconds at ~1,010 ms per frame with `dequeueBuffer timed out` on eve
 one. The recovery being survivable is not the same as the burst being affordable;
 `docs/notes/headless-shots-software-renderer.md` and the churn entry in CLAUDE.md
 are where that thread continues.
+
+
+## The halt the app could not survive being backgrounded (2026-08-19)
+
+Same phone, two reports five minutes apart, and between them they close the thread
+the section above left open.
+
+**The halt is not the end of the process, it is a delay.** Report one: device lost
+at 23:38:15, `handle_render_error` halts as designed, the picture freezes and the
+report is written — and then at 23:38:40, the moment the app is backgrounded:
+
+```
+F ... Abort message: 'Trying to destroy a SwapchainAcquireSemaphore that is still
+      in use by a SurfaceTexture'   wgpu-hal-29.0.4/.../swapchain/native.rs:359
+```
+
+The same assertion as the abandoned recovery, reached without any recovery at all.
+`StopRendering` skips the entire `Render` schedule from then on, and *presenting*
+is a system inside it (`renderer::render_system`) — so the swapchain image
+`prepare_windows` acquired for the frame that failed is never presented and never
+dropped. It sits in `ExtractedWindows`, with views of it in every `ViewTarget` and
+in `ViewTargetAttachments`, which the same halt stops anything from clearing.
+Extraction, though, keeps running: `set_extract` is not gated. So when
+`bevy_winit` removes the primary window's `RawHandleWrapper` on suspend,
+`extract_windows` drops the surface, wgpu-hal tears down the swapchain, and the
+outstanding acquire semaphore aborts the process.
+
+`lib.rs::release_halted_frame` gives the image back at the halt — all three
+holders together, since one surviving `Arc` is as good as three. **It is not a
+recovery**: nothing is rebuilt and the surface is not touched. That distinction is
+the whole reason it is allowed to exist after two aborts that were.
+
+Report two ends in `Error in Buffer::get_mapped_range … Buffer is invalid`, which
+CLAUDE.md already names as downstream noise: a readback polled after the device is
+gone. Nothing was changed for it. **Both tombstones are the device loss wearing a
+different hat, and the fix for both is not losing the device.**
+
+**Which brings the tier question back, with a number this time.** The 23:43 run had
+no upload ceiling at all, because a rung chosen in Settings ▸ Graphics bypasses
+`android_budget()` — see `upload-bursts.md`, which has that story and the fix. But
+the 23:38 run *had* the ceiling and lost the device anyway, and no per-frame
+throttle could have helped it: the phone was holding ~1 GB of streamed content.
+Its own report said so and nobody could read it — `upload_total_mb = 993` beside an
+asset census that had released almost none of it. `UploadMeter::resident_bytes`
+makes that a first-class reading (`resident_mb` in the census and the slow-frame
+line, `gpu_resident_kb` in `--dump-state`), and `quality::handset_guarded` caps the
+two fields that drive it on every rung a handset can reach: 991 MB → 371 MB over
+Groningen, with shadows, bloom, the detail layers and the native render scale all
+kept.
+
+Three rules came out of this and are worth more than the diff:
+
+- **A rate guard and a total guard are different guards.** Every bound in this
+  codebase before today was a rate. A driver refusing an allocation does not care
+  how slowly you asked.
+- **The tier has to be in the log.** `quality::init` answers before `LogPlugin`
+  exists, so the rung had never once appeared in an Android log and had to be
+  inferred from `peak_asset_kb`. `quality::report_budget` says it again from
+  `Startup`, with `chose=` naming which of env / settings / auto won.
+- **A `#[cfg]`-gated rule is a rule no test can see** — for the second time. The
+  guard is a plain function compiled everywhere; only its *application* is
+  `cfg!`-conditional.

@@ -581,6 +581,23 @@ pub struct ShotMetrics {
     /// LoD2.2 cells were cut into pieces this read 64,892 over Groningen; the
     /// ceiling is 8,192 now.
     pub upload_peak_asset_kb: usize,
+    /// What the streamed content **occupies** at the shutter, in kB — the tiles,
+    /// cells, buildings and ribbons this client has created and not dropped.
+    ///
+    /// The columns above are a *rate* and this is the *total*, and a settled view
+    /// is exactly where the difference shows: the burst is minutes past and this is
+    /// still being held. It is what a driver refuses when it refuses an allocation,
+    /// so it is the column to compare between two rungs — `CARTO_QUALITY=android`
+    /// against `CARTO_QUALITY=phone` over the same viewpoint answers "what does the
+    /// handset's tile raster actually cost" in one number.
+    ///
+    /// Machine-independent, like the two above, and for the same reason: it counts
+    /// asset bytes, not anything the adapter did with them. So `--expect
+    /// 'gpu_resident_kb<=...'` is a legitimate gate.
+    pub gpu_resident_kb: usize,
+    /// The most it ever occupied during the run, in kB. A capture that peaks well
+    /// above where it settles has still asked the driver for the peak.
+    pub gpu_resident_peak_kb: usize,
     /// The capture ran on a CPU rasteriser (Mesa lavapipe in a container or CI)
     /// rather than a GPU. Geometry, placement, culling and UI layout are the same
     /// picture either way; the tone-mapped sky is not, so a colour or lighting
@@ -598,7 +615,8 @@ alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
-terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,software_renderer";
+terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
+gpu_resident_peak_kb,software_renderer";
 
 /// The avatar's contribution to [`ShotMetrics`].
 ///
@@ -626,7 +644,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -673,6 +691,8 @@ impl ShotMetrics {
             self.terrain_relief_m,
             self.upload_peak_kb,
             self.upload_peak_asset_kb,
+            self.gpu_resident_kb,
+            self.gpu_resident_peak_kb,
             self.software_renderer,
         )
     }
@@ -1699,6 +1719,8 @@ pub fn drive_capture(
             terrain_relief_m: readouts.3.range_m.1 - readouts.3.range_m.0,
             upload_peak_kb: readouts.12.peak_kb(),
             upload_peak_asset_kb: readouts.12.peak_asset_kb(),
+            gpu_resident_kb: readouts.12.resident_kb(),
+            gpu_resident_peak_kb: readouts.12.peak_resident_kb(),
             software_renderer: readouts.8.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
         };
         // One line, but its *level* carries whether the shot is trustworthy: a
@@ -1744,6 +1766,8 @@ pub fn drive_capture(
                     terrain_relief_m = format!("{:.2}", m.terrain_relief_m),
                     upload_peak_kb = m.upload_peak_kb,
                     upload_peak_asset_kb = m.upload_peak_asset_kb,
+                    gpu_resident_kb = m.gpu_resident_kb,
+                    gpu_resident_peak_kb = m.gpu_resident_peak_kb,
                     software_renderer = m.software_renderer,
                     "shot state"
                 )
@@ -2029,6 +2053,8 @@ mod tests {
             terrain_relief_m: 0.0,
             upload_peak_kb: 0,
             upload_peak_asset_kb: 0,
+            gpu_resident_kb: 0,
+            gpu_resident_peak_kb: 0,
             software_renderer: true,
         }
     }

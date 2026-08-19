@@ -353,6 +353,14 @@ impl AtmosphereLuts {
 /// much without the other.
 const PHONE_UPLOAD_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
 
+/// The largest flat-map tile raster a handset rasterises, on any rung.
+///
+/// The same 256 the phone rung and the globe both settled on, and the single
+/// biggest term in what a handset has to *hold*: a 512² RGBA mip chain is 1.4 MB
+/// against 350 kB, and the clipmap keeps 424 of them. Measured over Groningen on
+/// 2026-08-19, that one field is 424 MB — see [`handset_guarded`] for the table.
+const HANDSET_TILE_PX: u32 = 256;
+
 impl Budget {
     /// The settings the rest of the codebase is written against.
     pub(crate) const fn desktop() -> Self {
@@ -586,6 +594,51 @@ pub fn init(preferred: Option<&str>) {
     }
 }
 
+/// Say again, where a phone can read it, which budget this run took.
+///
+/// **[`init`]'s own line goes nowhere on the one platform that needs it.** It is
+/// called at the top of `run()` — it has to be, `platform::workers` sizes itself
+/// from the answer — and that is *before* `DefaultPlugins` installs `LogPlugin`,
+/// which on Android is the only thing that writes to logcat at all (stderr is
+/// discarded there). So the tier has never appeared in an Android log, and on
+/// 2026-08-19 two crash reports from the same device had to have their rung
+/// *inferred* from `peak_asset_kb` — 4,095 kB meaning a 4 MB ceiling, 7,920
+/// meaning none. That inference is what found [`handset_guarded`]'s bug, and it
+/// should not have been necessary.
+///
+/// A `Startup` system rather than a second call inside `init`: the logger exists
+/// by then on every platform, and this is the same reason `init_capabilities`
+/// reports from `setup_camera`.
+///
+/// [`upload_ceiling`] and not the field, because that is the number in force —
+/// `CARTO_UPLOAD_KB` is folded in, and a report that names the tier's answer while
+/// the device runs another is the kind of half-true line this whole module keeps
+/// trying to delete.
+pub fn report_budget() {
+    let resolved = budget();
+    tracing::info!(
+        tier = ?resolved.tier,
+        chose = SOURCE.get().copied().unwrap_or("auto"),
+        shadows = resolved.shadows,
+        bloom = resolved.bloom,
+        sky_ibl = resolved.sky_ibl,
+        detail_layers = resolved.detail_layers,
+        msaa = resolved.msaa.samples(),
+        space_raymarch = resolved.space_raymarch,
+        tile_px = resolved.tile_px,
+        render_scale = resolved.render_scale,
+        upload_kb = upload_ceiling().map_or(0, |bytes| bytes / 1024),
+        "render budget in force"
+    );
+}
+
+/// Which of [`detect`]'s three answers this run took, for [`report_budget`].
+///
+/// A tier alone does not say whether a person chose it, and the difference is the
+/// first question of every report: `Balanced` from the settings screen and
+/// `Balanced` from `auto()` are the same struct and different bugs.
+static SOURCE: OnceLock<&'static str> = OnceLock::new();
+
 /// The budget for this run, resolving it on first use if [`init`] never ran (a
 /// unit test, or a system that beat startup to it).
 #[must_use]
@@ -715,7 +768,10 @@ fn detect(preferred: Option<&str>) -> Budget {
     // how the phone budget gets exercised on a machine that can profile it.
     if let Some(v) = crate::env_value("CARTO_QUALITY") {
         match parse(&v) {
-            Some(budget) => return budget,
+            Some(budget) => {
+                let _ = SOURCE.set("CARTO_QUALITY");
+                return on_this_machine(budget);
+            }
             None => tracing::warn!(
                 value = v,
                 "unknown CARTO_QUALITY; expected phone|low|mobile or desktop|high"
@@ -729,9 +785,130 @@ fn detect(preferred: Option<&str>) -> Budget {
     // laptop is nicer than its core count suggests. `None` is "Auto", which is not
     // a third answer but the absence of one.
     if let Some(budget) = preferred.and_then(parse) {
-        return budget;
+        let _ = SOURCE.set("settings");
+        return on_this_machine(budget);
     }
-    auto()
+    let _ = SOURCE.set("auto");
+    on_this_machine(auto())
+}
+
+/// Apply the guards that belong to the *machine* rather than to the rung.
+///
+/// `cfg!` rather than `#[cfg]` so [`handset_guarded`] is compiled — and testable —
+/// on every target. That is the same trap [`android_budget`] fell into: a rule
+/// that only exists in the Android build is a rule no test on any other host can
+/// see.
+fn on_this_machine(budget: Budget) -> Budget {
+    if cfg!(target_os = "android") {
+        handset_guarded(budget)
+    } else {
+        budget
+    }
+}
+
+/// What a handset cannot afford on **any** rung: the two guards a phone keeps
+/// whoever picked the preset, and whatever the preset says.
+///
+/// Both are about GPU memory and they are the two halves of it — a **rate**
+/// (`upload_bytes_per_frame`, how much a frame may hand over) and a **total**
+/// (`tile_px` and `radius_bias`, how much ends up being held at once). Everything
+/// else the rung asks for is a judgement about the picture and is left alone: a
+/// handset on "Full detail" still gets shadows, bloom, the detail layers and its
+/// native render scale.
+///
+/// # The rate
+///
+/// [`android_budget`] kept `upload_bytes_per_frame` when Android's *automatic*
+/// answer moved from [`Budget::phone`] to [`Budget::balanced`], and its comment
+/// says why: this is the only hardware known to lose its device to a streaming
+/// burst. What that fix did not cover is the person who picks a rung by hand.
+/// Settings ▸ Graphics ▸ Detail writes `QualityPreset::Medium` → the word
+/// `balanced` → `Budget::balanced()` **verbatim**, ceiling and all — so choosing
+/// "Balanced" or "Full detail" on the phone silently deleted the one guard the
+/// phone needs, from a screen whose whole purpose is to help a struggling device.
+///
+/// Two OnePlus 15 (Adreno 840) reports five minutes apart on 2026-08-19 are the
+/// same run with and without it, and the give-away is the largest single asset —
+/// `lod22::max_cell_mesh_bytes` derives its cut from this field:
+///
+/// | run | `peak_asset_kb` | ceiling in force |
+/// |---|---|---|
+/// | 23:38, `Auto` | 4,095 | 4 MB (`android_budget`) |
+/// | 23:43, an explicit rung | 7,920 | none (`Budget::balanced`) |
+///
+/// The second run also logged eleven `single asset above the frame upload budget`
+/// lines that the first never printed, and lost the device 4.3 s in.
+///
+/// A *lower* ceiling survives: the minimum, not an overwrite, so
+/// `QualityPreset::Low` keeps the phone rung's own number and a future rung that
+/// asks for less than 4 MB is not raised to it. `CARTO_UPLOAD_KB` remains the
+/// override for whoever holds the device (`0` = no ceiling), and it is applied
+/// downstream in [`upload_ceiling`], so this cannot take that away either.
+///
+/// **Why this is a property of the machine and not of the rung.** On 2026-08-17
+/// an Adreno 840 lost its Vulkan device five seconds into a cold start, handed
+/// ~215 MB of mesh and texture data in three and a half seconds, *while already on
+/// the phone budget*. `upload_bytes_per_frame` is the guard written for it, and it
+/// is `None` on every rung above the phone — reasonably, since those rungs
+/// describe machines whose uploads cross a bus with an order of magnitude more
+/// bandwidth and no desktop run has ever lost a device to streaming. A handset on
+/// one of those rungs is neither case, and it is the *rung* that raises the
+/// pressure: 512 px tile rasters are four times the texture bytes of 256, and
+/// `radius_bias: 0` nearly doubles the tile count. With the ceiling kept, that
+/// extra volume costs fill latency — the map sharpens a little later — rather than
+/// a black screen and a crash report.
+///
+/// Revisit the number itself on the device, with `systems::upload_meter`'s
+/// `upload_peak_kb` beside `lod22::max_cell_mesh_bytes`; neither means much
+/// without the other. Not from a desk.
+///
+/// # The total, which no ceiling can reach
+///
+/// The rate guard was in force in the 23:38 run **and the device was lost anyway**,
+/// three seconds in. It could not have helped: deferring an upload changes when a
+/// tile arrives, never whether it stays, and a driver that refuses an allocation is
+/// failing on what is held rather than on what arrived this frame. Nothing measured
+/// that until `upload_meter` grew `resident_bytes`; the first thing it said is that
+/// the phone's own report already contained the number, as `upload_total_mb = 993`
+/// against an asset census that had released almost none of it.
+///
+/// Measured here, Groningen at 150 m with a warm tile cache, `--dump-state`'s
+/// `gpu_resident_kb` (asset bytes, so machine-independent — the container's
+/// lavapipe changes the frame times in that run and none of this):
+///
+/// | configuration | resident | draws | settled |
+/// |---|---|---|---|
+/// | the handset rung of 2026-08-18 | **991 MB** | 695 | 45.1 s (hit the cap) |
+/// | + `tile_px` 256 | 567 MB | 695 | 27.3 s |
+/// | + `radius_bias` 1 — **this** | **371 MB** | 527 | 15.7 s |
+/// | `Budget::phone`, for scale | 307 MB | 225 | 12.9 s |
+///
+/// A gigabyte of streamed content is not a budget any handset has, and it arrived
+/// by accident: moving Android to `balanced` on 2026-08-18 took `tile_px` 256 → 512
+/// (four times the texture bytes of every one of the clipmap's 424 tiles) and
+/// `radius_bias` 1 → 0 (more tiles, and more of the LoD2.2 cells that are the other
+/// half of the total) — two fields whose cost is *memory*, in a change reasoned
+/// about entirely in terms of fill and frame time. The two caps take it back to
+/// 371 MB, within a quarter of the rung that was shipping before, while keeping
+/// everything that change was actually for.
+///
+/// The honest limit of this: **991 → 371 MB is measured, "and therefore the device
+/// survives" is not.** No harness here can lose a Vulkan device. What can be said
+/// is that the app now asks for a third of what it asked for on the run that
+/// crashed, and that the number is in every report from now on.
+#[must_use]
+pub(crate) fn handset_guarded(budget: Budget) -> Budget {
+    let ceiling = budget
+        .upload_bytes_per_frame
+        .map_or(PHONE_UPLOAD_BYTES_PER_FRAME, |own| {
+            own.min(PHONE_UPLOAD_BYTES_PER_FRAME)
+        });
+    Budget {
+        upload_bytes_per_frame: Some(ceiling),
+        tile_px: budget.tile_px.min(HANDSET_TILE_PX),
+        radius_bias: budget.radius_bias.max(1),
+        ..budget
+    }
 }
 
 /// The spelling of a tier, as `CARTO_QUALITY` / `?quality=` accepts it.
@@ -746,10 +923,13 @@ fn parse(value: &str) -> Option<Budget> {
         "balanced" | "medium" => Some(Budget::balanced()),
         // The rung Android resolves to, by name, on every platform — so the
         // handset's real budget can be run on a machine that can profile it.
-        // `balanced` is **not** a substitute for it: it has no upload ceiling at
-        // all, which is exactly the field a handset's cold start turns on. Naming
-        // it is what stopped `CARTO_QUALITY=balanced CARTO_UPLOAD_KB=4096` from
-        // being a thing anyone had to know.
+        // `balanced` is **not** a substitute for it *off* the handset: there it is
+        // the same rung with no upload ceiling at all, which is exactly the field a
+        // phone's cold start turns on. Naming it is what stopped
+        // `CARTO_QUALITY=balanced CARTO_UPLOAD_KB=4096` from being a thing anyone
+        // had to know. On Android every word here comes back guarded anyway — see
+        // `handset_guarded`, which is the fix for the half of this that a settings
+        // screen could reach.
         "android" | "handset" => Some(android_budget()),
         "desktop" | "high" => Some(Budget::desktop()),
         _ => None,
@@ -827,35 +1007,14 @@ fn auto() -> Budget {
 /// has a `None` ceiling. So the one configuration that has a ceiling *and* a
 /// handset behind it was the one configuration nothing checked, on a host where it
 /// did not compile. Every number below is unchanged; only its reachability is.
+///
+/// Since 2026-08-19 it is [`handset_guarded`] applied to `balanced` rather than a
+/// literal of its own: the guard below turned out to be needed for every rung a
+/// handset can end up on, not only the automatic one, so it belongs in a function
+/// the *machine* applies rather than in the one rung `auto()` happens to pick.
 #[must_use]
 pub(crate) fn android_budget() -> Budget {
-    Budget {
-        // **The one thing that does not come up with the rung, and it is not
-        // caution — it is the only failure this device has actually produced.**
-        //
-        // On 2026-08-17 an Adreno 840 lost its Vulkan device five seconds into a
-        // cold start, handed ~215 MB of mesh and texture data in three and a half
-        // seconds, *while already on the phone budget*. `upload_bytes_per_frame`
-        // is the guard written for it, and it is `None` on every rung above the
-        // phone — reasonably, since those rungs describe machines whose uploads
-        // cross a bus with an order of magnitude more bandwidth and no desktop run
-        // has ever lost a device to streaming.
-        //
-        // A handset on the balanced rung is neither of the cases that field was
-        // written for. Taking `balanced` wholesale would have silently deleted the
-        // burst guard from the only hardware known to need it, and it would have
-        // done so in the same change that *raises* the pressure on it: 512 px tile
-        // rasters are four times the texture bytes of 256, and `radius_bias: 0`
-        // nearly doubles the tile count. With the ceiling kept, that extra volume
-        // costs fill latency — the map sharpens a little later — rather than a
-        // black screen and a crash report.
-        //
-        // Revisit this together, on the device, with `systems::upload_meter`'s
-        // `upload_peak_kb` beside `lod22::MAX_CELL_MESH_BYTES`; neither number
-        // means much without the other. Not from a desk.
-        upload_bytes_per_frame: Some(PHONE_UPLOAD_BYTES_PER_FRAME),
-        ..Budget::balanced()
-    }
+    handset_guarded(Budget::balanced())
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -1033,6 +1192,70 @@ mod tests {
     /// prevent exactly that quietly does not apply. They drifted to 8 MB against
     /// 4 MB, which is how an Adreno 840 was handed a 6 MB asset on 2026-08-18 and
     /// lost its device with the budget switched on and apparently working.
+    /// **Every rung a handset can reach keeps the burst guard**, not only the one
+    /// `auto()` picks.
+    ///
+    /// The hole this closes was reachable from a settings screen: Settings ▸
+    /// Graphics ▸ Detail writes a `QualityPreset`, `parse` turns it into the rung's
+    /// own literal, and `Budget::balanced()` / `Budget::desktop()` carry no ceiling
+    /// — so "Balanced" on a phone was `android_budget()` minus the one field that
+    /// exists for phones. Two Adreno 840 reports five minutes apart on 2026-08-19
+    /// caught it: `peak_asset_kb` 4,095 on `Auto`, 7,920 on an explicit rung.
+    ///
+    /// Written against [`handset_guarded`] rather than against `detect`, because
+    /// `detect`'s Android arm is a `cfg!` this test's host does not take — the same
+    /// reason [`android_budget`] had to stop being a literal inside `auto()`.
+    #[test]
+    fn a_handset_keeps_the_burst_guard_on_every_rung() {
+        for (name, rung) in [
+            ("phone", Budget::phone()),
+            ("balanced", Budget::balanced()),
+            ("desktop", Budget::desktop()),
+        ] {
+            let guarded = handset_guarded(rung);
+            let ceiling = guarded
+                .upload_bytes_per_frame
+                .unwrap_or_else(|| panic!("{name}: a handset must never run without a ceiling"));
+            assert!(
+                ceiling <= PHONE_UPLOAD_BYTES_PER_FRAME,
+                "{name}: {ceiling} B is above the guard the device needs"
+            );
+            // …and the total, which the ceiling cannot reach: 424 tiles at a 512 px
+            // raster are 565 MB of texture however slowly they are handed over.
+            assert!(
+                guarded.tile_px <= HANDSET_TILE_PX,
+                "{name}: a {} px tile raster on a handset",
+                guarded.tile_px
+            );
+            assert!(
+                guarded.radius_bias >= 1,
+                "{name}: the full streaming radius is a memory budget, not a rung"
+            );
+            // Everything else is a judgement about the picture and stays the
+            // person's to make. "Full detail" on a phone still means full detail —
+            // this is not the place to second-guess a rung, only to stop one from
+            // asking the driver for memory no handset has.
+            assert_eq!(
+                guarded.tier, rung.tier,
+                "{name}: the guard must not silently move the rung"
+            );
+            assert_eq!(guarded.render_scale, rung.render_scale, "{name}");
+            assert_eq!(guarded.shadows, rung.shadows, "{name}");
+            assert_eq!(guarded.bloom, rung.bloom, "{name}");
+            assert_eq!(guarded.detail_layers, rung.detail_layers, "{name}");
+        }
+        // A rung that already asks for less keeps its own numbers, in both
+        // directions: `min` on the raster, `max` on the bias.
+        let phone = handset_guarded(Budget::phone());
+        assert_eq!(phone.tile_px, Budget::phone().tile_px);
+        assert_eq!(phone.radius_bias, Budget::phone().radius_bias);
+        // A rung that already asks for less keeps its own number.
+        assert_eq!(
+            handset_guarded(Budget::phone()).upload_bytes_per_frame,
+            Budget::phone().upload_bytes_per_frame
+        );
+    }
+
     #[test]
     fn no_rung_permits_an_asset_larger_than_its_own_frame() {
         for (name, budget) in [
@@ -1043,6 +1266,10 @@ mod tests {
             // it was an inline literal in a `cfg`-gated `auto()` — see
             // `android_budget`.
             ("android", android_budget()),
+            // …and every rung as a *handset* would run it, which is the
+            // configuration an explicit `QualityPreset` produces.
+            ("handset-balanced", handset_guarded(Budget::balanced())),
+            ("handset-desktop", handset_guarded(Budget::desktop())),
             ("desktop", Budget::desktop()),
         ] {
             let Some(per_frame) = budget.upload_bytes_per_frame else {
