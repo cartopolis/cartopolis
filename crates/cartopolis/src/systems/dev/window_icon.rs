@@ -11,9 +11,10 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy::winit::WinitWindows;
 
-/// The app icon (Noto Color Emoji fox `U+1F98A`, Apache-2.0 / OFL, on a teal
-/// card), embedded from the workspace `assets/` dir. Shared with
-/// `systems::desktop_integration`, which installs it into the XDG icon theme.
+/// The app icon (an isometric cluster of map-clad towers with a place pin,
+/// rendered from `assets/icon/cartopolis.svg`), embedded from the workspace
+/// `assets/` dir. Shared with `systems::desktop_integration`, which installs it
+/// into the XDG icon theme.
 pub(crate) const ICON_PNG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/icon/cartopolis.png"
