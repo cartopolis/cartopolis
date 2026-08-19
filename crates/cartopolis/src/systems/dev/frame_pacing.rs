@@ -445,6 +445,10 @@ pub(crate) fn frame_time_watchdog(
             upload_kb = uploads.frame_kb(),
             upload_peak_kb = uploads.peak_kb(),
             upload_peak_asset_kb = uploads.peak_asset_kb(),
+            // …and this is what all of it adds up to and has not been given back.
+            // A hitch with a quiet `upload_kb` and a large `resident_mb` is an
+            // allocation problem, which no per-frame throttle can reach.
+            resident_mb = uploads.resident_kb() / 1024,
             "slow frame — GPU may be nearing its command-buffer timeout (TDR)"
         );
     }
@@ -463,6 +467,12 @@ pub(crate) fn frame_time_watchdog(
             upload_peak_kb = uploads.peak_kb(),
             upload_peak_asset_kb = uploads.peak_asset_kb(),
             upload_total_mb = uploads.total_bytes / (1024 * 1024),
+            // The counts say how many objects exist; these say what they weigh,
+            // which is the quantity a driver refuses. `upload_total_mb` above is
+            // everything ever handed over — it climbs forever and says nothing
+            // about what is still held.
+            resident_mb = uploads.resident_kb() / 1024,
+            peak_resident_mb = uploads.peak_resident_kb() / 1024,
             "asset census"
         );
     }
