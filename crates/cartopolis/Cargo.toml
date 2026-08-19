@@ -85,7 +85,6 @@ earcutr.workspace = true
 fontdue.workspace = true
 image.workspace = true
 tiff.workspace = true
-postcard.workspace = true
 serde.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -179,11 +178,7 @@ ureq.workspace = true
 # for. The cost is that a corporate MITM root or a private CA is not trusted, and
 # the fix for that is an explicit `ws://` address, which is why that escape hatch
 # exists.
-tokio-tungstenite = { version = "0.30", default-features = false, features = [
-    "connect",
-    "handshake",
-    "rustls-tls-webpki-roots",
-] }
+tokio-tungstenite.workspace = true
 # Named directly only to pin the crypto provider, and it has to be pinned.
 #
 # rustls 0.23 has no built-in default: it resolves a process-wide `CryptoProvider`

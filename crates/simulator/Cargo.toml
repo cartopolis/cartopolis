@@ -40,7 +40,7 @@ cartopolis_core = { path = "../core" }
 tempfile = "3.0"
 # A WebSocket *client*, for the test that proves the browser carrier reaches the
 # same handshake the TCP one does. Test-only: the server half is axum's.
-tokio-tungstenite = "0.30"
+tokio-tungstenite.workspace = true
 # Blocking HTTP for the admin-API test. Already a workspace dependency (the
 # client's tile fetch), so this costs the tree nothing new.
 ureq.workspace = true
