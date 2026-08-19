@@ -4,11 +4,20 @@
 //!
 //! # Settings
 //!
-//! Three tabs: General, Map, Audio. It began as one (Audio), which made a panel
-//! called "Settings" that was really a hardware diagnostic — the two things
-//! behind it were a chime and a level meter, and every actual preference in the
-//! client lived somewhere else: the map layers in their own panel, the sky in the
-//! HUD switcher and the dev panel, the render budget nowhere at all.
+//! Five tabs: General, Map, Graphics, Audio, Account. It began as one (Audio),
+//! which made a panel called "Settings" that was really a hardware diagnostic —
+//! the two things behind it were a chime and a level meter, and every actual
+//! preference in the client lived somewhere else: the map layers in their own
+//! panel, the sky in the HUD switcher and the dev panel, the render budget
+//! nowhere at all.
+//!
+//! **Graphics is the last of that migration** and the one with a cost attached.
+//! Shadows, the sky, sky reflections and the stats overlay were `DevPanelState`
+//! fields, reached by a keyboard chord — on a client whose main platform is a
+//! phone, which has no keyboard and no developer panel worth opening. So the
+//! settings a struggling device most needs were the ones its owner could not
+//! reach. They were also unpersisted, which made every "restart to apply" toggle
+//! a lie: the restart that applied it also discarded it.
 //!
 //! **Nothing here invents a backend.** Each control is wired to state that
 //! already exists, or to a [`crate::resources::AppPrefs`] field whose doc comment
@@ -64,17 +73,28 @@ pub enum SettingsTab {
     #[default]
     General,
     Map,
+    /// What this machine spends on the picture. Everything here used to be in the
+    /// developer panel, where it was both unreachable to the people who needed it
+    /// most and unpersisted — see [`graphics_tab`].
+    Graphics,
     Audio,
     Account,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 4] = [Self::General, Self::Map, Self::Audio, Self::Account];
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Map,
+        Self::Graphics,
+        Self::Audio,
+        Self::Account,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Map => "Map",
+            Self::Graphics => "Graphics",
             Self::Audio => "Audio",
             Self::Account => "Account",
         }
@@ -141,6 +161,11 @@ pub fn render_settings_panel(
     mut commands: Commands,
     mut identity: ResMut<crate::resources::AuthIdentity>,
     online: Option<Res<crate::resources::OnlineSession>>,
+    // The sky this run actually got, so the Graphics tab can report it beside
+    // the preference. `Option` because it is inserted by `setup_camera`, which
+    // needs an adapter — a headless world without one has no answer, and saying
+    // so beats implying the preference took effect.
+    sky: Option<Res<crate::systems::sky_dome::SkyMode>>,
 ) {
     // Physical pixels, for the render-scale row's "drawn at W x H" hint. `None` in
     // a headless `--shot` run, where there is no window and the hint degrades to a
@@ -186,7 +211,10 @@ pub fn render_settings_panel(
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.tab {
                     SettingsTab::General => general_tab(ui, &mut edited),
-                    SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode, target),
+                    SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode),
+                    SettingsTab::Graphics => {
+                        graphics_tab(ui, &mut edited, target, sky.as_deref().copied());
+                    }
                     SettingsTab::Audio => play_tone = audio_tab(ui, &mut state, &mut edited),
                     SettingsTab::Account => {
                         delete_account =
@@ -533,9 +561,10 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
     );
 }
 
-/// Map: the two things that change what the map *looks* like and had no UI at
-/// all outside the developer panel.
-fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode, target: Option<UVec2>) {
+/// Map: how the scene is lit, as distinct from what the machine spends drawing
+/// it — the detail preset and the render scale moved to [`graphics_tab`], where
+/// they sit beside the other cost controls instead of under "Map".
+fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode) {
     section(ui, "Lighting");
     ui.horizontal_wrapped(|ui| {
         // `Manual` is deliberately absent: it is the developer panel's mode (its
@@ -560,9 +589,30 @@ fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode, targ
             SunMode::Manual => "The developer panel owns the clock — pick a mode to take it back.",
         },
     );
+    let _ = prefs;
+}
 
-    ui.add_space(8.0);
-    ui.separator();
+/// Graphics: what this machine spends on the picture.
+///
+/// **Every control here was in the developer panel**, which was wrong twice over.
+/// It is reached by a keyboard chord this client's main platform does not have,
+/// so the people who most need to turn something off — a phone that thermally
+/// throttles, a driver that will not draw the sky — were the ones who could not;
+/// and `DevPanelState` is not persisted, so a toggle labelled "restart" reverted
+/// on the very restart that was supposed to apply it.
+///
+/// The tab is ordered by what a struggling device should reach for first: the
+/// detail preset, then the render scale, then the individual features. Each
+/// control says whether it applies now or at the next start, because the split is
+/// real and not a UI convention — `quality::budget()` is a `OnceLock` read before
+/// the world exists, and the sky and env map cannot be added to or removed from a
+/// live camera without tearing down GPU resources still in flight.
+fn graphics_tab(
+    ui: &mut egui::Ui,
+    prefs: &mut AppPrefs,
+    target: Option<UVec2>,
+    sky: Option<crate::systems::sky_dome::SkyMode>,
+) {
     section(ui, "Detail");
     ui.horizontal_wrapped(|ui| {
         for preset in QualityPreset::ALL {
@@ -578,7 +628,163 @@ fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode, targ
     );
 
     ui.add_space(8.0);
+    ui.separator();
     render_scale_row(ui, prefs, target);
+
+    ui.add_space(8.0);
+    ui.separator();
+    sky_section(ui, prefs, sky);
+
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "Lighting");
+    // A startup switch beats the preference at the spawn site, so the row has to
+    // say so. Without this the checkbox reads "on" over a scene with no shadows
+    // in it — which is precisely the failure the old dev-panel seeding was
+    // written to avoid, reintroduced one layer up. Disabled rather than hidden:
+    // the point is that the setting still exists and something else is holding
+    // it.
+    let shadows_forced_off = crate::env_flag("CARTO_NO_SHADOWS");
+    ui.add_enabled_ui(!shadows_forced_off, |ui| {
+        tri_state(
+            ui,
+            &mut prefs.shadows,
+            crate::quality::budget().shadows,
+            "Shadows",
+        );
+    });
+    ui.label(
+        egui::RichText::new(if shadows_forced_off {
+            "Forced off for this run by CARTO_NO_SHADOWS."
+        } else {
+            "Sun and moon shadow maps. Applies immediately — the lights are respawned."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+
+    ui.add_space(6.0);
+    // Two things can hold this one down, so they are reported separately rather
+    // than collapsed into one disabled state with a single reason: the cubemap is
+    // baked *from* the atmosphere, so a `Simple` run has nothing to bake, and the
+    // startup switch overrides the preference at the same site the shadow one
+    // does. A control that vanishes reads as a bug, so both arms disable and
+    // explain instead.
+    let ibl_forced_off = crate::env_flag("CARTO_NO_ENVMAP");
+    let ibl_possible = sky != Some(crate::systems::sky_dome::SkyMode::Dome) && !ibl_forced_off;
+    ui.add_enabled_ui(ibl_possible, |ui| {
+        tri_state(
+            ui,
+            &mut prefs.sky_lighting,
+            crate::quality::budget().sky_ibl,
+            "Sky reflections",
+        );
+    });
+    ui.label(
+        egui::RichText::new(if ibl_forced_off {
+            "Forced off for this run by CARTO_NO_ENVMAP."
+        } else if ibl_possible {
+            "Lights shadowed faces with the sky and gives water something to \
+             reflect. Costs a cubemap re-baked every frame. Takes effect at the \
+             next start."
+        } else {
+            "Needs the full atmosphere — the simple sky has nothing to reflect."
+        })
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+
+    ui.add_space(8.0);
+    ui.separator();
+    section(ui, "Diagnostics");
+    theme::checkbox(ui, &mut prefs.show_stats, "Performance overlay");
+    ui.label(
+        egui::RichText::new(
+            "Frame rate, frame time and entity count, over the top-left of the map.",
+        )
+        .small()
+        .color(theme::TEXT_DIM),
+    );
+}
+
+/// The sky picker, plus what the run actually got.
+///
+/// The readout is the point, not decoration. A preference of "Automatic" and a
+/// black sky is precisely the report this tab was built for (an Adreno 840,
+/// 2026-08-19), and the one thing the person holding it could not find out was
+/// which sky the run had chosen. Saying it here — beside the choice, in the panel
+/// they are already in — is what turns "it's broken" into "it picked the full
+/// atmosphere and the full atmosphere is what's wrong".
+fn sky_section(
+    ui: &mut egui::Ui,
+    prefs: &mut AppPrefs,
+    sky: Option<crate::systems::sky_dome::SkyMode>,
+) {
+    use crate::resources::SkyPreference;
+    use crate::systems::sky_dome::SkyMode;
+
+    section(ui, "Sky");
+    ui.horizontal_wrapped(|ui| {
+        for preference in SkyPreference::ALL {
+            ui.selectable_value(&mut prefs.sky, preference, preference.label());
+        }
+    });
+    pending(
+        ui,
+        "Takes effect the next time the application starts. Simple is cheaper and \
+         works on every device.",
+    );
+
+    // What this run is drawing, and — when it differs from the request — why. The
+    // capability is the only reason the answer can be narrower than the ask.
+    let filterable = crate::quality::capabilities().map(|c| c.float32_filterable);
+    let now = match sky {
+        Some(SkyMode::Atmosphere) => "Drawing the full atmosphere.".to_string(),
+        Some(SkyMode::Dome) => {
+            let why = match (prefs.sky, filterable) {
+                (SkyPreference::Simple, _) => "as asked",
+                (_, Some(false)) => "this GPU cannot sample the atmosphere's lookup textures",
+                _ => "forced by a startup switch",
+            };
+            format!("Drawing the simple sky — {why}.")
+        }
+        Some(SkyMode::None) => {
+            "No sky at all — CARTO_NO_ATMOSPHERE is set for this run.".to_string()
+        }
+        None => "The renderer has not chosen a sky yet.".to_string(),
+    };
+    ui.label(egui::RichText::new(now).small().color(theme::TEXT_DIM));
+}
+
+/// A checkbox over an `Option<bool>`, where `None` means "follow this device".
+///
+/// The tri-state is not a flourish: writing a plain `bool` on first launch would
+/// freeze *this* device's tier answer into `user.json` forever, so a later tier
+/// change — or the same file carried to another machine — would be silently
+/// overridden by a preference the user never expressed. So the checkbox shows the
+/// resolved value, and an "Automatic" button appears once it has been overridden,
+/// exactly as the render-scale row does.
+fn tri_state(ui: &mut egui::Ui, value: &mut Option<bool>, tier_default: bool, label: &str) {
+    let mut resolved = value.unwrap_or(tier_default);
+    ui.horizontal(|ui| {
+        if theme::checkbox(ui, &mut resolved, label).changed() {
+            *value = Some(resolved);
+        }
+        if value.is_some() && theme::action_button(ui, "Automatic").clicked() {
+            *value = None;
+        }
+    });
+    if value.is_none() {
+        ui.label(
+            egui::RichText::new(if tier_default {
+                "Automatic — on for this device."
+            } else {
+                "Automatic — off for this device."
+            })
+            .small()
+            .color(theme::TEXT_DIM),
+        );
+    }
 }
 
 /// The render-scale slider.
@@ -1074,9 +1280,49 @@ mod tests {
     /// opened.
     #[test]
     fn every_tab_is_in_the_tab_strip() {
-        for tab in [SettingsTab::General, SettingsTab::Map, SettingsTab::Audio] {
+        // Named individually rather than iterated, because `ALL` is exactly what
+        // is under test: a variant added to the enum but forgotten here is a tab
+        // that exists, compiles, has a label and a body, and can never be opened.
+        // `label()`'s `match` is exhaustive, so the compiler covers the naming;
+        // nothing but this list covers the reachability.
+        for tab in [
+            SettingsTab::General,
+            SettingsTab::Map,
+            SettingsTab::Graphics,
+            SettingsTab::Audio,
+            SettingsTab::Account,
+        ] {
             assert!(SettingsTab::ALL.contains(&tab), "{tab:?} is not in ALL");
             assert!(!tab.label().is_empty());
+        }
+    }
+
+    /// Two tabs sharing a label would make one of them unreachable in the strip
+    /// while both still rendered — the sort of thing a copy-pasted arm produces.
+    #[test]
+    fn tab_labels_are_distinct() {
+        let mut seen: Vec<&str> = SettingsTab::ALL.iter().map(|t| t.label()).collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "two tabs share a label");
+    }
+
+    /// The sky picker's rungs, same contract as the tab strip: a preference the
+    /// enum has and `ALL` does not is one nobody can choose.
+    #[test]
+    fn every_sky_preference_is_offered() {
+        use crate::resources::SkyPreference;
+        for preference in [
+            SkyPreference::Auto,
+            SkyPreference::Full,
+            SkyPreference::Simple,
+        ] {
+            assert!(
+                SkyPreference::ALL.contains(&preference),
+                "{preference:?} is not in ALL"
+            );
+            assert!(!preference.label().is_empty());
         }
     }
 

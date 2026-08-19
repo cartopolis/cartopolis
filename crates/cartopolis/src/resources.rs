@@ -251,8 +251,51 @@ impl QualityPreset {
     }
 }
 
-/// The settings that are neither a map layer nor a sky knob: the General and Map
-/// tabs of Settings.
+/// Which sky the user asks for, as opposed to the one the adapter can draw.
+///
+/// Three options rather than the developer panel's two checkboxes, because the
+/// thing a person wants to choose is *which sky*, and "atmosphere off" plus
+/// "force the dome" is that question asked as two booleans with an illegal
+/// corner. The rungs are ordered by cost, and every one of them draws a sky —
+/// "no sky at all" stays a bisecting switch (`CARTO_NO_ATMOSPHERE`), because a
+/// settings screen whose options include a black screen is a bug report waiting
+/// to be filed.
+///
+/// [`Self::Auto`] is the absence of an answer, exactly as [`QualityPreset::Auto`]
+/// and `AppPrefs::render_scale = None` are: the adapter is asked whether it can
+/// filter a float32 texture and gets the best sky it can draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkyPreference {
+    #[default]
+    Auto,
+    /// bevy_pbr's atmosphere — multiple scattering, aerial perspective, a sky
+    /// that lights the scene. Refused, with a log line, on an adapter that
+    /// cannot sample its LUTs: asking for it cannot make it appear.
+    Full,
+    /// `systems::sky_dome` — one analytic shell, no compute pass and no LUT.
+    /// Chosen automatically where the atmosphere cannot run, and selectable here
+    /// because a device that *can* run it may still be better off without it,
+    /// and because it is the only way to see what the fallback looks like
+    /// without holding the phone that gets it.
+    Simple,
+}
+
+impl SkyPreference {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Full, Self::Simple];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Automatic",
+            Self::Full => "Full atmosphere",
+            Self::Simple => "Simple",
+        }
+    }
+}
+
+/// The settings that are neither a map layer nor a sky knob: the General, Map,
+/// Graphics and Audio tabs of Settings.
 ///
 /// **A resource *and* a serde value.** It is edited as a resource and belongs in
 /// `user.json` beside [`crate::systems::user_store::LayerPrefs`] and `SkyPrefs`,
@@ -325,6 +368,38 @@ pub struct AppPrefs {
     /// for that reason.
     #[serde(default = "crate::resources::unit_gain")]
     pub mic_gain: f32,
+    /// Which sky to draw. Applied at **startup only**, like [`Self::quality`]:
+    /// `free_camera::setup_camera` records the answer once as
+    /// `sky_dome::SkyMode` because three systems downstream must make the same
+    /// choice, and because adding or removing an `Atmosphere` component on a live
+    /// camera tears down GPU resources still in flight and hangs the device.
+    #[serde(default)]
+    pub sky: SkyPreference,
+    /// Sun + moon shadow maps, or `None` to follow the device's tier.
+    ///
+    /// `Option<bool>` rather than a plain `bool`, and the reason is the same one
+    /// [`Self::render_scale`] gives: a bare bool written to `user.json` on first
+    /// launch would freeze *this* device's tier answer forever, so a later tier
+    /// change — or the same file carried to another machine — would be silently
+    /// overridden by a preference the user never expressed. `None` is "whatever
+    /// this device would have chosen".
+    #[serde(default)]
+    pub shadows: Option<bool>,
+    /// Sky-driven image-based lighting: the cubemap that fills shadowed faces and
+    /// gives water something to reflect. `None` follows the tier.
+    ///
+    /// Startup only, and it needs the atmosphere — there is nothing to bake an
+    /// environment from on a `SkyMode::Simple` run, which is exactly why
+    /// `AMBIENT_DAY_BRIGHTNESS_NO_IBL` exists to stand in for it.
+    #[serde(default)]
+    pub sky_lighting: Option<bool>,
+    /// The frame-time / draw-count overlay.
+    ///
+    /// Not a developer-only readout any more: it is the one control here whose
+    /// whole purpose is to let somebody *check* what the rest of the tab did, and
+    /// on a handset it is the only frame counter there is.
+    #[serde(default)]
+    pub show_stats: bool,
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -359,11 +434,33 @@ impl Default for AppPrefs {
             effects_volume: unit_gain(),
             voice_volume: unit_gain(),
             mic_gain: unit_gain(),
+            sky: SkyPreference::default(),
+            shadows: None,
+            sky_lighting: None,
+            show_stats: false,
         }
     }
 }
 
 impl AppPrefs {
+    /// Shadows, with `None` resolved against this device's tier.
+    ///
+    /// The fallback lives here rather than at each call site so that "Automatic"
+    /// means one thing: `manage_lights` reads this, the Graphics tab shows this,
+    /// and neither can drift into its own idea of what the tier said.
+    #[must_use]
+    pub fn shadows_on(&self) -> bool {
+        self.shadows.unwrap_or(crate::quality::budget().shadows)
+    }
+
+    /// Sky-driven IBL, with `None` resolved against this device's tier. See
+    /// [`Self::shadows_on`].
+    #[must_use]
+    pub fn sky_lighting_on(&self) -> bool {
+        self.sky_lighting
+            .unwrap_or(crate::quality::budget().sky_ibl)
+    }
+
     /// The soundscape level, clamped. `user.json` is hand-editable and a
     /// negative or NaN level would reach `Volume::Linear` unchecked.
     #[must_use]
@@ -468,8 +565,15 @@ impl<'de> serde::Deserialize<'de> for SunMode {
     }
 }
 
-/// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel). Currently
-/// exposes a day/night slider that drives the sun, and a distance-fog slider.
+/// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel).
+///
+/// **Scene authoring only**: the clock, the season, the weather and the capture
+/// slots. What this machine spends on the picture — shadows, the sky, sky
+/// reflections, the stats overlay — moved to [`AppPrefs`] and Settings ▸
+/// Graphics, because a keyboard chord is not a control on a handset and because
+/// nothing here is persisted. Keep that line: a render setting added back to this
+/// struct is one nobody on a phone can reach and one that will not survive the
+/// restart it asks for.
 #[derive(Resource)]
 pub struct DevPanelState {
     pub open: bool,
@@ -500,23 +604,17 @@ pub struct DevPanelState {
     /// times and peak elevation track the season instead of the old fixed
     /// 06:00-sunrise/18:00-sunset equinox arc. See `utils::sun::sun_direction`.
     pub sun_declination_rad: f32,
-    /// Show the FPS / frame-time / entity-count overlay. Off by default.
-    pub show_stats: bool,
-    // ── Render feature toggles (perf/visual inspection) ─────────────────────
-    /// Sun + moon shadow maps. Off = both directional lights respawn without
-    /// shadows (`manage_lights`); toggling `shadow_maps_enabled` in place panics
-    /// bevy_light, so it despawns/respawns instead. Safe to flip at runtime.
-    ///
-    /// (Atmosphere and env-map IBL are deliberately NOT live toggles: removing
-    /// those components at runtime tears down in-flight GPU resources and hangs
-    /// the device on this stack — they're startup env flags instead. See
-    /// `main::env_flag` / `CARTO_NO_ATMOSPHERE` / `CARTO_NO_ENVMAP`.)
-    pub shadows_enabled: bool,
-    /// Planetary atmosphere on/off (dev panel toggle).
-    pub atmosphere_enabled: bool,
-    /// Environment-map image-based lighting on/off (dev panel toggle).
-    pub envmap_enabled: bool,
 }
+
+// The render feature toggles that used to live here — shadows, atmosphere,
+// env-map IBL and the stats overlay — are [`AppPrefs`] fields now, edited in
+// Settings ▸ Graphics. They were never developer-only questions: a shadow is
+// what a phone gives up first, and the sky is the setting a device with a
+// hostile driver most needs to change. Keeping them here also meant they were
+// *unpersisted*, so a "restart to apply" toggle reverted on the restart that was
+// supposed to apply it. What stays in this struct is scene authoring — the
+// clock, the season and the weather — which is a different question from what
+// this machine can afford to draw.
 
 impl Default for DevPanelState {
     fn default() -> Self {
@@ -533,17 +631,6 @@ impl Default for DevPanelState {
             // Overwritten from the real date on frame 1 by `apply_sun_mode`; this
             // default is the equinox (0°), only ever seen before the first update.
             sun_declination_rad: 0.0,
-            show_stats: false,
-            // Seeded from the render budget rather than hard-coded, so the phone
-            // tier arrives with the two expensive lighting features already off
-            // *and* with the dev panel's checkboxes telling the truth about it.
-            // Gating at the spawn sites instead would leave a checkbox that reads
-            // "on" and does nothing. Both remain user-settable from here: shadows
-            // take effect immediately (`manage_lights` respawns the lights), the
-            // env map on the next launch (see the field docs above).
-            shadows_enabled: crate::quality::budget().shadows,
-            atmosphere_enabled: true,
-            envmap_enabled: crate::quality::budget().sky_ibl,
         }
     }
 }
@@ -1268,6 +1355,12 @@ mod tests {
             effects_volume: 0.4,
             voice_volume: 0.8,
             mic_gain: 2.0,
+            sky: SkyPreference::Simple,
+            // `Some(..)`, not `None`: `None` is the serde default, so a field that
+            // round-trips only when unset would prove nothing about the field.
+            shadows: Some(false),
+            sky_lighting: Some(true),
+            show_stats: true,
         };
         let text = serde_json::to_string(&prefs).expect("serialises");
         assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);
@@ -1297,6 +1390,54 @@ mod tests {
         // is silence with nothing to say why.
         assert_eq!(bad(f32::NAN).effects_gain(), 1.0);
         assert_eq!(bad(f32::NAN).capture_gain(), 1.0);
+    }
+
+    /// `None` means "follow this device", and an explicit answer overrides it in
+    /// both directions.
+    ///
+    /// The direction that matters is `Some(true)` on a tier that says no: a user
+    /// asking a battery-saver device for shadows must get them, or the setting is
+    /// decoration. Asserted against `quality::budget()` rather than a literal,
+    /// because the tier is whatever the machine running the test resolved to and
+    /// hard-coding either answer would make this pass or fail by hardware.
+    #[test]
+    fn an_unset_graphics_preference_follows_the_tier() {
+        let tier = crate::quality::budget();
+        let auto = AppPrefs::default();
+        assert_eq!(
+            auto.shadows, None,
+            "a fresh install expresses no preference"
+        );
+        assert_eq!(auto.shadows_on(), tier.shadows);
+        assert_eq!(auto.sky_lighting_on(), tier.sky_ibl);
+
+        for answer in [true, false] {
+            let set = AppPrefs {
+                shadows: Some(answer),
+                sky_lighting: Some(answer),
+                ..AppPrefs::default()
+            };
+            assert_eq!(set.shadows_on(), answer, "shadows overridden to {answer}");
+            assert_eq!(
+                set.sky_lighting_on(),
+                answer,
+                "sky lighting overridden to {answer}"
+            );
+        }
+    }
+
+    /// A `user.json` written before the Graphics tab existed must keep working,
+    /// and must not have a tier decision frozen into it by the upgrade.
+    #[test]
+    fn an_older_settings_file_gains_the_graphics_defaults() {
+        let old = r#"{"units":"imperial","quality":"low","effects_volume":0.5}"#;
+        let prefs: AppPrefs = serde_json::from_str(old).expect("older files still parse");
+        assert_eq!(prefs.units, Units::Imperial, "the old fields survive");
+        assert_eq!(prefs.quality, QualityPreset::Low);
+        assert_eq!(prefs.sky, SkyPreference::Auto);
+        assert_eq!(prefs.shadows, None);
+        assert_eq!(prefs.sky_lighting, None);
+        assert!(!prefs.show_stats);
     }
 
     /// A file written before the levels existed must not arrive silent.

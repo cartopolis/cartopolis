@@ -562,6 +562,11 @@ pub fn setup_camera(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     dev: Res<crate::resources::DevPanelState>,
+    // The sky and the env map are chosen from here now, not from the developer
+    // panel — see `SkyPreference` and Settings ▸ Graphics. Both are startup-only
+    // for the reason this function's sky block gives at length, so reading the
+    // preference once, here, is the whole of applying it.
+    prefs: Res<crate::resources::AppPrefs>,
     adapter: Res<bevy::render::renderer::RenderAdapterInfo>,
     render_device: Res<bevy::render::renderer::RenderDevice>,
     // The *requested* present mode, which is the one that decides whether anything
@@ -677,9 +682,21 @@ pub fn setup_camera(
     // it gets the sky it can draw. A device that should not spend the frame is put
     // on a lower rung deliberately (Settings ▸ Map, `CARTO_QUALITY`), which is a
     // person deciding rather than a table guessing.
-    let want_sky = dev.atmosphere_enabled && !crate::env_flag("CARTO_NO_ATMOSPHERE");
-    let want_atmosphere = want_sky && float32_filterable && !crate::env_flag("CARTO_SKY_DOME");
-    let want_envmap = want_atmosphere && dev.envmap_enabled && !crate::env_flag("CARTO_NO_ENVMAP");
+    //
+    // **The user's own answer comes first, and it can only ever narrow.**
+    // `SkyPreference::Simple` picks the dome on hardware that could run the
+    // atmosphere — the setting a device with a hostile driver most needs, and
+    // until now reachable only through `CARTO_SKY_DOME`, i.e. through a shell
+    // that Android does not have. `Full` cannot conjure an atmosphere the adapter
+    // will not draw: it still has to pass `float32_filterable`, because the
+    // alternative to refusing is the bind-group validation failure described
+    // above, which takes the whole app down.
+    let want_sky = !crate::env_flag("CARTO_NO_ATMOSPHERE");
+    let asked_for_dome = prefs.sky == crate::resources::SkyPreference::Simple;
+    let want_atmosphere =
+        want_sky && float32_filterable && !asked_for_dome && !crate::env_flag("CARTO_SKY_DOME");
+    let want_envmap =
+        want_atmosphere && prefs.sky_lighting_on() && !crate::env_flag("CARTO_NO_ENVMAP");
     let sky = if want_atmosphere {
         crate::systems::sky_dome::SkyMode::Atmosphere
     } else if want_sky {
@@ -699,8 +716,9 @@ pub fn setup_camera(
         ?sky,
         adapter = %adapter.name,
         float32_filterable,
+        preference = ?prefs.sky,
         forced_dome = crate::env_flag("CARTO_SKY_DOME"),
-        no_atmosphere = !dev.atmosphere_enabled || crate::env_flag("CARTO_NO_ATMOSPHERE"),
+        no_atmosphere = crate::env_flag("CARTO_NO_ATMOSPHERE"),
         "sky chosen"
     );
     commands.insert_resource(sky);

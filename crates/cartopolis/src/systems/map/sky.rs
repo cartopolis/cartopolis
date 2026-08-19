@@ -31,18 +31,23 @@ use crate::systems;
 use crate::utils;
 use crate::utils::sun::sun_direction;
 
-pub(crate) fn setup_sky(mut commands: Commands, dev: Res<DevPanelState>) {
+pub(crate) fn setup_sky(
+    mut commands: Commands,
+    dev: Res<DevPanelState>,
+    prefs: Res<resources::AppPrefs>,
+) {
     // The built-in atmosphere derives the sky from the sun's `DirectionalLight`
     // direction and the camera position, so there's no atmosphere model to poke
     // here — we just spawn the sun/moon lights. `AmbientLight` is a per-camera
     // component now (set in setup_camera, driven by apply_day_night_cycle).
-    spawn_sun_light(&mut commands, &dev);
+    let shadows = prefs.shadows_on();
+    spawn_sun_light(&mut commands, &dev, shadows);
 
     // Moonlight is a second, shadow-casting directional light. It only exists while
     // it actually contributes (moon up at night); `manage_moon_light` spawns and
     // despawns it so its 4 shadow cascades aren't rendered through the whole day.
     if moon_light_wanted(&dev) {
-        spawn_moon_light(&mut commands, &dev);
+        spawn_moon_light(&mut commands, &dev, shadows);
     }
 }
 
@@ -75,7 +80,7 @@ pub(crate) fn shadow_cascades() -> usize {
     platform_max.min(quality::budget().shadow_cascades)
 }
 
-pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
+pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
     let sun_dir = sun_direction(dev.time_of_day, dev.sun_declination_rad);
     let (sun_color, illuminance) =
         sun_light(dev.time_of_day, dev.sun_declination_rad, dev.fog_density);
@@ -83,7 +88,7 @@ pub(crate) fn spawn_sun_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: sun_color,
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled && !env_flag("CARTO_NO_SHADOWS"),
+            shadow_maps_enabled: shadows && !env_flag("CARTO_NO_SHADOWS"),
             ..default()
         },
         // Cascades sized to cover the visible city while keeping crisp near shadows.
@@ -130,7 +135,7 @@ pub(crate) fn moon_light_wanted(dev: &DevPanelState) -> bool {
 /// Spawn the moon's directional light with its shadow cascades. Perceptually
 /// blue-gray, with a shorter shadow range than the sun — moon shadows only need to
 /// read up close.
-pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
+pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, shadows: bool) {
     let moon_dir = utils::sun::moon_direction(dev.time_of_day, dev.moon_age_days);
     let illuminance = MOONLIGHT_ILLUMINANCE
         * moonlight_factor(dev.time_of_day, dev.moon_age_days, dev.sun_declination_rad)
@@ -139,7 +144,7 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
         DirectionalLight {
             color: Color::linear_rgb(0.55, 0.72, 1.0),
             illuminance,
-            shadow_maps_enabled: dev.shadows_enabled && !env_flag("CARTO_NO_SHADOWS"),
+            shadow_maps_enabled: shadows && !env_flag("CARTO_NO_SHADOWS"),
             ..default()
         },
         // Match the sun's cascade count (4): Bevy 0.19's bevy_light panics
@@ -172,32 +177,38 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState) {
 pub(crate) fn manage_lights(
     mut commands: Commands,
     dev: Res<DevPanelState>,
+    // Shadows are a *preference* now (Settings ▸ Graphics), so this system's
+    // change gate has to watch both resources — with `dev.is_changed()` alone,
+    // flipping the checkbox did nothing until the clock or the weather next moved.
+    prefs: Res<resources::AppPrefs>,
     sun: Query<Entity, With<SunLight>>,
     moon: Query<Entity, With<MoonLight>>,
     mut last_shadows: Local<Option<bool>>,
 ) {
-    if !dev.is_changed() {
+    if !dev.is_changed() && !prefs.is_changed() {
         return;
     }
     // A shadow-toggle flip (not the first run, where setup_sky already spawned
     // the lights correctly) respawns both lights with the new shadow state.
-    let prev = last_shadows.replace(dev.shadows_enabled);
-    let shadows_flipped = prev.is_some() && prev != Some(dev.shadows_enabled);
+    let shadows = prefs.shadows_on();
+    let prev = last_shadows.replace(shadows);
+    let shadows_flipped = prev.is_some() && prev != Some(shadows);
 
     if shadows_flipped {
         for e in sun.iter() {
             commands.entity(e).despawn();
         }
-        spawn_sun_light(&mut commands, &dev);
+        spawn_sun_light(&mut commands, &dev, shadows);
         for e in moon.iter() {
             commands.entity(e).despawn();
         }
         if moon_light_wanted(&dev) {
-            spawn_moon_light(&mut commands, &dev);
+            spawn_moon_light(&mut commands, &dev, shadows);
         }
     } else {
         match (moon_light_wanted(&dev), moon.single()) {
-            (true, Err(_)) => spawn_moon_light(&mut commands, &dev), // wanted but absent
+            // wanted but absent
+            (true, Err(_)) => spawn_moon_light(&mut commands, &dev, shadows),
             (false, Ok(entity)) => {
                 commands.entity(entity).despawn(); // present but no longer wanted
             }
@@ -441,7 +452,41 @@ pub(crate) fn overcast_lighting(overcast: f32) -> (f32, f32) {
 pub(crate) struct StarSky;
 
 /// Global brightness multiplier for the star field.
+///
+/// Calibrated on the **ground at night**, and that is the whole of why the next
+/// constant exists.
 pub(crate) const STAR_BRIGHTNESS: f32 = 3.5;
+
+/// What the star field is multiplied by in the space tier, to undo the exposure
+/// that tier deliberately holds.
+///
+/// [`STAR_BRIGHTNESS`] is judged against the ground's *night* exposure, which is
+/// [`DAY_EXPOSURE_EV100`] lifted by [`NIGHT_EXPOSURE_LIFT`] — the eye adaptation
+/// that makes a night scene read. The space tier has no local clock to adapt to
+/// (the lit half of the planet is in full daylight whatever the time is at the
+/// anchor), so `apply_day_night_cycle` pins it at the *day* exposure
+/// ([`SPACE_EXPOSURE_STOPS`]). Stars therefore arrive `NIGHT_EXPOSURE_LIFT` stops
+/// under the exposure they were tuned for, and a stop is a factor of two.
+///
+/// Measured before the fix (2026-08-19, orbit at 5,000 km on the balanced tier):
+/// of 120,000 sky pixels, **78 exceeded luminance 32/255 and none reached 128**.
+/// The field was rendering correctly and was simply below the threshold of a
+/// screen — reported from a phone as "there are no stars", and reproducible on
+/// the desktop the moment anyone counted pixels instead of looking.
+///
+/// Derived from the constant rather than typed as a number, so it stays correct
+/// if either exposure constant moves. It is a compensation, not a taste knob:
+/// the stars end up as bright *relative to their exposure* as they are at night
+/// on the ground, which is where they were judged.
+///
+/// A function rather than a `const` only because `f32::exp2` is not `const fn`.
+/// Writing the `4.0` out by hand instead would be the drift this is built to
+/// avoid — the number is only correct while `NIGHT_EXPOSURE_LIFT` is 2.0.
+#[must_use]
+pub(crate) fn space_star_exposure_compensation() -> f32 {
+    // A stop is a factor of two in luminance, so undoing N stops is 2^N.
+    NIGHT_EXPOSURE_LIFT.exp2()
+}
 
 /// Star-shell radius: beyond all world geometry (so buildings and the ground
 /// occlude stars) but inside the far plane and the atmosphere skybox faces.
@@ -1315,9 +1360,15 @@ pub(crate) fn update_star_sky(
     // Above the atmosphere there is no daylight to drown them: the stars are out
     // whatever the clock at the anchor says, and no fog can veil them. Without
     // this the space view was an unlit black void whenever it was daytime below.
+    //
+    // In space that factor also carries the exposure compensation: this tier
+    // holds the *day* exposure while `STAR_BRIGHTNESS` was judged against the
+    // ground's night one, so an uncompensated field is two stops under and
+    // measures at 78 pixels out of 120,000 above luminance 32 — present, and
+    // invisible on a screen. See `space_star_exposure_compensation`.
     let elevation = sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     let night = match space_shell {
-        Some(_) => 1.0,
+        Some(_) => space_star_exposure_compensation(),
         None => ((-0.05 - elevation) / 0.2).clamp(0.0, 1.0),
     };
     // Fog is opaque to starlight long before it swallows the city: veil the star

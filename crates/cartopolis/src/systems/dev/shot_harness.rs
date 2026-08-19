@@ -1037,14 +1037,20 @@ pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::E
     render_output.force_next_write = true;
 }
 
-/// The two floating cards a `--ui` list can raise, bundled into one parameter:
-/// [`open_scripted_ui`] is at Bevy's sixteen-parameter ceiling, and these two are
-/// the same kind of thing — chrome that opens over the map rather than a panel in
-/// the right-hand slot.
+/// The two floating cards a `--ui` list can raise, plus the preferences a shot
+/// may override — bundled into one parameter because [`open_scripted_ui`] is at
+/// Bevy's sixteen-parameter ceiling and adding a seventeenth does not fail as a
+/// count, it fails as `does not describe a valid system configuration`.
+///
+/// `prefs` joined them when the stats overlay became a preference rather than a
+/// developer-panel field. A scripted run never reads or writes `user.json`, so
+/// writing it here is an in-memory override for the capture and nothing more.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct ScriptedCards<'w> {
     menu: ResMut<'w, crate::systems::ui::MainMenu>,
     sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
+    prefs: ResMut<'w, crate::resources::AppPrefs>,
+    settings: ResMut<'w, crate::systems::settings::SettingsState>,
 }
 
 /// Open the UI panels named by `--ui` so a scripted capture can document them —
@@ -1085,7 +1091,7 @@ pub fn open_scripted_ui(
     // Written unconditionally (not only when opening) so each shot starts from
     // exactly the chrome it asked for.
     dev.open = want("dev");
-    dev.show_stats = want("stats");
+    cards.prefs.show_stats = want("stats");
     // The status readout is off by default now (`hud::StatusHud`), so a capture
     // that wants to document it has to ask — `--ui hud`.
     status.open = want("hud");
@@ -1131,6 +1137,17 @@ pub fn open_scripted_ui(
         // `avatar.open` bool above is what the HUD reads, not the panel, so
         // `--ui avatar` opened nothing at all until this arm existed.
         crate::resources::RightPanel::Appearance
+    } else if want("settings") || want("graphics") {
+        // `--ui graphics` opens Settings on the Graphics tab. A tab is not
+        // reachable by opening the panel alone, so naming the panel would
+        // capture whichever tab was last selected — which for a fresh scripted
+        // world is always General, i.e. never the one being reviewed.
+        cards.settings.tab = if want("graphics") {
+            crate::systems::settings::SettingsTab::Graphics
+        } else {
+            crate::systems::settings::SettingsTab::General
+        };
+        crate::resources::RightPanel::Settings
     } else {
         crate::resources::RightPanel::None
     };
