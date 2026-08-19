@@ -51,6 +51,15 @@ const FETCH_RANGE: f32 = 800.0;
 const SHOW_RANGE: f32 = 500.0;
 /// At most this many boards in the world (nearest first).
 const MAX_BOARDS: usize = 8;
+
+/// How often the board *selection* re-runs. Selecting means walking every
+/// loaded transit POI (thousands) with a distance test — the sibling
+/// `poll_transit_live` grew an early-out for exactly this scan — while the
+/// per-frame work a board actually needs is only billboarding the ≤8 quads.
+/// A board mounting 250 ms after it comes in range is imperceptible next to
+/// its 500 m show radius; the minute flip on the display skews by at most the
+/// same 250 ms.
+const SELECT_INTERVAL: Duration = Duration::from_millis(250);
 /// At most this many stops per batched request (URL length + politeness).
 const BATCH_MAX: usize = 40;
 /// Drop cached boards not refreshed for this long (stops left behind).
@@ -192,6 +201,8 @@ pub struct TransitLive {
     results: Arc<Mutex<Vec<FetchResult>>>,
     in_flight: bool,
     last_poll: Option<Instant>,
+    /// When the board target set was last recomputed (see [`SELECT_INTERVAL`]).
+    last_select: Option<Instant>,
     pub boards: HashMap<String, StopBoard>,
     entries: HashMap<String, BoardEntry>,
     painter: Option<BoardPainter>,
@@ -304,59 +315,6 @@ pub fn update_transit_boards(
     let Ok((cam_cell, cam_tf)) = camera.single() else {
         return;
     };
-
-    // Which stops should carry a board right now?
-    let mut target: HashMap<&String, &PoiInstance> = HashMap::new();
-    if enabled {
-        let mut nearby: Vec<(f32, &String, &PoiInstance)> = Vec::new();
-        let mut seen = HashSet::new();
-        for poi in dl.layers[TRANSIT_LAYER].pois.values().flatten() {
-            let Some(code) = &poi.live_id else {
-                continue;
-            };
-            if !live.boards.contains_key(code) || !seen.insert(code) {
-                continue;
-            }
-            let d = poi.delta(cam_cell, cam_tf);
-            let dist = Vec2::new(d.x, d.z).length();
-            if dist <= SHOW_RANGE {
-                nearby.push((dist, code, poi));
-            }
-        }
-        nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
-        nearby.truncate(MAX_BOARDS);
-        target.extend(nearby.into_iter().map(|(_, c, p)| (c, p)));
-    }
-
-    // Retire boards that fell out of the target set (or the layer went off).
-    let stale: Vec<String> = live
-        .entries
-        .keys()
-        .filter(|c| !target.contains_key(c))
-        .cloned()
-        .collect();
-    for code in stale {
-        if let Some(entry) = live.entries.remove(&code) {
-            commands.entity(entry.entity).despawn();
-            images.remove(&entry.image);
-            materials.remove(&entry.material);
-            meshes.remove(&entry.mesh);
-        }
-    }
-    if target.is_empty() {
-        return;
-    }
-
-    // Lazy painter init; without a usable font there are no boards.
-    if live.painter.is_none() {
-        live.painter = BoardPainter::new();
-        if live.painter.is_none() {
-            tracing::warn!("no rasterizable font for transit boards");
-            return;
-        }
-    }
-    let painter = live.painter.as_ref().unwrap();
-
     let Ok(root) = bigspace.single() else {
         return;
     };
@@ -366,66 +324,129 @@ pub fn update_transit_boards(
     let minute = (now + clock.local_offset_secs.unwrap_or(0) as i64) / 60;
     let (hm, _) = clock.hms();
 
-    for (code, poi) in &target {
-        let board = &live.boards[*code];
-        if let Some(entry) = live.entries.get_mut(*code) {
-            // Repaint when the data or the minute changed. The texture is
-            // swapped as a fresh asset (mutating Image data in place does not
-            // reliably reach the GPU) and the material repointed at it.
-            if entry.drawn_fetch != board.fetched || entry.drawn_minute != minute {
-                entry.drawn_fetch = board.fetched;
-                entry.drawn_minute = minute;
-                let image = images.add(board_image(paint_board(painter, poi, board, now, hm)));
-                if let Some(mut mat) = materials.get_mut(&entry.material) {
-                    mat.base_color_texture = Some(image.clone());
+    // Selection, retirement and repaint run at SELECT_INTERVAL; only the
+    // billboarding at the bottom of this function is per-frame work.
+    if live
+        .last_select
+        .is_none_or(|t| t.elapsed() >= SELECT_INTERVAL)
+    {
+        live.last_select = Some(Instant::now());
+        'select: {
+            // Which stops should carry a board right now?
+            let mut target: HashMap<&String, &PoiInstance> = HashMap::new();
+            if enabled {
+                let mut nearby: Vec<(f32, &String, &PoiInstance)> = Vec::new();
+                let mut seen = HashSet::new();
+                for poi in dl.layers[TRANSIT_LAYER].pois.values().flatten() {
+                    let Some(code) = &poi.live_id else {
+                        continue;
+                    };
+                    if !live.boards.contains_key(code) || !seen.insert(code) {
+                        continue;
+                    }
+                    let d = poi.delta(cam_cell, cam_tf);
+                    let dist = Vec2::new(d.x, d.z).length();
+                    if dist <= SHOW_RANGE {
+                        nearby.push((dist, code, poi));
+                    }
                 }
-                images.remove(&entry.image);
-                entry.image = image;
+                nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
+                nearby.truncate(MAX_BOARDS);
+                target.extend(nearby.into_iter().map(|(_, c, p)| (c, p)));
             }
-        } else {
-            // New board: paint and mount the panel on the pole like a real
-            // stop sign — top edge just under the category finial, the pole
-            // running down behind the panel.
-            let image = images.add(board_image(paint_board(painter, poi, board, now, hm)));
-            let material = materials.add(StandardMaterial {
-                base_color_texture: Some(image.clone()),
-                unlit: true,
-                ..default()
-            });
-            // Real display proportions (bus ≈ 1.6×0.95 m), panel snug against
-            // the pole with the operator counterweight box on the far side.
-            // The mesh origin is on the pole axis at the display's top, so
-            // billboarding swings the whole assembly around the pole.
-            let style = &LAYER_DEFS[TRANSIT_LAYER].categories[poi.category].1;
-            let w = style.board_width;
-            let h = w * (BOARD_PX_H as f32 / PANEL_PX as f32);
-            let mesh = meshes.add(board_mesh(w, h));
-            let mount_y = style.pole_height - 0.15;
-            let translation = Vec3::new(poi.anchor.x, mount_y, poi.anchor.z);
-            let entity = commands
-                .spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(translation),
-                    poi.cell,
-                    ChildOf(root),
-                    BoardQuad,
-                    NotShadowCaster,
-                    NotShadowReceiver,
-                ))
-                .id();
-            live.entries.insert(
-                (*code).clone(),
-                BoardEntry {
-                    entity,
-                    cell: poi.cell,
-                    image,
-                    material,
-                    mesh,
-                    drawn_fetch: board.fetched,
-                    drawn_minute: minute,
-                },
-            );
+
+            // Retire boards that fell out of the target set (or the layer went off).
+            let stale: Vec<String> = live
+                .entries
+                .keys()
+                .filter(|c| !target.contains_key(c))
+                .cloned()
+                .collect();
+            for code in stale {
+                if let Some(entry) = live.entries.remove(&code) {
+                    commands.entity(entry.entity).despawn();
+                    images.remove(&entry.image);
+                    materials.remove(&entry.material);
+                    meshes.remove(&entry.mesh);
+                }
+            }
+            if target.is_empty() {
+                break 'select;
+            }
+
+            // Lazy painter init; without a usable font there are no boards.
+            if live.painter.is_none() {
+                live.painter = BoardPainter::new();
+                if live.painter.is_none() {
+                    tracing::warn!("no rasterizable font for transit boards");
+                    break 'select;
+                }
+            }
+            let painter = live.painter.as_ref().unwrap();
+
+            for (code, poi) in &target {
+                let board = &live.boards[*code];
+                if let Some(entry) = live.entries.get_mut(*code) {
+                    // Repaint when the data or the minute changed. The texture is
+                    // swapped as a fresh asset (mutating Image data in place does not
+                    // reliably reach the GPU) and the material repointed at it.
+                    if entry.drawn_fetch != board.fetched || entry.drawn_minute != minute {
+                        entry.drawn_fetch = board.fetched;
+                        entry.drawn_minute = minute;
+                        let image =
+                            images.add(board_image(paint_board(painter, poi, board, now, hm)));
+                        if let Some(mut mat) = materials.get_mut(&entry.material) {
+                            mat.base_color_texture = Some(image.clone());
+                        }
+                        images.remove(&entry.image);
+                        entry.image = image;
+                    }
+                } else {
+                    // New board: paint and mount the panel on the pole like a real
+                    // stop sign — top edge just under the category finial, the pole
+                    // running down behind the panel.
+                    let image = images.add(board_image(paint_board(painter, poi, board, now, hm)));
+                    let material = materials.add(StandardMaterial {
+                        base_color_texture: Some(image.clone()),
+                        unlit: true,
+                        ..default()
+                    });
+                    // Real display proportions (bus ≈ 1.6×0.95 m), panel snug against
+                    // the pole with the operator counterweight box on the far side.
+                    // The mesh origin is on the pole axis at the display's top, so
+                    // billboarding swings the whole assembly around the pole.
+                    let style = &LAYER_DEFS[TRANSIT_LAYER].categories[poi.category].1;
+                    let w = style.board_width;
+                    let h = w * (BOARD_PX_H as f32 / PANEL_PX as f32);
+                    let mesh = meshes.add(board_mesh(w, h));
+                    let mount_y = style.pole_height - 0.15;
+                    let translation = Vec3::new(poi.anchor.x, mount_y, poi.anchor.z);
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            Transform::from_translation(translation),
+                            poi.cell,
+                            ChildOf(root),
+                            BoardQuad,
+                            NotShadowCaster,
+                            NotShadowReceiver,
+                        ))
+                        .id();
+                    live.entries.insert(
+                        (*code).clone(),
+                        BoardEntry {
+                            entity,
+                            cell: poi.cell,
+                            image,
+                            material,
+                            mesh,
+                            drawn_fetch: board.fetched,
+                            drawn_minute: minute,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -442,7 +463,12 @@ pub fn update_transit_boards(
         let dz = (cam_cell.z - entry.cell.z) as f32 * WORLD_CELL_EDGE + cam_tf.translation.z
             - tf.translation.z;
         let pitch = dy.atan2((dx * dx + dz * dz).sqrt());
-        tf.rotation = Quat::from_rotation_y(dx.atan2(dz)) * Quat::from_rotation_x(-pitch);
+        let rotation = Quat::from_rotation_y(dx.atan2(dz)) * Quat::from_rotation_x(-pitch);
+        // No write when neither the board nor the camera moved — a write here
+        // is GlobalTransform propagation + render re-extraction per board.
+        if tf.rotation != rotation {
+            tf.rotation = rotation;
+        }
     }
 }
 

@@ -445,31 +445,46 @@ pub fn update_transit_vehicles(
         cam_cell.z as f32 * WORLD_CELL_EDGE + cam_tf.translation.z,
     );
 
+    // Split the resource into disjoint field borrows: the target list below
+    // holds references into `vehicles` while `entities`/`labels` are mutated.
+    // The alternative was what this used to do — clone every in-range vehicle's
+    // id and line `String` into the list, every frame the layer is on.
+    let TransitVehicles {
+        vehicles,
+        entities,
+        labels: label_entities,
+        mesh,
+        materials: vehicle_mats,
+        label_mesh,
+        label_mats,
+        painter,
+        ..
+    } = tv;
+
     // Nearest vehicles in range, this frame's interpolated positions.
-    let mut target: Vec<(f32, String, Vec2, f32, Transport, Option<String>)> = Vec::new();
-    for (id, s) in tv.vehicles.iter() {
+    let mut target: Vec<(f32, &String, Vec2, f32, Transport, Option<&String>)> = Vec::new();
+    for (id, s) in vehicles.iter() {
         let pos = interp(s, now);
         let dist = (pos - cam_flat).length();
         if dist <= SHOW_RANGE {
-            target.push((dist, id.clone(), pos, s.yaw, s.transport, s.line.clone()));
+            target.push((dist, id, pos, s.yaw, s.transport, s.line.as_ref()));
         }
     }
     target.sort_by(|a, b| a.0.total_cmp(&b.0));
     target.truncate(MAX_VEHICLES);
-    let target_ids: HashSet<&String> = target.iter().map(|t| &t.1).collect();
+    let target_ids: HashSet<&String> = target.iter().map(|t| t.1).collect();
 
     // Retire boxes + labels that fell out of the target set.
-    let stale: Vec<String> = tv
-        .entities
+    let stale: Vec<String> = entities
         .keys()
         .filter(|id| !target_ids.contains(id))
         .cloned()
         .collect();
     for id in stale {
-        if let Some(e) = tv.entities.remove(&id) {
+        if let Some(e) = entities.remove(&id) {
             commands.entity(e).despawn();
         }
-        if let Some(e) = tv.labels.remove(&id) {
+        if let Some(e) = label_entities.remove(&id) {
             commands.entity(e).despawn();
         }
     }
@@ -479,29 +494,26 @@ pub fn update_transit_vehicles(
     // target set, so a key that is absent from it has no entity holding its
     // material, and the ones retired just above are despawned in the same command
     // flush that precedes rendering.
-    if tv.label_mats.len() > MAX_LABEL_MATERIALS {
+    if label_mats.len() > MAX_LABEL_MATERIALS {
         let live: HashSet<String> = target
             .iter()
             .filter_map(|(_, _, _, _, transport, line)| {
-                line.as_ref().map(|l| format!("{}:{l}", *transport as u8))
+                line.map(|l| format!("{}:{l}", *transport as u8))
             })
             .collect();
-        let evicted: Vec<Handle<StandardMaterial>> = tv
-            .label_mats
+        let evicted: Vec<Handle<StandardMaterial>> = label_mats
             .iter()
             .filter(|(key, _)| !live.contains(*key))
             .map(|(_, handle)| handle.clone())
             .collect();
-        tv.label_mats.retain(|key, _| live.contains(key));
+        label_mats.retain(|key, _| live.contains(key));
         release_label_materials(evicted, &mut materials, &mut images);
     }
 
-    let mesh = tv
-        .mesh
+    let mesh = mesh
         .get_or_insert_with(|| meshes.add(Cuboid::new(BUS_WIDTH, BUS_HEIGHT, BUS_LEN)))
         .clone();
-    let label_mesh = tv
-        .label_mesh
+    let label_mesh = label_mesh
         .get_or_insert_with(|| meshes.add(Rectangle::new(LABEL_W, LABEL_H)))
         .clone();
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
@@ -509,24 +521,31 @@ pub fn update_transit_vehicles(
     // Per-frame budget for new box/label creation (paints + uploads), so a feed
     // that lands 80 vehicles at once spreads over frames instead of one burst.
     let mut spawn_budget = MAX_VEHICLE_SPAWNS_PER_FRAME;
-    for (_, id, pos, yaw, transport, line) in &target {
+    for &(_, id, pos, yaw, transport, line) in &target {
         // On the measured ground: a bus is a thing standing in the street, and the
         // street has moved.
         let ground = terrain.at(pos.x, pos.y);
         let (cell, local) = grid.translation_to_grid(Vec3::new(pos.x, ground, pos.y).as_dvec3());
         let translation = local + Vec3::new(0.0, BUS_HEIGHT * 0.5, 0.0);
-        let rotation = Quat::from_rotation_y(*yaw);
-        if let Some(&e) = tv.entities.get(id) {
+        let rotation = Quat::from_rotation_y(yaw);
+        if let Some(&e) = entities.get(id) {
             if let Ok((mut tf, mut gc)) = boxes.get_mut(e) {
-                tf.translation = translation;
-                tf.rotation = rotation;
-                *gc = cell;
+                // Write only on real movement: a stopped bus otherwise trips
+                // change detection every frame — GlobalTransform propagation
+                // plus render re-extraction, per vehicle, for a value that
+                // didn't move (compare `animate_stop_rings`' 20 Hz quantise).
+                if tf.translation != translation || tf.rotation != rotation {
+                    tf.translation = translation;
+                    tf.rotation = rotation;
+                }
+                if *gc != cell {
+                    *gc = cell;
+                }
             }
         } else if spawn_budget > 0 {
             spawn_budget -= 1;
-            let material = tv
-                .materials
-                .entry(*transport as u8)
+            let material = vehicle_mats
+                .entry(transport as u8)
                 .or_insert_with(|| {
                     let c = transport.color();
                     materials.add(StandardMaterial {
@@ -552,7 +571,7 @@ pub fn update_transit_vehicles(
                     NotShadowReceiver,
                 ))
                 .id();
-            tv.entities.insert(id.clone(), e);
+            entities.insert(id.clone(), e);
         } else {
             // Budget spent and no box yet — defer this vehicle (and its label) to
             // a later frame rather than bursting the command buffer.
@@ -573,19 +592,23 @@ pub fn update_transit_vehicles(
         let pitch = dy.atan2((dx * dx + dz * dz).sqrt());
         let lbl_rot = Quat::from_rotation_y(dx.atan2(dz)) * Quat::from_rotation_x(-pitch);
 
-        if let Some(&e) = tv.labels.get(id) {
+        if let Some(&e) = label_entities.get(id) {
             if let Ok((mut tf, mut gc)) = labels.get_mut(e) {
-                tf.translation = lbl_translation;
-                tf.rotation = lbl_rot;
-                *gc = cell;
+                // Same rule as the boxes: still bus + still camera = no write.
+                if tf.translation != lbl_translation || tf.rotation != lbl_rot {
+                    tf.translation = lbl_translation;
+                    tf.rotation = lbl_rot;
+                }
+                if *gc != cell {
+                    *gc = cell;
+                }
             }
         } else if spawn_budget > 0 {
             spawn_budget -= 1;
             // Paint once per (mode, line); shared by every bus on that line.
-            let key = format!("{}:{line}", *transport as u8);
-            let painter = tv.painter.get_or_insert_with(LabelPainter::new);
-            let material = tv
-                .label_mats
+            let key = format!("{}:{line}", transport as u8);
+            let painter = painter.get_or_insert_with(LabelPainter::new);
+            let material = label_mats
                 .entry(key)
                 .or_insert_with(|| {
                     let image = images.add(painter.paint(line, transport.color()));
@@ -612,7 +635,7 @@ pub fn update_transit_vehicles(
                     NotShadowReceiver,
                 ))
                 .id();
-            tv.labels.insert(id.clone(), e);
+            label_entities.insert(id.clone(), e);
         }
     }
 }

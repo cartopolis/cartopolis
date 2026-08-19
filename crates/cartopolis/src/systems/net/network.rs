@@ -765,10 +765,13 @@ pub fn apply_network_snapshot(
                             && !texture_cache.pending.contains(&entry.id)
                         {
                             texture_cache.pending.insert(entry.id.clone());
-                            sess.send("texture request", NetMessage::TextureRequest {
-                                request_id: 0,
-                                texture_id: entry.id.clone(),
-                            });
+                            sess.send(
+                                "texture request",
+                                NetMessage::TextureRequest {
+                                    request_id: 0,
+                                    texture_id: entry.id.clone(),
+                                },
+                            );
                         }
                     }
                 }
@@ -963,13 +966,17 @@ fn sync_remote_avatar_entities(
         commands.entity(e).despawn();
     }
 
+    // One pass to index, one lookup per snapshot row — the inner rescan per row
+    // was O(avatars × remote entities) at snapshot rate.
+    let by_id: std::collections::HashMap<u64, Entity> =
+        remote_query.iter().map(|(e, r)| (r.sim_id, e)).collect();
     for a in avatars {
         if Some(a.id) == local_id {
             continue;
         }
         let mut found = false;
-        for (_, mut r) in remote_query.iter_mut() {
-            if r.sim_id == a.id {
+        if let Some(&entity) = by_id.get(&a.id) {
+            if let Ok((_, mut r)) = remote_query.get_mut(entity) {
                 r.net_position = a.position;
                 r.net_yaw = snap_yaw_continuation(r.net_yaw, a.yaw);
                 // Fire only on a sequence we haven't seen: the sim re-sends a live
@@ -982,7 +989,6 @@ fn sync_remote_avatar_entities(
                     }
                 }
                 found = true;
-                break;
             }
         }
         if !found {

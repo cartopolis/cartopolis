@@ -716,7 +716,10 @@ pub fn render_avatar_chooser(
         chooser.draft = store.data.appearance.clone();
         chooser.seeded = true;
     }
-    let saved = store.data.appearance.clone();
+    // Borrowed, not cloned: this ran five String clones per frame whether the
+    // panel was open or not, and the closure only compares against it — the
+    // store write on Apply happens after the closure ends.
+    let saved = &store.data.appearance;
     let mut apply = false;
     let mut close = false;
     let compact = egui.compact();
@@ -796,7 +799,7 @@ pub fn render_avatar_chooser(
                     });
 
                 ui.separator();
-                let changed = *d != saved;
+                let changed = *d != *saved;
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(changed, egui::Button::new("Apply"))
@@ -2134,28 +2137,31 @@ pub fn send_prim_mutations(
                 tracing::warn!("cannot create prim: offline or world not anchored yet");
                 return;
             };
-            sess.send("create prim", NetMessage::CreatePrim {
-                request_id: 0,
-                region_id,
-                name: dialog_state.name.clone(),
-                position: pos,
-                rotation: Vec3::new(
-                    dialog_state.rotation[0],
-                    dialog_state.rotation[1],
-                    dialog_state.rotation[2],
-                ),
-                scale: Vec3::new(
-                    dialog_state.scale[0],
-                    dialog_state.scale[1],
-                    dialog_state.scale[2],
-                ),
-                color: dialog_state.color,
-                texture_id: dialog_state.texture_id.clone(),
-                shape: dialog_state.shape.clone(),
-                surface: dialog_state.surface,
-                geometry: dialog_state.geometry(),
-                geo,
-            });
+            sess.send(
+                "create prim",
+                NetMessage::CreatePrim {
+                    request_id: 0,
+                    region_id,
+                    name: dialog_state.name.clone(),
+                    position: pos,
+                    rotation: Vec3::new(
+                        dialog_state.rotation[0],
+                        dialog_state.rotation[1],
+                        dialog_state.rotation[2],
+                    ),
+                    scale: Vec3::new(
+                        dialog_state.scale[0],
+                        dialog_state.scale[1],
+                        dialog_state.scale[2],
+                    ),
+                    color: dialog_state.color,
+                    texture_id: dialog_state.texture_id.clone(),
+                    shape: dialog_state.shape.clone(),
+                    surface: dialog_state.surface,
+                    geometry: dialog_state.geometry(),
+                    geo,
+                },
+            );
             tracing::info!(name = %dialog_state.name, "sent CreatePrim (online)");
             return;
         } else if let Some(prim_id) = dialog_state.prim_id {
@@ -2171,27 +2177,30 @@ pub fn send_prim_mutations(
                 online.as_ref(),
                 crate::systems::prim_geo::geo_from_world(pos, &map_anchor),
             ) {
-                sess.send("update prim", NetMessage::UpdatePrim {
-                    request_id: 0,
-                    prim_id,
-                    position: pos,
-                    rotation: Vec3::new(
-                        dialog_state.rotation[0],
-                        dialog_state.rotation[1],
-                        dialog_state.rotation[2],
-                    ),
-                    scale: Vec3::new(
-                        dialog_state.scale[0],
-                        dialog_state.scale[1],
-                        dialog_state.scale[2],
-                    ),
-                    color: dialog_state.color,
-                    texture_id: dialog_state.texture_id.clone(),
-                    name: dialog_state.name.clone(),
-                    surface: dialog_state.surface,
-                    geometry: dialog_state.geometry(),
-                    geo,
-                });
+                sess.send(
+                    "update prim",
+                    NetMessage::UpdatePrim {
+                        request_id: 0,
+                        prim_id,
+                        position: pos,
+                        rotation: Vec3::new(
+                            dialog_state.rotation[0],
+                            dialog_state.rotation[1],
+                            dialog_state.rotation[2],
+                        ),
+                        scale: Vec3::new(
+                            dialog_state.scale[0],
+                            dialog_state.scale[1],
+                            dialog_state.scale[2],
+                        ),
+                        color: dialog_state.color,
+                        texture_id: dialog_state.texture_id.clone(),
+                        name: dialog_state.name.clone(),
+                        surface: dialog_state.surface,
+                        geometry: dialog_state.geometry(),
+                        geo,
+                    },
+                );
             }
             for (entity, mut prim, mut transform, mat_handle_opt, owned) in prim_query.iter_mut() {
                 if prim.id == prim_id {
@@ -2316,10 +2325,13 @@ pub fn send_prim_mutations(
 
     for prim_id in std::mem::take(&mut game_state.prims_to_delete) {
         if let Some(sess) = online.as_ref() {
-            sess.send("delete prim", NetMessage::DeletePrim {
-                request_id: 0,
-                prim_id,
-            });
+            sess.send(
+                "delete prim",
+                NetMessage::DeletePrim {
+                    request_id: 0,
+                    prim_id,
+                },
+            );
         }
         for (entity, prim, _, _, _) in prim_query.iter() {
             if prim.id == prim_id {
