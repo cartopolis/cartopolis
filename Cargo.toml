@@ -222,6 +222,19 @@ incremental = false
 debug = false
 panic = "abort"
 
+# The deployed simulator's profile (`deploy-sim.yml`). One deliberate difference
+# from `release`: panics unwind. `release`'s `panic = "abort"` is a client-side
+# trade (drops unwind tables and landing pads from a Bevy binary), but the server
+# built with it has no per-connection isolation at all — every connection runs in
+# its own tokio task precisely so one client's failure costs that client alone,
+# and abort turns any panic reachable from one client's input into a
+# process-wide outage for every session. With unwind, tokio catches the panic at
+# the task boundary, `net::AvatarGuard` retires the avatar on the way out, and
+# `SimHandle::task_ended` turns a dead *critical* task into a supervised exit.
+[profile.sim-release]
+inherits = "release"
+panic = "unwind"
+
 # The web build's working profile (ADR-033), and the reason it is not `dev`:
 # that profile optimises *dependencies* and leaves this crate at opt-level 1, which
 # is backwards for the browser. Bevy is hot, but so are our own streaming,

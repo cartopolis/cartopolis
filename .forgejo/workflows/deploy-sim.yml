@@ -48,14 +48,17 @@ jobs:
 
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:
-          key: simulator-release
+          key: simulator-sim-release
 
-      # Release rather than dev: this is a server that runs for weeks, and the
-      # workspace's `release` profile is fat LTO over one codegen unit. It fits
+      # `sim-release` rather than dev: this is a server that runs for weeks, and
+      # the profile inherits `release`'s fat LTO over one codegen unit. It fits
       # here where it does not for the client (`android-release` exists because
-      # that link OOMs) — the simulator has no Bevy under it.
+      # that link OOMs) — the simulator has no Bevy under it. What the profile
+      # changes is `panic = "unwind"`: per-connection isolation depends on tokio
+      # catching a panicking connection task at the task boundary, and the
+      # workspace `release` profile aborts instead (see its note in Cargo.toml).
       - name: Build
-        run: cargo build -j "$JOBS" -p cartopolis_simulator --bin simulator --release
+        run: cargo build -j "$JOBS" -p cartopolis_simulator --bin simulator --profile sim-release
 
       - name: sccache stats
         if: always()
@@ -71,7 +74,7 @@ jobs:
       - name: Smoke-test the binary
         run: |
           CARTO_ADMIN_PASSWORD=smoke-test-not-a-real-password \
-            ./target/release/simulator \
+            ./target/sim-release/simulator \
               --database-path /tmp/smoke/world.db \
               --create-admin smoketest
           echo "startup + migrations ok"
@@ -81,7 +84,7 @@ jobs:
       # then loop on it. `mv` within one filesystem is atomic.
       - name: Publish
         run: |
-          install -m 0755 target/release/simulator /publish/simulator.new
+          install -m 0755 target/sim-release/simulator /publish/simulator.new
           mv /publish/simulator.new /publish/simulator
           # The signal that `cartopolis-sim-reload.path` is watching for. Last,
           # so the restart can never race the copy.
