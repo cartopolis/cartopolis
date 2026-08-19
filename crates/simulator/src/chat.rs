@@ -128,6 +128,15 @@ pub struct ChatHub {
     clients: Mutex<HashMap<u64, Client>>,
 }
 
+/// Lock the hub, surviving poisoning. `connected_ids` runs inside the tick loop,
+/// so a panic under this lock must not become a panic in every subsequent tick —
+/// that turns one bad message into a world that stops advancing. The map carries
+/// no multi-step invariant; the worst a mid-panic value can be is one client's
+/// entry in a stale state, which the next register/unregister corrects.
+fn locked(m: &Mutex<HashMap<u64, Client>>) -> std::sync::MutexGuard<'_, HashMap<u64, Client>> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl ChatHub {
     pub fn new() -> Self {
         Self::default()
@@ -148,7 +157,7 @@ impl ChatHub {
     ) -> (mpsc::Receiver<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
         let (text, text_rx) = mpsc::channel(TEXT_BACKLOG);
         let (voice, voice_rx) = mpsc::channel(VOICE_BACKLOG);
-        self.clients.lock().unwrap().insert(
+        locked(&self.clients).insert(
             avatar_id,
             Client {
                 text,
@@ -163,7 +172,7 @@ impl ChatHub {
     /// Add or remove a block for a live connection, so it takes effect on the
     /// next message rather than the next login.
     pub fn set_blocked(&self, avatar_id: u64, username: &str, blocked: bool) {
-        if let Some(c) = self.clients.lock().unwrap().get_mut(&avatar_id) {
+        if let Some(c) = locked(&self.clients).get_mut(&avatar_id) {
             let key = username.to_lowercase();
             if blocked {
                 c.blocked.insert(key);
@@ -174,12 +183,12 @@ impl ChatHub {
     }
 
     pub fn unregister(&self, avatar_id: u64) {
-        self.clients.lock().unwrap().remove(&avatar_id);
+        locked(&self.clients).remove(&avatar_id);
     }
 
     /// Join (`join = true`) or leave a room for a connection.
     pub fn set_room(&self, avatar_id: u64, room: &str, join: bool) {
-        if let Some(c) = self.clients.lock().unwrap().get_mut(&avatar_id) {
+        if let Some(c) = locked(&self.clients).get_mut(&avatar_id) {
             if join {
                 c.rooms.insert(room.to_string());
             } else {
@@ -214,7 +223,7 @@ impl ChatHub {
     /// encoded bytes" property — it never has to decode a message to route it.
     pub fn deliver_all(&self, from: &str, frame: &[u8]) {
         let from = from.to_lowercase();
-        for (id, c) in self.clients.lock().unwrap().iter() {
+        for (id, c) in locked(&self.clients).iter() {
             if c.blocked.contains(&from) {
                 continue;
             }
@@ -225,7 +234,7 @@ impl ChatHub {
     /// Deliver one encoded frame to members of a room.
     pub fn deliver_room(&self, room: &str, from: &str, lane: Lane, frame: &[u8]) {
         let from = from.to_lowercase();
-        for (id, c) in self.clients.lock().unwrap().iter() {
+        for (id, c) in locked(&self.clients).iter() {
             if c.rooms.contains(room) && !c.blocked.contains(&from) {
                 c.enqueue(*id, lane, frame.to_vec());
             }
@@ -245,7 +254,7 @@ impl ChatHub {
         frame: &[u8],
     ) {
         let from = from.to_lowercase();
-        for (id, c) in self.clients.lock().unwrap().iter() {
+        for (id, c) in locked(&self.clients).iter() {
             if *id != except && c.rooms.contains(room) && !c.blocked.contains(&from) {
                 c.enqueue(*id, lane, frame.to_vec());
             }
@@ -257,7 +266,7 @@ impl ChatHub {
     /// The block is applied here too, and it must be: proximity is the tier where
     /// somebody you have blocked can still walk up to you.
     pub fn deliver_to(&self, avatar_id: u64, from: &str, lane: Lane, frame: Vec<u8>) {
-        if let Some(c) = self.clients.lock().unwrap().get(&avatar_id) {
+        if let Some(c) = locked(&self.clients).get(&avatar_id) {
             if c.blocked.contains(&from.to_lowercase()) {
                 return;
             }
@@ -267,7 +276,7 @@ impl ChatHub {
 
     /// Connected avatar ids — the candidate set for a proximity send.
     pub fn connected_ids(&self) -> Vec<u64> {
-        self.clients.lock().unwrap().keys().copied().collect()
+        locked(&self.clients).keys().copied().collect()
     }
 }
 

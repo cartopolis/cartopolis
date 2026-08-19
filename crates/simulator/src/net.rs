@@ -206,6 +206,49 @@ pub fn tcp_frames(stream: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> 
     )
 }
 
+/// Owns the cleanup for one connection's avatar and chat inbox.
+///
+/// `handle_connection` spawns the avatar early — the ack that follows carries its
+/// id — and then has a long fallible prologue (blocked list, scrollback replay,
+/// capacity frames) before the select loop, plus the loop itself. Every `?` on
+/// that path used to skip the trailing cleanup, so a client dropping
+/// mid-handshake leaked a ghost avatar into every future snapshot and a chat
+/// inbox into the hub, permanently. Cleanup on `Drop` covers every exit at once:
+/// early return, loop break, and — in a build with unwinding — a panic.
+///
+/// `Drop` cannot await, so the world write takes `try_write` first (the common
+/// case: nothing else holds it at the moment a task unwinds its stack) and falls
+/// back to spawning the removal onto the runtime.
+struct AvatarGuard {
+    world: Arc<RwLock<SimWorld>>,
+    chat: Arc<crate::chat::ChatHub>,
+    avatar_id: u64,
+}
+
+impl Drop for AvatarGuard {
+    fn drop(&mut self) {
+        // Unregister on a never-registered id is a map remove of nothing.
+        self.chat.unregister(self.avatar_id);
+        let avatar_id = self.avatar_id;
+        if let Ok(mut w) = self.world.try_write() {
+            w.remove_avatar(avatar_id);
+        } else {
+            let world = self.world.clone();
+            match tokio::runtime::Handle::try_current() {
+                Ok(h) => {
+                    h.spawn(async move {
+                        world.write().await.remove_avatar(avatar_id);
+                    });
+                }
+                // No runtime left (process teardown) — the world is going away
+                // with us, so there is nothing to leak into.
+                Err(_) => return,
+            }
+        }
+        tracing::info!(avatar_id, "avatar removed (disconnect)");
+    }
+}
+
 pub async fn handle_connection<T: FrameTransport>(
     mut framed: T,
     world: Arc<RwLock<SimWorld>>,
@@ -260,6 +303,12 @@ pub async fn handle_connection<T: FrameTransport>(
         let mut w = world.write().await;
         w.spawn_avatar()
     };
+    // From here on, every exit — `?`, break, or unwind — retires the avatar.
+    let _cleanup = AvatarGuard {
+        world: world.clone(),
+        chat: chat.clone(),
+        avatar_id,
+    };
     tracing::info!(%principal, %username, avatar_id, "client authenticated");
     // Display name for chat (the ack moves `username`).
     let display_name = username.clone();
@@ -272,11 +321,7 @@ pub async fn handle_connection<T: FrameTransport>(
         session_token,
         osm_tile_url_template: config.osm_tile_url_template.clone(),
     })?;
-    if let Err(e) = framed.send(Bytes::from(ack)).await {
-        let mut w = world.write().await;
-        w.remove_avatar(avatar_id);
-        return Err(e.into());
-    }
+    framed.send(Bytes::from(ack)).await?;
 
     // Chat (ADR-028): register a personal delivery inbox, then replay recent
     // Global scrollback so the tab isn't empty on connect.
@@ -579,7 +624,11 @@ pub async fn handle_connection<T: FrameTransport>(
                                         }
                                         last_global = Instant::now();
                                         if let Ok(c) = conn.lock() {
-                                            let _ = crate::db::insert_chat(&c, GLOBAL_CHANNEL, avatar_id as i64, &display_name, now_ms as i64, &body);
+                                            // Delivered live either way, but a store that failed means the
+                                            // scrollback replay will silently miss this line — say so.
+                                            if let Err(e) = crate::db::insert_chat(&c, GLOBAL_CHANNEL, avatar_id as i64, &display_name, now_ms as i64, &body) {
+                                                tracing::warn!(avatar_id, "storing global chat failed: {e:#}");
+                                            }
                                         }
                                         let frame = encode_app_frame(&NetMessage::ChatMessage {
                                             channel: GLOBAL_CHANNEL.into(), sender_id: avatar_id,
@@ -606,7 +655,9 @@ pub async fn handle_connection<T: FrameTransport>(
                                         }
                                         last_room = Instant::now();
                                         if let Ok(c) = conn.lock() {
-                                            let _ = crate::db::insert_chat(&c, &channel, avatar_id as i64, &display_name, now_ms as i64, &body);
+                                            if let Err(e) = crate::db::insert_chat(&c, &channel, avatar_id as i64, &display_name, now_ms as i64, &body) {
+                                                tracing::warn!(avatar_id, channel = %channel, "storing room chat failed: {e:#}");
+                                            }
                                         }
                                         let frame = encode_app_frame(&NetMessage::ChatMessage {
                                             channel: channel.clone(), sender_id: avatar_id,
@@ -1045,13 +1096,8 @@ pub async fn handle_connection<T: FrameTransport>(
         }
     }
 
-    chat.unregister(avatar_id);
-    {
-        let mut w = world.write().await;
-        w.remove_avatar(avatar_id);
-    }
-    tracing::info!(avatar_id, "avatar removed (disconnect)");
-
+    // Cleanup (avatar + chat inbox) is `_cleanup`'s Drop, which also covers the
+    // early returns above the loop.
     outcome
 }
 

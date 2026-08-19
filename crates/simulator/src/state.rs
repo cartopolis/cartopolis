@@ -641,11 +641,13 @@ impl SimWorld {
         if self.dirty.is_empty() {
             return;
         }
-        let ids: Vec<i64> = self.dirty.drain().collect();
+        // Lock before draining: a poisoned lock must leave the set intact for
+        // the next flush, exactly as the doc above promises.
         let Ok(conn) = self.conn.lock() else {
             tracing::warn!("db lock poisoned; script writes not persisted");
             return;
         };
+        let ids: Vec<i64> = self.dirty.drain().collect();
         for id in ids {
             let Some(p) = self.prims.iter().find(|p| p.id == id) else {
                 continue;
@@ -664,6 +666,10 @@ impl SimWorld {
                 p.geo,
             ) {
                 tracing::warn!(prim_id = id, "persisting script write failed: {e:#}");
+                // Keep the promise above: a failed write stays dirty, so a
+                // transiently locked or full database is retried on the next
+                // flush instead of silently rewinding the prim on restart.
+                self.dirty.insert(id);
             }
         }
     }

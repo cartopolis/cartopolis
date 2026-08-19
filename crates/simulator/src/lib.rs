@@ -37,20 +37,29 @@ pub struct SimHandle {
     /// `SimConfig::http_listen` asked for one. `None` is the default and is what
     /// solo mode and the tests get.
     pub http_addr: Option<SocketAddr>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    tasks: tokio::task::JoinSet<&'static str>,
 }
 
 impl SimHandle {
-    /// Stop the server now. Equivalent to dropping the handle.
-    pub fn shutdown(self) {
-        // Drop runs the abort.
-    }
-}
+    /// Stop the server now. Equivalent to dropping the handle (a `JoinSet`
+    /// aborts its tasks on drop).
+    pub fn shutdown(self) {}
 
-impl Drop for SimHandle {
-    fn drop(&mut self) {
-        for task in self.tasks.drain(..) {
-            task.abort();
+    /// Resolve when any background task ends — with what it was.
+    ///
+    /// Short of shutdown these tasks run for the life of the process, so an
+    /// ending task is a failure even when it is not a panic: a tick loop that
+    /// returned leaves a server that still accepts connections, authenticates
+    /// and answers admin HTTP while the world silently never advances and no
+    /// snapshot goes out. The binary selects on this against Ctrl-C and exits
+    /// non-zero, so a half-dead server becomes a systemd restart instead of a
+    /// mystery.
+    pub async fn task_ended(&mut self) -> anyhow::Error {
+        match self.tasks.join_next().await {
+            Some(Ok(label)) => anyhow::anyhow!("{label} ended unexpectedly"),
+            // JoinError carries the panic message when there was one.
+            Some(Err(e)) => anyhow::anyhow!("background task died: {e}"),
+            None => anyhow::anyhow!("no background tasks"),
         }
     }
 }
@@ -88,13 +97,18 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
 
     let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);
     let script_handle = scripts_host.handle();
-    let tick_task = tokio::spawn(net::tick_loop(
-        world.clone(),
-        config.clone(),
-        tx_snap.clone(),
-        scripts_host,
-        chat.clone(),
-    ));
+    // Each task returns a label so `task_ended` can say *which* one died.
+    let mut tasks = tokio::task::JoinSet::new();
+    {
+        let world = world.clone();
+        let config = config.clone();
+        let tx_snap = tx_snap.clone();
+        let chat = chat.clone();
+        tasks.spawn(async move {
+            net::tick_loop(world, config, tx_snap, scripts_host, chat).await;
+            "tick loop"
+        });
+    }
 
     let listener = TcpListener::bind(&config.listen).await?;
     let local_addr = listener.local_addr()?;
@@ -103,7 +117,6 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     // Bound before the accept loop takes ownership of everything, so a bad
     // `http_listen` fails `serve` rather than killing a background task minutes
     // later and leaving a server that looks healthy and answers nothing.
-    let mut tasks = vec![tick_task];
     let mut http_addr = None;
     if let Some(ref addr) = config.http_listen {
         let state = http::HttpState {
@@ -125,24 +138,28 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         // WS handler logs the peer, and without the connect info that extractor
         // is a 500 on every upgrade rather than a compile error.
         let app = http::router(state).into_make_service_with_connect_info::<SocketAddr>();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             if let Err(e) = axum::serve(http_listener, app).await {
                 tracing::error!("http server ended: {e:#}");
             }
-        }));
+            "http server"
+        });
     }
 
-    let accept_task = tokio::spawn(accept_loop(
-        listener,
-        world,
-        config,
-        tx_snap,
-        conn,
-        sessions,
-        chat,
-        script_handle,
-    ));
-    tasks.push(accept_task);
+    tasks.spawn(async move {
+        accept_loop(
+            listener,
+            world,
+            config,
+            tx_snap,
+            conn,
+            sessions,
+            chat,
+            script_handle,
+        )
+        .await;
+        "accept loop"
+    });
 
     Ok(SimHandle {
         local_addr,

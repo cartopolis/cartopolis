@@ -30,6 +30,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+/// Lock a mutex, surviving poisoning. The session map is consulted from the tick
+/// loop and from every connection task, so a panic under this lock must cost the
+/// panicking task alone — an `unwrap()` here turns one poisoned guard into a
+/// panic in every later caller, which on the deployed sim is a process-wide
+/// outage. The data is a plain map with no multi-step invariant, so the value
+/// mid-panic is as good as any.
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Hash a password as an argon2id PHC string for storage.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -412,7 +422,7 @@ impl Sessions {
     /// Issue a fresh random opaque token bound to a principal + its username.
     pub fn issue(&self, principal: Uuid, username: &str) -> String {
         let token = random_token();
-        let mut map = self.by_token.lock().unwrap();
+        let mut map = locked(&self.by_token);
         // Sweep on the way in: `resolve` only ever sees the token it was asked
         // about, so a token nobody ever presents again would otherwise sit there
         // for the life of the process.
@@ -436,7 +446,7 @@ impl Sessions {
     /// Expired tokens are removed as they are found — the first presentation
     /// after the TTL is both the rejection and the cleanup.
     pub fn resolve(&self, token: &str) -> Option<(Uuid, String)> {
-        let mut map = self.by_token.lock().unwrap();
+        let mut map = locked(&self.by_token);
         let session = map.get_mut(token)?;
         if session.touched.elapsed() >= self.ttl {
             map.remove(token);
@@ -453,7 +463,7 @@ impl Sessions {
     /// disconnect, so revoking there would make every restart of the client ask
     /// for a password again.
     pub fn revoke(&self, token: &str) {
-        self.by_token.lock().unwrap().remove(token);
+        locked(&self.by_token).remove(token);
     }
 
     /// Invalidate every token belonging to one principal, and say how many went.
@@ -466,7 +476,7 @@ impl Sessions {
     /// keep playing. It is a handful of thousand entries at most and it runs once
     /// per deletion.
     pub fn revoke_principal(&self, principal: Uuid) -> usize {
-        let mut map = self.by_token.lock().unwrap();
+        let mut map = locked(&self.by_token);
         let before = map.len();
         map.retain(|_, s| s.principal != principal);
         before - map.len()
@@ -475,7 +485,7 @@ impl Sessions {
     /// Live token count, for tests and diagnostics.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.by_token.lock().unwrap().len()
+        locked(&self.by_token).len()
     }
 
     #[must_use]
