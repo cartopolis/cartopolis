@@ -150,8 +150,10 @@ look like, and three list rows for it pushed Exit below the fold.
 
 ## The mark and the wordmark are drawn, not shipped
 
-`theme::paint_mark` is a geometry table in fractions of a radius — a dark disc,
-four streets, an accent avenue on the diagonal, an amber marker — and
+`theme::paint_mark` is a geometry table in the launcher icon's own 512-unit
+square — the isometric map-tower cluster of `assets/icon/cartopolis.svg`, seven
+towers clad in map paper on a gridded plinth with the place pin planted on the
+tallest — and
 `theme::paint_wordmark` splits the name in two tones (cream `carto`, accent
 `polis`), which is how the account GUI writes it (`jeroen/cartopy`'s
 `.app-header .wordmark`). Three reasons it is not a PNG:
@@ -168,6 +170,18 @@ four streets, an accent avenue on the diagonal, an amber marker — and
   match the in-app splash. The same shape is inline SVG there — no request, no
   404, nothing to arrive late. **Keep the two in step**; they are one screen
   handed over mid-load.
+
+There are now **three** copies of that shape — the icon SVG, `paint_mark`, and
+the loader's inline SVG — and the app's two are a deliberate reduction of the
+first: a flat tile where the icon has a gradient, one motif per facade where the
+icon collages a different map fragment onto every tower, and a disc-over-triangle
+pin instead of the teardrop path. Painting the full art from egui primitives
+would cost several hundred shapes on the frame the splash has least to spare,
+and none of the detail survives the 44 px the sign-in card draws it at. What is
+*not* reduced is the silhouette, the placement and the palette, which is what a
+mark is recognised by. `cargo test -p cartopolis write_mark_preview -- --ignored`
+rasterises exactly what egui tessellates, at the four sizes the mark is used at,
+which is how the reduction was checked against the icon rather than guessed at.
 
 ## The suggestion rows carry a distance, and that is the point
 
