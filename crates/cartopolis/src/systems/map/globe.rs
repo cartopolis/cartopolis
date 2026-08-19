@@ -760,6 +760,45 @@ fn space_raymarch() -> bool {
             && !crate::env_flag("CARTO_NO_SPACE_RAYMARCH")
     })
 }
+
+/// Whether to leave `Atmosphere::inner_radius` at bevy's own Earth radius instead
+/// of matching it to `GlobeState::radius`, read once.
+///
+/// **On by default on Android, and that is a fix rather than caution.** The match
+/// exists to close a thin ring below the horizon; what it opens is an f32
+/// cancellation in the sky-view and aerial-view LUT parameterization, worth 2.6
+/// ulps at ground level ([`update_atmosphere_origin`] does the arithmetic). The
+/// only hardware this project ships to has produced exactly the symptom that
+/// predicts — a black sky at ground level with a correct limb from orbit, on an
+/// Adreno 840, 2026-08-19. A faint ring near the horizon is a far smaller price
+/// than a sky that isn't there, so the handset steps around the cliff.
+///
+/// Every other platform keeps the ring closed, because no desktop driver has ever
+/// tripped the cancellation and `cargo shots` output should not move for a fix
+/// aimed at one GPU family. The two flags are how either side is reached from the
+/// other: `CARTO_ATMO_EARTH_RADIUS=1` exercises the handset's path on a machine
+/// that can profile it, and `CARTO_ATMO_GLOBE_RADIUS=1` puts the match back on the
+/// handset — which is the A/B that says whether the cliff was ever the cause.
+/// On Android both arrive as `debug.carto.*` properties.
+fn earth_inner_radius() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !crate::env_flag("CARTO_ATMO_GLOBE_RADIUS")
+            && (cfg!(target_os = "android") || crate::env_flag("CARTO_ATMO_EARTH_RADIUS"))
+    })
+}
+
+/// `CARTO_GROUND_RAYMARCH=1`: run the sky `Raymarched` at ground level too, where
+/// the tier normally picks `LookupTexture`. A bisecting switch, not a quality
+/// knob: `render_sky.wgsl`'s raymarch branch integrates the sky per pixel and
+/// never touches the sky-view or aerial-view LUTs, so on a device whose
+/// atmosphere is black this splits "the LUT compute passes produce garbage" from
+/// "the whole pass is broken" in one launch. On Android:
+/// `adb shell setprop debug.carto.ground_raymarch 1`.
+fn ground_raymarch() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env_flag("CARTO_GROUND_RAYMARCH"))
+}
 /// Raymarch sky samples per fragment in the space tier. Held at Bevy's default:
 /// measured offscreen at 200 km and 15,000 km, 16 samples costs the same as 6
 /// within run-to-run noise (~2 ms over `LookupTexture` either way), so there's
@@ -864,10 +903,48 @@ pub fn update_atmosphere_origin(
     // is derived from this each frame in `update_globe_visibility`, so the
     // 100 km shell follows. A field write on the live component is safe; it is
     // adding or removing one that hangs the device.
-    if atmosphere.inner_radius != globe.radius {
-        atmosphere.inner_radius = globe.radius;
+    //
+    // **[`earth_inner_radius`] gives that 4.5 km back, and it is the default on
+    // Android, because this very match opens a precision cliff.** bevy's
+    // sky-view LUT parameterization (both directions, `functions.wgsl`) opens with
+    //
+    //     v_horizon = sqrt(r * r - inner_radius * inner_radius)
+    //
+    // in f32. Matching the radii means `r - inner_radius` *is* the camera's
+    // altitude in metres — 1 m against 6,364,500 m — while the subtraction happens
+    // between two squares near 4.05e13, where one f32 ulp is 4.8e6. At 1 m up the
+    // whole horizon term is **2.6 ulps**; at 45 m it is ~119, still under 0.3 %
+    // error. Upstream's unmatched default leaves ~4.5 km of altitude and with it
+    // 100x the headroom, so the cancellation never shows there. A driver that
+    // contracts, reassociates or rounds that expression differently can reach zero
+    // or a negative, and `sqrt` of a negative is NaN — which propagates through
+    // `fast_acos_4` into the LUT's UV and samples as black. Reported 2026-08-19 on
+    // an Adreno 840: black sky at ground level, correct atmospheric limb from
+    // orbit (where `r >> inner_radius` and nothing cancels), sun disc fine
+    // throughout (it never touches this term). Not reproducible on lavapipe.
+    //
+    // The real fix is one line upstream and is algebraically identical:
+    // `sqrt((r - inner_radius) * (r + inner_radius))` cancels nothing and is exact
+    // at 1 m. It cannot be applied from here — the expression is inside
+    // `bevy_pbr`, and vendoring 50,000 lines to reach it is the trade
+    // `docs/notes/sky-without-an-atmosphere.md` already refuses. So the handset
+    // steps around the cliff instead and pays the ring back, and
+    // `CARTO_ATMO_GLOBE_RADIUS=1` puts the match in front of it again when
+    // somebody wants the A/B.
+    let want_inner = if earth_inner_radius() {
+        BEVY_EARTH_INNER_RADIUS
+    } else {
+        globe.radius
+    };
+    if atmosphere.inner_radius != want_inner {
+        atmosphere.inner_radius = want_inner;
     }
 }
+
+/// `Atmosphere::earth`'s own ground radius, in metres — what `inner_radius` holds
+/// before [`update_atmosphere_origin`] matches it to the globe's.
+/// [`earth_inner_radius`] keeps it; see that switch for why it exists.
+const BEVY_EARTH_INNER_RADIUS: f32 = 6_360_000.0;
 
 /// Show the globe only once high enough that it's the thing you're looking at, so
 /// normal ground play never pays for it or sees it poke through the tiles. At the
@@ -952,6 +1029,9 @@ pub fn update_globe_visibility(
     // which are the part every tier needs.
     if let Some(mut atmosphere) = atmosphere {
         let (want_mode, want_samples) = if show_globe && space_raymarch() {
+            (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
+        } else if ground_raymarch() {
+            // The bisecting switch: per-pixel sky, no sky-view/aerial LUT reads.
             (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
         } else {
             (AtmosphereMode::LookupTexture, GROUND_SKY_SAMPLES)
