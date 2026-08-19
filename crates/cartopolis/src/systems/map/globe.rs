@@ -761,6 +761,33 @@ fn space_raymarch() -> bool {
     })
 }
 
+/// Whether to leave `Atmosphere::inner_radius` at bevy's own Earth radius instead
+/// of matching it to `GlobeState::radius`, read once.
+///
+/// **On by default on Android, and that is a fix rather than caution.** The match
+/// exists to close a thin ring below the horizon; what it opens is an f32
+/// cancellation in the sky-view and aerial-view LUT parameterization, worth 2.6
+/// ulps at ground level ([`update_atmosphere_origin`] does the arithmetic). The
+/// only hardware this project ships to has produced exactly the symptom that
+/// predicts — a black sky at ground level with a correct limb from orbit, on an
+/// Adreno 840, 2026-08-19. A faint ring near the horizon is a far smaller price
+/// than a sky that isn't there, so the handset steps around the cliff.
+///
+/// Every other platform keeps the ring closed, because no desktop driver has ever
+/// tripped the cancellation and `cargo shots` output should not move for a fix
+/// aimed at one GPU family. The two flags are how either side is reached from the
+/// other: `CARTO_ATMO_EARTH_RADIUS=1` exercises the handset's path on a machine
+/// that can profile it, and `CARTO_ATMO_GLOBE_RADIUS=1` puts the match back on the
+/// handset — which is the A/B that says whether the cliff was ever the cause.
+/// On Android both arrive as `debug.carto.*` properties.
+fn earth_inner_radius() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !crate::env_flag("CARTO_ATMO_GLOBE_RADIUS")
+            && (cfg!(target_os = "android") || crate::env_flag("CARTO_ATMO_EARTH_RADIUS"))
+    })
+}
+
 /// `CARTO_GROUND_RAYMARCH=1`: run the sky `Raymarched` at ground level too, where
 /// the tier normally picks `LookupTexture`. A bisecting switch, not a quality
 /// knob: `render_sky.wgsl`'s raymarch branch integrates the sky per pixel and
@@ -877,8 +904,8 @@ pub fn update_atmosphere_origin(
     // 100 km shell follows. A field write on the live component is safe; it is
     // adding or removing one that hangs the device.
     //
-    // **`CARTO_ATMO_EARTH_RADIUS=1` gives that 4.5 km back, and it is a bisecting
-    // switch for a suspected precision cliff this very match creates.** bevy's
+    // **[`earth_inner_radius`] gives that 4.5 km back, and it is the default on
+    // Android, because this very match opens a precision cliff.** bevy's
     // sky-view LUT parameterization (both directions, `functions.wgsl`) opens with
     //
     //     v_horizon = sqrt(r * r - inner_radius * inner_radius)
@@ -900,11 +927,11 @@ pub fn update_atmosphere_origin(
     // `sqrt((r - inner_radius) * (r + inner_radius))` cancels nothing and is exact
     // at 1 m. It cannot be applied from here — the expression is inside
     // `bevy_pbr`, and vendoring 50,000 lines to reach it is the trade
-    // `docs/notes/sky-without-an-atmosphere.md` already refuses. So this switch
-    // buys the *diagnosis* instead: if the sky comes back with it, the cliff is
-    // real and the upstream patch is what to send. It costs the horizon ring back.
-    // On Android: `adb shell setprop debug.carto.atmo_earth_radius 1`.
-    let want_inner = if crate::env_flag("CARTO_ATMO_EARTH_RADIUS") {
+    // `docs/notes/sky-without-an-atmosphere.md` already refuses. So the handset
+    // steps around the cliff instead and pays the ring back, and
+    // `CARTO_ATMO_GLOBE_RADIUS=1` puts the match in front of it again when
+    // somebody wants the A/B.
+    let want_inner = if earth_inner_radius() {
         BEVY_EARTH_INNER_RADIUS
     } else {
         globe.radius
@@ -915,8 +942,8 @@ pub fn update_atmosphere_origin(
 }
 
 /// `Atmosphere::earth`'s own ground radius, in metres — what `inner_radius` holds
-/// before [`update_atmosphere_origin`] matches it to the globe's. Only
-/// `CARTO_ATMO_EARTH_RADIUS` restores it; see that switch for why it exists.
+/// before [`update_atmosphere_origin`] matches it to the globe's.
+/// [`earth_inner_radius`] keeps it; see that switch for why it exists.
 const BEVY_EARTH_INNER_RADIUS: f32 = 6_360_000.0;
 
 /// Show the globe only once high enough that it's the thing you're looking at, so

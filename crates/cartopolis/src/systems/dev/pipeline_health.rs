@@ -100,7 +100,9 @@ fn watch_pipelines(cache: Res<PipelineCache>, mut frame: Local<u32>) {
     }
 
     let health = HEALTH.get_or_init(Mutex::default);
-    let mut guard = health.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = health
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Log each *new* error once, from here: bevy's own line named the shader at
     // creation time and is long gone from a phone's log ring by the time anyone
     // asks. Growth of the list is the edge; labels are stable.
