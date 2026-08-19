@@ -585,7 +585,7 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::CreatePrim {
+            session.send("create prim", NetMessage::CreatePrim {
                 request_id: 0,
                 region_id,
                 name: prim_name.clone(),
@@ -659,7 +659,7 @@ fn run_tool(
             let Some(geo) = crate::systems::prim_geo::geo_from_world(new_pos, &map_anchor) else {
                 return "Failed: world not anchored yet".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
+            session.send("update prim", NetMessage::UpdatePrim {
                 request_id: 0,
                 prim_id,
                 position: new_pos,
@@ -684,7 +684,7 @@ fn run_tool(
             let Some(session) = online else {
                 return "Failed: prims require an online session".to_string();
             };
-            let _ = session.intent_tx.unbounded_send(NetMessage::DeletePrim {
+            session.send("delete prim", NetMessage::DeletePrim {
                 request_id: 0,
                 prim_id,
             });

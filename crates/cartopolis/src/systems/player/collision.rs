@@ -369,14 +369,15 @@ pub fn sync_prop_colliders(
 /// no-go polygon that respects the building's orientation (an axis-aligned box
 /// would not).
 pub fn convex_hull_xz(mut pts: Vec<Vec2>) -> Vec<Vec2> {
+    // The points are decoded from network-fetched 3DBAG data, so a single NaN
+    // coordinate must cost that vertex, not the client — `partial_cmp().unwrap()`
+    // here was a remote panic. Non-finite points can't contribute to a hull
+    // anyway (cross products against them are NaN and poison the winding test).
+    pts.retain(|p| p.x.is_finite() && p.y.is_finite());
     if pts.len() < 3 {
         return pts;
     }
-    pts.sort_by(|a, b| {
-        a.x.partial_cmp(&b.x)
-            .unwrap()
-            .then(a.y.partial_cmp(&b.y).unwrap())
-    });
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     pts.dedup();
     if pts.len() < 3 {
         return pts;

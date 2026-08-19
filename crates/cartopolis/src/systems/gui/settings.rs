@@ -227,12 +227,13 @@ pub fn render_settings_panel(
 
     if delete_account {
         if let Some(online) = online {
-            let _ = online
-                .intent_tx
-                .unbounded_send(cartopolis_core::NetMessage::DeleteAccount {
+            online.send(
+                "delete account",
+                cartopolis_core::NetMessage::DeleteAccount {
                     request_id: crate::resources::DELETE_ACCOUNT_REQUEST,
                     password: std::mem::take(&mut state.delete_password),
-                });
+                },
+            );
         }
     }
 

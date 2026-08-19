@@ -1280,7 +1280,8 @@ pub fn render_context_menu(
                         .on_hover_text("Fire the object's on_touch handler")
                         .clicked()
                     {
-                        let _ = session.intent_tx.unbounded_send(
+                        session.send(
+                            "touch prim",
                             cartopolis_core::NetMessage::TouchPrim {
                                 request_id: 0,
                                 prim_id,
@@ -2133,7 +2134,7 @@ pub fn send_prim_mutations(
                 tracing::warn!("cannot create prim: offline or world not anchored yet");
                 return;
             };
-            let _ = sess.intent_tx.unbounded_send(NetMessage::CreatePrim {
+            sess.send("create prim", NetMessage::CreatePrim {
                 request_id: 0,
                 region_id,
                 name: dialog_state.name.clone(),
@@ -2170,7 +2171,7 @@ pub fn send_prim_mutations(
                 online.as_ref(),
                 crate::systems::prim_geo::geo_from_world(pos, &map_anchor),
             ) {
-                let _ = sess.intent_tx.unbounded_send(NetMessage::UpdatePrim {
+                sess.send("update prim", NetMessage::UpdatePrim {
                     request_id: 0,
                     prim_id,
                     position: pos,
@@ -2315,7 +2316,7 @@ pub fn send_prim_mutations(
 
     for prim_id in std::mem::take(&mut game_state.prims_to_delete) {
         if let Some(sess) = online.as_ref() {
-            let _ = sess.intent_tx.unbounded_send(NetMessage::DeletePrim {
+            sess.send("delete prim", NetMessage::DeletePrim {
                 request_id: 0,
                 prim_id,
             });

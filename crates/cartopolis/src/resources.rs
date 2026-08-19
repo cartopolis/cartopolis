@@ -1158,6 +1158,32 @@ pub struct OnlineSession {
     pub intent_tx: UnboundedSender<NetMessage>,
 }
 
+impl OnlineSession {
+    /// Send an *authoring* message — one whose loss the user would not notice
+    /// until their work is gone (a prim edit, a script save, a chat line, a
+    /// block). `unbounded_send` fails exactly when the network thread has
+    /// exited, i.e. the link already dropped and the UI hasn't caught up; the
+    /// edit was applied to local state and the next authoritative snapshot will
+    /// silently revert it. The sim's rate-limit note in `net.rs` makes the same
+    /// argument server-side: an author who is told nothing believes their work
+    /// was stored. So the failure is logged with what it was, and reported to
+    /// the caller for any UI that can say so.
+    ///
+    /// Per-frame traffic (`ClientIntent`, `ObserverUpdate`, `VoiceFrame`)
+    /// deliberately does not come through here: a dropped movement frame is
+    /// corrected by the next one, and a log line per frame during a disconnect
+    /// would be noise on top of the failure that matters.
+    pub fn send(&self, what: &'static str, msg: NetMessage) -> bool {
+        match self.intent_tx.unbounded_send(msg) {
+            Ok(()) => true,
+            Err(_) => {
+                tracing::warn!(what, "not sent: the connection is gone, so this change will not reach the server");
+                false
+            }
+        }
+    }
+}
+
 /// After the first `WorldSnapshot`, static regions/prims are not torn down each sim tick (ADR-011).
 #[derive(Resource, Default)]
 pub struct NetworkSyncState {

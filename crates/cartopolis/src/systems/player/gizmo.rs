@@ -291,7 +291,7 @@ pub fn handle_gizmo_interaction(
                 // ADR-029: persist the new position as an absolute geo anchor.
                 if let Some(geo) = crate::systems::prim_geo::geo_for(cell, transform, &map_anchor) {
                     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
-                    let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
+                    session.send("update prim", NetMessage::UpdatePrim {
                         request_id: generate_request_id(),
                         prim_id: prim.id,
                         position: transform.translation,
@@ -377,7 +377,7 @@ pub fn handle_gizmo_interaction(
         if let Some(ref session) = online_session {
             // ADR-029: reproject the dragged position back to an absolute geo anchor.
             if let Some(geo) = crate::systems::prim_geo::geo_for(cell, &transform, &map_anchor) {
-                let _ = session.intent_tx.unbounded_send(NetMessage::UpdatePrim {
+                session.send("update prim", NetMessage::UpdatePrim {
                     request_id: generate_request_id(),
                     prim_id: prim.id,
                     position: transform.translation,
