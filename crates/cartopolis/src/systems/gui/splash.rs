@@ -307,11 +307,13 @@ pub fn boot_splash(
     // The `min(22rem, 70vw)` is its sizing rule too: on a phone in portrait a
     // fixed 352 pt track runs past both margins.
     let track_w = (viewport.x * 0.7).min(352.0);
-    let track = egui::Rect::from_center_size(
-        egui::pos2(c.x, c.y + 104.0),
-        egui::vec2(track_w, TRACK_H),
+    let track =
+        egui::Rect::from_center_size(egui::pos2(c.x, c.y + 104.0), egui::vec2(track_w, TRACK_H));
+    painter.rect_filled(
+        track,
+        TRACK_H * 0.5,
+        fade(theme::SURFACE_RAISED, content, 1.0),
     );
-    painter.rect_filled(track, TRACK_H * 0.5, fade(theme::SURFACE_RAISED, content, 1.0));
     let bar = match progress.fraction {
         // A measured fill, from the left.
         Some(f) => egui::Rect::from_min_size(track.min, egui::vec2(track_w * f, TRACK_H)),
