@@ -189,6 +189,15 @@ type Lod22Build = (
     Vec<crate::systems::collision::Footprint>,
 );
 
+/// A cell taken off the stream but not fully spawned: the remaining pieces land
+/// one `stream_ledger` admission at a time, a frame apart. See the apply loop in
+/// [`update_lod22`] for why a cell may not land whole.
+struct PartialCell {
+    cell: (i64, i64),
+    grid_cell: GridCell,
+    pieces: Vec<Mesh>,
+}
+
 /// Camera-following LoD2.2 mesh streamer. Same shape as the building far-cell
 /// streamer: a worker builds one cell at a time; cells are kept while in range.
 #[derive(Resource)]
@@ -215,6 +224,10 @@ pub struct Lod22Buildings {
     /// second or two after the anchor, so the first cells are always built on flat
     /// ground and have to be rebuilt onto the measured one.
     terrain_revision: u32,
+    /// The one cell mid-application, if any. Dropped by every teardown that
+    /// drops `cells` — a parked piece from the old anchor spawning into the new
+    /// world would stand in the wrong place for the life of the ring.
+    partial: Option<PartialCell>,
 }
 
 impl Lod22Buildings {
@@ -222,7 +235,10 @@ impl Lod22Buildings {
     /// harness's settle test — these are the buildings a city shot is *of*.
     #[must_use]
     pub fn streaming_busy(&self) -> bool {
-        self.stream.busy()
+        // `partial` is the tail of a cell the stream has already been told
+        // succeeded — without this term a capture could photograph a city with
+        // three quarters of its densest cell missing and call itself settled.
+        self.stream.busy() || self.partial.is_some()
     }
 }
 
@@ -244,6 +260,7 @@ impl Default for Lod22Buildings {
             material: None,
             enabled_was: true,
             terrain_revision: 0,
+            partial: None,
         }
     }
 }
@@ -289,6 +306,7 @@ pub fn update_lod22(
         lod.no_shadow.clear();
         lod.stream.reset();
         lod.anchor = None;
+        lod.partial = None;
     }
 
     // The Layers panel's 3DBAG toggle: on the off-edge, tear down like a
@@ -308,6 +326,7 @@ pub fn update_lod22(
         colliders.clear_lod22();
         lod.no_shadow.clear();
         lod.stream.reset();
+        lod.partial = None;
     }
     lod.enabled_was = enabled;
     if !enabled {
@@ -403,85 +422,128 @@ pub fn update_lod22(
             .detach();
     }
 
-    // Apply completed cells — at most MAX_BUILDS_PER_FRAME uploads per frame; the
-    // rest go back into the sink still holding their concurrency slots.
-    let mut done = lod.stream.take_results();
-    let deferred = done.split_off(done.len().min(MAX_BUILDS_PER_FRAME));
-    lod.stream.defer(deferred);
-    for (c, built) in done {
-        match built {
-            Ok(Some((grid_cell, pieces, footprints))) => {
-                colliders.set_cell(c, footprints);
-                let material = lod
-                    .material
-                    .get_or_insert_with(|| {
-                        materials.add(StandardMaterial {
-                            base_color: Color::WHITE,
-                            perceptual_roughness: 0.95,
-                            double_sided: !BACKFACE_CULL,
-                            cull_mode: if BACKFACE_CULL {
-                                Some(bevy::render::render_resource::Face::Back)
-                            } else {
-                                None
-                            },
-                            ..default()
-                        })
-                    })
-                    .clone();
-                // One entity per piece, flat under the same root rather than a
-                // parent with children: every consumer below — the shadow-LOD
-                // toggle, `HideInSpace`, the despawn queue — acts per mesh entity,
-                // and a parent would mean each of them learning to walk children
-                // for a hierarchy with nothing else to do. A cell that fits in one
-                // piece is bit-identical to what this spawned before.
-                let entities: Vec<Entity> = pieces
-                    .into_iter()
-                    .map(|mesh| {
-                        commands
-                            .spawn((
-                                Mesh3d(meshes.add(mesh)),
-                                MeshMaterial3d(material.clone()),
-                                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
-                                grid_cell,
-                                ChildOf(root),
-                                Lod22Mesh,
-                                HideInSpace,
-                            ))
-                            .id()
-                    })
-                    .collect();
-                let pieces = entities.len();
-                // Shadow-caster state is set by the shadow-LOD pass below.
-                lod.cells.insert(c, entities);
-                lod.stream.succeeded(&c);
-                // The far tier may already hold this cell — queued before the
-                // coverage manifest loaded, or while the 3DBAG toggle was off.
-                // Evict it now that the real mesh is up, or both tiers render
-                // stacked (see `OsmBuildings::evict_far_cell`).
-                osm.evict_far_cell(c);
-                tracing::info!(
-                    cell = ?c,
-                    live = lod.cells.len(),
-                    pieces,
-                    "lod22 cell rendered"
-                );
+    // Apply completed cells — one cell in application at a time, and its pieces
+    // land **one ledger admission each, across frames**.
+    //
+    // The ledger is what the item cap could never be: this was the strictest
+    // count in the codebase at one cell per frame and still the path that handed
+    // the GPU 63 MB in a frame, because a cell is one to four 8 MB pieces and a
+    // count cannot see that. The first fix admitted a cell *whole* (summed
+    // pieces), and the ledger's first-admission rule then let a four-piece cell
+    // through as a 31 MB frame — measured, 2026-08-20, the exact assets in the
+    // `single asset above the frame upload budget` lines. The pieces were
+    // byte-bounded on the worker precisely so they would not have to land
+    // together, so now they don't: a taken cell parks in `partial`, each frame
+    // spawns the pieces the ledger admits (on the phone ceiling that is one
+    // ~8 MB piece per frame, alone), and the buildings arrive in slices a frame
+    // apart. A cell that fits in one piece — most of them — lands exactly as it
+    // always did.
+    if lod.partial.is_none() {
+        let mut done = lod.stream.take_results();
+        let deferred = done.split_off(done.len().min(MAX_BUILDS_PER_FRAME));
+        lod.stream.defer(deferred);
+        for (c, built) in done {
+            match built {
+                Ok(Some((grid_cell, pieces, footprints))) => {
+                    // The whole cell's bookkeeping lands with its first frame:
+                    // colliders are cheap CPU state (an avatar can bump into a
+                    // building a frame before it is drawn, which beats walking
+                    // through one that is), and `succeeded` marks the stream done
+                    // — the settle harness sees the tail through
+                    // `streaming_busy`'s `partial` term instead.
+                    colliders.set_cell(c, footprints);
+                    lod.stream.succeeded(&c);
+                    lod.cells.insert(c, Vec::new());
+                    lod.partial = Some(PartialCell {
+                        cell: c,
+                        grid_cell,
+                        pieces,
+                    });
+                }
+                // Empty cell; stays requested so it isn't re-queried.
+                Ok(None) => lod.stream.succeeded(&c),
+                Err(err) => {
+                    tracing::warn!(cell = ?c, error = %err, "lod22 cell failed");
+                    // Drop any cached copy. The fetch no longer validates a cache
+                    // hit by parsing it (that parse moved to a worker), so this is
+                    // what stops a corrupt entry being re-served forever: whatever
+                    // failed, the stored text is the one thing we can invalidate.
+                    // Harmless when the failure came from the network instead —
+                    // the key simply isn't there.
+                    let key = cell_cache_key(c.0, c.1);
+                    IoTaskPool::get()
+                        .spawn(
+                            async move { storage::remove(storage::Namespace::Cache, &key).await },
+                        )
+                        .detach();
+                    lod.stream.failed(&c, now); // allows a bounded re-queue later
+                }
             }
-            // Empty cell; stays requested so it isn't re-queried.
-            Ok(None) => lod.stream.succeeded(&c),
-            Err(err) => {
-                tracing::warn!(cell = ?c, error = %err, "lod22 cell failed");
-                // Drop any cached copy. The fetch no longer validates a cache hit
-                // by parsing it (that parse moved to a worker), so this is what
-                // stops a corrupt entry being re-served forever: whatever failed,
-                // the stored text is the one thing we can invalidate. Harmless
-                // when the failure came from the network instead — the key simply
-                // isn't there.
-                let key = cell_cache_key(c.0, c.1);
-                IoTaskPool::get()
-                    .spawn(async move { storage::remove(storage::Namespace::Cache, &key).await })
-                    .detach();
-                lod.stream.failed(&c, now); // allows a bounded re-queue later
+        }
+    }
+
+    // Drain the cell in application: spawn the pieces the frame's ledger admits,
+    // park the rest for the next frame.
+    if let Some(mut partial) = lod.partial.take() {
+        let material = lod
+            .material
+            .get_or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    perceptual_roughness: 0.95,
+                    double_sided: !BACKFACE_CULL,
+                    cull_mode: if BACKFACE_CULL {
+                        Some(bevy::render::render_resource::Face::Back)
+                    } else {
+                        None
+                    },
+                    ..default()
+                })
+            })
+            .clone();
+        while let Some(mesh) = partial.pieces.first() {
+            if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh))
+            {
+                break;
             }
+            let mesh = partial.pieces.remove(0);
+            // One entity per piece, flat under the same root rather than a parent
+            // with children: every consumer — the shadow-LOD toggle,
+            // `HideInSpace`, the despawn queue — acts per mesh entity, and a
+            // parent would mean each of them learning to walk children for a
+            // hierarchy with nothing else to do.
+            let mut entity = commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(Vec3::new(0.0, 0.05, 0.0)),
+                partial.grid_cell,
+                ChildOf(root),
+                Lod22Mesh,
+                HideInSpace,
+            ));
+            // A late piece of a cell the shadow-LOD pass has already pushed past
+            // SHADOW_RADIUS: the pass only acts on boundary *crossings*, so this
+            // entity must arrive already matching its cell's state.
+            if lod.no_shadow.contains(&partial.cell) {
+                entity.insert(bevy::light::NotShadowCaster);
+            }
+            let id = entity.id();
+            lod.cells.entry(partial.cell).or_default().push(id);
+        }
+        if partial.pieces.is_empty() {
+            // The far tier may already hold this cell — queued before the
+            // coverage manifest loaded, or while the 3DBAG toggle was off. Evict
+            // only now that every piece is up, or the far mesh vanishes while the
+            // real one is still arriving in slices.
+            osm.evict_far_cell(partial.cell);
+            tracing::info!(
+                cell = ?partial.cell,
+                live = lod.cells.len(),
+                pieces = lod.cells.get(&partial.cell).map_or(0, Vec::len),
+                "lod22 cell rendered"
+            );
+        } else {
+            lod.partial = Some(partial);
         }
     }
 
@@ -498,6 +560,12 @@ pub fn update_lod22(
             for e in entities {
                 lod.stream.retire(e);
             }
+        }
+        // A cell can leave the ring mid-application; its parked pieces must go
+        // with it or they keep spawning into a cell whose entities were just
+        // retired.
+        if lod.partial.as_ref().is_some_and(|p| p.cell == c) {
+            lod.partial = None;
         }
         colliders.remove_cell(c);
         lod.no_shadow.remove(&c);

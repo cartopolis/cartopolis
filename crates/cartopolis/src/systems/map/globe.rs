@@ -1349,7 +1349,12 @@ pub fn update_globe_tiles(
         // Cap decode + upload per frame; defer the rest (still counted in flight, so
         // they aren't re-fetched *and* the budget keeps bounding how many decoded
         // tiles are held) to keep the burst from overrunning the GPU timeout.
-        if built >= crate::quality::budget().per_frame(MAX_GLOBE_TILE_BUILDS_PER_FRAME) {
+        // Byte-bounded through the shared `stream_ledger` too — the imagery mip
+        // chain is the cost that matters here; the sphere-patch mesh built below
+        // is a rounding error beside it.
+        if built >= crate::quality::budget().per_frame(MAX_GLOBE_TILE_BUILDS_PER_FRAME)
+            || !crate::systems::stream_ledger::admit(tile.data.len())
+        {
             deferred.push((key, TileFetch::Ok(tile)));
             continue;
         }

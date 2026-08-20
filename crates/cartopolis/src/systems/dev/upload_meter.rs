@@ -325,7 +325,9 @@ pub fn measure_uploads(
 /// all this one, whose whole job is to survive the frame that goes wrong. The
 /// vertex count is derived here rather than through `count_vertices` for the same
 /// reason, and takes the minimum over attributes exactly as bevy does.
-fn mesh_bytes(mesh: &Mesh) -> Option<usize> {
+// `pub(crate)` for `stream_ledger::mesh_cost`: what the ledger admits and what
+// this module measures must be the same number, so there is one arithmetic.
+pub(crate) fn mesh_bytes(mesh: &Mesh) -> Option<usize> {
     let mut vertex_size = 0usize;
     let mut vertices: Option<usize> = None;
     for (attribute, values) in mesh.try_attributes().ok()? {

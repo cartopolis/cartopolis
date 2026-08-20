@@ -46,7 +46,8 @@ pub use gui::{
 };
 pub use map::{
     globe, globe_ocean, globe_weather, grass, height, lod22, map_geometry, map_stream,
-    osm_buildings, render_scale, rendering, sky, sky_dome, street_furniture, street_labels,
+    osm_buildings, render_scale, rendering, sky, sky_dome, stream_ledger, street_furniture,
+    street_labels,
     terrain, tile_loader, tile_source, vegetation, water, weather, world_places,
 };
 pub use nav::{

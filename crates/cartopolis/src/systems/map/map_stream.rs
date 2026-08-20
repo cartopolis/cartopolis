@@ -1105,19 +1105,23 @@ pub fn apply_stream_textures(
     // the whole frame's budget must still be uploaded or it is deferred forever
     // and the map never fills — the same "one whole asset per frame" rule bevy
     // itself uses, and for the same reason.
-    let ceiling = crate::quality::upload_ceiling();
+    //
+    // Through `stream_ledger` since 2026-08-20, and the difference is the word
+    // *shared*: this loop used to keep its own tally against the same ceiling,
+    // which bounded the tiles and said nothing about the frame — `lod22`, the
+    // surfaces and the far buildings each spent their own caps beside it and the
+    // frame queued 27 MB with every individual bound in force. The ledger is that
+    // tally lifted out to where every streamer draws from it.
     let mut take = 0usize;
-    let mut queued = 0usize;
     for (_, outcome) in ready.iter() {
         if take >= uploads {
             break;
         }
         let cost = outcome.as_ref().map_or(0, |tile| tile.data.len());
-        if take > 0 && ceiling.is_some_and(|max| queued + cost > max) {
+        if !crate::systems::stream_ledger::admit(cost) {
             break;
         }
         take += 1;
-        queued += cost;
     }
 
     let deferred = ready.split_off(take);

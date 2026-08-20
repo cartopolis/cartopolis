@@ -2567,6 +2567,12 @@ fn run_client() {
         // archetypes at all, and the phone is the platform whose bursts it names.
         .add_systems(Last, systems::upload_meter::measure_uploads)
         .init_resource::<systems::upload_meter::UploadMeter>()
+        // The meter's enforcement half: fund the frame's shared finalisation
+        // budget before any streamer runs, so what they collectively hand the
+        // GPU per frame is bounded once rather than per streamer — see
+        // `systems::stream_ledger` for why the per-streamer caps alone still
+        // queued 27 MB frames.
+        .add_systems(First, systems::stream_ledger::open_frame)
         // Drawn over everything until the first tiles are up. Mirrors the
         // splash in index.html, which covers the wasm load this cannot.
         .init_resource::<systems::splash::BootSplash>()
