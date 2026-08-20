@@ -373,12 +373,35 @@ pub mod palette {
     /// geometry stops and this paint takes over. That edge is only invisible if
     /// the two agree. They used to disagree by almost the whole value range —
     /// pale `#A8C4DA` paint meeting water shaded from a near-black albedo — and
-    /// it read as a bright cut straight across every lake. Sampled from a render,
-    /// the shaded surface sits around `#36495C`–`#415462`; this is picked to land
-    /// there once the sun has been on it.
+    /// it read as a bright cut straight across every lake.
+    ///
+    /// **Both sides of that comparison have to be *rendered* ones, and until
+    /// 2026-08-20 only one of them was.** The value was picked to land on the
+    /// water surface's shaded tone (`#36495C`–`#415462`, sampled from a render) —
+    /// but this is an albedo as well, painted into a tile texture that is then lit
+    /// by the same sun on a `perceptual_roughness: 1.0`, `reflectance: 0.0`
+    /// ground quad. So the paint got the sunlight *too*, and arrived on screen
+    /// well above the tone it had been matched to. The step came back, quietly,
+    /// as a brighter sea outside the vector ring than inside it — which is what a
+    /// square of darker water in the middle of the screen is, and it is visible on
+    /// a phone at any oblique angle because the ring's far edge crosses the view.
+    ///
+    /// Measured at 53.07,5.34 from 12 km (nadir, 900×1900, `--shot-mode earth`,
+    /// same frame so the lighting is common to both): the ring's water rendered
+    /// `#425F7F` and the paint beside it `#5A7690` — a 24-level luminance step,
+    /// not the "residual blue cast" this comment used to promise. This value is
+    /// that measurement carried back through the ground quad's own lighting, so
+    /// the two now agree *on screen* rather than one of them agreeing with the
+    /// other's albedo.
     ///
     /// So this is not a free colour choice: move `water::WATER_ALBEDO` and this
-    /// has to move with it.
+    /// has to move with it — and re-sample **both** tones out of one frame, never
+    /// this constant against a render of that one.
+    ///
+    /// The container's software rasteriser is trustworthy for the *step* (one
+    /// frame, one light, two materials) and not for the absolute tone, so the
+    /// direction and rough size of this move are measured and the last few levels
+    /// want an eye on real hardware.
     ///
     /// It is pulled the other way too, and that one is silent. On a *raster*
     /// basemap the globe has no geometry to ask, so it decides what is ocean by
@@ -388,7 +411,7 @@ pub mod palette {
     /// and this value is where the two settle — the residual blue cast at the ring
     /// edge is the price. `tile_loader`'s
     /// `the_basemaps_water_paint_reads_as_fully_water` holds the line.
-    pub const WATER: u32 = 0x3E_5A_70;
+    pub const WATER: u32 = 0x2C_48_62;
     pub const FOREST: u32 = 0xC3_D3_BB;
     pub const GRASS: u32 = 0xD2_DE_C6;
     /// Canopy tone: one step down the [`FOREST`] hue ramp. The map is pale

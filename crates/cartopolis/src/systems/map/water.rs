@@ -51,7 +51,45 @@ use crate::systems::weather::WeatherState;
 /// because the vector surfaces only stream in a ring around the camera and the
 /// paint has to take over at its edge without a step. Changing this means
 /// re-sampling a render and moving the palette entry to wherever it lands.
-const WATER_ALBEDO: Color = Color::srgb(0.06, 0.16, 0.21);
+///
+/// **Sample the paint from the same frame, not from its constant.** The palette
+/// entry is an albedo too — it is painted into a tile texture and then lit — so
+/// comparing this surface's *render* against that constant's *value* compares two
+/// different spaces and lets a step open up that neither number admits to. That
+/// is exactly what had happened by 2026-08-20; see the palette entry for the
+/// measurement.
+///
+/// # Neither end of this can close the gap alone, and that is measured
+///
+/// The reconciliation has to be split across both constants, because each one is
+/// a weak lever on the thing being matched and a strong lever on the thing it
+/// exists for. Sampled at 53.07,5.34 from 12 km, ring water against the paint
+/// beside it in the same frame:
+///
+/// | change | rendered step (R,G,B levels) |
+/// |---|---|
+/// | as it stood | 23, 24, 16 |
+/// | paint `#3E5A70` → `#2C4862` | 12, 14, 12 |
+/// | + this `0.06,0.16,0.21` → `0.12,0.24,0.30` | **8, 9, 9** |
+///
+/// **Doubling this constant moved the render by four levels.** That is not a
+/// disappointment, it is the design working: the paragraph above says most of
+/// what you see is reflected, and a surface dominated by its reflection barely
+/// responds to its albedo. Reaching the paint from this side alone would need a
+/// pale-pond albedo that the fresnel would then blow out at grazing angles.
+/// Reaching it from the paint's side alone is worse and is a hard stop, not a
+/// judgement: the required ink is near-black, and `tile_loader::WATER_BLUE_BIAS`
+/// needs the paint at least 40 bluer than it is red or the globe's raster oceans
+/// classify as land. So both moved, modestly, and both stayed inside what they
+/// are for.
+///
+/// The residual 8–9 levels are not closable by constants at all — the surface
+/// reflects *this* sky and the paint does not, so any single pair of numbers is
+/// matched at one time of day and drifts at every other. Closing it properly
+/// means the ring's edge stops being a hard line (fading the water surface out
+/// over its last cell), which is a change to the surface build and the shader,
+/// not to a colour.
+const WATER_ALBEDO: Color = Color::srgb(0.12, 0.24, 0.30);
 
 /// Wind speed (m/s) at which the wave shaping is fully "blown up" — beyond this
 /// the sea state stops growing. Roughly Beaufort 6.
