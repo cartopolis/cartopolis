@@ -560,8 +560,10 @@ fn offer_last_crash() {
 /// recorded once rather than on every frame for the rest of the run.
 static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// What to do about a `RenderError`. **Never end the app** — halt the renderer,
-/// keep the process alive, and leave an explanation the next launch can share.
+/// What to do about a `RenderError`. **Never let bevy end the app** — halt the
+/// renderer, leave an explanation the next launch can share, and then decide for
+/// ourselves whether staying up is worth anything ([`exit_on_halt`]: on a phone it
+/// is not, and the process leaves deliberately with its report already written).
 ///
 /// Bevy's default handler writes `AppExit::error()` on any `RenderError`, and its
 /// own comment calls that overzealous. It cost this project a day: the first phone
@@ -595,20 +597,24 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 ///   SIGABRT again.
 ///
 /// Both are `panic!`/`expect` inside wgpu-hal, on the render thread, and neither is
-/// ours to catch. The second one is the deeper lesson: this handler runs **inside
-/// the render schedule, mid-frame**, and a swapchain image acquired for that frame
-/// is still referenced by bevy's view targets and by wgpu's own presentation state.
-/// There is no point in there at which a surface can be torn down safely, so
-/// "release the surface first" is not a fix with a bug in it — it is the wrong
-/// shape. Doing this properly means deferring the rebuild to a frame boundary,
-/// which is upstream's job (`RenderErrorPolicy::Recover` is supposed to *be* that
-/// affordance) and not something to reimplement from the error handler.
+/// ours to catch. The second one is the deeper lesson, and it took a third attempt
+/// and a reading of the wgpu sources to state correctly: **after a device loss the
+/// acquired swapchain image can no longer be released by anybody**, because
+/// `wgpu-core`'s `Surface::discard` is gated on `check_is_valid()` and a lost
+/// device never is. So it is not that a surface cannot be torn down safely at this
+/// point in the frame — it is that it cannot be torn down safely ever again, at
+/// any point, for the rest of the process. [`abandon_lost_surface`] has the code
+/// and the citation. Recovery is upstream's job (`RenderErrorPolicy::Recover` is
+/// supposed to *be* that affordance) and is not something to reimplement from the
+/// error handler.
 ///
 /// So the policy is one line again, and the trade is stated rather than hidden: a
-/// transient device loss now costs the session instead of being ridden out. It
-/// costs a **restart**, where recovering cost a **crash**, and a frozen picture
-/// that explains itself is strictly better than an abort that does not. If bevy or
-/// wgpu grow a recovery that survives an Android surface, this is the function to
+/// transient device loss costs the session instead of being ridden out. It costs a
+/// **restart**, where recovering cost a **crash**. What has changed since that was
+/// first written is only what "costs a restart" is allowed to look like: not a
+/// frozen picture the user has to force-close and then a tombstone when they do,
+/// but the app leaving on its own with the report already saved. If bevy or wgpu
+/// grow a recovery that survives an Android surface, this is the function to
 /// revisit — and the way to know it works is the device, not this file.
 ///
 /// **A halt is recorded, not just logged.** The point of the whole crash-reporter
@@ -634,71 +640,105 @@ fn handle_render_error(
             "render error — halting the renderer, keeping the app alive"
         );
         record_render_halt(error);
-        release_halted_frame(render_world);
+        abandon_lost_surface(render_world);
+        exit_on_halt();
     }
     bevy::render::error_handler::RenderErrorPolicy::StopRendering
 }
 
-/// Give back the swapchain image the halted frame was holding.
+/// End the process on a halt, on the one platform where staying up is worse.
 ///
-/// **A halt is terminal, and until now it also left the app unable to be put in
-/// the background.** `StopRendering` skips the whole `Render` schedule from here
-/// on, and *presenting* is a system inside it (`renderer::render_system`), so the
-/// image `prepare_windows` acquired for the frame that failed is never presented
-/// and never dropped — it just sits in `ExtractedWindows`, with views of it in
-/// each `ViewTarget` and in `ViewTargetAttachments`, which the same halt stops
-/// anything from clearing. Extraction keeps running, so the moment Android
-/// suspends and `bevy_winit` removes the window's `RawHandleWrapper`,
-/// `extract_windows` drops the surface — and wgpu-hal's swapchain teardown is an
-/// `Arc::into_inner(…).expect("Trying to destroy a SwapchainAcquireSemaphore that
-/// is still in use by a SurfaceTexture")`. SIGABRT, on the render thread, out of
-/// our reach. That is the 2026-08-19 OnePlus 15 report: device lost at 23:38:15,
-/// frozen picture as designed, then an abort at 23:38:40 the instant the app was
-/// backgrounded.
+/// The halt is terminal — nothing is drawn again for the life of the process —
+/// so what "keeping the app alive" buys a phone is a picture that answers no
+/// input and has to be force-closed, with the explanation in a `logcat` nobody
+/// can read. That was still the better half of the trade while the alternative
+/// was an abort; it is not the better half of the trade against a deliberate
+/// exit that has already written its report, which the next launch hands to the
+/// share sheet (`offer_last_crash`).
 ///
-/// So the frame is released here, once, at the halt. **This is not the recovery
-/// that was tried and abandoned twice** (`docs/notes/android-build.md`): nothing
-/// is rebuilt and the surface is not touched — the surface's *tenant* is evicted,
-/// which is the one thing that has to happen before somebody else tears it down.
-/// Every holder must go together or the release is a no-op: an `Arc` kept by a
-/// stale `ViewTarget` is as good as the one in the window.
+/// There is a second reason and it is not a preference. A lost device makes every
+/// render system's next `Buffer::get_mapped_range` a validation failure, and some
+/// of those run on `AsyncComputeTaskPool` threads out of reach of this handler —
+/// two of the four tombstones from the night of 2026-08-19 are that abort, not
+/// the swapchain one. Staying up after a halt means waiting to see which of them
+/// arrives first. Leaving promptly is the only thing that shortens that window.
 ///
-/// Safe to do from inside the render schedule precisely because rendering is over:
-/// every system that reads a `ViewTarget` lives in the schedule this policy stops.
+/// `process::exit` and not an `AppExit`: an orderly shutdown *runs the Vulkan
+/// teardown*, which is the thing [`abandon_lost_surface`] exists to make sure
+/// nobody does. Exiting the process runs no destructors, so there is nothing left
+/// to abort in. Status 0 because this is a decision rather than a fault —
+/// ActivityManager files it as an ordinary exit instead of `CRASH_NATIVE`.
 ///
-/// **Verified against the crash report and the sources, not against the device.**
-/// No harness here loses a Vulkan device — lavapipe does not, and the VPS emulator
-/// is SwiftShader — so what is confirmed is the mechanism (bevy 0.19's present
-/// lives in the gated schedule; wgpu-hal 29 asserts on an outstanding acquire
-/// semaphore) and not the outcome. The measurement is a phone: halt the renderer,
-/// background the app, and look for a tombstone that no longer arrives.
-fn release_halted_frame(render_world: &mut World) {
-    use bevy::render::view::{ViewTarget, ViewTargetAttachments};
+/// Desktop deliberately keeps the frozen picture: the explanation is already on
+/// the terminal the app was started from, and a developer may want to look at the
+/// window rather than have it vanish.
+#[cfg(target_os = "android")]
+fn exit_on_halt() -> ! {
+    tracing::error!("halted renderer is terminal — exiting rather than holding a frozen screen");
+    std::process::exit(0)
+}
 
-    let mut released = 0usize;
-    if let Some(mut windows) = render_world.get_resource_mut::<bevy::render::view::ExtractedWindows>()
-    {
-        for window in windows.windows.values_mut() {
-            released += usize::from(window.swap_chain_texture.is_some());
-            window.swap_chain_texture = None;
-            window.swap_chain_texture_view = None;
-        }
-    }
-    if let Some(mut attachments) = render_world.get_resource_mut::<ViewTargetAttachments>() {
-        attachments.clear();
-    }
-    let views: Vec<Entity> = render_world
-        .query_filtered::<Entity, With<ViewTarget>>()
-        .iter(render_world)
-        .collect();
-    for view in &views {
-        render_world.entity_mut(*view).remove::<ViewTarget>();
-    }
+#[cfg(not(target_os = "android"))]
+fn exit_on_halt() {}
+
+/// Make sure nobody ever tears down the swapchain this halt has stranded.
+///
+/// **The previous version of this tried to hand the frame back, and could not.**
+/// It cleared every holder bevy has — `ExtractedWindows::swap_chain_texture`, the
+/// `ViewTarget`s, `ViewTargetAttachments` — on the reasoning that the acquired
+/// image was stuck in the render world because `StopRendering` skips the system
+/// that presents. All true, and it changed nothing: the OnePlus 15 aborted with
+/// the same `Trying to destroy a SwapchainAcquireSemaphore that is still in use
+/// by a SurfaceTexture` on the next background, from a build that contained the
+/// fix. The holder was never ours.
+///
+/// ```text
+/// // wgpu-core-29.0.4/src/present.rs — Surface::discard()
+/// let device = &present.device;
+/// device.check_is_valid()?;                      // Err(DeviceError::Lost)
+/// let texture = present.acquired_texture.take()… // never reached
+/// ```
+///
+/// Dropping a `SurfaceTexture` that was never presented calls `discard`, and
+/// `discard` refuses to run on a lost device — so the raw texture, and the
+/// `Arc<Mutex<SwapchainAcquireSemaphore>>` clone it carries, stays parked in
+/// `present.acquired_texture` for good. Whatever destroys the swapchain
+/// afterwards then walks into
+/// `Arc::into_inner(semaphore).expect("Trying to destroy a
+/// SwapchainAcquireSemaphore…")` in `wgpu-hal`'s `NativeSwapchain::release_resources`.
+/// `NativeSwapchain::discard_texture` is still `// TODO: Current implementation
+/// no-ops`, and **wgpu trunk past 30.0.0 still has the `check_is_valid` gate**, so
+/// this is not a version to upgrade out of. Upstream: bevyengine/bevy#24722
+/// reports the same panic on desktop Vulkan.
+///
+/// A device loss therefore leaves an acquire semaphore that *cannot* be released
+/// by anyone. The only move left is to make sure nothing ever tries: take
+/// `WindowSurfaces` out of the render world and leak it, so no `wgpu::Surface`
+/// here is ever dropped and `release_resources` is never reached — not when
+/// Android suspends and `extract_windows` drops the surface, and not at shutdown.
+///
+/// Leaking is the honest word and the cost is nil: the renderer is halted for the
+/// life of the process, the process is going away
+/// ([`exit_on_halt`] on Android), and the alternative to holding a few Vulkan
+/// objects that can no longer be destroyed is a SIGABRT. The one thing it must not
+/// become is a leak on a *live* device — hence the single call site, inside the
+/// first-halt branch.
+///
+/// **Reasoned from the wgpu sources, not measured.** Nothing here can lose a
+/// Vulkan device — lavapipe does not and the VPS emulator is SwiftShader — so what
+/// is established is the mechanism, in code that is quoted above and readable in
+/// the registry. The measurement is a phone: lose the device, background the app,
+/// and look for a tombstone that no longer arrives.
+fn abandon_lost_surface(render_world: &mut World) {
+    let Some(surfaces) = render_world.remove_resource::<bevy::render::view::WindowSurfaces>() else {
+        tracing::warn!("no WindowSurfaces to abandon at the halt — nothing held a swapchain");
+        return;
+    };
+    // Not `drop`. See above: dropping is the thing that aborts.
+    std::mem::forget(surfaces);
     tracing::warn!(
-        frames = released,
-        views = views.len(),
-        "released the halted frame's swapchain image — a suspend after this must not \
-         abort in wgpu's swapchain teardown"
+        "abandoned the window surfaces — a lost device cannot release its acquired \
+         swapchain image, so nothing may destroy the swapchain that holds it"
     );
 }
 
