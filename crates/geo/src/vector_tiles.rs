@@ -2100,6 +2100,19 @@ pub fn extract_street_labels(tile: &TileData, tile_m: f32) -> Result<Vec<StreetL
 
     let mut out = Vec::new();
     for feature in features {
+        // A tunnel's name is not written on the ground above it, for exactly the
+        // reason its carriageway is not drawn there (`drawn_street`): the label
+        // would be laid across whatever genuinely *is* up there — the junction the
+        // tunnel passes under, or the park it runs beneath. Shortbread puts `tunnel`
+        // on `street_labels` as well as on `streets`, so this costs nothing.
+        //
+        // There is no matching rule for a bridge, and it is not an oversight:
+        // `street_labels` carries no `bridge` attribute (checked 2026-08-20 on the
+        // Groningen fixture), so a name on a viaduct cannot be told from one on the
+        // road underneath it. See `docs/notes/grade-separation.md`.
+        if flag_of(feature, "tunnel") {
+            continue;
+        }
         let Some(name) = str_prop(feature, "name").filter(|n| !n.is_empty()) else {
             continue;
         };
@@ -3542,6 +3555,89 @@ mod tests {
         for size in [TILE_PX, TILE_PX / 2, 128] {
             let mask = ocean_mask_sized(&tile, SubTile::WHOLE, size).expect("mask");
             assert_eq!(mask.len() as u32, size * size, "mask size {size} is wrong");
+        }
+    }
+
+    /// A tunnel's name must not be written on the ground over it.
+    ///
+    /// Same rule the carriageway already follows (`drawn_street`) and the same
+    /// consequence for missing it: the label lands across whatever genuinely *is* up
+    /// there — the junction the tunnel passes under, the park it runs beneath.
+    ///
+    /// Asserted on geometry rather than on names, because Shortbread merges by
+    /// attribute and a street with a tunnel section keeps a *separate* surface
+    /// feature under the same name — the fixture has nine tunnel-flagged label
+    /// features and not one name that is tunnel-only. So "Kastanjelaan is not
+    /// labelled" is the wrong claim; "nothing is labelled along the buried stretch
+    /// of it" is the right one.
+    ///
+    /// There is no matching rule for bridges, and that is not an oversight:
+    /// `street_labels` carries no `bridge` attribute (checked 2026-08-20 on this
+    /// fixture), so a name on a viaduct cannot be told from one on the road beneath.
+    /// `docs/notes/grade-separation.md` has it.
+    #[test]
+    fn a_tunnel_gets_no_street_label_along_its_buried_stretch() {
+        const TILE_M: f32 = 1500.0;
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse");
+        let meta = tile.layer("street_labels").expect("street_labels layer");
+        let scale = TILE_M / TileData::extent(meta);
+
+        // A point in the middle of each tunnel run, in the metres frame the output
+        // uses.
+        let mut probes: Vec<(String, [f32; 2])> = Vec::new();
+        for f in tile.features(meta) {
+            if !flag_of(f, "tunnel") {
+                continue;
+            }
+            let Some(name) = str_prop(f, "name").filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
+            match &f.geometry {
+                Geometry::LineString(ls) => lines.push(ls),
+                Geometry::MultiLineString(mls) => lines.extend(mls.iter()),
+                _ => continue,
+            }
+            for ls in lines {
+                // The midpoint of the middle *segment*, never a vertex. A vertex
+                // would routinely be the tunnel's portal, which the surface run of
+                // the same street shares — and a probe sitting on a shared node
+                // reports a hit of exactly 0.0 m against a label that is correctly
+                // drawn.
+                if ls.0.len() < 2 {
+                    continue;
+                }
+                let m = (ls.0.len() - 1) / 2;
+                let (a, b) = (ls.0[m], ls.0[m + 1]);
+                probes.push((
+                    name.to_string(),
+                    [(a.x + b.x) * 0.5 * scale, (a.y + b.y) * 0.5 * scale],
+                ));
+            }
+        }
+        assert!(
+            !probes.is_empty(),
+            "the fixture carries no named tunnel label — this test proves nothing, \
+             and a source that stopped shipping `tunnel` on `street_labels` would \
+             look exactly like this"
+        );
+
+        // Half the simplification tolerance: a surviving label vertex lands within a
+        // few metres of the centre line it came from, and nothing else on the map is
+        // that close to a tunnel's midpoint while carrying the tunnel's own name.
+        let near_m = LABEL_SIMPLIFY_M * 0.5;
+        let drawn = super::extract_street_labels(&tile, TILE_M).expect("extract");
+        for (name, probe) in &probes {
+            for line in drawn.iter().filter(|l| &l.name == name) {
+                for p in &line.points {
+                    let d = ((p[0] - probe[0]).powi(2) + (p[1] - probe[1]).powi(2)).sqrt();
+                    assert!(
+                        d > near_m,
+                        "{name} is labelled {d:.1} m from the middle of its own \
+                         tunnel run — the buried stretch was drawn on the surface"
+                    );
+                }
+            }
         }
     }
 
