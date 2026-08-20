@@ -424,6 +424,12 @@ struct BuiltPatch {
     detail: Vec<Mesh>,
     /// Window quads per glow bucket (indexes `WINDOW_GLOW_MULT`).
     windows: [Option<Mesh>; 4],
+    /// Whether the patch swap — retire the old patch, publish footprints —
+    /// already ran. The patch is applied **piece-wise across frames** (each
+    /// piece asks `stream_ledger` for its bytes), so the apply site re-enters
+    /// with the same patch until `detail` and `windows` are drained, and the
+    /// swap must happen exactly once, with the first admitted piece.
+    swap_done: bool,
 }
 
 /// Camera-following building patch: re-fetched from Overpass when the camera
@@ -1039,6 +1045,7 @@ pub fn update_buildings(
                             // pieces should stress the uploader equally.
                             detail: bld.into_meshes(crate::systems::lod22::max_cell_mesh_bytes()),
                             windows: wins.map(MeshData::into_mesh),
+                            swap_done: false,
                         }
                     });
                     if let Ok(mut g) = slot.lock() {
@@ -1163,7 +1170,32 @@ pub fn update_buildings(
             .chain(osm.far_tdbag.take_results().into_iter().map(|r| (true, r)))
             .collect();
         let cap = crate::quality::budget().per_frame(MAX_FAR_BUILDS_PER_FRAME);
-        let deferred = done.split_off(done.len().min(cap));
+        // …and byte-bounded by the shared `stream_ledger`, because a merged far
+        // cell is a whole CACHE_ZOOM tile of extruded buildings and two of them
+        // beside a LoD2.2 cell and a tile batch is the stacked burst the ledger
+        // exists to spread.
+        let mut take = 0usize;
+        for (_, (_, built)) in &done {
+            if take >= cap {
+                break;
+            }
+            let cost = match built {
+                Ok(Some((_, mesh, windows))) => {
+                    crate::systems::stream_ledger::mesh_cost(mesh)
+                        + windows
+                            .iter()
+                            .flatten()
+                            .map(crate::systems::stream_ledger::mesh_cost)
+                            .sum::<usize>()
+                }
+                _ => 0,
+            };
+            if !crate::systems::stream_ledger::admit(cost) {
+                break;
+            }
+            take += 1;
+        }
+        let deferred = done.split_off(take);
         // Each deferred result goes back to the lane it came from — they are two
         // independent `CellStream`s, and a result returned to the wrong one would
         // release a concurrency slot that was never taken while holding one that
@@ -1286,46 +1318,89 @@ pub fn update_buildings(
         }
     }
 
-    // --- Detail patch: apply a completed fetch+build ---
+    // --- Detail patch: apply a completed fetch+build, piece-wise ---
+    //
+    // The patch is the largest single thing this client finalises, and its
+    // pieces were byte-bounded on the worker precisely so it would not have to
+    // land whole — then this site spawned every piece in one frame anyway, and
+    // the first ledger-instrumented capture measured that frame at 63 MB. So it
+    // is applied **across frames** now: each piece asks the shared
+    // `stream_ledger` for its own bytes, what is admitted spawns, and the rest
+    // parks back in the fetch slot for the next frame. `in_flight` stays true
+    // until the patch is drained, which is correct twice over: no new fetch
+    // starts under a partially-applied patch, and the settle harness keeps
+    // counting it as work in progress — a capture cannot photograph half a city
+    // and call itself settled.
     let ready = osm.fetch.lock().ok().and_then(|mut g| g.take());
     let Some(result) = ready else {
         return;
     };
-    osm.in_flight = false;
-    let patch = match result {
+    let mut patch = match result {
         Ok(p) => p,
         Err(e) => {
+            osm.in_flight = false;
             tracing::error!(error = %e, "OSM buildings fetch failed");
             return;
         }
     };
-    // The patch swap, and the last inline mass-despawn in this module. The
-    // outgoing patch is a merged mesh over up to several thousand buildings; the
-    // incoming one is uploaded in this same frame a few lines below, so freeing
-    // the old one inline put an unbounded free and a multi-megabyte upload in one
-    // command buffer — the shape CLAUDE.md names as the original
-    // `VK_ERROR_DEVICE_LOST` trigger.
-    let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
-    osm.far.retire_all(retired);
+    // Detail pieces first, windows only once every piece is placed — windows are
+    // quads 6 cm proud of facades, and glass floating where its building has not
+    // landed yet reads as a glitch.
+    let mut admitted: Vec<Mesh> = Vec::new();
+    while let Some(mesh) = patch.detail.first() {
+        if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh)) {
+            break;
+        }
+        admitted.push(patch.detail.remove(0));
+    }
+    let mut admitted_windows: [Option<Mesh>; 4] = [None, None, None, None];
+    if patch.detail.is_empty() {
+        for (i, slot) in patch.windows.iter_mut().enumerate() {
+            let Some(mesh) = slot else { continue };
+            if !crate::systems::stream_ledger::admit(crate::systems::stream_ledger::mesh_cost(mesh))
+            {
+                break;
+            }
+            admitted_windows[i] = slot.take();
+        }
+    }
+    let drained = patch.detail.is_empty() && patch.windows.iter().all(Option::is_none);
+    if admitted.is_empty() && admitted_windows.iter().all(Option::is_none) && !drained {
+        // Nothing fit beside what already landed this frame — park and retry.
+        if let Ok(mut g) = osm.fetch.lock() {
+            *g = Some(Ok(patch));
+        }
+        return;
+    }
+    if !patch.swap_done {
+        patch.swap_done = true;
+        // The patch swap, once, with the first admitted piece — and the last
+        // inline mass-despawn in this module: the outgoing patch is a merged
+        // mesh over up to several thousand buildings, and freeing it beside an
+        // unbounded upload was the original `VK_ERROR_DEVICE_LOST` shape
+        // CLAUDE.md documents. (The retire goes through the bounded queue; the
+        // upload half is what the ledger now spreads.)
+        let retired: Vec<Entity> = osm.detail_entities.drain(..).collect();
+        osm.far.retire_all(retired);
+        osm.buildings = std::mem::take(&mut patch.buildings); // footprints, kept
+                                                              // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
+                                                              // collision. `ax/ay/z/tile_m` are the anchor established above, so these
+                                                              // land in the same frame as the avatar's absolute position.
+        let detail_fps = osm
+            .buildings
+            .iter()
+            .filter_map(|b| {
+                let ring: Vec<Vec2> = b
+                    .ring
+                    .iter()
+                    .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
+                    .collect();
+                crate::systems::collision::Footprint::new(ring)
+            })
+            .collect();
+        colliders.set_detail(detail_fps);
+    }
     let patch_cell = patch.patch_cell;
-    let count = patch.buildings.len();
-    osm.buildings = patch.buildings; // retain footprints for future per-building conversion
-                                     // Publish footprints (exact OSM rings → world-XZ polygons) for avatar
-                                     // collision. `ax/ay/z/tile_m` are the anchor established above, so these land
-                                     // in the same frame as the avatar's absolute position.
-    let detail_fps = osm
-        .buildings
-        .iter()
-        .filter_map(|b| {
-            let ring: Vec<Vec2> = b
-                .ring
-                .iter()
-                .map(|&(la, lo)| lat_lng_to_local(la, lo, ax, ay, z, tile_m))
-                .collect();
-            crate::systems::collision::Footprint::new(ring)
-        })
-        .collect();
-    colliders.set_detail(detail_fps);
     spawn_detail_patch(
         &mut commands,
         &mut meshes,
@@ -1333,10 +1408,15 @@ pub fn update_buildings(
         &mut osm,
         root,
         patch_cell,
-        patch.detail,
-        patch.windows,
+        admitted,
+        admitted_windows,
     );
-    tracing::info!(count, "buildings updated");
+    if drained {
+        osm.in_flight = false;
+        tracing::info!(count = osm.buildings.len(), "buildings updated");
+    } else if let Ok(mut g) = osm.fetch.lock() {
+        *g = Some(Ok(patch));
+    }
 }
 
 /// A far cell's built output: its BigSpace grid cell, the merged building mesh,

@@ -719,15 +719,37 @@ pub fn update_map_surfaces(
         spawn_geometry_task(c, tile_m, template.clone(), wants, sink.clone());
     }
 
-    // 3. Upload finished tessellations, capped per frame; the rest go back into
-    // the sink (still holding their concurrency slots, so the bound keeps bounding
-    // memory as well as work).
+    // 3. Upload finished tessellations, capped per frame and byte-bounded by the
+    // shared `stream_ledger` (a planted cell's canopy meshes are the second
+    // largest thing on the startup frame after a LoD2.2 cell); the rest go back
+    // into the sink (still holding their concurrency slots, so the bound keeps
+    // bounding memory as well as work). Priced by the same `VERTEX_BYTES`
+    // arithmetic `build_mesh` below makes true — every gap the tessellator left
+    // is filled to that layout before the GPU sees it.
     let mut ready = surfaces.stream.take_results();
-    let deferred = ready.split_off(
-        ready
-            .len()
-            .min(crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME)),
-    );
+    let cap = crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME);
+    let mut take = 0usize;
+    for (_, (outcome, ..)) in &ready {
+        if take >= cap {
+            break;
+        }
+        let cost = outcome.as_ref().map_or(0, |surface_meshes| {
+            surface_meshes
+                .iter()
+                .map(|sm| {
+                    crate::systems::vector_tiles::mesh_upload_bytes(
+                        sm.positions.len(),
+                        sm.indices.len(),
+                    )
+                })
+                .sum()
+        });
+        if !crate::systems::stream_ledger::admit(cost) {
+            break;
+        }
+        take += 1;
+    }
+    let deferred = ready.split_off(take);
     surfaces.stream.defer(deferred);
     for (c, (outcome, shore, decks, street_names, cell_places, grass)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
@@ -758,9 +780,7 @@ pub fn update_map_surfaces(
         stores.places.insert_cell(c, wx, wz, cell_places);
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {
-            stores
-                .grass
-                .insert_cell(c, Vec2::new(wx, wz), tile_m, area);
+            stores.grass.insert_cell(c, Vec2::new(wx, wz), tile_m, area);
         }
 
         // One water material per cell — it carries that cell's shore field, so it
@@ -1442,8 +1462,16 @@ mod tests {
             }],
         );
 
-        assert_eq!(plates.lift_at(Vec2::new(1020.0, 2020.0)), 6.0, "on the deck");
-        assert_eq!(plates.lift_at(Vec2::new(1050.0, 2020.0)), 0.0, "past its end");
+        assert_eq!(
+            plates.lift_at(Vec2::new(1020.0, 2020.0)),
+            6.0,
+            "on the deck"
+        );
+        assert_eq!(
+            plates.lift_at(Vec2::new(1050.0, 2020.0)),
+            0.0,
+            "past its end"
+        );
         assert_eq!(
             plates.lift_at(Vec2::new(20.0, 20.0)),
             0.0,

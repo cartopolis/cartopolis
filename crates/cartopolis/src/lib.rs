@@ -2096,8 +2096,7 @@ fn run_client() {
                 // wind. After the surface build, which is what fills the per-cell
                 // grass areas it plants into — a frame's lag there is a frame of
                 // bare ground on a cell that just streamed in.
-                systems::grass::update_grass
-                    .after(systems::map_geometry::update_map_surfaces),
+                systems::grass::update_grass.after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the
@@ -2567,6 +2566,12 @@ fn run_client() {
         // archetypes at all, and the phone is the platform whose bursts it names.
         .add_systems(Last, systems::upload_meter::measure_uploads)
         .init_resource::<systems::upload_meter::UploadMeter>()
+        // The meter's enforcement half: fund the frame's shared finalisation
+        // budget before any streamer runs, so what they collectively hand the
+        // GPU per frame is bounded once rather than per streamer — see
+        // `systems::stream_ledger` for why the per-streamer caps alone still
+        // queued 27 MB frames.
+        .add_systems(First, systems::stream_ledger::open_frame)
         // Drawn over everything until the first tiles are up. Mirrors the
         // splash in index.html, which covers the wasm load this cannot.
         .init_resource::<systems::splash::BootSplash>()

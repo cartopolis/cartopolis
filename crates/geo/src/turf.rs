@@ -297,11 +297,7 @@ pub fn mask_field(
                 let (lx, lz) = (wx - c.origin[0], wz - c.origin[1]);
                 // A cell only answers for its own ground; asking a neighbour about
                 // a point outside it would read its buckets at a negative index.
-                lx >= 0.0
-                    && lz >= 0.0
-                    && lx < c.tile_m
-                    && lz < c.tile_m
-                    && c.area.plantable(lx, lz)
+                lx >= 0.0 && lz >= 0.0 && lx < c.tile_m && lz < c.tile_m && c.area.plantable(lx, lz)
             }) {
                 cover[k] = u8::MAX;
             }
@@ -404,7 +400,10 @@ mod tests {
     ));
 
     fn fixture() -> (TileData, f32) {
-        (TileData::parse(GRONINGEN_Z14).expect("fixture parses"), 1500.0)
+        (
+            TileData::parse(GRONINGEN_Z14).expect("fixture parses"),
+            1500.0,
+        )
     }
 
     #[test]
@@ -566,7 +565,10 @@ mod tests {
             }
         }
         assert!(sampled > 0, "the fixture has water polygons");
-        assert_eq!(on_water, 0, "{on_water} of {sampled} water points grew grass");
+        assert_eq!(
+            on_water, 0,
+            "{on_water} of {sampled} water points grew grass"
+        );
     }
 
     #[test]
