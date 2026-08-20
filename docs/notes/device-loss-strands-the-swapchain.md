@@ -66,6 +66,30 @@ from here, only outrun — which is why Android now leaves promptly
 (`exit_on_halt`) instead of holding a frozen screen and waiting to see which
 abort arrives first.
 
+## The number the guards were not watching
+
+Groningen at 150 m, `--shot-mode earth`, 900×1900, 2026-08-20, from
+`--dump-state`'s new `vram_allocated_kb` / `vram_reserved_kb`
+(`wgpu::Device::generate_allocator_report`):
+
+| rung | our asset count | wgpu in use | reserved from the driver |
+|---|---|---|---|
+| `android` | 364 MB | 483 MB | **664 MB** |
+| `desktop` | 736 MB | 996 MB | 1228 MB |
+
+`gpu_resident_kb` counts asset bytes this client creates. It is machine-independent
+and that is why it is the gate — but it is **not what a driver refuses on**. Between
+it and the driver sit the render targets, shadow maps, atmosphere LUTs and pipelines
+it never counted, and then the allocator's own slack. On the handset rung those add
+up to 1.8×: the memory-guard series took `resident` from 991 MB to 371 MB and read
+that as the ask, while the ask was closer to 660.
+
+The 1.37× slack is not the catastrophic over-reservation
+[bevyengine/bevy#24722] describes, so on this evidence the allocator regression is
+a term rather than the whole story. **Measured on lavapipe**, whose render targets
+and allocator behaviour are its own; the ratio is indicative and the phone's own
+figure now arrives with every halt report (`gpu_memory_census`).
+
 ## Upstream
 
 [bevyengine/bevy#24722](https://github.com/bevyengine/bevy/issues/24722) reports

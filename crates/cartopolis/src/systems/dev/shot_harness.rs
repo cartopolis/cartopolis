@@ -603,6 +603,27 @@ pub struct ShotMetrics {
     /// picture either way; the tone-mapped sky is not, so a colour or lighting
     /// judgement made against a shot with this set is not evidence.
     pub software_renderer: bool,
+    /// What wgpu's own allocator has *in use*, in kB — every GPU allocation this
+    /// process holds, not just the streamed assets [`Self::gpu_resident_kb`]
+    /// counts: render targets, shadow maps, atmosphere LUTs, pipelines.
+    ///
+    /// `0` when the backend keeps no report.
+    pub vram_allocated_kb: u64,
+    /// What wgpu has **reserved from the driver** for that, slack included, in kB.
+    ///
+    /// This is the number a driver refuses on, and the pair is a diagnosis rather
+    /// than a statistic. Reserved tracking allocated means the client is asking
+    /// for what it gets; reserved standing well above it means the allocator is
+    /// holding memory the app does not have, which is the shape of
+    /// [bevyengine/bevy#24722] — the `gpu-alloc` → `gpu-allocator` switch in wgpu
+    /// 28, reported as OOM and lost devices on desktop Vulkan.
+    ///
+    /// Backend-dependent, unlike [`Self::gpu_resident_kb`], so it is *not* a
+    /// legitimate `--expect` gate across machines. It is here to be compared
+    /// against `vram_allocated_kb` in the same run.
+    ///
+    /// [bevyengine/bevy#24722]: https://github.com/bevyengine/bevy/issues/24722
+    pub vram_reserved_kb: u64,
 }
 
 /// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
@@ -616,7 +637,7 @@ orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
 route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
-gpu_resident_peak_kb,software_renderer";
+gpu_resident_peak_kb,software_renderer,vram_allocated_kb,vram_reserved_kb";
 
 /// The avatar's contribution to [`ShotMetrics`].
 ///
@@ -644,7 +665,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -694,6 +715,8 @@ impl ShotMetrics {
             self.gpu_resident_kb,
             self.gpu_resident_peak_kb,
             self.software_renderer,
+            self.vram_allocated_kb,
+            self.vram_reserved_kb,
         )
     }
 }
@@ -1439,6 +1462,8 @@ pub fn drive_capture(
         // The run's worst upload frame, which is a high-water mark and therefore
         // the one metric here that describes a moment other than the shutter.
         Res<crate::systems::upload_meter::UploadMeter>,
+        // wgpu's own allocator totals. Appended for the same reason as `.9`.
+        Res<bevy::render::renderer::RenderDevice>,
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1666,6 +1691,18 @@ pub fn drive_capture(
         // `Assets<Mesh>`. Expensive per frame, free once per capture — and this is
         // the frame the pool is already quiesced for.
         let render = readouts.10.counts();
+        // Absent on a backend that keeps no allocator report; reported as zeros
+        // rather than omitted, so a CSV row never changes width.
+        let vram = readouts
+            .13
+            .wgpu_device()
+            .generate_allocator_report()
+            .map_or((0, 0), |r| {
+                (
+                    r.total_allocated_bytes / 1024,
+                    r.total_reserved_bytes / 1024,
+                )
+            });
         let m = ShotMetrics {
             shot: progress.index + 1,
             name: shot.name.clone(),
@@ -1722,6 +1759,8 @@ pub fn drive_capture(
             gpu_resident_kb: readouts.12.resident_kb(),
             gpu_resident_peak_kb: readouts.12.peak_resident_kb(),
             software_renderer: readouts.8.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
+            vram_allocated_kb: vram.0,
+            vram_reserved_kb: vram.1,
         };
         // One line, but its *level* carries whether the shot is trustworthy: a
         // capture that timed out describes a half-built world, and at INFO it
@@ -2056,6 +2095,8 @@ mod tests {
             gpu_resident_kb: 0,
             gpu_resident_peak_kb: 0,
             software_renderer: true,
+            vram_allocated_kb: 0,
+            vram_reserved_kb: 0,
         }
     }
 

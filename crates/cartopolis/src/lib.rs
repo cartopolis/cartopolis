@@ -626,7 +626,7 @@ static RENDER_HALTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// stays `Errored`.
 fn handle_render_error(
     error: &bevy::render::error_handler::RenderError,
-    _main_world: &mut World,
+    main_world: &mut World,
     render_world: &mut World,
 ) -> bevy::render::error_handler::RenderErrorPolicy {
     use std::sync::atomic::Ordering;
@@ -639,7 +639,12 @@ fn handle_render_error(
             description = %error.description,
             "render error — halting the renderer, keeping the app alive"
         );
-        record_render_halt(error);
+        // Before `abandon_lost_surface`, which takes the render device's
+        // `WindowSurfaces` away — and on every platform, not just the one that
+        // writes a file, because the same census goes to the log a desktop halt
+        // leaves behind.
+        tracing::error!("{}", gpu_memory_census(main_world, render_world));
+        record_render_halt(error, main_world, render_world);
         abandon_lost_surface(render_world);
         exit_on_halt();
     }
@@ -751,24 +756,109 @@ fn abandon_lost_surface(render_world: &mut World) {
 /// launch — a halted renderer and a panic are the same question from the user's
 /// side ("it stopped working, here is why").
 #[cfg(target_os = "android")]
-fn record_render_halt(error: &bevy::render::error_handler::RenderError) {
+fn record_render_halt(
+    error: &bevy::render::error_handler::RenderError,
+    main_world: &World,
+    render_world: &World,
+) {
     let report = format!(
-        "cartopolis {} ({})\nabi: {}\nThe renderer was halted by a {:?} error and the \
-         picture is frozen from here on; the process itself is still running. This is not \
-         a crash — it is the deliberate response to a GPU error we cannot resume through. \
-         Restart the app. See `handle_render_error` for why a rebuild is not attempted.\n\
-         error: {}\n",
+        "cartopolis {} ({})\nabi: {}\nThe renderer was halted by a {:?} error and the app \
+         closed itself; the report you are reading is why. This is not a crash — a lost \
+         GPU device cannot be resumed through, and staying up would only have ended in an \
+         abort. See `handle_render_error`.\n\
+         error: {}\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
         option_env!("CARTO_BUILD_SHA").unwrap_or("unknown build"),
         std::env::consts::ARCH,
         error.ty,
         error.description,
+        gpu_memory_census(main_world, render_world),
     );
     record_fatal(&report);
 }
 
 #[cfg(not(target_os = "android"))]
-fn record_render_halt(_error: &bevy::render::error_handler::RenderError) {}
+fn record_render_halt(
+    _error: &bevy::render::error_handler::RenderError,
+    _main_world: &World,
+    _render_world: &World,
+) {
+}
+
+/// What the GPU was holding at the instant of the halt, for the report.
+///
+/// **A halt report that says only `DeviceLost` is one bit of information**, and one
+/// bit is what every account of these losses has had to reason from. It cannot
+/// distinguish the three live explanations — this client asking for too much, the
+/// driver refusing an allocation it should have served, or something that is not
+/// about memory at all — and the losses are rare enough on a phone nobody can
+/// attach a profiler to that guessing wrong costs days.
+///
+/// The pair that matters is `total_allocated_bytes` against `total_reserved_bytes`
+/// (`wgpu::Device::generate_allocator_report`, which the vulkan backend gained in
+/// wgpu 28 along with the `gpu-allocator` switch). Allocated is what is *in use*;
+/// reserved is what wgpu has taken from the driver, slack included. A driver
+/// refuses on the second. So:
+///
+/// - reserved ≈ allocated ≈ our own `resident_mb` → the client is asking for too
+///   much, and the streaming budgets are the place to look;
+/// - reserved far above allocated → wgpu's allocator is holding memory the app
+///   does not have, which is [bevyengine/bevy#24722] and is not fixable from here;
+/// - both small → not a memory problem at all, and every budget written for it
+///   was aimed at the wrong thing.
+///
+/// Cheap and only ever called once, on the way out. `generate_allocator_report`
+/// answers `None` on backends that do not track it.
+///
+/// [bevyengine/bevy#24722]: https://github.com/bevyengine/bevy/issues/24722
+fn gpu_memory_census(main_world: &World, render_world: &World) -> String {
+    use std::fmt::Write as _;
+
+    let budget = crate::quality::budget();
+    let mut out = format!(
+        "quality: {:?} (tile_px {}, radius_bias {}, upload ceiling {})\n",
+        budget.tier,
+        budget.tile_px,
+        budget.radius_bias,
+        crate::quality::upload_ceiling().map_or("none".to_owned(), |b| format!("{} kB", b / 1024)),
+    );
+
+    match main_world.get_resource::<systems::upload_meter::UploadMeter>() {
+        Some(m) => {
+            let _ = writeln!(
+                out,
+                "streamed content: resident {} MB (peak {} MB), worst frame {} kB, \
+                 largest asset {} kB",
+                m.resident_kb() / 1024,
+                m.peak_resident_kb() / 1024,
+                m.peak_kb(),
+                m.peak_asset_kb(),
+            );
+        }
+        None => out.push_str("streamed content: unmeasured\n"),
+    }
+
+    // The render world's own answer, which counts what this code never sees:
+    // render targets, shadow maps, LUTs, pipelines, and the allocator's slack.
+    match render_world
+        .get_resource::<bevy::render::renderer::RenderDevice>()
+        .and_then(|d| d.wgpu_device().generate_allocator_report())
+    {
+        Some(r) => {
+            let _ = writeln!(
+                out,
+                "wgpu allocator: {} MB in use of {} MB reserved from the driver \
+                 ({} allocations in {} blocks)",
+                r.total_allocated_bytes / (1024 * 1024),
+                r.total_reserved_bytes / (1024 * 1024),
+                r.allocations.len(),
+                r.blocks.len(),
+            );
+        }
+        None => out.push_str("wgpu allocator: no report on this backend\n"),
+    }
+    out
+}
 
 /// Start the client.
 ///
