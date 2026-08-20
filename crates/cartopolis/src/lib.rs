@@ -254,6 +254,120 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
     .map_err(|e| format!("--shot: {e}"))
 }
 
+/// Cap Bevy's GPU-driven draw path — by default on Android, and by
+/// `CARTO_GPU_PREPROCESS` anywhere.
+///
+/// **Why.** The device losses on the Adreno 840 have survived every guard aimed at
+/// memory: `handset_guarded`'s tile and radius caps, `MAX_CELL_MESH_BYTES`, the
+/// 4 MB per-frame ceiling. The halt report of 2026-08-20 puts residency at 126 MB
+/// and the whole wgpu allocator at 289 MB in use of 448 MB reserved — a fraction
+/// of what this phone has, and by [`gpu_memory_census`]'s own decision rule the
+/// reading that says *not a memory problem at all*. What is left is the commands
+/// rather than the bytes, and the most GPU-authored commands in the frame are
+/// Bevy's: in [`GpuPreprocessingMode::Culling`], a compute shader writes the
+/// instance data *and* the indirect draw arguments the GPU then draws from, plus
+/// the two-phase occlusion pass. An out-of-range value there is a GPU page fault,
+/// which arrives with no warning on a healthy frame and reads as `DeviceLost` —
+/// the shape of these losses (no slow frames, healthy census, sudden loss).
+///
+/// **The Android default is `PreprocessingOnly`, because upstream's own remedy for
+/// this class is a denylist the 840 is too new for.** `BatchingPlugin` caps
+/// `Adreno != 720 && <= 730` to CPU preprocessing ([bevy#14176]) and a Pixel 10 to
+/// preprocessing-without-culling; [bevy#17591] is the same story for the two-phase
+/// occlusion pass on further Android devices — the list grows one crashed device
+/// at a time, and a part newer than the list gets the full indirect path on a
+/// driver nobody upstream has run. This tree already holds a sibling of the same
+/// judgement: GPU light clustering is off ([`ForceCpuClusteringPlugin`]) because
+/// its readback lost an Intel device. `PreprocessingOnly` keeps the mesh uniforms
+/// on the compute path and issues direct draws — the CPU still says *what* to
+/// draw, so a bad GPU-written count can no longer be dereferenced.
+///
+/// `setprop debug.carto.gpu_preprocess cull` restores upstream's detection on the
+/// phone; `off` drops to CPU preprocessing entirely if the cap turns out not to be
+/// enough. The mode in force is in every halt report (`draw path:`), so a run that
+/// still dies says which rung it died on.
+///
+/// [bevy#14176]: https://github.com/bevyengine/bevy/pull/14176
+/// [bevy#17591]: https://github.com/bevyengine/bevy/issues/17591
+struct GpuPreprocessingOverridePlugin;
+
+impl Plugin for GpuPreprocessingOverridePlugin {
+    fn build(&self, app: &mut App) {
+        use bevy::render::batching::gpu_preprocessing::GpuPreprocessingSupport;
+        use bevy::render::RenderApp;
+
+        let Some(mode) = requested_gpu_preprocessing() else {
+            return;
+        };
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+        // `RenderStartup`, not `finish`: `init_gpu_resource` does not insert the
+        // resource, it *registers a `RenderStartup` system* that builds it — and
+        // that schedule runs again on every device the app acquires, so anything
+        // written once at startup would be silently reverted. Ordering against
+        // upstream's own system by name is what makes this an override rather than
+        // a race.
+        render_app.add_systems(
+            bevy::render::RenderStartup,
+            (move |mut support: ResMut<GpuPreprocessingSupport>| {
+                // A *cap*, not an assignment: `GpuPreprocessingSupport::min`
+                // cannot promote a mode past what the device supports, so `cull`
+                // on a WebGL2 or Adreno-730 adapter stays whatever upstream
+                // decided, never above it.
+                support.max_supported_mode = support.min(mode);
+                tracing::info!(
+                    path = gpu_preprocessing_name(support.max_supported_mode),
+                    "capped Bevy's draw path (Android default; CARTO_GPU_PREPROCESS overrides)"
+                );
+            })
+            .after(bevy::render::init_gpu_resource::<GpuPreprocessingSupport>),
+        );
+    }
+}
+
+/// The cap on Bevy's draw path: `CARTO_GPU_PREPROCESS` = `off` | `preprocess` |
+/// `cull` if set, otherwise `preprocess` on Android and no cap elsewhere.
+///
+/// Since the plugin applies this with [`GpuPreprocessingSupport::min`], `cull` is
+/// a cap at the top — i.e. exactly upstream's own detection — which is what makes
+/// it the right spelling for "give me back the default Bevy would have picked".
+///
+/// An unrecognised value warns and falls back to the platform default rather than
+/// quietly parsing as something: this is a switch somebody sets once, on a phone,
+/// to answer one question, and a typo that silently changed the answer would
+/// answer it wrongly.
+///
+/// [`GpuPreprocessingSupport::min`]: bevy::render::batching::gpu_preprocessing::GpuPreprocessingSupport::min
+fn requested_gpu_preprocessing(
+) -> Option<bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode> {
+    use bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode as M;
+    // `cfg!`, not `#[cfg]`, for the reason `handset_guarded` states: a rule that
+    // only exists in the Android build is a rule no test on any other machine can
+    // see.
+    let default = if cfg!(target_os = "android") {
+        Some(M::PreprocessingOnly)
+    } else {
+        None
+    };
+    let Some(raw) = env_value("CARTO_GPU_PREPROCESS") else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "cpu" => Some(M::None),
+        "preprocess" | "preprocessing" => Some(M::PreprocessingOnly),
+        "cull" | "culling" | "full" => Some(M::Culling),
+        other => {
+            tracing::warn!(
+                value = other,
+                "CARTO_GPU_PREPROCESS must be off, preprocess or cull — using the \
+                 platform default"
+            );
+            default
+        }
+    }
+}
+
 /// Force Bevy onto the stable CPU light-clustering path.
 ///
 /// Bevy 0.19's GPU-driven clustering grows its per-view cluster buffers via an
@@ -824,6 +938,34 @@ fn gpu_memory_census(main_world: &World, render_world: &World) -> String {
         crate::quality::upload_ceiling().map_or("none".to_owned(), |b| format!("{} kB", b / 1024)),
     );
 
+    // **Timeout or fault** — the question three rounds of budget work could not
+    // settle, because the frame that dies is the only frame nothing measures (see
+    // `watchdog::since_last_beat_ms`). Seconds here and the GPU was drowning in
+    // work this client handed it; a frame's worth of milliseconds and it was not,
+    // and every ceiling written for the burst was aimed past the problem.
+    match platform::watchdog::since_last_beat_ms() {
+        Some(ms) => {
+            let _ = writeln!(out, "the frame that died had been running {ms} ms");
+        }
+        None => out.push_str("the frame that died: no heartbeat, so no duration\n"),
+    }
+    // And what the frames *before* it cost, which is the other half of the same
+    // reading: a timeout is approached, so a run of climbing frame times is its
+    // signature, while a fault arrives out of a healthy second.
+    match main_world
+        .get_resource::<resources::FrameStats>()
+        .filter(|s| s.sampled)
+    {
+        Some(s) => {
+            let _ = writeln!(
+                out,
+                "the second before it: {} fps, mean {} ms, worst {} ms",
+                s.fps, s.mean_ms as u32, s.worst_ms as u32,
+            );
+        }
+        None => out.push_str("the second before it: not yet sampled\n"),
+    }
+
     match main_world.get_resource::<systems::upload_meter::UploadMeter>() {
         Some(m) => {
             let _ = writeln!(
@@ -858,7 +1000,31 @@ fn gpu_memory_census(main_world: &World, render_world: &World) -> String {
         }
         None => out.push_str("wgpu allocator: no report on this backend\n"),
     }
+
+    // Which of Bevy's three draw paths the frame was submitted through. A GPU
+    // fault on a healthy frame is a question about the commands, not the bytes,
+    // and this is the switch that decides whether the draw counts came off a
+    // compute shader — see [`GpuPreprocessingOverridePlugin`].
+    let _ = writeln!(
+        out,
+        "draw path: {}",
+        render_world
+            .get_resource::<bevy::render::batching::gpu_preprocessing::GpuPreprocessingSupport>()
+            .map_or("unknown", |s| gpu_preprocessing_name(s.max_supported_mode)),
+    );
     out
+}
+
+/// A name for a [`GpuPreprocessingMode`], which upstream derives no `Debug` for.
+fn gpu_preprocessing_name(
+    mode: bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode,
+) -> &'static str {
+    use bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode as M;
+    match mode {
+        M::None => "cpu (no preprocessing)",
+        M::PreprocessingOnly => "gpu preprocessing, direct draws",
+        M::Culling => "gpu preprocessing and gpu culling (indirect draws)",
+    }
 }
 
 /// Start the client.
@@ -1348,6 +1514,9 @@ fn run_client() {
         // Added after DefaultPlugins so its `finish` runs after PbrPlugin's (which
         // creates GlobalClusterSettings) — see the plugin's doc comment.
         .add_plugins(ForceCpuClusteringPlugin)
+        // Same reason for the placement: it orders a `RenderStartup` system after
+        // one `RenderPlugin` registers, so the sub-app has to exist first.
+        .add_plugins(GpuPreprocessingOverridePlugin)
         .add_plugins(EguiPlugin)
         // Renders the 3D world below the screen's resolution on a tier that asks
         // for it, and no-ops entirely on the tiers that do not. Must come after

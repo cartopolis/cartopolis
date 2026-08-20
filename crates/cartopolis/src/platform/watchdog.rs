@@ -96,6 +96,31 @@ pub fn beat() {
     LAST_BEAT_MS.store(elapsed_ms(), Ordering::Relaxed);
 }
 
+/// How long the frame now in flight has been running, in milliseconds, or `None`
+/// if [`start`] never ran and there is no heartbeat to measure against.
+///
+/// **The one frame whose duration nothing else can report is the one that kills
+/// the device**, and it is therefore the frame every device-loss report so far has
+/// been missing. `frame_pacing::frame_time_watchdog` reads `Time<Real>::delta`,
+/// which is the *previous* frame; a fatal frame has no successor, because
+/// `handle_render_error` ends the process from inside it. So the log of a loss
+/// ends with a run of healthy frames and a silence, and the silence is equally
+/// consistent with the two live explanations — a single enormous frame that
+/// overran the command-buffer timeout, and a healthy frame on which the GPU
+/// faulted for reasons that are not about our workload at all. Seconds here means
+/// the first; a frame's worth of milliseconds means the second.
+///
+/// It is the heartbeat's own clock and not a new one, deliberately: [`beat`] runs
+/// in `Last`, so "time since the last beat" is exactly "time spent in the frame
+/// that has not finished yet", already maintained, already free.
+pub fn since_last_beat_ms() -> Option<u64> {
+    match LAST_BEAT_MS.load(Ordering::Relaxed) {
+        // Zero is the pre-`start` sentinel, not a real reading — see the static.
+        0 => None,
+        last => Some(elapsed_ms().saturating_sub(last)),
+    }
+}
+
 /// Process uptime in milliseconds, from a base fixed at [`start`].
 fn elapsed_ms() -> u64 {
     // A `OnceLock<Instant>` rather than a `static Instant`, which cannot be const.
