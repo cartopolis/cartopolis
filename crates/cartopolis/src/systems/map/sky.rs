@@ -161,6 +161,12 @@ pub(crate) fn spawn_moon_light(commands: &mut Commands, dev: &DevPanelState, sha
         }
         .build(),
         Transform::from_translation(Vec3::ZERO).looking_to(-moon_dir, Vec3::Y),
+        // Explicit, because absent is not off: the atmosphere's sky pass reads
+        // `Option<&SunDisk>` per directional light and its `unwrap_or_default()`
+        // resolves to `SunDisk::EARTH` — so a moon light without this component
+        // is drawn as a second sun-sized disc at the moon's position. The moon's
+        // visible disc is `systems::moon`'s quad, not a sun disk.
+        bevy::light::SunDisk::OFF,
         MoonLight,
     ));
 }
