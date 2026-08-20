@@ -1803,7 +1803,7 @@ pub fn tessellate_roads(
     let features = tile.features(meta);
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
-    let nodes = street_nodes(&features);
+    let nodes = street_nodes(&features, scale);
 
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
     // Groups cut loose mid-tile, over the frame's upload budget. See the sweep at
@@ -1850,6 +1850,12 @@ pub fn tessellate_roads(
             let (Some(head), Some(tail)) = (pts.first().copied(), pts.last().copied()) else {
                 continue;
             };
+            // A roundabout, turning circle or loop road closes on itself. Its
+            // start and end are one node that the road runs *through*, so it
+            // takes no junction stub — an extension there fires a flap of
+            // tarmac off along the tangent — and its ribbon closes instead of
+            // meeting itself with two square ends.
+            let closed = pts.len() >= 4 && (head[0] - tail[0]).hypot(head[1] - tail[1]) <= 1e-4;
             // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
             // *linestring*, so the crossing parts of one merged feature separate.
             let y =
@@ -1873,16 +1879,36 @@ pub fn tessellate_roads(
                 // junction; the rest begin and end at the tile border, where the
                 // neighbour's copy of the same street abuts this one exactly and
                 // an extension would draw the same tarmac twice.
-                let ext_head = (run.first() == Some(&head))
-                    .then_some(head_out)
-                    .flatten()
-                    .map(|d| junction_extent(&nodes, head, fi, d))
-                    .unwrap_or(0.0);
-                let ext_tail = (run.last() == Some(&tail))
-                    .then_some(tail_out)
-                    .flatten()
-                    .map(|d| junction_extent(&nodes, tail, fi, d))
-                    .unwrap_or(0.0);
+                //
+                // A continuation takes precedence over a stub: where the street
+                // runs on through the node as another feature there is no notch
+                // to fill, and the mitred cap is the join.
+                let end_join = |at: [f32; 2], out: Option<Option<[f32; 2]>>| -> EndJoin {
+                    let Some(Some(d)) = out else {
+                        return EndJoin::default();
+                    };
+                    match continuation(&nodes, at, fi, d, class, half) {
+                        Some(cont) => EndJoin {
+                            extend: 0.0,
+                            cont: Some(cont),
+                        },
+                        None => EndJoin {
+                            extend: junction_extent(&nodes, at, fi, d),
+                            cont: None,
+                        },
+                    }
+                };
+                let join_head = end_join(
+                    head,
+                    (!closed && run.first() == Some(&head)).then_some(head_out),
+                );
+                let join_tail = end_join(
+                    tail,
+                    (!closed && run.last() == Some(&tail)).then_some(tail_out),
+                );
+                // Only an *unclipped* run is still a ring; a clipped one is an
+                // ordinary open polyline that happens to come from a loop.
+                let run_is_ring = closed && run.len() == pts.len();
                 // Tile units → metres, once, before any geometry is built.
                 let metres: Vec<[f32; 2]> =
                     run.iter().map(|p| [p[0] * scale, p[1] * scale]).collect();
@@ -1897,10 +1923,10 @@ pub fn tessellate_roads(
                 // from under the structure.
                 let whole = parts.len() == 1 && parts[0].len() == run.len();
                 for part in parts {
-                    let extend = if whole {
-                        [ext_head, ext_tail]
+                    let ends = if whole {
+                        [join_head, join_tail]
                     } else {
-                        [0.0, 0.0]
+                        [EndJoin::default(); 2]
                     };
                     {
                         let (_, positions, uvs, indices) = &mut builders[slot];
@@ -1909,7 +1935,8 @@ pub fn tessellate_roads(
                             half,
                             y,
                             class.texture_length_m(),
-                            extend,
+                            ends,
+                            run_is_ring && whole,
                             positions,
                             uvs,
                             indices,
@@ -1918,20 +1945,19 @@ pub fn tessellate_roads(
                     if let Some(cs) = casing_slot {
                         // The casing wraps the fill's stub ends too, so the
                         // kerb band runs around the junction mouth instead of
-                        // stopping square at it. Its ladder copy is compressed
-                        // under the fills' plane — see `CASING_LADDER_SCALE`.
-                        let ext = [
-                            if extend[0] > 0.0 {
-                                extend[0] + ROAD_CASING_M
+                        // stopping square at it. A mitred end needs no such
+                        // treatment — the neighbour's casing is mitred to the
+                        // same bisector and meets this one exactly. Its ladder
+                        // copy is compressed under the fills' plane — see
+                        // `CASING_LADDER_SCALE`.
+                        let ext = ends.map(|e| EndJoin {
+                            extend: if e.extend > 0.0 {
+                                e.extend + ROAD_CASING_M
                             } else {
                                 0.0
                             },
-                            if extend[1] > 0.0 {
-                                extend[1] + ROAD_CASING_M
-                            } else {
-                                0.0
-                            },
-                        ];
+                            cont: e.cont,
+                        });
                         let (_, positions, uvs, indices) = &mut builders[cs];
                         ribbon(
                             &part,
@@ -1939,6 +1965,7 @@ pub fn tessellate_roads(
                             y * CASING_LADDER_SCALE,
                             class.texture_length_m(),
                             ext,
+                            run_is_ring && whole,
                             positions,
                             uvs,
                             indices,
@@ -2179,6 +2206,24 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
     Some((road_class(kind, flags)?, road_width_m(kind, flags) * 0.5))
 }
 
+/// One road arriving at one node, as [`street_nodes`] records it.
+#[derive(Clone, Copy)]
+struct NodeArm {
+    /// Which feature this is, so a road never treats itself as a junction.
+    feature: usize,
+    /// Half the carriageway width, in metres.
+    half: f32,
+    class: RoadClass,
+    /// The road's direction *through* the node, sign-free — only the crossing
+    /// angle is ever read from it.
+    axis: [f32; 2],
+    /// Set when the node is one of this line's own **ends**: the direction the
+    /// road leaves the node in, and how long its first segment is, in metres.
+    /// `None` for an interior vertex — a road that merely passes through cannot
+    /// be the thing that *continues* another one.
+    leaves: Option<([f32; 2], f32)>,
+}
+
 /// Every vertex of every drawn street in the tile, keyed on the integer lattice,
 /// carrying the features that touch it and how wide each of them is.
 ///
@@ -2190,13 +2235,17 @@ pub(crate) fn drawn_street(feature: &Feature) -> Option<(RoadClass, f32)> {
 ///
 /// *Every* vertex goes in, not just endpoints: a side street tees into the middle
 /// of a through road, so the node it shares is an interior vertex of that road.
+/// Whether the node *is* an end is recorded ([`NodeArm::leaves`]) rather than
+/// used to filter, because the two questions asked of this table want opposite
+/// answers — [`junction_extent`] wants every road at the node, and
+/// [`continuation`] wants only the ones that end there.
 ///
-/// Keys are tile units; the half-widths are metres, which is what the ribbon
-/// builder works in.
-fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> {
-    let mut nodes: HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>> = HashMap::new();
+/// Keys are tile units; `scale` converts those to the metres the ribbon builder
+/// works in.
+fn street_nodes(features: &[Feature], scale: f32) -> HashMap<(i32, i32), Vec<NodeArm>> {
+    let mut nodes: HashMap<(i32, i32), Vec<NodeArm>> = HashMap::new();
     for (fi, feature) in features.iter().enumerate() {
-        let Some((_, half)) = drawn_street(feature) else {
+        let Some((class, half)) = drawn_street(feature) else {
             continue;
         };
         let mut lines: Vec<&geo_types::LineString<f32>> = Vec::new();
@@ -2227,11 +2276,25 @@ fn street_nodes(features: &[Feature]) -> HashMap<(i32, i32), Vec<(usize, f32, [f
                 } else {
                     [0.0, 0.0]
                 };
+                // At an end, `axis` already points from the node into the line
+                // (`j + 1 < n` at the head, `j > 0` reversed at the tail), so
+                // the leaving direction is the axis or its negation.
+                let leaves = match (j, len > 1e-6 && len.is_finite()) {
+                    (0, true) => Some((d, len * scale)),
+                    (j, true) if j + 1 == n => Some(([-d[0], -d[1]], len * scale)),
+                    _ => None,
+                };
                 let at = nodes.entry(node_key([c.x, c.y])).or_default();
                 // One entry per feature: a way that doubles back through its own
                 // node is not a junction with itself.
-                if !at.iter().any(|(o, _, _)| *o == fi) {
-                    at.push((fi, half, d));
+                if !at.iter().any(|a| a.feature == fi) {
+                    at.push(NodeArm {
+                        feature: fi,
+                        half,
+                        class,
+                        axis: d,
+                        leaves,
+                    });
                 }
             }
         }
@@ -2243,13 +2306,28 @@ fn node_key(p: [f32; 2]) -> (i32, i32) {
     (p[0].round() as i32, p[1].round() as i32)
 }
 
-/// Angles flatter than this against the joined road stop lengthening the stub.
-/// `half / sin θ` is the honest distance to the far kerb of a road crossed at
-/// θ, but as θ → 0 the two roads are merging rather than crossing and the
-/// "far kerb" runs away along them — a merge wants no stub at all, and the cap
-/// plus this floor (≈20°) keeps a slip-road join from painting a spear of
-/// tarmac down the carriageway it joins.
-const MIN_JUNCTION_SIN: f32 = 0.35;
+/// Below this crossing sine (≈15°) the road at the far side of the node is not
+/// **crossing** this one, it is *continuing* it, and a continuation needs no
+/// stub at all: the two ribbons already abut exactly at the shared node.
+///
+/// This is the common case, not an edge one. Shortbread merges ways by
+/// attribute, so an ordinary street arrives as a chain of features that meet
+/// end to end — measured on the Groningen fixture, **58 % of all junction ends
+/// are collinear joins like that** (418 of 722). They used to be the *worst*
+/// case rather than a free one: the old form of this floored the sine at 0.35
+/// and divided by it, so two collinear features each fired the longest stub the
+/// cap allowed — 10–12 m of [`STUB_PLAIN_U`] tarmac laid over its neighbour,
+/// from both sides. What that looks like on the ground is a street whose kerb
+/// lines and centre dashes stop dead for twenty metres every time the name
+/// changes, over a doubled ribbon that fights in depth. Flooring the sine
+/// bounded the spear; it did not stop the code aiming one down every street.
+const MERGE_SIN: f32 = 0.26;
+
+/// The sine at and above which the stub is the honest `half / sin` (≈30°, so at
+/// most `2 × half`). Between here and [`MERGE_SIN`] the stub ramps to zero, so
+/// a shallow join loses its stub gradually rather than at a threshold that
+/// would show as one street in a row of similar ones being drawn differently.
+const JUNCTION_SIN: f32 = 0.5;
 
 /// How far past `end` the feature's ribbon has to run to fill the junction
 /// there, in metres: for each **other** road meeting at that node, its
@@ -2257,10 +2335,14 @@ const MIN_JUNCTION_SIN: f32 = 0.35;
 /// kerb along *this* road's own direction — and the largest of those wins.
 /// Plain `half` (what this used to return) is only right at 90°: a road
 /// crossed at 30° left a notch on the acute side while overshooting on the
-/// obtuse one. `0.0` where nothing else meets — a dead end keeps a square end
-/// on the ground instead of a flap of tarmac reaching into the field beyond it.
+/// obtuse one.
+///
+/// Two ends get nothing. A **dead end** keeps a square end on the ground
+/// instead of a flap of tarmac reaching into the field beyond it (nothing else
+/// meets there, so the fold starts and finishes at `0.0`), and a **collinear
+/// continuation** keeps its markings running through — see [`MERGE_SIN`].
 fn junction_extent(
-    nodes: &HashMap<(i32, i32), Vec<(usize, f32, [f32; 2])>>,
+    nodes: &HashMap<(i32, i32), Vec<NodeArm>>,
     end: [f32; 2],
     feature_index: usize,
     out_dir: [f32; 2],
@@ -2269,17 +2351,93 @@ fn junction_extent(
         .get(&node_key(end))
         .map(|at| {
             at.iter()
-                .filter(|(fi, _, _)| *fi != feature_index)
-                .map(|(_, half, d)| {
-                    let sin = (out_dir[0] * d[1] - out_dir[1] * d[0])
-                        .abs()
-                        .max(MIN_JUNCTION_SIN);
-                    *half / sin
+                .filter(|a| a.feature != feature_index)
+                .map(|a| {
+                    let sin = (out_dir[0] * a.axis[1] - out_dir[1] * a.axis[0]).abs();
+                    // The far-kerb distance, and how much of a *junction* this
+                    // crossing angle actually is.
+                    let reach = a.half / sin.max(JUNCTION_SIN);
+                    let crossing = ((sin - MERGE_SIN) / (JUNCTION_SIN - MERGE_SIN)).clamp(0.0, 1.0);
+                    reach * crossing
                 })
                 .fold(0.0, f32::max)
         })
         .unwrap_or(0.0)
         .min(JUNCTION_EXTEND_MAX)
+}
+
+/// The smallest cosine — i.e. the widest bend — at which two features that end
+/// at the same node still count as one street continuing through it. 40° is
+/// well past what a road bends at a single OSM vertex and comfortably short of
+/// the 90° that would let a genuine side road be mistaken for a continuation.
+const CONTINUATION_COS: f32 = 0.77;
+
+/// The road that **continues** this one past `end`, if there is one: the
+/// direction it leaves the node in, and how long its first segment is.
+///
+/// Shortbread merges ways by attribute, so one street reaches the tessellator as
+/// a chain of features that meet end to end — 272 such joins in the Groningen
+/// fixture, 55 of them turning by 10° or more. Each half used to stop dead at
+/// the shared node with a square butt cap, and two square caps meeting at an
+/// angle leave a wedge of bare ground on the outside of the bend and a doubled
+/// overlap on the inside: measured up to 1.28 m across on a 7 m street, which is
+/// most of what "the roads don't connect" looks like from the pavement. (It went
+/// unnoticed for as long as it did because the old stub buried the seam under
+/// ten metres of blank tarmac, which was worse.)
+///
+/// Mitring closes it exactly rather than approximately, and that is the point of
+/// returning the neighbour's *segment length* alongside its direction: both
+/// halves then feed [`ribbon`] the identical `(d_in, d_out)` pair and the
+/// identical inner-backtrack budget, so both place their two end vertices on the
+/// same two points. The join is watertight by construction, not by tolerance.
+///
+/// Only a road that **ends** here can continue this one (a road passing through
+/// is being crossed, not joined), only one of the same class and width can
+/// (grafting a 4 m service road onto a 22 m motorway is not a continuation), and
+/// only one leaving in roughly the direction this one is pointing.
+fn continuation(
+    nodes: &HashMap<(i32, i32), Vec<NodeArm>>,
+    end: [f32; 2],
+    feature_index: usize,
+    out_dir: [f32; 2],
+    class: RoadClass,
+    half: f32,
+) -> Option<([f32; 2], f32)> {
+    let mut best: Option<(f32, [f32; 2], f32)> = None;
+    for arm in nodes.get(&node_key(end))? {
+        if arm.feature == feature_index || arm.class != class {
+            continue;
+        }
+        if (arm.half - half).abs() > 0.15 * half {
+            continue;
+        }
+        let Some((leaves, seg_m)) = arm.leaves else {
+            continue;
+        };
+        let cos = leaves[0] * out_dir[0] + leaves[1] * out_dir[1];
+        if cos < CONTINUATION_COS {
+            continue;
+        }
+        if best.is_none_or(|(c, _, _)| cos > c) {
+            best = Some((cos, leaves, seg_m));
+        }
+    }
+    best.map(|(_, leaves, seg_m)| (leaves, seg_m))
+}
+
+/// What a ribbon meets at one of its two ends. The two cases are exclusive by
+/// construction — a street that continues through a node has no notch there for
+/// a stub to fill, so [`tessellate_roads`] never asks for both.
+#[derive(Clone, Copy, Default)]
+struct EndJoin {
+    /// Metres of junction stub past the end, from [`junction_extent`]: how far
+    /// this road has to run *into* whatever it meets there. Zero at a dead end,
+    /// at a tile border and wherever `cont` is set.
+    extend: f32,
+    /// The feature that continues this road past the end, from
+    /// [`continuation`]: the direction it leaves in and its first segment's
+    /// length. The end is mitred into it instead of butt-capped.
+    cont: Option<([f32; 2], f32)>,
 }
 
 /// Extrude a centre line into a flat ribbon of `2 × half` metres at height `y`,
@@ -2315,19 +2473,30 @@ fn junction_extent(
 /// and the only thing that keeps two overlapping ribbons from flickering against
 /// each other at a junction.
 ///
-/// `extend` is `[head, tail]` metres of stub past each end, from
-/// [`junction_extent`]: how far this road has to run *into* whatever it meets
-/// there. Zero at a dead end and at a tile border.
+/// `ends` is what the ribbon meets at its head and its tail — see [`EndJoin`].
+///
+/// `ring` says the centre line closes on itself — a roundabout, a turning
+/// circle, a loop road. Its two "ends" are the same point and are not ends at
+/// all, so each takes its miter from the segment on the other side of the join
+/// instead of a butt cap. Without that the ring meets itself at an angle with
+/// two square ends: a wedge of bare ground bitten out of the outer kerb and a
+/// doubled overlap on the inner one, which is what put a notch in every
+/// roundabout. Position and width match on both sides of the seam, so the
+/// closure is watertight; only `v` wraps, and one texture discontinuity
+/// somewhere on a loop is unavoidable unless its length happens to be a whole
+/// number of texture repeats.
 fn ribbon(
     points: &[[f32; 2]],
     half: f32,
     y: f32,
     tex_len_m: f32,
-    extend: [f32; 2],
+    ends: [EndJoin; 2],
+    ring: bool,
     positions: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
     indices: &mut Vec<u32>,
 ) {
+    let extend = [ends[0].extend, ends[1].extend];
     // Consecutive duplicates have no direction and would produce NaN normals.
     let mut pts: Vec<[f32; 2]> = Vec::with_capacity(points.len());
     for p in points {
@@ -2341,6 +2510,13 @@ fn ribbon(
     if pts.len() < 2 || half <= 0.0 {
         return;
     }
+    // A ring needs three distinct points plus the repeat to have an interior;
+    // and the caller's flag is only a hint until the geometry agrees with it
+    // (a clipped run of a closed line is an ordinary open polyline).
+    let last = pts.len() - 1;
+    let ring = ring
+        && pts.len() >= 4
+        && (pts[0][0] - pts[last][0]).hypot(pts[0][1] - pts[last][1]) <= 1e-4;
 
     let dir = |a: [f32; 2], b: [f32; 2]| -> [f32; 2] {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -2361,13 +2537,27 @@ fn ribbon(
         if i > 0 {
             travelled += (pts[i][0] - pts[i - 1][0]).hypot(pts[i][1] - pts[i - 1][1]);
         }
+        // On a ring the first point's incoming segment is the *last* one and the
+        // last point's outgoing segment is the first, so both ends miter into
+        // the join rather than butt-ending against it. Failing that, an end with
+        // a continuation borrows the neighbouring feature's direction: `leaves`
+        // points *away* from the node into that road, so the traffic arriving
+        // along it runs the other way.
         let d_in = if i > 0 {
             dir(pts[i - 1], pts[i])
+        } else if ring {
+            dir(pts[last - 1], pts[last])
+        } else if let Some((leaves, _)) = ends[0].cont {
+            [-leaves[0], -leaves[1]]
         } else {
             dir(pts[0], pts[1])
         };
         let d_out = if i + 1 < pts.len() {
             dir(pts[i], pts[i + 1])
+        } else if ring {
+            dir(pts[0], pts[1])
+        } else if let Some((leaves, _)) = ends[1].cont {
+            leaves
         } else {
             d_in
         };
@@ -2401,11 +2591,27 @@ fn ribbon(
         // Inside: the same miter, but never further back than the segments it
         // eats into are long.
         let back_per_m = (m[0] * d_in[0] + m[1] * d_in[1]).abs();
-        let neighbour = match (i > 0, i + 1 < pts.len()) {
-            (true, true) => seg_len(i - 1).min(seg_len(i)),
-            (true, false) => seg_len(i - 1),
-            (false, true) => seg_len(i),
-            (false, false) => 0.0,
+        // The neighbour's segment length comes over with its direction, so both
+        // halves of a continuation clamp the inner corner against the same pair
+        // of lengths and land on the same vertex.
+        let prev_len = if i > 0 {
+            Some(seg_len(i - 1))
+        } else if ring {
+            Some(seg_len(last - 1))
+        } else {
+            ends[0].cont.map(|(_, seg_m)| seg_m)
+        };
+        let next_len = if i + 1 < pts.len() {
+            Some(seg_len(i))
+        } else if ring {
+            Some(seg_len(0))
+        } else {
+            ends[1].cont.map(|(_, seg_m)| seg_m)
+        };
+        let neighbour = match (prev_len, next_len) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => 0.0,
         };
         let mut ext_inner = half * miter;
         let budget = INNER_BACKTRACK_BUDGET * neighbour;
@@ -2532,7 +2738,6 @@ fn ribbon(
         stub(pts[0], dir(pts[1], pts[0]), extend[0], 0.0);
     }
     if extend[1] > 0.0 {
-        let last = pts.len() - 1;
         stub(
             pts[last],
             dir(pts[last - 1], pts[last]),
@@ -4519,6 +4724,198 @@ mod tests {
         }
     }
 
+    /// One arm of a junction, as `street_nodes` would have recorded it.
+    fn arm(feature: usize, half: f32, class: RoadClass, leaves: [f32; 2]) -> NodeArm {
+        NodeArm {
+            feature,
+            half,
+            class,
+            axis: leaves,
+            leaves: Some((leaves, 50.0)),
+        }
+    }
+
+    /// A street that Shortbread split in two is not a junction with itself, and
+    /// this is the common case: 58 % of the fixture's junction ends are joins
+    /// like that. The old rule *floored* the crossing sine and divided by it, so
+    /// two collinear features each fired the longest stub the cap allowed —
+    /// twelve metres of blank tarmac over its neighbour, from both sides. A real
+    /// crossing still gets its fill.
+    #[test]
+    fn a_street_that_continues_asks_for_no_stub() {
+        let east = [1.0, 0.0];
+        let mut nodes: HashMap<(i32, i32), Vec<NodeArm>> = HashMap::new();
+        // Feature 0 runs west→east and ends here; feature 1 carries it on east.
+        nodes.insert(
+            (0, 0),
+            vec![
+                arm(0, 3.5, RoadClass::Minor, [-1.0, 0.0]),
+                arm(1, 3.5, RoadClass::Minor, east),
+            ],
+        );
+        assert_eq!(
+            junction_extent(&nodes, [0.0, 0.0], 0, east),
+            0.0,
+            "a collinear continuation is not a notch to fill"
+        );
+        assert!(
+            continuation(&nodes, [0.0, 0.0], 0, east, RoadClass::Minor, 3.5).is_some(),
+            "the road carrying on east must be found as the continuation"
+        );
+
+        // The same node with a genuine side road crossing at 90°: the stub is
+        // back, and reaches that road's far kerb.
+        nodes.get_mut(&(0, 0)).unwrap()[1] = arm(1, 5.0, RoadClass::Major, [0.0, 1.0]);
+        assert!(
+            (junction_extent(&nodes, [0.0, 0.0], 0, east) - 5.0).abs() < 1e-4,
+            "a perpendicular crossing still needs its junction filled"
+        );
+        assert!(
+            continuation(&nodes, [0.0, 0.0], 0, east, RoadClass::Minor, 3.5).is_none(),
+            "a road crossing at 90 degrees is not a continuation"
+        );
+
+        // Nor is a road of another class, or one of a very different width,
+        // however well aligned: grafting a service road's cap onto a motorway's
+        // is not a join.
+        nodes.get_mut(&(0, 0)).unwrap()[1] = arm(1, 11.0, RoadClass::Motorway, east);
+        assert!(continuation(&nodes, [0.0, 0.0], 0, east, RoadClass::Minor, 3.5).is_none());
+        nodes.get_mut(&(0, 0)).unwrap()[1] = arm(1, 8.0, RoadClass::Minor, east);
+        assert!(continuation(&nodes, [0.0, 0.0], 0, east, RoadClass::Minor, 3.5).is_none());
+
+        // A road that merely *passes through* the node is being crossed, not
+        // joined, even when it is aligned — it has no end here to meet.
+        let mut through = arm(1, 3.5, RoadClass::Minor, east);
+        through.leaves = None;
+        nodes.get_mut(&(0, 0)).unwrap()[1] = through;
+        assert!(continuation(&nodes, [0.0, 0.0], 0, east, RoadClass::Minor, 3.5).is_none());
+    }
+
+    /// The point of mitring a continuation rather than approximating it: the two
+    /// halves must put their end vertices on the *same two points*, so the join
+    /// is watertight by construction. Two square butt caps meeting at a 30° bend
+    /// leave a wedge of bare ground on the outside and a doubled overlap on the
+    /// inside — measured up to 1.28 m across on the fixture's 7 m streets.
+    #[test]
+    fn two_halves_of_one_street_meet_on_the_same_two_points() {
+        let turn = 30.0f32.to_radians();
+        // A comes in from the west and stops at the origin; B carries on, bent
+        // by `turn`. Each is told the direction the other leaves the node in.
+        let b_leaves = [turn.cos(), turn.sin()];
+        let a_leaves = [-1.0, 0.0];
+        let lay = |pts: &[[f32; 2]], ends: [EndJoin; 2]| {
+            let (mut p, mut u, mut i) = (Vec::new(), Vec::new(), Vec::new());
+            ribbon(pts, 3.5, 0.0, 12.0, ends, false, &mut p, &mut u, &mut i);
+            p
+        };
+        let seg = 40.0;
+        let a = lay(
+            &[[-seg, 0.0], [0.0, 0.0]],
+            [
+                EndJoin::default(),
+                EndJoin {
+                    extend: 0.0,
+                    cont: Some((b_leaves, seg)),
+                },
+            ],
+        );
+        let b = lay(
+            &[[0.0, 0.0], [b_leaves[0] * seg, b_leaves[1] * seg]],
+            [
+                EndJoin {
+                    extend: 0.0,
+                    cont: Some((a_leaves, seg)),
+                },
+                EndJoin::default(),
+            ],
+        );
+        // The two vertices each ribbon puts *at* the node.
+        let at_node = |v: &[[f32; 3]]| -> Vec<[f32; 2]> {
+            let mut out: Vec<[f32; 2]> = v
+                .iter()
+                .filter(|p| p[0].hypot(p[2]) < 3.5 * MITER_LIMIT + 1e-3)
+                .map(|p| [p[0], p[2]])
+                .collect();
+            out.sort_by(|x, y| x[1].partial_cmp(&y[1]).unwrap());
+            out.dedup_by(|x, y| (x[0] - y[0]).hypot(x[1] - y[1]) < 1e-4);
+            out
+        };
+        let (ea, eb) = (at_node(&a), at_node(&b));
+        assert_eq!(ea.len(), 2, "an end is two vertices, got {ea:?}");
+        assert_eq!(eb.len(), 2, "an end is two vertices, got {eb:?}");
+        for (x, y) in ea.iter().zip(&eb) {
+            assert!(
+                (x[0] - y[0]).hypot(x[1] - y[1]) < 1e-4,
+                "the two halves end on different points: {x:?} against {y:?}"
+            );
+        }
+        // And the cap really is mitred, not square: a butt end would sit on the
+        // segment normal, i.e. exactly on x = 0.
+        assert!(
+            ea.iter().any(|p| p[0].abs() > 0.1),
+            "the cap is still square: {ea:?}"
+        );
+    }
+
+    /// A roundabout's centre line closes on itself, so its "two ends" are one
+    /// node the road runs *through*. Butt-capping there bit a notch out of every
+    /// roundabout in the city; closing the ribbon puts both ends on one miter.
+    #[test]
+    fn a_ring_closes_on_itself_instead_of_butting() {
+        let n = 12;
+        let ring: Vec<[f32; 2]> = (0..=n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                [20.0 * a.cos(), 20.0 * a.sin()]
+            })
+            .collect();
+        let lay = |ring_flag: bool| {
+            let (mut p, mut u, mut i) = (Vec::new(), Vec::new(), Vec::new());
+            ribbon(
+                &ring,
+                3.5,
+                0.0,
+                12.0,
+                [EndJoin::default(); 2],
+                ring_flag,
+                &mut p,
+                &mut u,
+                &mut i,
+            );
+            p
+        };
+        let closed = lay(true);
+        let butted = lay(false);
+        // The seam's first and last vertex pairs are the same two points when the
+        // ribbon closes, and different ones when it butt-caps.
+        let seam = |p: &[[f32; 3]]| {
+            let last = p.len() - 2;
+            (
+                (p[0][0] - p[last][0]).hypot(p[0][2] - p[last][2]),
+                (p[1][0] - p[last + 1][0]).hypot(p[1][2] - p[last + 1][2]),
+            )
+        };
+        let (d0, d1) = seam(&closed);
+        assert!(
+            d0 < 1e-4 && d1 < 1e-4,
+            "the ring does not close: seam gaps {d0} and {d1} m"
+        );
+        let (b0, b1) = seam(&butted);
+        assert!(
+            b0.max(b1) > 0.2,
+            "the butt-capped control should show the notch this test is about"
+        );
+        // Every vertex still sits on the carriageway: the closing miter must not
+        // spike, and the ring must not neck in.
+        for p in &closed {
+            let r = p[0].hypot(p[2]);
+            assert!(
+                (16.0..=24.5).contains(&r),
+                "ring vertex at radius {r} is off the carriageway"
+            );
+        }
+    }
+
     /// A straight run of road must come out exactly its class's width — this is
     /// the number that decides whether a street looks like a street from the
     /// pavement, and the miter maths is the easiest place to lose it.
@@ -4534,7 +4931,14 @@ mod tests {
             3.5,
             0.0,
             12.0,
-            [0.0, 5.0],
+            [
+                EndJoin::default(),
+                EndJoin {
+                    extend: 5.0,
+                    cont: None,
+                },
+            ],
+            false,
             &mut positions,
             &mut uvs,
             &mut indices,
@@ -4578,7 +4982,8 @@ mod tests {
             half,
             0.0,
             12.0,
-            [0.0, 0.0],
+            [EndJoin::default(); 2],
+            false,
             &mut positions,
             &mut uvs,
             &mut indices,
