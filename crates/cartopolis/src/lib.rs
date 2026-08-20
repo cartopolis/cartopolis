@@ -735,7 +735,8 @@ fn exit_on_halt() {}
 /// the registry. The measurement is a phone: lose the device, background the app,
 /// and look for a tombstone that no longer arrives.
 fn abandon_lost_surface(render_world: &mut World) {
-    let Some(surfaces) = render_world.remove_resource::<bevy::render::view::WindowSurfaces>() else {
+    let Some(surfaces) = render_world.remove_resource::<bevy::render::view::WindowSurfaces>()
+    else {
         tracing::warn!("no WindowSurfaces to abandon at the halt — nothing held a swapchain");
         return;
     };
