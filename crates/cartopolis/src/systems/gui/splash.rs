@@ -230,10 +230,18 @@ pub fn boot_splash(
 
     // The dismissal fade, which takes the backdrop with it — this is the layer
     // lifting off the world.
+    //
+    // Advanced by a *clamped* dt, so the fade is a number of drawn frames rather
+    // than a stretch of wall clock. It dismisses into the busiest seconds of the
+    // run — the startup stream — and there a frame can take several hundred
+    // milliseconds, which spent the whole 0.6 s budget across one or two paints:
+    // the math ran and nobody saw it, the splash simply cut to the map. Clamped
+    // to 50 ms per frame the fade always gets ≥ 12 paints; on a healthy frame
+    // rate the clamp never engages and the duration is exactly `FADE_S`.
     let backdrop = match splash.fading {
         None => 1.0,
         Some(left) => {
-            let left = left - dt;
+            let left = left - dt.min(0.05);
             splash.fading = Some(left);
             if left <= 0.0 {
                 splash.finished = true;
