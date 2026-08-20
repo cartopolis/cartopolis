@@ -38,6 +38,36 @@
 //! the nodes lying on it — before any edge is emitted. Skipping it does not fail
 //! loudly; it just returns [`RouteError::NoPath`] for perfectly ordinary routes,
 //! which is why the pass is not optional and the tests pin the component share.
+//!
+//! **Why the noding pass is guarded.** It invents a junction wherever a node lies
+//! on a segment, and it has no way ids to check the invention against — so left to
+//! itself it also joins a viaduct to the street it crosses, and a car leaves the
+//! underpass, climbs onto the motorway, and nothing in the returned route says it
+//! happened. Two rules decide, and the first does most of the work:
+//!
+//! * **Only a dangle may split.** The tee this pass exists to repair is a line that
+//!   *stops dead* on another line, its shared vertex generalised away. A line that
+//!   carries on past the contact was never touching it. Marking each line's own two
+//!   ends is enough to tell those apart, it needs nothing the tiles do not already
+//!   say — and it is the only rule here that separates two viaducts crossing each
+//!   other at an interchange, where no attribute in the data distinguishes them.
+//! * **…and only at its own grade.** A slip road really does end on the carriageway
+//!   it joins, so being a dangle is not sufficient: a bridge's abutment is a dangle
+//!   sitting directly over the street it lands beside. Every segment carries a
+//!   [`level`](RawSeg::level) — OSM's `layer` where the tile has one, else the
+//!   `bridge` / `tunnel` flags — and each node the levels of the segments that end
+//!   at it; a split needs a level in common.
+//!
+//! Refusing a split can never sever anything the tiles connected by a shared vertex
+//! — that connectivity is node identity and runs underneath this pass — so both
+//! guards are one-directional: they remove junctions that were never there and
+//! cannot remove one that was.
+//!
+//! The residue it does **not** fix is a bridge vertex that quantises onto a street
+//! vertex, which fuses them into one node before any of this runs. Splitting node
+//! identity by level would fix that and break something worse: a bridge meets the
+//! ground at its abutments through exactly such a shared vertex, so a level-keyed
+//! node would disconnect every bridge in the network from both its ends.
 
 use std::collections::{BinaryHeap, HashMap};
 
@@ -389,6 +419,14 @@ struct Edge {
     /// Loose surface: costs bikes and walkers speed, cars nothing (they are not
     /// routed onto tracks in any meaningful volume anyway).
     unpaved: bool,
+    /// The grade this edge runs at — see [`level_of`].
+    ///
+    /// Nothing in the *search* reads it: a route's cost and its turns do not depend
+    /// on how high the road stands. It is carried because the thing that draws the
+    /// route does need it, and cannot work it out. A bridge and the street beneath
+    /// it have the same ground position, so no test on the drawn line's coordinates
+    /// can say which of them it is on — only the edge it came from can.
+    level: i8,
 }
 
 /// A street segment carrying a name, used to label the turn list. Kept apart from
@@ -413,6 +451,37 @@ const BUCKET: f64 = 256.0;
 /// junctions between roads that merely pass close to one another.
 const NODE_TOL: f64 = 1.5;
 
+/// The levels a node's own segments occupy fit in a `u16` bitmask, so grades are
+/// clamped into a window centred on the ground. Nothing real reaches these: OSM's
+/// `layer` is conventionally −5..5 and the deepest stack in the wild is a handful
+/// of decks.
+const MIN_LEVEL: i8 = -7;
+const MAX_LEVEL: i8 = 8;
+
+/// A grade as its bit in the [`RoadGraph::node_levels`] mask.
+fn level_bit(level: i8) -> u16 {
+    1u16 << (level.clamp(MIN_LEVEL, MAX_LEVEL) - MIN_LEVEL) as u32
+}
+
+/// A street's grade: 0 is the ground, a bridge stands above it, a tunnel runs below.
+///
+/// OSM's `layer` is the authority where the tile carries one — it is the tag that
+/// actually orders a stack of decks, and it is what the raster's draw order already
+/// sorts on. Where it is absent the flags still say the thing that matters: a
+/// mapper who tagged a viaduct without a `layer` did say it is not on the ground.
+/// Only the *relative* value is ever used, so mapping every bridge to a single
+/// level 1 is enough to separate it from what it crosses.
+fn level_of(props: Option<&HashMap<String, Value>>) -> i8 {
+    match int_prop(props, "layer") {
+        Some(explicit) if explicit != 0 => {
+            explicit.clamp(i64::from(MIN_LEVEL), i64::from(MAX_LEVEL)) as i8
+        }
+        _ if bool_prop(props, "bridge") => 1,
+        _ if bool_prop(props, "tunnel") => -1,
+        _ => 0,
+    }
+}
+
 /// A street segment as read from a tile, before noding. Edges are only emitted in
 /// [`RoadGraph::finish`], because a segment's endpoints are not known until every
 /// tile has contributed the nodes that might split it.
@@ -427,6 +496,12 @@ struct RawSeg {
     rev_blocked: bool,
     bike_denied: bool,
     unpaved: bool,
+    /// The grade this segment runs at — see [`level_of`]. Read by the noding pass,
+    /// which will not invent a junction between two levels, and carried onto
+    /// [`Edge`] and out through [`Route::levels`] for the thing that *draws* the
+    /// route. Nothing in the search reads it: a route's cost and its turns do not
+    /// depend on how high the road stands.
+    level: i8,
 }
 
 /// The routable street network, stitched from any number of MVT tiles.
@@ -443,6 +518,22 @@ pub struct RoadGraph {
     built: bool,
     /// Bucket → node ids, for snapping a lat/lng onto the network.
     node_buckets: HashMap<(i32, i32), Vec<u32>>,
+    /// The grades meeting at each node, one bit per level, indexed by node id.
+    ///
+    /// Written from the *endpoints* of every raw segment, so it answers "is there a
+    /// street at this grade that genuinely reaches this point" — which is the
+    /// question [`Self::finish`] has to settle before inventing a junction there. A
+    /// bridge's abutment is shared with the ground road, so it carries both bits and
+    /// stays a junction; a vertex under a viaduct carries only its own.
+    node_levels: Vec<u16>,
+    /// Whether each node is the *end* of a line some tile drew, rather than a
+    /// vertex partway along one. The other half of what [`Self::finish`] needs
+    /// before inventing a junction — see the module docs.
+    node_terminal: Vec<bool>,
+    /// How many junctions [`Self::finish`]'s two guards turned down, split by which
+    /// one refused it. See there.
+    mid_span_refused: usize,
+    cross_level_refused: usize,
     names: Vec<String>,
     label_segs: Vec<LabelSeg>,
     /// Bucket → label segment ids.
@@ -495,6 +586,10 @@ impl RoadGraph {
             edges: Vec::new(),
             built: false,
             node_buckets: HashMap::new(),
+            node_levels: Vec::new(),
+            node_terminal: Vec::new(),
+            mid_span_refused: 0,
+            cross_level_refused: 0,
             names: Vec::new(),
             label_segs: Vec::new(),
             label_buckets: HashMap::new(),
@@ -597,6 +692,12 @@ impl RoadGraph {
 
         let raw = std::mem::take(&mut self.raw);
         let mut splits: Vec<(f64, u32)> = Vec::new();
+        // Candidates the grade guard turned down. Counted rather than merely
+        // skipped: a number that is zero over a city means the levels never reached
+        // the graph — a source that ships no `bridge`/`layer` at all reads exactly
+        // like one whose bridges cross nothing, and only this tells them apart.
+        let mut cross_level = 0usize;
+        let mut mid_span = 0usize;
         for seg in &raw {
             let (a, b) = (self.coords[seg.a as usize], self.coords[seg.b as usize]);
             splits.clear();
@@ -632,9 +733,33 @@ impl RoadGraph {
                         // Strictly interior: an endpoint-adjacent hit is already
                         // connected, and admitting t = 0/1 would emit zero-length
                         // edges that the turn list then has to filter out.
-                        if d <= NODE_TOL && t > 1e-6 && t < 1.0 - 1e-6 {
-                            splits.push((t, id));
+                        if d > NODE_TOL || t <= 1e-6 || t >= 1.0 - 1e-6 {
+                            continue;
                         }
+                        // Both guards are tested *after* the geometry, so their
+                        // counters mean "junctions this refused" and not "bucket
+                        // neighbours it looked at" — most of a bucket is nowhere near
+                        // the segment.
+                        //
+                        // Only a *dangle* may split. The tee this pass exists to
+                        // repair is a line that stops dead on another line, its
+                        // shared vertex generalised away; a line that carries on past
+                        // the contact was never touching it. That is the difference
+                        // between a junction and a crossing, and it is the one that
+                        // survives having no way ids to ask.
+                        if !self.node_terminal[id as usize] {
+                            mid_span += 1;
+                            continue;
+                        }
+                        // …and only at its own grade. A slip road really does end on
+                        // the carriageway it joins, so being a dangle is not enough:
+                        // a viaduct's abutment is a dangle sitting directly over the
+                        // street it lands beside.
+                        if self.node_levels[id as usize] & level_bit(seg.level) == 0 {
+                            cross_level += 1;
+                            continue;
+                        }
+                        splits.push((t, id));
                     }
                 }
             }
@@ -652,6 +777,15 @@ impl RoadGraph {
             }
             self.emit(seg, prev, seg.b);
         }
+        self.cross_level_refused = cross_level;
+        self.mid_span_refused = mid_span;
+        tracing::debug!(
+            nodes = self.coords.len(),
+            segments = raw.len(),
+            mid_span,
+            cross_level,
+            "noded the street graph"
+        );
     }
 
     /// Emit both traversals of one (possibly split) segment.
@@ -669,6 +803,7 @@ impl RoadGraph {
             against_oneway: seg.fwd_blocked,
             bike_denied: seg.bike_denied,
             unpaved: seg.unpaved,
+            level: seg.level,
         });
         self.edges[b as usize].push(Edge {
             to: a,
@@ -677,6 +812,7 @@ impl RoadGraph {
             against_oneway: seg.rev_blocked,
             bike_denied: seg.bike_denied,
             unpaved: seg.unpaved,
+            level: seg.level,
         });
     }
 
@@ -725,8 +861,18 @@ impl RoadGraph {
             (true, false) => (false, true),
             (true, true) => (true, false),
         };
+        // A ferry has neither tag and lands on the ground, which is right: it meets
+        // the road network at slipways that are ordinary street vertices.
+        let level = level_of(props);
         let mut add_line = |line: &geo_types::LineString<f32>| {
             let pts: Vec<Option<(f64, f64)>> = line.coords().map(to_global).collect();
+            // The first and last node this line actually contributes a segment to.
+            // Taken from the retained run rather than from `pts`, so a vertex the
+            // window rejected cannot mark a terminal — and, more importantly, a
+            // vertex that joins no segment is never interned at all: one of those
+            // is an orphan node in the snap index, and the hostile fixtures are
+            // built out of exactly such isolated coordinates.
+            let (mut first, mut last) = (None, None);
             for w in pts.windows(2) {
                 // One endpoint outside the tile's window is enough to drop the
                 // segment; the rest of the line is kept, since a way that leaves
@@ -735,10 +881,12 @@ impl RoadGraph {
                 let (Some(a), Some(b)) = (w[0], w[1]) else {
                     continue;
                 };
-                let (ia, ib) = (self.node(a), self.node(b));
+                let (ia, ib) = (self.node(a, level), self.node(b, level));
                 if ia == ib {
                     continue; // zero-length after quantisation
                 }
+                first = first.or(Some(ia));
+                last = Some(ib);
                 self.raw.push(RawSeg {
                     a: ia,
                     b: ib,
@@ -747,7 +895,15 @@ impl RoadGraph {
                     rev_blocked,
                     bike_denied,
                     unpaved,
+                    level,
                 });
+            }
+            // Shortbread merges ways by attribute, so a run of bridge stops being
+            // one line exactly where the `bridge` flag stops — which puts these two
+            // marks on the abutments, the places a deck legitimately joins the
+            // ground.
+            for id in [first, last].into_iter().flatten() {
+                self.node_terminal[id as usize] = true;
             }
         };
 
@@ -814,15 +970,26 @@ impl RoadGraph {
         }
     }
 
-    /// Intern a lattice point as a node id.
-    fn node(&mut self, p: (f64, f64)) -> u32 {
+    /// Intern a lattice point as a node id, recording that a street at `level`
+    /// reaches it.
+    ///
+    /// Node identity stays the bare coordinate, *not* the coordinate and the level:
+    /// a bridge meets the ground through a vertex it shares with the road at its
+    /// abutment, so keying the level in would disconnect every bridge from both its
+    /// ends. The level is accumulated beside the node instead, for the noding pass
+    /// to consult — see the module docs.
+    fn node(&mut self, p: (f64, f64), level: i8) -> u32 {
         let key: Node = (p.0.round() as i32, p.1.round() as i32);
+        let bit = level_bit(level);
         if let Some(&id) = self.index.get(&key) {
+            self.node_levels[id as usize] |= bit;
             return id;
         }
         let id = self.coords.len() as u32;
         self.index.insert(key, id);
         self.coords.push((f64::from(key.0), f64::from(key.1)));
+        self.node_levels.push(bit);
+        self.node_terminal.push(false);
         self.node_buckets
             .entry((bucket(f64::from(key.0)), bucket(f64::from(key.1))))
             .or_default()
@@ -1315,6 +1482,37 @@ impl RoadGraph {
         }
         points.push([to.0, to.1]);
 
+        // A point's grade is the **lowest** of the path edges meeting there, so an
+        // abutment — where a bridge run's edge meets a ground edge — counts as
+        // ground. That puts the step at the first vertex genuinely on the structure
+        // rather than at the one where it begins, which is where the deck's own
+        // fascia puts it too. The two pins inherit the end they lead to.
+        let mut levels = vec![i8::MAX; points.len()];
+        for (i, w) in path.windows(2).enumerate() {
+            let level = self.edges[w[0] as usize]
+                .iter()
+                .filter(|e| e.to == w[1])
+                .filter(|e| self.edge_cost(e, mode).is_some())
+                .map(|e| e.level)
+                .min()
+                .unwrap_or(0);
+            // `points` is [pin, path…, pin], so path vertex `i` is `points[i + 1]`.
+            levels[i + 1] = levels[i + 1].min(level);
+            levels[i + 2] = levels[i + 2].min(level);
+        }
+        // A one-node path has no edge to speak for it, and the pins copy their
+        // neighbour rather than inventing a grade of their own.
+        for l in &mut levels {
+            if *l == i8::MAX {
+                *l = 0;
+            }
+        }
+        if points.len() >= 3 {
+            levels[0] = levels[1];
+            let last = levels.len() - 1;
+            levels[last] = levels[last - 1];
+        }
+
         // One hop per traversed edge, with everything the turn list needs.
         let mut hops: Vec<Hop> = Vec::with_capacity(path.len());
         for w in path.windows(2) {
@@ -1362,6 +1560,7 @@ impl RoadGraph {
             return Route {
                 mode,
                 points,
+                levels,
                 distance_m,
                 duration_s,
                 steps: vec![RouteStep {
@@ -1420,6 +1619,7 @@ impl RoadGraph {
         Route {
             mode,
             points,
+            levels,
             distance_m,
             duration_s,
             steps,
@@ -1531,6 +1731,14 @@ pub struct Route {
     pub mode: TravelMode,
     /// The path as `[lat, lng]`, including the lead-in/out to the requested points.
     pub points: Vec<[f64; 2]>,
+    /// The grade each point sits at, parallel to `points`: 0 on the ground, 1 or
+    /// more on a bridge, negative in a tunnel.
+    ///
+    /// Here because the drawn line has to climb onto a viaduct it was routed over,
+    /// and *not* climb onto one it was routed under. Those two are the same ground
+    /// position, so nothing downstream can recover the difference — the graph is the
+    /// last place that knows it (`systems::navigation`, `map_geometry::DeckPlates`).
+    pub levels: Vec<i8>,
     pub distance_m: f64,
     pub duration_s: f64,
     pub steps: Vec<RouteStep>,
@@ -1869,6 +2077,11 @@ pub fn route_staged(
     let mut points = head.points.clone();
     points.extend_from_slice(&long.points[a + 1..b]);
     points.extend_from_slice(&tail.points);
+    // Grades splice exactly as the geometry does — they are parallel arrays, and a
+    // pair that drifts apart is a route line that climbs the wrong viaduct.
+    let mut levels = head.levels.clone();
+    levels.extend_from_slice(&long.levels[a + 1..b]);
+    levels.extend_from_slice(&tail.levels);
 
     // The coarse middle's own length, measured off the polyline rather than taken
     // from the planner's total — the two legs it replaces are gone. Its time is
@@ -1901,6 +2114,7 @@ pub fn route_staged(
     Ok(Route {
         mode,
         points,
+        levels,
         distance_m: head.distance_m + middle_m + tail.distance_m,
         duration_s: head.duration_s + middle_s + tail.duration_s,
         steps,
@@ -1960,6 +2174,21 @@ fn str_prop<'a>(props: Option<&'a HashMap<String, Value>>, key: &str) -> Option<
 
 fn bool_prop(props: Option<&HashMap<String, Value>>, key: &str) -> bool {
     matches!(props.and_then(|p| p.get(key)), Some(Value::Bool(true)))
+}
+
+/// An integer-valued property, in whichever of MVT's numeric shapes the encoder
+/// chose. Reading only one of them is how `housenumber` lost most of its values
+/// (see `vector_tiles`); `layer` is the same tag in the same position to make that
+/// mistake in, and a dropped `layer` reads as a viaduct lying on the ground.
+fn int_prop(props: Option<&HashMap<String, Value>>, key: &str) -> Option<i64> {
+    match props?.get(key)? {
+        Value::Int(v) | Value::SInt(v) => Some(*v),
+        Value::UInt(v) => Some(*v as i64),
+        Value::Float(v) => Some(*v as i64),
+        Value::Double(v) => Some(*v as i64),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
 }
 
 fn minmax(a: f64, b: f64) -> (f64, f64) {
@@ -2105,16 +2334,383 @@ mod tests {
     /// Add one segment straight to the raw list, bypassing the tile decode — the
     /// way to build a graph whose shape is the thing under test.
     fn seg(g: &mut RoadGraph, a: (f64, f64), b: (f64, f64), kind: RoadKind) {
-        let (ia, ib) = (g.node(a), g.node(b));
-        g.raw.push(RawSeg {
-            a: ia,
-            b: ib,
-            kind,
-            fwd_blocked: false,
-            rev_blocked: false,
-            bike_denied: false,
-            unpaved: false,
-        });
+        seg_at(g, a, b, kind, 0);
+    }
+
+    /// As [`seg`], at an explicit grade.
+    fn seg_at(g: &mut RoadGraph, a: (f64, f64), b: (f64, f64), kind: RoadKind, level: i8) {
+        line_at(g, &[a, b], kind, level);
+    }
+
+    /// Add a whole polyline the way a tile's line arrives: its two ends are dangles
+    /// and every vertex between them is interior.
+    ///
+    /// That distinction is what `finish` routes on, so a test about crossings has to
+    /// be built out of lines and not out of segments — a chain of [`seg_at`] calls
+    /// marks every joint a dangle and quietly tests the opposite thing.
+    fn line_at(g: &mut RoadGraph, pts: &[(f64, f64)], kind: RoadKind, level: i8) {
+        let ids: Vec<u32> = pts.iter().map(|&p| g.node(p, level)).collect();
+        for w in ids.windows(2) {
+            g.raw.push(RawSeg {
+                a: w[0],
+                b: w[1],
+                kind,
+                fwd_blocked: false,
+                rev_blocked: false,
+                bike_denied: false,
+                unpaved: false,
+                level,
+            });
+        }
+        g.node_terminal[ids[0] as usize] = true;
+        g.node_terminal[*ids.last().expect("a line has at least one vertex") as usize] = true;
+    }
+
+    /// A viaduct and the street beneath it are not a junction, however exactly the
+    /// noding pass finds one lying on the other.
+    ///
+    /// The geometry is the one that bites: the bridge carries a *vertex* at the
+    /// crossing (its own generalisation put one there) while the ground road runs
+    /// straight through, so the sweep sees a node sitting on a segment and — before
+    /// the grade guard — spliced them into a slip road nobody can drive.
+    #[test]
+    fn a_bridge_does_not_join_the_street_it_crosses() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // The street, straight through, with no vertex at the crossing.
+        seg(&mut g, at(0.0, 0.0), at(800.0, 0.0), RoadKind::Residential);
+        // The viaduct over it, hinged exactly on the street's centre line.
+        seg_at(
+            &mut g,
+            at(400.0, -300.0),
+            at(400.0, 0.0),
+            RoadKind::Primary,
+            1,
+        );
+        seg_at(
+            &mut g,
+            at(400.0, 0.0),
+            at(400.0, 300.0),
+            RoadKind::Primary,
+            1,
+        );
+        g.finish();
+
+        assert_eq!(g.cross_level_refused, 1, "the guard did not fire");
+        let street = g.index[&(base.0 as i32, base.1 as i32)];
+        let on_the_bridge = g.index[&((base.0 + 400.0) as i32, (base.1 + 300.0) as i32)];
+        assert!(
+            !g.reachable(street, TravelMode::Car)
+                .contains(&on_the_bridge),
+            "a car drove off the street and onto the viaduct crossing over it"
+        );
+    }
+
+    /// …and it still meets the ground at its abutments.
+    ///
+    /// Same shape, one difference that is the whole distinction available in this
+    /// data: here the *ground road* carries the vertex too, because the two really
+    /// do share an OSM node. That shared vertex is a shared graph node, so the
+    /// junction exists without the noding pass being asked — which is why
+    /// [`RoadGraph::node`] keys on the coordinate alone. Key the level in and every
+    /// bridge in the network is severed from both its ends; this test is what
+    /// notices.
+    #[test]
+    fn a_bridge_meets_the_ground_at_its_abutments() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        seg(&mut g, at(0.0, 0.0), at(400.0, 0.0), RoadKind::Residential);
+        seg(&mut g, at(400.0, 0.0), at(800.0, 0.0), RoadKind::Residential);
+        seg_at(
+            &mut g,
+            at(400.0, 0.0),
+            at(400.0, 300.0),
+            RoadKind::Primary,
+            1,
+        );
+        g.finish();
+
+        let street = g.index[&(base.0 as i32, base.1 as i32)];
+        let on_the_bridge = g.index[&((base.0 + 400.0) as i32, (base.1 + 300.0) as i32)];
+        assert!(
+            g.reachable(street, TravelMode::Car).contains(&on_the_bridge),
+            "the ramp is unreachable from the road it ramps off"
+        );
+    }
+
+    /// Both guards fire on real tiles, and the grade one fires on levels that came
+    /// out of the attributes rather than out of a default.
+    ///
+    /// The second assertion is the one that fails if Shortbread renames `bridge`, or
+    /// if a decode change drops the flag: `level_of` would answer 0 everywhere,
+    /// every grade refusal would disappear, and that guard would sit inert while
+    /// looking installed. Measured 2026-08-20 on the Groningen z14 fixture: 59
+    /// mid-span and 2 cross-level junctions refused, 6348 → 6226 undirected edges,
+    /// car component share 0.9199 → 0.9195. The grade count is low because
+    /// Groningen's bridges mostly cross *water*, where there is no road to be fused
+    /// with; `docs/notes/grade-separation.md` has the full A/B.
+    #[test]
+    fn both_noding_guards_bite_on_real_tiles() {
+        let g = graph();
+        assert!(
+            g.mid_span_refused > 0,
+            "no crossing was refused over a whole city tile — the dangle guard is \
+             not seeing which vertices end a line"
+        );
+        assert!(
+            g.cross_level_refused > 0,
+            "no cross-level junction was refused over a whole city tile — the \
+             bridge/tunnel attributes are not reaching the graph"
+        );
+    }
+
+    /// `layer` decides where the tile carries one, the flags decide where it does
+    /// not — and Shortbread is the second case, so the flags are what does the work
+    /// today (its `streets` layer ships `bridge` and `tunnel` and no `layer`,
+    /// checked 2026-08-20 on the fixture). The consequence is worth knowing: every
+    /// bridge lands on level 1, which separates a viaduct from the ground beneath it
+    /// but says nothing about a second viaduct crossing it at an interchange — those
+    /// are told apart by the dangle rule instead
+    /// (`two_viaducts_crossing_are_not_a_junction`).
+    #[test]
+    fn a_level_comes_from_layer_first_and_the_flags_after() {
+        let props = |pairs: &[(&str, Value)]| -> HashMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect()
+        };
+
+        let flat = props(&[]);
+        assert_eq!(level_of(Some(&flat)), 0);
+
+        let bridge = props(&[("bridge", Value::Bool(true))]);
+        assert_eq!(level_of(Some(&bridge)), 1);
+
+        let tunnel = props(&[("tunnel", Value::Bool(true))]);
+        assert_eq!(level_of(Some(&tunnel)), -1);
+
+        // An explicit `layer` outranks the flag, so a stack of decks separates.
+        let upper = props(&[("bridge", Value::Bool(true)), ("layer", Value::SInt(2))]);
+        assert_eq!(level_of(Some(&upper)), 2);
+
+        // …in whichever numeric shape the encoder picked. Reading only one of them
+        // is how `housenumber` lost most of its values.
+        for v in [
+            Value::Int(-2),
+            Value::SInt(-2),
+            Value::Float(-2.0),
+            Value::Double(-2.0),
+            Value::String("-2".into()),
+        ] {
+            let sunk = props(&[("layer", v.clone())]);
+            assert_eq!(level_of(Some(&sunk)), -2, "layer as {v:?}");
+        }
+
+        // A `layer` past the mask's window still separates from the ground rather
+        // than wrapping onto some other level's bit.
+        let absurd = props(&[("layer", Value::SInt(99))]);
+        assert_eq!(level_of(Some(&absurd)), MAX_LEVEL);
+        assert_ne!(level_bit(MAX_LEVEL), level_bit(0));
+    }
+
+    /// A route's grades line up with its geometry, and the abutments read as ground.
+    ///
+    /// This is what stops the drawn line climbing the wrong viaduct. `points` and
+    /// `levels` are parallel arrays and every splice has to keep them so; a route
+    /// that crosses *under* a bridge has the same ground coordinates as one crossing
+    /// over it, so if these two ever drift apart nothing downstream can notice.
+    #[test]
+    fn a_route_carries_the_grade_of_the_road_it_is_on() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // Ground, then a bridge span, then ground again — one continuous road, with
+        // its abutments at x = 400 and x = 800 shared between the runs.
+        line_at(
+            &mut g,
+            &[at(0.0, 0.0), at(400.0, 0.0)],
+            RoadKind::Residential,
+            0,
+        );
+        line_at(
+            &mut g,
+            &[at(400.0, 0.0), at(600.0, 0.0), at(800.0, 0.0)],
+            RoadKind::Residential,
+            1,
+        );
+        line_at(
+            &mut g,
+            &[at(800.0, 0.0), at(1200.0, 0.0)],
+            RoadKind::Residential,
+            0,
+        );
+        g.finish();
+
+        let ends = |p: (f64, f64)| {
+            let c = g.index[&(p.0 as i32, p.1 as i32)] as usize;
+            g.lattice_to_lat_lng(g.coords[c].0, g.coords[c].1)
+        };
+        let route = g
+            .route(ends(at(0.0, 0.0)), ends(at(1200.0, 0.0)), TravelMode::Car)
+            .expect("one road end to end");
+
+        assert_eq!(
+            route.levels.len(),
+            route.points.len(),
+            "the grades must stay parallel to the geometry"
+        );
+        // The mid-span vertex is the only one wholly on the structure; both
+        // abutments are shared with a ground run and count as ground, which is where
+        // the deck's own fascia puts the step too.
+        assert!(
+            route.levels.contains(&1),
+            "the span was routed over but no point reports being on it: {:?}",
+            route.levels
+        );
+        assert_eq!(route.levels[0], 0, "the start pin is on the ground");
+        assert_eq!(
+            *route.levels.last().expect("levels"),
+            0,
+            "and so is the finish pin"
+        );
+    }
+
+    /// Two viaducts crossing each other at an interchange are not a junction — and
+    /// this is the case no attribute in the tile can settle, because both of them
+    /// are simply `bridge`. Only the dangle rule separates them.
+    ///
+    /// This was written off as unfixable when the grade guard went in ("nothing in
+    /// this repo can recover it"). It was fixable; the recoverable fact was never
+    /// the height, it was which line *ends* at the contact.
+    #[test]
+    fn two_viaducts_crossing_are_not_a_junction() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // Both decks. Neither carries a vertex the other could be tested against —
+        // except that the upper one is hinged over the lower, exactly as a
+        // generalised line is.
+        line_at(&mut g, &[at(0.0, 0.0), at(800.0, 0.0)], RoadKind::Primary, 1);
+        line_at(
+            &mut g,
+            &[at(400.0, -300.0), at(400.0, 0.0), at(400.0, 300.0)],
+            RoadKind::Primary,
+            1,
+        );
+        g.finish();
+
+        assert_eq!(g.mid_span_refused, 1, "the dangle guard did not fire");
+        assert_eq!(
+            g.cross_level_refused, 0,
+            "both decks are level 1 — the grade guard cannot see this one"
+        );
+        let lower = g.index[&(base.0 as i32, base.1 as i32)];
+        let upper = g.index[&((base.0 + 400.0) as i32, (base.1 + 300.0) as i32)];
+        assert!(
+            !g.reachable(lower, TravelMode::Car).contains(&upper),
+            "a car changed decks in mid-air"
+        );
+    }
+
+    /// The tee the noding pass exists for still joins, which is the half that a
+    /// guard is always one step from breaking: refuse a little too much and the
+    /// network shatters again, silently, into `NoPath` for ordinary routes.
+    #[test]
+    fn a_side_street_that_stops_dead_on_a_road_still_joins_it() {
+        let base = (TILE.0 as f64 * EXTENT, TILE.1 as f64 * EXTENT);
+        let at = |x: f64, y: f64| (base.0 + x, base.1 + y);
+
+        let mut g = RoadGraph::new(53.2194);
+        // The through road, generalised past the tee — it has no vertex there.
+        line_at(
+            &mut g,
+            &[at(0.0, 0.0), at(800.0, 0.0)],
+            RoadKind::Residential,
+            0,
+        );
+        // The side street, ending on it.
+        line_at(
+            &mut g,
+            &[at(400.0, 0.0), at(400.0, 300.0)],
+            RoadKind::Residential,
+            0,
+        );
+        g.finish();
+
+        assert_eq!(g.mid_span_refused + g.cross_level_refused, 0);
+        let road = g.index[&(base.0 as i32, base.1 as i32)];
+        let up_the_side_street = g.index[&((base.0 + 400.0) as i32, (base.1 + 300.0) as i32)];
+        assert!(
+            g.reachable(road, TravelMode::Car)
+                .contains(&up_the_side_street),
+            "the side street is unreachable from the road it tees into"
+        );
+    }
+
+    /// A/B of the two noding guards on the real fixture: the same tile noded with
+    /// each combination of them, against the flat pass they replaced. Diagnostic,
+    /// not a gate — the numbers it prints are quoted in
+    /// `docs/notes/grade-separation.md`.
+    #[test]
+    #[ignore]
+    fn grade_separation_diagnostic() {
+        // Each variant is expressed by *relaxing* the finished graph's inputs
+        // before noding, so there is no knob in production code: dropping every
+        // level to the ground disables the grade guard, and marking every node a
+        // dangle disables the mid-span one.
+        let build = |levels: bool, dangles: bool| {
+            let mut g = RoadGraph::new(53.2194);
+            g.add_tile(&TileData::parse(GRONINGEN_Z14).expect("parse"), TILE)
+                .expect("add tile");
+            if !levels {
+                for s in &mut g.raw {
+                    s.level = 0;
+                }
+                for l in &mut g.node_levels {
+                    *l = level_bit(0);
+                }
+            }
+            if !dangles {
+                for t in &mut g.node_terminal {
+                    *t = true;
+                }
+            }
+            g.finish();
+            g
+        };
+
+        println!(
+            "{:<14} {:>7} {:>9} {:>10} {:>8} {:>8} {:>8}",
+            "variant", "edges", "mid-span", "cross-lvl", "car", "bike", "foot"
+        );
+        for (name, levels, dangles) in [
+            ("flat", false, false),
+            ("level only", true, false),
+            ("dangle only", false, true),
+            ("both", true, true),
+        ] {
+            let g = build(levels, dangles);
+            let share = |mode| {
+                let (l, u) = g.largest_component(mode);
+                l as f64 / u as f64
+            };
+            println!(
+                "{name:<14} {:>7} {:>9} {:>10} {:>8.4} {:>8.4} {:>8.4}",
+                g.edge_count(),
+                g.mid_span_refused,
+                g.cross_level_refused,
+                share(TravelMode::Car),
+                share(TravelMode::Bike),
+                share(TravelMode::Foot),
+            );
+        }
     }
 
     /// A vertex no tile can legitimately carry must never reach the graph.
@@ -2633,6 +3229,7 @@ mod tests {
             against_oneway: true,
             bike_denied: false,
             unpaved: false,
+            level: 0,
         };
         assert!(g.edge_cost(&edge, TravelMode::Car).is_none());
         assert!(g.edge_cost(&edge, TravelMode::Foot).is_some());
@@ -2743,32 +3340,43 @@ mod tests {
 
     /// The noding pass is load-bearing, and its absence does not announce itself —
     /// it just returns `NoPath` for ordinary routes. Pin both halves of the fix:
-    /// nothing is left lying on a segment afterwards, and the network is one piece.
+    /// every tee it was built for is a real vertex afterwards, and the network is
+    /// one piece.
+    ///
+    /// "Every tee", not "every contact". The pass deliberately leaves nodes lying on
+    /// segments now — a street passing under a viaduct is exactly that, and joining
+    /// the two is the bug the guards exist to prevent. What must not be left lying
+    /// is a **dangle at a shared grade**: a line that stops dead on another line it
+    /// could really have met. That is the invariant, and stating it this way is what
+    /// keeps the test from being satisfied by a pass that simply joins less.
     #[test]
     fn noding_reconnects_the_network() {
         let g = graph();
 
-        // Every tee has become a real vertex.
         let mut segs = Vec::new();
         for (i, adj) in g.edges.iter().enumerate() {
             for e in adj {
                 if e.to as usize > i {
-                    segs.push((g.coords[i], g.coords[e.to as usize]));
+                    segs.push((i, e.to as usize));
                 }
             }
         }
-        let dangling = g
-            .coords
-            .iter()
-            .filter(|c| {
-                segs.iter().any(|(a, b)| {
-                    *a != **c && *b != **c && point_seg_distance(**c, *a, *b) <= NODE_TOL
+        let dangling = (0..g.coords.len())
+            .filter(|&i| g.node_terminal[i])
+            .filter(|&i| {
+                segs.iter().any(|&(a, b)| {
+                    a != i
+                        && b != i
+                        // A grade all three share, or they were never in contact.
+                        && g.node_levels[i] & g.node_levels[a] & g.node_levels[b] != 0
+                        && point_seg_distance(g.coords[i], g.coords[a], g.coords[b])
+                            <= NODE_TOL
                 })
             })
             .count();
         assert!(
             dangling <= g.coords.len() / 100,
-            "{dangling} nodes still sit on a segment they are not a vertex of"
+            "{dangling} dangling ends still sit on a segment they could have joined"
         );
 
         // …and the usable network is essentially one component per mode. Before

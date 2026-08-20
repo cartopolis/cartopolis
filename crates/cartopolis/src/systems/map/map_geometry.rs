@@ -125,6 +125,88 @@ type Tessellated = (
 pub struct CellStores<'w> {
     labels: ResMut<'w, StreetLabelStore>,
     places: ResMut<'w, WorldPlaces>,
+    decks: ResMut<'w, DeckPlates>,
+}
+
+/// Where the raised bridge decks are and how high they stand, in the anchored
+/// world-XZ frame — the deck heights kept as a *queryable* fact rather than only as
+/// vertices in a mesh.
+///
+/// It exists because a deck is the one piece of this map that other things have to
+/// stand on. `resolve_bridge_decks` already knows every number in here; before this
+/// it spent them into `build_deck_mesh` and forgot them, so the route line — drawn
+/// on the ground plane, as everything is — ran *underneath* every viaduct it was
+/// routed over. Same shape and same contract as `collision::BuildingColliders`: the
+/// streamer publishes, consumers sample, and an entry dies with its cell.
+///
+/// Only decks that were actually *lifted* are kept ([`MIN_LIFT_M`]). A flat deck is
+/// a piece of road surface and there is nothing to climb onto.
+#[derive(Resource, Default)]
+pub struct DeckPlates {
+    plates: HashMap<Cell, Vec<Plate>>,
+    /// Bumped on every change, so a consumer that caches geometry can tell it has
+    /// gone stale. The decks land some frames *after* the cell they belong to —
+    /// their height is a measurement — so "the route was drawn before the viaduct
+    /// arrived" is the ordinary case, not an edge one, and the route's redraw key
+    /// carries this for exactly that reason.
+    pub revision: u32,
+}
+
+/// One lifted deck: its outline as the tile drew it, where that tile sits in the
+/// world, and how high the structure stands.
+struct Plate {
+    deck: BridgeDeck,
+    /// Cell origin in world metres; a deck's rings are tile-local.
+    world: Vec2,
+    height: f32,
+}
+
+impl DeckPlates {
+    /// Install (or replace) one cell's lifted decks.
+    fn set_cell(&mut self, cell: Cell, plates: Vec<Plate>) {
+        if plates.is_empty() && !self.plates.contains_key(&cell) {
+            return;
+        }
+        self.plates.insert(cell, plates);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Drop one cell's decks (cell retired).
+    pub fn remove_cell(&mut self, cell: &Cell) {
+        if self.plates.remove(cell).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// Drop every deck (re-anchor, or the source stopped being a vector one).
+    pub fn clear(&mut self) {
+        if !self.plates.is_empty() {
+            self.plates.clear();
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// How far above the ground plane a deck carries this world-XZ point, or 0
+    /// where none does.
+    ///
+    /// The **tallest** deck wins where two overlap. Stacked decks at an interchange
+    /// are the case, and anything standing on them wants the top one — taking the
+    /// first hit instead would make the answer depend on cell iteration order, which
+    /// is a `HashMap`'s, i.e. it would change between runs.
+    #[must_use]
+    pub fn lift_at(&self, p: Vec2) -> f32 {
+        let mut best = 0.0f32;
+        for plate in self.plates.values().flatten() {
+            if plate.height > best
+                && plate
+                    .deck
+                    .contains([p.x - plate.world.x, p.y - plate.world.y])
+            {
+                best = plate.height;
+            }
+        }
+        best
+    }
 }
 
 /// Deck slab thickness in metres: the fascia band extruded down from the surface,
@@ -499,6 +581,7 @@ pub fn update_map_surfaces(
             surfaces.clear();
             stores.labels.clear();
             stores.places.clear();
+            stores.decks.clear();
         }
         return;
     }
@@ -518,6 +601,7 @@ pub fn update_map_surfaces(
         surfaces.clear();
         stores.places.clear();
         stores.labels.clear();
+        stores.decks.clear();
     }
     // So does the ground moving under them. The measured field lands a second or
     // two after the anchor it belongs to, by which time these cells have already
@@ -530,6 +614,7 @@ pub fn update_map_surfaces(
         surfaces.clear();
         stores.places.clear();
         stores.labels.clear();
+        stores.decks.clear();
     }
 
     // The cells hold whatever detail was wanted when their worker ran, so turning
@@ -552,6 +637,7 @@ pub fn update_map_surfaces(
         surfaces.clear();
         stores.places.clear();
         stores.labels.clear();
+        stores.decks.clear();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -585,6 +671,7 @@ pub fn update_map_surfaces(
         surfaces.stream.forget(&c);
         stores.labels.remove_cell(&c);
         stores.places.remove_cell(&c);
+        stores.decks.remove_cell(&c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -769,6 +856,7 @@ pub fn resolve_bridge_decks(
     bigspace: Query<Entity, With<BigSpace>>,
     dl: Res<crate::systems::data_layers::DataLayers>,
     terrain: Res<TerrainField>,
+    mut plates: ResMut<DeckPlates>,
 ) {
     if surfaces.pending_decks.is_empty() {
         return;
@@ -811,7 +899,26 @@ pub fn resolve_bridge_decks(
         if mesh.indices.is_empty() {
             continue;
         }
-        let world = Vec3::new(pending.world.x, 0.0, pending.world.y);
+        let cell_world = pending.world;
+        // Publish before the mesh is spawned rather than after, so the two cannot
+        // disagree about a cell: this is the same `heights` the vertices were built
+        // from, and a deck that reached the screen but not the resource is a route
+        // line threaded through a viaduct.
+        plates.set_cell(
+            c,
+            pending
+                .decks
+                .into_iter()
+                .zip(&heights)
+                .filter(|(_, &h)| h > 0.0)
+                .map(|(deck, &height)| Plate {
+                    deck,
+                    world: cell_world,
+                    height,
+                })
+                .collect(),
+        );
+        let world = Vec3::new(cell_world.x, 0.0, cell_world.y);
         let (grid_cell, local) = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD)
             .translation_to_grid(world.as_dvec3());
         let material = surfaces
@@ -834,12 +941,7 @@ pub fn resolve_bridge_decks(
             .clone();
         let id = commands
             .spawn((
-                Mesh3d(meshes.add(build_mesh(
-                    &mesh,
-                    pending.world.x,
-                    pending.world.y,
-                    &terrain,
-                ))),
+                Mesh3d(meshes.add(build_mesh(&mesh, cell_world.x, cell_world.y, &terrain))),
                 MeshMaterial3d(material),
                 Transform::from_translation(local),
                 grid_cell,
@@ -1268,6 +1370,102 @@ fn veg_seed(cell: Cell) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A square deck, `span` metres on a side, with its south-west corner at the
+    /// tile-local origin. Only the outline matters here — `lift_at` never touches
+    /// the triangles.
+    fn square_deck(span: f32) -> BridgeDeck {
+        BridgeDeck {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            rings: vec![vec![
+                [0.0, 0.0],
+                [span, 0.0],
+                [span, span],
+                [0.0, span],
+                [0.0, 0.0],
+            ]],
+            min: [0.0, 0.0],
+            max: [span, span],
+        }
+    }
+
+    /// The route line asks one question of a deck — "how high are you here" — and
+    /// the answer has to be in the world frame, because that is the only frame the
+    /// route knows. A deck's own rings are tile-local, so the cell origin is part of
+    /// the lookup and getting it wrong puts the viaduct a tile away.
+    #[test]
+    fn a_deck_lifts_only_the_ground_it_stands_over() {
+        let mut plates = DeckPlates::default();
+        plates.set_cell(
+            (7, 9),
+            vec![Plate {
+                deck: square_deck(40.0),
+                world: Vec2::new(1000.0, 2000.0),
+                height: 6.0,
+            }],
+        );
+
+        assert_eq!(plates.lift_at(Vec2::new(1020.0, 2020.0)), 6.0, "on the deck");
+        assert_eq!(plates.lift_at(Vec2::new(1050.0, 2020.0)), 0.0, "past its end");
+        assert_eq!(
+            plates.lift_at(Vec2::new(20.0, 20.0)),
+            0.0,
+            "the tile-local coordinate must not answer — that is the cell origin \
+             being dropped, and it reads as a viaduct a kilometre away"
+        );
+    }
+
+    /// Stacked decks at an interchange: whatever is drawn on them belongs on the top
+    /// one. Taking the first hit instead would make the answer depend on `HashMap`
+    /// iteration order, i.e. it would differ between runs of the same scene.
+    #[test]
+    fn the_tallest_deck_wins_where_two_overlap() {
+        let mut plates = DeckPlates::default();
+        for (cell, height) in [((0, 0), 5.0), ((1, 0), 11.0), ((2, 0), 8.0)] {
+            plates.set_cell(
+                cell,
+                vec![Plate {
+                    deck: square_deck(40.0),
+                    world: Vec2::ZERO,
+                    height,
+                }],
+            );
+        }
+        assert_eq!(plates.lift_at(Vec2::new(20.0, 20.0)), 11.0);
+    }
+
+    /// A deck must die with its cell, and every change must be visible to a consumer
+    /// that caches. The route mesh is built once and keyed on this revision — a deck
+    /// that arrives without bumping it is a route line drawn under a viaduct that is
+    /// already on screen, which is the whole bug this resource exists to fix.
+    #[test]
+    fn a_retired_cell_takes_its_decks_and_moves_the_revision() {
+        let mut plates = DeckPlates::default();
+        let start = plates.revision;
+
+        plates.set_cell(
+            (3, 4),
+            vec![Plate {
+                deck: square_deck(40.0),
+                world: Vec2::ZERO,
+                height: 6.0,
+            }],
+        );
+        assert_ne!(plates.revision, start, "an arriving deck is a change");
+        let placed = plates.revision;
+
+        plates.remove_cell(&(3, 4));
+        assert_eq!(plates.lift_at(Vec2::new(20.0, 20.0)), 0.0);
+        assert_ne!(plates.revision, placed, "a retired deck is a change too");
+
+        // …but a cell that never had one is not a change. Every surface cell is
+        // offered to `set_cell`, and most cities are mostly not bridges: bumping on
+        // those would redraw the route line a few times a second forever.
+        let quiet = plates.revision;
+        plates.set_cell((5, 5), Vec::new());
+        assert_eq!(plates.revision, quiet);
+    }
 
     /// The first pass must be a *build*, not a rebuild.
     ///

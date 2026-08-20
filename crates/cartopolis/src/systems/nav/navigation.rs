@@ -960,8 +960,9 @@ pub fn update_route_visuals(
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32, u32)>>,
+    mut drawn: Local<Option<(u32, u32, u32, u32)>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
+    decks: Res<crate::systems::map_geometry::DeckPlates>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -973,7 +974,16 @@ pub fn update_route_visuals(
     // editing an endpoint both bump `generation`, so the line still goes away the
     // moment the route it draws does.
     // Redrawn when the ground moves under it, too — the line is baked into a mesh.
-    let key = (route.generation, stream.anchor_generation, terrain.revision);
+    // The decks land some frames after the cell they belong to — their height is a
+    // measurement — so a route planned over a viaduct is routinely drawn before the
+    // viaduct exists. Its revision belongs in the redraw key for the same reason the
+    // terrain's does.
+    let key = (
+        route.generation,
+        stream.anchor_generation,
+        terrain.revision,
+        decks.revision,
+    );
     if *drawn == Some(key) {
         return;
     }
@@ -1080,10 +1090,14 @@ pub fn update_route_visuals(
         return;
     };
     let to_local = |w: DVec3| Vec2::new((w.x - origin.x) as f32, (w.z - origin.z) as f32);
-    let road: Vec<Vec2> = dedupe(road_world.iter().map(|w| to_local(*w)));
+    // The grades belong to the same slice of `points` the geometry was taken from.
+    let road_levels = r.levels.get(1..n - 1).unwrap_or(&[]);
+    let lift = route_lift(&road_world, road_levels, &decks);
+    let (road, kept) = dedupe(road_world.iter().map(|w| to_local(*w)));
     if road.len() < 2 {
         return;
     }
+    let road_lift: Vec<f32> = kept.iter().map(|&i| lift[i]).collect();
     let from_pin = to_local(to_world(&r.points[0]));
     let to_pin = to_local(to_world(&r.points[n - 1]));
 
@@ -1093,7 +1107,8 @@ pub fn update_route_visuals(
         // Follow the measured ground under the road. `ROUTE_Y` still lifts the line
         // clear of the surface stack; the terrain moves that whole stack, and a
         // route drawn on the old flat plane would run through the hill the street
-        // goes over.
+        // goes over. Any bridge deck is already in the mesh (`route_lift`) and the
+        // drape adds to it, so a viaduct ends up over the ground it stands on.
         crate::systems::terrain::drape_mesh(
             &mut mesh,
             Vec2::new(at.x as f32, at.z as f32),
@@ -1116,22 +1131,34 @@ pub fn update_route_visuals(
 
     let base = DVec3::new(origin.x, f64::from(ROUTE_Y), origin.z);
     spawn(
-        ribbon(&road, CASING_HALF_WIDTH),
+        ribbon(&road, &road_lift, CASING_HALF_WIDTH),
         palette.casing.clone(),
         base,
     );
-    spawn(ribbon(&road, ROUTE_HALF_WIDTH), palette.fill.clone(), base);
+    spawn(
+        ribbon(&road, &road_lift, ROUTE_HALF_WIDTH),
+        palette.fill.clone(),
+        base,
+    );
 
     // Pin-to-road connectors, drawn thin so a long one (the pin snapped across
     // water to reach a drivable road) reads as "get to the road", not as the route.
     // Skipped when the pin already sits on the road, the ordinary case.
-    for (pin, road_end, material) in [
-        (from_pin, road[0], palette.casing.clone()),
-        (to_pin, *road.last().unwrap(), palette.casing.clone()),
+    // The pin end stays on the ground — it is where the user aimed, not a place the
+    // graph had an opinion about — so a connector to a road end on a deck ramps up to
+    // it rather than hanging in the air.
+    for (pin, road_end, end_lift, material) in [
+        (from_pin, road[0], road_lift[0], palette.casing.clone()),
+        (
+            to_pin,
+            *road.last().expect("road has ≥ 2 points"),
+            *road_lift.last().expect("one lift per road point"),
+            palette.casing.clone(),
+        ),
     ] {
         if pin.distance(road_end) > CONNECTOR_MIN_M {
             spawn(
-                ribbon(&[pin, road_end], CONNECTOR_HALF_WIDTH),
+                ribbon(&[pin, road_end], &[0.0, end_lift], CONNECTOR_HALF_WIDTH),
                 material,
                 base,
             );
@@ -1155,17 +1182,53 @@ pub fn update_route_visuals(
 /// costs nothing and removes the degenerate input.
 const MIN_SEGMENT_M: f32 = 1.5;
 
-fn dedupe(points: impl Iterator<Item = Vec2>) -> Vec<Vec2> {
+/// Returns the surviving points **and the indices they came from**, so a caller with
+/// a parallel array (the route's per-point grade) can thin it the same way. Two
+/// arrays deduped independently would drift apart on the first collapsed pair, and
+/// the symptom of that is a line that climbs a viaduct a few metres early.
+fn dedupe(points: impl Iterator<Item = Vec2>) -> (Vec<Vec2>, Vec<usize>) {
     let mut out: Vec<Vec2> = Vec::new();
-    for p in points {
+    let mut kept: Vec<usize> = Vec::new();
+    for (i, p) in points.enumerate() {
         if out
             .last()
             .is_none_or(|last| last.distance_squared(p) > MIN_SEGMENT_M * MIN_SEGMENT_M)
         {
             out.push(p);
+            kept.push(i);
         }
     }
-    out
+    (out, kept)
+}
+
+/// How far above the ground plane each point of the drawn road path sits.
+///
+/// Zero everywhere the route runs on the ground, and the deck's height where it runs
+/// over a bridge. The grade comes from the route (i.e. from the graph edge), never
+/// from the position: a viaduct and the street it crosses occupy the same world XZ,
+/// so a lift decided by `DeckPlates` alone would hoist an underpass onto the
+/// structure above it.
+///
+/// A negative grade — a tunnel — is deliberately *not* pushed down. There is no
+/// modelled tunnel bore to sink into, so the line would vanish under the map; the
+/// route through a tunnel is drawn on the surface, as the basemap draws nothing
+/// there at all.
+fn route_lift(
+    world: &[DVec3],
+    levels: &[i8],
+    decks: &crate::systems::map_geometry::DeckPlates,
+) -> Vec<f32> {
+    world
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if levels.get(i).copied().unwrap_or(0) > 0 {
+                decks.lift_at(Vec2::new(w.x as f32, w.z as f32))
+            } else {
+                0.0
+            }
+        })
+        .collect()
 }
 
 /// A flat ribbon of constant width along a polyline, in the XZ plane at y = 0.
@@ -1179,48 +1242,60 @@ fn dedupe(points: impl Iterator<Item = Vec2>) -> Vec<Vec2> {
 /// vertex sits further than `half_width` from the centreline) and cannot pinch (each
 /// segment keeps full width end to end), at any angle or segment length. The inner
 /// corner triangle overlaps the quads harmlessly — the material is opaque and unlit.
-fn ribbon(points: &[Vec2], half_width: f32) -> Mesh {
+///
+/// **Height is per point**, and it is the only way a bridge can reach this mesh. The
+/// deck a route crosses cannot be sampled from the ribbon's coordinates, because the
+/// road on the viaduct and the road underneath it are at the same world XZ — only
+/// the graph edge the point came from knows which, so the caller resolves it and
+/// passes the answer in (see [`route_lift`]). `heights` is parallel to `points`.
+fn ribbon(points: &[Vec2], heights: &[f32], half_width: f32) -> Mesh {
+    debug_assert_eq!(points.len(), heights.len());
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
     // Append a triangle wound so it faces +Y (up), or it is backface-culled and
-    // invisible — the failure `ribbon_faces_up` guards.
-    let mut tri = |a: Vec2, b: Vec2, c: Vec2| {
+    // invisible — the failure `ribbon_faces_up` guards. Each corner carries the
+    // height of the centreline point it was offset from, so a step between two
+    // points is a short ramp across the quad between them rather than a tear.
+    let mut tri = |a: (Vec2, f32), b: (Vec2, f32), c: (Vec2, f32)| {
         // Y of (b−a)×(c−a): positive already faces up; otherwise swap b and c.
-        let up = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0.0;
+        let up = (b.0.x - a.0.x) * (c.0.y - a.0.y) - (b.0.y - a.0.y) * (c.0.x - a.0.x) < 0.0;
         let (b, c) = if up { (b, c) } else { (c, b) };
         let base = positions.len() as u32;
-        for p in [a, b, c] {
-            positions.push([p.x, 0.0, p.y]);
+        for (p, y) in [a, b, c] {
+            positions.push([p.x, y, p.y]);
         }
         indices.extend([base, base + 1, base + 2]);
     };
 
     let perp = |d: Vec2| Vec2::new(-d.y, d.x);
+    let h = |i: usize| heights.get(i).copied().unwrap_or(0.0);
 
     // One butt-ended quad per segment.
-    for w in points.windows(2) {
-        let (a, b) = (w[0], w[1]);
+    for i in 0..points.len().saturating_sub(1) {
+        let (a, b) = (points[i], points[i + 1]);
+        let (ya, yb) = (h(i), h(i + 1));
         let dir = (b - a).normalize_or_zero();
         if dir == Vec2::ZERO {
             continue;
         }
         let nrm = perp(dir) * half_width;
-        tri(a + nrm, b + nrm, a - nrm);
-        tri(a - nrm, b + nrm, b - nrm);
+        tri((a + nrm, ya), (b + nrm, yb), (a - nrm, ya));
+        tri((a - nrm, ya), (b + nrm, yb), (b - nrm, yb));
     }
 
     // Fill the wedge at each interior vertex (both sides — the inner one overlaps).
     for i in 1..points.len().saturating_sub(1) {
         let c = points[i];
+        let y = h(i);
         let din = (points[i] - points[i - 1]).normalize_or_zero();
         let dout = (points[i + 1] - points[i]).normalize_or_zero();
         if din == Vec2::ZERO || dout == Vec2::ZERO {
             continue;
         }
         let (nin, nout) = (perp(din) * half_width, perp(dout) * half_width);
-        tri(c, c + nin, c + nout);
-        tri(c, c - nin, c - nout);
+        tri((c, y), (c + nin, y), (c + nout, y));
+        tri((c, y), (c - nin, y), (c - nout, y));
     }
 
     Mesh::new(
@@ -1856,7 +1931,7 @@ mod tests {
     #[test]
     fn ribbon_has_the_requested_width() {
         let points = vec![Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)];
-        let mesh = ribbon(&points, 3.0);
+        let mesh = ribbon(&points, &vec![0.0; points.len()], 3.0);
         let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
             bevy::render::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
             _ => panic!("positions are not Float32x3"),
@@ -1886,7 +1961,7 @@ mod tests {
             Vec2::new(100.0, 0.0),
             Vec2::new(100.0, 80.0),
         ];
-        let mesh = ribbon(&points, 3.0);
+        let mesh = ribbon(&points, &vec![0.0; points.len()], 3.0);
         let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
             bevy::render::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
             _ => panic!("positions are not Float32x3"),
@@ -1920,7 +1995,7 @@ mod tests {
             Vec2::new(100.8, 0.3), // a 0.85 m segment doubling back ~150°
             Vec2::new(0.0, 5.0),
         ];
-        let mesh = ribbon(&points, HW);
+        let mesh = ribbon(&points, &vec![0.0; points.len()], HW);
         let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
             bevy::render::mesh::VertexAttributeValues::Float32x3(v) => v.clone(),
             _ => panic!("positions are not Float32x3"),
@@ -2199,9 +2274,13 @@ mod tests {
             ]
             .into_iter(),
         );
+        let (pts, kept) = pts;
         assert_eq!(pts.len(), 2, "got {pts:?}");
         assert_eq!(pts[0], Vec2::new(0.0, 0.0));
         assert_eq!(pts[1], Vec2::new(50.0, 0.0));
+        // The surviving indices are what keeps a parallel array (the per-point
+        // grade) in step with the thinned geometry.
+        assert_eq!(kept, vec![0, 3], "the kept indices must name the input points");
     }
 
     #[test]
@@ -2238,6 +2317,7 @@ mod tests {
         let mk = |span: f64| Route {
             mode: TravelMode::Car,
             points: vec![[53.20, 6.55], [53.20 + span, 6.55]],
+            levels: vec![0; 2],
             distance_m: span * 111_320.0,
             duration_s: 60.0,
             steps: Vec::new(),
@@ -2273,6 +2353,7 @@ mod tests {
         Route {
             mode: TravelMode::Car,
             points: vec![[53.20, 6.55], [53.205, 6.55], [53.21, 6.55]],
+            levels: vec![0; 3],
             distance_m: 1000.0,
             duration_s: 60.0,
             steps: Vec::new(),
@@ -2387,6 +2468,7 @@ mod tests {
         route.route = Some(Route {
             mode: TravelMode::Car,
             points: vec![[53.20, 6.55], [53.21, 6.55]],
+            levels: vec![0; 2],
             distance_m: 1000.0,
             duration_s: 60.0,
             steps: Vec::new(),

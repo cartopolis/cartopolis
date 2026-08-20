@@ -2928,9 +2928,11 @@ mod tests {
         let mut points = vec![[52.9995, 6.0]]; // start pin
         points.extend(pts.iter().copied());
         points.push([53.0105, 6.0]); // end pin
+        let levels = vec![0; points.len()];
         Route {
             mode: TravelMode::Car,
             points,
+            levels,
             distance_m: 1105.4,
             duration_s: 120.0,
             steps: vec![

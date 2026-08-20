@@ -529,17 +529,25 @@ pub fn refine_for_terrain(
     }
 }
 
-/// Lay an existing flat mesh over the measured ground: refine its long edges, then
-/// lift every vertex by the field under it.
+/// Lay an existing mesh over the measured ground: refine its long edges, then lift
+/// every vertex by the field under it.
 ///
 /// `origin` is the world-XZ point the mesh's local coordinates are relative to. A
 /// no-op when the field is absent, so a caller can apply it unconditionally.
+///
+/// It **adds** to whatever height the mesh already carries rather than assigning
+/// one, which is what lets the route line arrive with a bridge deck already baked
+/// into its vertices and still follow the ground the bridge stands on. A deck height
+/// cannot be a field sampled here: a road on a viaduct and the road beneath it have
+/// the same world XZ, so no function of position can tell them apart — see
+/// `navigation::route_lift`.
 pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
 
     if !field.is_ready() {
         return;
     }
+
     let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
     else {
         return;
@@ -663,6 +671,87 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// A flat quad with a vertex at each corner, in the XZ plane — the shape a
+    /// route ribbon is made of.
+    fn flat_quad(size: f32) -> Mesh {
+        use bevy::render::mesh::Indices;
+        let mut mesh = Mesh::new(
+            bevy::render::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [0.0, 0.0, 0.0],
+                [size, 0.0, 0.0],
+                [size, 0.0, size],
+                [0.0, 0.0, size],
+            ],
+        );
+        mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+        mesh
+    }
+
+    /// Lift every vertex of a mesh, the way the route ribbon arrives off a bridge
+    /// deck.
+    fn raise(mesh: &mut Mesh, by: f32) {
+        let Some(bevy::render::mesh::VertexAttributeValues::Float32x3(p)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        for v in p.iter_mut() {
+            v[1] += by;
+        }
+    }
+
+    fn heights_of(mesh: &Mesh) -> Vec<f32> {
+        let Some(bevy::render::mesh::VertexAttributeValues::Float32x3(p)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        p.iter().map(|v| v[1]).collect()
+    }
+
+    /// The drape **adds** to the height a mesh already carries. That is what lets the
+    /// route line arrive with a bridge deck baked into its vertices and still follow
+    /// the ground the bridge stands on — a drape that assigned would flatten the
+    /// viaduct back onto the terrain.
+    #[test]
+    fn draping_adds_to_the_height_a_mesh_already_has() {
+        let field = ramp_field(0.01).snapshot();
+        let at = Vec2::ZERO;
+
+        let mut ground = flat_quad(10.0);
+        drape_mesh(&mut ground, at, &field);
+
+        let mut raised = flat_quad(10.0);
+        raise(&mut raised, 6.0);
+        drape_mesh(&mut raised, at, &field);
+
+        let (a, b) = (heights_of(&ground), heights_of(&raised));
+        assert_eq!(a.len(), b.len());
+        assert!(
+            a.iter().any(|y| *y != 0.0),
+            "the ramp field should have moved the plain drape at all"
+        );
+        for (g, r) in a.iter().zip(&b) {
+            assert!((r - g - 6.0).abs() < 1e-3, "ground {g}, raised {r}");
+        }
+    }
+
+    /// An absent field leaves a mesh exactly as it was — including a height it
+    /// brought with it. The old wording for this was "a no-op", which is only the
+    /// same thing while nothing arrives pre-lifted.
+    #[test]
+    fn an_absent_field_leaves_a_raised_mesh_raised() {
+        let mut mesh = flat_quad(10.0);
+        raise(&mut mesh, 6.0);
+        drape_mesh(&mut mesh, Vec2::ZERO, &TerrainField::default().snapshot());
+        assert!(heights_of(&mesh).iter().all(|y| (*y - 6.0).abs() < 1e-6));
     }
 
     #[test]
