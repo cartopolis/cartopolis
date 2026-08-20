@@ -30,6 +30,14 @@ pub mod presets;
 pub mod road_texture;
 pub mod routing;
 pub mod scatter;
+// The pure half of the near-field grass layer: where a blade may stand, and the
+// one lattice mesh every patch of them draws. Split from `scatter` rather than
+// folded into it because the two share no machinery beyond the keep-out masks —
+// a tree is scattered here and uploaded, a blade of grass is generated in the
+// vertex shader and never exists on this side at all. Named for the ground
+// rather than the plant so it can pair with the client's `systems::grass` the
+// way `scatter` pairs with `systems::vegetation`.
+pub mod turf;
 pub mod vector_tiles;
 
 // The counting allocator that `perf::Cost::measure` reads. A `#[global_allocator]`

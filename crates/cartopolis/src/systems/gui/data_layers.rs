@@ -475,6 +475,11 @@ pub struct DataLayers {
     /// Feature toggle (under Map): the merged tree canopies/trunks
     /// (`systems::vegetation`). Gates their visibility on top of the altitude LOD.
     pub trees_enabled: bool,
+    /// Feature toggle (under Map): near-field grass on the green areas
+    /// (`systems::grass`) — blades within a few tens of metres of the camera.
+    /// Unlike the layers around it this gates no streaming of its own: what it
+    /// switches off is the per-cell coverage read and the patch pool.
+    pub grass_enabled: bool,
     /// Feature toggle (under Map): the merged street furniture
     /// (`systems::street_furniture`) — benches, bins, shelters read out of the
     /// tile's `pois` layer. Gates their visibility on top of the altitude LOD.
@@ -556,11 +561,12 @@ impl DataLayers {
     /// in its snapshot — persist those, so exiting mid-drive doesn't freeze the
     /// stripped-down map into the file.
     pub fn prefs(&self) -> crate::systems::user_store::LayerPrefs {
-        let (buildings, vehicles, trees, furniture, overlay) = match &self.minimal {
+        let (buildings, vehicles, trees, grass, furniture, overlay) = match &self.minimal {
             Some(m) => (
                 m.buildings,
                 m.vehicles,
                 m.trees,
+                m.grass,
                 m.furniture,
                 Some(&m.layers),
             ),
@@ -568,6 +574,7 @@ impl DataLayers {
                 self.buildings_enabled,
                 self.vehicles_enabled,
                 self.trees_enabled,
+                self.grass_enabled,
                 self.furniture_enabled,
                 None,
             ),
@@ -578,6 +585,7 @@ impl DataLayers {
             osm_buildings: self.osm_buildings_enabled,
             map: self.map_enabled,
             trees,
+            grass,
             roads_textured: self.roads_textured,
             water_shading: self.water_shading,
             street_labels: self.street_labels,
@@ -640,6 +648,7 @@ impl DataLayers {
         self.osm_buildings_enabled = p.osm_buildings;
         self.map_enabled = p.map;
         self.trees_enabled = p.trees;
+        self.grass_enabled = p.grass;
         self.roads_textured = p.roads_textured;
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
@@ -661,6 +670,7 @@ struct MinimalSave {
     buildings: bool,
     vehicles: bool,
     trees: bool,
+    grass: bool,
     furniture: bool,
     layers: Vec<bool>,
     fog_density: f32,
@@ -693,6 +703,7 @@ impl Default for DataLayers {
             map_enabled: true,
             vehicles_enabled: false,
             trees_enabled: detail,
+            grass_enabled: detail,
             furniture_enabled: detail,
             roads_textured: detail,
             water_shading: detail,
@@ -1563,6 +1574,7 @@ pub fn apply_minimal_mode(
                 buildings: dl.buildings_enabled,
                 vehicles: dl.vehicles_enabled,
                 trees: dl.trees_enabled,
+                grass: dl.grass_enabled,
                 furniture: dl.furniture_enabled,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
@@ -1573,6 +1585,7 @@ pub fn apply_minimal_mode(
             dl.buildings_enabled = false;
             dl.vehicles_enabled = false;
             dl.trees_enabled = false;
+            dl.grass_enabled = false;
             dl.furniture_enabled = false;
             for l in &mut dl.layers {
                 l.enabled = false;
@@ -1589,6 +1602,7 @@ pub fn apply_minimal_mode(
                 dl.buildings_enabled = saved.buildings;
                 dl.vehicles_enabled = saved.vehicles;
                 dl.trees_enabled = saved.trees;
+                dl.grass_enabled = saved.grass;
                 dl.furniture_enabled = saved.furniture;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
@@ -2242,6 +2256,11 @@ pub fn render_data_layers_panel(
                     );
                     crate::systems::theme::checkbox(
                         ui,
+                        &mut dl.grass_enabled,
+                        egui::RichText::new("Grass").size(theme::SIZE_SUB),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
                         &mut dl.furniture_enabled,
                         egui::RichText::new("Street furniture").size(theme::SIZE_SUB),
                     );
@@ -2314,6 +2333,7 @@ pub fn render_data_layers_panel(
         dl.map_enabled = fresh.map_enabled;
         dl.vehicles_enabled = fresh.vehicles_enabled;
         dl.trees_enabled = fresh.trees_enabled;
+        dl.grass_enabled = fresh.grass_enabled;
         dl.furniture_enabled = fresh.furniture_enabled;
         dl.roads_textured = fresh.roads_textured;
         dl.water_shading = fresh.water_shading;
@@ -2991,6 +3011,7 @@ mod tests {
             buildings: true,
             vehicles: false,
             trees: true,
+            grass: true,
             furniture: true,
             layers: vec![false; LAYER_DEFS.len()],
             fog_density: 0.4,

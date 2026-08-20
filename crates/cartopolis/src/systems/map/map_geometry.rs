@@ -38,6 +38,7 @@ use crate::platform::stream::{CellStream, Policy};
 use crate::resources::OsmTileUrlTemplate;
 use crate::systems::furniture;
 use crate::systems::globe::GlobeState;
+use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::places;
@@ -47,6 +48,7 @@ use crate::systems::street_furniture::FurnitureLod;
 use crate::systems::street_labels::StreetLabelStore;
 use crate::systems::terrain::TerrainField;
 use crate::systems::tile_loader::load_tile_image;
+use crate::systems::turf::GrassArea;
 use crate::systems::vector_tiles::ShoreField;
 use crate::systems::vector_tiles::{self, BridgeDeck, StreetLabelLine, SurfaceGroup, SurfaceMesh};
 use crate::systems::vegetation::VegetationLod;
@@ -110,22 +112,28 @@ type Tessellated = (
     // places and house numbers. All read out of the same parse as everything
     // above — see `systems::places`.
     CellPlaces,
+    // Where a blade of grass may stand in this cell (`systems::grass`). `None`
+    // when the layer is off; empty — and so dropped on arrival — for the many
+    // cells of a city centre that hold no green at all.
+    Option<GrassArea>,
 );
 
-/// The two per-cell stores that live and die with a surface cell: the street
-/// names written into the roads, and everything in the cell a player can walk up
-/// to.
+/// The per-cell stores that live and die with a surface cell: the street names
+/// written into the roads, everything in the cell a player can walk up to, and
+/// the ground its grass may grow on.
 ///
-/// One parameter rather than two because `update_map_surfaces` is at Bevy's
+/// One parameter rather than three because `update_map_surfaces` is at Bevy's
 /// 16-parameter ceiling — the same reason `free_camera::CameraInput` exists — and
-/// because these genuinely are one concern: both are keyed by cell, both are
-/// inserted at the cell's origin, and both must be dropped on exactly the same
-/// events, or the map ends up naming a street it no longer draws.
+/// because these genuinely are one concern: each is keyed by cell, each is
+/// inserted at the cell's origin, and all must be dropped on exactly the same
+/// events, or the map ends up naming a street it no longer draws — or growing
+/// grass on ground it has stopped holding.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct CellStores<'w> {
     labels: ResMut<'w, StreetLabelStore>,
     places: ResMut<'w, WorldPlaces>,
     decks: ResMut<'w, DeckPlates>,
+    grass: ResMut<'w, GrassAreas>,
 }
 
 /// Where the raised bridge decks are and how high they stand, in the anchored
@@ -339,6 +347,10 @@ struct DetailWants {
     furniture: bool,
     /// Build the per-cell shore distance field. See `WaterSeaState::shading`.
     shore: bool,
+    /// Read the cell's grass polygons and their keep-outs (`systems::grass`).
+    /// Same rule as the rest: with the layer off this is not built, so turning
+    /// it off costs nothing at all rather than only saving the draw call.
+    grass: bool,
 }
 
 impl DetailWants {
@@ -349,6 +361,7 @@ impl DetailWants {
         trees: true,
         furniture: true,
         shore: true,
+        grass: true,
     };
 }
 
@@ -375,6 +388,7 @@ fn spawn_geometry_task(
             let fetched = load_tile_image(&key, &template).await;
             crate::platform::workers::submit(Box::new(move || {
                 let mut shore = None;
+                let mut grass = None;
                 let mut decks = Vec::new();
                 let mut labels = Vec::new();
                 let mut cell_places = CellPlaces::default();
@@ -493,6 +507,16 @@ fn spawn_geometry_task(
                                     }
                                 }
                             }
+                            // Where a blade may stand. Rides this fetch and this
+                            // parse like everything above it — the `land` layer
+                            // is already decoded here, and the two keep-out masks
+                            // are the same ones the tree scatter builds.
+                            if wants.grass {
+                                let area = cartopolis_geo::turf::GrassArea::build(&tile, tile_m);
+                                if !area.is_empty() {
+                                    grass = Some(area);
+                                }
+                            }
                             Some(meshes)
                         }
                         Err(e) => {
@@ -506,7 +530,7 @@ fn spawn_geometry_task(
                     }
                 };
                 if let Ok(mut g) = results.lock() {
-                    g.push((cell, (outcome, shore, decks, labels, cell_places)));
+                    g.push((cell, (outcome, shore, decks, labels, cell_places, grass)));
                 }
             }));
         })
@@ -582,6 +606,7 @@ pub fn update_map_surfaces(
             stores.labels.clear();
             stores.places.clear();
             stores.decks.clear();
+            stores.grass.clear();
         }
         return;
     }
@@ -602,6 +627,7 @@ pub fn update_map_surfaces(
         stores.places.clear();
         stores.labels.clear();
         stores.decks.clear();
+        stores.grass.clear();
     }
     // So does the ground moving under them. The measured field lands a second or
     // two after the anchor it belongs to, by which time these cells have already
@@ -615,6 +641,7 @@ pub fn update_map_surfaces(
         stores.places.clear();
         stores.labels.clear();
         stores.decks.clear();
+        stores.grass.clear();
     }
 
     // The cells hold whatever detail was wanted when their worker ran, so turning
@@ -631,6 +658,7 @@ pub fn update_map_surfaces(
         trees: veg_lod.enabled,
         furniture: furniture_lod.enabled,
         shore: sea_state.shading,
+        grass: stores.grass.enabled,
     };
     if surfaces.detail_wants != Some(wants) {
         surfaces.detail_wants = Some(wants);
@@ -638,6 +666,7 @@ pub fn update_map_surfaces(
         stores.places.clear();
         stores.labels.clear();
         stores.decks.clear();
+        stores.grass.clear();
     }
 
     // Freeze from orbit, exactly as `map_stream` does: the ground is hidden up
@@ -672,6 +701,7 @@ pub fn update_map_surfaces(
         stores.labels.remove_cell(&c);
         stores.places.remove_cell(&c);
         stores.decks.remove_cell(&c);
+        stores.grass.remove_cell(&c);
     }
 
     // 2. Queue cells not yet fetched as detached tessellation tasks, bounded to
@@ -699,7 +729,7 @@ pub fn update_map_surfaces(
             .min(crate::quality::budget().per_frame(MAX_BUILDS_PER_FRAME)),
     );
     surfaces.stream.defer(deferred);
-    for (c, (outcome, shore, decks, street_names, cell_places)) in ready {
+    for (c, (outcome, shore, decks, street_names, cell_places, grass)) in ready {
         // Dropped from the ring (or re-anchored) while the worker was busy.
         if !wanted.contains(&c) {
             surfaces.stream.forget(&c);
@@ -726,6 +756,12 @@ pub fn update_map_surfaces(
         // they are retired with the cell below, for the same reason the labels
         // are.
         stores.places.insert_cell(c, wx, wz, cell_places);
+        // Same origin, same lifetime, same retire path — see `CellStores`.
+        if let Some(area) = grass {
+            stores
+                .grass
+                .insert_cell(c, Vec2::new(wx, wz), tile_m, area);
+        }
 
         // One water material per cell — it carries that cell's shore field, so it
         // cannot be shared the way the flat-colour group materials are. Built once

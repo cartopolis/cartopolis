@@ -1543,6 +1543,7 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+        .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
         .init_resource::<GameState>()
         .init_resource::<AvatarState>()
@@ -1697,6 +1698,8 @@ fn run_client() {
         // handle out of `Assets<WaterMaterial>`.
         .init_resource::<systems::water::WaterSeaState>()
         .init_resource::<systems::vegetation::VegetationLod>()
+        .init_resource::<systems::grass::GrassAreas>()
+        .init_resource::<systems::grass::GrassPatches>()
         .init_resource::<systems::street_furniture::FurnitureLod>()
         .init_resource::<systems::globe::GlobeState>()
         .init_resource::<systems::globe::GlobeSurfaceAlbedo>()
@@ -2087,6 +2090,13 @@ fn run_client() {
                     .after(systems::map_geometry::update_map_surfaces),
                 // Same for the street furniture, over its own (much lower) band.
                 systems::street_furniture::update_furniture_lod
+                    .after(systems::map_geometry::update_map_surfaces),
+                // Near-field grass: slide the patch pool along its lattice, keep
+                // the coverage mask under it and drive the sway from the live
+                // wind. After the surface build, which is what fills the per-cell
+                // grass areas it plants into — a frame's lag there is a frame of
+                // bare ground on a cell that just streamed in.
+                systems::grass::update_grass
                     .after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
