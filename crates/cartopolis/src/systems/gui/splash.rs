@@ -17,6 +17,12 @@
 //! anyone wants it. The three numbers to keep in step are
 //! [`theme::SPLASH_WORDMARK`], [`theme::SPLASH_MOTTO`] and the palette.
 //!
+//! The progress track and the status line under it belong to that parity too, and
+//! until 2026-08-20 only the HTML side had them — so the handover went from a
+//! screen that said what it was doing to one that said nothing, and a *native*
+//! launch never said anything at all. See [`Loading`] for what this half counts,
+//! and for the eighteen-second hold that made saying so necessary.
+//!
 //! Native has no such gap, so this is the whole startup screen there.
 //!
 //! Painted with egui rather than `bevy_ui` for a plain reason: egui is already
@@ -28,8 +34,11 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use big_space::prelude::GridCell;
 
+use crate::components::{FreeCamera, StreamTileReady};
 use crate::systems::egui_manager::EguiManager;
+use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
 use crate::systems::theme;
 
@@ -90,6 +99,85 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Height of the progress track, in points (`index.html`'s `#track` is 3 px).
+const TRACK_H: f32 = 3.0;
+/// The status line under the track. Smaller than [`theme::SPLASH_MOTTO`] on
+/// purpose: the motto is the brand and this is a caption under it.
+const STATUS_TEXT: f32 = 13.0;
+/// One 35 %-wide sweep of the indeterminate bar, in seconds. `index.html`'s
+/// `@keyframes sweep` runs at 1.1 s and the two splashes are one screen.
+const SWEEP_S: f32 = 1.1;
+/// Fraction of the track the indeterminate segment occupies (`#bar.indeterminate`).
+const SWEEP_FRAC: f32 = 0.35;
+
+/// What the splash is waiting for, in the words under the track.
+///
+/// **This exists because an eighteen-second hold looked like a crash.** The only
+/// thing that dismisses the splash early is the map becoming visible, and above
+/// [`map_stream::MAP_PREFETCH_ALT`](crate::systems::map_stream) the flat streamer
+/// is *deliberately* frozen — so a launch that restores a camera in orbit (a
+/// bookmark taken from space, or simply where the last session left off) had
+/// nothing to wait for and sat out [`MAX_VISIBLE_S`] in full, every time, with a
+/// static logo and no way for anyone to tell that from a hang. Two things follow
+/// and they are separate: [`ready`](Self::ready) now asks whichever streamer is
+/// actually feeding the screen, and the label says which one and how far it has
+/// got.
+struct Loading {
+    /// The status line. Owned rather than `&'static str` because the counts are
+    /// the diagnostic half — "Streaming the map… 6/224" is what says whether a
+    /// long hold is a slow network or a streamer that never started.
+    label: String,
+    /// Track fill, or `None` for a stage with no honest denominator — drawn as
+    /// the sweeping segment rather than as a number nobody measured.
+    fraction: Option<f32>,
+    /// Enough of the world is on screen that lifting the splash uncovers a map
+    /// rather than a void.
+    ready: bool,
+}
+
+/// Which streamer the splash is waiting on, and how far along it is.
+///
+/// `tiles_ready` is counted from [`StreamTileReady`] rather than taken from
+/// `MapStream` — see [`MapStream::wanted_tiles`] for why the streamer's own
+/// `loaded` count cannot be the numerator (it reaches the full ring within a
+/// frame or two of an anchor, while every tile is still blank paper).
+fn loading(stream: &MapStream, globe: &GlobeState, in_space: bool, tiles_ready: usize) -> Loading {
+    if stream.geo_anchor().is_none() {
+        return Loading {
+            label: "Placing the map…".to_owned(),
+            fraction: None,
+            ready: false,
+        };
+    }
+    // In space the flat clipmap is frozen *and* hidden; the globe's quadtree is
+    // the layer that will be uncovered, so it is the one to wait for and to
+    // report. Asking `MapStream` here is what produced the eighteen-second hold.
+    let (what, have, want, ready) = if in_space {
+        let (have, want) = globe.tile_progress();
+        ("globe", have, want, have > 0)
+    } else {
+        (
+            "map",
+            tiles_ready,
+            stream.wanted_tiles(),
+            // Unchanged from the signal this system has always dismissed on: a
+            // spawned ring is a paper-coloured map, which is a world. Holding out
+            // for textures instead would make every warm start *longer*, and the
+            // complaint about this screen has never been that it is too short.
+            stream.has_tiles(),
+        )
+    };
+    Loading {
+        label: if want > 0 {
+            format!("Streaming the {what}… {have}/{want}")
+        } else {
+            format!("Streaming the {what}…")
+        },
+        fraction: (want > 0).then(|| (have as f32 / want as f32).clamp(0.0, 1.0)),
+        ready,
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct BootSplash {
     elapsed: f32,
@@ -113,6 +201,9 @@ pub fn boot_splash(
     egui: Res<EguiManager>,
     time: Res<Time<Real>>,
     stream: Res<MapStream>,
+    globe: Res<GlobeState>,
+    camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
+    tiles_ready: Query<(), With<StreamTileReady>>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
     if splash.finished {
@@ -121,10 +212,18 @@ pub fn boot_splash(
     let dt = time.delta_secs();
     splash.elapsed += dt;
 
+    // No camera yet is the first frame or two, and "not in space" is the right
+    // answer there: the startup restore has not run, so the flat streamer is what
+    // is about to fill the screen.
+    let in_space = camera
+        .single()
+        .is_ok_and(|(cell, tf)| globe.in_space(cell, tf));
+    let progress = loading(&stream, &globe, in_space, tiles_ready.iter().count());
+
     // Dismiss on the world being visible, not on a timer alone: fading out into
     // an empty blue void is worse than holding the splash half a second longer.
     // `MAX_VISIBLE_S` is the backstop for when tiles never arrive at all.
-    let ready = stream.has_tiles() && splash.elapsed >= min_visible_s();
+    let ready = progress.ready && splash.elapsed >= min_visible_s();
     if (ready || splash.elapsed >= MAX_VISIBLE_S) && splash.fading.is_none() {
         splash.fading = Some(FADE_S);
     }
@@ -200,5 +299,43 @@ pub fn boot_splash(
         MOTTO,
         egui::FontId::proportional(theme::SPLASH_MOTTO),
         fade(theme::TEXT_DIM, content, 0.9),
+    );
+
+    // The track and the line under it — `index.html`'s `#track` / `#bar` /
+    // `#status`, in the same order under the same motto and off the same two
+    // palette entries (`SURFACE_RAISED` is its `#263842`, `ACCENT` its `#fd6012`).
+    // The `min(22rem, 70vw)` is its sizing rule too: on a phone in portrait a
+    // fixed 352 pt track runs past both margins.
+    let track_w = (viewport.x * 0.7).min(352.0);
+    let track = egui::Rect::from_center_size(
+        egui::pos2(c.x, c.y + 104.0),
+        egui::vec2(track_w, TRACK_H),
+    );
+    painter.rect_filled(track, TRACK_H * 0.5, fade(theme::SURFACE_RAISED, content, 1.0));
+    let bar = match progress.fraction {
+        // A measured fill, from the left.
+        Some(f) => egui::Rect::from_min_size(track.min, egui::vec2(track_w * f, TRACK_H)),
+        // No denominator, so no number: a segment sweeping the track instead. The
+        // alternative is a bar sitting at zero, which is what a *stalled* loader
+        // looks like — the one reading this screen must not give.
+        None => {
+            let t = (splash.elapsed / SWEEP_S).fract();
+            let x = track.min.x + (t * (1.0 + SWEEP_FRAC) - SWEEP_FRAC) * track_w;
+            egui::Rect::from_min_size(
+                egui::pos2(x, track.min.y),
+                egui::vec2(track_w * SWEEP_FRAC, TRACK_H),
+            )
+            .intersect(track)
+        }
+    };
+    if bar.width() > 0.0 {
+        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::ACCENT, content, 1.0));
+    }
+    painter.text(
+        egui::pos2(c.x, c.y + 128.0),
+        egui::Align2::CENTER_CENTER,
+        &progress.label,
+        egui::FontId::proportional(STATUS_TEXT),
+        fade(theme::TEXT_DIM, content, 0.75),
     );
 }
