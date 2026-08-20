@@ -1239,7 +1239,7 @@ impl SurfaceGroup {
 
 /// Which `land` kinds map to which surface. Anything unlisted is skipped rather
 /// than guessed — an unstyled polygon is better than a wrong one.
-fn land_group(kind: &str) -> Option<SurfaceGroup> {
+pub(crate) fn land_group(kind: &str) -> Option<SurfaceGroup> {
     Some(match kind {
         "forest" | "wood" => SurfaceGroup::Forest,
         "grass" | "meadow" | "park" | "garden" | "farmland" | "orchard" | "scrub" | "heath"

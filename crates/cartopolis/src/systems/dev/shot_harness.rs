@@ -520,6 +520,24 @@ pub struct ShotMetrics {
     /// it is the depth range. A `--frames` sweep now answers that in one run.
     pub globe_texture_mb: f32,
     pub globe_tile_px: u32,
+    /// Grass patch entities standing, and the blade slots they add up to
+    /// (`systems::grass`).
+    ///
+    /// Read them together, and read them against `grass_slots` in particular:
+    /// this layer's failure mode is not "no entities" but "entities whose every
+    /// blade collapsed", because a blade that fails the coverage mask is a
+    /// zero-height blade rather than an absent one. So `grass_patches > 0` with
+    /// a bare-looking capture means the *mask* is wrong (misplaced, unbuilt, or
+    /// still on a worker) — which is a different bug from the pool never having
+    /// been spawned, and nothing else here can tell the two apart.
+    pub grass_patches: usize,
+    pub grass_slots: u32,
+    /// How many of those patches the view actually drew. The third number is what
+    /// makes the pair above diagnostic rather than merely reassuring: the pool is
+    /// laid out around the camera's *ground* position, so from any height it sits
+    /// below the frame and is frustum-culled — `45 / 0` is that, and it is not a
+    /// bug. `n / n` with a bare lawn is the mask; `0 / 0` is the pool.
+    pub grass_rendered: usize,
     /// Drawn-route entities (ADR-037) and how many the view actually rendered.
     /// The same "black image vs black scene" question the globe counts answer: a
     /// route that is built but not rendered is a visibility or culling problem,
@@ -635,7 +653,9 @@ tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,avatar_meshes,avatar_rendered,ground_m,height_patches,\
+route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
+avatar_meshes,avatar_rendered,\
+ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
 gpu_resident_peak_kb,software_renderer,vram_allocated_kb,vram_reserved_kb";
 
@@ -665,7 +685,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -704,6 +724,9 @@ impl ShotMetrics {
             self.globe_tile_px,
             self.route_meshes,
             self.route_rendered,
+            self.grass_patches,
+            self.grass_slots,
+            self.grass_rendered,
             self.avatar_meshes,
             self.avatar_rendered,
             self.ground_m,
@@ -1464,6 +1487,10 @@ pub fn drive_capture(
         Res<crate::systems::upload_meter::UploadMeter>,
         // wgpu's own allocator totals. Appended for the same reason as `.9`.
         Res<bevy::render::renderer::RenderDevice>,
+        // The grass pool, which is both a metric and a settle input: a capture
+        // taken while its coverage mask is still on a worker photographs a lawn
+        // that has not arrived. Appended for the same reason as `.9`.
+        Res<crate::systems::grass::GrassPatches>,
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1621,6 +1648,7 @@ pub fn drive_capture(
         ("surfaces", surfaces.streaming_busy()),
         ("osm_buildings", osm.streaming_busy()),
         ("lod22", lod22.streaming_busy()),
+        ("grass", readouts.14.streaming_busy()),
         ("routing", routing),
         ("weather", weather.live && !weather.ready()),
     ]
@@ -1738,6 +1766,9 @@ pub fn drive_capture(
             furniture_factor: readouts.4.factor,
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
+            grass_patches: readouts.14.census().0,
+            grass_slots: readouts.14.census().1,
+            grass_rendered: readouts.14.census().2,
             avatar_meshes: avatar_counts.0,
             avatar_rendered: avatar_counts.1,
             globe_entities: globe_meshes.iter().count(),
@@ -1794,6 +1825,9 @@ pub fn drive_capture(
                     furniture_factor = format!("{:.3}", m.furniture_factor),
                     route_meshes = m.route_meshes,
                     route_rendered = m.route_rendered,
+                    grass_patches = m.grass_patches,
+                    grass_slots = m.grass_slots,
+                    grass_rendered = m.grass_rendered,
                     avatar_meshes = m.avatar_meshes,
                     avatar_rendered = m.avatar_rendered,
                     globe_entities = m.globe_entities,
@@ -2074,6 +2108,9 @@ mod tests {
             bloom: 0.15,
             globe_albedo: 1.0,
             veg_factor: 0.0,
+            grass_patches: 0,
+            grass_slots: 0,
+            grass_rendered: 0,
             furniture_factor: 0.0,
             globe_entities: 0,
             globe_visible: 0,

@@ -197,6 +197,9 @@ pub struct LayerPrefs {
     pub map: bool,
     #[serde(default = "detail_default")]
     pub trees: bool,
+    /// Near-field grass (`systems::grass`).
+    #[serde(default = "detail_default")]
+    pub grass: bool,
     #[serde(default = "detail_default")]
     pub roads_textured: bool,
     #[serde(default = "detail_default")]

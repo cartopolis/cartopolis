@@ -296,7 +296,18 @@ pub struct WaterMask {
 impl WaterMask {
     const CELL: f32 = 16.0;
 
-    fn build(tile: &TileData, scale: f32, extent: f32, tile_m: f32) -> Self {
+    /// A mask over a tile with nothing to keep out of. Both masks walk a whole
+    /// layer to build, so a caller that already knows there is nothing to plant
+    /// has somewhere cheap to land (`crate::grass`).
+    pub(crate) fn empty(tile_m: f32) -> Self {
+        Self {
+            tris: Vec::new(),
+            buckets: HashMap::new(),
+            edges: EdgeGrid::new(&[], &BorderGuard::new(tile_m)),
+        }
+    }
+
+    pub(crate) fn build(tile: &TileData, scale: f32, extent: f32, tile_m: f32) -> Self {
         use crate::vector_tiles::{clipped_rings, tessellate_polygon};
         use geo_types::Geometry;
 
@@ -346,7 +357,7 @@ impl WaterMask {
     }
 
     /// True if a tree of canopy radius `r` here would stand in, or lean over, water.
-    fn blocks(&self, x: f32, z: f32, r: f32) -> bool {
+    pub(crate) fn blocks(&self, x: f32, z: f32, r: f32) -> bool {
         let key = (
             (x / Self::CELL).floor() as i32,
             (z / Self::CELL).floor() as i32,
@@ -394,7 +405,16 @@ impl RoadMask {
     /// eleven metres would otherwise smear every segment over a 3×3 neighbourhood.
     const CELL: f32 = 32.0;
 
-    fn build(tile: &TileData, tile_m: f32) -> Self {
+    /// The sibling of [`WaterMask::empty`], and there for the same reason.
+    pub(crate) fn empty(tile_m: f32) -> Self {
+        Self {
+            segs: Vec::new(),
+            buckets: HashMap::new(),
+            tile_m,
+        }
+    }
+
+    pub(crate) fn build(tile: &TileData, tile_m: f32) -> Self {
         use crate::vector_tiles::drawn_street;
         use geo_types::Geometry;
 
