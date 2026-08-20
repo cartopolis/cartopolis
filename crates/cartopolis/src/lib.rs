@@ -1691,6 +1691,7 @@ fn run_client() {
         .init_resource::<systems::world_places::WorldPlaces>()
         .init_resource::<systems::interact::InteractState>()
         .init_resource::<systems::street_labels::StreetLabelStore>()
+        .init_resource::<systems::map_geometry::DeckPlates>()
         .init_resource::<systems::street_labels::StreetLabelSigns>()
         // Must come after the `WaterMaterial` plugin above: it mints the shared
         // handle out of `Assets<WaterMaterial>`.
