@@ -345,6 +345,17 @@ impl Default for GlobeState {
 }
 
 impl GlobeState {
+    /// Quadtree tiles applied, and how many this view wants — the boot splash's
+    /// readiness signal and progress track *above* the flat streamer's freeze
+    /// altitude, where `MapStream` is deliberately doing nothing at all.
+    ///
+    /// The pair is honest in a way the flat streamer's cannot be without a query:
+    /// [`Self::loaded`] holds only tiles whose texture is on, so the numerator is
+    /// what is actually on screen.
+    pub fn tile_progress(&self) -> (usize, usize) {
+        (self.loaded.len(), self.desired.len())
+    }
+
     /// The camera's **geocentric** altitude (m): distance from the Earth's centre
     /// minus the surface radius. This is the only correct "how high am I" once
     /// the camera can orbit the planet — the local-frame `y` is only altitude

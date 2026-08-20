@@ -254,6 +254,18 @@ impl MapStream {
     pub fn has_tiles(&self) -> bool {
         !self.loaded.is_empty()
     }
+
+    /// How many tiles the clipmap currently wants — the denominator the boot
+    /// splash's progress track counts against.
+    ///
+    /// Deliberately the *wanted* set and not `loaded`: `loaded` is entities that
+    /// have been spawned, which the whole ring reaches within a frame or two of a
+    /// fresh anchor while every one of them is still showing the paper
+    /// placeholder. A bar that counts those is at 100 % before a single texture
+    /// has arrived, which is the one thing a progress bar must not do.
+    pub fn wanted_tiles(&self) -> usize {
+        self.desired.wanted.len()
+    }
 }
 
 impl MapStream {

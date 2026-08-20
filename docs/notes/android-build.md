@@ -1193,15 +1193,24 @@ Extraction, though, keeps running: `set_extract` is not gated. So when
 `extract_windows` drops the surface, wgpu-hal tears down the swapchain, and the
 outstanding acquire semaphore aborts the process.
 
-`lib.rs::release_halted_frame` gives the image back at the halt — all three
-holders together, since one surviving `Arc` is as good as three. **It is not a
-recovery**: nothing is rebuilt and the surface is not touched. That distinction is
-the whole reason it is allowed to exist after two aborts that were.
+`lib.rs::release_halted_frame` gave the image back at the halt — all three holders
+together, since one surviving `Arc` is as good as three. **It did not work**, and
+the reasoning above is where it goes wrong: the holder is not in the render world
+at all. `wgpu-core`'s `Surface::discard` is gated on `check_is_valid()`, a lost
+device never is, and the raw texture stays parked in `present.acquired_texture`
+whatever bevy drops. The 2026-08-20 report is that same abort from a build
+containing the fix. It was replaced by `abandon_lost_surface`, which leaks
+`WindowSurfaces` so the teardown never runs — see
+[device-loss-strands-the-swapchain.md](device-loss-strands-the-swapchain.md) for
+the sources and for why no wgpu version available to bevy 0.19 fixes it.
 
 Report two ends in `Error in Buffer::get_mapped_range … Buffer is invalid`, which
 CLAUDE.md already names as downstream noise: a readback polled after the device is
-gone. Nothing was changed for it. **Both tombstones are the device loss wearing a
-different hat, and the fix for both is not losing the device.**
+gone. It runs on an `AsyncComputeTaskPool` thread, out of reach of any error
+handler, so it cannot be prevented from here — only outrun, which is one of the
+two reasons Android now leaves at the halt (`exit_on_halt`) instead of holding a
+frozen screen. **Both tombstones are the device loss wearing a different hat, and
+the fix for both is not losing the device.**
 
 **Which brings the tier question back, with a number this time.** The 23:43 run had
 no upload ceiling at all, because a rung chosen in Settings ▸ Graphics bypasses
