@@ -2096,8 +2096,7 @@ fn run_client() {
                 // wind. After the surface build, which is what fills the per-cell
                 // grass areas it plants into — a frame's lag there is a frame of
                 // bare ground on a cell that just streamed in.
-                systems::grass::update_grass
-                    .after(systems::map_geometry::update_map_surfaces),
+                systems::grass::update_grass.after(systems::map_geometry::update_map_surfaces),
             ),
             // Globe / space tier (ADR-025): (re)build when the anchor moves, then
             // bake its OSM skin in the background. Nested to stay under the

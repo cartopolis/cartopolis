@@ -2424,7 +2424,12 @@ mod tests {
 
         let mut g = RoadGraph::new(53.2194);
         seg(&mut g, at(0.0, 0.0), at(400.0, 0.0), RoadKind::Residential);
-        seg(&mut g, at(400.0, 0.0), at(800.0, 0.0), RoadKind::Residential);
+        seg(
+            &mut g,
+            at(400.0, 0.0),
+            at(800.0, 0.0),
+            RoadKind::Residential,
+        );
         seg_at(
             &mut g,
             at(400.0, 0.0),
@@ -2437,7 +2442,8 @@ mod tests {
         let street = g.index[&(base.0 as i32, base.1 as i32)];
         let on_the_bridge = g.index[&((base.0 + 400.0) as i32, (base.1 + 300.0) as i32)];
         assert!(
-            g.reachable(street, TravelMode::Car).contains(&on_the_bridge),
+            g.reachable(street, TravelMode::Car)
+                .contains(&on_the_bridge),
             "the ramp is unreachable from the road it ramps off"
         );
     }
@@ -2597,7 +2603,12 @@ mod tests {
         // Both decks. Neither carries a vertex the other could be tested against —
         // except that the upper one is hinged over the lower, exactly as a
         // generalised line is.
-        line_at(&mut g, &[at(0.0, 0.0), at(800.0, 0.0)], RoadKind::Primary, 1);
+        line_at(
+            &mut g,
+            &[at(0.0, 0.0), at(800.0, 0.0)],
+            RoadKind::Primary,
+            1,
+        );
         line_at(
             &mut g,
             &[at(400.0, -300.0), at(400.0, 0.0), at(400.0, 300.0)],

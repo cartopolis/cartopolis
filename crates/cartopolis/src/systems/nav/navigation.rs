@@ -2280,7 +2280,11 @@ mod tests {
         assert_eq!(pts[1], Vec2::new(50.0, 0.0));
         // The surviving indices are what keeps a parallel array (the per-point
         // grade) in step with the thinned geometry.
-        assert_eq!(kept, vec![0, 3], "the kept indices must name the input points");
+        assert_eq!(
+            kept,
+            vec![0, 3],
+            "the kept indices must name the input points"
+        );
     }
 
     #[test]

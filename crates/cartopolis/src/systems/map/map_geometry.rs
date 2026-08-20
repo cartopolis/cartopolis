@@ -780,9 +780,7 @@ pub fn update_map_surfaces(
         stores.places.insert_cell(c, wx, wz, cell_places);
         // Same origin, same lifetime, same retire path — see `CellStores`.
         if let Some(area) = grass {
-            stores
-                .grass
-                .insert_cell(c, Vec2::new(wx, wz), tile_m, area);
+            stores.grass.insert_cell(c, Vec2::new(wx, wz), tile_m, area);
         }
 
         // One water material per cell — it carries that cell's shore field, so it
@@ -1464,8 +1462,16 @@ mod tests {
             }],
         );
 
-        assert_eq!(plates.lift_at(Vec2::new(1020.0, 2020.0)), 6.0, "on the deck");
-        assert_eq!(plates.lift_at(Vec2::new(1050.0, 2020.0)), 0.0, "past its end");
+        assert_eq!(
+            plates.lift_at(Vec2::new(1020.0, 2020.0)),
+            6.0,
+            "on the deck"
+        );
+        assert_eq!(
+            plates.lift_at(Vec2::new(1050.0, 2020.0)),
+            0.0,
+            "past its end"
+        );
         assert_eq!(
             plates.lift_at(Vec2::new(20.0, 20.0)),
             0.0,

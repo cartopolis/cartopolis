@@ -36,9 +36,9 @@
 //! never a race — the camera cannot outwalk the mask it is standing in.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::ViewVisibility;
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
@@ -772,12 +772,7 @@ fn ensure_assets(
                         PATCH_M,
                     ),
                     wind: Vec4::new(1.0, 0.0, CALM_SWAY, 1.0),
-                    range: Vec4::new(
-                        GRASS_RADIUS_M * FADE_START_FRAC,
-                        GRASS_RADIUS_M,
-                        0.0,
-                        1.0,
-                    ),
+                    range: Vec4::new(GRASS_RADIUS_M * FADE_START_FRAC, GRASS_RADIUS_M, 0.0, 1.0),
                     tint: blade_tint(),
                     clump: Vec4::new(CLUMP_M, DENSITY_LOW, DENSITY_HIGH, CLUMP_FAN),
                     mask: empty,
@@ -889,13 +884,9 @@ fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainF
                 area: a.as_ref(),
             })
             .collect();
-        let field = turf::mask_field(
-            &placed,
-            [origin.x, origin.y],
-            FIELD_M,
-            FIELD_PX,
-            &|x, z| ground.at(x, z),
-        );
+        let field = turf::mask_field(&placed, [origin.x, origin.y], FIELD_M, FIELD_PX, &|x, z| {
+            ground.at(x, z)
+        });
         if let Ok(mut g) = sink.lock() {
             *g = Some(field);
         }
@@ -920,13 +911,7 @@ mod tests {
         }
         // …and the disc must be covered: the patch under the camera and its four
         // neighbours are the ones a standing avatar is actually looking at.
-        for o in [
-            IVec2::ZERO,
-            IVec2::X,
-            IVec2::NEG_X,
-            IVec2::Y,
-            IVec2::NEG_Y,
-        ] {
+        for o in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
             assert!(offsets.contains(&o), "{o:?} missing from the pool");
         }
     }
