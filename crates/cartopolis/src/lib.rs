@@ -234,21 +234,21 @@ fn build_shot_harness(cli: &Cli) -> Result<Option<systems::shot_harness::ShotHar
     let Some(path) = cli.shot.clone() else {
         return Ok(None);
     };
-    ShotHarness::from_cli(
+    ShotHarness::from_cli(systems::shot_harness::ShotArgs {
         path,
-        &cli.at,
-        &cli.look,
-        cli.size.as_deref().unwrap_or(DEFAULT_SIZE),
-        cli.settle.unwrap_or(DEFAULT_SETTLE),
-        cli.wait.unwrap_or(DEFAULT_WAIT),
-        cli.hide_ui,
-        cli.ui.clone(),
-        cli.shot_mode.clone(),
-        cli.frames,
-        cli.csv.clone(),
-        cli.dump_state.clone(),
-        &cli.expect,
-    )
+        at: &cli.at,
+        look: &cli.look,
+        size: cli.size.as_deref().unwrap_or(DEFAULT_SIZE),
+        settle: cli.settle.unwrap_or(DEFAULT_SETTLE),
+        wait: cli.wait.unwrap_or(DEFAULT_WAIT),
+        hide_ui: cli.hide_ui,
+        ui: cli.ui.clone(),
+        mode: cli.shot_mode.clone(),
+        frames: cli.frames,
+        csv: cli.csv.clone(),
+        dump_state: cli.dump_state.clone(),
+        expect: &cli.expect,
+    })
     .map(Some)
     .map_err(|e| format!("--shot: {e}"))
 }

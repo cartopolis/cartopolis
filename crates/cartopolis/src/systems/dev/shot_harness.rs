@@ -650,9 +650,16 @@ pub struct ShotMetrics {
     pub vram_reserved_kb: u64,
 }
 
-/// Field order for the `--csv` header and rows. Kept adjacent to [`ShotMetrics::csv_row`]
-/// so the two never drift; a mismatch would silently mislabel columns.
-/// `busy` is `|`-joined rather than comma-joined for the obvious reason.
+/// The `--csv` column order, and the spine the rest of the harness's introspection
+/// hangs off: [`ShotMetrics::csv_row`] renders a row by looking each of these names
+/// up in the struct, and [`metric_keys`] derives the `--expect` vocabulary from the
+/// same list. So this is the one place a column's *name* and *position* are stated,
+/// and adding a metric here is what makes it reachable from a CSV and from a gate on
+/// the same commit.
+///
+/// The order is deliberately not the struct's declaration order (related columns
+/// were grouped as they were added), which is exactly why a row must be built by
+/// name rather than by position.
 const CSV_HEADER: &str = "shot,name,lat,lng,settled,settled_s,busy,frame_ms,frame_ms_max,\
 draws,tris_total,tris_shadow,tris_buildings,tris_lod22,tris_tiles,tris_globe,worker_outstanding,\
 tiles_occluded,\
@@ -688,90 +695,152 @@ impl ShotMetrics {
         }
     }
 
-    /// One CSV line, columns in [`CSV_HEADER`] order.
+    /// One CSV line, columns in [`CSV_HEADER`] order — each cell **looked up by
+    /// the header's own name** out of the `Serialize` impl, exactly as
+    /// [`Self::measure`] does.
+    ///
+    /// This was a positional `format!` with 54 placeholders and 54 `self.` field
+    /// expressions until 2026-08-21, and the danger in that is not the length: the
+    /// header, the placeholders and the arguments were three hand-maintained lists
+    /// that had to agree on *order*, while the only test over them compared their
+    /// *arity*. Inserting a column in the middle of the header without moving its
+    /// argument to match still had 54 of each, so it passed — and silently shifted
+    /// every column after it, mislabelling the rest of the file. Looking each cell
+    /// up by name cannot do that; a header naming a field that does not exist is
+    /// what `csv_columns_all_resolve` now catches instead.
     fn csv_row(&self) -> String {
-        format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
-            self.shot,
-            self.name.as_deref().unwrap_or(""),
-            self.lat,
-            self.lng,
-            self.settled,
-            self.settled_s,
-            self.busy.join("|"),
-            self.frame_ms,
-            self.frame_ms_max,
-            self.draws,
-            self.tris_total,
-            self.tris_shadow,
-            self.tris_buildings,
-            self.tris_lod22,
-            self.tris_tiles,
-            self.tris_globe,
-            self.worker_outstanding,
-            self.tiles_occluded,
-            self.alt_m,
-            self.space_factor,
-            self.in_space,
-            self.orbit_space,
-            self.near_m,
-            self.far_m,
-            self.exposure_ev100,
-            self.bloom,
-            self.globe_albedo,
-            self.veg_factor,
-            self.furniture_factor,
-            self.globe_entities,
-            self.globe_visible,
-            self.globe_rendered,
-            self.globe_tiles_loaded,
-            self.globe_tiles_desired,
-            self.globe_texture_mb,
-            self.globe_tile_px,
-            self.route_meshes,
-            self.route_rendered,
-            self.grass_patches,
-            self.grass_slots,
-            self.grass_rendered,
-            self.prop_meshes,
-            self.avatar_meshes,
-            self.avatar_rendered,
-            self.ground_m,
-            self.height_patches,
-            self.terrain_ready,
-            self.terrain_relief_m,
-            self.upload_peak_kb,
-            self.upload_peak_asset_kb,
-            self.gpu_resident_kb,
-            self.gpu_resident_peak_kb,
-            self.software_renderer,
-            self.vram_allocated_kb,
-            self.vram_reserved_kb,
-        )
+        let value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        CSV_HEADER
+            .split(',')
+            .map(|key| csv_cell(key, value.get(key)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// Decimal places for the columns where a raw `f32`-widened-to-`f64` would be
+/// noise (`0.30000001192092896`). A column that isn't listed prints as
+/// serialised, which is what every integer and boolean wants.
+///
+/// Unlike the positional format string this replaced, a name missing from here
+/// costs a column some readability — never its label.
+const CSV_PRECISION: &[(&str, usize)] = &[
+    ("settled_s", 2),
+    ("frame_ms", 2),
+    ("frame_ms_max", 2),
+    ("space_factor", 4),
+    ("exposure_ev100", 3),
+    ("bloom", 4),
+    ("globe_albedo", 4),
+    ("veg_factor", 4),
+    ("furniture_factor", 4),
+    ("globe_texture_mb", 2),
+    ("ground_m", 2),
+    ("terrain_relief_m", 2),
+];
+
+/// Render one serialised metric as a CSV cell.
+///
+/// `busy` is `|`-joined for the obvious reason. A **null is an empty cell**, and
+/// that covers the two ways one arises with the same answer: an unnamed shot has
+/// no preset name, and a `NaN` float — which is what `ground_m` is when the height
+/// layer is off or outside AHN's coverage — serialises to null too. Empty is the
+/// honest cell for both, and it agrees with [`ShotMetrics::measure`], which
+/// already reports a `NaN` metric as *not measured* rather than as a number.
+fn csv_cell(key: &str, value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("|"),
+        Some(serde_json::Value::Number(n)) => match CSV_PRECISION.iter().find(|(k, _)| *k == key) {
+            Some((_, places)) => match n.as_f64() {
+                Some(f) => format!("{f:.places$}"),
+                None => n.to_string(),
+            },
+            None => n.to_string(),
+        },
+        // Null, or a header naming a field that isn't there — the latter is a bug,
+        // and `csv_columns_all_resolve` is what fails on it. Matched before the
+        // catch-all below, which would otherwise print the literal `null`.
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// The `--shot` half of the CLI, as one value.
+///
+/// Thirteen positional parameters on [`ShotHarness::from_cli`] before this, which
+/// the flag names made *look* self-describing at the one real call site and did
+/// not at any other: a test asking only "does `--frames` need two waypoints"
+/// still had to spell out `0.1, 1.0, false, vec![], "free".into(), 8, None, None,
+/// &[]`, and a reader had to count commas against the signature to find which
+/// `None` was `--csv`. Named fields plus a [`Default`] carrying the CLI's own
+/// defaults means a caller writes only what it is actually testing.
+pub struct ShotArgs<'a> {
+    /// Base output path (`--shot`).
+    pub path: PathBuf,
+    /// One or more "lat,lng,alt".
+    pub at: &'a [String],
+    /// Zero or more "pitch,yaw", paired with `at` by index; the last one carries
+    /// over to any waypoint past the end.
+    pub look: &'a [String],
+    pub size: &'a str,
+    pub settle: f32,
+    pub wait: f32,
+    pub hide_ui: bool,
+    pub ui: Vec<String>,
+    pub mode: String,
+    /// `> 0` densifies the waypoints into an N-frame sweep (see [`densify_path`]).
+    pub frames: u32,
+    pub csv: Option<PathBuf>,
+    pub dump_state: Option<PathBuf>,
+    pub expect: &'a [String],
+}
+
+impl Default for ShotArgs<'_> {
+    /// The plain-flag defaults, so the one place they are stated is beside the
+    /// [`DEFAULT_SIZE`] / [`DEFAULT_SETTLE`] / [`DEFAULT_WAIT`] constants they come
+    /// from — and a test that doesn't care about settle timing doesn't invent one.
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            at: &[],
+            look: &[],
+            size: DEFAULT_SIZE,
+            settle: DEFAULT_SETTLE,
+            wait: DEFAULT_WAIT,
+            hide_ui: false,
+            ui: Vec::new(),
+            mode: String::from("free"),
+            frames: 0,
+            csv: None,
+            dump_state: None,
+            expect: &[],
+        }
     }
 }
 
 impl ShotHarness {
-    /// Build from the raw CLI strings: `at` is one or more "lat,lng,alt", `look`
-    /// zero or more "pitch,yaw" (paired by index; the last one carries over).
-    /// `frames > 0` densifies the waypoints into an N-frame sweep (see
-    /// [`densify_path`]).
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_cli(
-        path: PathBuf,
-        at: &[String],
-        look: &[String],
-        size: &str,
-        settle: f32,
-        wait: f32,
-        hide_ui: bool,
-        ui: Vec<String>,
-        mode: String,
-        frames: u32,
-        csv: Option<PathBuf>,
-        dump_state: Option<PathBuf>,
-        expect: &[String],
-    ) -> Result<Self, String> {
+    /// Build from the raw CLI strings — see [`ShotArgs`] for what each one is.
+    pub fn from_cli(args: ShotArgs) -> Result<Self, String> {
+        let ShotArgs {
+            path,
+            at,
+            look,
+            size,
+            settle,
+            wait,
+            hide_ui,
+            ui,
+            mode,
+            frames,
+            csv,
+            dump_state,
+            expect,
+        } = args;
         fn nums(s: &str, want: usize, what: &str) -> Result<Vec<f64>, String> {
             let v: Vec<f64> = s
                 .split(',')
@@ -1126,6 +1195,39 @@ pub struct ScriptedCards<'w> {
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
 }
 
+/// Every name `--ui` accepts — the vocabulary [`open_scripted_ui`] checks the
+/// caller's list against, so a typo is a warning rather than a silently missing
+/// panel.
+///
+/// **It must name every string `want(…)` is called with down there**, and the
+/// hazard is that nothing enforces it: the two lists drifted for real, `settings`
+/// and `graphics` grew handlers without ever being added here, and the result was
+/// the worst possible reading — `--ui graphics` opened Settings on the Graphics
+/// tab *and* logged that it had been ignored. A reviewer trusting the log would
+/// have gone looking for a bug in a panel that had already worked. Adding a `want`
+/// arm means adding its name here; `ui_vocabulary_covers_every_handler` is the
+/// test that fails when it doesn't.
+const UI_ELEMENTS: &[&str] = &[
+    "dev",
+    "stats",
+    "hud",
+    "menu",
+    "ai",
+    "avatar",
+    "appearance",
+    "layers",
+    "places",
+    "bookmarks",
+    "route",
+    "driver",
+    "search",
+    "place",
+    "settings",
+    "graphics",
+    "signin",
+    "all",
+];
+
 /// Open the UI panels named by `--ui` so a scripted capture can document them —
 /// the dev lighting/weather controls, the layers list, the bookmarks or AI
 /// panels — not just the always-on HUD and menu bar. These panels are normally
@@ -1277,26 +1379,8 @@ pub fn open_scripted_ui(
         });
     }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
-    let known = [
-        "dev",
-        "stats",
-        "hud",
-        "menu",
-        "ai",
-        "avatar",
-        "appearance",
-        "layers",
-        "places",
-        "bookmarks",
-        "route",
-        "driver",
-        "search",
-        "place",
-        "signin",
-        "all",
-    ];
     for u in &panels {
-        if !known.contains(&u.as_str()) {
+        if !UI_ELEMENTS.contains(&u.as_str()) {
             tracing::warn!(name = %u, "shot harness: unknown --ui element (ignored)");
         }
     }
@@ -1466,6 +1550,53 @@ pub fn place_space_orbit(
     cam_state.orbit_heading = 0.0;
 }
 
+/// Everything [`drive_capture`] reads that is neither the camera nor the
+/// harness's own bookkeeping: the streamers the settle test waits on, and the
+/// resources each [`ShotMetrics`] field is measured from.
+///
+/// Bundled because `drive_capture` is at Bevy's sixteen-parameter ceiling, and a
+/// new inspectable fact is exactly the kind of thing that keeps being added to
+/// it. It was a **positional tuple** until 2026-08-21, which made that ceiling
+/// bite twice over: new readouts had to be *appended* so the existing `.0`–`.15`
+/// indices kept their meaning, the sixteenth had to nest a tuple inside itself
+/// (`readouts.15 .0`), and every use site named a number instead of a thing. A
+/// `SystemParam` struct has no element limit and no positions to preserve — add a
+/// field wherever it belongs and read it by name. `RenderCensus`, `AvatarReadout`
+/// and [`ScriptedCards`] are the same move; this was the one holdout.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ShotReadouts<'w, 's> {
+    globe_albedo: Res<'w, GlobeSurfaceAlbedo>,
+    vegetation: Res<'w, crate::systems::vegetation::VegetationLod>,
+    height: Res<'w, crate::systems::height::HeightLayer>,
+    terrain: Res<'w, crate::systems::terrain::TerrainField>,
+    furniture: Res<'w, crate::systems::street_furniture::FurnitureLod>,
+    surfaces: Res<'w, crate::systems::map_geometry::MapSurfaces>,
+    osm_buildings: Res<'w, crate::systems::osm_buildings::OsmBuildings>,
+    lod22: Res<'w, crate::systems::lod22::Lod22Buildings>,
+    adapter: Res<'w, bevy::render::renderer::RenderAdapterInfo>,
+    avatar: AvatarReadout<'w, 's>,
+    census: crate::systems::render_census::RenderCensus<'w, 's>,
+    /// The wall clock, for the frame-time columns only. Everything else the
+    /// harness schedules against is deliberately the *virtual* clock — see
+    /// [`ShotProgress::frame_time`] for why the two must not be confused.
+    real: Res<'w, Time<Real>>,
+    /// The run's worst upload frame, which is a high-water mark and therefore the
+    /// one metric here that describes a moment other than the shutter.
+    uploads: Res<'w, crate::systems::upload_meter::UploadMeter>,
+    /// wgpu's own allocator totals.
+    render_device: Res<'w, bevy::render::renderer::RenderDevice>,
+    /// The grass pool, which is both a metric and a settle input: a capture taken
+    /// while its coverage mask is still on a worker photographs a lawn that has
+    /// not arrived.
+    grass: Res<'w, crate::systems::grass::GrassPatches>,
+    /// The Overpass street-detail streamer and its coarse sibling, the
+    /// tall-structure lane — settle inputs (a ground-level capture without its
+    /// lamps and trees photographs a half-built street) and the `prop_meshes`
+    /// metric.
+    street_detail: Res<'w, crate::systems::street_detail::StreetDetail>,
+    tall_structures: Res<'w, crate::systems::tall_structures::TallStructures>,
+}
+
 /// Wait for the view to settle, capture, then move to the next shot (or exit).
 #[allow(clippy::too_many_arguments)]
 pub fn drive_capture(
@@ -1481,48 +1612,7 @@ pub fn drive_capture(
     weather: Res<WeatherState>,
     route: Res<crate::systems::navigation::RouteState>,
     cam_state: Res<CameraState>,
-    // Resources read into `ShotMetrics`, plus the streamers the settle test waits
-    // on (`.5`–`.7`), tupled into one `SystemParam`: this system is at Bevy's
-    // 16-parameter ceiling, and a new inspectable fact is exactly the kind of
-    // thing that keeps getting added here.
-    readouts: (
-        Res<GlobeSurfaceAlbedo>,
-        Res<crate::systems::vegetation::VegetationLod>,
-        Res<crate::systems::height::HeightLayer>,
-        Res<crate::systems::terrain::TerrainField>,
-        Res<crate::systems::street_furniture::FurnitureLod>,
-        Res<crate::systems::map_geometry::MapSurfaces>,
-        Res<crate::systems::osm_buildings::OsmBuildings>,
-        Res<crate::systems::lod22::Lod22Buildings>,
-        Res<bevy::render::renderer::RenderAdapterInfo>,
-        // Appended, so every existing index above keeps its meaning. It is here
-        // rather than as a 17th argument because that is one past Bevy's
-        // parameter ceiling, which is the reason this tuple exists at all.
-        AvatarReadout,
-        crate::systems::render_census::RenderCensus,
-        // The wall clock, for the frame-time columns only. Everything else the
-        // harness schedules against is deliberately the *virtual* clock — see
-        // `ShotProgress::frame_time` for why the two must not be confused.
-        Res<Time<Real>>,
-        // The run's worst upload frame, which is a high-water mark and therefore
-        // the one metric here that describes a moment other than the shutter.
-        Res<crate::systems::upload_meter::UploadMeter>,
-        // wgpu's own allocator totals. Appended for the same reason as `.9`.
-        Res<bevy::render::renderer::RenderDevice>,
-        // The grass pool, which is both a metric and a settle input: a capture
-        // taken while its coverage mask is still on a worker photographs a lawn
-        // that has not arrived. Appended for the same reason as `.9`.
-        Res<crate::systems::grass::GrassPatches>,
-        // The Overpass street-detail streamer and its coarse sibling, the
-        // tall-structure lane — settle inputs (a ground-level capture without
-        // its lamps and trees photographs a half-built street) and the
-        // `prop_meshes` metric. One nested element, because this tuple is *at*
-        // the 16-element SystemParam ceiling, which is one past appendable.
-        (
-            Res<crate::systems::street_detail::StreetDetail>,
-            Res<crate::systems::tall_structures::TallStructures>,
-        ),
-    ),
+    readouts: ShotReadouts,
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
     // the camera out of this whole query — every metric below it, not just
@@ -1593,7 +1683,7 @@ pub fn drive_capture(
     // `--shot`, deliberately stepped — it measures the scripted run's intent, which
     // is what `elapsed`/`quiet` above want and exactly what a frame time does not.
     if progress.quiet > 0.0 {
-        let frame = readouts.11.delta_secs();
+        let frame = readouts.real.delta_secs();
         progress.frames += 1;
         progress.frame_time += frame;
         progress.frame_time_max = progress.frame_time_max.max(frame);
@@ -1641,6 +1731,20 @@ pub fn drive_capture(
             // Leaving the pool paused would strand every job parked behind this
             // capture; the run is ending, but `AppExit` is not immediate.
             crate::platform::workers::set_paused(false);
+            // Hand back whatever the run *did* measure, including this shot's own
+            // row — the metrics are pushed at the shutter, so a capture that never
+            // read back still has its numbers. Only the completion path used to
+            // write them, which threw the whole set away in exactly the case that
+            // needs it most: `ci.yml` catches a failed smoke run and `cat`s the
+            // dump to explain it, and got "(no dump: the run died before it
+            // captured)" for a run that had captured four of six viewpoints.
+            //
+            // Nothing measured is left as no file at all, rather than as an empty
+            // array: that is the case the CI message is already right about, and a
+            // present-but-empty dump would read as "measured, and found nothing".
+            if !progress.metrics.is_empty() {
+                harness.write_metrics(&progress.metrics);
+            }
             exit.write(AppExit::error());
         }
         return;
@@ -1660,8 +1764,6 @@ pub fn drive_capture(
     //
     // A `--weather-live` run also holds until the first met.no sample lands, so the
     // capture shows real conditions rather than the default clear sky, and a
-    // `--weather-live` run also holds until the first met.no sample lands, so the
-    // capture shows real conditions rather than the default clear sky, and a
     // `--ui route` run holds until the solve lands — otherwise the shot documents
     // an empty planner and a map with no line on it (ADR-037).
     let routing = matches!(
@@ -1669,7 +1771,7 @@ pub fn drive_capture(
         crate::systems::navigation::SolveStatus::Fetching(..)
             | crate::systems::navigation::SolveStatus::Solving
     );
-    let (surfaces, osm, lod22) = (&readouts.5, &readouts.6, &readouts.7);
+    let (surfaces, osm, lod22) = (&readouts.surfaces, &readouts.osm_buildings, &readouts.lod22);
     // Named, not a single `||` chain: when a capture gives up at `--wait`, *which*
     // streamer was still going is the entire diagnosis, and a bare "not settled"
     // sends you back to re-run with a longer cap just to learn it.
@@ -1679,9 +1781,9 @@ pub fn drive_capture(
         ("surfaces", surfaces.streaming_busy()),
         ("osm_buildings", osm.streaming_busy()),
         ("lod22", lod22.streaming_busy()),
-        ("grass", readouts.14.streaming_busy()),
-        ("street_detail", readouts.15 .0.streaming_busy()),
-        ("tall_structures", readouts.15 .1.streaming_busy()),
+        ("grass", readouts.grass.streaming_busy()),
+        ("street_detail", readouts.street_detail.streaming_busy()),
+        ("tall_structures", readouts.tall_structures.streaming_busy()),
         ("routing", routing),
         ("weather", weather.live && !weather.ready()),
     ]
@@ -1747,15 +1849,18 @@ pub fn drive_capture(
         let shot = &harness.shots[progress.index];
         // Walked once here rather than twice in the struct literal below: the
         // descendant walk is the only metric that costs a traversal.
-        let avatar_counts = readouts.9.counts();
+        let avatar_counts = readouts.avatar.counts();
         // Likewise: one walk of every mesh entity, resolving each handle into
         // `Assets<Mesh>`. Expensive per frame, free once per capture — and this is
         // the frame the pool is already quiesced for.
-        let render = readouts.10.counts();
+        let render = readouts.census.counts();
+        // Likewise, and it was called three times in the struct literal below —
+        // once per column — each walking every pool.
+        let grass = readouts.grass.census();
         // Absent on a backend that keeps no allocator report; reported as zeros
         // rather than omitted, so a CSV row never changes width.
         let vram = readouts
-            .13
+            .render_device
             .wgpu_device()
             .generate_allocator_report()
             .map_or((0, 0), |r| {
@@ -1794,15 +1899,15 @@ pub fn drive_capture(
             // honest reading for it — the same number the component would have
             // carried, since `bloom_intensity` returns exactly 0.0 on that tier.
             bloom: bloom.map_or(0.0, |b| b.intensity),
-            globe_albedo: readouts.0 .0,
-            veg_factor: readouts.1.factor,
-            furniture_factor: readouts.4.factor,
+            globe_albedo: readouts.globe_albedo.0,
+            veg_factor: readouts.vegetation.factor,
+            furniture_factor: readouts.furniture.factor,
             route_meshes: route_meshes.iter().count(),
             route_rendered: route_meshes.iter().filter(|vv| vv.get()).count(),
-            grass_patches: readouts.14.census().0,
-            grass_slots: readouts.14.census().1,
-            grass_rendered: readouts.14.census().2,
-            prop_meshes: readouts.15 .0.spawned_meshes + readouts.15 .1.spawned(),
+            grass_patches: grass.0,
+            grass_slots: grass.1,
+            grass_rendered: grass.2,
+            prop_meshes: readouts.street_detail.spawned_meshes + readouts.tall_structures.spawned(),
             avatar_meshes: avatar_counts.0,
             avatar_rendered: avatar_counts.1,
             globe_entities: globe_meshes.iter().count(),
@@ -1815,15 +1920,15 @@ pub fn drive_capture(
             globe_tiles_desired: globe.tiles_desired(),
             globe_texture_mb: globe.tile_texture_bytes() as f32 / (1024.0 * 1024.0),
             globe_tile_px: crate::systems::globe::GLOBE_TILE_PX,
-            ground_m: readouts.2.ground_m.unwrap_or(f32::NAN),
-            height_patches: readouts.2.fetched,
-            terrain_ready: readouts.3.is_ready(),
-            terrain_relief_m: readouts.3.range_m.1 - readouts.3.range_m.0,
-            upload_peak_kb: readouts.12.peak_kb(),
-            upload_peak_asset_kb: readouts.12.peak_asset_kb(),
-            gpu_resident_kb: readouts.12.resident_kb(),
-            gpu_resident_peak_kb: readouts.12.peak_resident_kb(),
-            software_renderer: readouts.8.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
+            ground_m: readouts.height.ground_m.unwrap_or(f32::NAN),
+            height_patches: readouts.height.fetched,
+            terrain_ready: readouts.terrain.is_ready(),
+            terrain_relief_m: readouts.terrain.range_m.1 - readouts.terrain.range_m.0,
+            upload_peak_kb: readouts.uploads.peak_kb(),
+            upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
+            gpu_resident_kb: readouts.uploads.resident_kb(),
+            gpu_resident_peak_kb: readouts.uploads.peak_resident_kb(),
+            software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
             vram_allocated_kb: vram.0,
             vram_reserved_kb: vram.1,
         };
@@ -2021,21 +2126,12 @@ mod tests {
 
     #[test]
     fn frames_requires_two_waypoints() {
-        let result = ShotHarness::from_cli(
-            "/tmp/s.png".into(),
-            &["0,0,1000".into()],
-            &[],
-            "64x64",
-            0.1,
-            1.0,
-            false,
-            vec![],
-            "free".into(),
-            8,
-            None,
-            None,
-            &[],
-        );
+        let result = ShotHarness::from_cli(ShotArgs {
+            path: "/tmp/s.png".into(),
+            at: &["0,0,1000".into()],
+            frames: 8,
+            ..default()
+        });
         match result {
             Err(e) => assert!(e.contains("--frames"), "got {e:?}"),
             Ok(_) => panic!("expected --frames with one waypoint to error"),
@@ -2044,21 +2140,12 @@ mod tests {
 
     #[test]
     fn path_for_indexes_and_pads_a_sweep() {
-        let h = ShotHarness::from_cli(
-            "/tmp/sweep.png".into(),
-            &["0,0,2000".into(), "0,0,4000000".into()],
-            &[],
-            "64x64",
-            0.1,
-            1.0,
-            false,
-            vec![],
-            "free".into(),
-            12,
-            None,
-            None,
-            &[],
-        )
+        let h = ShotHarness::from_cli(ShotArgs {
+            path: "/tmp/sweep.png".into(),
+            at: &["0,0,2000".into(), "0,0,4000000".into()],
+            frames: 12,
+            ..default()
+        })
         .unwrap();
         // 12 frames → indices 00..11, zero-padded to width 2, altitude-tagged.
         assert_eq!(h.path_for(0), PathBuf::from("/tmp/sweep_00_2000m.png"));
@@ -2173,6 +2260,45 @@ mod tests {
         }
     }
 
+    /// [`UI_ELEMENTS`] and `open_scripted_ui`'s handlers are two lists that have
+    /// to agree, and nothing in the type system relates them — a handler arm is a
+    /// string comparison against a literal. They drifted for real: `settings` and
+    /// `graphics` were handled for months while the vocabulary called them
+    /// unknown, so `--ui graphics` did its job and logged that it hadn't.
+    ///
+    /// So the test reads this file back and checks the one direction that matters.
+    /// Unusual, and cheaper than the alternative: the only other way to relate
+    /// them is to run the system, which needs a built `App` with two dozen
+    /// resources in it.
+    #[test]
+    fn ui_vocabulary_covers_every_handler() {
+        // Assembled rather than written out, so this needle does not match the
+        // line that defines it — the scan reads the whole file, this one included.
+        let call = format!("want({}", '"');
+        let source = include_str!("shot_harness.rs");
+        let mut missing: Vec<&str> = source
+            .match_indices(&call)
+            .map(|(i, _)| {
+                let rest = &source[i + call.len()..];
+                &rest[..rest.find('"').expect("unterminated --ui handler name")]
+            })
+            .filter(|name| !UI_ELEMENTS.contains(name))
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "open_scripted_ui handles {missing:?}, which UI_ELEMENTS does not list \
+             — `--ui` would warn that they were ignored while acting on them"
+        );
+        // And the scan found the handlers at all, so a rename of `want` can't turn
+        // this into a test that passes by looking at nothing.
+        assert!(
+            source.matches(&call).count() > 10,
+            "found no --ui handlers to check"
+        );
+    }
+
     #[test]
     fn csv_header_and_row_have_matching_arity() {
         assert_eq!(
@@ -2180,6 +2306,55 @@ mod tests {
             sample_metrics().csv_row().split(',').count(),
             "CSV header and row column counts drifted"
         );
+    }
+
+    /// The arity test above is necessary and was never sufficient: it passed for a
+    /// header that named a field the struct doesn't have, because the missing cell
+    /// is still a cell. Rows are built by name now, so *that* is the failure left
+    /// to guard — a renamed or removed field turns its column into blanks for
+    /// every row of every run, and nothing else says so.
+    #[test]
+    fn csv_columns_all_resolve() {
+        let value = serde_json::to_value(sample_metrics()).unwrap();
+        for key in CSV_HEADER.split(',') {
+            assert!(
+                value.get(key).is_some(),
+                "CSV column {key:?} names no ShotMetrics field"
+            );
+        }
+    }
+
+    /// Columns land under their own headers, and the cells that aren't plain
+    /// numbers keep their shape: `busy` stays one `|`-joined cell rather than
+    /// spilling into the columns after it, and a `NaN` metric is blank — the same
+    /// "not measured" `measure()` reports for it.
+    #[test]
+    fn csv_cells_line_up_with_their_headers() {
+        let m = sample_metrics();
+        let header: Vec<&str> = CSV_HEADER.split(',').collect();
+        let row = m.csv_row();
+        let cells: Vec<&str> = row.split(',').collect();
+        let cell = |key: &str| {
+            cells[header
+                .iter()
+                .position(|h| *h == key)
+                .unwrap_or_else(|| panic!("{key} is not a column"))]
+        };
+        assert_eq!(cell("shot"), "1");
+        assert_eq!(cell("name"), "city");
+        assert_eq!(cell("busy"), "map_tiles|lod22");
+        assert_eq!(cell("settled"), "false");
+        assert_eq!(cell("alt_m"), "1000");
+        assert_eq!(
+            cell("space_factor"),
+            "0.0000",
+            "float precision is per column"
+        );
+        assert_eq!(cell("frame_ms"), "16.60");
+        assert_eq!(cell("ground_m"), "", "a NaN metric reads as unmeasured");
+        assert_eq!(cell("software_renderer"), "true");
+        // The last column is populated, i.e. nothing shifted off the end.
+        assert_eq!(cell("vram_reserved_kb"), "0");
     }
 
     /// The `--expect` key set is derived from `CSV_HEADER`, and the values are read
@@ -2273,21 +2448,12 @@ mod tests {
 
     #[test]
     fn a_bad_expectation_fails_the_whole_run_setup() {
-        let result = ShotHarness::from_cli(
-            "/tmp/s.png".into(),
-            &["0,0,1000".into()],
-            &[],
-            "64x64",
-            0.1,
-            1.0,
-            false,
-            vec![],
-            "free".into(),
-            0,
-            None,
-            None,
-            &["globe_rendered>0".into(), "nonsense>1".into()],
-        );
+        let result = ShotHarness::from_cli(ShotArgs {
+            path: "/tmp/s.png".into(),
+            at: &["0,0,1000".into()],
+            expect: &["globe_rendered>0".into(), "nonsense>1".into()],
+            ..default()
+        });
         match result {
             Err(e) => assert!(e.starts_with("--expect"), "got {e:?}"),
             Ok(_) => panic!("an unknown metric must not build a harness"),
