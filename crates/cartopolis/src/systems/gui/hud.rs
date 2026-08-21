@@ -530,6 +530,7 @@ pub fn render_map_controls(
     globe: Res<crate::systems::globe::GlobeState>,
     right_panel: Res<crate::resources::RightPanel>,
     mut tracking: ResMut<crate::systems::locate::LocateTracking>,
+    session: Res<crate::systems::session::SessionState>,
     camera: Query<(&GridCell, &Transform, &Projection), With<FreeCamera>>,
     avatars: Query<(), With<crate::components::Avatar>>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
@@ -651,14 +652,17 @@ pub fn render_map_controls(
         camera_state.orbit_north_reset = camera_state.orbit_north_lock;
     }
 
-    // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
-    // the viewer that owns a local avatar — Follow doesn't exist otherwise. Not
-    // drawn while driving: the arrow is already centred and the camera is held, so
-    // there is nothing left for it to do.
+    // GPS / locate button, stacked under the compass (Organic-Maps style). Only
+    // where Follow is on offer (`free_camera::follow_available` — a signed-in
+    // session with an avatar): the button *enters* follow-and-rotate, and offline
+    // the mode guard in `camera_mode_toggle` would bounce it straight back out,
+    // leaving a button that visibly does nothing. Not drawn while driving: the
+    // arrow is already centred and the camera is held, so there is nothing left
+    // for it to do.
     // The bottom edge of what the column has drawn so far; each control below
     // adds its own gap before its own height.
     let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
-    if !avatars.is_empty() {
+    if crate::systems::free_camera::follow_available(&session, !avatars.is_empty()) {
         use crate::resources::CameraMode;
         let state = if tracking.active {
             LocateState::Tracking

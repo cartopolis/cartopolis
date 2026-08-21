@@ -1046,8 +1046,8 @@ pub struct CameraState {
     /// Cleared on entering the mode so the first frame seeds the focus/distance
     /// from wherever the camera was looking.
     pub orbit_initialized: bool,
-    /// True once Earth mode has ever held a real pose (seeded, restored, or set by
-    /// "View Whole Earth"). Re-entering Earth restores that pose instead of
+    /// True once Earth mode has ever held a real pose (seeded or restored).
+    /// Re-entering Earth restores that pose instead of
     /// reseeding from the current view, so switching away and back returns you to
     /// the same globe location. The first-ever entry (this false) still seeds.
     pub orbit_has_pose: bool,
