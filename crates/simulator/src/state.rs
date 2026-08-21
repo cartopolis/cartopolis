@@ -276,13 +276,23 @@ impl SimWorld {
 
     pub fn step(&mut self, dt: f32) {
         for av in self.avatars.values_mut() {
-            av.position.x += av.velocity.x * dt;
-            av.position.z += av.velocity.z * dt;
+            // Flight rides altitude (`motion::fly_altitude_factor`), applied here
+            // at integration rather than to the stored velocity: the factor moves
+            // with `y` between intents, and the wire's wish encoding saturates at
+            // `MAX_SPEED` so it could never carry the ramped speed anyway. The
+            // client predicts through the same function.
+            let lift = if av.flying {
+                motion::fly_altitude_factor(av.position.y)
+            } else {
+                1.0
+            };
+            av.position.x += av.velocity.x * lift * dt;
+            av.position.z += av.velocity.z * lift * dt;
             // Flight holds altitude; everything else is on the vertical arc, which
             // is `motion::step_fall` — the same function the client predicts with
             // and the `--offline` path integrates, so the three cannot disagree.
             if av.flying {
-                av.position.y += av.fly_vertical * dt;
+                av.position.y += av.fly_vertical * lift * dt;
                 av.vertical_velocity = 0.0;
                 av.jump_requested = false;
                 if av.position.y < motion::GROUND_Y {

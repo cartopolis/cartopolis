@@ -80,6 +80,35 @@ pub const TERMINAL_FALL_SPEED: f32 = 40.0;
 /// falling, so this is a velocity, not an acceleration.
 pub const FLY_VERTICAL_SPEED: f32 = 12.0;
 
+/// Altitude (m) at which the flight speeds are taken literally; above it they
+/// grow in proportion to altitude — the same Google-Earth rule the Fly camera
+/// applies (`FREE_SPEED_ALT_REF` over there, deliberately the same number), so
+/// how fast the ground slides past stays roughly constant as you climb. Without
+/// it, flying the *avatar* up was 12 m/s forever: reaching 1 km took a minute
+/// and a half, and at that height the 32 m/s horizontal cap reads as standing
+/// still.
+pub const FLY_ALT_REF: f32 = 120.0;
+/// Ceiling on that scaling — 640 m/s across, 240 m/s of climb, reached by
+/// ~2.4 km up. Far below the camera's own ceiling on purpose: an avatar is
+/// followed from at most 25 m, so past this the map streams for a viewpoint
+/// that outruns it, and a fall from higher than this already exceeds anything
+/// [`TERMINAL_FALL_SPEED`] was tuned to land.
+pub const FLY_ALT_MAX_FACTOR: f32 = 20.0;
+
+/// How much faster flight is at height `y` (m above the sim's flat ground).
+///
+/// Applied at *integration* — where a velocity becomes a displacement — never
+/// baked into the wish on the wire: the wire's magnitude encoding saturates at
+/// [`MAX_SPEED`], so a client that pre-multiplied would clamp, and the sim
+/// derives the factor from the authoritative `y` it already holds. All three
+/// motion sites (sim, prediction, offline) multiply by this in their flying
+/// branch and nowhere else — a walker, a jumper and a faller are below
+/// [`FLY_ALT_REF`] anyway, where the factor is exactly 1.
+#[must_use]
+pub fn fly_altitude_factor(y: f32) -> f32 {
+    (y / FLY_ALT_REF).clamp(1.0, FLY_ALT_MAX_FACTOR)
+}
+
 /// Ground level for a standing avatar (m). The Quaternius models are authored
 /// origin-at-feet, so the sim's floor is exactly zero.
 pub const GROUND_Y: f32 = 0.0;
@@ -198,6 +227,18 @@ mod tests {
             (-vy).abs() <= TERMINAL_FALL_SPEED + 1e-3,
             "and it never exceeds terminal velocity"
         );
+    }
+
+    /// The altitude factor leaves the ground untouched and is capped above:
+    /// anything a walker or a jumper can reach multiplies by exactly 1, so the
+    /// ramp cannot change grounded movement by a rounding error.
+    #[test]
+    fn flight_rides_altitude_between_a_floor_and_a_ceiling() {
+        for y in [-5.0, 0.0, 1.2, FLY_ALT_REF] {
+            assert_eq!(fly_altitude_factor(y), 1.0, "at y={y}");
+        }
+        assert!((fly_altitude_factor(FLY_ALT_REF * 2.0) - 2.0).abs() < 1e-5);
+        assert_eq!(fly_altitude_factor(1e9), FLY_ALT_MAX_FACTOR);
     }
 
     /// Standing on the ground is stable: no landing event is invented every

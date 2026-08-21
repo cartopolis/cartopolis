@@ -104,7 +104,7 @@ pub struct UserData {
     #[serde(default)]
     pub photo_seq: u64,
     /// ADR-016: session tokens keyed by server address, so an external sim only
-    /// asks for a password once. Not stored for solo mode (ephemeral port).
+    /// asks for a password once.
     #[serde(default)]
     pub session_tokens: std::collections::HashMap<String, String>,
     /// How this client entered the world last time (`systems::session`), so the

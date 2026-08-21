@@ -141,6 +141,40 @@ pub fn bottom_left_reserved(cluster: Option<Cluster>) -> f32 {
 /// long as it rests there.
 const STICK_DEADZONE: f32 = 0.14;
 
+/// How far (egui points) a landing may miss a control and still work it.
+///
+/// A thumb pad is wider than a 40-pt disc, and a grab aimed at one lands a few
+/// points off it often. Missed, that finger used to stay a *map* finger: nothing
+/// claimed it, so it fed the gesture recogniser — one near-miss turned the view
+/// under the thumb that "was on the stick", and two thumbs missing at once
+/// (stick + climb is held exactly that way) made a **pinch**, i.e. the camera
+/// zooming away in the middle of flying it. Between the two discs of a pair the
+/// margin is not applied (see [`reach`]) — the gap stays dead rather than firing
+/// both verbs at once.
+const MISS_MARGIN: f32 = 8.0;
+
+/// Padding (egui points) on the *published* claim regions — wider than
+/// [`MISS_MARGIN`], because the two answer different questions. A finger inside
+/// this band is taken away from the camera whether or not a control answers it:
+/// a dead finger is a nuisance, a camera acting on a grab you meant for the
+/// stick is worse. Bounded by [`theme::OSD_MARGIN`], the gap to the dock — a
+/// claimed finger is invisible to the emulated mouse, so a band reaching the
+/// dock would cost a second finger its tap there.
+const CLAIM_PAD: f32 = 12.0;
+
+/// A control's hit rect grown by [`MISS_MARGIN`] on its outer sides. The sides
+/// facing a sibling disc stay exact — pad both discs of a pair and the gap
+/// between them presses (or worse, *clicks*) both at once, which for the action
+/// pair would be a jump and a flight toggle from one lift.
+fn reach(rect: egui::Rect, grow_top: bool, grow_bottom: bool) -> egui::Rect {
+    let top = if grow_top { MISS_MARGIN } else { 0.0 };
+    let bottom = if grow_bottom { MISS_MARGIN } else { 0.0 };
+    egui::Rect::from_min_max(
+        egui::pos2(rect.min.x - MISS_MARGIN, rect.min.y - top),
+        egui::pos2(rect.max.x + MISS_MARGIN, rect.max.y + bottom),
+    )
+}
+
 /// What the on-screen controls asked for, this frame.
 ///
 /// Rewritten in full every frame by [`render_map_osd`] — there is no
@@ -384,8 +418,13 @@ pub fn render_map_osd(
         }
         // Published in the window's points, which is what the touchscreen
         // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
+        // Padded by the miss band, so a grab that lands beside a control is
+        // claimed rather than handed to the camera as a gesture.
         regions.set_if_neq(crate::systems::touch::UiClaimRegions {
-            rects: areas.iter().map(|r| to_window(*r, ui_scale)).collect(),
+            rects: areas
+                .iter()
+                .map(|r| to_window(r.expand(CLAIM_PAD), ui_scale))
+                .collect(),
         });
     } else {
         *stick_finger = None;
@@ -444,14 +483,16 @@ fn action_pair(
                     // pointer) the second does, and a jump is idempotent either
                     // way.
                     let resp = round_button(ui, Mark::Jump, false);
-                    jump = resp.clicked() || fingers.lifted_in(resp.rect);
+                    jump = resp.clicked() || fingers.lifted_in(reach(resp.rect, true, false));
                 }
                 // The flight toggle is a *state*, not a rate or an edge that
                 // vanishes — so it wears the engaged plate while flying, the same
                 // muted orange an open panel's dock disc wears. It was the one
                 // control on the map whose on and off looked identical.
+                // In flight the jump disc above is gone, so the top side is
+                // outer too and may carry the margin.
                 let resp = round_button(ui, Mark::Wings, flying);
-                fly_toggle = resp.clicked() || fingers.lifted_in(resp.rect);
+                fly_toggle = resp.clicked() || fingers.lifted_in(reach(resp.rect, flying, true));
             });
         });
     areas.push(area.response.rect);
@@ -518,13 +559,22 @@ fn vertical_pair(
                 ui.spacing_mut().item_spacing.y = theme::OSD_GAP;
                 // A claimed finger resting on the disc is the held state, whether
                 // or not egui's one pointer is that finger — so zooming with one
-                // thumb no longer forbids the other from turning the view.
+                // thumb no longer forbids the other from turning the view. The
+                // egui arm is bounded to the same rect: `is_pointer_button_down_on`
+                // holds a `click_and_drag` widget for as long as the press that
+                // started on it stays down, so a thumb that slid *off* the disc
+                // kept zooming until it lifted.
+                let held = |resp: &egui::Response, hit: egui::Rect| {
+                    (resp.is_pointer_button_down_on()
+                        && resp.interact_pointer_pos().is_some_and(|p| hit.contains(p)))
+                        || fingers.pressing(hit)
+                };
                 let resp = round_button(ui, top, false);
-                if resp.is_pointer_button_down_on() || fingers.pressing(resp.rect) {
+                if held(&resp, reach(resp.rect, true, false)) {
                     wish += 1.0;
                 }
                 let resp = round_button(ui, bottom, false);
-                if resp.is_pointer_button_down_on() || fingers.pressing(resp.rect) {
+                if held(&resp, reach(resp.rect, false, true)) {
                     wish -= 1.0;
                 }
             });
@@ -626,8 +676,8 @@ fn paint_mark(p: &egui::Painter, c: egui::Pos2, s: f32, mark: Mark, ink: egui::C
 /// when there is no such finger does the stick adopt one from inside its own
 /// area.
 ///
-/// `area` is the square the well is drawn in, not the disc: it is the rect
-/// published as the claim region, and a finger the UI has taken out of the
+/// `area` is the square the well is drawn in plus the miss band
+/// ([`MISS_MARGIN`]), not the disc: a finger the UI has taken out of the
 /// camera's hands but which no control then reads is a finger that does nothing
 /// at all. The corners are a few points past the rim and `stick_wish` clamps
 /// them back onto it.
@@ -660,7 +710,10 @@ fn thumbstick(
             let (rect, resp) =
                 ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::click_and_drag());
             let centre = rect.center();
-            *owner = stick_owner(*owner, fingers, rect);
+            // The miss band: a grab that lands just past the well still takes
+            // the stick (nothing borders it but map), and `stick_wish` clamps
+            // the reading back onto the rim.
+            *owner = stick_owner(*owner, fingers, rect.expand(MISS_MARGIN));
             // The mouse is the `or` arm, and on a desktop it is the only one.
             // `interact_pointer_pos` is the position of the pointer that owns
             // *this* widget's drag, so it cannot be stolen by a finger elsewhere
@@ -885,6 +938,47 @@ mod tests {
         let bare = crate::systems::dock::reserved_bottom();
         assert_eq!(bottom_left_reserved(Some(Cluster::Zoom)), bare);
         assert_eq!(bottom_left_reserved(None), bare);
+    }
+
+    /// A grab that lands a few points beside the well is the ordinary way a
+    /// thumb misses; it must work the stick, not become a camera gesture.
+    #[test]
+    fn a_near_miss_beside_the_well_still_takes_the_stick() {
+        let w = well();
+        let beside = fingers(&[(3, (w.min.x - MISS_MARGIN * 0.5, w.center().y))], &[]);
+        assert_eq!(
+            stick_owner(None, &beside, w.expand(MISS_MARGIN)),
+            Some(3),
+            "the miss band adopts"
+        );
+        let far = fingers(&[(3, (w.min.x - MISS_MARGIN * 3.0, w.center().y))], &[]);
+        assert_eq!(stick_owner(None, &far, w.expand(MISS_MARGIN)), None);
+    }
+
+    /// The miss band grows a disc's outer sides only: the gap between the two
+    /// discs of a pair stays dead, because a margin there would press (or click)
+    /// both verbs from one finger.
+    #[test]
+    fn the_miss_band_stops_at_a_siblings_edge() {
+        let disc = egui::Rect::from_min_size(egui::pos2(300.0, 700.0), egui::Vec2::splat(40.0));
+        let top = reach(disc, true, false);
+        assert_eq!(top.min.y, disc.min.y - MISS_MARGIN, "outer side forgives");
+        assert_eq!(top.max.y, disc.max.y, "sibling side is exact");
+        assert_eq!(top.min.x, disc.min.x - MISS_MARGIN);
+        assert_eq!(top.max.x, disc.max.x + MISS_MARGIN);
+        let bottom = reach(disc, false, true);
+        assert_eq!(bottom.min.y, disc.min.y);
+        assert_eq!(bottom.max.y, disc.max.y + MISS_MARGIN);
+    }
+
+    /// The bands must fit the gaps they sit in: two padded neighbours in the
+    /// right-edge column may not overlap (one lift would fire two verbs), and
+    /// the claim padding may not reach the dock (a claimed finger is invisible
+    /// to the emulated mouse, so it would cost a dock disc its tap).
+    #[test]
+    fn the_miss_bands_fit_between_the_clusters_and_off_the_dock() {
+        assert!(MISS_MARGIN * 2.0 < theme::OSD_GROUP_GAP);
+        assert!(CLAIM_PAD <= theme::OSD_MARGIN);
     }
 
     #[test]

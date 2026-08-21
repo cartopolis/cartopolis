@@ -76,7 +76,7 @@ phases in `lib.rs`:
 | `systems/nav/` | `navigation`, `route_ahead`, `driver`, `geo_nav`, `transit_live`, `transit_vehicles` |
 | `systems/player/` | `avatar`, `collision`, `free_camera`, `picking`, `gizmo`, `prim_geo` |
 | `systems/gui/` | `egui_manager`, `theme`, `icons`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
-| `systems/net/` | `network`, `user_store` (plus `../login.rs`, `../solo.rs`) |
+| `systems/net/` | `network`, `user_store` (plus `../login.rs`) |
 | `systems/dev/` | `shot_harness`, `shot_presets`, `debug`, `desktop_integration`, `window_icon` |
 | `platform/` | `http`, `storage`, `location`, `stream`, `work`, `workers` (native vs wasm behind one API) |
 
@@ -199,12 +199,11 @@ full build needs — it is `wasm_thread`, which opens `feature(stdarch_wasm_atom
 in a `cfg_attr(target_arch = "wasm32")`. On stable that is a hard `E0554` from a
 dependency, before any of our code is reached, and no flag turns it off.
 
-The two feature flags are not optional and are not opposites. `--no-default-features`
-is what drops `solo`, and the web build has no in-process sim; `--features audio`
-puts back the one other default, which the web build does ship — dropping both is
-how the browser client spent months with the soundscape compiled out
-(`docs/notes/audio-off-platform.md`). Together they are exactly what `index.html`
-asks trunk for. This rung catches essentially everything that rots, because what
+The two feature flags mirror `index.html` exactly, which is the point — the
+check and the real build must not drift. (They date from the since-removed
+`solo` default; dropping the defaults without naming `audio` back is how the
+browser client spent months with the soundscape compiled out —
+`docs/notes/audio-off-platform.md`.) This rung catches essentially everything that rots, because what
 rots is `cfg(target_arch = "wasm32")` code that no other lane ever compiles.
 
 **2. Run it in a browser:**

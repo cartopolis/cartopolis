@@ -46,6 +46,15 @@ authority by transcription.
 avatar moves. It cost nothing on the wire. Jump and emotes did *not* fit through
 it (see below) and cost protocol 13.
 
+Altitude-scaled flight (2026-08-21) did not fit through it either, for the
+mirror reason: the magnitude encoding **saturates at `MAX_SPEED`**, so a wish
+can never ask for the 640 m/s a high flight is worth. It rides
+`motion::fly_altitude_factor` instead — a multiplier derived from the avatar's
+`y`, which is state both ends already share — applied at *integration* in all
+three motion sites. Nothing changed on the wire, but the sim's `step` changed,
+so **the deployed simulator must be rebuilt** or an online client predicts fast
+flight the authority refuses and rubber-bands above ~120 m.
+
 ## `cartopolis_core::motion` exists because three copies could not be kept in step
 
 The fall/climb/speed constants were duplicated in `cartopolis_simulator::state`,
@@ -103,7 +112,7 @@ every Linux build, including headless ones that will never open a device. So it
 is the `audio` feature — in `default`, off for hosts that can't build it:
 
 ```bash
-cargo check -p cartopolis --no-default-features --features solo   # the agent container, CI
+cargo check -p cartopolis --no-default-features   # the agent container, CI
 ```
 
 The container has no root and cannot install the headers, so **the playback

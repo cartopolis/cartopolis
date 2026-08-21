@@ -82,7 +82,7 @@ Guideline 2.5.2 forbids downloading and executing code that changes an app's
 features; 4.7's list of permitted interpreted content (HTML5/JS mini-apps,
 chatbots, plug-ins, emulators) does not name Luau. Roblox is a live counter-
 example, but there is no need to argue it here: `mlua` is a **simulator-only**
-dependency and the client reaches it solely through the `solo` feature. An iOS
-or Android build that omits `solo` contains no interpreter — author scripts run
-on the server and the app renders the result. Keep it that way on any store lane,
-and the question does not arise.
+dependency, and since solo mode's removal (2026-08-21) the client ships no
+interpreter in any build — `cartopolis_simulator` is only a dev-dependency for
+tests. Author scripts run on the server and the app renders the result. Keep it
+that way on any store lane, and the question does not arise.

@@ -36,16 +36,12 @@ test = false
 # expect it to disappear. On Android it is the whole app.
 [target.'cfg(target_os = "android")'.dependencies]
 bevy.workspace = true
-# `default-features = false` drops `solo`: Phase-1 Android is the offline viewer,
-# so no in-process simulator and therefore no bundled SQLite to cross-compile.
-# See `docs/notes/android-build.md`.
-#
-# `audio` has to be named back explicitly, and that is the whole reason the phone
-# was silent. It is a *default* feature of `cartopolis` only because Linux desktop
-# builds need `libasound2-dev` for it (see that crate's Cargo.toml); turning the
-# defaults off to drop `solo` took the soundscape with it, so every APK ever built
-# had the footsteps, the landing thud, the wind and the driver turn cues compiled
-# out. Android needs none of ALSA — `bevy_audio`'s cpal resolves to the NDK's
+# `default-features = false, features = ["audio"]` is a deliberate pin even
+# though it currently equals the defaults (the `solo` feature this line existed
+# to drop was removed 2026-08-21): a future default this platform cannot build
+# must not arrive silently. History worth keeping: `audio` once had to be named
+# back explicitly, and forgetting that is how every early APK shipped with the
+# footsteps, the landing thud, the wind and the driver turn cues compiled out. Android needs none of ALSA — `bevy_audio`'s cpal resolves to the NDK's
 # AAudio, which is a plain C API in the platform (`libaaudio.so`, API 26; the
 # manifest's minSdk is 28) and needs no permission for playback and no
 # `classes.dex`. `platform::audio`'s *capture* half stays off here on its own cfg.
