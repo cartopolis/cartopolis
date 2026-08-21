@@ -429,13 +429,22 @@ impl Plugin for ForceCpuClusteringPlugin {
 /// releases. A fixed configuration is the only version of this with a predictable
 /// outcome.
 ///
-/// `--offline` is that configuration, and it is a deliberate choice rather than a
-/// stub: Phase-1 Android is the same shape as Phase-1 web (`docs/notes/android-build.md`)
-/// — the streamed OSM/3DBAG map plus a local avatar, no sim, no auth, no world
-/// persistence. It also happens to be what the build produces anyway, since the
-/// APK is built `--no-default-features` and so carries no `solo` sim to connect to;
-/// saying it explicitly keeps `login::resolve` from going looking for a credentials
-/// file that cannot exist on the device.
+/// The fixed configuration is **no flags at all** — and it was `--offline` until
+/// 2026-08-21, which is worth spelling out because of what that silently cost.
+/// The flag was deliberate when Android was Phase-1 (the streamed map, no
+/// transport, no auth), but `--offline` is also the switch that skips the
+/// remembered-session startup, and it kept doing so after the phone gained the
+/// sign-in card and the WebSocket carrier: every launch saved the "stay signed
+/// in" token and prefs faithfully and then never looked at them, which read as
+/// the checkbox being broken. The sim's log was what said so — a reopened app
+/// made *no* connection attempt at all, where even a stale token would have
+/// shown a rejected handshake. With no flags the startup decision is the
+/// remembered session's, exactly as on desktop; a fresh install still opens
+/// offline because that is the default `SessionPrefs`, and a remembered solo
+/// mode on this solo-less build is already guarded by `can_solo()`.
+/// (`login::resolve` runs now too, but with no `--login`, no `data/login.toml`
+/// under the zygote's `/` cwd and no env vars it just answers the dev default,
+/// whose server is `None` — it cannot start a session on its own.)
 #[cfg(not(target_os = "android"))]
 fn parse_cli() -> Cli {
     Cli::parse()
@@ -446,7 +455,7 @@ fn parse_cli() -> Cli {
     // `parse_from` rather than a hand-built struct literal: every field keeps its
     // clap-declared default, so a new flag added to `Cli` cannot leave this arm
     // silently uninitialised.
-    Cli::parse_from(["cartopolis", "--offline"])
+    Cli::parse_from(["cartopolis"])
 }
 
 /// Build and run the client. The `cartopolis` binary is a one-line shim over this

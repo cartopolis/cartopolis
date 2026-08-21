@@ -52,9 +52,12 @@ layout, non-Latin scripts and dictation.
 
 ## What the phone runs
 
-Phase 1 is the **offline viewer**, the same shape as Phase 1 on the web: the
-streamed OSM / 3DBAG / AHN map and a local avatar, with no simulator, no auth and
-no world persistence. Two consequences that look like bugs if you don't know:
+The phone opens on the **offline viewer** — the streamed OSM / 3DBAG / AHN map
+and a local avatar — and can sign in to a remote sim over the WebSocket carrier
+like any other build; since 2026-08-21 startup also honours the remembered
+session, so "stay signed in" works (it did not before — see `parse_cli` below).
+What it cannot run is **solo**. Two consequences that look like bugs if you
+don't know:
 
 The APK drops the `solo` feature — and with it the in-process
 `cartopolis_simulator` and its bundled SQLite — so it is not compiled at all.
@@ -107,13 +110,19 @@ not a duplicate of the log, either — logd's buffer is a ring and this client i
 chatty, so by the time somebody notices, scrolls and taps, the lines that
 explain it may already have rolled out.
 
-`lib.rs`'s `parse_cli()` hands Android a fixed `--offline`. It cannot call
-`Cli::parse()`: a NativeActivity process is started by the zygote, so the `argv`
-Rust captured belongs to `app_process` and is full of flags clap has never heard
-of — and clap's response to an unknown flag is `exit(2)`, i.e. the app dying on
-launch with nothing on screen and one line in `logcat`. There is no equivalent of
-the web build's `?query=string` switch surface yet; anything the phone needs to be
-told has to become UI or an env default.
+`lib.rs`'s `parse_cli()` hands Android a fixed configuration — **no flags**. It
+cannot call `Cli::parse()`: a NativeActivity process is started by the zygote, so
+the `argv` Rust captured belongs to `app_process` and is full of flags clap has
+never heard of — and clap's response to an unknown flag is `exit(2)`, i.e. the
+app dying on launch with nothing on screen and one line in `logcat`. Until
+2026-08-21 the fixed configuration was `--offline` (right for Phase 1, which had
+no transport), and that flag is also what skips the remembered-session startup —
+so the phone persisted the "stay signed in" token and prefs faithfully and never
+consulted them, which read as the checkbox being broken. The tell in diagnosis:
+a reopened app made *zero* connection attempts in the sim's log, where even a
+stale token shows a rejected handshake. There is no equivalent of the web
+build's `?query=string` switch surface yet; anything the phone needs to be told
+has to become UI or an env default.
 
 ### An emulator answers most Android questions without a device
 
