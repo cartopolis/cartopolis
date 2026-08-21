@@ -910,8 +910,8 @@ pub fn setup_camera(
 }
 
 /// Arm the per-mode entry behaviour when switching *into* `next`. Called from both
-/// the Tab cycle and the mode disc (`map_osd::mode_button`) so the two paths stay
-/// identical:
+/// the Tab cycle and the dock's mode disc (`dock::mode_disc`) so the two paths
+/// stay identical:
 /// - **Follow** snaps onto the avatar next frame (reposition reliably).
 /// - **Fly** restores its last saved pose, or seeds the look from the live view if
 ///   it has none yet.
@@ -938,8 +938,8 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
 /// Whether Follow is on offer *as a camera mode*: an avatar to follow, in a
 /// signed-in session. Walking a body around is what a simulator is for —
 /// offline is the map viewer, and its switcher offers Fly and Earth. One
-/// predicate, two readers — the Tab cycle here and the mode disc (`map_osd`) —
-/// so the two never disagree about what is on the cycle.
+/// predicate, two readers — the Tab cycle here and the dock's mode disc
+/// (`dock::mode_disc`) — so the two never disagree about what is on the cycle.
 ///
 /// This gates the *switcher*, not the camera: driver mode and device tracking
 /// (`systems::locate`) both enter the follow camera themselves, offline

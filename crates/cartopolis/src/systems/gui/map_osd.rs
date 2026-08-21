@@ -43,11 +43,11 @@
 //!   - **Earth** — a zoom pair on the right. The pinch already zooms it; the
 //!     buttons exist for the one-handed case, which is most of the time a phone
 //!     is held at all.
-//!   - **Every mode, every device** — the camera-mode disc ([`mode_button`]) in
-//!     the bottom-right corner, under whichever of the pairs the mode draws.
-//!     Unlike the clusters it is not touch-only chrome: it is *the* mode
-//!     switcher (the main menu's picker row is gone), so a desktop run draws it
-//!     too.
+//!
+//! The camera-mode switcher is *not* here: it is the dock's mode disc
+//! (`dock::mode_disc`). It sat in this corner briefly, and what that cost was
+//! the corner itself — every pair on this edge stacked one control higher for
+//! a disc that is chrome, not a touch control.
 //!
 //! ## Two rules it obeys, both learned elsewhere in this tree
 //!
@@ -101,9 +101,8 @@ const CONTROL_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 const STICK_RADIUS: f32 = 54.0;
 const STICK_KNOB_RADIUS: f32 = 22.0;
 
-/// Distance from the bottom of the window to the bottom of the right-edge
-/// column: clear of the dock, which owns the bottom edge, plus the standard
-/// edge inset. The camera-mode disc ([`mode_button`]) owns this corner.
+/// Distance from the bottom of the window to the bottom of a cluster: clear of
+/// the dock, which owns the bottom edge, plus the standard edge inset.
 fn bottom_offset() -> f32 {
     theme::OSD_MARGIN + crate::systems::dock::reserved_bottom()
 }
@@ -113,19 +112,11 @@ fn pair_height() -> f32 {
     CONTROL_SIZE * 2.0 + theme::OSD_GAP
 }
 
-/// Bottom offset of the zoom/climb pair: a group gap above the mode disc. The
-/// disc, not the pair, owns the corner — it is the one control that exists in
-/// every mode and on every device, so everything else on this edge stacks over
-/// it and keeps one position across Fly, Follow and Earth.
-fn pair_bottom_offset() -> f32 {
-    bottom_offset() + CONTROL_SIZE + theme::OSD_GROUP_GAP
-}
-
-/// Bottom offset of the jump/flight pair: a group gap above the zoom/climb
-/// pair. Named rather than inlined so the test below measures the same
-/// arithmetic the anchor uses.
+/// Bottom offset of the jump/flight pair: a group gap above the zoom/climb pair,
+/// which owns the corner. Named rather than inlined so the test below measures
+/// the same arithmetic the anchor uses.
 fn actions_bottom_offset() -> f32 {
-    pair_bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
+    bottom_offset() + pair_height() + theme::OSD_GROUP_GAP
 }
 
 /// How much of the bottom-**left** corner the thumbstick claims, in points, for
@@ -316,20 +307,17 @@ pub fn stick_wish(offset_pts: Vec2, radius: f32) -> Vec2 {
 /// following frame. That is a constant ~50 ms on a phone, not jitter, and it is
 /// the cheaper half of the trade: inverting either link would move the camera or
 /// the driver tick to answer a translation control that cannot feel it.
-#[allow(clippy::too_many_arguments)]
 pub fn render_map_osd(
     egui: Res<EguiManager>,
     mut osd: ResMut<OsdInput>,
     mut regions: ResMut<crate::systems::touch::UiClaimRegions>,
     mut stick_finger: Local<Option<u64>>,
-    mut camera_state: ResMut<CameraState>,
-    session: Res<crate::systems::session::SessionState>,
+    camera_state: Res<CameraState>,
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<RightPanel>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     touch: Res<crate::systems::touch::TouchGestures>,
     avatar_state: Res<crate::resources::AvatarState>,
-    avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     // Rebuilt from nothing every frame, including the frames that draw nothing —
     // otherwise switching to Earth mode mid-push would leave the last wish
@@ -341,17 +329,6 @@ pub fn render_map_osd(
     // published over a control that is no longer drawn is a piece of the map
     // that silently swallows fingers.
     let mut areas: Vec<egui::Rect> = Vec::new();
-    let ui_scale = egui.ui_scale();
-    let fingers = Fingers::new(&touch, ui_scale);
-
-    // The camera-mode disc is chrome, not a touch control: it is drawn on a
-    // desktop too (the menu's picker row is gone — this disc and Tab are the
-    // whole switcher now), and suppressed by the same three owners that
-    // suppress the clusters, for the same paint-over reasons.
-    if !driver.active && right_panel.is(RightPanel::None) && !keyboard.is_open() {
-        let follow = crate::systems::free_camera::follow_available(&session, !avatars.is_empty());
-        mode_button(egui.ctx(), &fingers, &mut areas, &mut camera_state, follow);
-    }
 
     if let Some(cluster) = cluster_for(
         camera_state.mode,
@@ -361,6 +338,8 @@ pub fn render_map_osd(
         theme::touch_layout() || touch.ever(),
     ) {
         let flying = avatar_state.is_flying;
+        let ui_scale = egui.ui_scale();
+        let fingers = Fingers::new(&touch, ui_scale);
         let ctx = egui.ctx();
         match cluster {
             Cluster::Fly => {
@@ -403,69 +382,16 @@ pub fn render_map_osd(
                 );
             }
         }
+        // Published in the window's points, which is what the touchscreen
+        // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
+        regions.set_if_neq(crate::systems::touch::UiClaimRegions {
+            rects: areas.iter().map(|r| to_window(*r, ui_scale)).collect(),
+        });
     } else {
         *stick_finger = None;
+        regions.set_if_neq(crate::systems::touch::UiClaimRegions::default());
     }
-    // Published in the window's points, which is what the touchscreen
-    // reports; egui laid them out in its own (see `EguiManager::ui_scale`).
-    // One publish for the disc and the clusters together — on the frames that
-    // draw nothing it is the empty set, which un-claims everything.
-    regions.set_if_neq(crate::systems::touch::UiClaimRegions {
-        rects: areas.iter().map(|r| to_window(*r, ui_scale)).collect(),
-    });
     osd.set_if_neq(next);
-}
-
-/// The camera-mode switcher: one disc owning the bottom-right corner, wearing
-/// the current mode's glyph; a tap steps to the next mode on offer — Follow →
-/// Fly → Earth when signed in to a simulator, Fly ⇄ Earth otherwise
-/// (`free_camera::next_camera_mode` is the shared cycle, and skipping Follow is
-/// [`crate::systems::free_camera::follow_available`]'s call, not this disc's).
-///
-/// It replaced a three-chip row and a "View whole Earth" entry in the main
-/// menu: a camera switch is a change to the map, and it belongs on the map —
-/// two taps and a card over the exact thing being switched was the long way to
-/// a verb this frequent. With at most three modes, cycling beats a popup: the
-/// disc always shows where you are, and the tooltip says where a tap goes.
-fn mode_button(
-    ctx: &egui::Context,
-    fingers: &Fingers,
-    areas: &mut Vec<egui::Rect>,
-    camera_state: &mut CameraState,
-    follow: bool,
-) {
-    use crate::systems::free_camera::{enter_mode, next_camera_mode};
-    let badge = |mode: CameraMode| match mode {
-        CameraMode::Avatar => (crate::systems::icons::CAM_FOLLOW, "Follow"),
-        CameraMode::Free => (crate::systems::icons::CAM_FLY, "Fly"),
-        CameraMode::Orbit => (crate::systems::icons::CAM_EARTH, "Earth"),
-    };
-    let next = next_camera_mode(camera_state.mode, follow);
-    let (icon, name) = badge(camera_state.mode);
-    let (_, next_name) = badge(next);
-    let area = egui::Area::new(egui::Id::new("osd_mode"))
-        .anchor(
-            egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
-        )
-        .show(ctx, |ui| {
-            // `theme::round_button`, not the local `round_button`: the mark is a
-            // mode glyph the icon font already carries, and the disc should be
-            // the same object as the dock's — this is a switcher, not a rate.
-            let resp = theme::round_button(
-                ui,
-                icon,
-                &format!("{name} view — switch to {next_name}"),
-                false,
-            );
-            // Same tap test as the action pair: a claimed finger lifting inside
-            // the disc on a phone, `clicked()` for the mouse.
-            if resp.clicked() || fingers.lifted_in(resp.rect) {
-                enter_mode(camera_state, next);
-                camera_state.mode = next;
-            }
-        });
-    areas.push(area.response.rect);
 }
 
 /// An egui rect in the window's own logical points.
@@ -585,7 +511,7 @@ fn vertical_pair(
     let area = egui::Area::new(egui::Id::new(id))
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
-            egui::vec2(-theme::OSD_MARGIN, -pair_bottom_offset()),
+            egui::vec2(-theme::OSD_MARGIN, -bottom_offset()),
         )
         .show(ctx, |ui| {
             ui.vertical(|ui| {
@@ -924,19 +850,11 @@ mod tests {
     /// between them — the arithmetic the two anchors are written from.
     #[test]
     fn the_right_edge_clusters_stack_without_overlapping() {
-        let disc = (bottom_offset(), bottom_offset() + CONTROL_SIZE);
-        let pair = (pair_bottom_offset(), pair_bottom_offset() + pair_height());
+        let pair = (bottom_offset(), bottom_offset() + pair_height());
         let actions = (
             actions_bottom_offset(),
             actions_bottom_offset() + pair_height(),
         );
-        assert!(
-            pair.0 >= disc.1,
-            "the zoom pair starts at {} inside a mode disc reaching {}",
-            pair.0,
-            disc.1
-        );
-        assert!((pair.0 - disc.1 - theme::OSD_GROUP_GAP).abs() < 1e-3);
         assert!(
             actions.0 >= pair.1,
             "the action pair starts at {} inside a zoom pair reaching {}",
@@ -944,9 +862,8 @@ mod tests {
             pair.1
         );
         assert!((actions.0 - pair.1 - theme::OSD_GROUP_GAP).abs() < 1e-3);
-        // …and the bottom-most of them — the mode disc, which owns the corner —
-        // clears the dock, which owns that edge.
-        assert!(disc.0 >= crate::systems::dock::reserved_bottom());
+        // …and the bottom-most of them clears the dock, which owns that edge.
+        assert!(pair.0 >= crate::systems::dock::reserved_bottom());
     }
 
     /// What the bottom-left corner reserves has to cover the stick actually
