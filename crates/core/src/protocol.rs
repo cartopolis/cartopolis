@@ -72,6 +72,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "moderation — SetBlocked / BlockedList / ReportUser / ReportAck, and DeleteAccount / AccountDeleted",
     },
+    ProtocolRevision {
+        version: 17,
+        adr: "",
+        summary: "avatar teleport — Teleport { position }; the sim moves the avatar there and the next snapshot confirms it",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -117,6 +122,7 @@ pub enum MessageKind {
     ReportAck = 31,
     DeleteAccount = 32,
     AccountDeleted = 33,
+    Teleport = 34,
 }
 
 impl MessageKind {
@@ -156,6 +162,7 @@ impl MessageKind {
             31 => Some(Self::ReportAck),
             32 => Some(Self::DeleteAccount),
             33 => Some(Self::AccountDeleted),
+            34 => Some(Self::Teleport),
             _ => None,
         }
     }
@@ -700,6 +707,22 @@ pub enum NetMessage {
     /// The account is gone. The server closes the connection immediately after
     /// sending this, so it is both the receipt and the goodbye.
     AccountDeleted,
+    /// Client asks to be *placed* — the counterpart of `ClientIntent`, which can
+    /// only ever ask to move. A jump to a searched place, a bookmark, a shared
+    /// link or a distant GPS fix used to move only the local entity; the next
+    /// snapshot pulled the avatar straight back, so online every teleport in
+    /// the client silently did not happen. The sim sets the position and clears
+    /// the motion state, and the next `WorldSnapshot` is the confirmation —
+    /// there is no ack, exactly as with intents.
+    ///
+    /// `position` is in the same frame `ObserverUpdate` and `AvatarStateDto`
+    /// already use. Trusted like an intent is trusted (the sim has no map to
+    /// validate a destination against); non-finite components discard the whole
+    /// message, same rule as `apply_intent`.
+    Teleport {
+        request_id: u32,
+        position: Vec3,
+    },
 }
 
 /// Why a person is being reported. A closed list rather than free text: it is
@@ -832,6 +855,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::ReportAck { .. } => MessageKind::ReportAck,
         NetMessage::DeleteAccount { .. } => MessageKind::DeleteAccount,
         NetMessage::AccountDeleted => MessageKind::AccountDeleted,
+        NetMessage::Teleport { .. } => MessageKind::Teleport,
     }
 }
 
@@ -854,6 +878,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::ReportUser { request_id, .. } => *request_id,
         NetMessage::ReportAck { request_id, .. } => *request_id,
         NetMessage::DeleteAccount { request_id, .. } => *request_id,
+        NetMessage::Teleport { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -1199,7 +1224,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 33] = [
+        const ALL: [MessageKind; 34] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1233,6 +1258,7 @@ mod tests {
             ReportAck,
             DeleteAccount,
             AccountDeleted,
+            Teleport,
         ];
         for k in ALL {
             assert_eq!(

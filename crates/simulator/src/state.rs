@@ -159,6 +159,37 @@ impl SimWorld {
         self.avatars.remove(&id);
     }
 
+    /// Place an avatar (protocol 17, `NetMessage::Teleport`): the counterpart of
+    /// [`Self::apply_intent`], which can only ask to *move*. Every jump in the
+    /// client — a searched place, a bookmark, a shared link, a distant GPS fix —
+    /// funnels here when a session is online; without it the client moved only
+    /// its local entity and the next snapshot pulled the avatar straight back.
+    ///
+    /// Motion state is cleared along with the position, for the same reason the
+    /// client's own teleport lands the camera at rest: velocity carried across a
+    /// jump slides the avatar off the place it asked for, and a jump arc from
+    /// the origin means landing mid-fall at the destination. Flight survives —
+    /// it is a mode, not motion — but the position's own `y` is clamped like
+    /// [`Self::step`] clamps it, so a malformed teleport cannot put an avatar
+    /// underground.
+    pub fn teleport_avatar(&mut self, id: u64, position: Vec3) {
+        // Same rule as `apply_intent`, and the same reason: postcard decodes an
+        // `f32` from raw bytes, a NaN position poisons every later snapshot, and
+        // there is no honest partial application of a malformed placement.
+        if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
+            tracing::debug!(id, "discarded a teleport with a non-finite position");
+            return;
+        }
+        let Some(av) = self.avatars.get_mut(&id) else {
+            return;
+        };
+        av.position = Vec3::new(position.x, position.y.max(0.0), position.z);
+        av.velocity = Vec3::ZERO;
+        av.vertical_velocity = 0.0;
+        av.jump_requested = false;
+        tracing::info!(id, x = position.x, z = position.z, "avatar teleported");
+    }
+
     /// Current position of an avatar (proximity chat, ADR-028).
     pub fn avatar_position(&self, id: u64) -> Option<Vec3> {
         self.avatars.get(&id).map(|a| a.position)
@@ -752,6 +783,37 @@ mod tests {
             (p.z - start.z).abs() > 1e-4,
             "a valid intent should have moved the avatar"
         );
+    }
+
+    /// A teleport (protocol 17) *places* the avatar: position set, motion
+    /// cleared, and the placement survives a tick — the whole point is that the
+    /// next snapshot confirms the jump instead of pulling the avatar back.
+    #[test]
+    fn a_teleport_places_the_avatar_and_the_placement_survives_a_tick() {
+        let (mut world, _dir) = test_world();
+        let id = world.spawn_avatar();
+        // Walking when the jump lands: the carried velocity must not slide the
+        // avatar off the destination.
+        world.apply_intent(id, 0.0, 1.0, 0.0, false, false, false, false, None);
+        world.step(0.05);
+
+        let dest = Vec3::new(1234.5, 0.05, -987.0);
+        world.teleport_avatar(id, dest);
+        assert_eq!(world.avatar_position(id), Some(dest));
+        world.step(0.05);
+        let p = world.avatar_position(id).expect("still there");
+        assert!(
+            (p.x - dest.x).abs() < 1e-3 && (p.z - dest.z).abs() < 1e-3,
+            "carried velocity slid the avatar to {p:?} after a teleport to {dest:?}"
+        );
+
+        // The same hostility rule as intents: a non-finite placement is
+        // discarded whole, and a below-ground one is clamped to the floor.
+        world.teleport_avatar(id, Vec3::new(f32::NAN, 0.0, 0.0));
+        assert_eq!(world.avatar_position(id), Some(p), "NaN must move nothing");
+        world.teleport_avatar(id, Vec3::new(0.0, -50.0, 0.0));
+        let sunk = world.avatar_position(id).expect("still there");
+        assert!(sunk.y >= 0.0, "teleported underground: {sunk:?}");
     }
 }
 

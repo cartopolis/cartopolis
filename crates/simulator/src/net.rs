@@ -481,6 +481,13 @@ pub async fn handle_connection<T: FrameTransport>(
                                 let mut w = world.write().await;
                                 w.set_observer(position);
                             }
+                            // Deliberately not rate-limited like intents: a
+                            // teleport is a deliberate act, not a stream, and
+                            // dropping one is not corrected by the next frame.
+                            NetMessage::Teleport { position, .. } => {
+                                let mut w = world.write().await;
+                                w.teleport_avatar(avatar_id, position);
+                            }
                             NetMessage::ClientHello { .. } => {
                                 tracing::warn!("duplicate hello ignored");
                             }

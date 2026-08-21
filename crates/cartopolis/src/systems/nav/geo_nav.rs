@@ -1893,6 +1893,7 @@ pub fn apply_teleport(
     mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
     globe: Res<crate::systems::globe::GlobeState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
     mut cameras: Query<(&mut GridCell, &mut Transform), (With<FreeCamera>, Without<Avatar>)>,
     mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
@@ -1961,6 +1962,23 @@ pub fn apply_teleport(
         tf.translation = avatar_local;
         avatar_state.position = avatar_local;
         avatar_state.display_position = avatar_local;
+        // Online, the sim owns this position, so ask it to place the avatar too
+        // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
+        // pulled the body straight back to where it was, which is what every
+        // online jump silently did before. The hold keeps the snapshots already
+        // in flight (still carrying the old position) from yanking the avatar
+        // back while the sim's confirmation is on its way
+        // (`network::adopt_local_pose`).
+        if let Some(sess) = &online {
+            sess.send(
+                "teleport",
+                cartopolis_core::NetMessage::Teleport {
+                    request_id: 0,
+                    position: avatar_local,
+                },
+            );
+            avatar_state.teleport_hold = Some(web_time::Instant::now());
+        }
     } else {
         tracing::warn!(
             "geo_nav: teleported the camera but not the avatar — no avatar with a \

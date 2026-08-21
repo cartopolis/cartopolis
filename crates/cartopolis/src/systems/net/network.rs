@@ -899,6 +899,34 @@ pub fn apply_network_snapshot(
 
 /// Updates authoritative position and replicated yaw. Does not touch [`AvatarState::online_tank_yaw`]
 /// (snapshot reconciliation there would cancel A/D before the server applies the next intent).
+/// How far a snapshot's local-avatar position may sit from the teleported one
+/// and still count as the sim's echo of the teleport. Generous: the avatar can
+/// legitimately walk a few metres between the jump and the confirmation.
+const TELEPORT_ECHO_M: f32 = 25.0;
+/// How long a sent teleport may hold snapshots off before authority wins again.
+/// Long enough for a round trip and a tick on a slow link; short enough that a
+/// lost message costs one visible correction, not a permanent divergence.
+const TELEPORT_HOLD_S: f32 = 2.0;
+
+/// Whether this snapshot's local-avatar pose should be adopted, given a
+/// possibly-outstanding teleport (`AvatarState::teleport_hold`). A snapshot
+/// sent before the sim processed the jump still carries the old position, and
+/// adopting it would yank the avatar back across the world for a frame or two.
+/// The first snapshot that lands near the teleported position is the echo and
+/// clears the hold; so does the timeout.
+fn adopt_local_pose(avatar_state: &mut AvatarState, snapshot_pos: bevy::math::Vec3) -> bool {
+    let Some(at) = avatar_state.teleport_hold else {
+        return true;
+    };
+    let stale = snapshot_pos.distance(avatar_state.position) > TELEPORT_ECHO_M
+        && at.elapsed().as_secs_f32() < TELEPORT_HOLD_S;
+    if stale {
+        return false;
+    }
+    avatar_state.teleport_hold = None;
+    true
+}
+
 fn apply_local_avatar_pose(
     avatars: &[AvatarStateDto],
     local_id: Option<u64>,
@@ -907,6 +935,9 @@ fn apply_local_avatar_pose(
     let Some(a) = local_avatar_dto(avatars, local_id) else {
         return;
     };
+    if !adopt_local_pose(avatar_state, a.position) {
+        return;
+    }
     avatar_state.position = a.position;
     avatar_state.snapshot_age = 0.0;
     avatar_state.sim_facing_yaw = snap_yaw_continuation(avatar_state.sim_facing_yaw, a.yaw);
@@ -921,6 +952,9 @@ fn apply_local_avatar_pose_full(
     let Some(a) = local_avatar_dto(avatars, local_id) else {
         return;
     };
+    if !adopt_local_pose(avatar_state, a.position) {
+        return;
+    }
     avatar_state.position = a.position;
     avatar_state.display_position = a.position;
     avatar_state.snapshot_age = 0.0;
