@@ -1268,8 +1268,17 @@ pub fn send_network_intent(
     // (`motion::sim_speed_for_wish`). Client-side prediction integrates this for
     // smooth motion between the 20 Hz snapshots (`smooth_online_avatar_display`).
     let mag = Vec2::new(v.x, v.z).length();
+    // Flight rides altitude, exactly as `SimWorld::step` applies it at
+    // integration: the sim derives the factor from its authoritative `y`, and
+    // predicting from the same function on the same (flat-frame) height is what
+    // keeps a high flight from rubber-banding.
+    let lift = if avatar_state.is_flying {
+        motion::fly_altitude_factor(avatar_state.position.y)
+    } else {
+        1.0
+    };
     let horizontal = if mag > 1e-4 {
-        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag)
+        Vec2::new(v.x, v.z) / mag * motion::sim_speed_for_wish(mag) * lift
     } else {
         Vec2::ZERO
     };
@@ -1281,9 +1290,9 @@ pub fn send_network_intent(
         avatar_state.vertical_velocity = 0.0;
         avatar_state.grounded = false;
         if fly_up {
-            motion::FLY_VERTICAL_SPEED
+            motion::FLY_VERTICAL_SPEED * lift
         } else if fly_down {
-            -motion::FLY_VERTICAL_SPEED
+            -motion::FLY_VERTICAL_SPEED * lift
         } else {
             0.0
         }
