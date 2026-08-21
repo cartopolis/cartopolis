@@ -43,8 +43,8 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::{FreeCamera, VegetationSurface};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::stream::{CellStream, Policy};
 use crate::platform::storage;
+use crate::platform::stream::{CellStream, Policy};
 use crate::systems::collision::{BuildingColliders, Footprint};
 use crate::systems::osm_buildings::{lat_lng_to_local, num_from_value, overpass_query, MeshData};
 use crate::systems::scatter::{
@@ -335,9 +335,7 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                 }
                 if tag_str(tags, "natural") == Some("tree_row") {
                     out.tree_rows.push(line);
-                } else if let Some(kind) =
-                    tag_str(tags, "barrier").and_then(BarrierKind::parse)
-                {
+                } else if let Some(kind) = tag_str(tags, "barrier").and_then(BarrierKind::parse) {
                     out.barriers.push((kind, tag_num(tags, "height"), line));
                 } else if tag_str(tags, "man_made") == Some("pier") {
                     out.piers.push(line);
@@ -504,11 +502,7 @@ pub(crate) fn push_yawed_box(
 ) {
     let (sn, cs) = yaw.sin_cos();
     let place = |lx: f32, ly: f32, lz: f32| {
-        Vec3::new(
-            at.x + lx * cs + lz * sn,
-            y0 + ly,
-            at.y - lx * sn + lz * cs,
-        )
+        Vec3::new(at.x + lx * cs + lz * sn, y0 + ly, at.y - lx * sn + lz * cs)
     };
     let (cx, cy, cz) = (center[0], center[1], center[2]);
     let (hx, hy, hz) = (half[0], half[1], half[2]);
@@ -525,12 +519,30 @@ pub(crate) fn push_yawed_box(
     let x_dir = place(1.0, 0.0, 0.0) - place(0.0, 0.0, 0.0);
     let z_dir = place(0.0, 0.0, 1.0) - place(0.0, 0.0, 0.0);
     // Six faces, outward-facing.
-    buf.quad_facing(corners[0], corners[1], corners[5], corners[4], color, -z_dir);
+    buf.quad_facing(
+        corners[0], corners[1], corners[5], corners[4], color, -z_dir,
+    );
     buf.quad_facing(corners[2], corners[3], corners[7], corners[6], color, z_dir);
-    buf.quad_facing(corners[3], corners[0], corners[4], corners[7], color, -x_dir);
+    buf.quad_facing(
+        corners[3], corners[0], corners[4], corners[7], color, -x_dir,
+    );
     buf.quad_facing(corners[1], corners[2], corners[6], corners[5], color, x_dir);
-    buf.quad_facing(corners[4], corners[5], corners[6], corners[7], shade(color, 1.08), Vec3::Y);
-    buf.quad_facing(corners[0], corners[3], corners[2], corners[1], shade(color, 0.8), -Vec3::Y);
+    buf.quad_facing(
+        corners[4],
+        corners[5],
+        corners[6],
+        corners[7],
+        shade(color, 1.08),
+        Vec3::Y,
+    );
+    buf.quad_facing(
+        corners[0],
+        corners[3],
+        corners[2],
+        corners[1],
+        shade(color, 0.8),
+        -Vec3::Y,
+    );
 }
 
 /// Sample points every `step` metres along a local-frame polyline.
@@ -694,7 +706,11 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let pts: Vec<Vec2> = line.iter().map(|&(la, lo)| local(la, lo)).collect();
         for (i, id) in ids.iter().enumerate() {
             let prev = if i > 0 { pts[i - 1] } else { pts[i] };
-            let next = if i + 1 < pts.len() { pts[i + 1] } else { pts[i] };
+            let next = if i + 1 < pts.len() {
+                pts[i + 1]
+            } else {
+                pts[i]
+            };
             let dir = (next - prev).normalize_or_zero();
             if dir == Vec2::ZERO {
                 continue;
@@ -738,7 +754,15 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let h = height.unwrap_or(5.0).clamp(2.5, 12.0);
         let yaw = srand(seed, 1) * std::f32::consts::TAU;
         let post = linear(LAMP_POST);
-        push_yawed_box(&mut solid, p, y0, yaw, [0.0, h * 0.5, 0.0], [0.05, h * 0.5, 0.05], post);
+        push_yawed_box(
+            &mut solid,
+            p,
+            y0,
+            yaw,
+            [0.0, h * 0.5, 0.0],
+            [0.05, h * 0.5, 0.05],
+            post,
+        );
         // The head: a squat lantern box on top, in its own emissive mesh.
         push_yawed_box(
             &mut heads,
@@ -776,8 +800,24 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let yaw = dir.y.atan2(dir.x);
         let group = signal_group(dir);
         let post = linear(SIGNAL_POST);
-        push_yawed_box(&mut solid, at, y0, yaw, [0.0, 1.8, 0.0], [0.05, 1.8, 0.05], post);
-        push_yawed_box(&mut solid, at, y0, yaw, [0.0, 3.25, 0.0], [0.11, 0.42, 0.09], post);
+        push_yawed_box(
+            &mut solid,
+            at,
+            y0,
+            yaw,
+            [0.0, 1.8, 0.0],
+            [0.05, 1.8, 0.05],
+            post,
+        );
+        push_yawed_box(
+            &mut solid,
+            at,
+            y0,
+            yaw,
+            [0.0, 3.25, 0.0],
+            [0.11, 0.42, 0.09],
+            post,
+        );
         // Three lamps, each in its phase-group + colour mesh; the cycle system
         // lights them by material.
         for (slot, dy) in [(0u8, 0.26), (1, 0.0), (2, -0.26)] {
@@ -855,9 +895,33 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         // Three staple hoops on a half-metre pitch.
         for i in -1i32..=1 {
             let cz = i as f32 * 0.5;
-            push_yawed_box(&mut solid, p, y0, yaw, [-0.35, 0.35, cz], [0.03, 0.35, 0.03], metal);
-            push_yawed_box(&mut solid, p, y0, yaw, [0.35, 0.35, cz], [0.03, 0.35, 0.03], metal);
-            push_yawed_box(&mut solid, p, y0, yaw, [0.0, 0.72, cz], [0.38, 0.03, 0.03], metal);
+            push_yawed_box(
+                &mut solid,
+                p,
+                y0,
+                yaw,
+                [-0.35, 0.35, cz],
+                [0.03, 0.35, 0.03],
+                metal,
+            );
+            push_yawed_box(
+                &mut solid,
+                p,
+                y0,
+                yaw,
+                [0.35, 0.35, cz],
+                [0.03, 0.35, 0.03],
+                metal,
+            );
+            push_yawed_box(
+                &mut solid,
+                p,
+                y0,
+                yaw,
+                [0.0, 0.72, cz],
+                [0.38, 0.03, 0.03],
+                metal,
+            );
         }
         colliders.extend(square_collider(p + Vec2::new(ox, oz), 0.8));
     }
@@ -872,8 +936,24 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         let seed = feature_seed(lat, lng);
         let yaw = srand(seed, 1) * std::f32::consts::TAU;
         let metal = linear(METAL);
-        push_yawed_box(&mut solid, p, y0, yaw, [-0.9, 1.1, 0.0], [0.06, 1.1, 0.06], metal);
-        push_yawed_box(&mut solid, p, y0, yaw, [0.9, 1.1, 0.0], [0.06, 1.1, 0.06], metal);
+        push_yawed_box(
+            &mut solid,
+            p,
+            y0,
+            yaw,
+            [-0.9, 1.1, 0.0],
+            [0.06, 1.1, 0.06],
+            metal,
+        );
+        push_yawed_box(
+            &mut solid,
+            p,
+            y0,
+            yaw,
+            [0.9, 1.1, 0.0],
+            [0.06, 1.1, 0.06],
+            metal,
+        );
         // The board face, slightly warm white — an unlit ad would be a black
         // rectangle at night, and a lit one is someone else's feature.
         push_yawed_box(
@@ -942,7 +1022,15 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         if *kind == BarrierKind::GuardRail {
             for (p, _) in along(&pts, 2.0) {
                 let y0 = ground_at(p);
-                push_yawed_box(&mut lin, p, y0, 0.0, [0.0, 0.3, 0.0], [0.03, 0.3, 0.03], color);
+                push_yawed_box(
+                    &mut lin,
+                    p,
+                    y0,
+                    0.0,
+                    [0.0, 0.3, 0.0],
+                    [0.03, 0.3, 0.03],
+                    color,
+                );
             }
         }
     }
@@ -1019,15 +1107,7 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
                 let dark = shade(linear(WOOD), 0.55);
                 for pair in pts.windows(2) {
                     push_wall_segment(
-                        &mut lin,
-                        pair[0],
-                        pair[1],
-                        level,
-                        level,
-                        -0.4,
-                        1.3,
-                        0.25,
-                        dark,
+                        &mut lin, pair[0], pair[1], level, level, -0.4, 1.3, 0.25, dark,
                     );
                 }
                 for p in [pts[0], *pts.last().unwrap()] {
@@ -1555,8 +1635,7 @@ fn lamp_pool_size() -> usize {
 
 /// The same night curve the building windows use.
 fn night_glow(dev: &crate::resources::DevPanelState) -> f32 {
-    let elevation =
-        crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
+    let elevation = crate::utils::sun::sun_direction(dev.time_of_day, dev.sun_declination_rad).y;
     ((0.18 - elevation) / 0.33).clamp(0.0, 1.0)
 }
 
@@ -1577,7 +1656,11 @@ pub fn update_lamp_glow(
     *applied = Some(glow);
     if let Some(mut mat) = materials.get_mut(handle) {
         let c = LAMP_COLOR.to_linear();
-        mat.emissive = LinearRgba::rgb(c.red * 14.0 * glow, c.green * 14.0 * glow, c.blue * 14.0 * glow);
+        mat.emissive = LinearRgba::rgb(
+            c.red * 14.0 * glow,
+            c.green * 14.0 * glow,
+            c.blue * 14.0 * glow,
+        );
     }
 }
 
@@ -1592,7 +1675,15 @@ pub fn update_lamp_lights(
     dev: Res<crate::resources::DevPanelState>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
-    mut lights: Query<(&mut Transform, &mut GridCell, &mut PointLight, &mut Visibility), Without<FreeCamera>>,
+    mut lights: Query<
+        (
+            &mut Transform,
+            &mut GridCell,
+            &mut PointLight,
+            &mut Visibility,
+        ),
+        Without<FreeCamera>,
+    >,
     time: Res<Time>,
     mut last_run: Local<f32>,
 ) {
@@ -1755,7 +1846,10 @@ pub fn update_prop_fade(
         let t = ((alt - start) / (end - start)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    let (near_f, far_f) = (band(NEAR_FADE_START, NEAR_FADE_END), band(FAR_FADE_START, FAR_FADE_END));
+    let (near_f, far_f) = (
+        band(NEAR_FADE_START, NEAR_FADE_END),
+        band(FAR_FADE_START, FAR_FADE_END),
+    );
     let previous = *last;
     if previous.is_some_and(|(n, f)| (n - near_f).abs() < 0.002 && (f - far_f).abs() < 0.002) {
         return;
@@ -1764,14 +1858,15 @@ pub fn update_prop_fade(
 
     // The vertex colours are absolute; walking the shared base toward a paving
     // grey collapses everything's contrast against the street from above.
-    let walk = |handle: &Option<Handle<StandardMaterial>>, f: f32, mats: &mut Assets<StandardMaterial>| {
-        if let Some(h) = handle {
-            if let Some(mut m) = mats.get_mut(h) {
-                let g = 1.0 - 0.35 * f;
-                m.base_color = Color::linear_rgb(g, g, g);
+    let walk =
+        |handle: &Option<Handle<StandardMaterial>>, f: f32, mats: &mut Assets<StandardMaterial>| {
+            if let Some(h) = handle {
+                if let Some(mut m) = mats.get_mut(h) {
+                    let g = 1.0 - 0.35 * f;
+                    m.base_color = Color::linear_rgb(g, g, g);
+                }
             }
-        }
-    };
+        };
     walk(&sd.solid_material, near_f, &mut materials);
     walk(&sd.linear_material, far_f, &mut materials);
 
@@ -1951,10 +2046,7 @@ mod tests {
         let (cx, cy) = lat_lng_to_tile(53.215, 6.565, DETAIL_ZOOM);
         let build = build_cell(text, cx, cy, &ctx()).unwrap().unwrap();
         assert!(build.colliders.is_empty());
-        assert!(build
-            .meshes
-            .iter()
-            .any(|(c, _)| *c == PropClass::Linear));
+        assert!(build.meshes.iter().any(|(c, _)| *c == PropClass::Linear));
     }
 
     #[test]

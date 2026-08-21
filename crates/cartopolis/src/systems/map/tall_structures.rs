@@ -23,8 +23,8 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::components::FreeCamera;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::platform::stream::{CellStream, Policy};
 use crate::platform::storage;
+use crate::platform::stream::{CellStream, Policy};
 use crate::systems::osm_buildings::{lat_lng_to_local, num_from_value, overpass_query, MeshData};
 use crate::systems::street_detail::{feature_seed, linear, push_yawed_box, shade, srand};
 use crate::systems::terrain::TerrainSnapshot;
@@ -350,8 +350,20 @@ fn build_cell(
                 push_tube(&mut buf, p, y0, (h * 0.026).max(1.6), 1.2, h, 10, tower);
                 // Nacelle: a rounded box behind the hub.
                 let yaw = PREVAILING_YAW + (srand(seed, 1) - 0.5) * 0.3;
-                push_yawed_box(&mut buf, p, y0, yaw, [0.0, h + 1.2, 2.2], [1.6, 1.6, 4.0], tower);
-                let rotor_r = s.rotor_d.map(|d| d * 0.5).unwrap_or(h * 0.55).clamp(4.0, 90.0);
+                push_yawed_box(
+                    &mut buf,
+                    p,
+                    y0,
+                    yaw,
+                    [0.0, h + 1.2, 2.2],
+                    [1.6, 1.6, 4.0],
+                    tower,
+                );
+                let rotor_r = s
+                    .rotor_d
+                    .map(|d| d * 0.5)
+                    .unwrap_or(h * 0.55)
+                    .clamp(4.0, 90.0);
                 let mut blades = MeshData::default();
                 let blade = linear(BLADE_WHITE);
                 for b in 0..3 {
@@ -416,12 +428,29 @@ fn build_cell(
                 let steel = linear(STEEL);
                 push_tube(&mut buf, p, y0, 1.6, 0.4, h, 6, steel);
                 // A couple of dishes/platforms to break the silhouette.
-                push_yawed_box(&mut buf, p, y0, srand(seed, 1), [0.0, h * 0.8, 0.0], [1.6, 0.25, 1.6], steel);
+                push_yawed_box(
+                    &mut buf,
+                    p,
+                    y0,
+                    srand(seed, 1),
+                    [0.0, h * 0.8, 0.0],
+                    [1.6, 0.25, 1.6],
+                    steel,
+                );
             }
             StructureKind::Tower => {
                 let conc = linear(CONCRETE);
                 push_tube(&mut buf, p, y0, 3.4, 2.2, h * 0.85, 10, conc);
-                push_tube(&mut buf, p, y0 + h * 0.85, 3.2, 2.6, h * 0.15, 10, shade(conc, 0.9));
+                push_tube(
+                    &mut buf,
+                    p,
+                    y0 + h * 0.85,
+                    3.2,
+                    2.6,
+                    h * 0.15,
+                    10,
+                    shade(conc, 0.9),
+                );
             }
             StructureKind::Chimney => {
                 push_tube(&mut buf, p, y0, 2.6, 1.6, h, 10, linear(BRICK));
@@ -430,15 +459,40 @@ fn build_cell(
                 let conc = linear(CONCRETE);
                 push_tube(&mut buf, p, y0, 2.6, 2.2, h * 0.7, 10, conc);
                 // The tank: a wider drum on top.
-                push_tube(&mut buf, p, y0 + h * 0.7, h * 0.18, h * 0.16, h * 0.3, 12, shade(conc, 1.05));
+                push_tube(
+                    &mut buf,
+                    p,
+                    y0 + h * 0.7,
+                    h * 0.18,
+                    h * 0.16,
+                    h * 0.3,
+                    12,
+                    shade(conc, 1.05),
+                );
             }
             StructureKind::Crane => {
                 let yellow = linear(CRANE_YELLOW);
                 let yaw = srand(seed, 1) * std::f32::consts::TAU;
                 push_tube(&mut buf, p, y0, 1.2, 1.2, h, 4, yellow);
                 // Jib and counter-jib.
-                push_yawed_box(&mut buf, p, y0, yaw, [h * 0.45, h + 1.0, 0.0], [h * 0.55, 0.6, 0.6], yellow);
-                push_yawed_box(&mut buf, p, y0, yaw, [-h * 0.18, h + 1.0, 0.0], [h * 0.18, 0.8, 0.8], yellow);
+                push_yawed_box(
+                    &mut buf,
+                    p,
+                    y0,
+                    yaw,
+                    [h * 0.45, h + 1.0, 0.0],
+                    [h * 0.55, 0.6, 0.6],
+                    yellow,
+                );
+                push_yawed_box(
+                    &mut buf,
+                    p,
+                    y0,
+                    yaw,
+                    [-h * 0.18, h + 1.0, 0.0],
+                    [h * 0.18, 0.8, 0.8],
+                    yellow,
+                );
             }
         }
     }
@@ -784,7 +838,11 @@ mod tests {
         assert!(build.mesh.is_some(), "tower mesh");
         assert_eq!(build.rotors.len(), 1);
         // The hub stands at the default height above flat ground.
-        assert!((build.rotors[0].hub.y - 86.2).abs() < 0.5, "{}", build.rotors[0].hub.y);
+        assert!(
+            (build.rotors[0].hub.y - 86.2).abs() < 0.5,
+            "{}",
+            build.rotors[0].hub.y
+        );
     }
 
     #[test]
