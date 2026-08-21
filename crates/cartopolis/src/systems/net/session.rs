@@ -675,4 +675,141 @@ mod tests {
         assert!(!SessionStatus::Online.is_busy());
         assert!(!SessionStatus::Offline.is_busy());
     }
+
+    /// **"Stay signed in", end to end, across a viewer restart.** A real sim on
+    /// loopback, the real `drive_session` + `apply_network_snapshot` systems, a
+    /// real `UserStore` — sign in with a password once, then rebuild the whole
+    /// client world (a restart) carrying only what `user.json` would carry, and
+    /// require the remembered session to come up without the password. This is
+    /// the exact loop a user reported broken on 2026-08-21, and every unit here
+    /// read as correct on paper; only the assembled path can say so.
+    #[cfg(feature = "solo")]
+    #[test]
+    fn stay_signed_in_survives_a_viewer_restart() {
+        use crate::resources::{AvatarState, PrimTextureCache, TextureLibrary};
+        use bevy::asset::Assets;
+        use bevy::image::Image;
+
+        /// The client world as `lib.rs` assembles it, reduced to the systems and
+        /// resources the session + snapshot path touches. Fresh per "launch".
+        fn client_app(store: UserStore) -> App {
+            let mut app = App::new();
+            app.init_resource::<SessionState>()
+                .init_resource::<GameState>()
+                .init_resource::<LocalAvatarSimId>()
+                .init_resource::<AuthIdentity>()
+                .init_resource::<AvatarState>()
+                .init_resource::<TextureLibrary>()
+                .init_resource::<PrimTextureCache>()
+                .init_resource::<crate::systems::chat::ChatState>()
+                .init_resource::<crate::systems::script_editor::ScriptEditorState>()
+                .init_resource::<crate::systems::voice::VoiceState>()
+                .init_resource::<OsmTileUrlTemplate>()
+                .insert_resource(Assets::<Image>::default())
+                .insert_resource(store)
+                .add_systems(
+                    Update,
+                    (
+                        drive_session,
+                        crate::systems::network::apply_network_snapshot,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        /// Pump frames (the link runs on its own thread) until `done`, or fail
+        /// with whatever the session has to say for itself.
+        fn pump(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
+            for _ in 0..500 {
+                app.update();
+                if done(app.world()) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let session = app.world().resource::<SessionState>();
+            panic!(
+                "timed out waiting for {what}: status {:?}, error {:?}",
+                session.status, session.error
+            );
+        }
+
+        // A real simulator with a known account, exactly as the voice loopback
+        // test boots one.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("world.db").to_str().unwrap().to_string();
+        {
+            let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+            cartopolis_simulator::ensure_account(&conn, "alice", "hunter22").unwrap();
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt
+            .block_on(cartopolis_simulator::serve(std::sync::Arc::new(
+                cartopolis_simulator::SimConfig {
+                    database_path: db,
+                    listen: "127.0.0.1:0".into(),
+                    ..cartopolis_simulator::SimConfig::default()
+                },
+            )))
+            .unwrap();
+        let addr = handle.local_addr.to_string();
+
+        // Launch one: the sign-in card's submit, "stay signed in" ticked.
+        let mut app = client_app(UserStore::default());
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.clone(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: "hunter22".into(),
+                },
+                persist_token: true,
+            });
+        pump(&mut app, "the password sign-in", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+        // The ack's token has to land in the store under the address the next
+        // launch will look it up by.
+        pump(&mut app, "the token to be persisted", |w| {
+            w.resource::<UserStore>().session_token(&addr).is_some()
+        });
+
+        // The restart: a new world, carrying only what user.json holds. The
+        // request is verbatim what `lib.rs` builds from a remembered session —
+        // the username with no password, riding the persisted token.
+        let mut store = UserStore::default();
+        store.data.session_tokens = app
+            .world()
+            .resource::<UserStore>()
+            .data
+            .session_tokens
+            .clone();
+        drop(app);
+        let mut relaunch = client_app(store);
+        relaunch
+            .world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.clone(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: String::new(),
+                },
+                persist_token: true,
+            });
+        pump(&mut relaunch, "the silent reconnect", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+        assert_eq!(
+            relaunch
+                .world()
+                .resource::<AuthIdentity>()
+                .username
+                .as_deref(),
+            Some("alice"),
+            "the token signed in as somebody else"
+        );
+    }
 }
