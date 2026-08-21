@@ -1201,12 +1201,12 @@ pub fn tile_url_override() -> Option<String> {
 pub struct ConnectAddr(pub String);
 
 /// Credential presented in the ADR-016 handshake (resolved from `--login`, a login
-/// file, env, or the solo dev default). Read by `network::spawn_network_thread`.
+/// file, env, or the `dev:dev` default). Read by `network::spawn_network_thread`.
 #[derive(Resource, Clone)]
 pub struct ConnectAuth {
     pub credential: cartopolis_core::AuthCredential,
     /// Persist the issued session token for silent reconnect. True for external
-    /// sims only — solo mode's loopback port is ephemeral, so a token is useless.
+    /// sims only.
     pub persist_token: bool,
 }
 

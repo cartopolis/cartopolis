@@ -487,7 +487,7 @@ fn account_tab(
     );
 
     // Signed in, over a live session: the request travels on the wire, so there
-    // is nothing to send while offline and nothing to delete in solo's own world.
+    // is nothing to send while offline.
     let can_delete = online && identity.username.is_some();
     if !can_delete {
         theme::note(ui, "Sign in to the world holding the account to delete it.");

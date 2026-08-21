@@ -1,9 +1,10 @@
 //! Server-side authentication (ADR-016): local accounts with argon2id password
-//! hashing, plus an in-memory session store.
+//! hashing, plus the session store.
 //!
-//! v0 scope: accounts persist in SQLite; sessions are in-memory (dev), so tokens
-//! are valid only for the lifetime of a sim process. Persisting sessions (hashed)
-//! so tokens survive a restart is a later step.
+//! Accounts persist in SQLite; sessions live in memory and are **written through
+//! to SQLite** (hashed — see [`Sessions`]) so a token survives a sim restart.
+//! They did not until 2026-08: every redeploy of the hosted sim silently signed
+//! everybody out, which read on the client as "stay signed in" being broken.
 //!
 //! # Hashing is deliberately kept away from everything else
 //!
@@ -23,10 +24,11 @@ use anyhow::{anyhow, Context};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use blake2::{Blake2s256, Digest};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -366,10 +368,12 @@ pub fn verify_credentials(
 /// How long an unused session token stays valid.
 ///
 /// Sliding, not absolute: [`Sessions::resolve`] renews the token it just accepted,
-/// so a player who reconnects daily is never asked for a password again, while a
-/// token copied out of a `user.json` and left in a drawer stops working. Sessions
-/// are in-memory, so the outer bound is still the process lifetime.
-pub const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// so a player who keeps coming back is never asked for a password again, while a
+/// token copied out of a `user.json` and left in a drawer stops working. Thirty
+/// days because this is what the sign-in card's "stay signed in" tick promises —
+/// it was 24 h, which signed out anyone who skipped a day and made the checkbox
+/// look broken even while the sim stayed up.
+pub const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Hard ceiling on live tokens, whatever the TTL says.
 ///
@@ -382,22 +386,38 @@ const MAX_SESSIONS: usize = 4096;
 struct Session {
     principal: Uuid,
     username: String,
-    /// When this token was issued or last used. The sweep and the TTL both read it.
-    touched: Instant,
+    /// When this token was issued or last used. The sweep and the TTL both read
+    /// it. Wall-clock rather than `Instant` because a restored session's age has
+    /// to be measured across processes, and `SystemTime` is the only clock that
+    /// exists on both sides of a restart.
+    touched: SystemTime,
 }
 
-/// In-memory session store (ADR-016 v0): opaque token → (principal, username).
+/// The session store: hash of an opaque token → (principal, username).
 ///
 /// It used to be `issue` and `resolve` and nothing else — no expiry, no
 /// revocation, no eviction. A token was therefore valid for the whole process
 /// lifetime, which for a long-lived server is "forever", and the client persists
 /// it in plaintext in `user.json`; and because nothing was ever removed, the map
 /// was a slow leak keyed by connection count.
+///
+/// The in-memory map answers every lookup; a store built by [`Self::persistent`]
+/// also **writes through** to the `sessions` table and reloads it at startup, so
+/// the hosted sim's redeploys stop signing everybody out. Two deliberate choices
+/// there: rows hold a Blake2s **hash** of the token, never the token (the client
+/// keeps the raw one, so a copy of the database must not be a bag of bearer
+/// credentials — same reasoning as the password hashes two tables over), and a
+/// failed write is a `warn!`, not an error, because a session that lasts only
+/// until the next restart is degraded, while a sign-in refused over a disk
+/// hiccup is broken.
 pub struct Sessions {
     by_token: Mutex<HashMap<String, Session>>,
     /// Configurable so a test can assert expiry in milliseconds rather than
-    /// waiting a day or mocking the clock.
+    /// waiting a month or mocking the clock.
     ttl: Duration,
+    /// Write-through target; `None` is a memory-only store (tests, and any
+    /// caller that has no database to offer).
+    conn: Option<Arc<Mutex<Connection>>>,
 }
 
 impl Default for Sessions {
@@ -416,28 +436,78 @@ impl Sessions {
         Self {
             by_token: Mutex::new(HashMap::new()),
             ttl,
+            conn: None,
+        }
+    }
+
+    /// A store backed by the `sessions` table: yesterday's unexpired tokens are
+    /// live again, and every change from here on is written through.
+    #[must_use]
+    pub fn persistent(conn: Arc<Mutex<Connection>>) -> Self {
+        Self::persistent_with_ttl(conn, SESSION_TTL)
+    }
+
+    /// Split out so a test can exercise restart survival and expiry-at-load
+    /// without a month on the clock.
+    fn persistent_with_ttl(conn: Arc<Mutex<Connection>>, ttl: Duration) -> Self {
+        let mut map = HashMap::new();
+        {
+            let guard = locked(&conn);
+            match load_sessions(&guard, ttl, &mut map) {
+                Ok(expired) => {
+                    tracing::info!(live = map.len(), expired, "sessions restored");
+                }
+                Err(e) => tracing::warn!("could not restore sessions: {e:#}"),
+            }
+        }
+        Self {
+            by_token: Mutex::new(map),
+            ttl,
+            conn: Some(conn),
         }
     }
 
     /// Issue a fresh random opaque token bound to a principal + its username.
     pub fn issue(&self, principal: Uuid, username: &str) -> String {
         let token = random_token();
+        let hash = token_hash(&token);
         let mut map = locked(&self.by_token);
         // Sweep on the way in: `resolve` only ever sees the token it was asked
         // about, so a token nobody ever presents again would otherwise sit there
         // for the life of the process.
-        map.retain(|_, s| s.touched.elapsed() < self.ttl);
-        if map.len() >= MAX_SESSIONS {
-            evict_oldest(&mut map);
-        }
+        map.retain(|_, s| age(s.touched) < self.ttl);
+        let evicted = (map.len() >= MAX_SESSIONS)
+            .then(|| evict_oldest(&mut map))
+            .flatten();
+        let now = SystemTime::now();
         map.insert(
-            token.clone(),
+            hash.clone(),
             Session {
                 principal,
                 username: username.to_string(),
-                touched: Instant::now(),
+                touched: now,
             },
         );
+        // The map lock is never held into a database call — the two are taken in
+        // this order nowhere else, and holding both is how lock cycles start.
+        drop(map);
+        self.db(|c| {
+            // The sweep above may have dropped any number of rows; one DELETE by
+            // age brings the table along rather than tracking each of them.
+            c.execute(
+                "DELETE FROM sessions WHERE touched < ?1",
+                [cutoff(self.ttl)],
+            )?;
+            if let Some(evicted) = evicted {
+                c.execute("DELETE FROM sessions WHERE token_hash = ?1", [evicted])?;
+            }
+            c.execute(
+                "INSERT OR REPLACE INTO sessions (token_hash, principal, username, touched) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![hash, principal.to_string(), username, unix(now)],
+            )?;
+            Ok(())
+        });
         token
     }
 
@@ -446,14 +516,30 @@ impl Sessions {
     /// Expired tokens are removed as they are found — the first presentation
     /// after the TTL is both the rejection and the cleanup.
     pub fn resolve(&self, token: &str) -> Option<(Uuid, String)> {
+        let hash = token_hash(token);
         let mut map = locked(&self.by_token);
-        let session = map.get_mut(token)?;
-        if session.touched.elapsed() >= self.ttl {
-            map.remove(token);
+        let session = map.get_mut(&hash)?;
+        if age(session.touched) >= self.ttl {
+            map.remove(&hash);
+            drop(map);
+            self.db(|c| {
+                c.execute("DELETE FROM sessions WHERE token_hash = ?1", [&hash])?;
+                Ok(())
+            });
             return None;
         }
-        session.touched = Instant::now();
-        Some((session.principal, session.username.clone()))
+        let now = SystemTime::now();
+        session.touched = now;
+        let out = (session.principal, session.username.clone());
+        drop(map);
+        self.db(|c| {
+            c.execute(
+                "UPDATE sessions SET touched = ?1 WHERE token_hash = ?2",
+                rusqlite::params![unix(now), hash],
+            )?;
+            Ok(())
+        });
+        Some(out)
     }
 
     /// Invalidate a token immediately (sign-out, or an operator revoking access).
@@ -463,7 +549,12 @@ impl Sessions {
     /// disconnect, so revoking there would make every restart of the client ask
     /// for a password again.
     pub fn revoke(&self, token: &str) {
-        locked(&self.by_token).remove(token);
+        let hash = token_hash(token);
+        locked(&self.by_token).remove(&hash);
+        self.db(|c| {
+            c.execute("DELETE FROM sessions WHERE token_hash = ?1", [&hash])?;
+            Ok(())
+        });
     }
 
     /// Invalidate every token belonging to one principal, and say how many went.
@@ -479,7 +570,16 @@ impl Sessions {
         let mut map = locked(&self.by_token);
         let before = map.len();
         map.retain(|_, s| s.principal != principal);
-        before - map.len()
+        let gone = before - map.len();
+        drop(map);
+        self.db(|c| {
+            c.execute(
+                "DELETE FROM sessions WHERE principal = ?1",
+                [principal.to_string()],
+            )?;
+            Ok(())
+        });
+        gone
     }
 
     /// Live token count, for tests and diagnostics.
@@ -492,19 +592,89 @@ impl Sessions {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Run a write against the backing table, if there is one. Failures are
+    /// logged and swallowed on purpose — see the type-level note.
+    fn db(&self, op: impl FnOnce(&Connection) -> rusqlite::Result<()>) {
+        let Some(conn) = &self.conn else { return };
+        if let Err(e) = op(&locked(conn)) {
+            tracing::warn!("session table write failed: {e:#}");
+        }
+    }
 }
 
-/// Drop the least recently used entry. Linear, and that is fine: it runs only at
-/// the ceiling, which a healthy server never reaches.
-fn evict_oldest(map: &mut HashMap<String, Session>) {
-    let Some(oldest) = map
+/// Fill `map` from the `sessions` table, deleting what has already expired.
+/// Returns how many expired rows were dropped.
+fn load_sessions(
+    conn: &Connection,
+    ttl: Duration,
+    map: &mut HashMap<String, Session>,
+) -> anyhow::Result<usize> {
+    let expired = conn.execute("DELETE FROM sessions WHERE touched < ?1", [cutoff(ttl)])?;
+    let mut stmt = conn.prepare("SELECT token_hash, principal, username, touched FROM sessions")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, u64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (hash, principal, username, touched) = row?;
+        let principal = Uuid::parse_str(&principal).context("bad principal in sessions table")?;
+        map.insert(
+            hash,
+            Session {
+                principal,
+                username,
+                touched: std::time::UNIX_EPOCH + Duration::from_secs(touched),
+            },
+        );
+    }
+    Ok(expired)
+}
+
+/// How long ago, on the wall clock. A clock that moved backwards (NTP step,
+/// suspend) answers zero rather than panicking — a session aged "not at all" is
+/// the harmless reading of an unreadable interval.
+fn age(touched: SystemTime) -> Duration {
+    touched.elapsed().unwrap_or_default()
+}
+
+/// Wall-clock seconds since the epoch, the form the `touched` column stores.
+fn unix(t: SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// The `touched` value below which a row is expired right now.
+fn cutoff(ttl: Duration) -> u64 {
+    unix(SystemTime::now()).saturating_sub(ttl.as_secs())
+}
+
+/// What the map and the table are keyed by: a hash, so neither is worth stealing.
+/// Blake2s over sha2 only because argon2 already brings it into the build.
+fn token_hash(token: &str) -> String {
+    let digest = Blake2s256::digest(token.as_bytes());
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Drop the least recently used entry and say which, so the caller can take the
+/// table's row with it. Linear, and that is fine: it runs only at the ceiling,
+/// which a healthy server never reaches.
+fn evict_oldest(map: &mut HashMap<String, Session>) -> Option<String> {
+    let oldest = map
         .iter()
         .min_by_key(|(_, s)| s.touched)
-        .map(|(t, _)| t.clone())
-    else {
-        return;
-    };
+        .map(|(t, _)| t.clone())?;
     map.remove(&oldest);
+    Some(oldest)
 }
 
 /// 256-bit random token, hex-encoded.
@@ -711,6 +881,90 @@ mod tests {
         s.revoke(&tok);
         assert_eq!(s.resolve(&tok), None);
         assert!(s.is_empty());
+    }
+
+    /// A database with the `sessions` table, shared the way `serve` shares it.
+    fn sessions_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, principal TEXT NOT NULL, \
+             username TEXT NOT NULL, touched INTEGER NOT NULL);",
+        )
+        .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn table_count(conn: &Arc<Mutex<Connection>>) -> i64 {
+        locked(conn)
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// **The whole reason the table exists**: the deployed sim restarts on every
+    /// publish, and each restart used to sign everybody out — "stay signed in"
+    /// read as broken on the client. A token issued by one store must resolve in
+    /// a store built later over the same database.
+    #[test]
+    fn a_token_survives_a_simulator_restart() {
+        let db = sessions_db();
+        let p = Uuid::new_v4();
+        let first = Sessions::persistent(db.clone());
+        let tok = first.issue(p, "dev");
+        drop(first);
+
+        let rebooted = Sessions::persistent(db.clone());
+        assert_eq!(
+            rebooted.resolve(&tok),
+            Some((p, "dev".to_string())),
+            "a restart signed the player out"
+        );
+
+        // And what the table holds must be the hash, never the credential.
+        let raw: i64 = locked(&db)
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE token_hash = ?1",
+                [&tok],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, 0, "the raw token was written to disk");
+    }
+
+    /// Expiry still holds across the reload — a stale row is dropped at boot,
+    /// from the map and from the table.
+    #[test]
+    fn a_restart_does_not_resurrect_an_expired_token() {
+        let db = sessions_db();
+        let first = Sessions::persistent(db.clone());
+        let tok = first.issue(Uuid::new_v4(), "dev");
+        drop(first);
+        locked(&db)
+            .execute("UPDATE sessions SET touched = 0", [])
+            .unwrap();
+
+        let rebooted = Sessions::persistent(db.clone());
+        assert_eq!(rebooted.resolve(&tok), None, "an expired token came back");
+        assert!(rebooted.is_empty());
+        assert_eq!(table_count(&db), 0, "the expired row was left in the table");
+    }
+
+    /// Revocation must reach the table, or a sign-out (or an operator kicking an
+    /// account) is undone by the next restart.
+    #[test]
+    fn revocation_survives_a_restart_too() {
+        let db = sessions_db();
+        let p = Uuid::new_v4();
+        let s = Sessions::persistent(db.clone());
+        let signed_out = s.issue(p, "dev");
+        let kicked = s.issue(p, "dev");
+        s.revoke(&signed_out);
+        assert_eq!(s.revoke_principal(p), 1);
+        assert_eq!(table_count(&db), 0);
+        drop(s);
+
+        let rebooted = Sessions::persistent(db);
+        assert_eq!(rebooted.resolve(&signed_out), None);
+        assert_eq!(rebooted.resolve(&kicked), None);
     }
 
     /// The lookup/verify split has to agree with the one-shot it replaced, or the

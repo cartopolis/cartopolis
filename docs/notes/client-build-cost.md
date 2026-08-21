@@ -69,7 +69,7 @@ versus link in the first place. Do the third one first.
 **The cost is codegen and linking, not type-checking.** 7.1 s of the 52.4 s is
 the frontend; the remaining ~45 s is LLVM and the link. So anything that
 *discards* the incremental cache pays full price: CI (`CARGO_INCREMENTAL=0`),
-switching profiles, flipping `solo` / `fast-dev` / `scalar-fallback`, and every
+switching profiles, flipping `fast-dev` / `scalar-fallback`, and every
 `cargo test`.
 
 ## Two structural taxes, both self-inflicted

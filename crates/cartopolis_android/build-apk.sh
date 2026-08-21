@@ -164,8 +164,8 @@ echo "==> cargo ndk ($ABI / $TRIPLE, profile $PROFILE)"
 # its own, so a `--no-default-features` on this line would be a no-op that merely
 # reads like a decision — which is how the phone came to ship without a soundscape
 # for months. What the APK contains is `crates/cartopolis_android/Cargo.toml`'s
-# dependency line on `cartopolis`: `default-features = false` (no `solo`, hence no
-# bundled SQLite to cross-compile) plus `features = ["audio"]`. Change it there.
+# dependency line on `cartopolis`: `default-features = false` plus
+# `features = ["audio"]`. Change it there.
 #
 # `--platform` is the *native API level* the NDK links against and must match the
 # manifest's minSdkVersion, or the .so imports symbols the oldest supported device

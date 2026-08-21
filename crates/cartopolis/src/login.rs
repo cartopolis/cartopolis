@@ -1,6 +1,7 @@
 //! Resolve connect credentials for the ADR-016 handshake, so you don't log in each
 //! run. Precedence: explicit `--login` (a file, or inline `user:pass`) → a default
-//! login file → `CARTO_USER`/`CARTO_PASSWORD` env → the solo `dev` account.
+//! login file → `CARTO_USER`/`CARTO_PASSWORD` env → the `dev:dev` default a
+//! freshly provisioned dev sim answers to.
 //!
 //! Login file (gitignored TOML), all fields optional:
 //! ```toml

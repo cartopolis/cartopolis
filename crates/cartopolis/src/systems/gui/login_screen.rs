@@ -13,9 +13,8 @@
 //! to choose between three architectures before they had seen anything, and two
 //! of the three answers were "carry on as you are". Offline is now simply where
 //! everybody starts (`SessionPrefs::default`) and is reached by not signing in or
-//! by logging out; solo is a developer path with no button (see `SessionKind`).
-//! What is left is one question — which server, as whom — and the card is that
-//! question.
+//! by logging out. What is left is one question — which server, as whom — and the
+//! card is that question.
 //!
 //! **The app menu is the only thing that opens it, and a live session is the only
 //! thing that closes it.** It is reached from the top of that menu, never shown on
@@ -224,8 +223,8 @@ impl LoginScreen {
 /// `docs/notes/hosted-simulator.md` tells people to type was the one address the
 /// sign-in card could not reach, while `--connect cartopolis.org` (which skips
 /// this function) worked. A default port is only meaningful where the port is
-/// still a real socket: loopback, which is solo's in-process sim, and an explicit
-/// `tcp://`, which is the opt-out for a LAN dev sim.
+/// still a real socket: loopback, which is a dev sim on this machine, and an
+/// explicit `tcp://`, which is the opt-out for a LAN dev sim.
 fn normalize_server(raw: &str) -> String {
     let host = raw.trim();
     if host.is_empty() {
@@ -649,8 +648,8 @@ mod tests {
         assert_eq!(normalize_server("  10.0.0.4  "), "10.0.0.4");
     }
 
-    /// Loopback is the one place a default port still means a socket: it is
-    /// solo's in-process sim, which `resolve_target` keeps on plain TCP.
+    /// Loopback is the one place a default port still means a socket: a dev
+    /// sim on this machine, which `resolve_target` keeps on plain TCP.
     #[test]
     fn loopback_still_gets_the_default_port() {
         assert_eq!(normalize_server("localhost"), "localhost:4747");
@@ -751,8 +750,8 @@ mod tests {
     /// came up from startup's auto-enter or from `--connect` answers the same
     /// question, so it cannot be the condition.
     /// A session in a given state, with an optional reason on it. `SessionState`
-    /// keeps its link and its solo handle private, so it is built and then written
-    /// rather than struct-literalled.
+    /// keeps its link private, so it is built and then written rather than
+    /// struct-literalled.
     fn session(status: SessionStatus, error: Option<&str>) -> SessionState {
         let mut session = SessionState::default();
         session.status = status;

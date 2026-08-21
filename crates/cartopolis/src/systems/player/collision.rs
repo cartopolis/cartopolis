@@ -313,7 +313,7 @@ impl BuildingColliders {
 
     /// Steer a desired walk velocity (`wish`, world XZ) from the avatar's current
     /// position `pos` so it slides along walls and never enters a building — the
-    /// client-side prediction for the authoritative (solo/split) movement path,
+    /// client-side prediction for the authoritative (online) movement path,
     /// where the sim integrates exactly this velocity and has no building data.
     /// Returns the (possibly redirected, possibly zeroed) velocity; if the avatar
     /// is already inside a footprint it returns a straight push outward at the

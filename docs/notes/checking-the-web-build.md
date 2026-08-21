@@ -28,12 +28,13 @@ ship with no soundscape at all ([audio-off-platform.md](audio-off-platform.md)).
 
 ## Why each part is load-bearing
 
-- **`--no-default-features`.** The default `solo` feature pulls
-  `cartopolis_simulator` → `rusqlite` → `libsqlite3-sys`, whose bundled C cannot
-  find `stdio.h` for wasm. The error is a fatal C-preprocessor error inside
-  sqlite, which reads like a broken toolchain and is really a feature flag.
-  `crates/cartopolis/index.html` passes `data-cargo-no-default-features` for this
-  reason — the web client is Phase-1 Viewer with no sim (ADR-031/033).
+- **`--no-default-features`.** Historically this dropped the `solo` feature
+  (removed 2026-08-21), whose `cartopolis_simulator` → `rusqlite` →
+  `libsqlite3-sys` chain could not compile for wasm — the error was a fatal
+  C-preprocessor error inside sqlite that read like a broken toolchain.
+  `crates/cartopolis/index.html` still passes `data-cargo-no-default-features`
+  (plus `audio` named back), and the check mirrors the real build's flags so the
+  two cannot drift.
 - **Nightly.** `wasm_thread` opens with
   `#![cfg_attr(target_arch = "wasm32", feature(stdarch_wasm_atomic_wait))]`, so
   stable rejects it with E0554 pointing at someone else's crate.

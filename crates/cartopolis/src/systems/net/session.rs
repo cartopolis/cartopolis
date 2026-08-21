@@ -1,16 +1,21 @@
 //! Which world you are in, and the machinery for changing your mind about it.
 //!
-//! The client has always had three run modes (ADR-016): offline (no sim, no auth,
-//! a streamed basemap and a local avatar), solo (an in-process sim on loopback)
-//! and split (`--connect` to an external sim). What it did not have was a way to
-//! *move between* them — the mode was decided in `lib.rs` before the app was
-//! built, from flags, and changing it meant quitting.
+//! There are exactly two modes: **offline** (no sim, no auth, a streamed basemap
+//! and a local avatar) and **online** (a simulator reached over the network).
+//! There used to be a third — *solo*, an in-process sim on loopback behind a
+//! `solo` cargo feature — and it was removed on 2026-08-21 because three modes
+//! were an architecture quiz nobody needed to sit: solo was reached through the
+//! same authenticated connect path as any server, so it was "online to yourself"
+//! wearing a mode of its own, plus a bundled SQLite that neither wasm nor
+//! Android could compile and a feature flag every build lane had to remember.
+//! A developer runs `cargo run -p cartopolis_simulator` and signs in to
+//! `127.0.0.1:4747` like any other server.
 //!
-//! That was the wrong shape, because the sim is not a different application: it is
-//! offline plus an authority for the avatar, the prims and the other people in it.
-//! Everything online is already `Option<Res<OnlineSession>>`-guarded, so "offline"
-//! is precisely "that resource is absent" — a state the app can enter and leave at
-//! runtime rather than a launch-time fork. This module is that state machine, and
+//! The sim is not a different application: it is offline plus an authority for
+//! the avatar, the prims and the other people in it. Everything online is
+//! already `Option<Res<OnlineSession>>`-guarded, so "offline" is precisely "that
+//! resource is absent" — a state the app can enter and leave at runtime rather
+//! than a launch-time fork. This module is that state machine, and
 //! `systems::login_screen` is its face.
 //!
 //! **The request is a resource field, not an event**, because the sign-in screen
@@ -66,75 +71,56 @@ impl Default for SessionPrefs {
 /// A mode without its address — the serialisable, comparable part of
 /// [`SessionMode`].
 ///
-/// **Only two of these are anything a person chooses**, and the sign-in card
-/// offers neither as a *mode*: offline is where the app starts and signing in is
-/// the one verb, so the card is a form for [`Self::Remote`] and nothing else. It
-/// used to be a three-row picker, which asked everybody to make an architecture
-/// decision — "solo simulator" against "connect to a server" — before they had
-/// seen the map. [`Self::Solo`] survives as a developer path (`--login` with no
-/// server, `crates/cartopolis/src/solo.rs`) and as a mode a `user.json` written
-/// by an older build may still name; nothing in the UI can enter it.
+/// The sign-in card offers neither of these as a *mode*: offline is where the
+/// app starts and signing in is the one verb, so the card is a form for
+/// [`Self::Remote`] and nothing else. It used to be a three-row picker, which
+/// asked everybody to make an architecture decision before they had seen the
+/// map.
+///
+/// `#[serde(other)]` on `Offline` is a file-format obligation, not a
+/// convenience: a `user.json` written before 2026-08-21 may say `"solo"` (the
+/// removed in-process-sim mode), and `UserData::session`'s `#[serde(default)]`
+/// only covers a *missing* field — an unparseable one fails the whole document,
+/// which quarantines the user's bookmarks over a mode that no longer exists.
+/// An unknown kind is read as offline, which is also what a remembered solo
+/// session should now mean.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
-    /// No sim at all: the streamed map and a local avatar, single user.
-    #[default]
-    Offline,
-    /// An in-process sim on loopback (the `solo` feature).
-    Solo,
-    /// An external sim over TCP.
+    /// A simulator reached over the network.
     Remote,
+    /// No sim at all: the streamed map and a local avatar, single user.
+    /// Last, because serde requires the `other` fallback to be the last variant.
+    #[default]
+    #[serde(other)]
+    Offline,
 }
 
 /// The mode the client is actually in.
-///
-/// Only `Offline` is reachable on the web build (`can_simulate`), hence the
-/// allow — same reason as `network::LinkState`.
-///
-/// The `solo` arm of that allow is the more interesting one, and it is here
-/// because leaving it out cost this project every Android release it never had.
-/// `Solo` is constructed only where the `solo` feature compiles, and the APK is
-/// built `--no-default-features` (nothing cross-compiles `rusqlite` for Android)
-/// — so on that target the variant is dead, `[workspace.lints.rust] unused =
-/// "deny"` turns dead code into a hard error, and the whole client crate fails to
-/// build. Gating on the *platform* would have been the third instance of the trap
-/// CLAUDE.md names: this tree's seams were written as native-vs-wasm and Android
-/// answers "native" to all of them. Gate on the feature that is actually absent.
-#[cfg_attr(any(target_arch = "wasm32", not(feature = "solo")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum SessionMode {
     #[default]
     Offline,
-    Solo,
     Remote {
         server: String,
     },
 }
 
 impl SessionMode {
-    /// Where the session lives, for a status line. Solo's ephemeral loopback port
-    /// is noise to a user, so it reads as the machine instead.
+    /// Where the session lives, for a status line.
     pub fn where_(&self) -> String {
         match self {
             Self::Offline => "no simulator".into(),
-            Self::Solo => "this machine".into(),
             Self::Remote { server } => server.clone(),
         }
     }
 }
 
 /// How far the current mode has got. `Offline` is a resting state, not a failure.
-///
-/// Same two-part allow as [`SessionMode`]: `Starting` means "booting the
-/// in-process sim", which is unreachable both on the web and in any build without
-/// the `solo` feature — the Android APK being the one that matters.
-#[cfg_attr(any(target_arch = "wasm32", not(feature = "solo")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum SessionStatus {
     #[default]
     Offline,
-    /// Booting the in-process sim; no socket yet.
-    Starting,
     Connecting,
     Authenticating,
     Online,
@@ -142,16 +128,12 @@ pub enum SessionStatus {
 
 impl SessionStatus {
     pub fn is_busy(&self) -> bool {
-        matches!(
-            self,
-            Self::Starting | Self::Connecting | Self::Authenticating
-        )
+        matches!(self, Self::Connecting | Self::Authenticating)
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Self::Offline => "Offline",
-            Self::Starting => "Starting the local simulator…",
             Self::Connecting => "Connecting…",
             Self::Authenticating => "Signing in…",
             Self::Online => "Online",
@@ -163,12 +145,6 @@ impl SessionStatus {
 #[derive(Clone, Debug)]
 pub enum SessionRequest {
     Offline,
-    Solo {
-        /// Log in as somebody other than the provisioned `dev` account — what a
-        /// `--login` with no server means. `None` is the sign-in screen's answer
-        /// and the ordinary one.
-        credential: Option<AuthCredential>,
-    },
     Remote {
         server: String,
         credential: AuthCredential,
@@ -188,13 +164,6 @@ pub struct SessionState {
     /// Written by the UI or startup, taken by [`drive_session`].
     pub request: Option<SessionRequest>,
     link: Option<LinkStatus>,
-    /// The credential to present once a pending solo sim finishes booting.
-    pending_auth: Option<ConnectAuth>,
-    #[cfg(feature = "solo")]
-    pending_solo: Option<crate::solo::SoloPending>,
-    /// Keeps the in-process sim alive; dropped on teardown, which stops it.
-    #[cfg(feature = "solo")]
-    solo: Option<crate::solo::SoloSim>,
 }
 
 impl SessionState {
@@ -224,10 +193,6 @@ pub const fn can_simulate() -> bool {
     true
 }
 
-pub const fn can_solo() -> bool {
-    cfg!(feature = "solo") && !cfg!(target_arch = "wasm32")
-}
-
 /// Leave the world and go back to the offline map — the app menu's **Log out**,
 /// which is the only place it is offered. The sign-in card had one too, for the
 /// case where a failure raised that card over a session that was still live; the
@@ -253,9 +218,9 @@ pub fn sign_out(session: &mut SessionState, store: &mut UserStore) {
     session.request(SessionRequest::Offline);
 }
 
-/// Apply session requests, poll a booting solo sim, and watch a live link.
+/// Apply session requests and watch a live link.
 ///
-/// One system rather than three because all of them mutate the same state machine
+/// One system rather than two because both mutate the same state machine
 /// and the ordering between them matters within a single frame: a request torn
 /// down here must not be seen as a *dropped* link by the watcher below.
 #[allow(clippy::too_many_arguments)]
@@ -291,7 +256,6 @@ pub fn drive_session(
                 session.status = SessionStatus::Offline;
                 info!("session: offline");
             }
-            SessionRequest::Solo { credential } => start_solo(&mut session, credential),
             SessionRequest::Remote {
                 server,
                 credential,
@@ -315,26 +279,6 @@ pub fn drive_session(
             }
         }
         return;
-    }
-
-    // A solo sim that was still binding when the request came through.
-    #[cfg(feature = "solo")]
-    if let Some(mut pending) = session.pending_solo.take() {
-        match pending.poll() {
-            None => session.pending_solo = Some(pending),
-            Some(Ok((addr, sim))) => {
-                info!(%addr, "solo mode: in-process sim");
-                session.solo = Some(sim);
-                let auth = session.pending_auth.take().unwrap_or_else(solo_auth);
-                connect(&mut commands, &mut session, &store, &tile_url, &addr, auth);
-            }
-            Some(Err(e)) => {
-                error!("solo sim failed to start: {e}");
-                session.error = Some(e);
-                session.mode = SessionMode::Offline;
-                session.status = SessionStatus::Offline;
-            }
-        }
     }
 
     // Watch the live link. A drop is the same event as a failed sign-in as far as
@@ -386,39 +330,6 @@ pub fn drive_session(
     }
 }
 
-#[cfg(feature = "solo")]
-fn solo_auth() -> ConnectAuth {
-    ConnectAuth {
-        credential: AuthCredential::Password {
-            username: crate::solo::DEV_USER.to_string(),
-            password: crate::solo::DEV_PASSWORD.to_string(),
-        },
-        // Solo's loopback port is ephemeral, so a token keyed on it is useless.
-        persist_token: false,
-    }
-}
-
-#[cfg(feature = "solo")]
-fn start_solo(session: &mut SessionState, credential: Option<AuthCredential>) {
-    session.mode = SessionMode::Solo;
-    session.status = SessionStatus::Starting;
-    session.pending_auth = Some(match credential {
-        Some(credential) => ConnectAuth {
-            credential,
-            persist_token: false,
-        },
-        None => solo_auth(),
-    });
-    session.pending_solo = Some(crate::solo::start());
-}
-
-#[cfg(not(feature = "solo"))]
-fn start_solo(session: &mut SessionState, _credential: Option<AuthCredential>) {
-    session.mode = SessionMode::Offline;
-    session.status = SessionStatus::Offline;
-    session.error = Some("This build has no local simulator — connect to a server".into());
-}
-
 /// Open the link and install the resources that make the rest of the client
 /// online. Everything here is the inverse of [`teardown`]; keep them in step.
 fn connect(
@@ -463,15 +374,6 @@ fn teardown(
     remotes: &Query<Entity, With<RemoteAvatar>>,
 ) {
     session.link = None;
-    session.pending_auth = None;
-    #[cfg(feature = "solo")]
-    {
-        session.pending_solo = None;
-        // Drops the shutdown sender → the sim thread wakes, aborts its tasks and
-        // frees the port. Switching solo → remote otherwise leaks a runtime and a
-        // SQLite handle per switch.
-        session.solo = None;
-    }
     session.mode = SessionMode::Offline;
     session.status = SessionStatus::Offline;
 
@@ -614,7 +516,6 @@ mod tests {
     fn session_kind_round_trips_as_snake_case() {
         for (kind, text) in [
             (SessionKind::Offline, "\"offline\""),
-            (SessionKind::Solo, "\"solo\""),
             (SessionKind::Remote, "\"remote\""),
         ] {
             assert_eq!(serde_json::to_string(&kind).unwrap(), text);
@@ -624,6 +525,17 @@ mod tests {
                 "{text} did not round-trip"
             );
         }
+    }
+
+    /// A `user.json` written before 2026-08-21 may remember the removed solo
+    /// mode. That must read as offline — an unparseable session field fails the
+    /// whole document, and the document is the user's bookmarks.
+    #[test]
+    fn a_remembered_solo_session_degrades_to_offline() {
+        assert_eq!(
+            serde_json::from_str::<SessionKind>("\"solo\"").unwrap(),
+            SessionKind::Offline
+        );
     }
 
     #[test]
@@ -669,10 +581,145 @@ mod tests {
 
     #[test]
     fn busy_statuses_are_the_ones_with_a_spinner() {
-        assert!(SessionStatus::Starting.is_busy());
         assert!(SessionStatus::Connecting.is_busy());
         assert!(SessionStatus::Authenticating.is_busy());
         assert!(!SessionStatus::Online.is_busy());
         assert!(!SessionStatus::Offline.is_busy());
+    }
+
+    /// **"Stay signed in", end to end, across a viewer restart.** A real sim on
+    /// loopback, the real `drive_session` + `apply_network_snapshot` systems, a
+    /// real `UserStore` — sign in with a password once, then rebuild the whole
+    /// client world (a restart) carrying only what `user.json` would carry, and
+    /// require the remembered session to come up without the password. This is
+    /// the exact loop a user reported broken on 2026-08-21, and every unit here
+    /// read as correct on paper; only the assembled path can say so.
+    #[test]
+    fn stay_signed_in_survives_a_viewer_restart() {
+        use crate::resources::{AvatarState, PrimTextureCache, TextureLibrary};
+        use bevy::asset::Assets;
+        use bevy::image::Image;
+
+        /// The client world as `lib.rs` assembles it, reduced to the systems and
+        /// resources the session + snapshot path touches. Fresh per "launch".
+        fn client_app(store: UserStore) -> App {
+            let mut app = App::new();
+            app.init_resource::<SessionState>()
+                .init_resource::<GameState>()
+                .init_resource::<LocalAvatarSimId>()
+                .init_resource::<AuthIdentity>()
+                .init_resource::<AvatarState>()
+                .init_resource::<TextureLibrary>()
+                .init_resource::<PrimTextureCache>()
+                .init_resource::<crate::systems::chat::ChatState>()
+                .init_resource::<crate::systems::script_editor::ScriptEditorState>()
+                .init_resource::<crate::systems::voice::VoiceState>()
+                .init_resource::<OsmTileUrlTemplate>()
+                .insert_resource(Assets::<Image>::default())
+                .insert_resource(store)
+                .add_systems(
+                    Update,
+                    (
+                        drive_session,
+                        crate::systems::network::apply_network_snapshot,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        /// Pump frames (the link runs on its own thread) until `done`, or fail
+        /// with whatever the session has to say for itself.
+        fn pump(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
+            for _ in 0..500 {
+                app.update();
+                if done(app.world()) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let session = app.world().resource::<SessionState>();
+            panic!(
+                "timed out waiting for {what}: status {:?}, error {:?}",
+                session.status, session.error
+            );
+        }
+
+        // A real simulator with a known account, exactly as the voice loopback
+        // test boots one.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("world.db").to_str().unwrap().to_string();
+        {
+            let conn = cartopolis_simulator::db::open_and_migrate(&db).unwrap();
+            cartopolis_simulator::ensure_account(&conn, "alice", "hunter22").unwrap();
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt
+            .block_on(cartopolis_simulator::serve(std::sync::Arc::new(
+                cartopolis_simulator::SimConfig {
+                    database_path: db,
+                    listen: "127.0.0.1:0".into(),
+                    ..cartopolis_simulator::SimConfig::default()
+                },
+            )))
+            .unwrap();
+        let addr = handle.local_addr.to_string();
+
+        // Launch one: the sign-in card's submit, "stay signed in" ticked.
+        let mut app = client_app(UserStore::default());
+        app.world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.clone(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: "hunter22".into(),
+                },
+                persist_token: true,
+            });
+        pump(&mut app, "the password sign-in", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+        // The ack's token has to land in the store under the address the next
+        // launch will look it up by.
+        pump(&mut app, "the token to be persisted", |w| {
+            w.resource::<UserStore>().session_token(&addr).is_some()
+        });
+
+        // The restart: a new world, carrying only what user.json holds. The
+        // request is verbatim what `lib.rs` builds from a remembered session —
+        // the username with no password, riding the persisted token.
+        let mut store = UserStore::default();
+        store.data.session_tokens = app
+            .world()
+            .resource::<UserStore>()
+            .data
+            .session_tokens
+            .clone();
+        drop(app);
+        let mut relaunch = client_app(store);
+        relaunch
+            .world_mut()
+            .resource_mut::<SessionState>()
+            .request(SessionRequest::Remote {
+                server: addr.clone(),
+                credential: AuthCredential::Password {
+                    username: "alice".into(),
+                    password: String::new(),
+                },
+                persist_token: true,
+            });
+        pump(&mut relaunch, "the silent reconnect", |w| {
+            w.resource::<SessionState>().is_online()
+        });
+        assert_eq!(
+            relaunch
+                .world()
+                .resource::<AuthIdentity>()
+                .username
+                .as_deref(),
+            Some("alice"),
+            "the token signed in as somebody else"
+        );
     }
 }

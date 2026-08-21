@@ -2351,6 +2351,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "axum",
+ "blake2",
  "bytes",
  "cartopolis_core",
  "clap",
