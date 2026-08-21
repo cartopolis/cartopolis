@@ -1082,9 +1082,12 @@ pub struct CameraState {
     pub orbit_north_lock: bool,
     /// Follow-and-rotate (Organic-Maps style): while true *and* in Avatar mode, the
     /// follow camera's [`Self::azimuth`] tracks the avatar's facing yaw, so the
-    /// camera stays behind the avatar and swings with it like a chase cam. Toggled
-    /// by the GPS/locate button; cleared when the user manually left-drags to orbit
-    /// (matching OM, where touching the map drops the rotate-follow).
+    /// camera stays behind the avatar and swings with it like a chase cam. Armed
+    /// by the GPS/locate button *while already in Avatar mode* — the button takes
+    /// no camera mode of its own, and this rig is the Follow camera's, so in Fly
+    /// and Earth there is nothing for it to turn. Cleared when the user manually
+    /// left-drags to orbit (matching OM, where touching the map drops the
+    /// rotate-follow).
     pub follow_rotate: bool,
     /// What [`Self::follow_rotate`] should aim at, when something other than the
     /// avatar's own facing knows better: a world-XZ yaw in the same convention as

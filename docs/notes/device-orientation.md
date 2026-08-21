@@ -1,7 +1,7 @@
 ---
 topic: device-orientation
 triggers: [orientation.rs, locate.rs, "compass", "magnetometer", "heading", "bearing", "deviceorientation", "webkitCompassHeading", "ASensorManager", "rotation vector", "screen.orientation", "locate button", "track my position", "gps"]
-updated: 2026-08-15
+updated: 2026-08-21
 ---
 
 # The compass: which way the *screen* is pointing
@@ -114,6 +114,30 @@ request). The old middle rung followed the avatar without turning with it; on a
 phone that is the odd one out, and needing two presses to get "put me on the map,
 the right way up" is a worse default than the state it skips. That state is still
 reachable from Tab and the Camera menu.
+
+**And the button no longer picks a camera mode at all** (2026-08-21, at the user's
+request). It used to force Follow on the way in and `track_device_pose` stood down
+the moment the mode was anything else — which made "where am I" a one-way door out
+of Fly and Earth: you pressed it to see your position and lost the view you were
+in to get it. Tracking is a *position* verb, so it now runs in whichever mode is
+on and moves the camera instead of the switcher. Two things follow.
+
+The **heading half stays Avatar-only**, and not as a simplification: the
+rotate-follow rig is the Follow camera's, so in Fly and Earth there is nothing for
+a bearing to turn, and arming `follow_rotate` behind those modes would leave it
+set, waiting to swing the view for whoever switched back. The compass is still
+read and still reported in the button's caption there — what it says the device
+answers does not depend on what is consuming it.
+
+The **position half snaps once and then follows by delta**
+(`locate::tracked_ground_offset`). The press is the "take me there", so the first
+fix puts the camera on it — Fly keeps its altitude and its look, Earth re-centres
+its ground focus, both exactly as `geo_nav::apply_teleport` already does for those
+modes. Every fix after it moves the camera by however far the *fix* moved, which
+keeps the map sliding under a walk while leaving a pan or a fly free to change
+where you watch it from. Re-centring every frame was the obvious alternative and
+is worse: it is a camera the user cannot move while the button is lit, with
+nothing on screen to say why.
 
 **Driver mode wins.** It owns the avatar's position, the camera rig and its own
 pair of watches; `locate::track_device_pose` stands down whenever

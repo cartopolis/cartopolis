@@ -655,15 +655,15 @@ pub fn render_map_controls(
     // the viewer that owns a local avatar — and deliberately *not* gated on a
     // session, unlike the mode switcher's Follow: "where am I on the map" is a
     // traditional map-viewer verb and offline is exactly where a viewer lives.
-    // The follow camera it enters is a system path there, exempted from the
-    // offline mode guard while `LocateTracking::active` (`camera_mode_toggle`),
-    // the same way driver mode is. Not drawn while driving: the arrow is already
-    // centred and the camera is held, so there is nothing left for it to do.
+    // It takes no camera mode of its own (`systems::locate`), so there is nothing
+    // for the offline mode guard to exempt: the button answers where you are in
+    // whatever view you were already using. Not drawn while driving: the arrow is
+    // already centred and the camera is held, so there is nothing left for it to
+    // do.
     // The bottom edge of what the column has drawn so far; each control below
     // adds its own gap before its own height.
     let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;
     if !avatars.is_empty() {
-        use crate::resources::CameraMode;
         let state = if tracking.active {
             LocateState::Tracking
         } else {
@@ -672,15 +672,13 @@ pub fn render_map_controls(
         let hover = locate_hover(state, &tracking);
         if locate_overlay(egui.ctx(), column + theme::OSD_GAP, state, &hover) {
             match state {
-                // Recenter *and* orient: snap the rig onto the avatar (the same
-                // proven path Tab / the Camera menu use), then hand it to
-                // `systems::locate`, which owns the sensors from here.
-                LocateState::Off => {
-                    crate::systems::free_camera::enter_mode(&mut camera_state, CameraMode::Avatar);
-                    camera_state.mode = CameraMode::Avatar;
-                    camera_state.follow_rotate = true;
-                    tracking.enter();
-                }
+                // Recenter, in the view the user is already in. The button used to
+                // force Follow on the way in, which made "where am I" a one-way
+                // door out of Fly and Earth; `systems::locate` moves the camera
+                // that is there instead, and owns the rotate-follow rig too — it
+                // has to, because arriving in Follow later (Tab, the mode disc)
+                // must arm the same thing this press would have.
+                LocateState::Off => tracking.enter(),
                 LocateState::Tracking => {
                     camera_state.follow_rotate = false;
                     tracking.exit();

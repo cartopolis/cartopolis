@@ -454,7 +454,7 @@ pub fn globe_spin_polar(dir: DVec3, north: DVec3, drag: Vec2, sens: f32) -> DVec
 }
 
 /// Absolute world position of a big_space grid cell's origin.
-fn cell_origin(cell: &GridCell) -> DVec3 {
+pub(crate) fn cell_origin(cell: &GridCell) -> DVec3 {
     DVec3::new(cell.x as f64, cell.y as f64, cell.z as f64) * WORLD_CELL_EDGE as f64
 }
 
@@ -941,11 +941,12 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
 /// predicate, two readers — the Tab cycle here and the dock's mode disc
 /// (`dock::mode_disc`) — so the two never disagree about what is on the cycle.
 ///
-/// This gates the *switcher*, not the camera: driver mode and device tracking
-/// (`systems::locate`) both enter the follow camera themselves, offline
-/// included — a GPS map viewer is a legitimate offline use, and both paths
-/// stand down on their own — so the guard in [`camera_mode_toggle`] exempts
-/// them rather than fighting them every frame.
+/// This gates the *switcher*, not the camera: driver mode enters the follow
+/// camera itself, offline included — navigation is a legitimate offline use, and
+/// it stands down on its own — so the guard in [`camera_mode_toggle`] exempts it
+/// rather than fighting it every frame. Device tracking (`systems::locate`) needs
+/// no exemption: it runs in whichever mode is already on and moves the camera,
+/// never the switcher.
 ///
 /// The avatar check stays even though `main::spawn_avatar_entity` spawns one
 /// unconditionally at `Startup`: it costs an `is_empty` and it is the only
@@ -976,20 +977,18 @@ pub fn camera_mode_toggle(
     mut camera_state: ResMut<CameraState>,
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
-    tracking: Res<crate::systems::locate::LocateTracking>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     let follow = follow_available(&session, !avatars.is_empty());
     // Follow without a session (or an avatar) is dropped to Fly — this is also
     // what lands the camera in Fly when a live session ends, or on the first
     // frame of an offline start (the `CameraState` default is still Avatar).
-    // Driver mode and device tracking are exempt: both enter the follow camera
-    // themselves, both are offline features on purpose (navigation, and the
-    // locate button's "where am I"), and both stand down on their own —
-    // driver mode restores the saved mode on exit, and `locate` exits the
-    // moment the mode is anything else, which also makes this guard the thing
-    // that ends an offline locate-follow the frame the tracking stops.
-    if !follow && !driver.active && !tracking.active && camera_state.mode == CameraMode::Avatar {
+    // Driver mode is exempt: it enters the follow camera itself, it is an offline
+    // feature on purpose, and it stands down on its own, restoring the saved mode
+    // on the way out. Device tracking (`systems::locate`) used to be exempted for
+    // the same reason and no longer needs to be — the locate button takes no
+    // camera mode at all now, so there is nothing here for it to fight.
+    if !follow && !driver.active && camera_state.mode == CameraMode::Avatar {
         enter_mode(&mut camera_state, CameraMode::Free);
         camera_state.mode = CameraMode::Free;
     }
@@ -1244,7 +1243,7 @@ pub fn camera_controls(
                 }
             }
 
-            // Follow-and-rotate (GPS button state 3): glue the camera behind the
+            // Follow-and-rotate (the GPS button, pressed in this mode): glue the camera behind the
             // avatar's heading so it swings around as the avatar turns. The avatar's
             // render yaw `face` is authoritative in every run mode (the movement
             // systems write `Quat::from_rotation_y(face)` each frame), so read it off
