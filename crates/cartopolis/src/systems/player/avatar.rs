@@ -314,12 +314,6 @@ const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
 const REMOTE_RUN_SPEED_THRESH: f32 = 0.12;
 
-/// Offline flight's vertical rate, mirroring what the sim gives an online client
-/// so the same keys move the avatar at the same rate in every run mode
-/// (`cartopolis_simulator::state::FLY_VERTICAL_SPEED`). The *horizontal* rates now come
-/// from `systems::locomotion`, which is shared by all three copies of the model.
-const FLY_VERTICAL_SPEED: f32 = 12.0;
-
 /// How long Space must be held to take off, rather than jump.
 ///
 /// Space is the right key for both verbs and they cannot both be a tap, so the
@@ -1482,8 +1476,18 @@ pub fn handle_avatar_movement(
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
 
+    // Flight rides altitude, at integration — the same
+    // `motion::fly_altitude_factor` the sim applies in `step` and prediction
+    // applies in `send_network_intent`, so the launch mode cannot change how fast
+    // a height flies. `ground_speed` itself stays the base rate: it feeds the
+    // animation and the intent's wish encoding, both of which saturate.
+    let lift = if avatar_state.is_flying {
+        motion::fly_altitude_factor(transform.translation.y)
+    } else {
+        1.0
+    };
     if avatar_state.ground_speed > 1e-4 {
-        let delta = avatar_state.move_dir * avatar_state.ground_speed * delta_time;
+        let delta = avatar_state.move_dir * avatar_state.ground_speed * lift * delta_time;
         // Collide against buildings while walking (anything off the ground passes
         // over roofs — the footprints are 2D, so they'd otherwise divert a flight
         // or a fall around a building it clears) when the buildings layer is on.
@@ -1525,9 +1529,9 @@ pub fn handle_avatar_movement(
     let ground_y = GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z);
     if avatar_state.is_flying {
         if fly_up {
-            transform.translation.y += FLY_VERTICAL_SPEED * delta_time;
+            transform.translation.y += motion::FLY_VERTICAL_SPEED * lift * delta_time;
         } else if fly_down && transform.translation.y > ground_y {
-            transform.translation.y -= FLY_VERTICAL_SPEED * delta_time;
+            transform.translation.y -= motion::FLY_VERTICAL_SPEED * lift * delta_time;
         }
         transform.translation.y = transform.translation.y.max(ground_y);
         avatar_state.vertical_velocity = 0.0;
