@@ -718,7 +718,13 @@ fn build_cell(text: &str, cx: i64, cy: i64, ctx: &BuildCtx) -> CellResult {
         // ours is cell-local. Lift each mesh onto the terrain afterwards, the
         // way `map_geometry` does for volumetric groups (no refinement — a
         // tree's normals describe the tree, not the hill).
-        for sm in build_vegetation_meshes(&instances, crate::quality::upload_ceiling()) {
+        // The same derived cap the barrier pieces below take, and for the same
+        // reason: the raw upload ceiling is `None` off the phone, which leaves a
+        // dense row of surveyed trees as one unsplittable mesh.
+        for sm in build_vegetation_meshes(
+            &instances,
+            Some(crate::systems::lod22::max_cell_mesh_bytes()),
+        ) {
             let mut positions = sm.positions.clone();
             if ctx.ground.is_ready() {
                 for p in positions.iter_mut() {
