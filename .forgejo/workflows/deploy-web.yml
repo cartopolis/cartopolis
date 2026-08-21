@@ -52,10 +52,32 @@ jobs:
       # same directory mounted read-only as /srv/cartopolis.
       # `/data/ci-cache` is in `valid_volumes` too — ci.yml has mounted both of
       # these since it was written; the comment above predates them.
+      #
+      # **Its own registry copy, not the `test` job's**, for the reason ci.yml's
+      # `targets` job states in full: a bind mount of `registry/` shares exactly
+      # the data that needs protecting and excludes the lock that protects it —
+      # cargo's lock is `$CARGO_HOME/.package-cache`, one level *above* the
+      # mount, so each container takes a private one and two concurrent jobs
+      # write one registry with nothing serialising them. That comment called
+      # this lane's shared mount "not fixed, and worth knowing"; on 2026-08-21
+      # it cost a deploy. The three `deploy-*` workflows were dispatched within
+      # twenty seconds of each other against a runner of capacity 3, all three
+      # mounted this directory, and this job died on
+      #
+      #   failed to unpack package `toml_datetime v0.7.3`
+      #     failed to open …/toml_datetime-0.7.3/.cargo-ok: File exists (17)
+      #
+      # `.cargo-ok` is written last, so an interrupted extract leaves a
+      # directory cargo can neither use nor replace. Note the second writer is
+      # not only cargo: `Swatinem/rust-cache` restores a ~570 MB archive over
+      # `/root/.cargo/registry` and prunes `registry/src` in its post step, and
+      # neither of those takes cargo's lock even when it is shared. Isolation is
+      # the only thing that covers both. ~310 MB of disk per lane, and the
+      # copies are independent, so they cannot race whatever the runner starts.
       options: >-
         --volume /data/cartopolis/site:/publish
         --volume /data/ci-cache/sccache:/sccache
-        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+        --volume /data/ci-cache/cargo-registry-web:/root/.cargo/registry
     steps:
       - uses: actions/checkout@v4
         with:

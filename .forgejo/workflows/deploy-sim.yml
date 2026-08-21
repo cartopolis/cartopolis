@@ -36,10 +36,16 @@ jobs:
       image: cartopolis-ci:latest
       # `/data/cartopolis/sim` is where the systemd unit reads the binary from,
       # and it has to be in the runner's `valid_volumes` or this mount is refused.
+      #
+      # Its own registry copy rather than the `test` job's — deploy-web.yml has
+      # the long version. Short: a bind mount of `registry/` excludes cargo's
+      # lock (`$CARGO_HOME/.package-cache`, one level above it), so two
+      # concurrent containers corrupt one registry, and on 2026-08-21 the three
+      # `deploy-*` lanes dispatched together did exactly that.
       options: >-
         --volume /data/cartopolis/sim:/publish
         --volume /data/ci-cache/sccache:/sccache
-        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+        --volume /data/ci-cache/cargo-registry-sim:/root/.cargo/registry
     steps:
       # No `lfs: true`. Unlike every other job in this directory, the simulator
       # embeds no assets at all — it holds no map data and never will — so the LFS
