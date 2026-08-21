@@ -556,6 +556,35 @@ impl MapSurfaces {
         self.materials.get(&group)
     }
 
+    /// The shared material for a *textureless* surface group, created on first
+    /// use with the group's standard recipe. `street_detail` spawns surveyed
+    /// trees through this so they hold the same canopy/trunk handles the
+    /// scattered ones do — the vegetation fade then repaints both with one
+    /// write. Road groups sample a generated texture and are created only by
+    /// `update_map_surfaces`, which owns the image assets.
+    pub(crate) fn group_material(
+        &mut self,
+        group: SurfaceGroup,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Handle<StandardMaterial> {
+        debug_assert!(
+            !matches!(group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)),
+            "road materials carry a texture and are created by update_map_surfaces"
+        );
+        self.materials
+            .entry(group)
+            .or_insert_with(|| {
+                let [r, g, b] = group.base_color();
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(r, g, b),
+                    perceptual_roughness: group.perceptual_roughness(),
+                    depth_bias: group.depth_bias(),
+                    ..default()
+                })
+            })
+            .clone()
+    }
+
     /// Retire every live cell (used on a re-anchor, or when the source stops being
     /// a vector one). Entities go through the despawn queue, not straight out.
     fn clear(&mut self) {
@@ -1601,6 +1630,10 @@ mod tests {
         assert_eq!(
             dl.water_shading, tier,
             "Water shading must start at the tier"
+        );
+        assert_eq!(
+            dl.street_detail_enabled, tier,
+            "Street detail must start at the tier"
         );
     }
 }

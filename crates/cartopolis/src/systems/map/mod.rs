@@ -14,6 +14,8 @@ pub mod rendering;
 pub mod sky;
 pub mod sky_dome;
 pub mod stream_ledger;
+pub mod street_detail;
+pub mod tall_structures;
 pub mod street_furniture;
 pub mod street_labels;
 pub mod terrain;

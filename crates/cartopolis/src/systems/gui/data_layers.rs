@@ -494,6 +494,11 @@ pub struct DataLayers {
     /// (`systems::street_labels`). Screen-space text, so this gates the drawing
     /// only — the names are parsed with the cell either way, off the frame loop.
     pub street_labels: bool,
+    /// Feature toggle (under Map): the Overpass street-detail layer
+    /// (`systems::street_detail`) — surveyed trees, street lamps, traffic
+    /// signals, zebra paint, barriers, piers. Off tears the cells down, the
+    /// same contract the Buildings master toggle keeps.
+    pub street_detail_enabled: bool,
     /// Feature toggle: the **height layer** (`systems::height`) — measured ground
     /// and surface elevation from PDOK's AHN. Its own source rather than a Map
     /// sub-toggle, like Buildings: it answers only over the Netherlands, and off
@@ -561,24 +566,27 @@ impl DataLayers {
     /// in its snapshot — persist those, so exiting mid-drive doesn't freeze the
     /// stripped-down map into the file.
     pub fn prefs(&self) -> crate::systems::user_store::LayerPrefs {
-        let (buildings, vehicles, trees, grass, furniture, overlay) = match &self.minimal {
-            Some(m) => (
-                m.buildings,
-                m.vehicles,
-                m.trees,
-                m.grass,
-                m.furniture,
-                Some(&m.layers),
-            ),
-            None => (
-                self.buildings_enabled,
-                self.vehicles_enabled,
-                self.trees_enabled,
-                self.grass_enabled,
-                self.furniture_enabled,
-                None,
-            ),
-        };
+        let (buildings, vehicles, trees, grass, furniture, street_detail, overlay) =
+            match &self.minimal {
+                Some(m) => (
+                    m.buildings,
+                    m.vehicles,
+                    m.trees,
+                    m.grass,
+                    m.furniture,
+                    m.street_detail,
+                    Some(&m.layers),
+                ),
+                None => (
+                    self.buildings_enabled,
+                    self.vehicles_enabled,
+                    self.trees_enabled,
+                    self.grass_enabled,
+                    self.furniture_enabled,
+                    self.street_detail_enabled,
+                    None,
+                ),
+            };
         crate::systems::user_store::LayerPrefs {
             buildings,
             tdbag: self.tdbag_enabled,
@@ -590,6 +598,7 @@ impl DataLayers {
             water_shading: self.water_shading,
             street_labels: self.street_labels,
             furniture,
+            street_detail,
             height: self.height_enabled,
             vehicles,
             overlays: LAYER_DEFS
@@ -653,6 +662,7 @@ impl DataLayers {
         self.water_shading = p.water_shading;
         self.street_labels = p.street_labels;
         self.furniture_enabled = p.furniture;
+        self.street_detail_enabled = p.street_detail;
         self.height_enabled = p.height;
         self.vehicles_enabled = p.vehicles;
         for (i, def) in LAYER_DEFS.iter().enumerate() {
@@ -672,6 +682,7 @@ struct MinimalSave {
     trees: bool,
     grass: bool,
     furniture: bool,
+    street_detail: bool,
     layers: Vec<bool>,
     fog_density: f32,
     cloud_cover: f32,
@@ -708,6 +719,7 @@ impl Default for DataLayers {
             roads_textured: detail,
             water_shading: detail,
             street_labels: detail,
+            street_detail_enabled: detail,
             // Off by default: it reaches a third party's service and only
             // answers over the Netherlands, so opting in is the honest default.
             height_enabled: false,
@@ -1576,6 +1588,7 @@ pub fn apply_minimal_mode(
                 trees: dl.trees_enabled,
                 grass: dl.grass_enabled,
                 furniture: dl.furniture_enabled,
+                street_detail: dl.street_detail_enabled,
                 layers: dl.layers.iter().map(|l| l.enabled).collect(),
                 fog_density: dev.fog_density,
                 cloud_cover: dev.cloud_cover,
@@ -1587,6 +1600,7 @@ pub fn apply_minimal_mode(
             dl.trees_enabled = false;
             dl.grass_enabled = false;
             dl.furniture_enabled = false;
+            dl.street_detail_enabled = false;
             for l in &mut dl.layers {
                 l.enabled = false;
             }
@@ -1604,6 +1618,7 @@ pub fn apply_minimal_mode(
                 dl.trees_enabled = saved.trees;
                 dl.grass_enabled = saved.grass;
                 dl.furniture_enabled = saved.furniture;
+                dl.street_detail_enabled = saved.street_detail;
                 for (l, was) in dl.layers.iter_mut().zip(saved.layers) {
                     l.enabled = was;
                 }
@@ -2278,6 +2293,11 @@ pub fn render_data_layers_panel(
                         ui,
                         &mut dl.street_labels,
                         egui::RichText::new("Street labels").size(theme::SIZE_SUB),
+                    );
+                    crate::systems::theme::checkbox(
+                        ui,
+                        &mut dl.street_detail_enabled,
+                        egui::RichText::new("Street detail").size(theme::SIZE_SUB),
                     );
                 });
                 ui.add_space(4.0);
@@ -3013,6 +3033,7 @@ mod tests {
             trees: true,
             grass: true,
             furniture: true,
+            street_detail: true,
             layers: vec![false; LAYER_DEFS.len()],
             fog_density: 0.4,
             cloud_cover: 0.7,
