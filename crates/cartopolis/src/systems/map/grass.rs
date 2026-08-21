@@ -5,7 +5,9 @@
 //! `assets/shaders/grass.wgsl`; both have the reasoning for *why* a blade is
 //! generated in the vertex shader rather than scattered and uploaded. What this
 //! module owns is the consequence of that decision, which is that grass does not
-//! stream. There is:
+//! stream. Per [`Tier`] — a dense near pool, and on the full quality rung a
+//! sparse far ring of wider blades that pushes the lawn's edge out to where a
+//! blade is sub-pixel — there is:
 //!
 //! * **one mesh** — [`turf::blade_lattice`], uploaded at startup and never again;
 //! * **one material** — rewritten when the wind changes (a few times an hour) and
@@ -14,6 +16,10 @@
 //!   world-aligned lattice under the camera. A patch never spawns, never
 //!   despawns, and never has its mesh rebuilt: crossing a lattice line moves a
 //!   `Transform` and rewrites a `MeshTag`.
+//!
+//! The rings hand over statistically, not geometrically — see [`Tier`] — so
+//! there is no LOD *switch* anywhere: no distance at which anything pops, and no
+//! circle on the ground where the density changes.
 //!
 //! That last point is the whole reason this layer exists in the shape it does.
 //! Every other streamer in this tree is bounded per frame because mass mesh churn
@@ -68,8 +74,8 @@ use crate::systems::weather::WeatherState;
 const PATCH_M: f32 = 8.0;
 
 /// Blade slots along one edge of a patch, per quality tier. `slots()²` blades per
-/// patch, so this and [`PATCH_M`] together are the density: 96² over 64 m² is
-/// ~144 blades/m².
+/// patch, so this and [`PATCH_M`] together are the density: 128² over 64 m² is
+/// ~256 blades/m².
 ///
 /// **Density is the one number that decides whether this reads as a lawn**, and
 /// it took four captures over the Noorderplantsoen on 2026-08-20 to find: 9
@@ -77,20 +83,87 @@ const PATCH_M: f32 = 8.0;
 /// ground between them. Grass only stops looking like individual plants when the
 /// blades overlap, and no amount of getting the blade *shape* right substitutes
 /// for that. Real turf is thousands per m²; this is as close as a real-time
-/// budget gets.
+/// budget gets (raised from 196/m² on 2026-08-21 because the ground still read
+/// through the lawn — density, the survival floor and the blade width moved
+/// together, since coverage is their product).
 ///
-/// It costs nothing to *store* — the lattice is one shared mesh, ~2.5 MB — so
-/// what density actually buys is paid in **vertex invocations**: ~46k per drawn
-/// patch, and a pool with ~17 patches in frame is ~800k a frame. That is cheap on
-/// a desktop GPU and is not free on a tiler, which is why the handset rung takes
-/// both a lower count here *and* half the radius in [`pool_offsets`] — a quarter
-/// of the area at a third of the density.
+/// It costs nothing to *store* — the lattice is one shared mesh — so what
+/// density actually buys is paid in **vertex invocations**: ~82k per drawn
+/// patch, and a pool with ~17 patches in frame is ~1.4M a frame. That is cheap
+/// on a desktop GPU and is not free on a tiler, which is why the handset rung
+/// takes both a lower count here *and* half the radius in [`pool_offsets`] — a
+/// quarter of the area at a quarter of the density.
 fn slots() -> u32 {
     if crate::quality::budget().detail_layers {
-        112
+        128
     } else {
         64
     }
+}
+
+/// One ring of the lawn: a lattice density, a patch size, and the distance band
+/// its blades live in.
+///
+/// The **arrive** band is what makes two rings read as one lawn. A far blade
+/// rises out of the ground across the exact band the near blades sink into it,
+/// and both draw their per-blade cut from the same hash lane (`h.z` in the
+/// shader) — so at any distance through the handover the *expected* blade count
+/// falls smoothly from the near density to the far one, with no circle anywhere
+/// for the eye to find. The near tier's arrive band is placed below zero, which
+/// the shader reads as "always arrived".
+#[derive(Clone, Copy)]
+struct Tier {
+    patch_m: f32,
+    slots: u32,
+    /// Distance band over which blades stand up, staggered per blade.
+    arrive: Vec2,
+    /// Distance band over which blades retire, staggered per blade.
+    retire: Vec2,
+    height_m: f32,
+    width_m: f32,
+}
+
+/// The rings the current quality tier runs. The far ring is full-tier only: it
+/// exists to push the lawn's edge out to where a blade is sub-pixel, and a
+/// handset that forces the layer on gets the honest half-radius near pool it
+/// always did.
+fn tiers() -> Vec<Tier> {
+    let detail = crate::quality::budget().detail_layers;
+    let near_radius = if detail {
+        GRASS_RADIUS_M
+    } else {
+        // A handset that turns this on by hand gets half the reach. The tier
+        // flag is what it starts *off* under, so this is the "you asked for it
+        // anyway" case, and a quarter of the vertex work is the honest thing to
+        // hand it.
+        GRASS_RADIUS_M * 0.5
+    };
+    let mut out = vec![Tier {
+        patch_m: PATCH_M,
+        slots: slots(),
+        arrive: Vec2::new(-4.0, -2.0),
+        retire: Vec2::new(near_radius * FADE_START_FRAC, near_radius),
+        height_m: BLADE_HEIGHT_M,
+        width_m: BLADE_WIDTH_M,
+    }];
+    if detail {
+        out.push(Tier {
+            patch_m: FAR_PATCH_M,
+            slots: FAR_SLOTS,
+            // Exactly the near tier's retire band — see [`Tier`].
+            arrive: Vec2::new(GRASS_RADIUS_M * FADE_START_FRAC, GRASS_RADIUS_M),
+            retire: Vec2::new(FAR_RADIUS_M * FADE_START_FRAC, FAR_RADIUS_M),
+            height_m: FAR_BLADE_HEIGHT_M,
+            width_m: FAR_BLADE_WIDTH_M,
+        });
+    }
+    out
+}
+
+/// The distance the last blade of any ring has retired by — what the mask has to
+/// cover and the rebuild trigger has to leave slack for.
+fn max_radius() -> f32 {
+    tiers().iter().map(|t| t.retire.y).fold(0.0, f32::max)
 }
 
 /// Size of a clump, in metres — the scale grass varies on because the soil under
@@ -107,8 +180,11 @@ const CLUMP_M: f32 = 0.45;
 ///
 /// The floor is not zero on purpose: bald patches in the middle of a lawn read as
 /// a bug in the coverage mask, which is exactly the thing this layer's diagnostics
-/// exist to distinguish. Thin, not absent.
-const DENSITY_LOW: f32 = 0.34;
+/// exist to distinguish. Thin, not absent. It is also the *free* density knob —
+/// a dead slot costs its vertex invocations regardless, so raising the floor
+/// thickens the sparse patches at zero extra vertex work (raised 0.34 → 0.5 on
+/// 2026-08-21, when the ground still read through the lawn).
+const DENSITY_LOW: f32 = 0.5;
 const DENSITY_HIGH: f32 = 1.0;
 
 /// How far a blade's facing may swing off its clump's, in radians. Wide enough
@@ -117,23 +193,22 @@ const CLUMP_FAN: f32 = 2.0;
 
 /// Blade height and width in metres, before the shader's per-blade jitter.
 ///
-/// Mown grass, not a hayfield: the map this stands on is a pale cartographic
-/// drawing, and knee-high meadow over it reads as a texture error rather than as
-/// vegetation. Tall grass belongs to a `land` kind (`meadow`, `heath`) that the
-/// coverage mask cannot currently distinguish, which is the obvious next step.
-///
-/// These are the numbers the first capture actually moved. 26 cm × 2.6 cm was
-/// chosen from a table of "what is a blade of grass" and rendered as a bed of
-/// reeds standing to the avatar's knee — the thing a still frame is good for
-/// catching, and the thing no amount of reading the constant would have. A real
-/// mown blade is ~5 cm and would be invisible past a metre; this is the
-/// compromise, and it is deliberately on the tall side of a lawn because the
-/// whole point of the layer is that you can see it.
-const BLADE_HEIGHT_M: f32 = 0.15;
-/// Narrower than a real blade looks from standing height, on purpose: at
-/// [`slots`]'s density a wider blade closes into an opaque mat and the lawn loses
-/// the depth the root shading exists to give it.
-const BLADE_WIDTH_M: f32 = 0.010;
+/// Wild grass, not a lawn — an explicit direction change (2026-08-21). The
+/// layer began deliberately mown at 15 cm; the ask is an unmown verge, so the
+/// height is shin-high and the *variation* carries the wildness: the shader
+/// spreads per-blade height 0.6–1.4× and per-clump 0.65–1.35×, so a field is
+/// patchy stands rather than a cut surface, and the droop is heavy enough that
+/// tall blades fold over. The old warning stands in one respect: this is still
+/// well short of the knee-high reeds the first 26 cm × 2.6 cm attempt produced,
+/// because that was a *stiff* 26 cm — height reads as wild only together with
+/// droop and unevenness, which is where the rest of this tune lives.
+const BLADE_HEIGHT_M: f32 = 0.30;
+/// Still narrower than a real blade looks from standing height, but wide enough
+/// that at [`slots`]'s density the blades overlap and the ground stops reading
+/// through the lawn — that was the explicit ask on 2026-08-21. The root
+/// darkening is what keeps an overlapping mat from going flat: the depth now
+/// comes from the tone gradient rather than from bare ground between blades.
+const BLADE_WIDTH_M: f32 = 0.013;
 
 /// How far a blade may be jittered off its lattice slot, as a fraction of the
 /// slot spacing. Just under half, so blades never swap places and the density
@@ -161,19 +236,51 @@ const WIND_EPSILON: f32 = 0.25;
 
 // ─── How far it reaches ──────────────────────────────────────────────────────
 
-/// Radius of the patch pool, in metres, at the full quality tier — and with it
-/// the distance at which the last blade has retired.
+/// Radius of the *near* pool, in metres, at the full quality tier — and the
+/// distance by which the last dense blade has retired.
 ///
-/// Grass is only ever legible close up: past thirty-odd metres a blade is well
-/// under a pixel and all it can contribute is aliasing. Everything beyond this is
-/// the flat `palette::GRASS` fill it has always been, which is why the ramp below
-/// has to end *inside* the pool rather than at its edge.
+/// A blade at full density is only legible close up; past this it hands over to
+/// the far ring below, whose blades are sparser and wider. On the reduced tier
+/// (a handset that turned the layer on by hand) there is no far ring and this
+/// halved radius is where the flat `palette::GRASS` fill takes over.
 const GRASS_RADIUS_M: f32 = 26.0;
 
-/// Where blades start retiring, as a fraction of the radius. The shader staggers
-/// each blade's own cut-off across this band, so the lawn thins towards its edge
-/// instead of ending at a visible circle.
-const FADE_START_FRAC: f32 = 0.55;
+/// Where blades start retiring, as a fraction of their tier's radius. The shader
+/// staggers each blade's own cut-off across this band, so a tier thins towards
+/// its edge instead of ending at a visible circle.
+///
+/// 0.78, up from 0.55 (2026-08-21): with the band starting at 55% the near pool
+/// was already thinning from 14 m out, so most of what a standing viewer looks
+/// at was the half-density tail — raising the *lattice* density changed almost
+/// nothing on screen because the retire ramp had already given it back. Full
+/// density now holds to ~20 m and the handover band is the last quarter.
+const FADE_START_FRAC: f32 = 0.78;
+
+/// Radius of the far ring — where the last blade anywhere has retired and the
+/// flat fill finally takes over. At 80 m a 17 cm blade is under two pixels at
+/// 1080p, so the handover to paint happens where a blade stops being legible,
+/// not on a circle the eye can find.
+const FAR_RADIUS_M: f32 = 80.0;
+
+/// Patch edge and lattice side of the far ring: 88² slots over a 16 m patch is
+/// ~30 blades/m² against the near pool's ~256. One coarse blade stands in for
+/// eight — Ghost of Tsushima's "drop three blades in four at the LOD switch"
+/// made into a ring — and the bigger patch keeps a drawn far patch at half a
+/// near patch's vertex cost while covering four times the ground.
+const FAR_PATCH_M: f32 = 16.0;
+const FAR_SLOTS: u32 = 88;
+
+/// A far blade stands in for eight near ones, so it is taller and nearly four
+/// times wider. Width times height times density is the ground coverage, and it
+/// has to survive the grazing-angle projection: at 30 m a standing viewer sees
+/// the ground foreshortened ~8:1 while a vertical blade is not, so ~0.3 m² of
+/// blade silhouette per m² of ground is what closes the carpet in expectation.
+/// The first far ring (20/m² × 4 cm × 17 cm ≈ 0.14) left a third of the ground
+/// reading through at mid-field, which is exactly what it looked like. Safe
+/// *because* the ring only exists past the distance where a single blade's
+/// silhouette can be read.
+const FAR_BLADE_HEIGHT_M: f32 = 0.34;
+const FAR_BLADE_WIDTH_M: f32 = 0.050;
 
 /// Altitude at which the whole layer starts fading, and where it is gone.
 ///
@@ -188,14 +295,25 @@ const GRASS_HIDE_ALT: f32 = 140.0;
 
 // ─── The mask ────────────────────────────────────────────────────────────────
 
-/// Side length of the mask texture, in texels, and the ground it covers.
+/// Side length of the mask texture, in texels, and the ground it covers, per
+/// quality tier.
 ///
-/// 0.25 m per texel. That is finer than the disagreement between a landuse
-/// polygon and the road ribbon drawn over it, which is the accuracy that actually
-/// matters here — a coverage edge is only ever as true as the two generalisations
-/// that produced it.
-const FIELD_PX: u32 = 384;
-const FIELD_M: f32 = 96.0;
+/// The reduced tier is 0.25 m per texel — finer than the disagreement between a
+/// landuse polygon and the road ribbon drawn over it, which is the accuracy that
+/// actually matters here; a coverage edge is only ever as true as the two
+/// generalisations that produced it. The full tier has to reach the far ring, so
+/// it trades to 0.325 m per texel over a 208 m field: still under the
+/// generalisation error, and the linear filter plus the probabilistic survival
+/// test feather the edge either way. One mask serves both rings — the far
+/// blades need no more coverage accuracy, just coverage at all, and a second
+/// coarser mask would double the worker/rebuild machinery to save ~600 KB.
+fn field_dims() -> (f32, u32) {
+    if crate::quality::budget().detail_layers {
+        (208.0, 640)
+    } else {
+        (96.0, 384)
+    }
+}
 
 /// How far inside the mask's edge the camera must stay. The rebuild fires when it
 /// gets closer than this, so there is always at least a patch pool's worth of
@@ -234,6 +352,11 @@ pub struct GrassExtension {
     /// keep. w: how far a blade's facing may swing off its clump's, in radians.
     #[uniform(107, visibility(vertex))]
     pub clump: Vec4,
+    /// xy: the distance band over which this tier's blades *arrive*, staggered
+    /// per blade — the far ring stands up across the exact band the near ring
+    /// retires in. Below zero (the near tier) means always arrived. zw: spare.
+    #[uniform(108, visibility(vertex))]
+    pub range2: Vec4,
     /// r: coverage. g: ground height. Sampled in the vertex stage, hence the
     /// visibility — the derive defaults a texture to fragment-only, and a
     /// vertex-stage sample against that fails bind-group validation at draw time
@@ -339,34 +462,40 @@ impl GrassAreas {
     }
 }
 
-/// The patch pool, the mask, and the state both are placed against.
-#[derive(Resource)]
-pub struct GrassPatches {
-    /// The one lattice mesh, and the one material.
-    mesh: Option<Handle<Mesh>>,
-    material: Option<Handle<GrassMaterial>>,
+/// One tier's pool: its lattice mesh, its material, and the entities that slide
+/// along its own patch lattice. The mesh and material outlive a layer toggle;
+/// only `patches` is drained when the layer goes quiet.
+struct TierPool {
+    tier: Tier,
+    mesh: Handle<Mesh>,
+    material: Handle<GrassMaterial>,
     /// The pool, in the order it was spawned. Never grows or shrinks after the
     /// first placement.
     patches: Vec<Entity>,
     /// Patch-lattice offsets the pool covers, paired with `patches` by index.
     offsets: Vec<IVec2>,
-    /// The lattice cell the pool is currently centred on, and the generation it
-    /// was placed against.
+    /// The lattice cell the pool is currently centred on. In *this tier's*
+    /// patch units — the far ring's lattice is coarser than the near pool's, so
+    /// the two cross lines at different moments and each keeps its own centre.
     centre: Option<IVec2>,
+}
+
+/// The patch pools (one per [`Tier`]), the mask, and the state all of it is
+/// placed against.
+#[derive(Resource)]
+pub struct GrassPatches {
+    pools: Vec<TierPool>,
     generation: u32,
-    /// The mask currently bound to the material, and the rebuild in flight.
+    /// The mask currently bound to the materials, and the rebuild in flight.
     field: Option<FieldPlacement>,
     /// `GrassAreas::revision` the bound mask was built against.
     field_revision: u32,
     pending: Arc<Mutex<Option<MaskField>>>,
     in_flight: bool,
-    /// Wind and layer state already written to the material.
+    /// Wind and layer state already written to the materials.
     applied_wind: Option<f32>,
     applied_alt: f32,
-    /// Blades the pool would draw if every slot were on grass — the denominator
-    /// behind `--dump-state`'s `grass_slots`.
-    slots: u32,
-    /// Patches the view drew last frame.
+    /// Patches the view drew last frame, across every tier.
     ///
     /// Counted here rather than in the shot harness because that system is at
     /// Bevy's 16-parameter ceiling and a `Query` cannot join its `readouts` tuple
@@ -385,11 +514,7 @@ struct FieldPlacement {
 impl Default for GrassPatches {
     fn default() -> Self {
         Self {
-            mesh: None,
-            material: None,
-            patches: Vec::new(),
-            offsets: Vec::new(),
-            centre: None,
+            pools: Vec::new(),
             generation: 0,
             field: None,
             field_revision: 0,
@@ -397,15 +522,14 @@ impl Default for GrassPatches {
             in_flight: false,
             applied_wind: None,
             applied_alt: f32::MAX,
-            slots: 0,
             rendered: 0,
         }
     }
 }
 
 impl GrassPatches {
-    /// Patch entities standing, the blade slots they add up to, and how many the
-    /// view actually drew.
+    /// Patch entities standing (all tiers), the blade slots they add up to, and
+    /// how many the view actually drew.
     ///
     /// Three numbers because there are three distinct failures and one metric
     /// cannot tell them apart. `0 / 0 / 0` is a pool that never spawned (the
@@ -416,7 +540,14 @@ impl GrassPatches {
     /// unbuilt, or still on a worker.
     #[must_use]
     pub fn census(&self) -> (usize, u32, usize) {
-        (self.patches.len(), self.slots, self.rendered)
+        let patches: usize = self.pools.iter().map(|p| p.patches.len()).sum();
+        let slots: u32 = self
+            .pools
+            .iter()
+            .filter(|p| !p.patches.is_empty())
+            .map(|p| p.offsets.len() as u32 * p.tier.slots * p.tier.slots)
+            .sum();
+        (patches, slots, self.rendered)
     }
 
     /// Is a mask rebuild in flight? The `--shot` settle test waits on this: a
@@ -494,13 +625,11 @@ pub fn update_grass(
 
     let live = areas.enabled && alt < GRASS_HIDE_ALT && !areas.cells.is_empty();
     if !live {
-        if !patches.patches.is_empty() {
-            for e in patches.patches.drain(..) {
+        for pool in &mut patches.pools {
+            for e in pool.patches.drain(..) {
                 commands.entity(e).despawn();
             }
-            patches.offsets.clear();
-            patches.centre = None;
-            patches.slots = 0;
+            pool.centre = None;
         }
         return;
     }
@@ -511,21 +640,25 @@ pub fn update_grass(
     if patches.generation != areas.generation {
         patches.generation = areas.generation;
         patches.field = None;
-        patches.centre = None;
+        for pool in &mut patches.pools {
+            pool.centre = None;
+        }
     }
 
-    let (mesh, material) = ensure_assets(&mut patches, &mut meshes, &mut materials, &mut images);
+    ensure_pools(&mut patches, &mut meshes, &mut materials, &mut images);
 
     // ── The mask ──
     if let Some(field) = landed {
         let image = images.add(mask_image(&field));
-        if let Some(mut m) = materials.get_mut(&material) {
-            m.extension.field.x = field.origin[0];
-            m.extension.field.y = field.origin[1];
-            m.extension.field.z = field.size_m;
-            m.extension.range.z = field.min_y;
-            m.extension.range.w = field.span_y;
-            m.extension.mask = image;
+        for pool in &patches.pools {
+            if let Some(mut m) = materials.get_mut(&pool.material) {
+                m.extension.field.x = field.origin[0];
+                m.extension.field.y = field.origin[1];
+                m.extension.field.z = field.size_m;
+                m.extension.range.z = field.min_y;
+                m.extension.range.w = field.span_y;
+                m.extension.mask = image.clone();
+            }
         }
         // The one line that separates the layer's three failures from each other:
         // an empty `cover` is a mask built over the wrong ground (or over none),
@@ -550,7 +683,7 @@ pub fn update_grass(
     }
     let need_field = patches.field_revision != areas.revision
         || patches.field.as_ref().is_none_or(|f| {
-            let inner = f.size_m * 0.5 - GRASS_RADIUS_M - FIELD_MARGIN_M;
+            let inner = f.size_m * 0.5 - max_radius() - FIELD_MARGIN_M;
             (cam - (f.origin + Vec2::splat(f.size_m * 0.5)))
                 .abs()
                 .max_element()
@@ -574,42 +707,44 @@ pub fn update_grass(
     if wind_moved || (patches.applied_alt - fade).abs() > 0.01 {
         patches.applied_wind = Some(wind_ms);
         patches.applied_alt = fade;
-        if let Some(mut m) = materials.get_mut(&material) {
-            let dir = CLOUD_WIND.normalize_or(Vec2::X);
-            let sway = CALM_SWAY.lerp(FULL_SWAY, (wind_ms / FULL_SWAY_WIND).clamp(0.0, 1.0));
-            // The last term is the sway *rate*. It was 0.9 + 0.18·wind, which at
-            // the light breeze this falls back to with no network is one lean
-            // every four seconds — slow enough to read as a drifting mesh rather
-            // than as wind.
-            m.extension.wind = Vec4::new(dir.x, dir.y, sway, 1.6 + wind_ms * 0.30);
-            // The altitude ramp is a *height* ramp, not an opacity one: there is
-            // no alpha anywhere in this layer, and there must not be — a lawn is
-            // tens of thousands of triangles and any of them being transparent
-            // buys a sort order and a pass to fade something already sub-pixel.
-            // Blades sink into the ground instead, which is also exactly what the
-            // distance ramp does, so the two compose without a seam.
-            m.extension.blade.x = BLADE_HEIGHT_M * fade;
+        let dir = CLOUD_WIND.normalize_or(Vec2::X);
+        let sway = CALM_SWAY.lerp(FULL_SWAY, (wind_ms / FULL_SWAY_WIND).clamp(0.0, 1.0));
+        for pool in &patches.pools {
+            if let Some(mut m) = materials.get_mut(&pool.material) {
+                // The last term is the sway *rate*. It was 0.9 + 0.18·wind, which
+                // at the light breeze this falls back to with no network is one
+                // lean every four seconds — slow enough to read as a drifting
+                // mesh rather than as wind.
+                m.extension.wind = Vec4::new(dir.x, dir.y, sway, 1.6 + wind_ms * 0.30);
+                // The altitude ramp is a *height* ramp, not an opacity one: there
+                // is no alpha anywhere in this layer, and there must not be — a
+                // lawn is tens of thousands of triangles and any of them being
+                // transparent buys a sort order and a pass to fade something
+                // already sub-pixel. Blades sink into the ground instead, which
+                // is also exactly what the distance ramp does, so the two compose
+                // without a seam.
+                m.extension.blade.x = pool.tier.height_m * fade;
+            }
         }
     }
 
-    // ── The pool ──
-    let centre = (cam / PATCH_M).floor().as_ivec2();
-    if patches.offsets.is_empty() {
-        patches.offsets = pool_offsets();
-        patches.slots = patches.offsets.len() as u32 * slots() * slots();
-    }
-    // Spawn the pool once; thereafter a lattice crossing only *moves* it. That
+    // ── The pools ──
+    // Spawn each pool once; thereafter a lattice crossing only *moves* it. That
     // is the whole design — see the module doc.
-    if patches.patches.len() != patches.offsets.len() {
-        for e in patches.patches.drain(..) {
+    let mut spawned = false;
+    for pool in &mut patches.pools {
+        if pool.patches.len() == pool.offsets.len() {
+            continue;
+        }
+        for e in pool.patches.drain(..) {
             commands.entity(e).despawn();
         }
-        let half = PATCH_M * 0.5;
-        for _ in 0..patches.offsets.len() {
+        let half = pool.tier.patch_m * 0.5;
+        for _ in 0..pool.offsets.len() {
             let id = commands
                 .spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
+                    Mesh3d(pool.mesh.clone()),
+                    MeshMaterial3d(pool.material.clone()),
                     MeshTag(0),
                     Transform::default(),
                     GridCell::default(),
@@ -625,46 +760,57 @@ pub fn update_grass(
                     // a computed bounding box would be a flat sheet and Bevy would
                     // cull a patch the moment its ground plane left the frustum.
                     // The blades stand up out of it, and this is where that is
-                    // declared.
+                    // declared. ×2.5 covers the shader's stacked height jitters
+                    // (per-blade 1.4 × per-clump 1.35 × vigour 1.08 ≈ 2.05) with
+                    // slack — a blade taller than its patch's Aabb pops out at
+                    // the frustum edge with nothing anywhere to say why.
                     Aabb::from_min_max(
                         Vec3::new(-half, -1.0, -half),
-                        Vec3::new(half, BLADE_HEIGHT_M * 2.0, half),
+                        Vec3::new(half, pool.tier.height_m * 2.5, half),
                     ),
                 ))
                 .id();
-            patches.patches.push(id);
+            pool.patches.push(id);
         }
         // `centre` stays unset, so the placement below runs next frame — the
         // entities do not exist until these commands are applied, and a pool
         // placed on the frame it was queued would sit at the world origin
         // forever (the lattice test below would then think it was up to date).
-        patches.centre = None;
+        pool.centre = None;
+        spawned = true;
+    }
+    if spawned {
         return;
     }
-
-    if patches.centre == Some(centre) {
-        return;
-    }
-    patches.centre = Some(centre);
 
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
-    for (entity, offset) in patches.patches.iter().zip(patches.offsets.iter()) {
-        let Ok((mut tf, mut tag, mut gc)) = placed.get_mut(*entity) else {
+    for pool in &mut patches.pools {
+        let centre = (cam / pool.tier.patch_m).floor().as_ivec2();
+        if pool.centre == Some(centre) {
             continue;
-        };
-        let patch = centre + *offset;
-        let world = Vec3::new(
-            patch.x as f32 * PATCH_M,
-            SurfaceGroup::Canopy.y_offset(),
-            patch.y as f32 * PATCH_M,
-        );
-        let (cell, local) = grid.translation_to_grid(world.as_dvec3());
-        tf.translation = local;
-        *gc = cell;
-        // Two signed 16-bit patch indices. This is the blade's anchor-metre frame
-        // and the only thing that carries it into the shader — see the module doc
-        // in `grass.wgsl` for why it cannot come from `world_position`.
-        *tag = MeshTag(((patch.x as i16 as u16 as u32) << 16) | patch.y as i16 as u16 as u32);
+        }
+        pool.centre = Some(centre);
+
+        for (entity, offset) in pool.patches.iter().zip(pool.offsets.iter()) {
+            let Ok((mut tf, mut tag, mut gc)) = placed.get_mut(*entity) else {
+                continue;
+            };
+            let patch = centre + *offset;
+            let world = Vec3::new(
+                patch.x as f32 * pool.tier.patch_m,
+                SurfaceGroup::Canopy.y_offset(),
+                patch.y as f32 * pool.tier.patch_m,
+            );
+            let (cell, local) = grid.translation_to_grid(world.as_dvec3());
+            tf.translation = local;
+            *gc = cell;
+            // Two signed 16-bit patch indices. This is the blade's anchor-metre
+            // frame and the only thing that carries it into the shader — see the
+            // module doc in `grass.wgsl` for why it cannot come from
+            // `world_position`. The unit is this tier's own patch edge, which
+            // the shader reads back out of `blade.w`.
+            *tag = MeshTag(((patch.x as i16 as u16 as u32) << 16) | patch.y as i16 as u16 as u32);
+        }
     }
 }
 
@@ -683,33 +829,39 @@ fn layer_fade(alt: f32) -> f32 {
 /// How far a patch's nearest point is from the pool centre, in metres.
 ///
 /// A patch is *centred* on its lattice point (the lattice mesh runs ±half a patch
-/// about its origin), so patch `i` reaches to within `(|i| − ½)·PATCH_M`. Using
+/// about its origin), so patch `i` reaches to within `(|i| − ½)·patch_m`. Using
 /// the nearest point rather than the centre is what keeps the pool from having
 /// bites taken out of its edge, and getting the half-patch right is what stops it
 /// carrying a ring of patches whose every blade the distance ramp has already
 /// retired.
-fn patch_reach(offset: IVec2) -> f32 {
-    let axis = |n: i32| (n.abs() as f32 - 0.5).max(0.0) * PATCH_M;
+fn patch_reach(offset: IVec2, patch_m: f32) -> f32 {
+    let axis = |n: i32| (n.abs() as f32 - 0.5).max(0.0) * patch_m;
     Vec2::new(axis(offset.x), axis(offset.y)).length()
 }
 
-/// The patch-lattice offsets the pool covers. Computed once — it is a constant of
-/// the tier.
-fn pool_offsets() -> Vec<IVec2> {
-    // A handset that turns this on by hand gets half the reach. The tier flag is
-    // what it starts *off* under, so this is the "you asked for it anyway" case,
-    // and a quarter of the vertex work is the honest thing to hand it.
-    let radius = if crate::quality::budget().detail_layers {
-        GRASS_RADIUS_M
-    } else {
-        GRASS_RADIUS_M * 0.5
-    };
-    let reach = (radius / PATCH_M + 0.5).ceil() as i32;
+/// How far a patch's *farthest* point is from the pool centre — the other half of
+/// the annulus test: a far-ring patch whose whole extent sits nearer than the
+/// arrive band would draw a mesh no blade of which ever stands.
+fn patch_far_reach(offset: IVec2, patch_m: f32) -> f32 {
+    let axis = |n: i32| (n.abs() as f32 + 0.5) * patch_m;
+    Vec2::new(axis(offset.x), axis(offset.y)).length()
+}
+
+/// The patch-lattice offsets a tier's pool covers. Computed once — it is a
+/// constant of the tier. A disc for the near pool; an annulus for the far ring,
+/// whose hole is the ground the near pool still owns.
+fn pool_offsets(tier: &Tier) -> Vec<IVec2> {
+    let radius = tier.retire.y;
+    let reach = (radius / tier.patch_m + 0.5).ceil() as i32;
     let mut out = Vec::new();
     for j in -reach..=reach {
         for i in -reach..=reach {
             let offset = IVec2::new(i, j);
-            if patch_reach(offset) <= radius {
+            // The −2 is the smoothstep lead-in the shader gives an arriving
+            // blade, so a patch straddling the very start of the band is kept.
+            if patch_reach(offset, tier.patch_m) <= radius
+                && patch_far_reach(offset, tier.patch_m) >= tier.arrive.x - 2.0
+            {
                 out.push(offset);
             }
         }
@@ -717,70 +869,75 @@ fn pool_offsets() -> Vec<IVec2> {
     out
 }
 
-/// Create the shared mesh and material on first use.
-fn ensure_assets(
+/// Create each tier's mesh, material and offsets on first use.
+fn ensure_pools(
     patches: &mut GrassPatches,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<GrassMaterial>,
     images: &mut Assets<Image>,
-) -> (Handle<Mesh>, Handle<GrassMaterial>) {
-    let mesh = patches
-        .mesh
-        .get_or_insert_with(|| meshes.add(lattice_mesh()))
-        .clone();
-    let material = patches
-        .material
-        .get_or_insert_with(|| {
-            let empty = images.add(mask_image(&MaskField {
-                px: 1,
-                data: vec![0, 0],
-                origin: [0.0, 0.0],
-                size_m: 1.0,
-                min_y: 0.0,
-                span_y: 1.0,
-                cells: 0,
-            }));
-            materials.add(GrassMaterial {
-                base: StandardMaterial {
-                    // The blade's own colour is written per vertex by the shader;
-                    // this is the white it is multiplied into.
-                    base_color: Color::WHITE,
-                    perceptual_roughness: 0.9,
-                    // The same rung the trees and the street furniture stand on,
-                    // and for the same reason (`SurfaceGroup::depth_rung`): the
-                    // coplanar ground sheets are biased *forward* to settle their
-                    // own z-fight, so a blade at the default rung 0 is painted
-                    // over by the very lawn it is growing out of. Real geometry
-                    // standing on the ground belongs above the whole stack.
-                    depth_bias: SurfaceGroup::Canopy.depth_bias(),
-                    // A blade is a flat strip with no back to it: seen from the
-                    // far side it is the same blade, and culling it would make a
-                    // lawn half-vanish as the camera swung round.
-                    double_sided: true,
-                    cull_mode: None,
-                    ..default()
-                },
-                extension: GrassExtension {
-                    // Placed at nothing, so the first frame draws no blades
-                    // rather than a lawn in the wrong place — the mask job below
-                    // corrects it within a frame or two.
-                    field: Vec4::new(0.0, 0.0, 1.0, SurfaceGroup::Canopy.y_offset()),
-                    blade: Vec4::new(
-                        BLADE_HEIGHT_M,
-                        BLADE_WIDTH_M,
-                        PATCH_M / slots() as f32 * JITTER_FRAC,
-                        PATCH_M,
-                    ),
-                    wind: Vec4::new(1.0, 0.0, CALM_SWAY, 1.0),
-                    range: Vec4::new(GRASS_RADIUS_M * FADE_START_FRAC, GRASS_RADIUS_M, 0.0, 1.0),
-                    tint: blade_tint(),
-                    clump: Vec4::new(CLUMP_M, DENSITY_LOW, DENSITY_HIGH, CLUMP_FAN),
-                    mask: empty,
-                },
-            })
-        })
-        .clone();
-    (mesh, material)
+) {
+    if !patches.pools.is_empty() {
+        return;
+    }
+    let empty = images.add(mask_image(&MaskField {
+        px: 1,
+        data: vec![0, 0],
+        origin: [0.0, 0.0],
+        size_m: 1.0,
+        min_y: 0.0,
+        span_y: 1.0,
+        cells: 0,
+    }));
+    for tier in tiers() {
+        let material = materials.add(GrassMaterial {
+            base: StandardMaterial {
+                // The blade's own colour is written per vertex by the shader;
+                // this is the white it is multiplied into.
+                base_color: Color::WHITE,
+                perceptual_roughness: 0.9,
+                // The same rung the trees and the street furniture stand on,
+                // and for the same reason (`SurfaceGroup::depth_rung`): the
+                // coplanar ground sheets are biased *forward* to settle their
+                // own z-fight, so a blade at the default rung 0 is painted
+                // over by the very lawn it is growing out of. Real geometry
+                // standing on the ground belongs above the whole stack.
+                depth_bias: SurfaceGroup::Canopy.depth_bias(),
+                // A blade is a flat strip with no back to it: seen from the
+                // far side it is the same blade, and culling it would make a
+                // lawn half-vanish as the camera swung round.
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            },
+            extension: GrassExtension {
+                // Placed at nothing, so the first frame draws no blades
+                // rather than a lawn in the wrong place — the mask job
+                // corrects it within a frame or two.
+                field: Vec4::new(0.0, 0.0, 1.0, SurfaceGroup::Canopy.y_offset()),
+                blade: Vec4::new(
+                    tier.height_m,
+                    tier.width_m,
+                    tier.patch_m / tier.slots as f32 * JITTER_FRAC,
+                    tier.patch_m,
+                ),
+                wind: Vec4::new(1.0, 0.0, CALM_SWAY, 1.0),
+                range: Vec4::new(tier.retire.x, tier.retire.y, 0.0, 1.0),
+                tint: blade_tint(),
+                clump: Vec4::new(CLUMP_M, DENSITY_LOW, DENSITY_HIGH, CLUMP_FAN),
+                range2: Vec4::new(tier.arrive.x, tier.arrive.y, 0.0, 0.0),
+                mask: empty.clone(),
+            },
+        });
+        let offsets = pool_offsets(&tier);
+        patches.pools.push(TierPool {
+            tier,
+            mesh: meshes.add(lattice_mesh(&tier)),
+            material,
+            patches: Vec::new(),
+            offsets,
+            centre: None,
+        });
+    }
 }
 
 /// The blade's tip colour, and how much darker its root is.
@@ -802,12 +959,12 @@ fn blade_tint() -> Vec4 {
     Vec4::new(r * 0.94, g * 0.99, b * 0.86, 0.45)
 }
 
-/// Build the shared lattice as a Bevy mesh.
-fn lattice_mesh() -> Mesh {
+/// Build a tier's shared lattice as a Bevy mesh.
+fn lattice_mesh(tier: &Tier) -> Mesh {
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
-    let side = slots();
-    let lattice = turf::blade_lattice(side, PATCH_M / side as f32);
+    let side = tier.slots;
+    let lattice = turf::blade_lattice(side, tier.patch_m / side as f32);
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         // `RENDER_WORLD` only: nothing ever reads a blade slot back, and this
@@ -816,7 +973,7 @@ fn lattice_mesh() -> Mesh {
     );
     // The lattice is placed with its centre on the patch origin, so a patch's
     // `Transform` is its middle and the `Aabb` above is symmetric.
-    let half = PATCH_M * 0.5;
+    let half = tier.patch_m * 0.5;
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_POSITION,
         lattice
@@ -867,14 +1024,16 @@ fn mask_image(field: &MaskField) -> Image {
 /// Rasterise the next mask on a worker.
 ///
 /// On `platform::workers` rather than inline for the reason every other
-/// per-cell product is: this is ~150k point-in-polygon tests, which is a frame on
-/// a phone. It is also why the trigger has [`FIELD_MARGIN_M`] of slack — the
-/// answer is allowed to take a while.
+/// per-cell product is: this is ~150k point-in-polygon tests on the reduced tier
+/// and ~410k on the full one, which is a frame or more on a phone. It is also
+/// why the trigger has [`FIELD_MARGIN_M`] of slack — the answer is allowed to
+/// take a while.
 fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainField, cam: Vec2) {
     let cells = areas.snapshot();
     let ground = terrain.snapshot();
     let sink = patches.pending.clone();
-    let origin = cam - Vec2::splat(FIELD_M * 0.5);
+    let (field_m, field_px) = field_dims();
+    let origin = cam - Vec2::splat(field_m * 0.5);
     crate::platform::workers::submit(Box::new(move || {
         let placed: Vec<PlacedArea<'_>> = cells
             .iter()
@@ -884,7 +1043,7 @@ fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainF
                 area: a.as_ref(),
             })
             .collect();
-        let field = turf::mask_field(&placed, [origin.x, origin.y], FIELD_M, FIELD_PX, &|x, z| {
+        let field = turf::mask_field(&placed, [origin.x, origin.y], field_m, field_px, &|x, z| {
             ground.at(x, z)
         });
         if let Ok(mut g) = sink.lock() {
@@ -898,22 +1057,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pool_covers_the_radius_and_not_much_more() {
-        let offsets = pool_offsets();
-        assert!(!offsets.is_empty());
-        // Every patch must be reachable — a pool with a patch outside the fade
-        // end is drawing a mesh whose every blade has already retired.
-        for o in &offsets {
-            assert!(
-                patch_reach(*o) <= GRASS_RADIUS_M + 1e-3,
-                "{o:?} is out of range"
-            );
+    fn the_pools_cover_their_radii_and_not_much_more() {
+        for tier in tiers() {
+            let offsets = pool_offsets(&tier);
+            assert!(!offsets.is_empty());
+            for o in &offsets {
+                // Every patch must be reachable — a patch outside the fade end
+                // is a mesh whose every blade has already retired…
+                assert!(
+                    patch_reach(*o, tier.patch_m) <= tier.retire.y + 1e-3,
+                    "{o:?} is out of range"
+                );
+                // …and a far-ring patch entirely inside the arrive band is a
+                // mesh whose every blade has yet to stand.
+                assert!(
+                    patch_far_reach(*o, tier.patch_m) >= tier.arrive.x - 2.0 - 1e-3,
+                    "{o:?} is inside the arrive band"
+                );
+            }
         }
-        // …and the disc must be covered: the patch under the camera and its four
+        // The near disc must be covered: the patch under the camera and its four
         // neighbours are the ones a standing avatar is actually looking at.
+        let near = pool_offsets(&tiers()[0]);
         for o in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
-            assert!(offsets.contains(&o), "{o:?} missing from the pool");
+            assert!(near.contains(&o), "{o:?} missing from the near pool");
         }
+    }
+
+    #[test]
+    fn the_far_ring_hands_over_where_the_near_pool_retires() {
+        let tiers = tiers();
+        if tiers.len() < 2 {
+            return; // reduced tier: no far ring to hand over to
+        }
+        let (near, far) = (&tiers[0], &tiers[1]);
+        // The far ring's arrive band must be exactly the near pool's retire
+        // band: both draw a blade's cut from the same hash lane, so equal bands
+        // are what conserves the expected blade count through the handover — a
+        // gap is a bald ring around the camera, an overlap a dense one.
+        assert_eq!(near.retire, far.arrive);
+        // …and the far ring must actually reach past the near pool, or the LOD
+        // is a second pool under the first.
+        assert!(far.retire.y > near.retire.y);
+        // The far ring's own retire must start beyond the handover, or blades
+        // begin dying before they have finished arriving.
+        assert!(far.retire.x >= far.arrive.y);
+        // The mask has to cover the farthest blade with rebuild slack to spare —
+        // an undersized field silently clips the far ring to the mask edge.
+        let (field_m, _) = field_dims();
+        assert!(field_m * 0.5 >= max_radius() + FIELD_MARGIN_M + 8.0);
     }
 
     #[test]
@@ -951,22 +1143,24 @@ mod tests {
         // attribute does not fail to compile — it drops the matching shader-def,
         // and the pipeline is then built against a vertex struct the mesh does
         // not supply, which wgpu rejects at draw time.
-        let mesh = lattice_mesh();
-        for attr in [
-            Mesh::ATTRIBUTE_POSITION,
-            Mesh::ATTRIBUTE_NORMAL,
-            Mesh::ATTRIBUTE_UV_0,
-            Mesh::ATTRIBUTE_COLOR,
-        ] {
-            assert!(
-                mesh.attribute(attr).is_some(),
-                "the lattice is missing an attribute the shader reads"
+        for tier in tiers() {
+            let mesh = lattice_mesh(&tier);
+            for attr in [
+                Mesh::ATTRIBUTE_POSITION,
+                Mesh::ATTRIBUTE_NORMAL,
+                Mesh::ATTRIBUTE_UV_0,
+                Mesh::ATTRIBUTE_COLOR,
+            ] {
+                assert!(
+                    mesh.attribute(attr).is_some(),
+                    "the lattice is missing an attribute the shader reads"
+                );
+            }
+            assert_eq!(
+                mesh.count_vertices(),
+                (tier.slots * tier.slots * turf::BLADE_VERTS) as usize
             );
         }
-        assert_eq!(
-            mesh.count_vertices(),
-            (slots() * slots() * turf::BLADE_VERTS) as usize
-        );
     }
 
     #[test]
@@ -975,16 +1169,18 @@ mod tests {
         // it; a lattice laid from a corner instead would put every patch half a
         // patch off its own lattice slot, which reads as grass sliding under the
         // camera.
-        let mesh = lattice_mesh();
-        let Some(bevy::render::mesh::VertexAttributeValues::Float32x3(p)) =
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        else {
-            panic!("positions are Float32x3");
-        };
-        let half = PATCH_M * 0.5;
-        for v in p {
-            assert!(v[0] >= -half && v[0] <= half, "x {} off-patch", v[0]);
-            assert!(v[2] >= -half && v[2] <= half, "z {} off-patch", v[2]);
+        for tier in tiers() {
+            let mesh = lattice_mesh(&tier);
+            let Some(bevy::render::mesh::VertexAttributeValues::Float32x3(p)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("positions are Float32x3");
+            };
+            let half = tier.patch_m * 0.5;
+            for v in p {
+                assert!(v[0] >= -half && v[0] <= half, "x {} off-patch", v[0]);
+                assert!(v[2] >= -half && v[2] <= half, "z {} off-patch", v[2]);
+            }
         }
     }
 }

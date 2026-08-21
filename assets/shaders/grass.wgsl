@@ -66,6 +66,12 @@
 // keep, 0–1. w: how far a blade's facing may swing off its clump's, in radians.
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var<uniform> clump: vec4<f32>;
 
+// xy: the distance band over which this tier's blades *arrive*, staggered per
+// blade. The near tier passes a band below zero, which any real distance has
+// already crossed; the far ring passes the near tier's retire band, so its
+// blades stand up exactly where the dense ones sink. zw: spare.
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var<uniform> range2: vec4<f32>;
+
 // r: grass coverage. g: ground height, encoded over `range.zw`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var mask_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var mask_sampler: sampler;
@@ -201,8 +207,16 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // sheet. Ghost of Tsushima drops three blades in four at its LOD switch; this
     // is the same idea made continuous, which costs nothing here because there is
     // no switch to hide.
+    //
+    // Arrival is the same stagger run the other way, and it draws from the SAME
+    // hash lane (`h.z`) on purpose: the far ring's arrive band equals the near
+    // tier's retire band, so at any distance through the handover a blade that
+    // has retired from one lattice has, in expectation, stood up on the other —
+    // the total blade count ramps smoothly from the near density to the far one
+    // and no circle exists for the eye to find.
     let cut = mix(range.x, range.y, h.z);
-    let reach = 1.0 - smoothstep(cut - 2.0, cut, dist);
+    let acut = mix(range2.x, range2.y, h.z);
+    let reach = smoothstep(acut - 2.0, acut, dist) * (1.0 - smoothstep(cut - 2.0, cut, dist));
 
     // The clump this blade belongs to. Square cells rather than a true Voronoi:
     // the blades are jittered off their slots and the density noise below is
@@ -240,9 +254,14 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // Thin ground grows short grass, and a clump has its own vigour. Both ride
     // the same noise the density does, which is what keeps them correlated —
     // a sparse patch of tall blades reads as damage, not as a lawn.
+    //
+    // The spreads are wide on purpose: this is wild grass, and what separates a
+    // verge from a lawn is less the mean height than the unevenness — 0.6–1.4×
+    // per blade and 0.65–1.35× per clump means neighbouring stands genuinely
+    // differ, where the original mown ranges read as a cut surface.
     let height = blade.x
-        * (0.75 + 0.5 * h.w)
-        * mix(0.75, 1.25, ch.y)
+        * (0.6 + 0.8 * h.w)
+        * mix(0.65, 1.35, ch.y)
         * mix(0.72, 1.08, density)
         * live;
 
@@ -268,8 +287,10 @@ fn vertex(v: GrassVertex) -> VertexOutput {
     // 15 cm blade — about 15° off vertical — and a lawn of those reads as a
     // brush. Real grass folds over under its own weight, so the arc has to be
     // the dominant feature of the silhouette, not a lean on a straight line.
-    // Per *clump*, so a tuft folds together.
-    let lean = 0.38 + 0.5 * ch.z;
+    // Per *clump*, so a tuft folds together. The range is heavier than the
+    // lawn's original 0.38–0.88 because wild grass at shin height cannot stand
+    // straight: the tallest clumps must visibly bow.
+    let lean = 0.45 + 0.65 * ch.z;
     // t², because a blade is stiff at the root and loose at the tip.
     let curve = t * t;
 

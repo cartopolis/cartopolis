@@ -6,7 +6,7 @@ triggers:
   - reaching for an off-the-shelf Bevy grass crate
   - the lawn is bare, or a seam appears along a patch boundary
   - bumping Bevy, or anything that moves `MeshTag` / `MaterialExtension`
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # Grass is generated on the GPU, and the reason is churn
@@ -58,6 +58,33 @@ Three fixed things and one small moving one:
 `assets/shaders/grass.wgsl` turns a slot into a blade: hash the slot's world
 position for jitter, yaw, height, lean and tone; sample the mask for existence
 and ground height; bend in the wind; shrink back into the ground with distance.
+
+## The far ring (LOD), and why its seam is statistical
+
+One dense pool ended at 26 m on a visible line — dense lawn on one side, flat
+`palette::GRASS` paint on the other. The fix (2026-08-21) is a second `Tier`:
+16 m patches on a 64² lattice (16 blades/m² against the near pool's ~200), each
+blade a shade taller and three times wider so ground coverage doesn't collapse
+with the count — Ghost of Tsushima's "drop three blades in four at the LOD
+switch, widen the survivors" made into a ring. It retires, staggered, across
+44–80 m, where a 17 cm blade is under two pixels: the handover to paint happens
+where a blade stops being legible, not where the eye can find a circle.
+
+The two rings never meet on a line. A far blade *arrives* (stands up out of the
+ground) across exactly the band the near blades retire in, and both draw their
+per-blade cut from the same hash lane — so the expected blade count ramps
+smoothly from the near density to the far one through the band, and there is no
+LOD switch anywhere, only two overlapping staggers. The `range2` uniform is the
+arrive band; the near tier's sits below zero, which reads as "always arrived".
+An unarrived blade costs its vertex invocations but rasterises nothing: height
+zero collapses all five vertices onto one line, and zero-area triangles emit no
+fragments.
+
+The far ring is full-tier only, and the mask grew to feed it: 640² texels over
+208 m (0.325 m/texel, against 0.25 before) on the full rung, unchanged on the
+reduced one. One mask serves both rings — far blades need coverage, not more
+coverage *accuracy*, and a second coarser mask would double the rebuild
+machinery to save ~600 KB.
 
 ## Three things that are load-bearing and do not look it
 
