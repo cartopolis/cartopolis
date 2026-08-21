@@ -102,8 +102,27 @@ const RECENT_SUGGESTIONS: usize = 6;
 /// the offline gravity clamp rests the feet at the same value. (Was 0.45 = ground
 /// + half fox height, which floated the humanoids ~0.4 m.)
 const AVATAR_GROUND_Y: f64 = 0.05;
-/// Minimum free-camera altitude after a teleport, so the destination is visible.
+/// Minimum free-camera altitude after a teleport that had to **choose** one, so
+/// the destination is visible. Not a floor on an altitude the caller stated —
+/// see the `CameraMode::Free` arm of `apply_teleport` for why the two differ.
 pub const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
+/// Floor on an *explicit* free-camera altitude: enough to keep the near plane
+/// out of the ground and the view clear of head height, and nothing more.
+pub const MIN_CAMERA_ALTITUDE: f64 = 2.0;
+
+/// Where a free-camera teleport lands, in metres above the anchor's ground.
+///
+/// Split out of `apply_teleport` so the rule is testable without a `World`, and
+/// because the rule is the whole subtlety: a *stated* altitude takes only the
+/// keep-out-of-the-ground floor, a *derived* one takes the see-the-destination
+/// floor. `current` is a closure because reading it costs a grid conversion the
+/// stated-altitude path has no use for.
+fn free_teleport_altitude(target: Option<f64>, current: impl FnOnce() -> f64) -> f64 {
+    match target {
+        Some(alt) => alt.max(MIN_CAMERA_ALTITUDE),
+        None => current().max(MIN_TELEPORT_ALTITUDE),
+    }
+}
 
 /// One hit in a geocoding dropdown.
 ///
@@ -2005,12 +2024,28 @@ pub fn apply_teleport(
             // Use the target's altitude when it carries one (copied locations,
             // bookmarks, the startup restore); otherwise keep the current
             // altitude (with a floor) over the new spot.
+            //
+            // The two cases take **different floors, and that is the point**.
+            // `MIN_TELEPORT_ALTITUDE` exists so a jump we chose the altitude for
+            // arrives somewhere the destination is visible — it is a default, and
+            // a default has no business overriding a number the caller stated.
+            // Applying it to `target_alt` silently rewrote every explicit
+            // altitude below it: a bookmark saved at 30 m reopened at 60, a
+            // `?place=…,25m,…` link landed at 60, and `--shot --at lat,lng,35`
+            // photographed 60 m while `ShotMetrics` dutifully reported the 60 it
+            // had been moved to. That last one is why this was found — a harness
+            // built to answer "what does it look like from there?" could not be
+            // aimed below the floor, and said nothing about refusing.
+            //
+            // An explicit altitude still gets `MIN_CAMERA_ALTITUDE`, which is a
+            // different kind of limit: not "far enough to see" but "not inside
+            // the ground". Terrain relief is added to the camera downstream, so
+            // this is metres above the anchor's ground rather than above the
+            // local surface, and it is deliberately clear of head height.
             CameraMode::Free => {
-                let altitude = target_alt
-                    .unwrap_or_else(|| {
-                        cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64
-                    })
-                    .max(MIN_TELEPORT_ALTITUDE);
+                let altitude = free_teleport_altitude(target_alt, || {
+                    cell.y as f64 * WORLD_CELL_EDGE as f64 + tf.translation.y as f64
+                });
                 let (new_cell, local) = grid.translation_to_grid(DVec3::new(wx, altitude, wz));
                 *cell = new_cell;
                 tf.translation = local;
@@ -2124,6 +2159,57 @@ mod tests {
 
     fn suggestion(label: &str) -> GeoSuggestion {
         GeoSuggestion::plain(label, 53.0, 6.0)
+    }
+
+    /// A teleport that had to pick an altitude arrives high enough to see where
+    /// it landed — that is what [`MIN_TELEPORT_ALTITUDE`] is for.
+    #[test]
+    fn a_derived_teleport_altitude_keeps_the_destination_in_view() {
+        assert_eq!(
+            free_teleport_altitude(None, || 5.0),
+            MIN_TELEPORT_ALTITUDE,
+            "a jump from near the ground must still show the destination"
+        );
+        assert_eq!(
+            free_teleport_altitude(None, || 4_000.0),
+            4_000.0,
+            "and an altitude already above the floor is kept, not lowered"
+        );
+    }
+
+    /// …but a **stated** altitude is an instruction, not a suggestion. This is
+    /// the one that regressed: the floor was applied to both, so a bookmark at
+    /// 30 m, a `?place=…,25m,…` link and `--shot --at lat,lng,35` all silently
+    /// became 60 m — and the shot harness then reported the 60 as if it had been
+    /// asked for, which is how it went unnoticed.
+    #[test]
+    fn a_stated_teleport_altitude_is_honoured_below_the_view_floor() {
+        for stated in [35.0, 30.0, 25.0, MIN_CAMERA_ALTITUDE] {
+            assert_eq!(
+                free_teleport_altitude(Some(stated), || 1_000.0),
+                stated,
+                "an explicitly requested {stated} m must not be raised"
+            );
+        }
+    }
+
+    /// The floor a stated altitude *does* take is the one that keeps the near
+    /// plane out of the ground — a different limit with a different job.
+    #[test]
+    fn a_stated_teleport_altitude_still_clears_the_ground() {
+        assert_eq!(
+            free_teleport_altitude(Some(0.0), || 1_000.0),
+            MIN_CAMERA_ALTITUDE
+        );
+        assert_eq!(
+            free_teleport_altitude(Some(-500.0), || 1_000.0),
+            MIN_CAMERA_ALTITUDE
+        );
+        assert!(
+            MIN_CAMERA_ALTITUDE < MIN_TELEPORT_ALTITUDE,
+            "the keep-out-of-the-ground floor must stay under the see-it floor, \
+             or stating an altitude gains nothing"
+        );
     }
 
     /// The suggestion rows show a name, a kind and an address context, and all
