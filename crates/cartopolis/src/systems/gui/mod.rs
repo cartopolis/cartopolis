@@ -12,6 +12,7 @@ pub mod icons;
 pub mod login_screen;
 pub mod map_osd;
 pub mod onscreen_keyboard;
+pub mod place_card;
 pub mod place_pins;
 pub mod script_editor;
 pub mod settings;

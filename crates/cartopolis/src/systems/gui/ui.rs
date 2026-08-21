@@ -81,11 +81,7 @@ pub fn render_main_menu(
     mut status: ResMut<crate::systems::hud::StatusHud>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<crate::resources::RightPanel>,
-    mut camera_state: ResMut<crate::resources::CameraState>,
     mut app_exit: MessageWriter<AppExit>,
-    globe: Res<crate::systems::globe::GlobeState>,
-    // Follow mode needs an avatar to follow (logged-in viewer only).
-    avatars: Query<(), With<crate::components::Avatar>>,
     mut sign_in: SignInMenu,
     // Written here, read and cleared by `diagnostics::share_diagnostics`.
     mut diagnostics: ResMut<crate::systems::diagnostics::DiagnosticsRequest>,
@@ -200,19 +196,6 @@ pub fn render_main_menu(
                             if let Some(error) = &sign_in.session.error {
                                 theme::note(ui, error);
                             }
-                            ui.separator();
-
-                            // How you are looking at the world. Where you have
-                            // *been* left with the history buttons, for the Search
-                            // panel — Back, Forward and Home are navigation, and
-                            // navigation belongs with the field you navigate from
-                            // (`geo_nav::search_ui`).
-                            close |= camera_picker_ui(
-                                ui,
-                                &mut camera_state,
-                                !avatars.is_empty(),
-                                &globe,
-                            );
                             ui.separator();
 
                             // Panels you *visit* rather than flip: Appearance is a
@@ -332,100 +315,12 @@ pub fn render_main_menu(
     }
 }
 
-/// Camera-mode picker (Follow / Fly / Earth, plus a one-click "View whole
-/// Earth"), drawn **inline** in the main menu. The mode is also Tab-cyclable.
-/// Follow needs an avatar (logged-in viewer only).
-///
-/// It was a `menu_button` carrying the current mode, which cost two things. It
-/// was the last plate left in a card of list rows — `ui.menu_button` *is* a
-/// `Button`, so there is no styling of it that is not a box. And a submenu opens
-/// a second popup beside a card that is already anchored to the bottom edge of a
-/// phone, for a choice between three things that fit in three rows.
-///
-/// Returns whether a mode was picked, so the card can close: changing the camera
-/// is a change to the map, and staying open would hide what you just asked to see.
-pub fn camera_picker_ui(
-    ui: &mut egui::Ui,
-    camera_state: &mut crate::resources::CameraState,
-    has_avatar: bool,
-    globe: &crate::systems::globe::GlobeState,
-) -> bool {
-    use crate::resources::CameraMode;
-    // One icon per mode rather than one crosshair for all three: the row is the
-    // only place the current mode is written down, so the picture should say
-    // which it is without reading the word.
-    let mut pick: Option<CameraMode> = None;
-    // **One row, not three.** The three modes are a switcher — the same shape as
-    // the status readout's Auto/Day/Night — and a card anchored to the bottom of a
-    // phone cannot spend three of its ten visible rows on them (it did, and Exit
-    // went below the fold). `theme::chip` is the switcher segment, and unlike a
-    // menu row it is *meant* to be a plate: it shows the position it is in.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (mode, icon, name, hint) in [
-            (
-                CameraMode::Avatar,
-                icons::CAM_FOLLOW,
-                "Follow",
-                "Third-person, behind the avatar",
-            ),
-            (
-                CameraMode::Free,
-                icons::CAM_FLY,
-                "Fly",
-                "Free camera — fly anywhere",
-            ),
-            (
-                CameraMode::Orbit,
-                icons::CAM_EARTH,
-                "Earth",
-                "Orbit the globe",
-            ),
-        ] {
-            let enabled = has_avatar || mode != CameraMode::Avatar;
-            let mut clicked = false;
-            ui.add_enabled_ui(enabled, |ui| {
-                clicked = theme::chip(
-                    ui,
-                    &format!("{icon} {name}"),
-                    camera_state.mode == mode && enabled,
-                )
-                .on_hover_text(hint)
-                .on_disabled_hover_text("Needs an avatar to follow")
-                .clicked();
-            });
-            if clicked {
-                pick = Some(mode);
-            }
-        }
-    });
-    // One-click jump to an orbit that frames the whole planet.
-    let whole_earth =
-        globe.ready && theme::menu_entry(ui, icons::CAM_EARTH, "View whole Earth").clicked();
-
-    if let Some(mode) = pick {
-        // Same entry behaviour as the Tab cycle (restore/seed per mode).
-        crate::systems::free_camera::enter_mode(camera_state, mode);
-        camera_state.mode = mode;
-    }
-    if whole_earth {
-        use bevy::math::DVec3;
-        let cs = &mut *camera_state;
-        cs.mode = CameraMode::Orbit;
-        cs.orbit_initialized = true;
-        cs.orbit_has_pose = true;
-        cs.orbit_space = true;
-        cs.orbit_focus = DVec3::ZERO;
-        cs.orbit_distance = globe.radius as f64 * 3.0;
-        cs.orbit_distance_target = cs.orbit_distance;
-        // Over the anchor, slightly north-east; heading 0 so the view arrives
-        // north-up (free_camera derives the up vector from the planet's north
-        // axis and this heading).
-        cs.orbit_dir = DVec3::new(0.54, 0.30, 0.79).normalize();
-        cs.orbit_heading = 0.0;
-    }
-    pick.is_some() || whole_earth
-}
+// The camera-mode picker (a Follow/Fly/Earth chip row plus a "View whole
+// Earth" jump) used to be drawn inline here. It is the mode disc in the
+// bottom-right corner of the map now (`map_osd::mode_button`): a camera switch
+// is a change to the map and belongs on it, not two taps deep in a card that
+// covers it — and the disc, cycling only the modes on offer, is also where
+// "Follow needs a signed-in session" is enforced for the UI.
 
 /// Toggle the AI panel with Ctrl+Shift+A.
 pub fn toggle_ai_panel_shortcut(

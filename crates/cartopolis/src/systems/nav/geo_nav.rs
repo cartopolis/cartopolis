@@ -103,7 +103,7 @@ const RECENT_SUGGESTIONS: usize = 6;
 /// + half fox height, which floated the humanoids ~0.4 m.)
 const AVATAR_GROUND_Y: f64 = 0.05;
 /// Minimum free-camera altitude after a teleport, so the destination is visible.
-const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
+pub const MIN_TELEPORT_ALTITUDE: f64 = 60.0;
 
 /// One hit in a geocoding dropdown.
 ///
@@ -215,6 +215,10 @@ pub struct RouteRequest {
     pub label: String,
     pub lat: f64,
     pub lng: f64,
+    /// Which end of the route this place becomes. Almost always
+    /// [`Endpoint::To`] — the place card's "Route from" is the one caller that
+    /// plans *away* from a found place.
+    pub end: Endpoint,
 }
 
 #[derive(Resource)]
@@ -256,6 +260,12 @@ pub struct GeoNavState {
     /// A destination waiting to be handed to the route planner. See
     /// [`RouteRequest`]; spent by `apply_route_request`.
     pub route_request: Option<RouteRequest>,
+    /// A place picked in the Search panel, waiting for the place card
+    /// (`place_card::render_place_card`, which also closes the panel). The same
+    /// queue shape as [`route_request`](Self::route_request), for the same
+    /// reason: the row that was tapped is drawn by a panel system that does not
+    /// own the card.
+    pub pending_card: Option<crate::systems::place_card::CardPlace>,
     /// Browser-style location history; `history[history_pos]` is where we are.
     /// Every teleport that isn't itself a Back/Forward move truncates the
     /// forward entries and appends the destination (see `apply_teleport`).
@@ -364,6 +374,18 @@ impl GeoNavState {
             label: label.into(),
             lat,
             lng,
+            end: Endpoint::To,
+        });
+    }
+
+    /// Ask for a route *starting* at a named place — the place card's "Route
+    /// from". Same queue, other end.
+    pub fn route_from(&mut self, label: impl Into<String>, lat: f64, lng: f64) {
+        self.route_request = Some(RouteRequest {
+            label: label.into(),
+            lat,
+            lng,
+            end: Endpoint::From,
         });
     }
 
@@ -648,6 +670,7 @@ impl Default for GeoNavState {
             pending_teleport: None,
             pending_label: None,
             route_request: None,
+            pending_card: None,
             history: Vec::new(),
             history_pos: 0,
             from_history: false,
@@ -1215,9 +1238,9 @@ fn apply_route_request(nav: &mut GeoNavState, route: &mut RouteState, panel: &mu
     };
     let label = req.label.trim();
     if label.is_empty() {
-        route.set_endpoint_at(Endpoint::To, req.lat, req.lng);
+        route.set_endpoint_at(req.end, req.lat, req.lng);
     } else {
-        route.set_endpoint_named(Endpoint::To, label, req.lat, req.lng);
+        route.set_endpoint_named(req.end, label, req.lat, req.lng);
     }
     // The start fills itself in: opening the panel runs `default_start`, which is
     // where "here" is defined. Same contract as the map's "Route to here".
@@ -1512,6 +1535,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
             // without the user having read the row.
             let first = nav.suggestions[0].clone();
             nav.pending_teleport = Some(Teleport::geo(first.lat, first.lng, None));
+            nav.pending_card = Some(card_place(&first));
             nav.pending_label = Some(first.name);
             nav.query = first.label;
             nav.show_suggestions = false;
@@ -1649,7 +1673,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
     } else if let Some(i) = picked_recent {
         // A revisit restores the framing it was seen with, exactly as Back does —
         // but it is a fresh visit, not a history move, so it appends.
-        let (tp, label) = {
+        let (tp, label, card) = {
             let e = &nav.history[i];
             (
                 Teleport {
@@ -1659,10 +1683,18 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                     pose: Some(e.pose.clone()),
                 },
                 e.label.clone(),
+                crate::systems::place_card::CardPlace {
+                    name: e.title(),
+                    kind: Some("recent".to_string()),
+                    context: String::new(),
+                    lat: e.lat,
+                    lng: e.lng,
+                },
             )
         };
         nav.pending_label = label;
         nav.pending_teleport = Some(tp);
+        nav.pending_card = Some(card);
         nav.show_suggestions = false;
     } else if let Some(s) = picked {
         // The direct coordinate entry keeps its pasted altitude and view; a
@@ -1670,6 +1702,13 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         // typed those coordinates, and replacing them with "Go to 53.21940, …"
         // would make a re-submit unparseable.
         let fix = coord_fix.filter(|f| f.lat == s.lat && f.lng == s.lng);
+        let mut card = card_place(&s);
+        if fix.is_some() {
+            // The row said "Go to 53.21940, …" — an imperative that reads wrong
+            // as a card *title*; the bare coordinates are the place's name.
+            card.name = s.label.clone();
+        }
+        nav.pending_card = Some(card);
         match fix {
             Some(fix) => nav.pending_teleport = Some(Teleport::fix(fix)),
             None => {
@@ -1680,6 +1719,18 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
         }
         nav.show_suggestions = false;
         nav.teleport_on_result = false;
+    }
+}
+
+/// A suggestion, reshaped for the place card: the same name, tag and address
+/// context the row showed, so the card reads as the row that opened it.
+fn card_place(s: &GeoSuggestion) -> crate::systems::place_card::CardPlace {
+    crate::systems::place_card::CardPlace {
+        name: s.name.clone(),
+        kind: s.kind.clone(),
+        context: s.context.clone(),
+        lat: s.lat,
+        lng: s.lng,
     }
 }
 
@@ -1842,6 +1893,7 @@ pub fn apply_teleport(
     mut camera_state: ResMut<CameraState>,
     mut avatar_state: ResMut<AvatarState>,
     globe: Res<crate::systems::globe::GlobeState>,
+    online: Option<Res<crate::resources::OnlineSession>>,
     mut cameras: Query<(&mut GridCell, &mut Transform), (With<FreeCamera>, Without<Avatar>)>,
     mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
@@ -1910,6 +1962,23 @@ pub fn apply_teleport(
         tf.translation = avatar_local;
         avatar_state.position = avatar_local;
         avatar_state.display_position = avatar_local;
+        // Online, the sim owns this position, so ask it to place the avatar too
+        // (`NetMessage::Teleport`, protocol 17) — without this the next snapshot
+        // pulled the body straight back to where it was, which is what every
+        // online jump silently did before. The hold keeps the snapshots already
+        // in flight (still carrying the old position) from yanking the avatar
+        // back while the sim's confirmation is on its way
+        // (`network::adopt_local_pose`).
+        if let Some(sess) = &online {
+            sess.send(
+                "teleport",
+                cartopolis_core::NetMessage::Teleport {
+                    request_id: 0,
+                    position: avatar_local,
+                },
+            );
+            avatar_state.teleport_hold = Some(web_time::Instant::now());
+        }
     } else {
         tracing::warn!(
             "geo_nav: teleported the camera but not the avatar — no avatar with a \

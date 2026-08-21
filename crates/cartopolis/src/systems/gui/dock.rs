@@ -16,7 +16,7 @@
 //! **The row reads outwards from the map.** Search sits at the left end because
 //! it is where a session starts, the panels you navigate between are in the
 //! middle, and the menu closes the row on the right — the way into everything
-//! that is not a place: sign-in, the camera mode, Settings, the tools. It was the
+//! that is not a place: sign-in, Settings, the tools. It was the
 //! app *mark* until the menu grew a hamburger; the history and the two location
 //! actions it also used to reach are in the Search panel now, beside the field
 //! they navigate from. Both of those discs used to sit in the opposite corner as
@@ -82,14 +82,15 @@ const TOP_MARGIN: f32 = theme::OSD_MARGIN;
 /// [`RightPanel::icons`] / [`RightPanel::label`] — the same table the panel
 /// headers wear, so a dock button and the header it opens can never drift apart.
 ///
-/// The app-mark disc that closes the row on the right is not in this list: it
-/// opens a menu rather than a panel (`ui::render_main_menu`).
-const ENTRIES: [RightPanel; 4] = [
-    RightPanel::Search,
-    RightPanel::Chat,
-    RightPanel::Route,
-    RightPanel::Places,
-];
+/// Two discs in the row are not in this list: the camera-mode disc drawn between
+/// Chat and Places (it cycles a mode rather than opening a panel), and the
+/// app-mark disc that closes the row on the right (it opens a menu —
+/// `ui::render_main_menu`). **Route lost its disc** when the place card arrived:
+/// a route now starts from a place — the card's Route from / Route to, the ⚑ on
+/// a search row, the map's context menu — and the panel those open is where the
+/// plan lives. A disc that opened an empty planner was the long way to the same
+/// place, and its slot is what the mode disc took.
+const ENTRIES: [RightPanel; 3] = [RightPanel::Search, RightPanel::Chat, RightPanel::Places];
 
 /// How much of the bottom edge the dock claims, in points.
 ///
@@ -123,9 +124,12 @@ pub fn render_dock(
     egui: Res<EguiManager>,
     mut right_panel: ResMut<RightPanel>,
     mut menu: ResMut<crate::systems::ui::MainMenu>,
+    mut camera_state: ResMut<crate::resources::CameraState>,
+    session: Res<crate::systems::session::SessionState>,
     online: Option<Res<OnlineSession>>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     // Driving owns the screen — its own chrome already occupies the bottom.
     if driver.active {
@@ -156,32 +160,41 @@ pub fn render_dock(
         menu.open = false;
     }
     let ctx = egui.ctx();
-    let icons: Vec<&'static str> = ENTRIES.iter().map(|p| p.icon()).collect();
     let layers_icon = RightPanel::Layers.icon();
 
     let mut clicked: Option<RightPanel> = None;
     let mut menu_clicked = false;
-    // Chat comes and goes with the session, and the mark always closes the row.
+    // Chat comes and goes with the session; the mode disc and the mark are
+    // always there.
     let disc_count = ENTRIES
         .iter()
         .filter(|p| **p != RightPanel::Chat || has_session)
         .count()
-        + 1;
+        + 2;
     if !covered {
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.x = disc_spacing(viewport_w, disc_count);
                 ui.horizontal(|ui| {
-                    for (panel, icon) in ENTRIES.iter().zip(&icons) {
-                        if *panel == RightPanel::Chat && !has_session {
-                            continue;
+                    let mut panel_disc = |ui: &mut egui::Ui, panel: RightPanel| {
+                        let open = right_panel.is(panel);
+                        if theme::round_button(ui, panel.icon(), panel.label(), open).clicked() {
+                            clicked = Some(panel);
                         }
-                        let open = right_panel.is(*panel);
-                        if theme::round_button(ui, icon, panel.label(), open).clicked() {
-                            clicked = Some(*panel);
-                        }
+                    };
+                    panel_disc(ui, RightPanel::Search);
+                    if has_session {
+                        panel_disc(ui, RightPanel::Chat);
                     }
+                    // The camera-mode disc, in the slot the Route disc vacated:
+                    // between the session entries and Places. It wears the
+                    // current mode's glyph and a tap steps to the next mode on
+                    // offer — Follow only in a signed-in session
+                    // (`free_camera::follow_available`); the same cycle Tab
+                    // walks, from the same shared functions.
+                    mode_disc(ui, &mut camera_state, &session, !avatars.is_empty());
+                    panel_disc(ui, RightPanel::Places);
                     // The menu closes the row: everything that is not a place.
                     //
                     // A hamburger, not the app mark. The mark is the brand, and a
@@ -223,6 +236,42 @@ pub fn render_dock(
     }
 }
 
+/// The camera-mode disc: the current mode's glyph, a tap steps to the next mode
+/// on offer. It lived in the bottom-right corner briefly; the dock slot the
+/// Route disc vacated is a better home — one row holds every disc on the bottom
+/// edge, and the corner goes back to the touch controls that need to stack
+/// there. With at most three modes, cycling beats a popup: the disc always
+/// shows where you are, and the tooltip says where a tap goes.
+fn mode_disc(
+    ui: &mut egui::Ui,
+    camera_state: &mut crate::resources::CameraState,
+    session: &crate::systems::session::SessionState,
+    has_avatar: bool,
+) {
+    use crate::resources::CameraMode;
+    use crate::systems::free_camera::{enter_mode, follow_available, next_camera_mode};
+    use crate::systems::icons;
+    let badge = |mode: CameraMode| match mode {
+        CameraMode::Avatar => (icons::CAM_FOLLOW, "Follow"),
+        CameraMode::Free => (icons::CAM_FLY, "Fly"),
+        CameraMode::Orbit => (icons::CAM_EARTH, "Earth"),
+    };
+    let next = next_camera_mode(camera_state.mode, follow_available(session, has_avatar));
+    let (icon, name) = badge(camera_state.mode);
+    let (_, next_name) = badge(next);
+    if theme::round_button(
+        ui,
+        icon,
+        &format!("{name} view — switch to {next_name}"),
+        false,
+    )
+    .clicked()
+    {
+        enter_mode(camera_state, next);
+        camera_state.mode = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,7 +292,7 @@ mod tests {
         // overflows the web tier by 13 pt at each end shipped. 274 pt is 411 dp
         // at `ui_scale` 1.5 (an ordinary Android handset); ~214 pt is 393 CSS px
         // on the web phone tier, and it is the binding case.
-        let discs = ENTRIES.len() + 1; // + the app mark
+        let discs = ENTRIES.len() + 2; // + the mode disc and the app mark
         for viewport in [274.0_f32, 214.0] {
             let row = discs as f32 * theme::ROUND_BUTTON_SIZE
                 + (discs - 1) as f32 * disc_spacing(viewport, discs);

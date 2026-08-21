@@ -910,7 +910,8 @@ pub fn setup_camera(
 }
 
 /// Arm the per-mode entry behaviour when switching *into* `next`. Called from both
-/// the Tab cycle and the Camera menu so the two paths stay identical:
+/// the Tab cycle and the dock's mode disc (`dock::mode_disc`) so the two paths
+/// stay identical:
 /// - **Follow** snaps onto the avatar next frame (reposition reliably).
 /// - **Fly** restores its last saved pose, or seeds the look from the live view if
 ///   it has none yet.
@@ -934,27 +935,62 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
     }
 }
 
+/// Whether Follow is on offer *as a camera mode*: an avatar to follow, in a
+/// signed-in session. Walking a body around is what a simulator is for —
+/// offline is the map viewer, and its switcher offers Fly and Earth. One
+/// predicate, two readers — the Tab cycle here and the dock's mode disc
+/// (`dock::mode_disc`) — so the two never disagree about what is on the cycle.
+///
+/// This gates the *switcher*, not the camera: driver mode and device tracking
+/// (`systems::locate`) both enter the follow camera themselves, offline
+/// included — a GPS map viewer is a legitimate offline use, and both paths
+/// stand down on their own — so the guard in [`camera_mode_toggle`] exempts
+/// them rather than fighting them every frame.
+///
+/// The avatar check stays even though `main::spawn_avatar_entity` spawns one
+/// unconditionally at `Startup`: it costs an `is_empty` and it is the only
+/// thing standing between a future conditional spawn and a camera following
+/// nothing.
+#[must_use]
+pub fn follow_available(session: &crate::systems::session::SessionState, has_avatar: bool) -> bool {
+    session.is_online() && has_avatar
+}
+
+/// The mode a switch lands on from `mode`: Follow → Fly → Earth → Follow, with
+/// Follow skipped when it is not on offer ([`follow_available`]). Pure, and
+/// shared by the Tab cycle and the mode disc so the two never disagree about
+/// what "next" means.
+#[must_use]
+pub fn next_camera_mode(mode: CameraMode, follow: bool) -> CameraMode {
+    match mode {
+        CameraMode::Avatar => CameraMode::Free,
+        CameraMode::Free => CameraMode::Orbit,
+        CameraMode::Orbit if follow => CameraMode::Avatar,
+        CameraMode::Orbit => CameraMode::Free,
+    }
+}
+
 pub fn camera_mode_toggle(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     egui_manager: Res<crate::systems::egui_manager::EguiManager>,
     mut camera_state: ResMut<CameraState>,
+    session: Res<crate::systems::session::SessionState>,
+    driver: Res<crate::systems::driver::DriverState>,
+    tracking: Res<crate::systems::locate::LocateTracking>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
-    // Follow needs an avatar to follow, so it is dropped when there is none.
-    //
-    // In practice there always is: `main::spawn_avatar_entity` spawns it at
-    // `Startup` unconditionally and nothing despawns it, in any run mode —
-    // offline included, where the avatar is most of what there is
-    // (`session::SessionKind::Offline`: "The map, and you"). This comment used to
-    // say the opposite, that Follow "exists only in the logged-in viewer" and
-    // that "in anonymous mode there is none", which described an arrangement that
-    // predates the offline viewer and would send the next reader looking for a
-    // spawn condition that is not there.
-    //
-    // The guard stays: it costs an `is_empty` and it is the only thing standing
-    // between a future conditional spawn and a camera following nothing.
-    let has_avatar = !avatars.is_empty();
-    if !has_avatar && camera_state.mode == CameraMode::Avatar {
+    let follow = follow_available(&session, !avatars.is_empty());
+    // Follow without a session (or an avatar) is dropped to Fly — this is also
+    // what lands the camera in Fly when a live session ends, or on the first
+    // frame of an offline start (the `CameraState` default is still Avatar).
+    // Driver mode and device tracking are exempt: both enter the follow camera
+    // themselves, both are offline features on purpose (navigation, and the
+    // locate button's "where am I"), and both stand down on their own —
+    // driver mode restores the saved mode on exit, and `locate` exits the
+    // moment the mode is anything else, which also makes this guard the thing
+    // that ends an offline locate-follow the frame the tracking stops.
+    if !follow && !driver.active && !tracking.active && camera_state.mode == CameraMode::Avatar {
+        enter_mode(&mut camera_state, CameraMode::Free);
         camera_state.mode = CameraMode::Free;
     }
     if !keyboard_input.just_pressed(KeyCode::Tab) {
@@ -969,13 +1005,7 @@ pub fn camera_mode_toggle(
     if egui_manager.ui_owns_keyboard(false, &keyboard_input) {
         return;
     }
-    // Cycle Follow → Fly → Earth → Follow, skipping Follow when there's no avatar.
-    let next = match camera_state.mode {
-        CameraMode::Avatar => CameraMode::Free,
-        CameraMode::Free => CameraMode::Orbit,
-        CameraMode::Orbit if has_avatar => CameraMode::Avatar,
-        CameraMode::Orbit => CameraMode::Free,
-    };
+    let next = next_camera_mode(camera_state.mode, follow);
     enter_mode(&mut camera_state, next);
     camera_state.mode = next;
     println!("Camera mode: {:?}", camera_state.mode);

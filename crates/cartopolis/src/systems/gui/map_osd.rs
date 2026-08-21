@@ -44,6 +44,11 @@
 //!     buttons exist for the one-handed case, which is most of the time a phone
 //!     is held at all.
 //!
+//! The camera-mode switcher is *not* here: it is the dock's mode disc
+//! (`dock::mode_disc`). It sat in this corner briefly, and what that cost was
+//! the corner itself — every pair on this edge stacked one control higher for
+//! a disc that is chrome, not a touch control.
+//!
 //! ## Two rules it obeys, both learned elsewhere in this tree
 //!
 //! **It draws into floating `Area`s, never the shared root `Ui`**, so it stays

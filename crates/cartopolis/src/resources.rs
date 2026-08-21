@@ -960,6 +960,15 @@ pub struct AvatarState {
     /// on the next frame — a landing is an event, and this is the cheapest way to
     /// publish one without a message type.
     pub landing_impact: f32,
+    /// Set when a teleport was sent to the sim (`NetMessage::Teleport`, protocol
+    /// 17) and not yet confirmed. Snapshots in flight when the jump was made
+    /// still carry the *old* position, and adopting one would yank the avatar
+    /// back across the world for a frame or two; `network::adopt_local_pose`
+    /// skips the local avatar's pose while this holds and the snapshot is still
+    /// far from where the teleport put it. Cleared by the first snapshot that
+    /// agrees (the sim's echo), or by timeout — the message can be lost, and an
+    /// avatar that ignores authority forever is worse than one that flickers.
+    pub teleport_hold: Option<web_time::Instant>,
 }
 
 impl Default for AvatarState {
@@ -983,6 +992,7 @@ impl Default for AvatarState {
             wants_jump: false,
             pending_emote: None,
             landing_impact: 0.0,
+            teleport_hold: None,
         }
     }
 }
@@ -1046,8 +1056,8 @@ pub struct CameraState {
     /// Cleared on entering the mode so the first frame seeds the focus/distance
     /// from wherever the camera was looking.
     pub orbit_initialized: bool,
-    /// True once Earth mode has ever held a real pose (seeded, restored, or set by
-    /// "View Whole Earth"). Re-entering Earth restores that pose instead of
+    /// True once Earth mode has ever held a real pose (seeded or restored).
+    /// Re-entering Earth restores that pose instead of
     /// reseeding from the current view, so switching away and back returns you to
     /// the same globe location. The first-ever entry (this false) still seeds.
     pub orbit_has_pose: bool,

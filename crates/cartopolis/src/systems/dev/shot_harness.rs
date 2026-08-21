@@ -1255,6 +1255,20 @@ pub fn open_scripted_ui(
         let query = std::env::var("CARTO_SEARCH_QUERY").unwrap_or_else(|_| "Amsterdam".into());
         nav.seed_search(query);
     }
+    // `--ui place` opens the place card (`systems::place_card`) over the map,
+    // seeded with a demo place: the card is normally opened by picking a search
+    // result, and a scripted run has no geocoder to answer one. Queued through
+    // the same `pending_card` slot a real pick uses, so the capture exercises
+    // the real path.
+    if want("place") {
+        nav.pending_card = Some(crate::systems::place_card::CardPlace {
+            name: "Martinitoren".into(),
+            kind: Some("tower".into()),
+            context: "Martinikerkhof, Groningen".into(),
+            lat: 53.2194,
+            lng: 6.5681,
+        });
+    }
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
     let known = [
         "dev",
@@ -1270,6 +1284,7 @@ pub fn open_scripted_ui(
         "route",
         "driver",
         "search",
+        "place",
         "signin",
         "all",
     ];

@@ -652,9 +652,13 @@ pub fn render_map_controls(
     }
 
     // GPS / locate button, stacked under the compass (Organic-Maps style). Only in
-    // the viewer that owns a local avatar — Follow doesn't exist otherwise. Not
-    // drawn while driving: the arrow is already centred and the camera is held, so
-    // there is nothing left for it to do.
+    // the viewer that owns a local avatar — and deliberately *not* gated on a
+    // session, unlike the mode switcher's Follow: "where am I on the map" is a
+    // traditional map-viewer verb and offline is exactly where a viewer lives.
+    // The follow camera it enters is a system path there, exempted from the
+    // offline mode guard while `LocateTracking::active` (`camera_mode_toggle`),
+    // the same way driver mode is. Not drawn while driving: the arrow is already
+    // centred and the camera is held, so there is nothing left for it to do.
     // The bottom edge of what the column has drawn so far; each control below
     // adds its own gap before its own height.
     let column = crate::systems::dock::reserved_top() + COMPASS_SIZE;

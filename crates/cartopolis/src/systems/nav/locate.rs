@@ -26,7 +26,7 @@
 //! with it. On a phone that middle state is the odd one out: what a person wants
 //! from a locate button is "put me on the map, the right way up", and having to
 //! press twice for it is a worse default than the state it skips — which is still
-//! reachable from Tab and the Camera menu.
+//! reachable, signed in, from Tab and the mode disc.
 //!
 //! **Turning the phone must not be a fight.** While a compass is reporting, the
 //! follow-and-rotate flag is *held* rather than merely set: `free_camera` clears
@@ -142,7 +142,7 @@ pub fn track_device_pose(
     // conflict that resolves visibly — it is a fix from whichever ran last — so
     // this one stands down rather than being merged with it.
     //
-    // Leaving Avatar mode (Tab, the Camera menu) ends it too, and that is the
+    // Leaving Avatar mode (Tab, the mode disc) ends it too, and that is the
     // reason this system never *writes* the mode: forcing it back each frame would
     // make the camera switcher silently inoperative while a sensor happened to be
     // on, with nothing on screen to explain it. The switch the user reached for
