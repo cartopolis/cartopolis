@@ -53,22 +53,20 @@ layout, non-Latin scripts and dictation.
 ## What the phone runs
 
 The phone opens on the **offline viewer** — the streamed OSM / 3DBAG / AHN map
-and a local avatar — and can sign in to a remote sim over the WebSocket carrier
+and a local avatar — and signs in to a remote sim over the WebSocket carrier
 like any other build; since 2026-08-21 startup also honours the remembered
 session, so "stay signed in" works (it did not before — see `parse_cli` below).
-What it cannot run is **solo**. Two consequences that look like bugs if you
-don't know:
+Those are the only two modes any build has now: the in-process *solo* sim was
+removed the same day, and Android is part of why (nothing cross-compiles
+`rusqlite` for Android, so the phone could never carry it — a mode that exists
+on some builds is a `can_solo()` gate and a feature flag every lane must
+remember).
 
-The APK drops the `solo` feature — and with it the in-process
-`cartopolis_simulator` and its bundled SQLite — so it is not compiled at all.
-Nothing cross-compiles `rusqlite` for Android today, and nobody has tried.
-
-That is expressed as `default-features = false` on
-`crates/cartopolis_android/Cargo.toml`'s dependency line, **plus `features =
-["audio"]` naming one default back**. Until 2026-08-15 it did not, and the
-consequence was a phone with no sound of any kind: no footsteps, no wind, and no
-driver turn cues, which is the one part of navigation usable without looking at
-the screen. Android needs nothing of the ALSA headers that made `audio` a feature
+The dependency line on `crates/cartopolis_android/Cargo.toml` still pins
+`default-features = false` **plus `features = ["audio"]`**. Until 2026-08-15 it
+named nothing back, and the consequence was a phone with no sound of any kind:
+no footsteps, no wind, and no driver turn cues, which is the one part of
+navigation usable without looking at the screen. Android needs nothing of the ALSA headers that made `audio` a feature
 in the first place — cpal resolves to the platform's AAudio.
 [audio-off-platform.md](audio-off-platform.md) has the rest, including why the
 same omission silenced the web build.
@@ -180,27 +178,20 @@ here can see one. It is also, precisely, a fact that only the device holds.
 
 ### Running the phone's configuration on a workstation
 
-Worth knowing before the next Android bug is diagnosed by `adb install`, because
-the two facts above compose into one nobody had written down: **a default
-`cargo run -p cartopolis` does not exercise anything the phone does.** The
-desktop default is solo — an in-process simulator, server-authoritative movement
-— and the phone has no `solo` compiled in at all, so it takes the offline arm
-(`avatar::handle_avatar_movement` moving the transform itself) which a desktop
-run never reaches. On top of that `quality::auto()` hands Android
-`Budget::phone()` unconditionally, which no desktop resolves to.
+Worth knowing before the next Android bug is diagnosed by `adb install`: a
+desktop run signed in to a sim exercises the server-authoritative movement path,
+while the phone's offline map takes the offline arm
+(`avatar::handle_avatar_movement` moving the transform itself) — and
+`quality::auto()` hands Android `Budget::phone()` unconditionally, which no
+desktop resolves to. (This used to be worse: the desktop default was solo mode,
+so a bare `cargo run` never touched the offline arm at all. Solo is gone and a
+fresh run opens offline exactly as the phone does.)
 
-Both are reachable locally, and together they are as close to the device as a
-machine with a keyboard gets:
+The phone's configuration is reachable locally:
 
 ```bash
-CARTO_QUALITY=phone cargo run -p cartopolis \
-    --no-default-features --features audio -- --offline
-```
-
-`--no-default-features` is the part that is easy to leave off and the part that
-matters most: it is what drops `solo`. `--features audio` is what puts back the
-one default the APK keeps — without it this "closest thing to the device" is
-silent in a way the device is not, which is a worse lie than either extreme. What this still does *not* reproduce is
+CARTO_QUALITY=phone cargo run -p cartopolis -- --offline
+``` What this still does *not* reproduce is
 the device — the GPU and its driver, the `AssetManager`, the NativeActivity
 lifecycle — so it narrows a bug rather than settling one. That is worth a lot on
 its own, given the alternative is a thirteen-minute build and an install.
@@ -398,13 +389,13 @@ now. The general rule, worth applying to any gate added here: **whatever gates
 last cannot hide anything.**
 
 The break it hid is this tree's recurring platform-vs-feature confusion, and it
-will come back. The APK builds `--no-default-features`, so no `solo`, so
-`SessionMode::Solo` and `SessionStatus::Starting` are never constructed — and
-`[workspace.lints.rust] unused = "deny"` makes dead code a hard error. Both
-carried `cfg_attr(target_arch = "wasm32", allow(dead_code))`: a *platform* gate
-standing in for a *feature* condition, which Android passes and therefore fails
-on. Gate on `not(feature = "solo")`, which is the condition that is actually
-true and covers wasm as a side effect.
+will come back. The instance then: the APK built without the `solo` feature, so
+`SessionMode::Solo` and `SessionStatus::Starting` (both since removed with solo
+mode) were never constructed — and `[workspace.lints.rust] unused = "deny"`
+makes dead code a hard error. Both carried `cfg_attr(target_arch = "wasm32",
+allow(dead_code))`: a *platform* gate standing in for a *feature* condition,
+which Android passes and therefore fails on. The rule stands: gate on the
+feature that is actually absent, not on a platform that correlates with it.
 
 ## Publishing: one APK, no history, and why the key lives on the host
 

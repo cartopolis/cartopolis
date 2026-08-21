@@ -112,7 +112,7 @@ every Linux build, including headless ones that will never open a device. So it
 is the `audio` feature — in `default`, off for hosts that can't build it:
 
 ```bash
-cargo check -p cartopolis --no-default-features --features solo   # the agent container, CI
+cargo check -p cartopolis --no-default-features   # the agent container, CI
 ```
 
 The container has no root and cannot install the headers, so **the playback

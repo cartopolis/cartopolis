@@ -1,6 +1,6 @@
 //! Client half of the sim link (ADR-008, ADR-009).
 //!
-//! The TCP carrier — `--connect`, and solo's loopback — is here. The browser's
+//! The TCP carrier — `--connect`, and a loopback dev sim — is here. The browser's
 //! WebSocket carrier is in the sibling `ws_transport`, and everything above
 //! [`start_link`] is shared: both fill the same mailbox, drive the same
 //! [`LinkStatus`], and speak the same frames.
@@ -182,7 +182,7 @@ pub fn ws_url(addr: &str, secure_page: bool, page_host: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     /// Length-delimited TCP straight to a socket. Loopback only by default: this
-    /// is solo mode's in-process sim, where "unencrypted" means the bytes go from
+    /// is a dev sim on this machine, where "unencrypted" means the bytes go from
     /// one end of a socket on this machine to the other. TLS there would mean a
     /// self-signed certificate and a disabled verifier, which is worse than
     /// nothing — it looks like security and is not — for traffic that anything
@@ -199,7 +199,7 @@ pub enum Target {
 /// - `wss://…` / `ws://…` — used as given; an explicit URL is an instruction, and
 ///   `ws://` is the escape hatch for a private CA or a plaintext dev sim.
 /// - `tcp://host:port` — plain TCP on purpose, for a LAN sim with no certificate.
-/// - `127.0.0.1:x`, `localhost:x`, `[::1]:x` — TCP. Solo mode's own address.
+/// - `127.0.0.1:x`, `localhost:x`, `[::1]:x` — TCP. A dev sim on this machine.
 /// - anything else — `wss://host/ws`. **Bare hosts get TLS**, which is the whole
 ///   point: the address a person types is the address that ends up encrypted.
 ///
@@ -227,7 +227,7 @@ pub fn resolve_target(addr: &str) -> Target {
 ///
 /// Text, not a DNS resolution: this runs before connecting and must not block,
 /// and a name that *resolves* to loopback but was typed as a public host is a
-/// case where the person's intent was the network. Solo mode supplies a literal
+/// case where the person's intent was the network. A local dev sim is a literal
 /// `127.0.0.1:port` from its own bound listener, which is what this recognises.
 #[cfg(not(target_arch = "wasm32"))]
 fn is_loopback(addr: &str) -> bool {
@@ -1466,7 +1466,7 @@ mod tests {
         }
     }
 
-    /// Loopback stays plain TCP: that is solo mode's in-process sim, and TLS to
+    /// Loopback stays plain TCP: that is a dev sim on this machine, and TLS to
     /// yourself means a self-signed certificate and a disabled verifier — the
     /// appearance of security over traffic that never touches a network.
     #[cfg(not(target_arch = "wasm32"))]

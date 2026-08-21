@@ -625,9 +625,10 @@ jobs:
       # precisely because this does NOT set RUSTFLAGS.
       # `--no-default-features --features audio` matches the web build exactly —
       # see `crates/cartopolis/index.html`, which spells the same pair as
-      # `data-cargo-no-default-features` + `data-cargo-features`. No `solo`,
-      # hence no sim; but `audio` back on, because dropping the defaults to lose
-      # `solo` had also been losing the soundscape and the mic test.
+      # `data-cargo-no-default-features` + `data-cargo-features`. It currently
+      # equals the defaults (the `solo` feature it existed to drop was removed
+      # 2026-08-21) and stays spelled out so the lane and the real build cannot
+      # drift apart silently.
       #
       # Nightly is not optional and is *not* about `-Z build-std`, which this lane
       # does not use: `wasm_thread` opens `feature(stdarch_wasm_atomic_wait)` under

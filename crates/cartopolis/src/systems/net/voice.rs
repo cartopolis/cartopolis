@@ -1213,7 +1213,7 @@ mod tests {
 /// hardware at all (`docs/notes/container-audio.md`), so the capture side is a
 /// generated tone rather than a microphone, and playback is asserted as samples
 /// in a queue rather than as sound. Those two ends are unverified and say so.
-#[cfg(all(test, feature = "solo", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod loopback {
     use super::*;
     use bytes::Bytes;

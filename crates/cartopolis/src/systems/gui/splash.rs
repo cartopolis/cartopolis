@@ -217,12 +217,10 @@ fn signin_caption(session: &SessionState, username: Option<&str>) -> Option<Stri
     }
     match (&session.status, &session.mode) {
         (status, _) if status.is_busy() => Some(status.label().to_owned()),
-        (SessionStatus::Online, SessionMode::Remote { .. } | SessionMode::Solo) => {
-            Some(match username {
-                Some(name) => format!("Signed in as {name}"),
-                None => "Signed in".to_owned(),
-            })
-        }
+        (SessionStatus::Online, SessionMode::Remote { .. }) => Some(match username {
+            Some(name) => format!("Signed in as {name}"),
+            None => "Signed in".to_owned(),
+        }),
         _ => None,
     }
 }

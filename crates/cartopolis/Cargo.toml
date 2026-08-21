@@ -30,11 +30,12 @@ name = "cartopolis"
 path = "src/main.rs"
 
 [features]
-# `solo`: one-command dev — run an in-process simulator and connect to it (ADR-016).
-# On by default for dev; turn off for lean/release client builds (then `--connect`
-# is required for online play).
-default = ["solo", "audio"]
-solo = ["dep:cartopolis_simulator"]
+# There is no `solo` feature any more (removed 2026-08-21): the in-process
+# simulator was a third run mode nobody needed — dev is `cargo run -p
+# cartopolis_simulator` plus a sign-in to 127.0.0.1:4747, the same online path
+# every server uses. The simulator crate survives here as a dev-dependency, so
+# the loopback tests still boot the real thing.
+default = ["audio"]
 # `audio`: the avatar soundscape (`systems::soundscape` — footsteps, landings,
 # wind). On by default, because a city you can walk through in silence reads as a
 # viewer rather than as a place.
@@ -95,8 +96,6 @@ serde_json.workspace = true
 toml = "0.8"
 cartopolis_core = { path = "../core" }
 cartopolis_geo = { path = "../geo" }
-# Embedded server for solo/dev mode (ADR-016); only compiled with the `solo` feature.
-cartopolis_simulator = { path = "../simulator", optional = true }
 bytes.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
@@ -414,7 +413,9 @@ winresource = "0.1"
 workspace = true
 
 [dev-dependencies]
-# A throwaway world database for the voice loopback test
-# (`systems::voice::loopback`), which starts a real simulator. Test-only, and
-# already in the tree as the simulator's own dev-dependency.
+# The loopback tests (`systems::voice::loopback`, the session restart test)
+# boot a real simulator; test-only, so it ships in no client build.
+cartopolis_simulator = { path = "../simulator" }
+# A throwaway world database for those same tests. Already in the tree as the
+# simulator's own dev-dependency.
 tempfile = "3"

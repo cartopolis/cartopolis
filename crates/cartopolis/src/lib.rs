@@ -18,8 +18,6 @@ mod platform;
 mod quality;
 mod resources;
 mod simd_baseline;
-#[cfg(feature = "solo")]
-mod solo;
 mod systems;
 mod utils;
 
@@ -65,9 +63,9 @@ use systems::*;
 #[derive(Parser, Debug)]
 #[command(name = "cartopolis")]
 struct Cli {
-    /// Connect to an external `simulator` instance (TCP, postcard messages).
-    /// Omit to enter whatever the sign-in screen last remembered — solo mode on a
-    /// fresh install (`systems::session`).
+    /// Connect to a `simulator` at this address. Omit to enter whatever the
+    /// sign-in screen last remembered — offline on a fresh install
+    /// (`systems::session`).
     #[arg(long)]
     connect: Option<String>,
 
@@ -77,9 +75,10 @@ struct Cli {
     #[arg(long)]
     offline: bool,
 
-    /// Credentials for the online handshake, so you don't log in each run: a path
-    /// to a TOML login file, or inline `user:pass`. Defaults to `data/dev-login.toml`
-    /// if present, else env `CARTO_USER`/`CARTO_PASSWORD`, else the solo `dev` account.
+    /// Credentials for the `--connect` handshake, so you don't log in each run: a
+    /// path to a TOML login file, or inline `user:pass`. Defaults to
+    /// `data/dev-login.toml` if present, else env `CARTO_USER`/`CARTO_PASSWORD`,
+    /// else `dev:dev`. Meaningless without a server to connect to.
     #[arg(long, value_name = "FILE|user:pass")]
     login: Option<String>,
 
@@ -440,8 +439,7 @@ impl Plugin for ForceCpuClusteringPlugin {
 /// made *no* connection attempt at all, where even a stale token would have
 /// shown a rejected handshake. With no flags the startup decision is the
 /// remembered session's, exactly as on desktop; a fresh install still opens
-/// offline because that is the default `SessionPrefs`, and a remembered solo
-/// mode on this solo-less build is already guarded by `can_solo()`.
+/// offline because that is the default `SessionPrefs`.
 /// (`login::resolve` runs now too, but with no `--login`, no `data/login.toml`
 /// under the zygote's `/` cwd and no env vars it just answers the dev default,
 /// whose server is `None` — it cannot start a session on its own.)
@@ -1746,10 +1744,10 @@ fn run_client() {
         });
 
     // Connection mode (ADR-016, and `systems::session` for the runtime half):
-    //  - `--connect ADDR` (or `server` in the login file) → external sim.
+    //  - `--connect ADDR` (or `server` in the login file) → that simulator.
     //  - `--offline` or `--shot` → no sim, no auth, no sign-in screen.
     //  - otherwise → whatever `user.json` remembers, which on a fresh install is
-    //    solo mode entered automatically — i.e. unchanged behaviour.
+    //    the offline map.
     //
     // None of it happens *here* any more: the mode is expressed as the session
     // driver's first request and applied on frame one, which is the same path the
@@ -1773,12 +1771,7 @@ fn run_client() {
     let screen = systems::login_screen::LoginScreen::from_prefs(&session_prefs);
     // The web build used to be excluded here outright — it was the Phase-1 viewer
     // with no transport to a sim at all. It has one now (a WebSocket carrier), so
-    // it takes this path like any other build. What it still cannot do is *solo*:
-    // that needs an in-process sim and a bundled SQLite, so `can_solo()` is false
-    // there and on Android. The guard below is therefore about solo specifically
-    // rather than about simulating at all — without it, a first-time web visitor
-    // inherits the default remembered session (Solo, auto-enter) and is greeted by
-    // a failure card about a simulator that was never coming.
+    // it takes this path like any other build.
     if !(cli.offline || scripted) {
         use systems::session::{SessionKind, SessionRequest};
         let login = login::resolve(cli.login.as_deref());
@@ -1796,18 +1789,9 @@ fn run_client() {
                 credential: login.credential,
                 persist_token: true,
             }),
-            // A `--login` with no server names the account solo logs in as.
-            None if cli.login.is_some() => Some(SessionRequest::Solo {
-                credential: Some(login.credential),
-            }),
             None if !session_prefs.auto_enter => None,
             None => match session_prefs.kind {
                 SessionKind::Offline => None,
-                // A remembered solo session on a build with no solo: stay offline
-                // silently — the user did not choose this here, so it is not
-                // something to bring up on this machine.
-                SessionKind::Solo if !systems::session::can_solo() => None,
-                SessionKind::Solo => Some(SessionRequest::Solo { credential: None }),
                 // A remembered server with no address is not a session.
                 SessionKind::Remote if session_prefs.server.is_empty() => None,
                 SessionKind::Remote => Some(SessionRequest::Remote {

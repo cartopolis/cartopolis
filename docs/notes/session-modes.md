@@ -1,19 +1,38 @@
 ---
 topic: session
-triggers: [session.rs, login_screen.rs, solo.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
-updated: 2026-08-17
+triggers: [session.rs, login_screen.rs, network.rs, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth]
+updated: 2026-08-21
 ---
 
-# Run modes are a runtime state, not a launch-time fork
+# Two modes, decided at runtime: offline and online
 
-Offline, solo and split (ADR-016) used to be decided in `lib.rs` before the app
-was built and could not be changed without quitting. They are now one state
-machine (`systems::session`) driven by a request field, with `systems::login_screen`
-as its only UI. What made that cheap: every online system was already
+The client is **offline** (no sim: the streamed map and a local avatar) or
+**online** (a simulator reached over the network), one state machine
+(`systems::session`) driven by a request field, with `systems::login_screen` as
+its only UI. What makes the switch cheap: every online system is
 `Option<Res<OnlineSession>>`-guarded, so *offline is the absence of a resource*
 rather than a separate configuration of the client. The sim is offline plus an
 authority — nothing about the map, the camera or the avatar changes when it
 arrives.
+
+## Removed: solo mode (2026-08-21)
+
+There was a third mode — *solo*, an in-process simulator on loopback behind a
+`solo` cargo feature, ADR-016's one-command dev loop — and it is gone, because
+three modes were an architecture quiz nobody needed: solo already went through
+the same authenticated connect path as any server, so it was "online to
+yourself" wearing a mode of its own, plus a bundled SQLite that neither wasm
+nor Android could compile, a `can_solo()` gate, dead-code allows keyed to the
+feature, and a feature flag every build lane had to remember (forgetting it is
+how the phone shipped silent for months). The dev loop is now explicit:
+`cargo run -p cartopolis_simulator` (provision an account once with
+`--create-admin dev` + `CARTO_ADMIN_PASSWORD`), then sign in to
+`127.0.0.1:4747` — remembered thereafter like any server, or pinned with
+`--connect`/`--login`. The simulator crate stays a *dev-dependency* of the
+client so the loopback tests still boot the real thing. A `user.json` that
+remembers `"solo"` deserialises as offline (`SessionKind` carries
+`#[serde(other)]` on `Offline`; an unparseable kind would quarantine the whole
+file, bookmarks included).
 
 ## Rejected: a login screen in front of the world
 
@@ -35,9 +54,8 @@ form for a *server*: address, user, password, one tick. Offline is where everybo
 starts (`SessionPrefs::default()` is `Offline` + `auto_enter`, so a fresh install
 opens onto the map and is asked nothing) and is reached again by **☰ ▸ Log out**,
 which is a single menu entry rather than a button inside the modal you would have
-to open first. `SessionKind::Solo` survives as a developer path with no UI —
-`--login` with no server — and as a kind an older `user.json` may still name;
-`lib.rs` still honours a remembered one.
+to open first. A kind an older `user.json` may
+still name (`"solo"`) reads as offline (see above).
 
 The two tick-boxes became one for the same reason. "Remember me on this device"
 and "Enter this way next time" were separately settable, and the combinations that
@@ -73,19 +91,8 @@ you are already in has nothing left to submit.
 booted straight into an in-process simulator with a SQLite database, for somebody
 who had come to look at a map. It is Offline + `auto_enter` now, which reads as
 "enter offline without asking" and is the only default that leaves the card shut.
-
-**Except where solo does not exist.** Solo is a cargo feature, and the APK is
-built `--no-default-features` because nothing cross-compiles `rusqlite` for
-Android — so `can_solo()` is `cfg!(feature = "solo") && !cfg!(target_arch =
-"wasm32")`, `lib.rs` forces `--offline` on Android, and there the remembered
-session never enters anything and no flag can win over it. A fresh install on the
-phone boots **offline**, permanently, and that is not a preference the user can
-change from the sign-in screen. Two consequences worth keeping: `SessionMode` and
-`SessionStatus` gate their dead-code allows on `not(feature = "solo")` rather than
-on a target — the platform-vs-feature confusion this tree keeps making, and the
-one that hid a broken Android build for two months
-(`docs/notes/android-build.md`) — and the sign-in screen's offline arm is the
-*only* arm the phone ever reaches, so it is the arm to check when touching it.
+(Android additionally forced `--offline` until 2026-08-21, which is the bug that
+made "stay signed in" a no-op there — `docs/notes/android-build.md`.)
 
 ## Teardown is the inverse of connect, and both halves are load-bearing
 
@@ -100,24 +107,12 @@ The local avatar entity is deliberately *not* despawned. It is spawned at startu
 and its offline movement path takes over the moment the session resource is gone,
 which is what makes going offline a change of authority rather than a reload.
 
-## The solo sim has to be stoppable
-
-`solo::start` used to park on `std::future::pending()` for the process lifetime,
-which was fine when the mode was chosen once. Switching solo → remote at runtime
-would then leak a tokio runtime, a SQLite handle and a listening port per switch,
-so the sim is now owned by a `SoloSim` whose drop stops it. It also starts
-*asynchronously* (`SoloPending`, polled once a frame): opening `data/world.db` and
-running migrations is tens of milliseconds, and doing it inline drops frames of
-the very modal that is meant to be showing a spinner.
-
-`mpsc`'s channel halves are `Send` but not `Sync`, and a Bevy `Resource` must be
-`Sync` — hence the `Mutex` around both ends in `solo.rs`. Nothing contends them.
-
 ## The wire has no account creation
 
-`AuthCredential` is `Password` or `Token` (`cartopolis_core::protocol`); there is no
-register message, and `simulator::ensure_account` is a server-side function solo
-mode calls on its own database. So the sign-in screen can only *sign in*. Adding
+`AuthCredential` is `Password` or `Token` (`cartopolis_core::protocol`); there is
+no register message, and `simulator::ensure_account` / `--create-admin` are
+server-side provisioning on the sim's own database. So the sign-in screen can
+only *sign in*. Adding
 "create an account" is a protocol change (a `PROTOCOL_HISTORY` row), not a UI one
 — which is why the screen does not offer it and does not pretend to.
 

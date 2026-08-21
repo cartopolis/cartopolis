@@ -99,17 +99,16 @@ would otherwise leave a truncated file that `Restart=always` loops on forever.
 ## Measured / observed, 2026-08-13
 
 - `axum` adds ~40 crates to the simulator's graph and nothing to the client's —
-  the client has never depended on `cartopolis_simulator` except through the
-  `solo` feature, which is off on both web and Android.
+  the client has never shipped `cartopolis_simulator` (it rode the since-removed
+  `solo` feature, and is a test-only dev-dependency since 2026-08-21).
 - The admin GUI builds to **35 KB** of JavaScript. That is what makes it a static
   site plus a Caddy route rather than a Bun service: there is no server-side
   rendering to do and no session to keep.
-- `cargo check -p cartopolis --target wasm32-unknown-unknown` **fails on `mio`**
-  unless you pass `--no-default-features`. The default features include `solo`,
-  which pulls the simulator and therefore tokio. That is not a regression, it is
-  how the web build has always been configured (`data-cargo-no-default-features`
-  in `crates/cartopolis/index.html`) — but the naive check command looks like it
-  found a real break. It also needs `RUSTUP_TOOLCHAIN=nightly`, because
+- `cargo check -p cartopolis --target wasm32-unknown-unknown` **failed on
+  `mio`** without `--no-default-features` while the default features included
+  `solo` (removed 2026-08-21), which pulled the simulator and therefore tokio.
+  The web build's flags (`data-cargo-no-default-features` plus `audio` in
+  `crates/cartopolis/index.html`) are unchanged, and the CI lane mirrors them. It also needs `RUSTUP_TOOLCHAIN=nightly`, because
   `wasm_thread` uses `#![feature(stdarch_wasm_atomic_wait)]`.
 
 ## Rejected: the admin GUI as a Bun service

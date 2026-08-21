@@ -13,12 +13,13 @@ is what to know before touching either lane again.
 
 `cartopolis`'s `audio` feature is default-on. That is a **Linux desktop**
 decision and nothing more: `bevy_audio` pulls `alsa-sys`, whose build script
-needs `libasound2-dev` and hard-fails without it, so the agent container and CI
-build `--no-default-features --features solo` to avoid a new system prerequisite.
+needs `libasound2-dev` and hard-fails without it, so a host without the headers
+builds `--no-default-features` to avoid a new system prerequisite.
 
-The trap is that Android and the web *also* build `--no-default-features` — for a
-completely unrelated reason (they cannot cross-compile the bundled SQLite that
-`solo` needs) — and cargo has no way to say "drop that default, keep this one".
+The trap was that Android and the web *also* built `--no-default-features` — for
+a completely unrelated reason (they could not cross-compile the bundled SQLite
+that the since-removed `solo` feature needed) — and cargo has no way to say
+"drop that default, keep this one".
 So both shipped for months with the whole soundscape compiled out: no footsteps,
 no landing thud, no wind, and no driver turn cues, which on a phone in a car is
 the one part of navigation you can use without looking at the screen.
