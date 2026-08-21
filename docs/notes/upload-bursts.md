@@ -164,3 +164,26 @@ Two things made this expensive to find, and both are fixed:
 - **A rule that only exists in the Android build is a rule no test can see.** This
   is the second time (`android_budget` was the first): `handset_guarded` is
   compiled on every target and `detect` reaches it through `cfg!`, not `#[cfg]`.
+
+## The ceiling reached the streamers that were never given one
+
+`lod22::max_cell_mesh_bytes` bounds a 3DBAG cell on **every** rung — the raw
+budget where there is one, 8 MB where there is not. The vector ground stack was
+handed `quality::upload_ceiling()` raw instead (`map_geometry`'s one `mesh_bytes`,
+which feeds `tessellate_surfaces`, `tessellate_roads` *and*
+`scatter::build_vegetation_meshes`, plus `street_detail`'s surveyed trees). That
+value is `None` on every rung above the phone, so those four paths were cut into
+byte-bounded pieces on a handset and left whole everywhere else — while
+`street_detail` was already taking the derived cap for its barrier pieces 450
+lines further down the same file. They take it now too.
+
+**This bounds the tail; it does not change the picture, and the measurement is
+the point.** Groningen at 150 m (2026-08-21, desktop rung) peaks at a 6,074 KB /
+89,712-vertex canopy mesh — real, and flagged by `upload_meter` as the asset no
+per-frame throttle can spread, but *under* the 8 MB cap, so the splitter
+correctly leaves it whole. Before and after are identical to the byte:
+`upload_peak_asset_kb` 7,920, `draws` 737, `gpu_resident_kb` ~1.04 GB, and the
+same 45 `single asset above the frame upload budget` lines. What changed is that
+a denser cell than this one can no longer produce an unbounded mesh off the
+phone; what did not change is anything you can see. Do not quote this fix as a
+measured win — the honest claim is bounded-versus-unbounded.

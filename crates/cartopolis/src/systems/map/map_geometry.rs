@@ -377,11 +377,23 @@ fn spawn_geometry_task(
     // on wasm `IoTaskPool` runs on the main thread, so every MVT decode, earcut,
     // road raster, vegetation scatter and shore field landed on the frame loop.
     // Awaiting the fetch there is free; the rest is what a core is for.
-    // Resolved here rather than inside the worker: `quality::upload_ceiling` is
-    // memoised, but reading it on the frame that *spawns* the task keeps the
-    // worker closure free of anything that could touch a system property or a
-    // `OnceLock` race on a platform where this is the first caller.
-    let mesh_bytes = crate::quality::upload_ceiling();
+    // Resolved here rather than inside the worker: the ceiling is memoised, but
+    // reading it on the frame that *spawns* the task keeps the worker closure
+    // free of anything that could touch a system property or a `OnceLock` race
+    // on a platform where this is the first caller.
+    //
+    // `lod22::max_cell_mesh_bytes` rather than `quality::upload_ceiling`, which
+    // is the same distinction `lod22` already had to make and this path had
+    // not. The raw ceiling is `None` on every rung above the phone, so surfaces,
+    // roads and vegetation were cut into byte-bounded pieces on a handset and
+    // left whole everywhere else — and "whole" here is not a small number:
+    // measured over Groningen on 2026-08-21, one cell's canopies reached a
+    // single 6,074 KB / 159k-triangle mesh, which `upload_meter` flags as the
+    // asset no per-frame throttle can spread (bevy always writes one whole
+    // asset). The derived cap is never above the frame budget and never above
+    // 8 MB, so a machine that asked for a budget keeps exactly the pieces it
+    // asked for and the rest gain the ceiling they never had.
+    let mesh_bytes = Some(crate::systems::lod22::max_cell_mesh_bytes());
     IoTaskPool::get()
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
