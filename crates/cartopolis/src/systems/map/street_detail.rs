@@ -266,6 +266,26 @@ fn is_footway(tags: Option<&serde_json::Value>) -> bool {
     )
 }
 
+/// True for a feature that is not on the surface — a tunnel, a covered way, or
+/// anything explicitly stacked below ground.
+///
+/// **Every other consumer of this ground already refuses these, and this layer
+/// arrived without the check.** `vector_tiles::drawn_street` keeps a tunnelled
+/// carriageway out of both the geometry and the raster, `extract_street_labels`
+/// keeps its name off whatever is genuinely above it, and `scatter`/`turf`
+/// inherit the same refusal by reusing `drawn_street`. Without it here, a run of
+/// railings, a bollard line or a zebra tagged on a buried way is painted flat on
+/// the park or the carriageway over the top of it.
+///
+/// `covered` counts alongside `tunnel` because an arcade and a bore are the same
+/// thing to a camera looking down, and a negative `layer` catches the sources
+/// that describe the stack without either flag. Overpass returns every tag as a
+/// string, which `tag_num` already parses (leading `-` included).
+fn underground(tags: Option<&serde_json::Value>) -> bool {
+    let flagged = |key: &str| matches!(tag_str(tags, key), Some(v) if v != "no");
+    flagged("tunnel") || flagged("covered") || tag_num(tags, "layer").is_some_and(|l| l < 0.0)
+}
+
 /// Parse the combined response. Elements disambiguate by tag, not by position
 /// in the response: a way is a tree row, a barrier, a pier, a waterway or a
 /// context road depending on what it carries.
@@ -280,10 +300,18 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
         .ok_or_else(|| "no elements in Overpass response".to_string())?;
 
     let mut out = DetailData::default();
+    // Nodes belonging to a buried carriageway. A signal or a zebra carries no
+    // grade of its own — it is a point on a way — so the only thing that can say
+    // it is underground is the way the query already fetched for its
+    // orientation, and that way may arrive after the node does.
+    let mut buried_nodes: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for el in elements {
         let tags = el.get("tags");
         match el.get("type").and_then(|t| t.as_str()) {
             Some("node") => {
+                if underground(tags) {
+                    continue;
+                }
                 let (Some(lat), Some(lng)) = (
                     el.get("lat").and_then(|v| v.as_f64()),
                     el.get("lon").and_then(|v| v.as_f64()),
@@ -333,6 +361,16 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
                 if line.len() < 2 {
                     continue;
                 }
+                if underground(tags) {
+                    // Remember a buried carriageway's nodes before dropping it,
+                    // so the signals and zebras standing on it go too.
+                    if tag_str(tags, "highway").is_some() {
+                        if let Some(ids) = el.get("nodes").and_then(|n| n.as_array()) {
+                            buried_nodes.extend(ids.iter().filter_map(|v| v.as_i64()));
+                        }
+                    }
+                    continue;
+                }
                 if tag_str(tags, "natural") == Some("tree_row") {
                     out.tree_rows.push(line);
                 } else if let Some(kind) = tag_str(tags, "barrier").and_then(BarrierKind::parse) {
@@ -359,6 +397,13 @@ fn parse_detail(text: &str) -> Result<DetailData, String> {
             }
             _ => {}
         }
+    }
+    // Applied after the loop because the carriageway that condemns a node can
+    // appear anywhere in the response, including after the node itself.
+    if !buried_nodes.is_empty() {
+        out.signals.retain(|(id, _, _)| !buried_nodes.contains(id));
+        out.crossings
+            .retain(|(id, _, _)| !buried_nodes.contains(id));
     }
     Ok(out)
 }
@@ -1940,6 +1985,48 @@ mod tests {
         assert_eq!(data.piers.len(), 1);
         assert_eq!(data.roads.len(), 1);
         assert_eq!(data.roads[0].2, 6.5); // two lanes at 3.25 m
+    }
+
+    /// A buried feature is not drawn on the ground above it — the refusal
+    /// `drawn_street` has always made for the carriageway, made here for the
+    /// furniture standing on it.
+    ///
+    /// The signal and the zebra are the interesting half: neither node carries a
+    /// grade of its own, so the only thing that condemns them is the tunnelled
+    /// way they belong to, and that way is listed *after* them on purpose —
+    /// Overpass does not order its response for our convenience, and a filter
+    /// that only looked backwards would pass them both.
+    #[test]
+    fn nothing_underground_reaches_the_surface() {
+        let text = r#"{"elements":[
+            {"type":"node","id":1,"lat":1.0,"lon":1.0,"tags":{"highway":"traffic_signals"}},
+            {"type":"node","id":2,"lat":1.0,"lon":1.1,"tags":{"highway":"crossing","crossing":"zebra"}},
+            {"type":"node","id":3,"lat":1.0,"lon":1.2,"tags":{"highway":"street_lamp","layer":"-1"}},
+            {"type":"node","id":4,"lat":1.0,"lon":1.3,"tags":{"barrier":"bollard"}},
+            {"type":"way","id":10,"nodes":[1,2],
+             "geometry":[{"lat":1.0,"lon":1.0},{"lat":1.0,"lon":1.1}],
+             "tags":{"highway":"residential","tunnel":"yes"}},
+            {"type":"way","id":11,
+             "geometry":[{"lat":2.0,"lon":2.0},{"lat":2.0,"lon":2.1}],
+             "tags":{"barrier":"fence","covered":"yes"}},
+            {"type":"way","id":12,
+             "geometry":[{"lat":3.0,"lon":3.0},{"lat":3.0,"lon":3.1}],
+             "tags":{"barrier":"wall"}}
+        ]}"#;
+        let data = parse_detail(text).unwrap();
+        // Both nodes stood on the tunnelled way, which arrived after them.
+        assert!(data.signals.is_empty(), "a signal in a tunnel was drawn");
+        assert!(data.crossings.is_empty(), "a zebra in a tunnel was drawn");
+        // Explicitly stacked below ground, with no way to inherit it from.
+        assert!(data.lamps.is_empty(), "a lamp at layer=-1 was drawn");
+        // The tunnelled carriageway is not context for anything anymore.
+        assert!(data.roads.is_empty());
+        // A covered way is refused for the same reason a bored one is; the
+        // ordinary wall beside it is untouched.
+        assert_eq!(data.barriers.len(), 1);
+        assert_eq!(data.barriers[0].0, BarrierKind::Wall);
+        // Nothing above ground was harmed.
+        assert_eq!(data.bollards.len(), 1);
     }
 
     #[test]
