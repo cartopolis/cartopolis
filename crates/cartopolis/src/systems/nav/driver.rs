@@ -139,7 +139,7 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use web_time::Instant;
 
-use crate::components::Avatar;
+use crate::components::{Avatar, FreeCamera};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
@@ -859,7 +859,7 @@ pub fn drive_driver_mode(
     mut nav: ResMut<GeoNavState>,
     time: Res<Time>,
     mut avatar_state: ResMut<AvatarState>,
-    mut avatars: Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+    mut avatars: Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
     map_anchor: Res<MapAnchor>,
 ) {
     // `route` is mutable only so leaving the route can ask for a new one (see the
@@ -1231,12 +1231,16 @@ impl DriverState {
 /// Shared with [`crate::systems::locate`], which follows a device fix with no
 /// route under it: the near/far rule below is about the *world* being anchored,
 /// not about navigating, so both callers need the identical pair.
+///
+/// The `Without<FreeCamera>` in the filter is for that caller's benefit — it also
+/// holds the camera, and Bevy needs the two `&mut Transform` queries to be
+/// provably disjoint. Costs this one nothing: an avatar is never a camera.
 pub(crate) fn place_avatar(
     anchor: (f64, f64, u32),
     lat: f64,
     lng: f64,
     avatar_state: &mut AvatarState,
-    avatars: &mut Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+    avatars: &mut Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) {
     let (wx, wz) = lat_lng_to_world(anchor, lat, lng);
     let grid = Grid::new(WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD);
@@ -1264,7 +1268,7 @@ pub(crate) fn place_avatar(
 pub(crate) fn fix_is_far(
     anchor: (f64, f64, u32),
     fix: GpsFix,
-    avatars: &Query<(&mut GridCell, &mut Transform), With<Avatar>>,
+    avatars: &Query<(&mut GridCell, &mut Transform), (With<Avatar>, Without<FreeCamera>)>,
 ) -> bool {
     let Ok((cell, tf)) = avatars.single() else {
         return true;

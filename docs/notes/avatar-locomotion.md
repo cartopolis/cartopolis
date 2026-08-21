@@ -62,7 +62,7 @@ them — and they were not taken: strafing everywhere reads as a shooter, not as
 person walking through a city, and it makes the replicated `display_yaw`
 carry the camera's orientation rather than the avatar's.
 
-Consequence worth knowing: with follow-and-rotate armed (the GPS button's third
-state) the camera chases the avatar's heading while the input stays
+Consequence worth knowing: with follow-and-rotate armed (the GPS button, pressed
+while in Follow) the camera chases the avatar's heading while the input stays
 camera-relative, so **holding A walks a circle**. That is inherent to the pair,
 not a bug in either.
