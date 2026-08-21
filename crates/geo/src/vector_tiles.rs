@@ -1132,14 +1132,19 @@ impl SurfaceGroup {
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
             Self::Road(_) => -0.0015,
-            // One ladder step below the fills' base plane, so every casing lies
-            // geometrically under every fill — the raster path's
-            // all-casings-then-all-fills rule expressed in depth. The casing
-            // ladder is compressed to stay inside this one step
-            // (`CASING_LADDER_SCALE`); same-class casings that overlap are the
-            // same colour, so their sub-resolution fight is invisible, and
-            // cross-class order is settled by [`Self::depth_bias`].
-            Self::RoadCasing(_) => -0.0015 - ROAD_LAYER_STEP,
+            // The same base plane as the fills, because a casing takes a rung on
+            // the *same* ladder now (`road_casing_rung`): the foot of its own
+            // class's block, under its own tarmac and over every narrower
+            // class's.
+            //
+            // It used to sit one whole step below this plane, which put every
+            // casing in the tile under every fill in the tile. That reads well
+            // up close and contradicts [`Self::depth_rung`], which puts a wide
+            // road's kerb band *over* a path it crosses — and the bias is what
+            // wins at range. The two answers crossed over in the middle
+            // distance, so a kerb line sliced across a junction at some camera
+            // heights and not others.
+            Self::RoadCasing(_) => -0.0015,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
             // A bridge deck is the same kind of thing: it carries its own height,
@@ -1659,20 +1664,51 @@ const JUNCTION_EXTEND_MAX: f32 = 12.0;
 /// the road sheet's `y_offset` (−1.5 mm) and the buildings' base at y = 0 — at
 /// [`ROAD_LAYERS`] rungs the ladder tops out at 1.44 mm, still under the
 /// buildings.
-const ROAD_LAYER_STEP: f32 = 4.0e-5;
+const ROAD_LAYER_STEP: f32 = 2.4e-5;
 
 /// How many rungs the [`ROAD_LAYER_STEP`] ladder has. The ladder is *ordered*, not
 /// arbitrary (see [`road_rung`]), so which of two overlapping features wins is a
 /// property of the roads rather than of the order the tile happened to store them
 /// in. Sized to the ceiling: `ROAD_LAYERS * ROAD_LAYER_STEP` must stay under the
 /// 1.5 mm between the road sheet and the buildings' base.
-const ROAD_LAYERS: u32 = 36;
+const ROAD_LAYERS: u32 = 58;
 
 /// Rungs reserved at the top of the ladder for bridge decks.
 const BRIDGE_LAYERS: u32 = 4;
 
 /// Tie-breaking rungs within one width band.
 const ROAD_TIE_LAYERS: u32 = 4;
+
+/// Width sub-bands *inside* one class block. Two, not the eight
+/// [`ROAD_WIDTH_BANDS`] carries, and the reason is the ladder's ceiling: the
+/// class is the major key now (see [`road_rung`]), so the block count multiplies
+/// everything below it. Most of what the eight bands used to buy was ordering
+/// *between* classes, which the class key states directly and correctly — what
+/// is left for width to settle is a wide residential against a narrow one.
+const ROAD_WIDTH_SUBBANDS: u32 = 2;
+
+/// Rungs one class owns: one for its casings, then its fills.
+///
+/// The casing takes a single rung because same-class casings that overlap are
+/// the same colour — their fight is invisible, which is the one place in this
+/// ladder where a tie costs nothing. Fills need the width sub-band and the tie
+/// colouring, so they take the rest.
+const CASING_RUNGS_PER_CLASS: u32 = 1;
+const ROAD_RUNGS_PER_CLASS: u32 = CASING_RUNGS_PER_CLASS + ROAD_WIDTH_SUBBANDS * ROAD_TIE_LAYERS;
+
+/// A class's block index, in the same order [`SurfaceGroup::depth_rung`] ranks
+/// them. **These two orderings must agree** — that they did not is the bug this
+/// layout exists to remove; see [`road_rung`].
+fn road_class_rank(class: RoadClass) -> u32 {
+    match class {
+        RoadClass::Path => 0,
+        RoadClass::Minor => 1,
+        RoadClass::Major => 2,
+        RoadClass::Carriageway => 3,
+        RoadClass::Motorway => 4,
+        RoadClass::Rail => 5,
+    }
+}
 
 /// Width-band thresholds (metres) for [`road_rung`]: a road's band is the count
 /// of thresholds at or below its width. 2 m steps where the urban network is
@@ -1690,13 +1726,28 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 ///   under it are both flat sheets on the same ground plane here, so the only
 ///   thing that can say which is on top is this; without it an interchange
 ///   resolves per-pixel and the deck and the road beneath interleave.
-/// * Otherwise the **wider road wins**, which is the same rule
-///   [`SurfaceGroup::depth_rung`] applies between classes, continued inside one:
-///   the through road keeps an unbroken surface and the side road disappears
-///   under it, rather than slicing its kerb lines across the junction. Bands are
-///   [`ROAD_WIDTH_BANDS`] — 2 m wide through the urban range, so roads that land
-///   in one band really are the same width; a residential street (7 m) no longer
-///   ties with a secondary (11 m).
+/// * Otherwise the **class decides, and width only breaks ties inside it**. The
+///   class is the major key because [`SurfaceGroup::depth_rung`] already ranks
+///   the classes and *that* ladder is the one that survives at range — so if
+///   this one sorted by anything else, the two would disagree, and the
+///   disagreement would resolve differently at different camera distances.
+///
+///   It used to sort by width alone, across every class at once, and that is
+///   exactly what went wrong. The two ladders are denominated differently: the
+///   geometric step here is a fixed 24 µm, while one `depth_rung` step is
+///   `1.19e-7 · DEPTH_BIAS_STEP · z` — an apparent shift that *grows with
+///   range*, ~1.14 mm at 150 m against a full width ladder of ~1.4 mm. So a wide
+///   residential (Minor) and a narrow tertiary (Major) were ordered one way by
+///   the geometry and the other by the bias, the two terms crossed over
+///   somewhere in the middle distance, and which road was on top flipped as the
+///   camera moved — the loser's tarmac vanishing over whole patches rather than
+///   flickering at a seam. Reported as "sometimes part of the roads become
+///   invisible, the order is reversed".
+///
+///   With the class as the major key both ladders say the same thing at every
+///   range, so there is no crossover to sit in. Width keeps
+///   [`ROAD_WIDTH_SUBBANDS`] sub-bands inside the block, which is what still
+///   separates a wide residential from a narrow one.
 ///
 /// Lines that tie on both are separated by `tie_seed`. `tessellate_roads` hands
 /// this a rung chosen across the whole tile by [`assign_road_ties`], which is
@@ -1710,12 +1761,32 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 /// assignment is stable across a tile seam (each tile clips its own copy of a
 /// shared street, so no whole-line function can be), but a junction lives inside
 /// one tile far more often than on a seam.
-fn road_rung(width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
+fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
     let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
         return ROAD_LAYERS - BRIDGE_LAYERS + tie;
     }
-    road_band(width_m) * ROAD_TIE_LAYERS + tie
+    let block = road_class_rank(class) * ROAD_RUNGS_PER_CLASS;
+    block + CASING_RUNGS_PER_CLASS + road_subband(width_m) * ROAD_TIE_LAYERS + tie
+}
+
+/// The rung a class's *casing* ribbons draw on: the foot of that class's block,
+/// so it lies under its own tarmac and over every narrower class's tarmac —
+/// which is what `SurfaceGroup::RoadCasing`'s depth bias has always claimed, and
+/// what the geometry used to contradict.
+fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
+    if bridge {
+        // A deck's kerb rides with the deck, under its own fills.
+        return ROAD_LAYERS - BRIDGE_LAYERS;
+    }
+    road_class_rank(class) * ROAD_RUNGS_PER_CLASS
+}
+
+/// Which width sub-band inside a class block a width falls in: the eight
+/// [`ROAD_WIDTH_BANDS`] compressed onto [`ROAD_WIDTH_SUBBANDS`].
+fn road_subband(width_m: f32) -> u32 {
+    let bands = ROAD_WIDTH_BANDS.len() as u32 + 1;
+    (road_band(width_m) * ROAD_WIDTH_SUBBANDS / bands).min(ROAD_WIDTH_SUBBANDS - 1)
 }
 
 /// Which [`ROAD_WIDTH_BANDS`] band a width falls in: the count of thresholds at
@@ -1921,13 +1992,6 @@ const STUB_PLAIN_U: (f32, f32) = (0.06, 0.16);
 /// side, in metres — a kerb-and-verge band, not a second road.
 const ROAD_CASING_M: f32 = 0.75;
 
-/// Compression of the casing ribbons' copy of the anti-z-fight ladder, so the
-/// whole casing ladder fits inside the single [`ROAD_LAYER_STEP`] that
-/// [`SurfaceGroup::RoadCasing`]'s `y_offset` reserves under the fills' plane.
-/// Casings keep *a* deterministic order among themselves while every one of
-/// them stays geometrically below every fill.
-const CASING_LADDER_SCALE: f32 = 1.0 / 64.0;
-
 /// Miter limit: how far a join may push the **outer** corner out relative to the
 /// half-width before it is bevelled off instead. Unbounded miters spike to
 /// infinity at a hairpin, which OSM has plenty of (motorway sliproads,
@@ -2045,7 +2109,12 @@ pub fn tessellate_roads(
                 .get(&(fi, li))
                 .copied()
                 .map_or_else(|| line_tie_seed(head, tail), u64::from);
-            let y = road_rung(half * 2.0, bridge, tie) as f32 * ROAD_LAYER_STEP;
+            let y = road_rung(class, half * 2.0, bridge, tie) as f32 * ROAD_LAYER_STEP;
+            // The casing's own rung, at the foot of the same class block rather
+            // than on a separate plane under every fill in the tile. Both are
+            // read off one ladder now, so the class order the depth bias states
+            // is the class order the geometry shows.
+            let casing_y = road_casing_rung(class, bridge) as f32 * ROAD_LAYER_STEP;
             // The line's outward direction at each end (tile units — uniform
             // scale, so angles match the metre frame), for the crossing-angle
             // term in `junction_extent`.
@@ -2133,9 +2202,8 @@ pub fn tessellate_roads(
                         // kerb band runs around the junction mouth instead of
                         // stopping square at it. A mitred end needs no such
                         // treatment — the neighbour's casing is mitred to the
-                        // same bisector and meets this one exactly. Its ladder
-                        // copy is compressed under the fills' plane — see
-                        // `CASING_LADDER_SCALE`.
+                        // same bisector and meets this one exactly. It draws on
+                        // its class block's own foot rung (`road_casing_rung`).
                         let ext = ends.map(|e| EndJoin {
                             extend: if e.extend > 0.0 {
                                 e.extend + ROAD_CASING_M
@@ -2148,7 +2216,7 @@ pub fn tessellate_roads(
                         ribbon(
                             &part,
                             half + ROAD_CASING_M,
-                            y * CASING_LADDER_SCALE,
+                            casing_y,
                             class.texture_length_m(),
                             ext,
                             run_is_ring && whole,
@@ -4440,9 +4508,9 @@ mod tests {
         let meshes = tessellate_roads(GRONINGEN_Z14, tile_m, &[]).expect("tessellate");
         let mut covered = 0usize;
         let mut coplanar = 0usize;
-        // Casing ribbons are exempt: their ladder is deliberately compressed
-        // below rung resolution (`CASING_LADDER_SCALE`), and a z-fight between
-        // two patches of the same flat colour cannot be seen.
+        // Casing ribbons are exempt: a whole class's casings share one rung by
+        // design (`road_casing_rung`), and a z-fight between two patches of the
+        // same flat colour cannot be seen.
         for m in meshes
             .iter()
             .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
@@ -4775,27 +4843,46 @@ mod tests {
     /// not of the order the tile happened to store them in — otherwise the same
     /// junction resolves one way in this tile and the other way in its neighbour.
     #[test]
-    fn the_wider_road_and_the_bridge_win_the_overlap() {
-        let street = road_rung(7.0, false, 0);
-        let main = road_rung(14.0, false, 0);
-        let motorway = road_rung(22.0, false, 0);
+    fn the_higher_class_and_the_bridge_win_the_overlap() {
+        let path = road_rung(RoadClass::Path, 2.0, false, 0);
+        let street = road_rung(RoadClass::Minor, 7.0, false, 0);
+        let main = road_rung(RoadClass::Major, 14.0, false, 0);
+        let motorway = road_rung(RoadClass::Motorway, 22.0, false, 0);
         assert!(
-            street < main && main < motorway,
-            "the wider road must be on top"
+            path < street && street < main && main < motorway,
+            "the higher road class must be on top"
+        );
+        // Width still settles two roads of one class…
+        assert!(
+            road_rung(RoadClass::Minor, 4.0, false, 0) < road_rung(RoadClass::Minor, 9.0, false, 0),
+            "the wider road of a class must be on top"
+        );
+        // …but it may never lift a road out of its class block. This is the
+        // inversion the class-major layout exists to remove: a wide residential
+        // used to outrank a narrow tertiary in the geometry while the depth bias
+        // said the opposite, so which won depended on camera distance.
+        assert!(
+            road_rung(RoadClass::Minor, 20.0, false, 3)
+                < road_rung(RoadClass::Major, 2.0, false, 0),
+            "the widest Minor must still lie under the narrowest Major"
         );
         // A flyover and the road under it are both flat sheets on this plane; the
         // deck is the only one that can be on top, whatever it flies over.
         assert!(
-            road_rung(4.0, true, 0) > motorway,
+            road_rung(RoadClass::Path, 4.0, true, 0) > motorway,
             "a bridge deck must be on top"
         );
         // …and the whole ladder has to stay inside the millimetre window under the
         // buildings' base that `SurfaceGroup::y_offset` documents.
-        for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
-            for bridge in [false, true] {
-                for seed in 0u64..40 {
-                    let rung = road_rung(width, bridge, seed);
-                    assert!(rung < ROAD_LAYERS, "rung {rung} is off the ladder");
+        for class in ROAD_CLASSES {
+            for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
+                for bridge in [false, true] {
+                    for seed in 0u64..40 {
+                        let rung = road_rung(class, width, bridge, seed);
+                        assert!(rung < ROAD_LAYERS, "rung {rung} is off the ladder");
+                    }
+                    let c = road_casing_rung(class, bridge);
+                    assert!(c < ROAD_LAYERS, "casing rung {c} is off the ladder");
                 }
             }
         }
@@ -4804,6 +4891,65 @@ mod tests {
                 < 0.0,
             "the ladder pushes roads through the buildings' base"
         );
+    }
+
+    /// Every road class in hierarchy order, for the ladder tests.
+    const ROAD_CLASSES: [RoadClass; 6] = [
+        RoadClass::Path,
+        RoadClass::Minor,
+        RoadClass::Major,
+        RoadClass::Carriageway,
+        RoadClass::Motorway,
+        RoadClass::Rail,
+    ];
+
+    /// **The two ladders must agree at every range.** `depth_rung` is denominated
+    /// in depth-buffer ULPs, so its apparent shift grows with distance;
+    /// `road_rung` is denominated in fixed metres, so its does not. Wherever the
+    /// two order a pair of ribbons differently there is a camera distance at
+    /// which the winner flips, and around it the loser's tarmac disappears in
+    /// patches — which is what "sometimes part of the roads become invisible,
+    /// the order is reversed" was.
+    ///
+    /// This is the regression test for that, and it needs no renderer: it is a
+    /// statement about two pure functions.
+    #[test]
+    fn the_geometric_ladder_never_contradicts_the_depth_bias() {
+        let widths = [1.5f32, 3.0, 5.0, 7.0, 9.0, 12.0, 16.0, 24.0];
+        let mut checked = 0usize;
+        for a in ROAD_CLASSES {
+            for b in ROAD_CLASSES {
+                let bias_a = SurfaceGroup::Road(a).depth_rung();
+                let bias_b = SurfaceGroup::Road(b).depth_rung();
+                if bias_a >= bias_b {
+                    continue;
+                }
+                for wa in widths {
+                    for wb in widths {
+                        for seed in 0u64..ROAD_TIE_LAYERS as u64 {
+                            assert!(
+                                road_rung(a, wa, false, seed) < road_rung(b, wb, false, 0),
+                                "{a:?} at {wa} m (bias {bias_a}) must lie under \
+                                 {b:?} at {wb} m (bias {bias_b}) in the geometry too"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+                // The higher class's *casing* rides over the lower class's
+                // tarmac, which is exactly what `RoadCasing`'s bias claims…
+                assert!(
+                    road_casing_rung(b, false) > road_rung(a, 24.0, false, 3),
+                    "{b:?}'s kerb band must cover the widest {a:?} it crosses"
+                );
+                // …while still lying under its own.
+                assert!(
+                    road_casing_rung(b, false) < road_rung(b, 1.5, false, 0),
+                    "{b:?}'s kerb band must stay under its own tarmac"
+                );
+            }
+        }
+        assert!(checked > 0, "the sweep must actually compare something");
     }
 
     #[test]

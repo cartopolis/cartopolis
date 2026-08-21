@@ -1,7 +1,7 @@
 ---
 topic: rendering
 triggers: [vector_tiles.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect"]
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # One street arrives as a chain of features, and most of its "junctions" are not
@@ -112,3 +112,46 @@ band really do overlap at one spot, where four colours cannot be enough and the
 hash decides as before. Getting past it needs a different mechanism, not a better
 colouring. Note also that neither the hash nor the assignment is stable across a
 tile seam, for the reason the ribbon joins are not: each tile clips its own copy.
+
+## Two ladders decide which road is on top, and they must agree
+
+There are two, denominated differently, and that is the whole trap:
+
+* `road_rung` → a **fixed metric** offset, `rung × ROAD_LAYER_STEP` (24 µm).
+  Its depth significance *shrinks* as 1/z.
+* `SurfaceGroup::depth_rung` → a **depth-buffer ULP** bias. Its apparent world
+  shift is `1.19e-7 · DEPTH_BIAS_STEP · z`, so it *grows* with range — 0.76 mm at
+  100 m, 1.14 mm at 150 m, 7.6 mm at 1 km.
+
+Until 2026-08-21 the first sorted by **width across every class at once** while
+the second sorted by **class**. Wherever those disagreed — a wide residential
+against a narrow tertiary — the two terms crossed over somewhere in the middle
+distance, and which road was on top flipped as the camera moved. It does not
+read as flicker at a seam: the loser's tarmac vanishes over whole patches.
+Reported from a handset as "sometimes part of the roads become invisible, the
+order is reversed". The casing plane had the identical contradiction —
+`RoadCasing::y_offset` put every casing under every fill while its `depth_rung`
+put a wide road's kerb over a narrower road's tarmac — which is the kerb line
+sliced across a junction.
+
+So the geometric ladder is **class-major** now: each class owns a block of
+`ROAD_RUNGS_PER_CLASS`, its casing on the block's foot rung and its fills above,
+width and the tie colouring ordering only *within* the block. Both ladders then
+say the same thing at every range and there is no crossover to sit in.
+`the_geometric_ladder_never_contradicts_the_depth_bias` pins it, and needs no
+renderer — it is a statement about two pure functions.
+
+**The ceiling is what makes this tight, and it is why width lost resolution.**
+`ROAD_LAYERS × ROAD_LAYER_STEP` must stay under the 1.5 mm between the road
+sheet and the buildings' base, and the step cannot go far below 24 µm or it stops
+clearing the depth buffer at ground range (2.0 ULP at 100 m, 1.0 at 200 m). At 58
+rungs the ladder tops out at 1.392 mm. Six class blocks eat that budget, so
+width keeps `ROAD_WIDTH_SUBBANDS` = 2 sub-bands rather than the eight
+`ROAD_WIDTH_BANDS` still used to compute them.
+
+**Measured cost, stated plainly:** coplanar overlap on the Groningen fixture went
+0.62 % → **0.89 %**, because two sub-bands put more same-class ribbons on one
+rung than eight bands did. That is the trade and it is deliberate — a same-class
+collision is one material and one colour, differing only in road-texture UV, so
+it reads as a seam; a cross-class inversion hides a street. It remains well under
+the 1.60 % that shipped before the tie colouring.
