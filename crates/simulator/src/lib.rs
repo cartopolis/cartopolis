@@ -92,7 +92,9 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
     }
     tracing::info!(count = scripts_host.requested(), "scripts loaded");
 
-    let sessions = Arc::new(auth::Sessions::new());
+    // Backed by the `sessions` table, which is what keeps "stay signed in"
+    // true across a redeploy — the deployed sim restarts on every publish.
+    let sessions = Arc::new(auth::Sessions::persistent(conn.clone()));
     let chat = Arc::new(chat::ChatHub::new());
 
     let (tx_snap, _) = broadcast::channel::<Vec<u8>>(256);

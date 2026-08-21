@@ -56,11 +56,15 @@ it shares with the game is the account table and the session map, which is the
 point — an admin signs in with an ordinary account, and disabling someone takes
 effect on their next handshake.
 
-**Disabling does not evict a live session.** `Sessions` is an in-memory map keyed
-by token with no principal index, so `disabled = 1` is a gate on the *next*
-`ClientHello`. Kicking someone who is already connected needs their token
-(`Sessions::revoke`) or a restart. Fixing it properly means indexing sessions by
-principal; nobody has needed it yet.
+**Disabling does not evict a live session.** `Sessions` is a map keyed by token
+with no principal index, so `disabled = 1` is a gate on the *next* `ClientHello`.
+Kicking someone who is already connected needs their token (`Sessions::revoke`)
+or `Sessions::revoke_principal` (a linear scan — account deletion uses it).
+Fixing it properly means indexing sessions by principal; nobody has needed it
+yet. **A restart is no longer a way to do it**: since 2026-08-21 the session map
+is written through to the `sessions` table (token *hashes*, 30-day sliding TTL),
+precisely so a redeploy stops signing everybody out — "stay signed in" was
+broken by every publish before that.
 
 ## The last-admin guard
 
