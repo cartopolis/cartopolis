@@ -1568,6 +1568,8 @@ fn run_client() {
         // the status readout is showing (`systems::hud`, off until the ⓘ disc
         // under the compass is pressed).
         .init_resource::<systems::ui::MainMenu>()
+        // The place card a picked search result opens (`systems::place_card`).
+        .init_resource::<systems::place_card::PlaceCard>()
         .init_resource::<systems::hud::StatusHud>()
         .init_resource::<systems::onscreen_keyboard::OnScreenKeyboard>()
         // What the on-screen navigation controls asked for this frame
@@ -2276,6 +2278,12 @@ fn run_client() {
                 // menu, and a menu drawn before its own switch would open a frame
                 // late and dismiss itself on the click that opened it.
                 systems::dock::render_dock.before(systems::ui::render_main_menu),
+                // The place card — a floating `Area` above the dock, so it stays
+                // out of the panel chain too. **Before the panels**: taking a
+                // pick out of `GeoNavState::pending_card` is also what closes
+                // the Search panel, and doing it before the chain runs means the
+                // panel never draws a frame over the card it just opened.
+                systems::place_card::render_place_card.before(systems::ui::render_main_menu),
                 systems::ui::toggle_ai_panel_shortcut,
                 systems::ui::toggle_dev_panel_shortcut,
                 // Nested to stay under the per-tuple system limit: the driver runs after
