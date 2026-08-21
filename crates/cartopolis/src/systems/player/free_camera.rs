@@ -935,12 +935,17 @@ pub fn enter_mode(camera_state: &mut CameraState, next: CameraMode) {
     }
 }
 
-/// Whether Follow is on offer at all: an avatar to follow, *in a signed-in
-/// session*. Walking a body around is what a simulator is for — offline is the
-/// map viewer, and its two modes are Fly and Earth. One predicate, three
-/// readers — the Tab cycle here, the mode disc (`map_osd`) and the locate
-/// button (`hud`) — because the last time this rule lived in each call site the
-/// three answers drifted apart.
+/// Whether Follow is on offer *as a camera mode*: an avatar to follow, in a
+/// signed-in session. Walking a body around is what a simulator is for —
+/// offline is the map viewer, and its switcher offers Fly and Earth. One
+/// predicate, two readers — the Tab cycle here and the mode disc (`map_osd`) —
+/// so the two never disagree about what is on the cycle.
+///
+/// This gates the *switcher*, not the camera: driver mode and device tracking
+/// (`systems::locate`) both enter the follow camera themselves, offline
+/// included — a GPS map viewer is a legitimate offline use, and both paths
+/// stand down on their own — so the guard in [`camera_mode_toggle`] exempts
+/// them rather than fighting them every frame.
 ///
 /// The avatar check stays even though `main::spawn_avatar_entity` spawns one
 /// unconditionally at `Startup`: it costs an `is_empty` and it is the only
@@ -971,15 +976,20 @@ pub fn camera_mode_toggle(
     mut camera_state: ResMut<CameraState>,
     session: Res<crate::systems::session::SessionState>,
     driver: Res<crate::systems::driver::DriverState>,
+    tracking: Res<crate::systems::locate::LocateTracking>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     let follow = follow_available(&session, !avatars.is_empty());
     // Follow without a session (or an avatar) is dropped to Fly — this is also
     // what lands the camera in Fly when a live session ends, or on the first
     // frame of an offline start (the `CameraState` default is still Avatar).
-    // Driver mode is exempt: it holds the chase rig itself, works offline, and
-    // restores the saved mode on exit (`driver::drive_driver_mode`).
-    if !follow && !driver.active && camera_state.mode == CameraMode::Avatar {
+    // Driver mode and device tracking are exempt: both enter the follow camera
+    // themselves, both are offline features on purpose (navigation, and the
+    // locate button's "where am I"), and both stand down on their own —
+    // driver mode restores the saved mode on exit, and `locate` exits the
+    // moment the mode is anything else, which also makes this guard the thing
+    // that ends an offline locate-follow the frame the tracking stops.
+    if !follow && !driver.active && !tracking.active && camera_state.mode == CameraMode::Avatar {
         enter_mode(&mut camera_state, CameraMode::Free);
         camera_state.mode = CameraMode::Free;
     }
