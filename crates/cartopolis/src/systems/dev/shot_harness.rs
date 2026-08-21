@@ -538,6 +538,12 @@ pub struct ShotMetrics {
     /// below the frame and is frustum-culled — `45 / 0` is that, and it is not a
     /// bug. `n / n` with a bare lawn is the mask; `0 / 0` is the pool.
     pub grass_rendered: usize,
+    /// Mesh entities spawned by the Overpass street-detail layer
+    /// (`systems::street_detail`) — surveyed trees, lamps, signals, barriers,
+    /// piers, paint. `0` over a city with the layer on means the cells never
+    /// arrived (Overpass, cache, or the toggle), which a capture alone cannot
+    /// tell apart from "this town has none of it mapped".
+    pub prop_meshes: usize,
     /// Drawn-route entities (ADR-037) and how many the view actually rendered.
     /// The same "black image vs black scene" question the globe counts answer: a
     /// route that is built but not rendered is a visibility or culling problem,
@@ -653,7 +659,7 @@ tiles_occluded,\
 alt_m,space_factor,in_space,\
 orbit_space,near_m,far_m,exposure_ev100,bloom,globe_albedo,veg_factor,furniture_factor,globe_entities,\
 globe_visible,globe_rendered,globe_tiles_loaded,globe_tiles_desired,globe_texture_mb,globe_tile_px,\
-route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,\
+route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,prop_meshes,\
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
@@ -685,7 +691,7 @@ impl ShotMetrics {
     /// One CSV line, columns in [`CSV_HEADER`] order.
     fn csv_row(&self) -> String {
         format!(
-            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{:.2},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.3},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{:.2},{},{},{:.2},{},{},{},{},{},{},{}",
             self.shot,
             self.name.as_deref().unwrap_or(""),
             self.lat,
@@ -727,6 +733,7 @@ impl ShotMetrics {
             self.grass_patches,
             self.grass_slots,
             self.grass_rendered,
+            self.prop_meshes,
             self.avatar_meshes,
             self.avatar_rendered,
             self.ground_m,
@@ -1506,6 +1513,15 @@ pub fn drive_capture(
         // taken while its coverage mask is still on a worker photographs a lawn
         // that has not arrived. Appended for the same reason as `.9`.
         Res<crate::systems::grass::GrassPatches>,
+        // The Overpass street-detail streamer and its coarse sibling, the
+        // tall-structure lane — settle inputs (a ground-level capture without
+        // its lamps and trees photographs a half-built street) and the
+        // `prop_meshes` metric. One nested element, because this tuple is *at*
+        // the 16-element SystemParam ceiling, which is one past appendable.
+        (
+            Res<crate::systems::street_detail::StreetDetail>,
+            Res<crate::systems::tall_structures::TallStructures>,
+        ),
     ),
     // `Option<&Bloom>`: a tier that wants no glare omits the component rather than
     // zeroing it (`free_camera::setup_camera`), and naming it bare here would drop
@@ -1664,6 +1680,8 @@ pub fn drive_capture(
         ("osm_buildings", osm.streaming_busy()),
         ("lod22", lod22.streaming_busy()),
         ("grass", readouts.14.streaming_busy()),
+        ("street_detail", readouts.15 .0.streaming_busy()),
+        ("tall_structures", readouts.15 .1.streaming_busy()),
         ("routing", routing),
         ("weather", weather.live && !weather.ready()),
     ]
@@ -1784,6 +1802,7 @@ pub fn drive_capture(
             grass_patches: readouts.14.census().0,
             grass_slots: readouts.14.census().1,
             grass_rendered: readouts.14.census().2,
+            prop_meshes: readouts.15 .0.spawned_meshes + readouts.15 .1.spawned(),
             avatar_meshes: avatar_counts.0,
             avatar_rendered: avatar_counts.1,
             globe_entities: globe_meshes.iter().count(),
@@ -1843,6 +1862,7 @@ pub fn drive_capture(
                     grass_patches = m.grass_patches,
                     grass_slots = m.grass_slots,
                     grass_rendered = m.grass_rendered,
+                    prop_meshes = m.prop_meshes,
                     avatar_meshes = m.avatar_meshes,
                     avatar_rendered = m.avatar_rendered,
                     globe_entities = m.globe_entities,
@@ -2126,6 +2146,7 @@ mod tests {
             grass_patches: 0,
             grass_slots: 0,
             grass_rendered: 0,
+            prop_meshes: 0,
             furniture_factor: 0.0,
             globe_entities: 0,
             globe_visible: 0,

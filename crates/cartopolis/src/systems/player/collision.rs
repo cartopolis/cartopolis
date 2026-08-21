@@ -126,6 +126,11 @@ pub struct BuildingColliders {
     /// the streamer directly, because the same extraction feeds the interaction
     /// prompt and the two must not disagree about where a bench is.
     props: Vec<(Vec2, f32)>,
+    /// Street-detail footprints (walls, fences, hedges, bollards — the Overpass
+    /// layer, `systems::street_detail`), keyed by its z14 cell and dropped with
+    /// it. Same lifetime contract as `lod22`: the streamer that draws the mesh
+    /// publishes the collider, so a wall you can see is a wall you cannot cross.
+    features: HashMap<(i64, i64), Vec<Footprint>>,
 }
 
 impl BuildingColliders {
@@ -163,10 +168,24 @@ impl BuildingColliders {
         self.props = props;
     }
 
+    /// Install (or replace) one street-detail cell's footprints.
+    pub fn set_feature_cell(&mut self, cell: (i64, i64), fps: Vec<Footprint>) {
+        self.features.insert(cell, fps);
+    }
+    /// Drop one street-detail cell's footprints (cell despawned).
+    pub fn remove_feature_cell(&mut self, cell: (i64, i64)) {
+        self.features.remove(&cell);
+    }
+    /// Drop every street-detail footprint (re-anchor or layer off).
+    pub fn clear_features(&mut self) {
+        self.features.clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         (self.detail_off || self.detail.is_empty())
             && (self.lod22_off || self.lod22.is_empty())
             && self.props.is_empty()
+            && self.features.is_empty()
     }
 
     /// True if `p` is inside a prop's circle. Separate from [`Self::blocked`]'s
@@ -188,6 +207,7 @@ impl BuildingColliders {
         detail
             .iter()
             .chain(self.lod22.values().filter(move |_| lod22_on).flatten())
+            .chain(self.features.values().flatten())
     }
 
     /// True if `p` (world XZ) lies inside any footprint or prop.

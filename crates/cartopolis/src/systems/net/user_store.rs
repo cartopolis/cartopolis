@@ -210,6 +210,9 @@ pub struct LayerPrefs {
     /// Street furniture (`systems::street_furniture`).
     #[serde(default = "detail_default")]
     pub furniture: bool,
+    /// The Overpass street-detail layer (`systems::street_detail`).
+    #[serde(default = "detail_default")]
+    pub street_detail: bool,
     /// Off on a fresh install: the vehicle layer is opt-in.
     #[serde(default)]
     pub vehicles: bool,

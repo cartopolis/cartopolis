@@ -406,6 +406,13 @@ struct Building {
     roof_height: Option<f32>,
     /// `roof:orientation=across` (ridge across the long axis instead of along it).
     roof_across: bool,
+    /// Wall base above ground (`min_height` / `building:min_level`, Simple 3D
+    /// Buildings) — an archway's opening, a tower section's start.
+    min_height: f32,
+    /// A `building:part` way. Parts carry a landmark's real massing (the church
+    /// tower over its nave); where they cover an outline, the outline's own
+    /// one-block extrusion is skipped (see [`resolve_parts`]).
+    part: bool,
 }
 
 /// A detail patch fully prepared on the background thread — fetched footprints
@@ -1005,6 +1012,8 @@ pub fn update_buildings(
                                 !lod22_covers(bx, by)
                             })
                         });
+                        // Simple 3D Buildings: parts replace covered outlines.
+                        resolve_parts(&mut buildings);
                         // Deduped: with consistent windings the fan-triangulated flat caps
                         // and shared footprint corners collapse to one vertex each.
                         let mut bld = MeshData::with_dedup();
@@ -1036,6 +1045,7 @@ pub fn update_buildings(
                                 b.roof_shape,
                                 b.roof_height,
                                 b.roof_across,
+                                b.min_height,
                             );
                         }
                         BuiltPatch {
@@ -1389,6 +1399,10 @@ pub fn update_buildings(
         let detail_fps = osm
             .buildings
             .iter()
+            // A part raised clear of head height is an archway or a skybridge —
+            // the ground under it is walkable, and a collider there would be an
+            // invisible wall across a passage the mapper deliberately opened.
+            .filter(|b| b.min_height < 2.2)
             .filter_map(|b| {
                 let ring: Vec<Vec2> = b
                     .ring
@@ -1463,6 +1477,13 @@ fn build_far_from_text(
     let mut buf = MeshData::with_dedup();
     let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
     for b in &buildings {
+        // The far tier keeps the one-block outlines and skips parts entirely:
+        // from kilometres away a part is sub-pixel massing, and rendering both
+        // would stack a part inside the outline `resolve_parts` only removes on
+        // the detail tier.
+        if b.part {
+            continue;
+        }
         // A building straddling a cell edge is returned by both cells; only the
         // cell owning its first vertex renders it. Half-open bounds ([south,north),
         // [west,east)) so a vertex exactly on a shared edge lands in one cell only.
@@ -2141,7 +2162,7 @@ fn push_building_lod(
         // kept a couple of metres below the wall top so they never reach the roof.
         let win_top = height - 2.5;
         if win_top >= WINDOW_MIN_HEIGHT {
-            push_wall_windows(wins, seed, a, b, perp, win_top, &FAR_WINDOWS);
+            push_wall_windows(wins, seed, a, b, perp, 0.0, win_top, &FAR_WINDOWS);
         }
     }
     flat_cap(bld, &ring, height, roof);
@@ -2162,6 +2183,7 @@ fn push_building(
     roof_shape: RoofShape,
     roof_height: Option<f32>,
     roof_across: bool,
+    min_height: f32,
 ) {
     let mut ring = ring_in.to_vec();
     if ring.len() >= 2 && ring.first() == ring.last() {
@@ -2171,6 +2193,7 @@ fn push_building(
     if n < 3 || height <= 0.0 {
         return;
     }
+    let min_height = min_height.min(height - 0.5).max(0.0);
     let wall = [wall_color[0], wall_color[1], wall_color[2], 1.0];
     let roof = [roof_color[0], roof_color[1], roof_color[2], 1.0];
 
@@ -2210,10 +2233,15 @@ fn push_building(
         // Wound to face `perp`, so the wall can be back-face culled. (A vertical
         // quad's derived flat normal is exactly ±perp, so this is identical to the
         // explicit normal this used to push — just with the winding fixed too.)
-        let base = wall_base_tone(wall, wall_h);
+        // A raised part gets no ground-contact band: its base is mid-air.
+        let base = if min_height > 0.0 {
+            wall
+        } else {
+            wall_base_tone(wall, wall_h)
+        };
         bld.quad_facing_graded(
-            Vec3::new(a.x, 0.0, a.y),
-            Vec3::new(b.x, 0.0, b.y),
+            Vec3::new(a.x, min_height, a.y),
+            Vec3::new(b.x, min_height, b.y),
             Vec3::new(b.x, wall_h, b.y),
             Vec3::new(a.x, wall_h, a.y),
             [base, base, wall, wall],
@@ -2222,8 +2250,19 @@ fn push_building(
 
         // Windows only on the walls of tall enough buildings (skips houses/sheds
         // and all roof/gable surfaces).
-        if wall_h >= WINDOW_MIN_HEIGHT {
-            push_wall_windows(wins, seed, a, b, perp, wall_h, &DETAIL_WINDOWS);
+        if wall_h - min_height >= WINDOW_MIN_HEIGHT {
+            push_wall_windows(wins, seed, a, b, perp, min_height, wall_h, &DETAIL_WINDOWS);
+        }
+    }
+
+    // A raised part shows its underside (an archway seen from below).
+    if min_height > 0.0 {
+        let flat: Vec<f64> = ring.iter().flat_map(|p| [p.x as f64, p.y as f64]).collect();
+        if let Ok(cap) = earcutr::earcut(&flat, &[], 2) {
+            for t in cap.chunks_exact(3) {
+                let p = |i: usize| Vec3::new(ring[i].x, min_height, ring[i].y);
+                bld.tri_facing(p(t[0]), p(t[1]), p(t[2]), wall, Vec3::NEG_Y);
+            }
         }
     }
 
@@ -2289,6 +2328,7 @@ fn push_wall_windows(
     a: Vec2,
     b: Vec2,
     out: Vec2,
+    y0: f32,
     wall_h: f32,
     g: &WindowGrid,
 ) {
@@ -2306,7 +2346,7 @@ fn push_wall_windows(
     let start = (len - (ncols as f32 - 1.0) * g.pitch) * 0.5;
     let color = [1.0, 1.0, 1.0, 1.0];
     let mut row = 0i32;
-    let mut wy = g.sill;
+    let mut wy = y0 + g.sill;
     while wy + g.h <= wall_h - 0.4 {
         for c in 0..ncols {
             let bucket = window_bucket(seed, row, c);
@@ -2463,8 +2503,11 @@ fn ridged_roof(
 
 /// On-disk cache path for a fixed CACHE_ZOOM cell (independent of patch size, so
 /// changing the patch radius never invalidates the cache).
+/// Versioned (`v2`): the query grew `building:part` ways, and a cell cached
+/// under the old query would silently lack every part forever. Stale `v1`
+/// files linger in the evictable Cache namespace until pruned.
 fn cell_cache_key(cx: i64, cy: i64, zoom: u32) -> String {
-    format!("buildings/{}/{}/{}.json", zoom, cx, cy)
+    format!("buildings/v2/{}/{}/{}.json", zoom, cx, cy)
 }
 
 /// Assemble a patch's buildings from the fixed CACHE_ZOOM cells covering its bbox:
@@ -2604,7 +2647,8 @@ async fn fetch_cell_overpass_text(cx: i64, cy: i64, zoom: u32) -> Result<String,
     let (north, west) = tile_to_lat_lng(cx, cy, zoom);
     let (south, east) = tile_to_lat_lng(cx + 1, cy + 1, zoom);
     let query = format!(
-        "[out:json][timeout:25];way[\"building\"]({south},{west},{north},{east});out geom;"
+        "[out:json][timeout:25];(way[\"building\"]({south},{west},{north},{east});\
+         way[\"building:part\"]({south},{west},{north},{east}););out geom;"
     );
     let fetched = overpass_query(&query).await?;
     // Space out live queries against a public instance so a multi-cell patch
@@ -2703,13 +2747,30 @@ fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
         }
         let id = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let tags = el.get("tags");
+        // A way with both tags is an outline that happens to also be a part
+        // (mappers do this); treating it as an outline keeps it standing when
+        // nothing else covers it.
+        let part = tag_str(tags, "building").is_none()
+            && tag_str(tags, "building:part").is_some_and(|v| v != "no");
+        let min_height = tags
+            .and_then(|t| t.get("min_height"))
+            .and_then(num_from_value)
+            .or_else(|| {
+                tags.and_then(|t| t.get("building:min_level"))
+                    .and_then(num_from_value)
+                    .map(|l| l * STOREY_HEIGHT)
+            })
+            .unwrap_or(0.0)
+            .max(0.0);
         let seed = color_seed(ring[0]);
         let (height_m, height_is_eaves) = building_height(tags, seed);
         let (wall_color, roof_color) = derive_colors(tags, ring[0]);
         let mut roof_shape = parse_roof_shape(tag_str(tags, "roof:shape"));
         // roof:shape is sparsely tagged; small residential buildings are almost
         // always gabled, so default them to that (odd shapes flatten downstream).
-        if roof_shape == RoofShape::Flat && default_pitched(tags, &ring) {
+        // Parts are exempt: a part is deliberate modelling, and guessing a gable
+        // onto a tower section stacks a roof mid-façade.
+        if !part && roof_shape == RoofShape::Flat && default_pitched(tags, &ring) {
             roof_shape = RoofShape::Gabled;
         }
         let roof_height = tags
@@ -2726,9 +2787,88 @@ fn parse_buildings(text: &str) -> Result<Vec<Building>, String> {
             roof_shape,
             roof_height,
             roof_across,
+            min_height,
+            part,
         });
     }
     Ok(out)
+}
+
+/// Even-odd point-in-ring test (lat/lng or any planar pair).
+fn point_in_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let n = ring.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (yi, xi) = ring[i];
+        let (yj, xj) = ring[j];
+        if ((yi > p.0) != (yj > p.0)) && p.1 < (xj - xi) * (p.0 - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Planar ring area in squared degrees — only ever compared against another
+/// area from the same cell, so the projection distortion cancels.
+fn ring_area_deg2(ring: &[(f64, f64)]) -> f64 {
+    let n = ring.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let (y0, x0) = ring[i];
+        let (y1, x1) = ring[(i + 1) % n];
+        a += x0 * y1 - x1 * y0;
+    }
+    (a * 0.5).abs()
+}
+
+/// Simple 3D Buildings: where `building:part` ways cover most of an outline,
+/// drop the outline's own extrusion and let the parts carry the massing —
+/// that is what parts are *for* (the church tower over its nave, the setback
+/// storeys of an office block). Coverage below half keeps both: sparse parts
+/// are usually an annex on an otherwise unmodelled building, and losing the
+/// outline there would amputate it.
+fn resolve_parts(buildings: &mut Vec<Building>) {
+    if !buildings.iter().any(|b| b.part) {
+        return;
+    }
+    // Part centroids, so containment is one point test per (outline, part).
+    let centroids: Vec<Option<((f64, f64), f64)>> = buildings
+        .iter()
+        .map(|b| {
+            b.part.then(|| {
+                let n = b.ring.len() as f64;
+                let (mut clat, mut clng) = (0.0, 0.0);
+                for &(la, lo) in &b.ring {
+                    clat += la;
+                    clng += lo;
+                }
+                ((clat / n, clng / n), ring_area_deg2(&b.ring))
+            })
+        })
+        .collect();
+    let mut drop = vec![false; buildings.len()];
+    for (i, outline) in buildings.iter().enumerate() {
+        if outline.part {
+            continue;
+        }
+        let own = ring_area_deg2(&outline.ring);
+        if own <= 0.0 {
+            continue;
+        }
+        let covered: f64 = centroids
+            .iter()
+            .flatten()
+            .filter(|(c, _)| point_in_ring(*c, &outline.ring))
+            .map(|(_, area)| area)
+            .sum();
+        if covered >= own * 0.5 {
+            drop[i] = true;
+        }
+    }
+    let mut keep = drop.iter().map(|d| !d);
+    buildings.retain(|_| keep.next().unwrap_or(true));
 }
 
 /// Derive wall + roof colours from OSM tags, with heuristic fallbacks plus a small
@@ -2963,7 +3103,7 @@ fn estimate_height(btype: &str, seed: u64) -> f32 {
 }
 
 /// Parse a leading number from a JSON value that may be a number or a string like "12 m".
-fn num_from_value(v: &serde_json::Value) -> Option<f32> {
+pub(crate) fn num_from_value(v: &serde_json::Value) -> Option<f32> {
     if let Some(n) = v.as_f64() {
         return Some(n as f32);
     }
@@ -3184,6 +3324,7 @@ mod tests {
                     shape,
                     None,
                     false,
+                    0.0,
                 );
                 assert_outward(&bld, &format!("{name} (clockwise={clockwise})"));
             }
@@ -3281,5 +3422,109 @@ mod tests {
         assert_eq!(bld.positions.len(), 20);
         assert_eq!(bld.positions.len(), bld.normals.len());
         assert_eq!(bld.positions.len(), bld.colors.len());
+    }
+
+    /// A degree-scale square ring around `(lat, lng)`.
+    fn deg_ring(lat: f64, lng: f64, half: f64) -> Vec<(f64, f64)> {
+        vec![
+            (lat - half, lng - half),
+            (lat - half, lng + half),
+            (lat + half, lng + half),
+            (lat + half, lng - half),
+            (lat - half, lng - half),
+        ]
+    }
+
+    #[test]
+    fn parses_building_parts_with_min_height() {
+        let text = r#"{"elements":[
+            {"type":"way","id":1,
+             "geometry":[{"lat":53.0,"lon":6.0},{"lat":53.0,"lon":6.001},
+                         {"lat":53.001,"lon":6.001},{"lat":53.0,"lon":6.0}],
+             "tags":{"building":"church"}},
+            {"type":"way","id":2,
+             "geometry":[{"lat":53.0,"lon":6.0},{"lat":53.0,"lon":6.0005},
+                         {"lat":53.0005,"lon":6.0005},{"lat":53.0,"lon":6.0}],
+             "tags":{"building:part":"yes","height":"40","min_height":"12"}}
+        ]}"#;
+        let b = parse_buildings(text).unwrap();
+        assert_eq!(b.len(), 2);
+        assert!(!b[0].part);
+        assert!(b[1].part);
+        assert_eq!(b[1].min_height, 12.0);
+        // A part must never inherit the residential gable guess.
+        assert_eq!(b[1].roof_shape, RoofShape::Flat);
+    }
+
+    /// Parts covering most of an outline replace it; sparse parts (an annex on
+    /// an otherwise unmodelled building) leave the outline standing.
+    #[test]
+    fn parts_replace_a_covered_outline_and_spare_an_uncovered_one() {
+        let outline = |id: i64, lat: f64, lng: f64, half: f64| Building {
+            id,
+            ring: deg_ring(lat, lng, half),
+            height_m: 10.0,
+            height_is_eaves: true,
+            wall_color: [0.5; 3],
+            roof_color: [0.4; 3],
+            roof_shape: RoofShape::Flat,
+            roof_height: None,
+            roof_across: false,
+            min_height: 0.0,
+            part: false,
+        };
+        let part = |id: i64, lat: f64, lng: f64, half: f64| Building {
+            part: true,
+            ..outline(id, lat, lng, half)
+        };
+
+        // Covered: one part over ~81% of the outline's area.
+        let mut covered = vec![outline(1, 53.0, 6.0, 0.001), part(2, 53.0, 6.0, 0.0009)];
+        resolve_parts(&mut covered);
+        assert_eq!(covered.len(), 1, "outline dropped");
+        assert!(covered[0].part);
+
+        // Sparse: one small part (~4%) — the outline must survive.
+        let mut sparse = vec![outline(1, 53.0, 6.0, 0.001), part(2, 53.0, 6.0, 0.0002)];
+        resolve_parts(&mut sparse);
+        assert_eq!(sparse.len(), 2, "outline kept");
+
+        // A part elsewhere covers nothing here.
+        let mut elsewhere = vec![outline(1, 53.0, 6.0, 0.001), part(2, 53.1, 6.1, 0.0009)];
+        resolve_parts(&mut elsewhere);
+        assert_eq!(elsewhere.len(), 2);
+    }
+
+    /// A raised part's walls start at `min_height`, and it gains an underside.
+    #[test]
+    fn a_raised_part_starts_at_its_min_height() {
+        let mut bld = MeshData::default();
+        let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
+        push_building(
+            &mut bld,
+            &mut wins,
+            1,
+            &square(false),
+            20.0,
+            true,
+            [0.5, 0.5, 0.5],
+            [0.4, 0.3, 0.3],
+            RoofShape::Flat,
+            None,
+            false,
+            8.0,
+        );
+        let min_y = bld
+            .positions
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (min_y - 8.0).abs() < 1e-4,
+            "no vertex below min_height, got {min_y}"
+        );
+        // Underside: at least one triangle's flat normal points down.
+        let down = bld.normals.iter().any(|n| n[1] < -0.9);
+        assert!(down, "raised part needs an underside cap");
     }
 }

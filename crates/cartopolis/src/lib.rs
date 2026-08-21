@@ -1668,6 +1668,8 @@ fn run_client() {
         })
         .init_resource::<systems::osm_buildings::OsmBuildings>()
         .init_resource::<systems::lod22::Lod22Buildings>()
+        .init_resource::<systems::street_detail::StreetDetail>()
+        .init_resource::<systems::tall_structures::TallStructures>()
         .init_resource::<systems::collision::BuildingColliders>()
         .init_resource::<systems::height::HeightLayer>()
         .init_resource::<systems::terrain::TerrainField>()
@@ -2106,6 +2108,26 @@ fn run_client() {
                 systems::geo_nav::apply_camera_reanchor.before(systems::geo_nav::apply_teleport),
             ),
             attach_avatar_to_bigspace,
+        ),
+    )
+    // The Overpass street-detail streamer, and the small systems riding it:
+    // night glow + the point-light pool, the signal phase cycle and the
+    // altitude fade. Its own block: the map tuple above is at the limit.
+    .add_systems(
+        Update,
+        (
+            systems::street_detail::update_street_detail.after(rendering::spawn_regions),
+            systems::street_detail::update_lamp_glow
+                .after(systems::street_detail::update_street_detail),
+            systems::street_detail::update_lamp_lights
+                .after(systems::street_detail::update_street_detail),
+            systems::street_detail::update_signal_cycle
+                .after(systems::street_detail::update_street_detail),
+            systems::street_detail::update_prop_fade
+                .after(systems::street_detail::update_street_detail),
+            systems::tall_structures::update_tall_structures.after(rendering::spawn_regions),
+            systems::tall_structures::spin_rotors
+                .after(systems::tall_structures::update_tall_structures),
         ),
     )
     .add_systems(
