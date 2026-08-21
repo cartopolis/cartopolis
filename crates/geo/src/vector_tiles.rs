@@ -1698,22 +1698,30 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 ///   in one band really are the same width; a residential street (7 m) no longer
 ///   ties with a secondary (11 m).
 ///
-/// Lines that tie on both fall back to `tie_seed`, a **hash of the line's own
-/// endpoints** (see `line_tie_seed`), not its index in the tile. The index was a
-/// per-tile shuffle with two real failure modes: a Shortbread `MultiLineString`
-/// whose parts cross each other gave every part the same index — a guaranteed
-/// exact-coplanar z-fight (measured at up to 37 % self-overlap within a class at
-/// a single junction) — and 1 in 4 same-band crossings collided anyway. A
-/// geometry hash decorrelates both. It is still not stable across a tile seam
-/// (each tile clips its own copy of a shared street, so no whole-line function
-/// can be), but a junction lives inside one tile far more often than on a seam.
+/// Lines that tie on both are separated by `tie_seed`. `tessellate_roads` hands
+/// this a rung chosen across the whole tile by [`assign_road_ties`], which is
+/// what stops two overlapping same-band lines landing on one rung; the seed is a
+/// **hash of the line's own endpoints** (`line_tie_seed`) wherever no
+/// coordinated answer exists, and that hash is what the assignment itself starts
+/// from. The seed is deliberately not the feature's index in the tile: a
+/// Shortbread `MultiLineString` whose parts cross each other gave every part the
+/// same index — a guaranteed exact-coplanar z-fight (measured at up to 37 %
+/// self-overlap within a class at a single junction). Neither the hash nor the
+/// assignment is stable across a tile seam (each tile clips its own copy of a
+/// shared street, so no whole-line function can be), but a junction lives inside
+/// one tile far more often than on a seam.
 fn road_rung(width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
     let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
         return ROAD_LAYERS - BRIDGE_LAYERS + tie;
     }
-    let band = ROAD_WIDTH_BANDS.iter().filter(|t| width_m >= **t).count() as u32;
-    band * ROAD_TIE_LAYERS + tie
+    road_band(width_m) * ROAD_TIE_LAYERS + tie
+}
+
+/// Which [`ROAD_WIDTH_BANDS`] band a width falls in: the count of thresholds at
+/// or below it.
+fn road_band(width_m: f32) -> u32 {
+    ROAD_WIDTH_BANDS.iter().filter(|t| width_m >= **t).count() as u32
 }
 
 /// Tie-break seed for one linestring: a mix of its endpoint coordinates, so two
@@ -1727,6 +1735,178 @@ fn line_tie_seed(head: [f32; 2], tail: [f32; 2]) -> u64 {
         h ^= h >> 29;
     }
     h
+}
+
+/// One line's entry in the tie-assignment pass.
+struct TieLine {
+    /// Lines can only collide within one band, and bridges take their own
+    /// reserved block, so this is the whole of "could these two ever tie".
+    key: (u32, bool),
+    /// Whole-line bounds in tile units, widened by the ribbon's half-width — the
+    /// cheap reject before the per-segment test.
+    min: [f32; 2],
+    max: [f32; 2],
+    /// Per-segment bounds, same padding. **The whole-line box is far too blunt to
+    /// colour against**: a long diagonal street's box covers a quarter of the
+    /// tile and "overlaps" almost every other street in its band, which builds a
+    /// nearly complete graph, exhausts the four colours and sends most lines back
+    /// to the hash. Testing segments recovers the real adjacency — measured on
+    /// the fixture, the whole-line box left 0.79 % of road pixels coplanar where
+    /// segments leave far less.
+    segs: Vec<([f32; 2], [f32; 2])>,
+    seed: u64,
+    at: (usize, usize),
+}
+
+impl TieLine {
+    /// Do these two ribbons share any ground?
+    fn touches(&self, other: &TieLine) -> bool {
+        let apart = |amin: [f32; 2], amax: [f32; 2], bmin: [f32; 2], bmax: [f32; 2]| {
+            amax[0] < bmin[0] || bmax[0] < amin[0] || amax[1] < bmin[1] || bmax[1] < amin[1]
+        };
+        if apart(self.min, self.max, other.min, other.max) {
+            return false;
+        }
+        self.segs.iter().any(|(amin, amax)| {
+            other
+                .segs
+                .iter()
+                .any(|(bmin, bmax)| !apart(*amin, *amax, *bmin, *bmax))
+        })
+    }
+}
+
+/// Choose each line's tie rung so that two roads which share a width band *and*
+/// overlap on the ground never land on the same one.
+///
+/// **The hash alone cannot do this, and the ladder cannot be made bigger.**
+/// `line_tie_seed` is drawn independently per line, so two roads in one band
+/// collide one time in [`ROAD_TIE_LAYERS`] — and a collision here is not a
+/// settled order but an exact-coplanar pair, i.e. an opaque z-fight that
+/// flickers per pixel as the camera moves. Measured on the Groningen z14
+/// fixture, that left 1.60 % of road-covered pixels fighting. The obvious
+/// answer — more rungs — is unavailable: [`ROAD_LAYERS`] rungs at
+/// [`ROAD_LAYER_STEP`] already reach 1.44 mm against the 1.5 mm the road sheet
+/// has under the buildings, and the step cannot shrink because it has to clear
+/// the depth buffer's ~120 µm quantum at 1 km.
+///
+/// So the assignment is *coordinated* rather than drawn: within a band the
+/// overlapping lines form a graph, and this is a greedy colouring of it. A line
+/// keeps its hashed rung whenever that rung is free, which leaves the
+/// non-colliding majority exactly where it was and moves only what must move;
+/// where every colour is taken the hash decides as before, so the result is
+/// never worse than the old behaviour and is usually exact.
+///
+/// Bounds are compared rather than the geometry: a bounding box is a superset of
+/// the ribbon, so this can invent an edge between two roads that merely pass
+/// near one another. That costs a little colour diversity and never correctness.
+/// O(n²) over the lines of one tile — 95 street features on the fixture, so a
+/// few thousand box tests against a ~121 ms raster.
+fn assign_road_ties(
+    features: &[Feature],
+    scale: f32,
+) -> std::collections::HashMap<(usize, usize), u32> {
+    let mut lines: Vec<TieLine> = Vec::new();
+    for (fi, feature) in features.iter().enumerate() {
+        let Some((_, half)) = drawn_street(feature) else {
+            continue;
+        };
+        let bridge = flag_of(feature, "bridge");
+        let mut geoms: Vec<&geo_types::LineString<f32>> = Vec::new();
+        match &feature.geometry {
+            Geometry::LineString(ls) => geoms.push(ls),
+            Geometry::MultiLineString(mls) => geoms.extend(mls.iter()),
+            _ => continue,
+        }
+        // `half` is metres; these bounds are in tile units.
+        let pad = if scale > 0.0 { half / scale } else { 0.0 };
+        for (li, ls) in geoms.iter().enumerate() {
+            let pts: Vec<[f32; 2]> =
+                ls.0.iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| [c.x, c.y])
+                    .collect();
+            let (Some(h), Some(t)) = (pts.first().copied(), pts.last().copied()) else {
+                continue;
+            };
+            let mut min = [f32::MAX, f32::MAX];
+            let mut max = [f32::MIN, f32::MIN];
+            for p in &pts {
+                min[0] = min[0].min(p[0]);
+                min[1] = min[1].min(p[1]);
+                max[0] = max[0].max(p[0]);
+                max[1] = max[1].max(p[1]);
+            }
+            let segs: Vec<([f32; 2], [f32; 2])> = pts
+                .windows(2)
+                .map(|w| {
+                    (
+                        [w[0][0].min(w[1][0]) - pad, w[0][1].min(w[1][1]) - pad],
+                        [w[0][0].max(w[1][0]) + pad, w[0][1].max(w[1][1]) + pad],
+                    )
+                })
+                .collect();
+            if segs.is_empty() {
+                continue;
+            }
+            lines.push(TieLine {
+                key: (road_band(half * 2.0), bridge),
+                min: [min[0] - pad, min[1] - pad],
+                max: [max[0] + pad, max[1] + pad],
+                segs,
+                seed: line_tie_seed(h, t),
+                at: (fi, li),
+            });
+        }
+    }
+
+    // Adjacency once. The colouring consults it repeatedly and orders itself by
+    // it, so computing it up front is both cheaper than testing pairs inside the
+    // loop and what makes the ordering below possible.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
+    for i in 0..lines.len() {
+        for j in (i + 1)..lines.len() {
+            if lines[i].key == lines[j].key && lines[i].touches(&lines[j]) {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+
+    // Welsh–Powell: colour the most constrained lines first, so a crowded
+    // junction gets its colours before the four are gone and the sparse edges of
+    // the tile take what is left. Ties broken by the hash and then by position,
+    // so the answer never depends on the order the tile stored its features in.
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    order.sort_by(|&a, &b| {
+        adj[b]
+            .len()
+            .cmp(&adj[a].len())
+            .then(lines[a].seed.cmp(&lines[b].seed))
+            .then(lines[a].at.cmp(&lines[b].at))
+    });
+
+    let mut chosen: Vec<Option<u32>> = vec![None; lines.len()];
+    let mut out = std::collections::HashMap::new();
+    for &i in &order {
+        let mut used = [false; ROAD_TIE_LAYERS as usize];
+        for &j in &adj[i] {
+            if let Some(t) = chosen[j] {
+                used[t as usize] = true;
+            }
+        }
+        let hashed = (lines[i].seed % ROAD_TIE_LAYERS as u64) as u32;
+        let tie = if used[hashed as usize] {
+            (0..ROAD_TIE_LAYERS)
+                .find(|t| !used[*t as usize])
+                .unwrap_or(hashed)
+        } else {
+            hashed
+        };
+        chosen[i] = Some(tie);
+        out.insert(lines[i].at, tie);
+    }
+    out
 }
 
 /// The across-road `u` span a junction stub samples: a column of plain road
@@ -1804,6 +1984,9 @@ pub fn tessellate_roads(
     let extent = TileData::extent(meta);
     let scale = tile_m / extent;
     let nodes = street_nodes(&features, scale);
+    // Rungs for the lines that could otherwise land coplanar, decided across the
+    // whole tile before any of them is built — see `assign_road_ties`.
+    let ties = assign_road_ties(&features, scale);
 
     let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
     // Groups cut loose mid-tile, over the frame's upload budget. See the sweep at
@@ -1841,7 +2024,7 @@ pub fn tessellate_roads(
             _ => continue,
         }
 
-        for ls in lines {
+        for (li, ls) in lines.into_iter().enumerate() {
             let pts: Vec<[f32; 2]> =
                 ls.0.iter()
                     .filter(|c| c.x.is_finite() && c.y.is_finite())
@@ -1858,8 +2041,11 @@ pub fn tessellate_roads(
             let closed = pts.len() >= 4 && (head[0] - tail[0]).hypot(head[1] - tail[1]) <= 1e-4;
             // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
             // *linestring*, so the crossing parts of one merged feature separate.
-            let y =
-                road_rung(half * 2.0, bridge, line_tie_seed(head, tail)) as f32 * ROAD_LAYER_STEP;
+            let tie = ties
+                .get(&(fi, li))
+                .copied()
+                .map_or_else(|| line_tie_seed(head, tail), u64::from);
+            let y = road_rung(half * 2.0, bridge, tie) as f32 * ROAD_LAYER_STEP;
             // The line's outward direction at each end (tile units — uniform
             // scale, so angles match the metre frame), for the crossing-angle
             // term in `junction_extent`.

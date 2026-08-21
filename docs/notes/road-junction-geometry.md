@@ -69,3 +69,46 @@ class over the fixture went 10.7 % → 6.0 % (`Minor`), 8.0 % → 0.0 % (`Major`
 and the interchange at the north of the tile. `cargo test -p cartopolis_geo
 dump_road_ribbons -- --ignored --nocapture` (with `CARTO_DUMP_WIN="x,z,size"`)
 is how those numbers and the picture behind them are read.
+
+# A hash cannot break a tie it draws independently
+
+Overlapping is fine; landing on the *same rung* is not, and until 2026-08-21 one
+crossing in four did. `road_rung` picks a tie from `line_tie_seed % 4`, drawn per
+line with no reference to what it crosses, so two roads sharing a width band
+collided at exactly the rate the modulus allows. A collision there is not a
+settled order — both materials are opaque and coplanar, so it is a per-pixel
+z-fight that flickers under any camera motion. Measured over the fixture
+(`overlapping_road_features_are_separated_in_depth`, which prints the figure):
+**1.60 % of road-covered pixels**. The test only ever asserted < 5 %, so it had
+been passing over this the whole time.
+
+**More rungs is not available, and that is the constraint that shapes the fix.**
+`ROAD_LAYERS` × `ROAD_LAYER_STEP` is already 1.44 mm against the 1.5 mm the road
+sheet has under the buildings' base, and the step cannot shrink — it exists to
+clear the depth buffer's ~120 µm quantum at 1 km. The ladder is full.
+
+So `assign_road_ties` coordinates the assignment instead of drawing it: within a
+band the overlapping lines are a graph, and it is greedily coloured, most
+constrained first (Welsh–Powell). A line keeps its hashed rung whenever that rung
+is free, so the non-colliding majority does not move at all and the change is
+invisible except where it had to act. Two things measured on the way:
+
+| adjacency rule | coplanar overlap |
+|---|---|
+| hash alone (before) | 1.60 % |
+| whole-line bounding boxes | 0.79 % |
+| per-segment boxes | 0.64 % |
+| per-segment + Welsh–Powell | **0.62 %** |
+
+**Whole-line boxes are far too blunt**, which is why the first attempt only got
+half of it: a long diagonal street's box covers a quarter of the tile and
+"overlaps" nearly every road in its band, building an almost complete graph that
+exhausts four colours and sends most lines back to the hash. The ordering, by
+contrast, is worth little on its own (0.64 → 0.62) — it is the adjacency that
+carries the fix.
+
+The residue is genuine: places where more than `ROAD_TIE_LAYERS` ribbons of one
+band really do overlap at one spot, where four colours cannot be enough and the
+hash decides as before. Getting past it needs a different mechanism, not a better
+colouring. Note also that neither the hash nor the assignment is stable across a
+tile seam, for the reason the ribbon joins are not: each tile clips its own copy.
