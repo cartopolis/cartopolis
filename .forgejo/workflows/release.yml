@@ -53,11 +53,18 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
-      # The compilation and download caches, the same host directories ci.yml
-      # mounts. Both are in the runner's `valid_volumes`.
+      # The compilation cache is the same host directory ci.yml mounts —
+      # sccache is keyed on the compiler invocation and is safe to share. The
+      # download cache is **this workflow's own copy**, and deploy-web.yml has
+      # the long version: a bind mount of `registry/` excludes cargo's lock,
+      # which lives one level above it at `$CARGO_HOME/.package-cache`, so two
+      # concurrent containers write one registry with nothing serialising them.
+      # A tag push during a `main` run is exactly that. Both are in the runner's
+      # `valid_volumes`. The two jobs here share one copy safely: `release`
+      # needs `test`, so they never overlap.
       options: >-
         --volume /data/ci-cache/sccache:/sccache
-        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+        --volume /data/ci-cache/cargo-registry-release:/root/.cargo/registry
     env:
       # Byte-identical to ci.yml's build-test job, and that is the requirement
       # rather than a tidiness preference: RUSTFLAGS is part of the sccache key,
@@ -151,11 +158,18 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: cartopolis-ci:latest
-      # The compilation and download caches, the same host directories ci.yml
-      # mounts. Both are in the runner's `valid_volumes`.
+      # The compilation cache is the same host directory ci.yml mounts —
+      # sccache is keyed on the compiler invocation and is safe to share. The
+      # download cache is **this workflow's own copy**, and deploy-web.yml has
+      # the long version: a bind mount of `registry/` excludes cargo's lock,
+      # which lives one level above it at `$CARGO_HOME/.package-cache`, so two
+      # concurrent containers write one registry with nothing serialising them.
+      # A tag push during a `main` run is exactly that. Both are in the runner's
+      # `valid_volumes`. The two jobs here share one copy safely: `release`
+      # needs `test`, so they never overlap.
       options: >-
         --volume /data/ci-cache/sccache:/sccache
-        --volume /data/ci-cache/cargo-registry:/root/.cargo/registry
+        --volume /data/ci-cache/cargo-registry-release:/root/.cargo/registry
     steps:
       - uses: actions/checkout@v4
         with:

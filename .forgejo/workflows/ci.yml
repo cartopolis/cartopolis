@@ -190,9 +190,10 @@ jobs:
         # vendored as a path dep), so the registry is the whole of it — add
         # `/root/.cargo/git` here the day that stops being true.
         #
-        # The `test` job's own copy. **Not** shared with `targets`, which mounts
-        # `cargo-registry-targets` — its volume list has the race that cost this
-        # one, and why a bind mount of `registry/` cannot be shared at all.
+        # The `test` job's own copy, and nothing else mounts it: `targets` has
+        # `cargo-registry-targets`, and each `deploy-*` lane and `release.yml`
+        # have theirs. `targets`' volume list has the race that cost this one,
+        # and why a bind mount of `registry/` cannot be shared at all.
         - /data/ci-cache/cargo-registry:/root/.cargo/registry
     env:
       # mold instead of lld, which `.cargo/config.toml` has invited in a comment
@@ -592,13 +593,26 @@ jobs:
         # of disk and a registry that warms twice; the two are independent, so
         # they cannot race whatever order the runner starts them in.
         #
-        # Not fixed, and worth knowing: the three `deploy-*.yml` lanes still mount
-        # the `test` job's registry, so a manual dispatch during a `main` run can
-        # still lose this way — the runner has capacity 3, so any three jobs can
-        # be concurrent. They are rare and manual, and four registries to keep warm
-        # is a worse trade than an occasional re-run; but if one of them ever
-        # fails with a crate that "cannot compile its own source", this is why,
-        # and the fix is another copy.
+        # This paragraph used to end "not fixed, and worth knowing: the three
+        # `deploy-*.yml` lanes still mount the `test` job's registry … they are
+        # rare and manual, and four registries to keep warm is a worse trade
+        # than an occasional re-run". That trade was wrong, and it was called on
+        # 2026-08-21: `deploy-web`, `deploy-sim` and `deploy-android` were
+        # dispatched within twenty seconds of each other after a merge, all three
+        # mounted this job's registry, and the web deploy died on a
+        # half-extracted `toml_datetime 0.7.3` — the exact signature above. A
+        # deploy that needs a re-run to succeed is not "an occasional re-run",
+        # because nothing about the error says to re-run it. Every lane has its
+        # own copy now (`-web`, `-sim`, `-android`, `-release`), each also listed
+        # in the runner's `valid_volumes`. Cost: ~310 MB apiece and a registry
+        # that warms per lane, which `Swatinem/rust-cache` mostly pays anyway.
+        #
+        # A lock shared across lanes was considered instead — one registry, plus
+        # a bind-mounted `$CARGO_HOME/.package-cache` so the containers really
+        # do serialise — and rejected, because cargo is not the only writer:
+        # `rust-cache` extracts a ~570 MB archive over `/root/.cargo/registry`
+        # and prunes `registry/src` in its post step, and neither step takes
+        # cargo's lock. Isolation covers both writers; a shared lock covers one.
         - /data/ci-cache/cargo-registry-targets:/root/.cargo/registry
     steps:
       - uses: actions/checkout@v4
