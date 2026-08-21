@@ -37,9 +37,11 @@ use bevy::window::PrimaryWindow;
 use big_space::prelude::GridCell;
 
 use crate::components::{FreeCamera, StreamTileReady};
+use crate::resources::AuthIdentity;
 use crate::systems::egui_manager::EguiManager;
 use crate::systems::globe::GlobeState;
 use crate::systems::map_stream::MapStream;
+use crate::systems::session::{SessionMode, SessionState, SessionStatus};
 use crate::systems::theme;
 
 /// The line under the wordmark. Named because `index.html` carries the same
@@ -141,40 +143,87 @@ struct Loading {
 /// `MapStream` — see [`MapStream::wanted_tiles`] for why the streamer's own
 /// `loaded` count cannot be the numerator (it reaches the full ring within a
 /// frame or two of an anchor, while every tile is still blank paper).
-fn loading(stream: &MapStream, globe: &GlobeState, in_space: bool, tiles_ready: usize) -> Loading {
-    if stream.geo_anchor().is_none() {
-        return Loading {
+fn loading(
+    stream: &MapStream,
+    globe: &GlobeState,
+    in_space: bool,
+    tiles_ready: usize,
+    signin: Option<String>,
+) -> Loading {
+    let mut progress = if stream.geo_anchor().is_none() {
+        Loading {
             label: "Placing the map…".to_owned(),
             fraction: None,
             ready: false,
-        };
-    }
-    // In space the flat clipmap is frozen *and* hidden; the globe's quadtree is
-    // the layer that will be uncovered, so it is the one to wait for and to
-    // report. Asking `MapStream` here is what produced the eighteen-second hold.
-    let (what, have, want, ready) = if in_space {
-        let (have, want) = globe.tile_progress();
-        ("globe", have, want, have > 0)
+        }
     } else {
-        (
-            "map",
-            tiles_ready,
-            stream.wanted_tiles(),
-            // Unchanged from the signal this system has always dismissed on: a
-            // spawned ring is a paper-coloured map, which is a world. Holding out
-            // for textures instead would make every warm start *longer*, and the
-            // complaint about this screen has never been that it is too short.
-            stream.has_tiles(),
-        )
-    };
-    Loading {
-        label: if want > 0 {
-            format!("Streaming the {what}… {have}/{want}")
+        // In space the flat clipmap is frozen *and* hidden; the globe's quadtree
+        // is the layer that will be uncovered, so it is the one to wait for and
+        // to report. Asking `MapStream` here is what produced the
+        // eighteen-second hold.
+        let (what, have, want, ready) = if in_space {
+            let (have, want) = globe.tile_progress();
+            ("globe", have, want, have > 0)
         } else {
-            format!("Streaming the {what}…")
-        },
-        fraction: (want > 0).then(|| (have as f32 / want as f32).clamp(0.0, 1.0)),
-        ready,
+            (
+                "map",
+                tiles_ready,
+                stream.wanted_tiles(),
+                // Unchanged from the signal this system has always dismissed on:
+                // a spawned ring is a paper-coloured map, which is a world.
+                // Holding out for textures instead would make every warm start
+                // *longer*, and the complaint about this screen has never been
+                // that it is too short.
+                stream.has_tiles(),
+            )
+        };
+        Loading {
+            label: if want > 0 {
+                format!("Streaming the {what}… {have}/{want}")
+            } else {
+                format!("Streaming the {what}…")
+            },
+            fraction: (want > 0).then(|| (have as f32 / want as f32).clamp(0.0, 1.0)),
+            ready,
+        }
+    };
+    // The sign-in rides beside the streaming report, not instead of it: the two
+    // run concurrently, and replacing the tile counts would hide the diagnostic
+    // half of the line for exactly the seconds a slow host makes it interesting.
+    if let Some(signin) = signin {
+        progress.label = format!("{signin} · {}", progress.label);
+    }
+    progress
+}
+
+/// The sign-in half of the status line, when there is one to report.
+///
+/// A launch with a remembered session enters it during the splash
+/// (`lib.rs` writes the request, `session::drive_session` runs it), and until
+/// 2026-08-21 the splash said nothing about it — sign in with "stay signed in"
+/// ticked, relaunch, and nothing on screen acknowledged the signing-in that was
+/// happening, or that it had worked. So: the busy phases read as themselves
+/// ([`SessionStatus::label`] — the sign-in card uses the same words), a session
+/// that came up reads as "Signed in as …" for the rest of the hold, and a
+/// failure says only that it failed — the *reason* is in the app menu beside
+/// "Sign in…", where startup already reports it, and a caption that vanishes
+/// with the splash is no place for the one line that explains what to do next.
+///
+/// Ordinary offline launches return `None` and the splash reads as it always
+/// has.
+fn signin_caption(session: &SessionState, username: Option<&str>) -> Option<String> {
+    if session.error.is_some() {
+        return Some("Sign-in failed".to_owned());
+    }
+    match (&session.status, &session.mode) {
+        (status, _) if status.is_busy() => Some(status.label().to_owned()),
+        (SessionStatus::Online, SessionMode::Remote { .. } | SessionMode::Solo) => {
+            Some(match username {
+                Some(name) => format!("Signed in as {name}"),
+                None => "Signed in".to_owned(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -202,6 +251,8 @@ pub fn boot_splash(
     time: Res<Time<Real>>,
     stream: Res<MapStream>,
     globe: Res<GlobeState>,
+    session: Res<SessionState>,
+    identity: Res<AuthIdentity>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     tiles_ready: Query<(), With<StreamTileReady>>,
     window: Query<&Window, With<PrimaryWindow>>,
@@ -218,7 +269,14 @@ pub fn boot_splash(
     let in_space = camera
         .single()
         .is_ok_and(|(cell, tf)| globe.in_space(cell, tf));
-    let progress = loading(&stream, &globe, in_space, tiles_ready.iter().count());
+    let signin = signin_caption(&session, identity.username.as_deref());
+    let progress = loading(
+        &stream,
+        &globe,
+        in_space,
+        tiles_ready.iter().count(),
+        signin,
+    );
 
     // Dismiss on the world being visible, not on a timer alone: fading out into
     // an empty blue void is worse than holding the splash half a second longer.
@@ -348,4 +406,68 @@ pub fn boot_splash(
         egui::FontId::proportional(STATUS_TEXT),
         fade(theme::TEXT_DIM, content, 0.75),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(status: SessionStatus, mode: SessionMode) -> SessionState {
+        let mut s = SessionState::default();
+        s.status = status;
+        s.mode = mode;
+        s
+    }
+
+    /// An ordinary offline launch keeps the splash it always had: no caption,
+    /// nothing about signing in over the bare map.
+    #[test]
+    fn an_offline_launch_says_nothing_about_signing_in() {
+        let s = session(SessionStatus::Offline, SessionMode::Offline);
+        assert_eq!(signin_caption(&s, None), None);
+    }
+
+    /// A remembered session entered at startup reports its phases in the same
+    /// words the sign-in card uses, then confirms who it signed in as.
+    #[test]
+    fn a_remembered_session_reports_its_progress_and_then_who_you_are() {
+        let mode = SessionMode::Remote {
+            server: "sim.example".into(),
+        };
+        for busy in [SessionStatus::Connecting, SessionStatus::Authenticating] {
+            let s = session(busy.clone(), mode.clone());
+            assert_eq!(signin_caption(&s, None), Some(busy.label().to_owned()));
+        }
+        let s = session(SessionStatus::Online, mode);
+        assert_eq!(
+            signin_caption(&s, Some("alice")),
+            Some("Signed in as alice".to_owned())
+        );
+    }
+
+    /// A failed attempt says so and no more — the reason belongs to the app
+    /// menu, which outlives the splash.
+    #[test]
+    fn a_failed_signin_is_named_without_the_reason() {
+        // Failure tears the mode down to offline with the reason left behind,
+        // so the error must outrank the mode match.
+        let mut s = session(SessionStatus::Offline, SessionMode::Offline);
+        s.error = Some("sim.example: that password is not right".into());
+        assert_eq!(signin_caption(&s, None), Some("Sign-in failed".to_owned()));
+    }
+
+    /// The caption rides beside the streaming report rather than replacing it —
+    /// the tile counts are the diagnostic half of the line.
+    #[test]
+    fn the_caption_joins_the_streaming_label() {
+        let progress = loading(
+            &MapStream::default(),
+            &GlobeState::default(),
+            false,
+            0,
+            Some("Signing in…".to_owned()),
+        );
+        assert_eq!(progress.label, "Signing in… · Placing the map…");
+        assert!(!progress.ready);
+    }
 }
