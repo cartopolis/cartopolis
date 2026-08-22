@@ -189,6 +189,59 @@ it logs what it got. Retried until `native_window()` exists, because that is
 90/120 Hz device — `adb shell dumpsys SurfaceFlinger | grep -i refresh` plus
 battery temperature.
 
+### …and it came undone, and is fixed again with an idle throttle (2026-08-21)
+
+Reported from the OnePlus 15: fast enough, extremely hot. It had regressed.
+`report_frame_to_scheduler` was passing a hardcoded `0.0` to
+`ANativeWindow_setFrameRate` — the API's documented "the app will accept the
+system's choice of display frame rate" — so `Budget::target_fps` reached nothing
+but the ADPF seed and a 120 Hz LTPO panel got exactly what it asked for.
+
+The argument for the `0.0` was not silly and is worth keeping straight, because
+half of it is still true. It ran: 60 is not a property of any display, it is a
+property of the desktop the tier table was written on, and this codebase cannot
+*read* the panel's rate — winit's Android backend answers `None` for the refresh
+rate and fabricates a 60 in `video_modes`. All correct. What it got wrong is that
+handing the choice back is not neutral when the choice is "as fast as possible":
+the compositor optimises for smoothness, and nobody in that conversation
+represents the battery. `target_fps` is not a claim about the panel — it is a
+statement about how much work the tier is willing to do per second, which *is*
+something we know. And the panel's rate is measured now anyway (`Cadence`), so
+ADPF's deadline never depended on the constant.
+
+**The rung test could not have caught it**, and that is the reusable part.
+`quality::every_rung_asks_the_compositor_for_a_rate` asserts what `target_fps()`
+returns; the bug was that nothing passed the return value on. Same shape as the
+two demotions already recorded in `quality.rs` — a test that describes a preset
+rather than a call site. The resolution is a plain function now
+(`frame_pacing::resolve_frame_rate`), compiled on every target, with the
+assertion on it.
+
+On top of that, an **idle throttle**: `frame_pacing::present_rate` asks for half
+the rate (floored at 30) after `IDLE_AFTER_S` of nothing happening — no input
+held or just released, camera not moved, driver mode off, no bytes uploaded this
+frame and no tile job outstanding. The streamers are in that list because the
+per-frame build budgets are *per frame*, so a cold map filling in while you sit
+still would otherwise take twice as long to arrive.
+
+Two things about the mechanism. **The compositor is the lever, not a sleep**: a
+`thread::sleep` on top of FIFO is the second clock `frame_limiter` exists to
+refuse, whereas `setFrameRate` is the *same* clock — FIFO then blocks on acquire
+for the longer period and the whole loop throttles with it. And the rate is one
+resource (`PresentationRate`) with two consumers, so the desktop limiter gets the
+idle drop from the same decision rather than a parallel one that can drift.
+
+**The deliberate trade:** the world keeps animating while idle — sun, waves, a
+remote avatar walking past — and it animates at the idle rate. Hence a floor of
+30 rather than something lower.
+
+**Unverified.** Same wall as the 2026-08-16 entry: the emulator is fixed at
+60 Hz, so neither the mode switch nor the heat can be measured here. On the
+device, `debug.carto.fps_cap` A/Bs it without a rebuild (`0` = uncapped, which
+also disables the idle throttle so a headroom measurement is not measuring
+itself), and the transitions are on `debug` in logcat. `IDLE_AFTER_S = 2.0` is a
+guess and is the first number to move if the drop is noticeable.
+
 ### The repeat parses are collapsed (2026-08-16)
 
 `tile_loader::parse_shared` keys a `Weak<TileData>` cache on the **source** tile,

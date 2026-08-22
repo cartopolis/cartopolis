@@ -452,10 +452,14 @@ pub fn set_frame_rate(fps: f32) -> bool {
         let set: SetFrameRate = std::mem::transmute(ptr);
         let rc = set(window.ptr().as_ptr().cast(), fps, COMPATIBILITY_DEFAULT);
         if rc == 0 {
+            // `debug`, because this is no longer a one-shot at startup: the idle
+            // throttle re-asks every time you stop and start panning, and an hour
+            // of that at `info` is not a log anybody can read. The caller logs the
+            // first successful ask, which is the line a session wants.
             if fps == 0.0 {
-                tracing::info!("left the frame rate to the compositor — the panel decides");
+                tracing::debug!("left the frame rate to the compositor — the panel decides");
             } else {
-                tracing::info!(fps, "asked the compositor for a frame rate");
+                tracing::debug!(fps, "asked the compositor for a frame rate");
             }
             true
         } else {

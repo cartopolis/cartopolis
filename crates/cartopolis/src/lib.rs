@@ -2617,7 +2617,14 @@ fn run_client() {
         // before the tap.
         .init_resource::<systems::diagnostics::DiagnosticsRequest>()
         .add_systems(Last, systems::diagnostics::share_diagnostics)
-        // Three systems, one chain, and each position is load-bearing.
+        // Four systems, one chain, and each position is load-bearing.
+        //
+        // `present_rate` runs **first**, because both of the next two consume what
+        // it decides: it is the single resolution of "what rate do we want",
+        // handed to the compositor on Android and slept to by the limiter
+        // elsewhere. Resolved in `Last` rather than `First` so the idle test can
+        // read this frame's finished work — the bytes uploaded and the camera's
+        // settled transform — instead of the previous frame's.
         //
         // `report_frame_to_scheduler` runs **before** the limiter: it tells ADPF how
         // long the frame took, and the limiter *sleeps* to hit a deadline, so
@@ -2630,9 +2637,11 @@ fn run_client() {
         // — is inside the interval the watchdog measures. Beating in `First` would
         // say the loop is alive at the moment it enters the frame it is about to
         // hang in, which is the one frame that matters.
+        .init_resource::<frame_pacing::PresentationRate>()
         .add_systems(
             Last,
             (
+                frame_pacing::present_rate,
                 frame_pacing::report_frame_to_scheduler,
                 // Not under the shot harness. The limiter sleeps to a deadline, so
                 // with it running `ShotMetrics::frame_ms` can never read below the
