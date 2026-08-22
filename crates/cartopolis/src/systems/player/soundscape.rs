@@ -55,8 +55,8 @@ const SAMPLE_RATE: u32 = 22_050;
 const WALK_STEPS_PER_SEC: f32 = 1.5;
 const RUN_STEPS_PER_SEC: f32 = 2.5;
 
-/// Volume of a footstep at a walk and at a sprint. A sprint is not just faster,
-/// it is heavier, and a constant-volume step under an accelerating gait is one of
+/// Volume of a footstep at a stroll and at a run. A run is not just faster, it
+/// is heavier, and a constant-volume step under an accelerating gait is one of
 /// those things that sounds wrong without being identifiable.
 ///
 /// Lowered 2026-08-16 along with the timbre below. These are the *foreground* of
@@ -65,6 +65,19 @@ const RUN_STEPS_PER_SEC: f32 = 2.5;
 /// for as long as anyone is moving.
 const STEP_VOLUME_WALK: f32 = 0.10;
 const STEP_VOLUME_RUN: f32 = 0.24;
+
+/// How far either side of nominal a step's playback rate is nudged.
+///
+/// **This is the difference between footsteps and a metronome.** Every other
+/// property of a real footfall varies a little — where the foot lands, how hard,
+/// how the sole meets the stone — and the ear is far better at spotting an exact
+/// repeat than at identifying what a footstep should sound like. With two fixed
+/// samples strictly alternating at an exactly periodic rate, the pattern locks in
+/// after about four steps and stops reading as a person walking; that is most of
+/// what "cheap" means here. Four variants, a ±6 % speed nudge and a ±12 % level
+/// nudge give a cycle long enough not to be heard as one.
+const STEP_SPEED_JITTER: f32 = 0.06;
+const STEP_LEVEL_JITTER: f32 = 0.12;
 
 /// Loudest a landing can be, at [`motion::TERMINAL_FALL_SPEED`].
 const LAND_VOLUME_MAX: f32 = 0.4;
@@ -82,9 +95,11 @@ const WIND_RATE: f32 = 2.0;
 /// The synthesised clips, built once at startup.
 #[derive(Resource)]
 pub struct Soundscape {
-    /// Two footsteps, alternated, so a walk does not sound like a machine. Two is
-    /// enough — the ear locks onto an exact repeat, and stops noticing at two.
-    steps: [Handle<AudioSource>; 2],
+    /// Four footsteps, cycled, so a walk does not sound like a machine. It was
+    /// two, on the theory that the ear stops noticing at two; it does not — two
+    /// alternating samples at an exact rate is a *rhythm*, and a rhythm is the
+    /// one thing walking is not. See [`STEP_SPEED_JITTER`] for the other half.
+    steps: [Handle<AudioSource>; 4],
     land: Handle<AudioSource>,
     wind: Handle<AudioSource>,
     /// The Settings ▸ Audio sound test. Public because it is played from the
@@ -106,7 +121,12 @@ pub fn setup_soundscape(mut commands: Commands, mut sources: ResMut<Assets<Audio
         })
     };
     let soundscape = Soundscape {
-        steps: [source(synth::footstep(0.9)), source(synth::footstep(1.15))],
+        steps: [
+            source(synth::footstep(0.88)),
+            source(synth::footstep(1.06)),
+            source(synth::footstep(0.97)),
+            source(synth::footstep(1.18)),
+        ],
         land: source(synth::landing()),
         wind: source(synth::wind()),
         test_tone: source(synth::test_tone()),
@@ -185,22 +205,56 @@ pub fn play_avatar_sounds(
     if *stride < 1.0 {
         return;
     }
-    // Never fire a burst of steps after a long frame: the stride is a phase, not
-    // a queue, and a hitch should cost a step rather than pay back four at once.
-    *stride = 0.0;
+    // Carry the remainder rather than zeroing: a step is due partway through the
+    // frame that crosses the threshold, and discarding the overshoot quantises
+    // every footfall to a frame boundary and drops up to a whole frame of phase
+    // each time. At a run that is several percent of the step interval, jittered
+    // by whatever the frame time happened to be — which is heard as sloppy
+    // timing rather than as variation. A long frame is still not paid back as a
+    // burst: past two whole strides the phase is reset instead of queued.
+    if *stride >= 2.0 {
+        *stride = 0.0;
+    } else {
+        *stride -= 1.0;
+    }
     *foot = (*foot + 1) % soundscape.steps.len();
 
     let loudness = STEP_VOLUME_WALK
-        + (STEP_VOLUME_RUN - STEP_VOLUME_WALK)
-            * (speed / locomotion::RUN_SPEED).clamp(0.0, 1.0);
+        + (STEP_VOLUME_RUN - STEP_VOLUME_WALK) * (speed / locomotion::RUN_SPEED).clamp(0.0, 1.0);
+    // Nudge each step off nominal so the sequence never settles into a pattern.
+    // Deterministic (a hash of the step counter, not a PRNG) for the same reason
+    // the noise is: a sound that differs between runs cannot be tested, and the
+    // ear cannot tell one source of variation from another anyway.
+    let (speed_wobble, level_wobble) = step_wobble(*foot, *stride);
     commands.spawn((
         AudioPlayer(soundscape.steps[*foot].clone()),
         PlaybackSettings {
             mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(loudness * gain),
+            volume: Volume::Linear(loudness * level_wobble * gain),
+            speed: speed_wobble,
             ..default()
         },
     ));
+}
+
+/// Per-step playback-speed and level multipliers, both centred on 1.0 and
+/// bounded by [`STEP_SPEED_JITTER`] / [`STEP_LEVEL_JITTER`].
+///
+/// `phase` is the stride remainder carried into this step, which is continuous
+/// and unrepeating in a way the step counter is not — using it as the entropy
+/// keeps the four-sample cycle from lining up with the wobble cycle and
+/// producing an eight-step pattern instead of a four-step one.
+#[must_use]
+fn step_wobble(foot: usize, phase: f32) -> (f32, f32) {
+    // Two decorrelated saw-shaped signals from the same input. The golden-ratio
+    // multipliers are the standard trick for spreading a fractional sequence out
+    // evenly instead of clustering it.
+    let a = (phase * 0.618_034 + foot as f32 * 0.381_966).fract();
+    let b = (phase * 0.381_966 + foot as f32 * 0.618_034 + 0.5).fract();
+    (
+        1.0 + (a * 2.0 - 1.0) * STEP_SPEED_JITTER,
+        1.0 + (b * 2.0 - 1.0) * STEP_LEVEL_JITTER,
+    )
 }
 
 #[cfg(feature = "audio")]
@@ -232,7 +286,7 @@ pub fn update_wind_volume(
 }
 
 /// Wind volume for a speed. Silent at a walk (nobody hears the wind strolling),
-/// rising through a sprint, and loudest in flight.
+/// rising through a run, and loudest in flight.
 #[must_use]
 pub fn wind_volume(speed: f32, flying: bool) -> f32 {
     let full = if flying {
@@ -240,6 +294,8 @@ pub fn wind_volume(speed: f32, flying: bool) -> f32 {
     } else {
         locomotion::RUN_SPEED
     };
+    // The everyday gait is the onset, so the wind arrives exactly when the
+    // avatar starts doing something faster than walking.
     let onset = locomotion::WALK_SPEED;
     if speed <= onset {
         return 0.0;
@@ -293,10 +349,11 @@ pub mod synth {
         (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
     }
 
-    /// A footstep: a short noise burst through a **two-pole** low-pass, with a
-    /// very fast attack and a ~70 ms decay. `pitch` shifts the filter cutoff,
-    /// which is what makes the two variants sound like the same shoe on the same
-    /// stone rather than two different objects.
+    /// A footstep, in three parts: the **click** of the sole meeting the stone,
+    /// the **body** the foot puts into the ground under it, and the **scuff** of
+    /// the weight rolling forward off it. `pitch` shifts all three, which is what
+    /// makes the variants sound like the same shoe landing slightly differently
+    /// rather than like different objects.
     ///
     /// # Why two poles, and why the numbers are measured
     ///
@@ -312,30 +369,101 @@ pub mod synth {
     /// on stone actually occupies — and `GAIN` puts the peak back where one pole
     /// had it. The faster decay (`exp(-26 t)` over 70 ms rather than `exp(-9 t)`
     /// over 90 ms) is the other half: what made it a *gust* was the tail.
+    ///
+    /// # Why it is more than that one burst now
+    ///
+    /// Filtered noise with one envelope is a *tap*. It is in the right frequency
+    /// band and it lands at the right moment, and it still reads as synthetic,
+    /// because a real footfall is not one event — the impact and the weight
+    /// arriving behind it are separated by a few milliseconds, and the foot goes
+    /// on making noise while the body passes over it. Two additions, both cheap:
+    ///
+    /// - a **body** partial, two decaying sines around 80–130 Hz. That band is
+    ///   below anything the noise carries, so it costs nothing in the
+    ///   zero-crossing budget that keeps a step from sounding like a hiss, and it
+    ///   is what a step has that a tap has not.
+    /// - a **scuff**, the same filtered noise at a quarter of the level, delayed
+    ///   ~18 ms and decaying slowly. This is the part that stops a step ending
+    ///   abruptly; an abrupt end is what the ear hears as a sample rather than as
+    ///   a sound.
     pub fn footstep(pitch: f32) -> Vec<u8> {
         /// Two cascaded poles cost roughly `a` in amplitude each; this restores
         /// the peak rather than being a loudness choice (that is
         /// [`super::STEP_VOLUME_WALK`]).
         const GAIN: f32 = 3.0;
-        let len = (SAMPLE_RATE as f32 * 0.07) as usize;
+        /// Fundamental of the body thump (Hz) before `pitch`, with a second
+        /// partial a little over an octave up. Not harmonic on purpose: a foot on
+        /// stone excites a floor, and a floor is not a string.
+        const BODY_HZ: f32 = 82.0;
+        const BODY_HZ_2: f32 = 131.0;
+        /// How far into the clip the scuff starts (seconds), and how loud it is
+        /// against the impact.
+        const SCUFF_DELAY: f32 = 0.018;
+        const SCUFF_LEVEL: f32 = 0.28;
+        /// Peak the finished clip is normalised to.
+        ///
+        /// Three summed parts have no analytic peak — it depends on where the
+        /// noise happens to be when the body partial is at its loudest, which
+        /// changes with `pitch`. Tuning constants until the headroom test passes
+        /// would be fitting a number to a measurement that will move the next
+        /// time any of the three is touched; scaling the finished clip is the
+        /// same guarantee, stated once. Loudness stays entirely in
+        /// [`super::STEP_VOLUME_WALK`], which is where a listener can reach it.
+        const PEAK: f32 = 0.7;
+
+        let secs = 0.14;
+        let len = (SAMPLE_RATE as f32 * secs) as usize;
+        let scuff_start = (SAMPLE_RATE as f32 * SCUFF_DELAY) as usize;
         let mut seed = 0x1234_5678;
         let mut lp = 0.0_f32;
         let mut lp2 = 0.0_f32;
+        // The impact keeps the measured cutoff; the scuff is darker still, which
+        // is what separates "the sole hits" from "the sole drags".
         let a = (0.10 * pitch).clamp(0.02, 0.9);
-        let samples: Vec<i16> = (0..len)
+        let a_scuff = a * 0.55;
+        let mut sp = 0.0_f32;
+        let mut sp2 = 0.0_f32;
+        let mut scuff_seed = 0x5EED_1234_u32.wrapping_add((pitch * 4096.0) as u32);
+
+        let mixed: Vec<f32> = (0..len)
             .map(|i| {
-                let t = i as f32 / len as f32;
-                // Fast attack, exponential decay — a heel then nothing.
-                let env = if t < 0.02 {
-                    t / 0.02
+                let t = i as f32 / SAMPLE_RATE as f32;
+                // Impact: fast attack, exponential decay — a heel then nothing.
+                // The decay is per *second* now rather than per clip fraction, so
+                // lengthening the clip for the scuff does not stretch the click.
+                let click_env = if t < 0.0015 {
+                    t / 0.0015
                 } else {
-                    (-26.0 * t).exp()
+                    (-186.0 * (t - 0.0015)).exp()
                 };
                 lp += a * (noise(&mut seed) - lp);
                 lp2 += a * (lp - lp2);
-                to_i16(lp2 * GAIN * env)
+                let click = lp2 * GAIN * click_env;
+
+                // Body: the weight arriving, an instant behind the click.
+                let body_env = (-42.0 * t).exp() * (1.0 - (-t * 900.0).exp());
+                let body = ((t * BODY_HZ * pitch * core::f32::consts::TAU).sin() * 0.62
+                    + (t * BODY_HZ_2 * pitch * core::f32::consts::TAU).sin() * 0.30)
+                    * body_env
+                    * 0.55;
+
+                // Scuff: the roll-off, quieter and darker, with a slow decay.
+                let scuff = if i >= scuff_start {
+                    let st = (i - scuff_start) as f32 / SAMPLE_RATE as f32;
+                    sp += a_scuff * (noise(&mut scuff_seed) - sp);
+                    sp2 += a_scuff * (sp - sp2);
+                    sp2 * GAIN * SCUFF_LEVEL * (1.0 - (-st * 240.0).exp()) * (-34.0 * st).exp()
+                } else {
+                    0.0
+                };
+
+                click + body + scuff
             })
             .collect();
+
+        let peak = mixed.iter().fold(0.0_f32, |a, b| a.max(b.abs()));
+        let scale = if peak > 1e-6 { PEAK / peak } else { 0.0 };
+        let samples: Vec<i16> = mixed.iter().map(|v| to_i16(v * scale)).collect();
         wav(&samples)
     }
 
@@ -458,22 +586,22 @@ mod tests {
         assert_eq!(
             wind_volume(locomotion::STROLL_SPEED, false),
             0.0,
-            "silent at a walk"
+            "silent at a stroll"
         );
         assert_eq!(
             wind_volume(locomotion::WALK_SPEED, false),
             0.0,
-            "and still silent at the jog it starts from"
+            "and still silent at the walk it starts from"
         );
-        let sprint = wind_volume(locomotion::RUN_SPEED, false);
-        assert!(sprint > 0.0, "audible at a sprint: {sprint}");
-        assert!((sprint - WIND_VOLUME_MAX).abs() < 1e-5, "a sprint is full");
+        let run = wind_volume(locomotion::RUN_SPEED, false);
+        assert!(run > 0.0, "audible at a run: {run}");
+        assert!((run - WIND_VOLUME_MAX).abs() < 1e-5, "a run is full");
 
         let flight = wind_volume(locomotion::FLY_SPEED, true);
         assert!((flight - WIND_VOLUME_MAX).abs() < 1e-5);
         // The same speed reached in flight is a smaller fraction of flight's
         // range, so it must be quieter than it would be on foot.
-        assert!(wind_volume(locomotion::RUN_SPEED, true) < sprint);
+        assert!(wind_volume(locomotion::RUN_SPEED, true) < run);
     }
 
     /// Volume never leaves 0..=max, whatever it is handed.
@@ -563,8 +691,9 @@ mod tests {
     #[test]
     fn no_synthesised_clip_runs_out_of_headroom() {
         for (name, bytes) in [
-            ("footstep-low", synth::footstep(0.9)),
-            ("footstep-high", synth::footstep(1.15)),
+            ("footstep-low", synth::footstep(0.88)),
+            ("footstep-mid", synth::footstep(0.97)),
+            ("footstep-high", synth::footstep(1.18)),
             ("landing", synth::landing()),
             ("wind", synth::wind()),
             ("test tone", synth::test_tone()),
@@ -586,7 +715,7 @@ mod tests {
     /// got reported as wind. A foot on stone lives below ~600 Hz.
     #[test]
     fn a_footstep_is_a_thud_not_a_hiss() {
-        for pitch in [0.9, 1.15] {
+        for pitch in [0.88, 0.97, 1.06, 1.18] {
             let s = samples_of(&synth::footstep(pitch));
             let crossings = (1..s.len())
                 .filter(|&i| (s[i] >= 0.0) != (s[i - 1] >= 0.0))
@@ -601,13 +730,57 @@ mod tests {
         }
     }
 
-    /// The two footsteps differ, or alternating them buys nothing.
+    /// The footstep variants differ, or cycling them buys nothing.
     #[test]
-    fn the_two_footsteps_are_not_the_same_sound() {
-        assert_ne!(
-            synth::footstep(0.9),
-            synth::footstep(1.15),
-            "both feet make the identical sound"
+    fn the_footstep_variants_are_not_the_same_sound() {
+        let variants = [0.88, 1.06, 0.97, 1.18].map(synth::footstep);
+        for (i, a) in variants.iter().enumerate() {
+            for b in &variants[i + 1..] {
+                assert_ne!(a, b, "two variants are the identical sound");
+            }
+        }
+    }
+
+    /// A footstep has a **body** — energy well below the impact's own band. This
+    /// is the part that separates a step from a tap, and it is invisible to the
+    /// zero-crossing test above (which only says the sound is not *bright*).
+    /// Measured as the fraction of the clip's energy left after a low-pass that
+    /// keeps roughly the bottom 200 Hz.
+    #[test]
+    fn a_footstep_has_weight_under_it() {
+        for pitch in [0.88, 1.18] {
+            let s = samples_of(&synth::footstep(pitch));
+            // One pole at ~200 Hz for this sample rate.
+            let a = 1.0 - (-core::f32::consts::TAU * 200.0 / SAMPLE_RATE as f32).exp();
+            let mut lp = 0.0_f32;
+            let (mut low, mut total) = (0.0_f32, 0.0_f32);
+            for v in &s {
+                lp += a * (v - lp);
+                low += lp * lp;
+                total += v * v;
+            }
+            let share = low / total.max(1e-9);
+            assert!(
+                share > 0.05,
+                "footstep({pitch}) has {:.1}% of its energy below 200 Hz — no body",
+                share * 100.0
+            );
+        }
+    }
+
+    /// A step does not end abruptly: there is still audible signal in its last
+    /// third (the scuff). A clip that stops dead reads as a sample being cut off
+    /// rather than as a foot leaving the ground.
+    #[test]
+    fn a_footstep_does_not_stop_dead() {
+        let s = samples_of(&synth::footstep(1.0));
+        let third = s.len() / 3;
+        let rms = |w: &[f32]| (w.iter().map(|v| v * v).sum::<f32>() / w.len() as f32).sqrt();
+        let head = rms(&s[..third]);
+        let tail = rms(&s[third * 2..]);
+        assert!(
+            tail > head * 0.002,
+            "the tail ({tail:.5}) is silence against the impact ({head:.5})"
         );
     }
 }
