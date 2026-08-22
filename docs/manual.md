@@ -78,7 +78,7 @@ Movement is camera-relative. The full input reference:
 | Right-click | Context menu (create / edit / delete prims) |
 | T / R / S | Gizmo mode: translate / rotate / scale |
 | Delete / Backspace | Delete selected prims |
-| Ctrl + Shift + D | Toggle the developer panel (day/night slider, etc.) |
+| Ctrl + Shift + D | Toggle the developer panel (frame rate, draw counts, etc.) |
 | Ctrl + Shift + A | Toggle the AI assistant panel |
 
 ### Camera modes
@@ -284,18 +284,33 @@ changes. The Veluwe is where you see it.
 
 ## Developer panel
 
-Open it with **Ctrl + Shift + D** (or ☰ ▸ Developer tools). It gathers tools for
-inspecting and tuning the scene:
+Open it with **Ctrl + Shift + D** (or ☰ ▸ Developer tools). It is a **readout,
+not a control panel** — what this run is doing, measured live. The things you
+*set* are in Settings: the time of day and the weather under **World**, and what
+the machine spends drawing the scene under **Graphics**.
 
-- **Day / night cycle** — a slider that drives the sun position, with quick
-  Sunrise / Noon / Sunset / Midnight buttons and an optional auto-cycle.
-- **Distance fog** — atmospheric haze density.
-- **Moon** — lunar age, which sets the moon's sky position, phase, and light.
-- **Render features** — shadow, atmosphere, and env-map IBL toggles. (Atmosphere
-  and env-map IBL apply at startup only — flipping them takes effect after a
-  relaunch.)
-- **Stats overlay** — FPS, frame time, and live entity count.
+- **Frame** — frame rate, mean frame time, the worst single frame of the last
+  second, and jitter. The three are separate on purpose: a good mean beside a bad
+  worst is a hitch, and a good mean beside high jitter is a pacing problem rather
+  than a load one.
+- **Drawn** — draw calls, entities, and triangles split by what produced them
+  (buildings, 3DBAG, map tiles, globe), plus how many of them cast shadows and so
+  get re-drawn by every cascade.
+- **GPU** — bytes handed to the driver this frame, the worst frame so far, the
+  largest single asset, and how much streamed content is resident right now. The
+  rate and the total fail differently — a burst times out a command buffer, a
+  total exhausts an allocator — so both are here. Below them, whether the GPU
+  pipelines this frame needs actually compiled; a failed one is a silent hole in
+  the picture, and it is named here.
+- **View** — where the camera is (lat/lng, altitude, look angles) and which tier
+  it is in, including the 0–1 crossfade the space tier rides.
+- **Readouts** — a switch for the on-map frame overlay, which is the same one in
+  Settings ▸ Graphics (it is the only frame counter a phone has).
 - **README screenshots** — see below.
+
+Everything in the first four groups was already being measured for the log, the
+`--dump-state` metrics or the shareable diagnostics report. The panel is a window
+onto them, not a new instrument.
 
 ## Taking screenshots
 
@@ -318,8 +333,9 @@ cargo shots --size 2560x1440     # override the manifest's size
 `--dump-state`, `--settle`, … — see [`CLAUDE.md`](../CLAUDE.md)). Because it
 needs no display, it is a build step: it works over SSH and in CI.
 
-**Adding or moving a view.** Fly there in the app, open the dev panel
-(**Ctrl + Shift + D**) and click **📋 Copy as preset** — the current camera lands
+**Adding or moving a view.** Fly there in the app, set the time and weather you
+want in **Settings ▸ World**, then open the dev panel (**Ctrl + Shift + D**) and
+click **📋 Copy as preset** — the current camera lands
 on the clipboard as a `[[shot]]` block (position, look angles, time of day, fog,
 cloud) ready to paste into `docs/shots.toml` under a new name. From then on that
 viewpoint is reproducible instead of something to re-find every release.
