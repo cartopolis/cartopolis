@@ -100,6 +100,23 @@ pub struct HudActions {
 /// while they were six points apart; now it does.
 const COMPASS_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 
+/// The bottom edge of the top-left disc column: layers disc
+/// ([`crate::systems::dock::reserved_top`]), compass, locate button.
+///
+/// **Anything else anchored to the top-left corner has to start below this**, and
+/// the frame overlay is why the figure is a function rather than a comment. It
+/// was anchored at a hardcoded `y = 40` — written when a menu *bar* owned the top
+/// of the screen — and the column that replaced the bar draws straight over it,
+/// so the frame rate somebody switched on to read was behind two discs.
+///
+/// The locate button is counted even when it is not drawn (it needs a local
+/// avatar). A readout that changes position depending on whether an avatar exists
+/// is worse than one that leaves a gap: the gap is stable and the jump is not.
+#[must_use]
+pub fn left_column_bottom() -> f32 {
+    crate::systems::dock::reserved_top() + COMPASS_SIZE + theme::OSD_GAP + theme::ROUND_BUTTON_SIZE
+}
+
 /// How the rose behaves this frame — one compass with three jobs.
 struct Compass {
     /// Clicking does something: Orbit's north-up lock, or driver mode's map
@@ -822,7 +839,10 @@ pub fn hud_area(ctx: &egui::Context, data: &HudData) -> HudActions {
                             actions.set_weather_live = Some(true);
                         }
                         if theme::chip(ui, "Manual", !data.weather_live)
-                            .on_hover_text("Hold the weather; adjust it in the dev panel")
+                            // "▸" would tofu — it is not in the bundled font.
+                            .on_hover_text(
+                                "Hold the weather; the sliders are in Settings, under World",
+                            )
                             .clicked()
                         {
                             actions.set_weather_live = Some(false);

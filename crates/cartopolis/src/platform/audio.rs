@@ -466,9 +466,13 @@ mod native {
                 Ok(false) => {
                     // Actionable, because the system dialog does not come back: a
                     // second refusal is permanent until Settings is visited.
+                    //
+                    // The separator used to be "▸", which is not in the bundled
+                    // brand font — so the one sentence telling somebody how to
+                    // undo a permanent refusal had a tofu box in the middle of it.
                     shared.fail(
                         "Microphone permission denied. Allow it in Android's app settings \
-                         under Permissions ▸ Microphone.",
+                         under Permissions, then Microphone.",
                     );
                     false
                 }
