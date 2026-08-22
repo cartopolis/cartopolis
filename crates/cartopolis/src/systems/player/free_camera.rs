@@ -1406,7 +1406,7 @@ pub fn camera_controls(
             let want_fov = if locked {
                 FOLLOW_FOV_BASE
             } else {
-                let t = (avatar_state.ground_speed / crate::systems::locomotion::SPRINT_SPEED)
+                let t = (avatar_state.ground_speed / crate::systems::locomotion::RUN_SPEED)
                     .clamp(0.0, 1.0);
                 FOLLOW_FOV_BASE + FOLLOW_FOV_SPRINT_GAIN * t
             };

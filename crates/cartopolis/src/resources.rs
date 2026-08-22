@@ -936,7 +936,7 @@ pub struct AvatarState {
     /// avatar coasts to a stop along its own heading instead of stopping dead the
     /// frame the key comes up (the wish direction is zero by then).
     pub move_dir: Vec3,
-    /// Gait the held modifiers ask for (Alt walk / default jog / Shift sprint).
+    /// Gait the held modifiers ask for (Alt stroll / default walk / Shift run).
     pub gait: crate::systems::locomotion::Gait,
     /// Vertical velocity (m/s, up positive) for the jump/fall arc. The sim owns
     /// the authoritative copy; this is the client's prediction of it, and offline
@@ -986,7 +986,7 @@ impl Default for AvatarState {
             is_walking: false,
             ground_speed: 0.0,
             move_dir: Vec3::ZERO,
-            gait: crate::systems::locomotion::Gait::Jog,
+            gait: crate::systems::locomotion::Gait::Walk,
             vertical_velocity: 0.0,
             grounded: false,
             wants_jump: false,

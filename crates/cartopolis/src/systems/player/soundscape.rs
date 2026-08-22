@@ -64,7 +64,7 @@ const RUN_STEPS_PER_SEC: f32 = 2.5;
 /// loud as a chat notification — for something that happens 2–3 times a second
 /// for as long as anyone is moving.
 const STEP_VOLUME_WALK: f32 = 0.10;
-const STEP_VOLUME_SPRINT: f32 = 0.24;
+const STEP_VOLUME_RUN: f32 = 0.24;
 
 /// Loudest a landing can be, at [`motion::TERMINAL_FALL_SPEED`].
 const LAND_VOLUME_MAX: f32 = 0.4;
@@ -191,8 +191,8 @@ pub fn play_avatar_sounds(
     *foot = (*foot + 1) % soundscape.steps.len();
 
     let loudness = STEP_VOLUME_WALK
-        + (STEP_VOLUME_SPRINT - STEP_VOLUME_WALK)
-            * (speed / locomotion::SPRINT_SPEED).clamp(0.0, 1.0);
+        + (STEP_VOLUME_RUN - STEP_VOLUME_WALK)
+            * (speed / locomotion::RUN_SPEED).clamp(0.0, 1.0);
     commands.spawn((
         AudioPlayer(soundscape.steps[*foot].clone()),
         PlaybackSettings {
@@ -238,9 +238,9 @@ pub fn wind_volume(speed: f32, flying: bool) -> f32 {
     let full = if flying {
         locomotion::FLY_SPEED
     } else {
-        locomotion::SPRINT_SPEED
+        locomotion::RUN_SPEED
     };
-    let onset = locomotion::JOG_SPEED;
+    let onset = locomotion::WALK_SPEED;
     if speed <= onset {
         return 0.0;
     }
@@ -456,16 +456,16 @@ mod tests {
     fn wind_starts_at_a_run_and_peaks_in_flight() {
         assert_eq!(wind_volume(0.0, false), 0.0, "silent at rest");
         assert_eq!(
-            wind_volume(locomotion::WALK_SPEED, false),
+            wind_volume(locomotion::STROLL_SPEED, false),
             0.0,
             "silent at a walk"
         );
         assert_eq!(
-            wind_volume(locomotion::JOG_SPEED, false),
+            wind_volume(locomotion::WALK_SPEED, false),
             0.0,
             "and still silent at the jog it starts from"
         );
-        let sprint = wind_volume(locomotion::SPRINT_SPEED, false);
+        let sprint = wind_volume(locomotion::RUN_SPEED, false);
         assert!(sprint > 0.0, "audible at a sprint: {sprint}");
         assert!((sprint - WIND_VOLUME_MAX).abs() < 1e-5, "a sprint is full");
 
@@ -473,7 +473,7 @@ mod tests {
         assert!((flight - WIND_VOLUME_MAX).abs() < 1e-5);
         // The same speed reached in flight is a smaller fraction of flight's
         // range, so it must be quieter than it would be on foot.
-        assert!(wind_volume(locomotion::SPRINT_SPEED, true) < sprint);
+        assert!(wind_volume(locomotion::RUN_SPEED, true) < sprint);
     }
 
     /// Volume never leaves 0..=max, whatever it is handed.

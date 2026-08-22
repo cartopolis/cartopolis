@@ -182,16 +182,16 @@ it replaced: `camera_controls` derives a throttle from `move_direction.length()`
 is half the speed.
 
 **Follow's stick is a throttle over the gait ladder, and it has to be.** The
-keyboard picks a rung with a held modifier — Alt strolls, Shift sprints, neither
-jogs (`systems::locomotion`) — and a touchscreen has neither key, so a phone that
-mapped the stick onto one gait would have exactly one speed. The push carries the
-choice instead: `locomotion::speed_for_throttle` slides between the same
-`WALK_SPEED` and `SPRINT_SPEED` the keys reach, so neither input can ask for a
-speed the other cannot. Two consequences worth knowing. The stick's deadzone
-means the *slowest* push is already a brisk walk rather than a creep — that is
+keyboard picks a rung with a held modifier — Alt strolls, Shift runs, neither
+walks (`systems::locomotion`) — and a touchscreen has neither key, so a phone
+that mapped the stick onto one gait would have exactly one speed. The push
+carries the choice instead: `locomotion::speed_for_throttle` slides between the
+same `STROLL_SPEED` and `RUN_SPEED` the keys reach, so neither input can ask for
+a speed the other cannot. Two consequences worth knowing. The stick's deadzone
+means the *slowest* push is already a stroll rather than a creep — that is
 the deadzone's cost, paid where it is visible rather than hidden in a curve. And
 the keys win outright when both are live (a desktop touchscreen has both), or a
-thumb resting inside the deadzone would quietly cap a sprint.
+thumb resting inside the deadzone would quietly cap a run.
 
 The wish goes into `OsdInput::walk`, which `avatar::handle_avatar_movement`
 consumes — *not* `camera_controls`. That is what makes it work identically in
