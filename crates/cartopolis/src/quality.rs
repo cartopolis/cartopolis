@@ -1140,7 +1140,7 @@ mod tests {
         }
     }
 
-    /// Every rung asks the compositor for a real rate, including the one that
+    /// Every rung has a real rate to offer the compositor, including the one that
     /// deliberately has no `fps_cap`.
     ///
     /// The phone's `fps_cap` is `None` because a `thread::sleep` limiter layered on
@@ -1149,6 +1149,14 @@ mod tests {
     /// the first as the second is what leaves a 120 Hz handset rendering a 30
     /// fps-budgeted scene at 120 until it throttles. `target_fps` is the second
     /// conversation and must never be zero.
+    ///
+    /// **This is not the guard, and mistaking it for one cost a release.** It
+    /// asserts what `target_fps()` returns; between 2026-08-19 and 2026-08-21 the
+    /// call site passed a hardcoded `0.0` to `ANativeWindow_setFrameRate` instead
+    /// of passing this on, and the test went on being green about a number nobody
+    /// read — the same demotion the sibling test below records for `fps_cap`. What
+    /// the ask actually resolves to is pinned by
+    /// `frame_pacing::rate_tests::the_tier_s_target_is_what_gets_asked_for`.
     #[test]
     fn every_rung_asks_the_compositor_for_a_rate() {
         for budget in [Budget::phone(), Budget::balanced(), Budget::desktop()] {

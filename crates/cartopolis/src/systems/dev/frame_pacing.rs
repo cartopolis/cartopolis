@@ -9,16 +9,265 @@ use big_space::prelude::GridCell;
 use std::time::Duration;
 
 use crate::env_flag;
-// The limiter's cap resolution and the vsync-paced probe are native-only code
-// paths, so their imports are too — on wasm they are cfg-stripped and `unused =
-// "deny"` makes an unconditional import an error.
-#[cfg(not(target_arch = "wasm32"))]
 use crate::env_value;
 use crate::platform;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::quality;
 use crate::resources;
 use crate::systems;
+
+// ---------------------------------------------------------------------------
+// The presentation rate: what we ask to present at, and when we ask for less
+// ---------------------------------------------------------------------------
+
+/// The rate the app wants to present at right now, in fps; `0.0` means "no cap,
+/// the platform decides".
+///
+/// **One resolution of the question with two consumers**, which is why it is a
+/// resource and not a `Local` in each. On Android [`present_rate`] hands it to the
+/// compositor — the only pacer that does not fight FIFO — and on a machine that
+/// presents without a vsync [`frame_limiter`] sleeps to it. A version where those
+/// two resolve it separately is one where the idle throttle applies on one
+/// platform and not the other, with nothing to say so.
+///
+/// Nothing consumes it on the web: `requestAnimationFrame` is the pacer there and
+/// there is no lever to pull. It is still computed, so the value a diagnostics
+/// report quotes is the same one everywhere.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct PresentationRate {
+    /// What we want — the tier's target, or the idle rate. Set by [`present_rate`],
+    /// which is chained ahead of both consumers, so the zero this defaults to is
+    /// never read.
+    pub wanted: f32,
+    /// What the compositor last accepted, on Android. `None` until the surface
+    /// exists — `native_window()` answers `None` for the first few seconds after
+    /// `android_main`, which is what [`report_frame_to_scheduler`] waits for
+    /// before opening its ADPF session.
+    ///
+    /// Both the write and the read are inside `cfg(target_os = "android")` blocks,
+    /// so off the handset this is a field nothing touches. Kept unconditional
+    /// rather than `cfg`-ed away, for the same reason the systems that use it keep
+    /// one signature on every target: a second shape of the resource is one more
+    /// thing to keep in step, and `wanted` is read everywhere.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    applied: Option<f32>,
+}
+
+/// How long everything must be quiet before the rate drops.
+///
+/// Long enough that the pause between two drags is not idle, short enough that
+/// reading the map is. **A guess** — it has never been felt on a device, and it is
+/// the first number to move if the drop is noticeable.
+const IDLE_AFTER_S: f32 = 2.0;
+
+/// The floor the idle throttle will not go below.
+///
+/// The scene is never actually static — the sky, the water and the day/night
+/// cycle animate whatever the camera does — so this is a *rate* to fall back to
+/// and not a stop. Below about this it stops reading as a still picture and starts
+/// reading as a broken one.
+const IDLE_FPS_FLOOR: f32 = 30.0;
+
+/// The rate to ask for, given the tier's target and any `CARTO_FPS_CAP` override.
+///
+/// `0.0` is "the platform decides": both what `ANativeWindow_setFrameRate`
+/// documents for a zero and what [`frame_limiter`] has always read as "no cap". So
+/// `CARTO_FPS_CAP=0` still means uncapped, on the platform where lifting the cap is
+/// how headroom gets measured at all.
+fn resolve_frame_rate(override_fps: Option<f32>, target_fps: f32) -> f32 {
+    match override_fps {
+        Some(fps) if fps > 0.0 => fps,
+        // An explicit zero (or a negative typo) is the debugging knob asking for
+        // no cap, and a knob has to win over a default to be worth having.
+        Some(_) => 0.0,
+        None => target_fps.max(0.0),
+    }
+}
+
+/// The idle rate for an active rate.
+///
+/// Half, floored at [`IDLE_FPS_FLOOR`], and **never applied to a run that asked
+/// for no cap at all**: lifting the cap is how somebody measures what this device
+/// can do, and an idle throttle underneath that measurement would be measuring
+/// itself.
+fn idle_frame_rate(active_fps: f32) -> f32 {
+    if active_fps <= 0.0 {
+        return 0.0;
+    }
+    (active_fps * 0.5).max(IDLE_FPS_FLOOR).min(active_fps)
+}
+
+/// `CARTO_FPS_CAP`, parsed once.
+///
+/// Through [`env_value`], not `std::env::var`: on Android the former maps to the
+/// `debug.carto.*` system properties and the latter reads an environment the
+/// zygote never gave us. Cached because this is now consulted every frame rather
+/// than once, and on Android each read is a `__system_property_get`.
+fn cap_override() -> Option<f32> {
+    static CAP: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| env_value("CARTO_FPS_CAP").and_then(|v| v.parse().ok()))
+}
+
+/// What [`present_rate`] remembers between frames to tell moving from still.
+#[derive(Default)]
+pub(crate) struct IdleWatch {
+    quiet_s: f32,
+    camera: Option<(Vec3, Quat)>,
+}
+
+/// Ask to present at the tier's rate, and at half of it while nothing is happening.
+///
+/// **Why this is the lever and a sleep is not.** Android runs `AutoVsync`, so the
+/// swapchain is already a clock; a `thread::sleep` on top is a second one timing
+/// from the other end of the pipeline, which is the alternating judder
+/// [`frame_limiter`] refuses to cause (see its body). The compositor, though, is
+/// the *same* clock — telling it to present every 33 ms throttles the whole loop,
+/// because FIFO then blocks on acquire for exactly that long. So the one call that
+/// can lower the rate without adding a pacer is `ANativeWindow_setFrameRate`, and
+/// it is `dlsym`ed out of `libandroid.so` like the rest of this file's NDK calls,
+/// needing no `classes.dex`.
+///
+/// **What counts as busy.** Input held or just released, the camera having moved,
+/// driver mode, and either streaming signal — bytes handed to the GPU this frame,
+/// or a tile job still outstanding. The streamers are in that list deliberately:
+/// the per-frame build budgets are *per frame*, so a cold map filling in while you
+/// sit still would otherwise take twice as long to arrive.
+///
+/// **What does not count**, and this is the deliberate trade: the world keeps
+/// animating while idle — the sun moves, the water has waves, a remote avatar
+/// walks past — and it animates at the idle rate. A still camera over a moving
+/// scene at 30 fps is the cost of not cooking the device to render a view nobody
+/// is touching.
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(unused_variables, clippy::needless_pass_by_value)
+)]
+pub(crate) fn present_rate(
+    time: Res<Time<Real>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    uploads: Res<systems::upload_meter::UploadMeter>,
+    driver: Res<systems::driver::DriverState>,
+    camera: Query<&Transform, With<crate::components::FreeCamera>>,
+    mut rate: ResMut<PresentationRate>,
+    mut watch: Local<IdleWatch>,
+) {
+    // Compared against the last frame's rather than read from a change detection
+    // flag: under `big_space` the camera's `Transform` is re-based whenever the
+    // origin moves a grid cell, and half the systems in the app touch it. An
+    // epsilon, because a smoothed follow camera never comes exactly to rest and an
+    // exact compare would report "moving" for the rest of the session.
+    let now = camera.single().ok().map(|tf| (tf.translation, tf.rotation));
+    let moved = match (watch.camera, now) {
+        (Some(was), Some(is)) => {
+            was.0.distance_squared(is.0) > 1.0e-6 || was.1.angle_between(is.1) > 1.0e-4
+        }
+        // No camera yet, or it just appeared: not a resting scene.
+        _ => true,
+    };
+    watch.camera = now;
+
+    let busy = moved
+        || driver.active
+        || uploads.frame_bytes > 0
+        || platform::workers::outstanding() > 0
+        || keys.get_pressed().next().is_some()
+        || keys.get_just_released().next().is_some()
+        || mouse.get_pressed().next().is_some()
+        || mouse.get_just_released().next().is_some()
+        || touches.iter().next().is_some()
+        || touches.iter_just_released().next().is_some();
+
+    watch.quiet_s = if busy {
+        0.0
+    } else {
+        watch.quiet_s + time.delta_secs()
+    };
+
+    let active = resolve_frame_rate(cap_override(), quality::budget().target_fps());
+    let wanted = if watch.quiet_s >= IDLE_AFTER_S {
+        idle_frame_rate(active)
+    } else {
+        active
+    };
+    rate.wanted = wanted;
+
+    #[cfg(target_os = "android")]
+    if rate.applied != Some(wanted) {
+        let first = rate.applied.is_none();
+        if platform::android::set_frame_rate(wanted) {
+            rate.applied = Some(wanted);
+            // The first ask at `info`, so a session log says what rate this device
+            // was asked for; the transitions at `debug`, because there is one every
+            // time you stop and start panning and an hour of that is not a log.
+            if first {
+                tracing::info!(fps = wanted, "asked the compositor to present at this rate");
+            } else {
+                tracing::debug!(
+                    fps = wanted,
+                    idle = wanted < active,
+                    "presentation rate changed"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::{idle_frame_rate, resolve_frame_rate, IDLE_FPS_FLOOR};
+
+    /// **The regression this exists for.** `report_frame_to_scheduler` used to pass
+    /// a hardcoded `0.0` — `ANativeWindow_setFrameRate`'s "the app will accept the
+    /// system's choice" — which on a 120 Hz LTPO handset means 120, i.e. twice the
+    /// frames the tier budgeted for, paid in heat.
+    ///
+    /// The rung's own test (`quality::every_rung_asks_the_compositor_for_a_rate`)
+    /// could not catch it: it asserts what `target_fps()` *returns*, and the bug was
+    /// that nothing passed the return value on. This asserts the resolution the call
+    /// site actually performs, which is why the resolution is a function and not
+    /// three lines inside a `cfg(target_os = "android")` block.
+    #[test]
+    fn the_tier_s_target_is_what_gets_asked_for() {
+        assert_eq!(resolve_frame_rate(None, 60.0), 60.0);
+        assert_eq!(resolve_frame_rate(None, 90.0), 90.0);
+    }
+
+    /// `CARTO_FPS_CAP` still wins, on the platform where it is a `debug.carto.*`
+    /// property and therefore the only way to A/B a rate without a rebuild.
+    #[test]
+    fn the_debug_cap_overrides_the_tier() {
+        assert_eq!(resolve_frame_rate(Some(120.0), 60.0), 120.0);
+    }
+
+    /// …and zero still means "no cap", which is how headroom gets measured.
+    #[test]
+    fn lifting_the_cap_hands_the_choice_back() {
+        assert_eq!(resolve_frame_rate(Some(0.0), 60.0), 0.0);
+    }
+
+    /// Idle halves the rate.
+    #[test]
+    fn idle_halves_the_rate() {
+        assert_eq!(idle_frame_rate(60.0), 30.0);
+        assert_eq!(idle_frame_rate(120.0), 60.0);
+    }
+
+    /// But never below the floor, and never *above* the active rate — a tier
+    /// already at the floor must not be throttled up into asking for more.
+    #[test]
+    fn the_idle_rate_is_bounded_at_both_ends() {
+        assert_eq!(idle_frame_rate(IDLE_FPS_FLOOR), IDLE_FPS_FLOOR);
+        assert_eq!(idle_frame_rate(24.0), 24.0);
+    }
+
+    /// An uncapped run is left alone: the idle throttle must not quietly become the
+    /// cap that `CARTO_FPS_CAP=0` was set to remove.
+    #[test]
+    fn an_uncapped_run_is_not_idle_throttled() {
+        assert_eq!(idle_frame_rate(0.0), 0.0);
+    }
+}
 
 /// Drives the sun direction, sun light intensity, and ambient brightness from the dev
 /// panel's time-of-day slider (Ctrl+Shift+D). Runs only when the value changes.
@@ -69,54 +318,53 @@ use crate::systems;
 )]
 pub(crate) fn report_frame_to_scheduler(
     time: Res<Time<Real>>,
+    rate: Res<PresentationRate>,
     mut started: Local<bool>,
     mut cadence: Local<Cadence>,
 ) {
     #[cfg(target_os = "android")]
     {
-        if !*started {
-            // **Let the display decide the rate, and aim ADPF at what it decided.**
+        if !*started && rate.applied.is_some() {
+            // **The rate we ask for and the deadline we report against are two
+            // different numbers, and conflating them is the bug this had twice.**
             //
-            // This used to ask for a hard 60, out of a real concern: FIFO paces to
-            // *the panel*, so on a 90 or 120 Hz screen a scene budgeted for 30 fps
-            // renders two to four times the frames it needs and is thermally
-            // throttled for the privilege. The mistake was answering that concern
-            // with a number nobody could check. 60 is not a property of any display
-            // — it is a property of the desktop the tier table was written on — and
-            // on a 120 Hz LTPO handset asking for it is worse than asking for
-            // nothing: the panel is pinned to half its rate, and it is pinned there
-            // by a constant this codebase could not have derived from anything the
-            // device said.
+            // Asking is [`present_rate`]'s job now. It used to be done here, with a
+            // hardcoded `0.0` — `ANativeWindow_setFrameRate`'s "the app will accept
+            // the system's choice of display frame rate" — on the argument that the
+            // compositor is the only party that knows the panel's modes. True, and
+            // the consequence is that a 120 Hz LTPO handset renders every frame the
+            // panel can take: twice the tier's budget, spent as heat on a device
+            // that then thermally throttles. Handing the choice back is not a
+            // neutral act when the choice is "as fast as possible".
             //
-            // A capability cannot be *read* here — winit's Android backend answers
-            // `None` for the refresh rate outright and fabricates a 60 in
-            // `video_modes` (see `quality::Capabilities`), so bevy's `Monitor` knows
-            // nothing on this platform. So it is *handed back*: `0.0` is
-            // `ANativeWindow_setFrameRate`'s documented "the app will accept the
-            // system's choice of display frame rate". The compositor knows the
-            // panel's modes, the thermal state and what every other surface on
-            // screen is asking for, and it is the only party here that does.
+            // The earlier version of *that* argument was right about the number
+            // being unaccountable, though, and it still is: 60 is not a property of
+            // any display. It is not offered as one. `target_fps` is a statement
+            // about how much work this tier is willing to do per second, which is a
+            // thing this codebase does know, and the panel's own rate is measured
+            // rather than assumed (see [`Cadence`]).
             //
-            // ADPF then wants a deadline, and it must be the one we are *actually*
-            // being paced to rather than the one we asked for — so it is measured
-            // (`measured_period_ns`) instead of divided out of a constant. A hint
-            // aimed at 16.6 ms on a panel presenting every 8.3 ms reports every
-            // frame as comfortably early and the governor never boosts, which is
-            // the bug this had before in the other direction.
+            // So ADPF gets a deadline that is the one we are *actually* being paced
+            // to. Seeded here from what the compositor accepted — a hint aimed at
+            // 16.6 ms on a panel presenting every 8.3 ms reports every frame as
+            // comfortably early and the governor never boosts, which is the bug in
+            // the other direction — and replaced by `measured_period_ns` within a
+            // second or so.
             //
-            // Retried until the surface exists: `native_window()` is `None` for the
-            // first few seconds on Android (winit logs `Creating new window` about
-            // five seconds after `android_main`), so a one-shot at startup would
-            // silently never take.
-            const PLATFORMS_CHOICE: f32 = 0.0;
-            if platform::android::set_frame_rate(PLATFORMS_CHOICE) {
-                *started = true;
-                // Seeded from the tier so the session opens with *a* deadline; the
-                // measurement below replaces it within a second or so.
-                let period = (1.0e9 / f64::from(quality::budget().target_fps())) as i64;
-                platform::android::start_perf_hint(period);
-                platform::android::set_perf_hint_target(period);
-            }
+            // Gated on `rate.applied` rather than probing the surface again:
+            // `native_window()` is `None` for the first few seconds on Android
+            // (winit logs `Creating new window` about five seconds after
+            // `android_main`), and `present_rate` is already retrying against it
+            // every frame. Two callers racing to be the one that notices the
+            // surface is one caller too many.
+            let seed_fps = rate
+                .applied
+                .filter(|fps| *fps > 0.0)
+                .unwrap_or_else(|| quality::budget().target_fps());
+            let period = (1.0e9 / f64::from(seed_fps)) as i64;
+            *started = true;
+            platform::android::start_perf_hint(period);
+            platform::android::set_perf_hint_target(period);
         }
         if let Some(period) = cadence.observe(time.delta()) {
             tracing::info!(
@@ -288,14 +536,15 @@ mod cadence_tests {
 }
 
 pub(crate) fn frame_limiter(
+    rate: Res<PresentationRate>,
     mut deadline: Local<Option<std::time::Instant>>,
-    mut period: Local<Option<Duration>>,
+    mut period: Local<Duration>,
 ) {
     // Native only: a `thread::sleep`-based FPS cap. The browser paces frames itself
     // (requestAnimationFrame), and `Instant::now()`/`thread::sleep` would panic on
     // wasm, so this is a no-op there.
     #[cfg(target_arch = "wasm32")]
-    let _ = (&mut deadline, &mut period);
+    let _ = (&rate, &mut deadline, &mut period);
     #[cfg(not(target_arch = "wasm32"))]
     {
         // **Nothing paces a swapchain that already paces itself.**
@@ -321,29 +570,23 @@ pub(crate) fn frame_limiter(
         if quality::capabilities().is_some_and(|c| c.vsync_paced) {
             return;
         }
-        let period = *period.get_or_insert_with(|| {
-            // The tier's answer, with `CARTO_FPS_CAP` still overriding it — a
-            // debugging knob has to win over a default to be useful, and lifting
-            // the cap is how headroom gets measured at all.
-            //
-            // Through `env_value`, not `std::env::var`: on Android the former maps
-            // to the `debug.carto.*` system properties and the latter reads an
-            // environment the zygote never gave us. This was the one switch that
-            // bypassed it — so the knob for A/B-ing a frame cap was unreachable on
-            // the only platform where a frame cap is the answer, while the
-            // property-name test below already listed it as if it worked.
-            let fps: f64 = env_value("CARTO_FPS_CAP")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| quality::budget().fps_cap.unwrap_or(0.0));
-            if fps <= 0.0 {
-                Duration::ZERO
-            } else {
-                Duration::from_secs_f64(1.0 / fps)
-            }
-        });
-        if period.is_zero() {
+        // The rate comes from `PresentationRate` now rather than being resolved
+        // once into a `Local`, because it moves: `present_rate` halves it while
+        // nothing is happening. The tier's `fps_cap` and `CARTO_FPS_CAP` are folded
+        // in there, so this end of the pipeline no longer has an opinion about
+        // either — one resolution, two consumers.
+        if rate.wanted <= 0.0 {
             return;
         }
+        let wanted = Duration::from_secs_f64(1.0 / f64::from(rate.wanted));
+        if wanted != *period {
+            // The period changed underneath us. A deadline computed from the old
+            // one can be an entire idle frame away, so honouring it would sleep
+            // through the input that just ended the idle — re-base instead.
+            *period = wanted;
+            *deadline = None;
+        }
+        let period = wanted;
         let now = std::time::Instant::now();
         // A deadline in the past means we're already running below the cap (a hitch,
         // or a genuinely heavy frame). Re-base on `now` rather than sleeping zero for
