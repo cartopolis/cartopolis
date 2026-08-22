@@ -69,7 +69,7 @@ pub struct SignInMenu<'w> {
 /// rather than a menu whose contents depend on the window width.
 ///
 /// Anchored to the bottom centre rather than to the disc it belongs to: the dock
-/// is centred and its width depends on whether there is a session (Chat comes and
+/// is centred and its width depends on whether there is a session (Say comes and
 /// goes), so an offset measured from the disc would move under a card that should
 /// not move. It is a floating `Area`, so like the dock and the HUD it is
 /// deliberately *not* in the Phase 7b panel chain.
@@ -202,15 +202,28 @@ pub fn render_main_menu(
                             // wardrobe and the Assistant is a conversation, so neither
                             // earns a permanent disc in the dock next to the places you
                             // actually navigate between.
+                            //
+                            // Nearby chat joined them when chatting stopped being a
+                            // panel at all (`systems::chat_overlay`): the dock's Say
+                            // disc raises the composer over the map, and what is left
+                            // in here is the log, the rooms, the blocks and the
+                            // microphone. Only in a session — there is nobody to have
+                            // said anything otherwise.
                             for panel in [
                                 crate::resources::RightPanel::Appearance,
                                 crate::resources::RightPanel::Assistant,
+                                crate::resources::RightPanel::Chat,
                                 crate::resources::RightPanel::Settings,
                                 // About carries the attribution the map data's licences
                                 // require, so it must be reachable from the running app,
                                 // not only from a file in the tarball.
                                 crate::resources::RightPanel::About,
-                            ] {
+                            ]
+                            .into_iter()
+                            .filter(|p| {
+                                *p != crate::resources::RightPanel::Chat
+                                    || sign_in.session.is_online()
+                            }) {
                                 // Same glyph the panel's own header wears, so the menu
                                 // entry and the badge it opens are recognisably one thing.
                                 if theme::menu_entry_selected(

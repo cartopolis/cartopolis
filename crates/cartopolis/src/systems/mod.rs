@@ -40,9 +40,9 @@ pub use dev::{
 // writing `systems::vector_tiles` — the same separation of filing from naming the
 // group folders use, and the reason the move cost no call-site edits.
 pub use gui::{
-    ai_assistant, bookmarks, chat, data_layers, dismiss, dock, egui_manager, hud, icons,
-    login_screen, map_osd, onscreen_keyboard, place_card, place_pins, script_editor, settings,
-    splash, text_touch, theme, ui,
+    ai_assistant, bookmarks, chat, chat_overlay, data_layers, dismiss, dock, egui_manager, hud,
+    icons, login_screen, map_osd, onscreen_keyboard, place_card, place_pins, script_editor,
+    settings, splash, text_touch, theme, ui,
 };
 pub use map::{
     globe, globe_ocean, globe_weather, grass, height, lod22, map_geometry, map_stream,

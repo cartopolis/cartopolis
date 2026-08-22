@@ -1,9 +1,22 @@
-//! Chat UI (ADR-028, Simulation tier). Renders a collapsible panel with a tab per
-//! channel — Local (proximity), Global, and joined rooms — and sends `ChatSend` /
-//! `ChatSubscribe` through the online session. Only shown while connected.
+//! Chat state (ADR-028, Simulation tier), and the panel that is *not* how you
+//! chat.
+//!
+//! **Talking happens over the map** — [`crate::systems::chat_overlay`] draws a
+//! speech bubble above whoever said it, an ambient transcript that fades, and a
+//! composer pill that appears only while you are writing. This module owns the
+//! state all three read, and one panel that is now a **log and its settings**:
+//! the whole backlog in one scroll, the rooms you are in, the people you block,
+//! the microphone, and the report form. It is reached from ☰ rather than from
+//! the dock, because it is somewhere you visit, not the way you speak.
+//!
+//! Why the panel stopped being the chat: on a compact viewport a right panel is
+//! the *whole screen* (`egui_manager::responsive_right_panel`), so saying
+//! anything meant covering the world and the people in it — in a client whose
+//! Local channel is scoped by how far away those people are standing. See
+//! `docs/notes/chat-without-a-panel.md`.
 //!
 //! Geo tiers (country/province/municipality) land with `cartopolis_geo`; they slot in as
-//! extra tabs with no change to this panel.
+//! extra channels with no change to any of this.
 
 use bevy::prelude::*;
 use cartopolis_core::{ChatScope, NetMessage, ReportReason};
@@ -19,11 +32,24 @@ const MAX_LINES: usize = 200;
 #[derive(Resource)]
 pub struct ChatState {
     pub channels: Vec<ChatChannel>,
+    /// Where the composer sends — an index into [`Self::channels`]. It used to be
+    /// the selected *tab*; with the tabs gone it is the scope chip's value and
+    /// nothing else reads it.
     pub active: usize,
     pub input: String,
     /// Local say/shout toggle.
     pub shout: bool,
     pub join_input: String,
+    /// Seconds since app start, as of the last frame the overlay ran.
+    ///
+    /// **Chat is timed on the client, not on `sent_at_ms`.** Everything the
+    /// overlay does with a clock — hold a bubble up, fade a transcript line,
+    /// decide what "recent" means — is about how long *this* screen has shown a
+    /// line, so a server clock (unsynchronised, and skewed by however long the
+    /// message spent in flight) would make a bubble vanish early or linger on a
+    /// client whose watch disagrees. `sent_at_ms` stays on the wire for the log
+    /// and for ordering; this is what the picture runs on.
+    pub clock: f64,
     /// This client's avatar id (from `ServerHelloAck`), to tag own lines.
     pub my_id: Option<u64>,
     /// People this account blocks, exactly as the server last reported them
@@ -70,10 +96,19 @@ pub struct ChatChannel {
     pub lines: Vec<ChatLine>,
 }
 
+#[derive(Clone)]
 pub struct ChatLine {
     pub sender: String,
+    /// The speaker's avatar id, which is what hangs a line on the person who
+    /// said it: `RemoteAvatar::sim_id` is the same number, so a bubble finds its
+    /// entity with no name matching and no protocol change. `0` for anything
+    /// that arrived without one.
+    pub sender_id: u64,
     pub body: String,
     pub distance: Option<f32>,
+    /// [`ChatState::clock`] when this line landed — the age every fade is
+    /// measured from.
+    pub arrived: f64,
 }
 
 impl Default for ChatState {
@@ -95,6 +130,7 @@ impl Default for ChatState {
             input: String::new(),
             shout: false,
             join_input: String::new(),
+            clock: 0.0,
             my_id: None,
             blocked: Vec::new(),
             report: None,
@@ -117,6 +153,21 @@ impl ChatState {
         self.channels.len() - 1
     }
 
+    /// Forget a channel we have left, keeping the send scope on something that
+    /// still exists.
+    ///
+    /// The clamp is the whole reason this is a method: `active` is an index, and
+    /// leaving the room you were speaking in would otherwise leave the composer
+    /// pointing one past the end — where `scope_for` never runs and Send is a
+    /// button that does nothing.
+    pub fn drop_channel(&mut self, key: &str) {
+        let Some(i) = self.channels.iter().position(|c| c.key == key) else {
+            return;
+        };
+        self.channels.remove(i);
+        self.active = self.active.min(self.channels.len().saturating_sub(1));
+    }
+
     /// Whether this account blocks `name`. Case-insensitive, as the server's own
     /// comparison is — a block must not be walked around with the shift key.
     #[must_use]
@@ -125,18 +176,59 @@ impl ChatState {
     }
 
     /// Append an incoming message to its channel (ADR-028 delivery).
-    pub fn receive(&mut self, channel: &str, sender: String, body: String, distance: Option<f32>) {
+    pub fn receive(
+        &mut self,
+        channel: &str,
+        sender_id: u64,
+        sender: String,
+        body: String,
+        distance: Option<f32>,
+    ) {
+        let arrived = self.clock;
         let idx = self.channel_index(channel);
         let lines = &mut self.channels[idx].lines;
         lines.push(ChatLine {
             sender,
+            sender_id,
             body,
             distance,
+            arrived,
         });
         if lines.len() > MAX_LINES {
             let excess = lines.len() - MAX_LINES;
             lines.drain(0..excess);
         }
+    }
+
+    /// The lines that landed in the last `window` seconds, newest last, across
+    /// **every** channel, capped at `max`.
+    ///
+    /// Merged rather than per-channel because the transcript has no tabs to
+    /// scope it to: what it shows is "what has been said to me lately", which is
+    /// one stream however many channels fed it. Blocked senders are dropped
+    /// here, so no caller has to remember to (see [`Self::is_blocked`] — the
+    /// server withholds new messages, this hides the ones already on screen).
+    ///
+    /// Each entry carries the channel it came from, so the transcript can prefix
+    /// the ones that are *not* proximity chat. A Local line needs no prefix: the
+    /// whole design is that you can see who said it.
+    #[must_use]
+    pub fn recent(&self, now: f64, window: f64, max: usize) -> Vec<(&ChatChannel, &ChatLine)> {
+        let mut out: Vec<(&ChatChannel, &ChatLine)> = self
+            .channels
+            .iter()
+            .flat_map(|c| c.lines.iter().map(move |l| (c, l)))
+            .filter(|(_, l)| now - l.arrived <= window)
+            .filter(|(_, l)| !self.is_blocked(&l.sender))
+            .collect();
+        // By arrival, which is the order they appeared on this screen — and
+        // therefore the order a reader saw them in, whatever the senders' clocks
+        // said. Stable, so two lines that landed on one frame keep channel order.
+        out.sort_by(|a, b| a.1.arrived.total_cmp(&b.1.arrived));
+        if out.len() > max {
+            out.drain(0..out.len() - max);
+        }
+        out
     }
 }
 
@@ -149,7 +241,7 @@ fn channel_label(key: &str) -> String {
 }
 
 /// Scope to send into for a channel key.
-fn scope_for(key: &str, shout: bool) -> ChatScope {
+pub fn scope_for(key: &str, shout: bool) -> ChatScope {
     match key {
         "geo:" => ChatScope::Global,
         "local" => ChatScope::Local { shout },
@@ -157,18 +249,22 @@ fn scope_for(key: &str, shout: bool) -> ChatScope {
     }
 }
 
-/// The chat panel: channel tabs, history, and the composer.
+/// The chat panel: the whole log, the rooms, the blocks and the microphone.
 ///
-/// The composer used to be a persistent "say" line in the bottom bar, Second
-/// Life style, with the channel picker and the Shout toggle beside it. It has
-/// moved in here, and three things fell out of that. The scope **combo box is
-/// gone** — the panel already has channel tabs, and two controls picking the same
-/// value is one too many. The bottom of the screen is back to being map. And the
-/// composer now sits under the history it writes into, which is where every chat
-/// client puts it and where the reply you are answering is still on screen.
+/// **This is not where you talk.** The composer, the scope picker and the
+/// per-channel tabs left for [`crate::systems::chat_overlay`], which draws them
+/// over the map — see this module's note. What a panel is still good at is the
+/// things you do *occasionally* and want space for: reading back further than
+/// the transcript keeps, joining and leaving rooms, undoing a block, arming the
+/// microphone, and the report form.
+///
+/// The history here is **merged across every channel**, in arrival order, the
+/// same stream the transcript shows and for the same reason: the tabs are gone,
+/// so there is nothing to scope it to, and a room's lines interleaved with the
+/// proximity ones is what actually happened.
 ///
 /// Present only when online (Simulation tier) — there is no one to talk to
-/// otherwise. The dock button that opens this panel is hidden on the same test.
+/// otherwise, and the ☰ entry that opens it is hidden on the same test.
 pub fn render_chat_panel(
     mut egui: ResMut<EguiManager>,
     mut chat: ResMut<ChatState>,
@@ -180,25 +276,40 @@ pub fn render_chat_panel(
         return;
     };
 
-    let tabs: Vec<(String, String)> = chat
-        .channels
-        .iter()
-        .map(|c| (c.key.clone(), c.label.clone()))
-        .collect();
-    let mut active = chat.active.min(tabs.len().saturating_sub(1));
-    let is_local = tabs.get(active).map(|(k, _)| k == "local").unwrap_or(false);
-
-    let mut send_now = false;
     let mut join_now = false;
     // Collected while the panel draws and acted on after it, because every one of
     // these mutates `chat` and the closure already holds it borrowed.
     let mut block_now: Option<String> = None;
     let mut unblock_now: Option<String> = None;
+    let mut leave_now: Option<String> = None;
     let mut open_report: Option<(String, Option<String>)> = None;
     let blocked = chat.blocked.clone();
     let mut dismiss_notice = false;
+    // Every joined room, as (channel key, name). The two built-in channels are
+    // not rooms and cannot be left.
+    let rooms: Vec<(String, String)> = chat
+        .channels
+        .iter()
+        .filter(|c| c.key.starts_with("room:"))
+        .map(|c| (c.key.clone(), c.label.clone()))
+        .collect();
+    // The log, flattened out of the borrow before the closure takes `chat`
+    // mutably. `f64::INFINITY` because a *log* has no recency window — that is
+    // the transcript's job, and this is the place you come when the transcript
+    // has already faded.
+    let log: Vec<(String, ChatLine)> = chat
+        .recent(chat.clock, f64::INFINITY, usize::MAX)
+        .into_iter()
+        .map(|(c, l)| {
+            let prefix = if c.key == "local" {
+                String::new()
+            } else {
+                format!("[{}] ", c.label)
+            };
+            (prefix, l.clone())
+        })
+        .collect();
 
-    // --- Chat history as an animated right panel (mutually exclusive slot). ---
     crate::systems::egui_manager::right_panel(
         &mut egui,
         &mut right_panel,
@@ -206,11 +317,6 @@ pub fn render_chat_panel(
         "chat_panel",
         320.0,
         |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (i, (_key, label)) in tabs.iter().enumerate() {
-                    ui.selectable_value(&mut active, i, label);
-                }
-            });
             // A refusal is an error chip; a confirmation is not. They are the same
             // field because they answer the same question ("did my report go?"),
             // and styling a success in the error tone would teach people to
@@ -227,6 +333,42 @@ pub fn render_chat_panel(
                     });
                 }
             }
+            voice_row(ui, &mut voice);
+            ui.separator();
+
+            theme::section(ui, "Rooms");
+            for (key, label) in &rooms {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::action_button(ui, "Leave").clicked() {
+                            leave_now = Some(key.clone());
+                        }
+                    });
+                });
+            }
+            ui.horizontal(|ui| {
+                // Enter submits, as it does in every other field in the client.
+                let field = crate::systems::text_touch::field(
+                    ui,
+                    egui::TextEdit::singleline(&mut chat.join_input)
+                        .desired_width(ui.available_width() * 0.55)
+                        .hint_text("Room name"),
+                );
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                // Disabled on an empty field rather than live-and-inert.
+                // `data_layers` states the rule this restores — "a control that
+                // swallows a tap is indistinguishable from a broken app".
+                let ready = !chat.join_input.trim().is_empty();
+                let join = crate::systems::theme::action_enabled_because(
+                    ui,
+                    ready,
+                    "Join",
+                    "Type a room name first",
+                );
+                join_now = (join.clicked() || entered) && ready;
+            });
+
             // Only once there is something in it. An empty "Blocked (0)" header on
             // every session is chrome that says nothing; the list is a place to
             // *undo* a block, and until one exists there is nothing to undo.
@@ -250,152 +392,55 @@ pub fn render_chat_panel(
                     });
             }
             ui.separator();
-            // The composer and the Join row are laid out *first*, from the bottom
-            // up, so the history takes whatever is left. Give the scroll area the
-            // remaining height instead and it claims the whole panel, pushing the
-            // input off the bottom edge the moment the backlog is long enough —
-            // which is exactly when you want to reply.
-            egui::Panel::bottom("chat_composer")
-                .show_separator_line(false)
-                .frame(egui::Frame::NONE.outer_margin(egui::Margin {
-                    top: 6,
-                    ..Default::default()
-                }))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Join room");
-                        // Enter submits, as it does in every other field in the
-                        // client — this was the one that only took a click.
-                        let field = crate::systems::text_touch::field(
-                            ui,
-                            egui::TextEdit::singleline(&mut chat.join_input),
-                        );
-                        let entered =
-                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        // Disabled on an empty field rather than live-and-inert.
-                        // `data_layers` states the rule this restores — "a control
-                        // that swallows a tap is indistinguishable from a broken
-                        // app" — and Join was pressing to no effect and no message.
-                        let ready = !chat.join_input.trim().is_empty();
-                        let join = crate::systems::theme::action_enabled_because(
-                            ui,
-                            ready,
-                            "Join",
-                            "Type a room name first",
-                        );
-                        join_now = (join.clicked() || entered) && ready;
-                    });
-                    ui.separator();
-                    // Voice sits with the Local tab and only there: the server
-                    // refuses global voice outright, and a room send would need
-                    // the room this composer is not scoped to.
-                    if is_local {
-                        voice_row(ui, &mut voice);
-                        ui.separator();
-                    }
-                    // Shout is a property of the *local* channel only; a room or
-                    // the global channel has no distance to shout across.
-                    if is_local {
-                        crate::systems::theme::checkbox(ui, &mut chat.shout, "Shout");
-                    }
-                    // Right-to-left so Send lands at the right edge and the field
-                    // takes whatever is left: the panel is resizable and responsive,
-                    // and a fixed input width either overflows the narrow layout or
-                    // leaves a gap in the wide one.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Same rule as Join above.
-                        let ready = !chat.input.trim().is_empty();
-                        let send = crate::systems::theme::action_enabled_because(
-                            ui,
-                            ready,
-                            "Send",
-                            "Type a message first",
-                        );
-                        // `desired_width`, not `add_sized(available_size())`: this
-                        // layout's available *height* is the whole rest of the
-                        // panel, and sizing to it grows the single-line field into
-                        // a full-height block.
-                        let field = crate::systems::text_touch::field(
-                            ui,
-                            egui::TextEdit::singleline(&mut chat.input)
-                                .desired_width(ui.available_width())
-                                .hint_text("Say something…"),
-                        );
-                        let entered =
-                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (send.clicked() || entered) && !chat.input.trim().is_empty() {
-                            send_now = true;
-                            field.request_focus();
-                        }
-                    });
-                });
+            theme::section(ui, "Everything said");
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let empty = chat.channels.get(active).is_none_or(|c| c.lines.is_empty());
-                    if empty {
+                    if log.is_empty() {
                         theme::empty_state(
                             ui,
-                            "No messages yet",
-                            "Anything you say here reaches the people nearby.",
+                            "Nothing said yet",
+                            "What people say near you appears over their heads, and here.",
                         );
                     }
-                    if let Some(ch) = chat.channels.get(active) {
-                        for line in &ch.lines {
-                            // The server stops a blocked person's *new* messages;
-                            // this hides the ones that were already on screen when
-                            // the block was made, which is the half a person
-                            // notices — they blocked someone and the abuse stayed
-                            // where it was.
-                            if chat.is_blocked(&line.sender) {
-                                continue;
-                            }
-                            let who = match line.distance {
-                                Some(d) => format!("{} ({:.0} m)", line.sender, d),
-                                None => line.sender.clone(),
-                            };
-                            ui.horizontal_wrapped(|ui| {
-                                // The name is the handle for everything you can do
-                                // *about* a person, which is why it senses clicks
-                                // at all. It has no click action of its own, so it
-                                // needs no `long_touched` guard — the trap the
-                                // Places rows document applies to a widget that
-                                // both jumps somewhere and opens a menu.
-                                let name = ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!("{who}:"))
-                                            .strong()
-                                            .color(theme::ACCENT_TEXT),
-                                    )
-                                    .sense(egui::Sense::click()),
-                                );
-                                name.context_menu(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&line.sender)
-                                            .strong()
-                                            .color(theme::CREAM),
-                                    );
-                                    ui.separator();
-                                    if ui.button("Block").clicked() {
-                                        block_now = Some(line.sender.clone());
-                                        ui.close();
+                    for (prefix, line) in &log {
+                        let who = match line.distance {
+                            Some(d) => format!("{}{} ({:.0} m)", prefix, line.sender, d),
+                            None => format!("{}{}", prefix, line.sender),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            // The name is the handle for everything you can do
+                            // *about* a person, which is why it senses clicks at
+                            // all. It has no click action of its own, so it needs
+                            // no `long_touched` guard — the trap the Places rows
+                            // document applies to a widget that both jumps
+                            // somewhere and opens a menu.
+                            let name = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{who}:"))
+                                        .strong()
+                                        .color(theme::ACCENT_TEXT),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            person_menu(
+                                &name,
+                                &line.sender,
+                                Some(&line.body),
+                                |action| match action {
+                                    PersonAction::Block => block_now = Some(line.sender.clone()),
+                                    PersonAction::Report(msg) => {
+                                        open_report = Some((line.sender.clone(), msg))
                                     }
-                                    if ui.button("Report…").clicked() {
-                                        open_report =
-                                            Some((line.sender.clone(), Some(line.body.clone())));
-                                        ui.close();
-                                    }
-                                });
-                                ui.label(&line.body);
-                            });
-                        }
+                                },
+                            );
+                            ui.label(&line.body);
+                        });
                     }
                 });
         },
     );
-
-    chat.active = active;
 
     if join_now {
         let room = chat.join_input.trim().to_string();
@@ -407,25 +452,20 @@ pub fn render_chat_panel(
                 join: true,
             },
         );
+        // Joining a room is also choosing to speak in it: the scope chip follows,
+        // which is the one thing the vanished tab strip did that mattered.
         let idx = chat.channel_index(&key);
         chat.active = idx;
         chat.join_input.clear();
     }
 
-    if send_now {
-        if let Some((key, _)) = tabs.get(active) {
-            let scope = scope_for(key, chat.shout);
-            let body = chat.input.trim().to_string();
-            online.send(
-                "chat send",
-                NetMessage::ChatSend {
-                    request_id: 0,
-                    scope,
-                    body,
-                },
-            );
-        }
-        chat.input.clear();
+    if let Some(key) = leave_now {
+        let room = key.strip_prefix("room:").unwrap_or(&key).to_string();
+        online.send(
+            "chat unsubscribe",
+            NetMessage::ChatSubscribe { room, join: false },
+        );
+        chat.drop_channel(&key);
     }
 
     if dismiss_notice {
@@ -454,7 +494,48 @@ pub fn render_chat_panel(
     render_report_dialog(&mut egui, &mut chat, &online);
 }
 
+/// What the person menu can ask for.
+pub enum PersonAction {
+    Block,
+    /// Report, carrying the line that prompted it when there is one.
+    Report(Option<String>),
+}
+
+/// The menu behind a speaker's name: block them, or report them.
+///
+/// One function because it hangs off three different widgets now — a name in the
+/// panel's log, a name in the transcript, and a speech bubble over an avatar's
+/// head — and "the moderation menu differs depending on where you found the
+/// person" is not a difference anyone wants to discover while being harassed.
+pub fn person_menu(
+    response: &egui::Response,
+    sender: &str,
+    message: Option<&str>,
+    mut act: impl FnMut(PersonAction),
+) {
+    response.context_menu(|ui| {
+        ui.label(egui::RichText::new(sender).strong().color(theme::CREAM));
+        ui.separator();
+        if ui.button("Block").clicked() {
+            act(PersonAction::Block);
+            ui.close();
+        }
+        if ui.button("Report…").clicked() {
+            act(PersonAction::Report(message.map(str::to_string)));
+            ui.close();
+        }
+    });
+}
+
 /// The voice controls: arm the microphone, hold to talk, and see that it works.
+///
+/// # Why it is always proximity voice
+///
+/// This used to be drawn only while the Local tab was selected, because the
+/// server refuses global voice outright and a room send would need the room the
+/// composer was scoped to. With the tabs gone there is no scope here to be wrong
+/// about: voice is proximity voice, unconditionally, and the panel says so by
+/// being the only place it appears.
 ///
 /// # Why *Hold to talk* is a button and not only a key
 ///
@@ -656,7 +737,13 @@ mod tests {
     #[test]
     fn blocking_hides_a_line_that_already_arrived() {
         let mut chat = ChatState::default();
-        chat.receive("local", "loud".into(), "before the block".into(), Some(3.0));
+        chat.receive(
+            "local",
+            7,
+            "loud".into(),
+            "before the block".into(),
+            Some(3.0),
+        );
         let visible = |chat: &ChatState| {
             chat.channels[0]
                 .lines

@@ -275,6 +275,23 @@ pub enum Cluster {
     Zoom,
 }
 
+/// How much of the **bottom-left** corner the touch controls claim, in points —
+/// what anything else anchored there has to sit above.
+///
+/// Exported for the same reason [`crate::systems::dock::reserved_bottom`] is:
+/// the chat transcript wants this corner, the thumbstick is already in it, and a
+/// second copy of the arithmetic is how the two would drift. The zoom cluster
+/// claims nothing here — it is a pair on the right edge and the corner is free.
+#[must_use]
+pub fn reserved_left_bottom(cluster: Option<Cluster>) -> f32 {
+    match cluster {
+        Some(Cluster::Fly | Cluster::Walk) => {
+            bottom_offset() + STICK_RADIUS * 2.0 + theme::OSD_GROUP_GAP
+        }
+        Some(Cluster::Zoom) | None => crate::systems::dock::reserved_bottom() + theme::OSD_MARGIN,
+    }
+}
+
 /// Whether to draw anything, and what — the whole policy, as a pure function so
 /// it can be tested without a window.
 ///
