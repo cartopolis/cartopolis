@@ -1224,6 +1224,7 @@ const UI_ELEMENTS: &[&str] = &[
     "place",
     "settings",
     "graphics",
+    "world",
     "signin",
     "all",
 ];
