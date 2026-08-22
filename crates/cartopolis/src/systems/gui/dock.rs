@@ -4,8 +4,8 @@
 //! The dock used to be a wide strip of labelled toggles sharing the bottom of the
 //! screen with the nearby-chat composer, camera picker and five text buttons — it
 //! read as a taskbar, and the map ran out under it. The dock is what is left once
-//! each of those goes where it belongs: the composer into the Chat panel (it is
-//! chat, and the panel is already open when you are chatting), the camera picker
+//! each of those goes where it belongs: the composer over the map, where it now
+//! appears only while you are writing (`systems::chat_overlay`), the camera picker
 //! into the app menu, and Appearance and the Assistant with it (settings you
 //! visit, not things you flip while looking at the map).
 //!
@@ -34,6 +34,13 @@
 //! only appears when there is one; the map panels do not, and the dock therefore
 //! renders in `--offline` too — which the old bar, living inside
 //! `chat::render_chat_panel` behind its `OnlineSession` guard, did not.
+//!
+//! **And Chat is the one disc that opens no panel.** It opens the composer
+//! (`systems::chat_overlay`), because that is what a chat button is for — the
+//! log, the rooms and the blocks moved to ☰ with the other things you visit
+//! rather than flip. This costs the row nothing: it was already five discs and
+//! the note above says it cannot hold six, which is exactly why chat had to take
+//! a slot rather than add one.
 
 use bevy::prelude::*;
 
@@ -82,15 +89,16 @@ const TOP_MARGIN: f32 = theme::OSD_MARGIN;
 /// [`RightPanel::icons`] / [`RightPanel::label`] — the same table the panel
 /// headers wear, so a dock button and the header it opens can never drift apart.
 ///
-/// Two discs in the row are not in this list: the camera-mode disc drawn between
-/// Chat and Places (it cycles a mode rather than opening a panel), and the
-/// app-mark disc that closes the row on the right (it opens a menu —
+/// Three discs in the row are not in this list, because none of them opens a
+/// panel: the Say disc (it opens the chat composer over the map), the
+/// camera-mode disc drawn beside it (it cycles a mode), and the app-mark disc
+/// that closes the row on the right (it opens a menu —
 /// `ui::render_main_menu`). **Route lost its disc** when the place card arrived:
 /// a route now starts from a place — the card's Route from / Route to, the ⚑ on
 /// a search row, the map's context menu — and the panel those open is where the
 /// plan lives. A disc that opened an empty planner was the long way to the same
 /// place, and its slot is what the mode disc took.
-const ENTRIES: [RightPanel; 3] = [RightPanel::Search, RightPanel::Chat, RightPanel::Places];
+const ENTRIES: [RightPanel; 2] = [RightPanel::Search, RightPanel::Places];
 
 /// How much of the bottom edge the dock claims, in points.
 ///
@@ -129,6 +137,7 @@ pub fn render_dock(
     online: Option<Res<OnlineSession>>,
     driver: Res<crate::systems::driver::DriverState>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
+    mut say: ResMut<crate::systems::chat_overlay::ChatOverlay>,
     avatars: Query<(), With<crate::components::Avatar>>,
 ) {
     // Driving owns the screen — its own chrome already occupies the bottom.
@@ -164,13 +173,10 @@ pub fn render_dock(
 
     let mut clicked: Option<RightPanel> = None;
     let mut menu_clicked = false;
-    // Chat comes and goes with the session; the mode disc and the mark are
+    let mut say_clicked = false;
+    // Say comes and goes with the session; the mode disc and the mark are
     // always there.
-    let disc_count = ENTRIES
-        .iter()
-        .filter(|p| **p != RightPanel::Chat || has_session)
-        .count()
-        + 2;
+    let disc_count = ENTRIES.len() + 2 + usize::from(has_session);
     if !covered {
         egui::Area::new(egui::Id::new("panel_dock"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -BOTTOM_MARGIN))
@@ -184,8 +190,21 @@ pub fn render_dock(
                         }
                     };
                     panel_disc(ui, RightPanel::Search);
-                    if has_session {
-                        panel_disc(ui, RightPanel::Chat);
+                    // Say — the one disc here that opens no panel. A tap raises
+                    // the composer over the map; the log, the rooms and the
+                    // blocks are in ☰ ▸ Nearby chat. It carries the accent while
+                    // the composer is up, the same "this is the live one" the
+                    // panel discs wear.
+                    if has_session
+                        && theme::round_button(
+                            ui,
+                            crate::systems::icons::CHAT,
+                            "Say something",
+                            say.composing,
+                        )
+                        .clicked()
+                    {
+                        say_clicked = true;
                     }
                     // The camera-mode disc, in the slot the Route disc vacated:
                     // between the session entries and Places. It wears the
@@ -225,6 +244,17 @@ pub fn render_dock(
         right_panel.toggle(panel);
         // A panel and the menu are two things asking for the same attention, and
         // on a phone the panel is the whole screen the menu would float over.
+        menu.open = false;
+    }
+    if say_clicked {
+        if say.composing {
+            say.close();
+        } else {
+            say.open();
+        }
+        // The composer and the menu are two things asking for the same corner of
+        // the screen, and on a phone the keyboard the composer brings up would
+        // take the menu's card with it.
         menu.open = false;
     }
     if menu_clicked {
@@ -292,7 +322,9 @@ mod tests {
         // overflows the web tier by 13 pt at each end shipped. 274 pt is 411 dp
         // at `ui_scale` 1.5 (an ordinary Android handset); ~214 pt is 393 CSS px
         // on the web phone tier, and it is the binding case.
-        let discs = ENTRIES.len() + 2; // + the mode disc and the app mark
+        // + Say, the mode disc and the app mark. Say only exists in a session,
+        // which is the widest the row ever gets and therefore the case to pin.
+        let discs = ENTRIES.len() + 3;
         for viewport in [274.0_f32, 214.0] {
             let row = discs as f32 * theme::ROUND_BUTTON_SIZE
                 + (discs - 1) as f32 * disc_spacing(viewport, discs);

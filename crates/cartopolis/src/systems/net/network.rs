@@ -803,12 +803,18 @@ pub fn apply_network_snapshot(
             }
             NetMessage::ChatMessage {
                 channel,
+                sender_id,
                 sender_name,
                 body,
                 distance_m,
                 ..
             } => {
-                auth.chat.receive(&channel, sender_name, body, distance_m);
+                // `sender_id` is carried through rather than dropped: it is the
+                // same number as `RemoteAvatar::sim_id`, which is what lets a
+                // speech bubble find the person who said it without matching on
+                // a display name.
+                auth.chat
+                    .receive(&channel, sender_id, sender_name, body, distance_m);
             }
             NetMessage::ServerError {
                 request_id,

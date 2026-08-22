@@ -436,6 +436,32 @@ fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Sl
     }
 }
 
+/// How much of the bottom edge the keys will take on this viewport — **whether
+/// or not they are currently up**.
+///
+/// For the one caller that cannot wait to be told. [`layout`] chooses its edge
+/// from where the focused field landed *this* frame, flipping to the top when
+/// the bottom slab would cover it, and there is no second chance: a floating
+/// composer that reserves nothing spends its first frame at the bottom, gets
+/// covered, and pushes the keyboard onto the top edge — over everything it was
+/// meant to leave visible — for as long as that field keeps focus. Reserving the
+/// predicted height keeps the field above the keys on the frame that decides.
+///
+/// Answers the height of the slab plus its edge inset, in points. The prediction
+/// is exact whenever the keys land at the bottom, which is the case it exists
+/// for: [`layout`] only varies the slab's *position* with the field, never its
+/// size.
+#[must_use]
+pub fn expected_height(viewport: egui::Rect, ui_scale: f32, display_scale: f32) -> f32 {
+    let min_key_h = MIN_TOUCH_DP
+        / dp_per_point(
+            ui_scale,
+            display_scale,
+            cfg!(target_arch = "wasm32") && crate::quality::is_phone(),
+        );
+    layout(viewport, min_key_h, None).rect.height() + EDGE_MARGIN
+}
+
 // ─── Resource ─────────────────────────────────────────────────────────────────
 
 /// The on-screen keyboard's whole state.

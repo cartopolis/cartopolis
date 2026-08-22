@@ -1188,11 +1188,38 @@ pub fn keep_egui_fresh(mut render_output: ResMut<crate::systems::egui_manager::E
 /// developer-panel field. A scripted run never reads or writes `user.json`, so
 /// writing it here is an in-memory override for the capture and nothing more.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct ScriptedCards<'w> {
+pub struct ScriptedCards<'w, 's> {
     menu: ResMut<'w, crate::systems::ui::MainMenu>,
     sign_in: ResMut<'w, crate::systems::login_screen::LoginScreen>,
     prefs: ResMut<'w, crate::resources::AppPrefs>,
     settings: ResMut<'w, crate::systems::settings::SettingsState>,
+    /// Nested rather than added beside: the ceiling this type exists to work
+    /// around is a *parameter* count, so a second bundle would hit it again.
+    chat: ScriptedChat<'w, 's>,
+}
+
+/// What `--ui chat` needs, bundled for the same reason [`ScriptedCards`] is.
+///
+/// The spawned speaker is here rather than in a system of its own because it has
+/// to be *unspawned* on the next shot that does not ask for chat, exactly as
+/// every other `--ui` element is written unconditionally — a preset that raises a
+/// stranger over one image and leaves them standing in the next five is the
+/// failure mode the "written unconditionally" rule exists to stop.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ScriptedChat<'w, 's> {
+    commands: Commands<'w, 's>,
+    state: ResMut<'w, crate::systems::chat::ChatState>,
+    overlay: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
+    seeded: Query<'w, 's, Entity, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
+    avatar: Query<
+        'w,
+        's,
+        &'static Transform,
+        (
+            With<crate::components::Avatar>,
+            Without<crate::components::RemoteAvatar>,
+        ),
+    >,
 }
 
 /// Every name `--ui` accepts — the vocabulary [`open_scripted_ui`] checks the
@@ -1226,6 +1253,7 @@ const UI_ELEMENTS: &[&str] = &[
     "graphics",
     "world",
     "signin",
+    "chat",
     "all",
 ];
 
@@ -1382,6 +1410,15 @@ pub fn open_scripted_ui(
             lng: 6.5681,
         });
     }
+    // `--ui chat` is the only way to photograph `systems::chat_overlay` at all:
+    // the bubbles, the transcript and the composer all need a session, and every
+    // scripted run is offline (`--shot` implies it). So this seeds an exchange,
+    // claims `my_id` for the local avatar — whose bubble then needs no entity a
+    // `--offline` run does not already have — and stands one more speaker beside
+    // it. Pair it with `--shot-mode avatar`, or the camera is somewhere the
+    // avatar is not and the bubbles are off screen with it.
+    seed_scripted_chat(want("chat"), &mut cards.chat);
+
     // Surface typos: anything that matched nothing is neither a panel nor `all`.
     for u in &panels {
         if !UI_ELEMENTS.contains(&u.as_str()) {
@@ -1389,6 +1426,113 @@ pub fn open_scripted_ui(
         }
     }
     tracing::info!(shot = progress.index + 1, ui = ?panels, "shot harness: opened scripted UI panels");
+}
+
+/// Seed or clear `--ui chat`. Written unconditionally, like every other element.
+fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
+    if !want {
+        for e in chat.seeded.iter() {
+            chat.commands.entity(e).despawn();
+        }
+        chat.overlay.demo = false;
+        chat.overlay.close();
+        return;
+    }
+    crate::systems::chat_overlay::seed_demo_chat(&mut chat.state, &mut chat.overlay);
+    if !chat.seeded.is_empty() {
+        return;
+    }
+    let at = chat
+        .avatar
+        .single()
+        .map(|t| t.translation)
+        .unwrap_or_default()
+        + crate::systems::chat_overlay::DEMO_SPEAKER_OFFSET;
+    // The same shape `network::sync_remote_avatar_entities` spawns, so
+    // `avatar::spawn_avatar_models` dresses it exactly as a real one — and so
+    // the bubble finds it through the ordinary `sim_id` path rather than a
+    // second one written for the harness.
+    chat.commands.spawn((
+        crate::components::RemoteAvatar {
+            sim_id: 2,
+            net_position: at,
+            net_yaw: std::f32::consts::PI,
+            pending_emote: None,
+            last_emote_sequence: None,
+        },
+        crate::components::RemoteAvatarMotionHint::default(),
+        crate::systems::chat_overlay::ScriptedSpeaker,
+        Transform::from_translation(at).with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+    ));
+}
+
+/// Hold the `--ui chat` demo steady: keep the seeded lines fresh, and stand the
+/// demo speaker where the camera can see them.
+///
+/// **The lines have to be re-stamped or the bubbles are never in the picture.**
+/// A capture waits for the tile streams to go quiet — fifteen virtual seconds
+/// over a city, and longer on a software rasteriser — while a speech bubble is
+/// deliberately short-lived. The first `--ui chat` shot photographed the demo
+/// speaker standing in the street with nothing over their head for exactly that
+/// reason. Nothing about it is a fact about the feature; it is the seed and the
+/// shutter being seconds apart, so the seed keeps saying "just now".
+///
+/// **Because `--look` cannot be relied on to frame anything.** The pitch a shot
+/// asks for does not reliably reach the rendered camera (`--shot-mode avatar`
+/// ignored three different elevations in a row while this was being written), so
+/// a demo speaker parked at a fixed offset from the avatar photographs as an
+/// empty street about as often as not — and a feature that cannot be
+/// photographed is a feature nobody reviews. Following the camera instead makes
+/// the bubble land in frame whatever the camera turned out to be doing.
+///
+/// Runs every frame rather than once with the seed, because the camera is placed
+/// by a different system and the settle loop moves it afterwards.
+pub fn hold_scripted_chat(
+    mut chat: ResMut<crate::systems::chat::ChatState>,
+    overlay: Res<crate::systems::chat_overlay::ChatOverlay>,
+    camera: Query<
+        &Transform,
+        (
+            With<FreeCamera>,
+            Without<crate::systems::chat_overlay::ScriptedSpeaker>,
+        ),
+    >,
+    mut speaker: Query<&mut Transform, With<crate::systems::chat_overlay::ScriptedSpeaker>>,
+) {
+    if !overlay.demo {
+        return;
+    }
+    let now = chat.clock;
+    for channel in &mut chat.channels {
+        for line in &mut channel.lines {
+            line.arrived = now;
+        }
+    }
+    let Ok(cam) = camera.single() else { return };
+    let Ok(mut at) = speaker.single_mut() else {
+        return;
+    };
+    /// Ground the avatars stand on (`geo_nav::AVATAR_GROUND_Y`).
+    const GROUND_Y: f32 = 0.05;
+    /// Nearest and furthest the speaker is placed, in metres.
+    const RANGE: std::ops::RangeInclusive<f32> = 3.0..=15.0;
+    let forward = cam.forward().as_vec3();
+    // Where the view ray meets the ground, if it is pointed down at all; a level
+    // or upward camera gets a speaker straight ahead at head height instead, so
+    // the bubble is still on screen.
+    let drop = cam.translation.y - GROUND_Y;
+    let hit = (forward.y < -0.05 && drop > 0.0).then(|| drop / -forward.y);
+    let distance = hit.unwrap_or(6.0).clamp(*RANGE.start(), *RANGE.end());
+    let mut pos = cam.translation + forward * distance;
+    pos.y = if hit.is_some() {
+        GROUND_Y
+    } else {
+        (cam.translation.y - 1.7).max(GROUND_Y)
+    };
+    at.translation = pos;
+    // Facing the camera, which is what a person talking to you does.
+    let away = cam.translation - pos;
+    at.rotation = Quat::from_rotation_y(away.x.atan2(away.z));
 }
 
 /// Point the camera at an offscreen image of the requested size, so the run

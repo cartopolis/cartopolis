@@ -70,6 +70,7 @@ pub struct Dismissable<'w> {
     pub menu: ResMut<'w, MainMenu>,
     pub driver: ResMut<'w, DriverState>,
     pub panel: ResMut<'w, RightPanel>,
+    pub composer: ResMut<'w, crate::systems::chat_overlay::ChatOverlay>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -104,6 +105,12 @@ pub enum Rung {
     /// since the feature was written; until now the only way out of an armed
     /// pick was to click the map.
     RoutePick,
+    /// The chat composer over the map. Outside the dialogs (it is a pill, not a
+    /// modal) and inside the cards, which is where it sits on the screen too —
+    /// and above [`Rung::TextFocus`], so the first press blurs the field and
+    /// keeps the keyboard's own rung intact while the second puts the composer
+    /// away.
+    ChatComposer,
     /// The sign-in card.
     SignIn,
     /// The main menu card.
@@ -128,6 +135,7 @@ pub struct OpenSurfaces {
     pub edit_dialog: bool,
     pub context_menu: bool,
     pub route_pick: bool,
+    pub chat_composer: bool,
     /// The card is open *and* answerable — a request in flight disables its own
     /// close button, and Escape must not be a way around that.
     pub sign_in: bool,
@@ -154,6 +162,8 @@ impl OpenSurfaces {
             Some(Rung::ContextMenu)
         } else if self.route_pick {
             Some(Rung::RoutePick)
+        } else if self.chat_composer {
+            Some(Rung::ChatComposer)
         } else if self.sign_in {
             Some(Rung::SignIn)
         } else if self.main_menu {
@@ -181,6 +191,7 @@ impl Dismissable<'_> {
             edit_dialog: self.dialog.visible,
             context_menu: self.context_menu.visible,
             route_pick: self.route.picking.is_some(),
+            chat_composer: self.composer.composing,
             sign_in: self.login.open && !self.login.is_busy(),
             main_menu: self.menu.open,
             driver_mode: self.driver.active,
@@ -201,6 +212,7 @@ impl Dismissable<'_> {
             Rung::EditDialog => self.dialog.visible = false,
             Rung::ContextMenu => self.context_menu.visible = false,
             Rung::RoutePick => self.route.picking = None,
+            Rung::ChatComposer => self.composer.close(),
             Rung::SignIn => self.login.open = false,
             Rung::MainMenu => self.menu.open = false,
             Rung::DriverMode => self.driver.exit(),
@@ -234,6 +246,7 @@ mod tests {
             edit_dialog: true,
             context_menu: true,
             route_pick: true,
+            chat_composer: true,
             sign_in: true,
             main_menu: true,
             driver_mode: true,
@@ -250,6 +263,7 @@ mod tests {
             Rung::EditDialog => s.edit_dialog = false,
             Rung::ContextMenu => s.context_menu = false,
             Rung::RoutePick => s.route_pick = false,
+            Rung::ChatComposer => s.chat_composer = false,
             Rung::SignIn => s.sign_in = false,
             Rung::MainMenu => s.main_menu = false,
             Rung::DriverMode => s.driver_mode = false,
@@ -281,6 +295,7 @@ mod tests {
                 Rung::EditDialog,
                 Rung::ContextMenu,
                 Rung::RoutePick,
+                Rung::ChatComposer,
                 Rung::SignIn,
                 Rung::MainMenu,
                 Rung::DriverMode,

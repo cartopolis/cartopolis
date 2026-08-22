@@ -1759,6 +1759,7 @@ fn run_client() {
     // launch, so it wins over the remembered session and is not written back.
     app.init_resource::<AuthIdentity>();
     app.init_resource::<systems::chat::ChatState>();
+    app.init_resource::<systems::chat_overlay::ChatOverlay>();
     app.init_resource::<systems::voice::VoiceState>();
     // Voice plays through the output device the soundscape already opened, as a
     // custom `Decodable` asset. Registering the type is what teaches bevy_audio
@@ -1843,6 +1844,10 @@ fn run_client() {
                 // reuse an older frame's tessellation for the capture.
                 systems::shot_harness::keep_egui_fresh,
                 systems::shot_harness::open_scripted_ui,
+                // After the camera is placed, so the demo speaker `--ui chat`
+                // spawns stands where this shot's camera is actually looking.
+                systems::shot_harness::hold_scripted_chat
+                    .after(systems::shot_harness::open_scripted_ui),
                 systems::shot_harness::place_camera.before(systems::geo_nav::apply_teleport),
                 systems::shot_harness::place_space_orbit
                     .after(systems::geo_nav::apply_teleport)
@@ -2398,6 +2403,18 @@ fn run_client() {
                 // those hold: it culls against the root `Ui`'s leftover space, which is
                 // only the map once the side panels have taken their width.
                 systems::interact::render_interaction_prompt,
+                // Chat over the map (`systems::chat_overlay`). In the chain
+                // because the bubbles cull against the root `Ui`'s leftover
+                // space exactly as the pins do; near the end because that space
+                // is only the map once every panel has taken its width. The
+                // composer draws last of the three so it is on top of the
+                // transcript it expands, and — being ordered before Phase 7d —
+                // its field is registered in time for the on-screen keyboard to
+                // find it.
+                systems::chat_overlay::render_chat_bubbles
+                    .after(systems::free_camera::camera_controls),
+                systems::chat_overlay::render_chat_transcript,
+                systems::chat_overlay::render_chat_composer,
                 // Also after the camera has moved, so pins project onto this frame's view.
                 systems::place_pins::render_place_pins.after(systems::free_camera::camera_controls),
             )
@@ -2434,6 +2451,14 @@ fn run_client() {
                 // has already written this frame, so it runs after the Phase 7b
                 // chain — which this tuple does, being registered after it.
                 systems::dismiss::handle_escape,
+                // The clock every chat line is aged against. Its own system
+                // rather than a line at the top of one of the drawing ones,
+                // which return early on half a dozen conditions — a clock that
+                // stops whenever nothing is drawn makes every line on screen
+                // immortal. A frame's lag against the network apply is
+                // deliberate and irrelevant: the shortest thing measured off it
+                // is a 1.5 s fade.
+                systems::chat_overlay::advance_chat_clock,
                 frame_pacing::apply_screen_wakelock,
                 sync_guidance_pref,
                 systems::render_scale::apply_preferred_render_scale,
