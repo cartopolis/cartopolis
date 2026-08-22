@@ -491,8 +491,9 @@ fn clamp_gain(v: f32, max: f32) -> f32 {
 }
 
 /// How `time_of_day` (the sun/moon/fog clock) is driven — a light/dark/auto
-/// switcher like a website's theme toggle. The HUD exposes Auto/Day/Night; the
-/// dev panel's slider, presets, and Quick-cycle drop into `Manual`.
+/// switcher like a website's theme toggle. The HUD exposes Auto/Day/Night;
+/// Settings ▸ World exposes all four, and its slider, presets and "Run the day"
+/// loop all drop into `Manual`.
 ///
 /// Serializable because it is persisted in `data/user.json`
 /// ([`crate::systems::user_store::SkyPrefs`]) — the sky comes back the way it
@@ -512,8 +513,9 @@ pub enum SunMode {
     Day,
     /// Forced night (midnight).
     Night,
-    /// The dev panel owns the clock: the slider / presets / Quick-cycle set
-    /// `time_of_day` directly and `main::apply_sun_mode` leaves it untouched.
+    /// Settings ▸ World owns the clock: the slider, the presets and the "Run the
+    /// day" loop set `time_of_day` directly and `sky::apply_sun_mode` leaves it
+    /// untouched.
     Manual,
 }
 
@@ -565,16 +567,26 @@ impl<'de> serde::Deserialize<'de> for SunMode {
     }
 }
 
-/// Developer tools panel (toggled with Ctrl+Shift+D, or View ▸ Dev Panel).
+/// The world's clock and weather, plus whether the developer panel is open.
 ///
-/// **Scene authoring only**: the clock, the season, the weather and the capture
-/// slots. What this machine spends on the picture — shadows, the sky, sky
-/// reflections, the stats overlay — moved to [`AppPrefs`] and Settings ▸
-/// Graphics, because a keyboard chord is not a control on a handset and because
-/// nothing here is persisted. Keep that line: a render setting added back to this
-/// struct is one nobody on a phone can reach and one that will not survive the
-/// restart it asks for.
-#[derive(Resource)]
+/// **The fields are scene state; the panel that used to own them is not.** Every
+/// control over this struct lives in **Settings ▸ World** now — the time of day,
+/// the moon, the season and the three weather sliders — because a keyboard chord
+/// is not a control on a handset and because "what time is it here" is the least
+/// developer-ish question in the client. What stayed behind Ctrl+Shift+D is
+/// measurement: frame timing, draw counts, upload and residency, pipeline health,
+/// and the capture tools. See [`crate::systems::ui::render_dev_panel`].
+///
+/// What this struct must *not* grow is a render setting. Those moved to
+/// [`AppPrefs`] and Settings ▸ Graphics, and the reason is still live: nothing
+/// here is persisted, so a toggle labelled "restart to apply" would revert on the
+/// restart meant to apply it.
+///
+/// `Clone`/`PartialEq` because the Settings panel edits a copy and writes back
+/// only on a real change — `ui.slider(&mut res.field)` takes a `DerefMut` and
+/// would mark the resource changed on every frame the panel is open, which
+/// re-runs the whole day/night lighting recompute.
+#[derive(Resource, Clone, PartialEq)]
 pub struct DevPanelState {
     pub open: bool,
     /// How the day/night clock is driven (Auto/Day/Night/Manual). `Manual` is
@@ -612,9 +624,14 @@ pub struct DevPanelState {
 // what a phone gives up first, and the sky is the setting a device with a
 // hostile driver most needs to change. Keeping them here also meant they were
 // *unpersisted*, so a "restart to apply" toggle reverted on the restart that was
-// supposed to apply it. What stays in this struct is scene authoring — the
-// clock, the season and the weather — which is a different question from what
-// this machine can afford to draw.
+// supposed to apply it.
+//
+// The clock and the weather followed them out, into Settings ▸ World, for the
+// first of those two reasons alone: they are scene state, they belong to
+// whoever is looking at the city, and reaching them needed a key chord no phone
+// has. They are still *stored* here because `apply_sun_mode`, `advance_day_cycle`
+// and `poll_weather` read them from here and because the `is_changed()` gate that
+// throttles the lighting recompute is on this resource.
 
 impl Default for DevPanelState {
     fn default() -> Self {

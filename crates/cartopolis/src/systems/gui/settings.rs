@@ -4,20 +4,28 @@
 //!
 //! # Settings
 //!
-//! Five tabs: General, Map, Graphics, Audio, Account. It began as one (Audio),
+//! Five tabs: General, World, Graphics, Audio, Account. It began as one (Audio),
 //! which made a panel called "Settings" that was really a hardware diagnostic —
 //! the two things behind it were a chime and a level meter, and every actual
 //! preference in the client lived somewhere else: the map layers in their own
 //! panel, the sky in the HUD switcher and the dev panel, the render budget
 //! nowhere at all.
 //!
-//! **Graphics is the last of that migration** and the one with a cost attached.
-//! Shadows, the sky, sky reflections and the stats overlay were `DevPanelState`
-//! fields, reached by a keyboard chord — on a client whose main platform is a
-//! phone, which has no keyboard and no developer panel worth opening. So the
-//! settings a struggling device most needs were the ones its owner could not
-//! reach. They were also unpersisted, which made every "restart to apply" toggle
-//! a lie: the restart that applied it also discarded it.
+//! **Graphics and World are the two halves of the same migration**, and the split
+//! between them is the line worth keeping. Shadows, the sky, sky reflections and
+//! the stats overlay were `DevPanelState` fields, reached by a keyboard chord —
+//! on a client whose main platform is a phone, which has no keyboard and no
+//! developer panel worth opening. So the settings a struggling device most needs
+//! were the ones its owner could not reach. They were also unpersisted, which
+//! made every "restart to apply" toggle a lie: the restart that applied it also
+//! discarded it. World is the rest of that panel's contents — the clock, the
+//! moon, the weather — moved for the first of those two reasons alone, since
+//! those are still stored in `DevPanelState` and still not persisted there.
+//!
+//! Graphics is **what this machine spends on the picture**; World is **what the
+//! picture is of**. A new control belongs on whichever side of that answers it,
+//! and a control that belongs on neither is probably a measurement, which is
+//! what [`crate::systems::ui::render_dev_panel`] kept.
 //!
 //! **Nothing here invents a backend.** Each control is wired to state that
 //! already exists, or to a [`crate::resources::AppPrefs`] field whose doc comment
@@ -72,7 +80,10 @@ use crate::systems::theme;
 pub enum SettingsTab {
     #[default]
     General,
-    Map,
+    /// The world's clock and its weather — what the scene *is*. Called World and
+    /// not Map because the map's layers have a panel of their own; this tab is
+    /// the time of day, the season and the sky over it. See [`world_tab`].
+    World,
     /// What this machine spends on the picture. Everything here used to be in the
     /// developer panel, where it was both unreachable to the people who needed it
     /// most and unpersisted — see [`graphics_tab`].
@@ -84,7 +95,7 @@ pub enum SettingsTab {
 impl SettingsTab {
     const ALL: [Self; 5] = [
         Self::General,
-        Self::Map,
+        Self::World,
         Self::Graphics,
         Self::Audio,
         Self::Account,
@@ -93,7 +104,7 @@ impl SettingsTab {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
-            Self::Map => "Map",
+            Self::World => "World",
             Self::Graphics => "Graphics",
             Self::Audio => "Audio",
             Self::Account => "Account",
@@ -154,6 +165,10 @@ pub fn render_settings_panel(
     mut state: ResMut<SettingsState>,
     mut prefs: ResMut<AppPrefs>,
     mut dev: ResMut<crate::resources::DevPanelState>,
+    // The World tab's Automatic/Manual switch *is* `WeatherState::live`, and the
+    // readout under Automatic is its last sample. The sliders it unlocks live in
+    // `DevPanelState` beside the clock, which is why both resources are here.
+    mut weather: ResMut<crate::systems::weather::WeatherState>,
     #[cfg(feature = "audio")] soundscape: Option<
         Res<crate::systems::player::soundscape::Soundscape>,
     >,
@@ -179,15 +194,19 @@ pub fn render_settings_panel(
     let mut play_tone = false;
     let mut delete_account = false;
 
-    // Edited as plain values and written back only on a real change. Both of
-    // these resources are read by `is_changed()` gates — `AppPrefs` will be, once
-    // it is persisted, and `DevPanelState`'s gate re-runs the whole day/night
-    // lighting recompute — and `ui.selectable_value(&mut res.field, …)` takes a
-    // `DerefMut`, i.e. marks the resource changed on *every frame the panel is
-    // open*. This is the same shape `hud::render_status_hud` uses for the sun
-    // switcher and for the same reason.
+    // Edited as plain values and written back only on a real change. All three of
+    // these resources are read by `is_changed()` gates — `DevPanelState`'s re-runs
+    // the whole day/night lighting recompute — and `ui.selectable_value(&mut
+    // res.field, …)` takes a `DerefMut`, i.e. marks the resource changed on *every
+    // frame the panel is open*. With a slider in the tab that is not a throttling
+    // nicety: dragging the clock would otherwise recompute the lighting from a
+    // resource that reports itself changed whether the drag moved anything or not.
+    // This is the same shape `hud::render_status_hud` uses for the sun switcher
+    // and for the same reason.
     let mut edited = *prefs;
-    let mut sun_mode = dev.sun_mode;
+    let mut world = dev.clone();
+    let mut weather_live = weather.live;
+    let observed = weather.latest;
 
     crate::systems::egui_manager::right_panel(
         &mut egui,
@@ -211,7 +230,9 @@ pub fn render_settings_panel(
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.tab {
                     SettingsTab::General => general_tab(ui, &mut edited),
-                    SettingsTab::Map => map_tab(ui, &mut edited, &mut sun_mode),
+                    SettingsTab::World => {
+                        world_tab(ui, &mut world, &mut weather_live, observed);
+                    }
                     SettingsTab::Graphics => {
                         graphics_tab(ui, &mut edited, target, sky.as_deref().copied());
                     }
@@ -227,8 +248,11 @@ pub fn render_settings_panel(
     if edited != *prefs {
         *prefs = edited;
     }
-    if sun_mode != dev.sun_mode {
-        dev.sun_mode = sun_mode;
+    if world != *dev {
+        *dev = world;
+    }
+    if weather_live != weather.live {
+        weather.live = weather_live;
     }
     // Closing the panel must release the microphone: leaving it open behind a
     // hidden panel is the recording-indicator problem the module note describes.
@@ -561,35 +585,214 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
     );
 }
 
-/// Map: how the scene is lit, as distinct from what the machine spends drawing
-/// it — the detail preset and the render scale moved to [`graphics_tab`], where
-/// they sit beside the other cost controls instead of under "Map".
-fn map_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs, sun_mode: &mut SunMode) {
-    section(ui, "Lighting");
+/// World: the clock and the weather over the map.
+///
+/// **Both were the developer panel's**, behind Ctrl+Shift+D — on a client whose
+/// main platform has no keyboard, and for two controls that are not developer
+/// questions at all. "What time is it here" and "make it rain" are the first two
+/// things anybody looking at a city reaches for; the panel keeps what actually
+/// needs a developer, which is measurement (see
+/// [`crate::systems::ui::render_dev_panel`]).
+///
+/// **Laid out tight on purpose.** The old block spent eleven rows, four
+/// paragraphs and two separators on this; here each group is a mode row, its
+/// controls, and one dim line. Three things do the compacting and each is worth
+/// keeping: the readout is *inside* the slider (`custom_formatter`) instead of on
+/// a label under it, so the clock does not cost a row that changes height as the
+/// number changes; the four time presets are one wrapped row of small buttons;
+/// and the row spacing is tightened for the tab rather than for the app, because
+/// a stack of sliders is the one layout egui's default 6 pt gap makes airy.
+/// A phone's 609 pt of viewport is the budget, and this fits it without a scroll.
+///
+/// The manual controls are **disabled, not hidden**, outside their manual mode.
+/// They read the automatic value, so the tab always says what the scene is doing;
+/// a control that vanishes reads as a bug, which is the same call
+/// [`sky_section`] and [`tri_state`] make.
+fn world_tab(
+    ui: &mut egui::Ui,
+    dev: &mut crate::resources::DevPanelState,
+    weather_live: &mut bool,
+    observed: Option<crate::systems::weather::Observation>,
+) {
+    ui.spacing_mut().item_spacing.y = 4.0;
+
+    section(ui, "Time");
     ui.horizontal_wrapped(|ui| {
-        // `Manual` is deliberately absent: it is the developer panel's mode (its
-        // slider and Quick-cycle drop into it), and offering it here would be a
-        // mode with no controls attached.
+        // `Manual` belongs here now. It used to be left out of this tab because
+        // its controls were in the other panel, which made it a mode you could
+        // land in and not get out of — the old copy literally told the reader to
+        // go and find the developer panel.
         for (mode, label) in [
             (SunMode::Auto, "Automatic"),
             (SunMode::Day, "Day"),
             (SunMode::Night, "Night"),
+            (SunMode::Manual, "Manual"),
         ] {
-            ui.selectable_value(sun_mode, mode, label);
+            ui.selectable_value(&mut dev.sun_mode, mode, label);
         }
+    });
+
+    // The four presets sit **outside** the manual gate, because clicking one is
+    // the natural way to *enter* Manual — they are a mode row as much as the row
+    // above is. Disabling them under Automatic would mean picking "Manual" to
+    // reach a "Sunset" button whose whole job is to mean "manual, at sunset".
+    ui.horizontal_wrapped(|ui| {
+        for (label, hour) in [
+            ("Sunrise", 6.0),
+            ("Noon", 12.0),
+            ("Sunset", 18.0),
+            ("Midnight", 0.0),
+        ] {
+            if theme::action_button(ui, label).clicked() {
+                dev.time_of_day = hour;
+                // Without this the value is written and `apply_sun_mode`
+                // overwrites it on the next frame, i.e. the button does nothing
+                // visible and reads as broken.
+                dev.sun_mode = SunMode::Manual;
+            }
+        }
+    });
+
+    let manual = dev.sun_mode == SunMode::Manual;
+    ui.add_enabled_ui(manual, |ui| {
+        ui.add(
+            egui::Slider::new(&mut dev.time_of_day, 0.0..=24.0)
+                .step_by(0.05) // three minutes
+                .custom_formatter(|h, _| clock_hhmm(h as f32))
+                .custom_parser(parse_clock),
+        );
+        ui.add(
+            egui::Slider::new(
+                &mut dev.moon_age_days,
+                0.0..=crate::utils::sun::LUNAR_CYCLE_DAYS,
+            )
+            .text("moon")
+            // Both numbers, and both derived from the formatter's own argument
+            // rather than from the resource — during a drag the resource still
+            // holds last frame's value, so a phase read off it would lag the
+            // handle being dragged.
+            .custom_formatter(|days, _| {
+                let lit = crate::utils::sun::moon_illuminated_fraction(days as f32);
+                format!("{days:.1} d · {:.0}% lit", lit * 100.0)
+            }),
+        );
+        ui.horizontal(|ui| {
+            theme::checkbox(ui, &mut dev.auto_cycle, "Run the day");
+            ui.add(
+                egui::DragValue::new(&mut dev.cycle_seconds)
+                    .suffix(" s")
+                    .range(1.0..=120.0)
+                    .speed(0.5),
+            );
+        });
     });
     pending(
         ui,
-        match sun_mode {
-            SunMode::Auto => "The sun and moon follow the real time where the map is anchored.",
-            SunMode::Day => "The sun is held at noon.",
-            SunMode::Night => "The sun is held at midnight.",
-            // Reachable: the dev panel's slider drops the clock into Manual, and
-            // the mode is persisted, so it can be the state this panel opens in.
-            SunMode::Manual => "The developer panel owns the clock — pick a mode to take it back.",
+        match dev.sun_mode {
+            SunMode::Auto => "Sun and moon follow the real time where the map is anchored.",
+            SunMode::Day => "Held at noon.",
+            SunMode::Night => "Held at midnight.",
+            SunMode::Manual => "The clock is yours. Run the day loops it in the seconds beside it.",
         },
     );
-    let _ = prefs;
+
+    ui.add_space(6.0);
+    ui.separator();
+    section(ui, "Weather");
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(weather_live, true, "Automatic");
+        ui.selectable_value(weather_live, false, "Manual");
+    });
+    ui.add_enabled_ui(!*weather_live, |ui| {
+        ui.add(
+            egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
+                .text("cloud")
+                .custom_formatter(percent)
+                .custom_parser(parse_percent),
+        );
+        ui.add(
+            egui::Slider::new(&mut dev.precipitation, 0.0..=1.0)
+                .text("rain")
+                .custom_formatter(percent)
+                .custom_parser(parse_percent),
+        );
+        ui.add(
+            egui::Slider::new(&mut dev.fog_density, 0.0..=1.0)
+                .text("fog")
+                .custom_formatter(percent)
+                .custom_parser(parse_percent),
+        );
+    });
+    pending(
+        ui,
+        &match (*weather_live, observed) {
+            // The sample point, not just the sample. It is the map *anchor*'s
+            // weather, which is not where the camera is looking and can be a long
+            // way from it — so a reading that disagrees with the window beside you
+            // has an explanation here rather than looking like a bad forecast.
+            // (It is also the only reader those two fields have; the developer
+            // panel's hover text was it before this tab existed.)
+            (true, Some(o)) => format!(
+                "Live from api.met.no at {:.3}, {:.3}: {:.0}% cloud · {:.1} mm/h · \
+                 {:.0} °C · {:.0} m/s wind.",
+                o.lat,
+                o.lng,
+                o.cloud_cover * 100.0,
+                o.precipitation * crate::systems::weather::RAIN_FULL_MM,
+                o.air_temp_c,
+                o.wind_ms,
+            ),
+            (true, None) => "Fetching the conditions at the map anchor…".to_string(),
+            (false, _) => "The sliders are the sky. Wind rides cloud cover, so the sea \
+                           state moves with it."
+                .to_string(),
+        },
+    );
+}
+
+/// `13.5` → `"13:30"`. A slider formatter rather than a label under the slider:
+/// the value belongs on the control it belongs to, and a separate row would
+/// change height with the number.
+fn clock_hhmm(hours: f32) -> String {
+    let h = hours.floor() as i32 % 24;
+    let m = ((hours.fract() * 60.0).floor() as i32).clamp(0, 59);
+    format!("{h:02}:{m:02}")
+}
+
+/// `"13:30"` → `13.5`, the inverse of [`clock_hhmm`].
+///
+/// **A custom formatter without a matching parser is a trap**, not a cosmetic
+/// gap: egui lets you double-click a slider and type into it, and the text it
+/// puts there is whatever the formatter produced. Left to the default parser,
+/// typing over `"13:30"` reads `13` and silently discards the minutes — so the
+/// control disagrees with itself. `None` on anything unparseable leaves the value
+/// alone, which is egui's own convention.
+fn parse_clock(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let (h, m) = match text.split_once(':') {
+        Some((h, m)) => (h.trim().parse::<f64>().ok()?, m.trim().parse::<f64>().ok()?),
+        // A bare number is hours, so "18" still works.
+        None => (text.parse::<f64>().ok()?, 0.0),
+    };
+    Some(h + m / 60.0)
+}
+
+/// A 0..1 slider read as a percentage. Shared by the three weather sliders so
+/// they cannot drift into three roundings of the same number.
+fn percent(value: f64, _: std::ops::RangeInclusive<usize>) -> String {
+    format!("{:.0}%", value * 100.0)
+}
+
+/// `"60%"` → `0.6`, the inverse of [`percent`]. See [`parse_clock`] for why the
+/// inverse has to exist: without it, typing over `"60%"` sets the value to 60,
+/// which the range then clamps to 1.0 — i.e. every typed number means "full".
+fn parse_percent(text: &str) -> Option<f64> {
+    text.trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .map(|v| v / 100.0)
 }
 
 /// Graphics: what this machine spends on the picture.
@@ -1239,6 +1442,45 @@ fn build_line() -> String {
 mod tests {
     use super::*;
 
+    /// The World tab's clock formatter and its parser must be inverses, because
+    /// egui puts the formatter's output into the text box the parser reads back
+    /// when a slider is double-clicked. A pair that disagrees is a control that
+    /// changes its own value when you look at it.
+    #[test]
+    fn the_clock_round_trips_through_its_own_text() {
+        for hours in [0.0_f32, 6.0, 12.5, 13.5, 18.25, 23.75] {
+            let text = clock_hhmm(hours);
+            let back = parse_clock(&text).expect("the formatter's own output must parse");
+            assert!(
+                (back - hours as f64).abs() < 1.0 / 60.0,
+                "{hours} → {text} → {back}"
+            );
+        }
+        // A bare hour is still accepted, so typing "18" does the obvious thing.
+        assert_eq!(parse_clock("18"), Some(18.0));
+        assert_eq!(parse_clock(" 07:30 "), Some(7.5));
+        // Unparseable leaves the value alone rather than zeroing it.
+        assert_eq!(parse_clock("noon"), None);
+    }
+
+    /// Same contract for the weather sliders. The failure this pins is specific:
+    /// without a parser, typing over "60%" yields 60, which the 0..=1 range
+    /// clamps to 1.0 — so every typed number would mean "full".
+    #[test]
+    fn a_percentage_round_trips_and_does_not_clamp_to_full() {
+        for value in [0.0_f64, 0.15, 0.6, 1.0] {
+            let text = percent(value, 0..=0);
+            let back = parse_percent(&text).expect("the formatter's own output must parse");
+            assert!((back - value).abs() < 0.005, "{value} → {text} → {back}");
+        }
+        assert_eq!(
+            parse_percent("60"),
+            Some(0.6),
+            "a bare number is a percentage"
+        );
+        assert_eq!(parse_percent(""), None);
+    }
+
     #[test]
     fn peak_holds_the_maximum_and_resets_with_the_test() {
         let mut state = SettingsState::default();
@@ -1287,7 +1529,7 @@ mod tests {
         // nothing but this list covers the reachability.
         for tab in [
             SettingsTab::General,
-            SettingsTab::Map,
+            SettingsTab::World,
             SettingsTab::Graphics,
             SettingsTab::Audio,
             SettingsTab::Account,

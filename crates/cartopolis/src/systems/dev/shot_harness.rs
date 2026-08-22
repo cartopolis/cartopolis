@@ -1312,13 +1312,16 @@ pub fn open_scripted_ui(
         // `avatar.open` bool above is what the HUD reads, not the panel, so
         // `--ui avatar` opened nothing at all until this arm existed.
         crate::resources::RightPanel::Appearance
-    } else if want("settings") || want("graphics") {
-        // `--ui graphics` opens Settings on the Graphics tab. A tab is not
-        // reachable by opening the panel alone, so naming the panel would
-        // capture whichever tab was last selected — which for a fresh scripted
-        // world is always General, i.e. never the one being reviewed.
+    } else if want("settings") || want("graphics") || want("world") {
+        // `--ui graphics` opens Settings on the Graphics tab, `--ui world` on the
+        // World tab. A tab is not reachable by opening the panel alone, so naming
+        // the panel would capture whichever tab was last selected — which for a
+        // fresh scripted world is always General, i.e. never the one being
+        // reviewed.
         cards.settings.tab = if want("graphics") {
             crate::systems::settings::SettingsTab::Graphics
+        } else if want("world") {
+            crate::systems::settings::SettingsTab::World
         } else {
             crate::systems::settings::SettingsTab::General
         };

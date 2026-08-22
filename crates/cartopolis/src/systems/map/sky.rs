@@ -747,12 +747,12 @@ impl Material for HorizonHazeMaterial {
     }
 }
 
-/// When the dev panel's "Quick cycle" toggle is on, advances the time of day smoothly,
-/// looping the full 24 h over `cycle_seconds`.
+/// When Settings ▸ World's "Run the day" toggle is on, advances the time of day
+/// smoothly, looping the full 24 h over `cycle_seconds`.
 /// Drive `time_of_day` from the sun-mode switcher (HUD Auto/Day/Night). `Auto`
 /// tracks the real local *solar* time at the map anchor (so the sun is where it
 /// really is right now); `Day`/`Night` pin noon/midnight; `Manual` hands the
-/// clock to the dev panel. Runs before `advance_day_cycle` and
+/// clock to Settings ▸ World. Runs before `advance_day_cycle` and
 /// `apply_day_night_cycle`, so the whole sun/moon/fog pipeline sees the value.
 pub(crate) fn apply_sun_mode(
     clock: Res<systems::transit_live::WorldClock>,
