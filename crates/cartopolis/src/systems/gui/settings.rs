@@ -349,7 +349,7 @@ fn controls_section(ui: &mut egui::Ui) {
         "W A S D",
         "Walk — the avatar turns to face where it goes",
     );
-    row(ui, "Shift / Alt", "Sprint / stroll");
+    row(ui, "Shift / Alt", "Run / stroll");
     row(ui, "Space", "Jump; hold to take off");
     row(ui, "F", "Toggle flight");
     row(ui, "R / Q", "Climb / descend, while flying");

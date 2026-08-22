@@ -399,7 +399,7 @@ pub(crate) fn wish_dir_camera_relative(
 /// **Keys win when both are live**, and the tie is not hypothetical: a desktop
 /// touchscreen draws the stick *and* has a keyboard. Blending them would let a
 /// thumb resting inside the deadzone quietly cap a sprint — the same failure
-/// `Gait::from_modifiers` avoids by letting Sprint win its tie.
+/// `Gait::from_modifiers` avoids by letting Run win its tie.
 pub(crate) fn travel_wish(azimuth: f32, keys: Vec3, stick: Vec2) -> (Vec3, f32) {
     if keys.length_squared() > 1e-8 {
         return (keys, 1.0);
@@ -827,6 +827,19 @@ fn locomotion_pose(speed: f32, flying: bool, running: bool) -> Pose {
 }
 
 impl AvatarAnimations {
+    /// One cycle of `node` in seconds, for the two clips whose phase means the
+    /// same thing (both `Walk` and `Run` are two footfalls long). `None` for
+    /// everything else — idle, flight and the emotes have no stride to carry.
+    fn cycle_secs(&self, node: AnimationNodeIndex) -> Option<f32> {
+        if node == self.walk_index {
+            Some(locomotion::WALK_CLIP_SECS)
+        } else if node == self.run_index {
+            Some(locomotion::RUN_CLIP_SECS)
+        } else {
+            None
+        }
+    }
+
     fn node(&self, clip: PoseClip) -> AnimationNodeIndex {
         match clip {
             PoseClip::Idle => self.idle_index,
@@ -848,6 +861,22 @@ impl AvatarAnimations {
 /// The rate is re-applied every frame *without* restarting anything: it tracks a
 /// continuously ramping ground speed, so it changes on almost every frame of an
 /// acceleration, and calling `play` for that would restart the stride each time.
+///
+/// # The stride survives a gait change
+///
+/// `AnimationTransitions::play` starts the incoming clip at seek time **zero**,
+/// which for a locomotion clip means "both feet together, about to lead with the
+/// left". A walk→run change therefore cross-faded a mid-stride pose into a
+/// standing-start one: for the 180 ms of [`GAIT_FADE`] the legs interpolated
+/// toward a position they had no business being in, which is the hitch you see
+/// the instant Shift goes down or comes up. Nothing is wrong with either clip —
+/// they are simply spliced at an arbitrary point in each other's cycle.
+///
+/// Both clips are exactly two footfalls long ([`locomotion::WALK_CLIP_SECS`] /
+/// [`locomotion::RUN_CLIP_SECS`]), so a *normalized* phase is directly
+/// transferable: seek the incoming clip to the same fraction of its own cycle
+/// and the cross-fade blends left foot into left foot. Idle, flight and the
+/// emotes carry no stride and are started from zero as before.
 fn apply_pose(
     player: &mut AnimationPlayer,
     transitions: &mut AnimationTransitions,
@@ -857,10 +886,26 @@ fn apply_pose(
     let want = anim.node(pose.clip);
     let repeat = !matches!(pose.clip, PoseClip::Emote(_));
     if transitions.get_main_animation() != Some(want) {
+        // Where in its cycle the outgoing clip is, as a fraction — read before
+        // `play` retires it. `None` whenever either side has no stride.
+        let phase = transitions
+            .get_main_animation()
+            .zip(anim.cycle_secs(want))
+            .and_then(|(previous, _)| {
+                let secs = anim.cycle_secs(previous)?;
+                let active = player.animation(previous)?;
+                Some((active.seek_time() / secs).fract())
+            });
         let fade = if repeat { GAIT_FADE } else { EMOTE_FADE };
         let active = transitions.play(player, want, fade);
         if repeat {
             active.repeat();
+        }
+        if let Some((phase, secs)) = phase.zip(anim.cycle_secs(want)) {
+            // `set_seek_time`, not `seek_to`: the latter records the jump as a
+            // range to fire clip events over, and this jump is a splice rather
+            // than playback.
+            active.set_seek_time(phase * secs);
         }
     }
     if let Some(active) = player.animation_mut(want) {
@@ -1352,14 +1397,16 @@ pub fn handle_avatar_movement(
     // keys do anything either.
     let fly_up = keyboard_input.pressed(KeyCode::KeyR) || osd.climb > 0.0;
     let fly_down = keyboard_input.pressed(KeyCode::KeyQ) || osd.climb < 0.0;
-    // Gait modifiers. Shift sprints, Alt strolls, neither jogs — see
+    // Gait modifiers. Shift runs, Alt strolls, neither walks — see
     // `systems::locomotion`. Shift is free in Follow (the camera's boost is a Fly
-    // binding) and Alt is unused anywhere in this client.
-    let sprint =
+    // binding) and Alt is unused anywhere in this client. Note the *unmodified*
+    // gait is the walk: a modifier is for leaving the everyday pace, not for
+    // reaching it.
+    let run =
         keyboard_input.pressed(KeyCode::ShiftLeft) || keyboard_input.pressed(KeyCode::ShiftRight);
-    let walk_mod =
+    let stroll =
         keyboard_input.pressed(KeyCode::AltLeft) || keyboard_input.pressed(KeyCode::AltRight);
-    avatar_state.gait = locomotion::Gait::from_modifiers(sprint, walk_mod);
+    avatar_state.gait = locomotion::Gait::from_modifiers(run, stroll);
 
     // Space is jump *and* take-off, resolved by how long it is held: the press
     // jumps at once (a jump that waits to see whether a hold is coming is not a

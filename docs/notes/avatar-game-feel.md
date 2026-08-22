@@ -1,7 +1,7 @@
 ---
 topic: avatar-game-feel
-triggers: [avatar feels sluggish, foot slide, ice skating, walk speed, sprint, gait, jump, gravity, camera collision, emote, interact, footsteps, audio, alsa, wish magnitude, throttle]
-updated: 2026-08-09
+triggers: [avatar feels sluggish, foot slide, ice skating, walk speed, sprint, run too fast, gait, stride phase, jump, gravity, camera collision, emote, interact, footsteps, footstep sound, audio, alsa, wish magnitude, throttle]
+updated: 2026-08-21
 ---
 
 # What made the avatar feel wrong, and what the fix rests on
@@ -127,10 +127,78 @@ object is the documented silent-failure mode) — it is also why the loop had to
 cross-faded into itself: a click every two seconds is the most noticeable
 artefact a looping ambience can have.
 
+## The ladder was still one rung too high (2026-08-21)
+
+Reported as "movement is not fluent, it should not be stuttery; when walking
+slowly it should use a walk animation, not run; the run is a bit too fast". All
+three are the same number.
+
+`JOG_SPEED` (the **unmodified** gait — press W and nothing else) was 4.2 m/s,
+and `GAIT_CLIP_SWITCH` was 2.4. So the everyday gait was above the switch:
+
+- the `Walk` clip loaded in the fix above was reachable **only by holding Alt**,
+  which is not a key a desktop compositor reliably delivers — several claim it
+  for window drag or menu focus before winit sees it. In practice the walk clip
+  had no user;
+- and a start from rest crossed idle → walk → run inside 0.23 s, paying **two**
+  180 ms `GAIT_FADE` cross-fades to travel in a straight line. Stopping paid two
+  more. That is the "stutter" — it is at every start and stop, which is where
+  the eye is.
+
+The ladder is now stroll 1.1 (Alt) / **walk 1.8 (default)** / run 6.0 (Shift),
+with the switch at 3.0 ± 0.5. A walk never reaches the switch, so an ordinary
+start costs one transition; the second only happens when Shift is actually held.
+6 m/s also puts the run clip at 1.5× instead of on `CLIP_SPEED_MAX` — the old
+8 m/s sprint was clamped, i.e. sliding its feet, which is the very thing the
+rate-matching was introduced to remove. `locomotion`'s suite pins both relations
+(`the_unmodified_gait_is_a_walk`, `no_gait_plays_its_clip_at_the_clamp`), because
+they are relations *between* constants that live in different sections of one
+file and either can be tuned alone.
+
+### A gait change has to carry the stride phase
+
+The remaining transition is still a splice unless somebody says otherwise:
+`AnimationTransitions::play` starts the incoming clip at seek time **zero**,
+which in a locomotion clip is feet-together. Cross-fading a mid-stride pose into
+that runs the legs through a position they never occupy, for 180 ms, every time.
+
+`avatar::apply_pose` now reads the outgoing clip's seek time, divides by its own
+cycle length and seeks the incoming clip to the same *fraction* of its cycle.
+This is only sound because both clips are exactly **two footfalls** long
+(`WALK_CLIP_SECS` 1.333, `RUN_CLIP_SECS` 0.8) — the normalized phase means the
+same thing in each, so left foot fades into left foot. Idle, flight and the
+emotes have no stride and are still started from zero, which is correct: idle
+*is* feet-together.
+
+### The footsteps were a metronome
+
+"The related sound is a bit cheap" was two separate things, and the timbre was
+the smaller of them.
+
+- **Pattern.** Two samples, strictly alternated, at an exactly periodic rate.
+  The ear locks onto that in about four steps — the earlier note claiming it
+  "stops noticing at two" was wrong. Four variants now, with a ±6 % playback-rate
+  and ±12 % level nudge per step, derived deterministically from the stride
+  phase (`step_wobble`) so the cycle never lines up with the sample cycle.
+- **Timing.** The stride counter was reset to `0.0` on firing rather than having
+  1.0 subtracted, so every footfall was quantised to a frame boundary and up to
+  a whole frame of phase was discarded each step — a few percent of the interval
+  at a run, varying with the frame time. That is heard as sloppiness, not as
+  variation. The remainder is carried now; a hitch past two whole strides still
+  resets rather than paying back a burst.
+- **Timbre.** One filtered noise burst with one envelope is a *tap*. A footfall
+  is an impact, the weight arriving a few milliseconds behind it, and the sole
+  still making noise as the body rolls over it. `synth::footstep` is three parts
+  now — click, body (two decaying sines at 82/131 Hz, below anything the noise
+  carries, so it costs nothing in the zero-crossing budget), and a scuff delayed
+  18 ms at a quarter level. Two new tests: the clip must have energy under
+  200 Hz, and must not stop dead in its last third.
+
 ## Keys that moved
 
 `E` was the flight climb key and is now **interact** — it is the near-universal
 "use" binding and a climb key is the cheaper of the two to move. Climb is `R`.
 `Space` is **jump** on the press and **take off** if held past 0.25 s; a jump that
 waits to see whether a hold is coming is not a jump. `F` remains the unambiguous
-flight toggle. `Shift` sprints and `Alt` strolls — both were free in Follow.
+flight toggle. `Shift` runs and `Alt` strolls — both were free in Follow. Note
+neither is needed for the ordinary case: the unmodified gait is the walk.
