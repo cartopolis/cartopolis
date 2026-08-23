@@ -1,7 +1,7 @@
 ---
 topic: place-photos
 triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour"]
-updated: 2026-08-16
+updated: 2026-08-23
 ---
 
 # A saved place can carry a photo
@@ -15,8 +15,12 @@ none of them is visible from the feature description.
 The ordinary way to take a photo is `startActivityForResult(ACTION_IMAGE_CAPTURE)`
 and read the answer in `onActivityResult`. **Neither half of that is reachable
 here.** `android-activity` 0.6 surfaces no activity result at all, and delivering
-one would need a Java class — hence a `classes.dex`, hence Gradle, which is the
-one thing `docs/notes/android-build.md` exists to avoid.
+one would need a Java class — hence a `classes.dex`, hence (it was assumed)
+Gradle, which is the one thing `docs/notes/android-build.md` exists to avoid.
+**That last step turned out to be false**: the dex lane landed 2026-08-23 as
+javac + d8 with no Gradle, so an activity that reports its result *is* now
+buildable. The watched-MediaStore design below is what ships and is not urgent to
+replace — but it is a workaround now, not the only option.
 
 What replaces it: the app inserts an empty row into the `MediaStore`, hands the
 camera app that `content://` URI as `EXTRA_OUTPUT` with a write grant, starts the
