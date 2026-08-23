@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
-triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool]
-updated: 2026-08-18
+triggers: [ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3]
+updated: 2026-08-23
 ---
 
 # Where the frames go, and where they do not
@@ -307,6 +307,62 @@ The decode is memoised; the path building and the bounds scan are not.
   pipeline is not resident is *silently skipped*. Costs time-to-a-complete-picture
   after launch and after every teleport, not steady-state frames — and `--shot`
   waits for settle, so the harness hides exactly this.
+
+## The space-tier cloud shell had no off-switch, and still has no measurement
+
+Reported 2026-08-23 from the OnePlus 15: frame rate swings hard with altitude —
+84 fps with the globe small on screen, 24 fps with it filling the screen — which
+reads as a streaming or residency fault. **It is not one**, and the developer
+panel is what settles it. At 7191 km, `space · factor 1.00`:
+
+    28 fps · 35.6 ms   draws 122 · 1040 entities   triangles 7 978
+    buildings 0 · 3DBAG 0 · map tiles 0 · globe 0
+    upload 0 kB now · pipelines 45 ready, 0 building
+
+122 draws and 8k triangles with nothing streaming and nothing compiling, at
+35.6 ms. No streaming cap can account for a cost that survives that; it is
+per-pixel. (The `worst` figures — 52 and 90 ms in the same session — are a
+different question and *are* plausibly the upload path: 12.4 MB peak against a
+4 MB/frame ceiling.)
+
+The candidate is `shaders/globe_clouds.wgsl`. Per fragment it runs **nine
+6-octave `fbm3` fields** (~54 3D value-noise lookups) plus two domain warps and a
+Coriolis curl, on a shell at planet radius — so from low orbit it covers every
+pixel of a 2772×1272 native-scale HDR target.
+
+**Two things made it unmeasurable, which is the part worth remembering.**
+Coverage (`params.x`) is not consulted until line 204, after every `fbm3`, and
+the only `discard` is at 242 — so there is no cheap value to set it to. And the
+value it *is* set to is the `GLOBE_CLOUD_COVER` constant blended with live GFS,
+deliberately not the weather slider (one met.no point should not overcast the
+planet), so neither `--clouds 0` nor Settings ▸ World moved it. A first A/B duly
+returned 303.8 ms against 293.2 ms and looked like an exoneration; it was the
+flag never reaching the shader. Hence `CARTO_NO_CLOUDS` and the Settings ▸ World
+checkbox, which hide both shells — the ground deck already dropped itself when it
+carried no cloud, and the globe copy was missing that guard.
+
+**What is still not established is whether the clouds are the cost**, and
+lavapipe cannot establish it. Triplicate at 1000 km, `CARTO_QUALITY=android`,
+480×1040, medians: baseline 261.6 ms, `CARTO_NO_CLOUDS` 223.0, `NO_ATMOSPHERE`
+252.5 — but repeats of one config spanned 218–319 ms, and an earlier sweep had
+`CARTO_NO_SHADOWS` landing 48 ms *slower* than baseline. The within-group spread
+exceeds every between-group difference. A CPU rasteriser also flatters this test
+in the wrong direction specifically: an ALU-heavy noise shader is far more
+expensive relative to everything else on lavapipe than on an Adreno, so even a
+clean number here would not transfer. This is the `frame_ms` row of the table at
+the top of this note doing exactly what it says it does.
+
+The device settles it, with no rebuild once an APK carries the flag:
+
+```
+adb shell setprop debug.carto.no_clouds 1
+adb shell am force-stop eu.garage44.cartopolis
+```
+
+One unrelated thing the same readout shows: **6,998 of 7,978 triangles (88%) go
+into shadow cascades at 7191 km**, where no shadow can be resolved. Cheap in
+absolute terms — 8k triangles — but it is three passes over invisible geometry
+and nothing gates cascade submission on the tier.
 
 ## A trap in the instrument itself
 

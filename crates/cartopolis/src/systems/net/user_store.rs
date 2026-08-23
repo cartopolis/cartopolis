@@ -167,6 +167,15 @@ pub struct SkyPrefs {
     pub cloud_cover: f32,
     #[serde(default)]
     pub precipitation: f32,
+    /// Whether the cloud shells are drawn at all (Settings ▸ World ▸ Weather).
+    ///
+    /// `default_true`, not a bare `#[serde(default)]`, and this is the field that
+    /// most needed the rule in this struct's doc comment: a `bool`'s serde zero is
+    /// `false`, so shipping this with the bare attribute would read every
+    /// `user.json` written before it existed as "the user turned clouds off" and
+    /// silently take the sky away from everybody who upgraded.
+    #[serde(default = "default_true")]
+    pub clouds: bool,
 }
 
 /// Snapshot of the Layers panel's toggles (see [`crate::systems::data_layers::
@@ -269,6 +278,12 @@ fn detail_default() -> bool {
 /// value, kept in step by hand because that struct is not `Deserialize`.
 fn default_fog() -> f32 {
     0.15
+}
+
+/// `#[serde(default)]` for [`SkyPrefs::clouds`] — see that field for why a bare
+/// `#[serde(default)]` would have been a bug rather than a shorter spelling.
+fn default_true() -> bool {
+    true
 }
 
 /// `#[serde(default)]` for a place's or folder's name, so a row that lost its name
@@ -1031,6 +1046,9 @@ pub fn restore_sky_prefs(
     if !cli.rain {
         dev.precipitation = p.precipitation.clamp(0.0, 1.0);
     }
+    // No CLI arm: `--clouds` seeds *coverage*, which is a different question, and
+    // the scripted way to take the shells out of a frame is `CARTO_NO_CLOUDS`.
+    dev.clouds_enabled = p.clouds;
 }
 
 pub fn autosave_user_store(
@@ -1134,6 +1152,7 @@ mod tests {
             fog_density: 0.3,
             cloud_cover: 0.5,
             precipitation: 0.0,
+            clouds: true,
         };
         let json = serde_json::to_string(&prefs).unwrap();
         assert!(
@@ -1141,6 +1160,30 @@ mod tests {
             "modes are named on disk: {json}"
         );
         assert_eq!(serde_json::from_str::<SkyPrefs>(&json).unwrap(), prefs);
+    }
+
+    /// A `user.json` written before the clouds toggle existed restores as "clouds
+    /// on", not as serde's `false`.
+    ///
+    /// This is the whole reason [`default_true`] exists, and the failure it guards
+    /// is silent and global: every upgrading user would have lost the sky, with
+    /// the app reporting a setting they had never touched as their own choice. The
+    /// fog default beside it carries the same rule for the same reason, so the two
+    /// are asserted together — a future knob added here with a bare
+    /// `#[serde(default)]` should fail this test rather than ship.
+    #[test]
+    fn a_sky_block_from_before_the_clouds_toggle_restores_with_clouds_on() {
+        let old = r#"{"sun_mode":"auto","weather_live":true,"cloud_cover":0.5}"#;
+        let p: SkyPrefs = serde_json::from_str(old).unwrap();
+        assert!(
+            p.clouds,
+            "a missing toggle means the app's default, not off"
+        );
+        assert!(
+            (p.fog_density - default_fog()).abs() < f32::EPSILON,
+            "and the same for fog: {}",
+            p.fog_density
+        );
     }
 
     fn test_store() -> UserStore {

@@ -2878,6 +2878,7 @@ mod android_property_tests {
             "CARTO_NO_HAZE",
             "CARTO_NO_ENVMAP",
             "CARTO_NO_OCEAN",
+            "CARTO_NO_CLOUDS",
             "CARTO_NO_SHADOWS",
             "CARTO_NO_SPACE_RAYMARCH",
             "CARTO_NO_DUAL_SOURCE",

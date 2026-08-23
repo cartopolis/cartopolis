@@ -703,6 +703,28 @@ fn world_tab(
         ui.selectable_value(weather_live, true, "Automatic");
         ui.selectable_value(weather_live, false, "Manual");
     });
+
+    // Deliberately *outside* the Manual-only block below. The sliders are the
+    // manual sky and are rightly dead in Automatic mode, but "don't draw clouds"
+    // is a standing choice about the picture, and in Automatic mode it is the only
+    // one available — the met.no poll owns `cloud_cover` there and would overwrite
+    // a zeroed slider on its next fetch. It is also the only control that reaches
+    // the space-tier shell at all (see `DevPanelState::clouds_enabled`).
+    let clouds_forced_off = crate::env_flag("CARTO_NO_CLOUDS");
+    ui.add_enabled_ui(!clouds_forced_off, |ui| {
+        ui.checkbox(&mut dev.clouds_enabled, "Clouds");
+    });
+    pending(
+        ui,
+        if clouds_forced_off {
+            "Forced off for this run by CARTO_NO_CLOUDS."
+        } else {
+            "Draws the cloud deck over the city and the cloud layer over the \
+             globe. Turning it off is the cheapest thing on this tab — from \
+             orbit the cloud shell covers the whole screen."
+        },
+    );
+
     ui.add_enabled_ui(!*weather_live, |ui| {
         ui.add(
             egui::Slider::new(&mut dev.cloud_cover, 0.0..=1.0)
