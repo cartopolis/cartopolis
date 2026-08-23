@@ -2393,7 +2393,13 @@ fn run_client() {
                 systems::ai_assistant::render_ai_panel,
                 systems::data_layers::render_data_layers_panel,
                 systems::bookmarks::render_bookmarks_panel,
-                systems::navigation::render_route_panel,
+                // The route planner draws a floating bottom sheet, not a docked
+                // panel (`navigation::SheetDetent`), so nothing about the shared
+                // root `Ui` puts it here. It stays in the chain because it owns
+                // two text fields and Phase 7d's keyboard anchors on the *end* of
+                // this chain to find them — registered outside it, the endpoint
+                // fields would be undrawn when the keys go looking for their rect.
+                systems::navigation::render_route_sheet,
                 systems::chat::render_chat_panel,
                 systems::script_editor::render_script_panel,
                 systems::ui::render_avatar_chooser,
@@ -2517,7 +2523,7 @@ fn run_client() {
                 // call order fixes its placement — keep it last in that chain.
                 systems::navigation::drive_route_geocoding,
                 systems::navigation::drive_route_solver
-                    .after(systems::navigation::render_route_panel),
+                    .after(systems::navigation::render_route_sheet),
                 // After the camera has moved, so the cursor ray matches the frame the
                 // user actually clicked on.
                 systems::navigation::handle_route_map_pick
@@ -2546,7 +2552,7 @@ fn run_client() {
                 // …and before the solver, so a reroute it asks for on leaving the
                 // route is picked up in the same frame rather than a frame late.
                 systems::driver::drive_driver_mode
-                    .after(systems::navigation::render_route_panel)
+                    .after(systems::navigation::render_route_sheet)
                     .after(avatar::handle_avatar_movement)
                     .before(systems::navigation::drive_route_solver),
                 // Writes the chase rig into `CameraState`, so it must land before the
