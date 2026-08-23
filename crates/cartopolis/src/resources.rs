@@ -294,6 +294,154 @@ impl SkyPreference {
     }
 }
 
+/// The `CARTO_*` bisecting switches, persisted so that a phone can reach them.
+///
+/// **This exists because every escape hatch in this codebase is unreachable on
+/// the one platform that needs them.** `env_flag`'s own doc says it: a
+/// NativeActivity inherits `app_process`'s environment and there is no shell on
+/// the device, so the switches arrive as `debug.carto.*` system properties — i.e.
+/// through `adb`, i.e. through a cable and a second machine. On 2026-08-23 that
+/// was the whole distance between "the Adreno's sky is black" and knowing why:
+/// the instrument (`CARTO_GROUND_RAYMARCH`) had been built four days earlier and
+/// nobody holding the phone could switch it on.
+///
+/// So the same switches are a *preference* too. The precedent is
+/// [`AppPrefs::sky`] and [`AppPrefs::quality`], and the rule is the same one
+/// `session::drive_session` states for `--connect`: **an explicit env or property
+/// is an instruction for this launch and wins**, and it is never written back;
+/// this is what a launch falls back to. `env_flag` resolves the two, so no call
+/// site changes and every existing switch becomes reachable at once.
+///
+/// Named fields rather than a map, because [`AppPrefs`] is `Copy` and because a
+/// free-text key is a typo that silently does nothing — the same argument the
+/// shot manifest makes for rejecting an unknown key. [`Self::SWITCHES`] is the
+/// one table the UI, the lookup and the tests all read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct DebugSwitches {
+    #[serde(default)]
+    pub ground_raymarch: bool,
+    #[serde(default)]
+    pub atmo_globe_radius: bool,
+    #[serde(default)]
+    pub no_atmosphere: bool,
+    #[serde(default)]
+    pub no_haze: bool,
+    #[serde(default)]
+    pub no_envmap: bool,
+    #[serde(default)]
+    pub no_ocean: bool,
+    #[serde(default)]
+    pub no_dual_source: bool,
+    #[serde(default)]
+    pub no_space_raymarch: bool,
+}
+
+impl DebugSwitches {
+    /// Every switch, as `(env name, label, what it proves)`.
+    ///
+    /// The order is the order a render problem is bisected in: the two that split
+    /// *this* sky bug first, then the layers, outermost first. The help text is
+    /// written for somebody holding a phone with no log, so it says what the
+    /// answer *means* rather than what the switch does.
+    pub const SWITCHES: [(&'static str, &'static str, &'static str); 8] = [
+        (
+            "CARTO_GROUND_RAYMARCH",
+            "Raymarch the sky at ground level",
+            "Integrates the sky per pixel and never reads the sky-view or \
+             aerial-view lookup textures. If a black sky comes back with this on, \
+             those compute passes are the fault.",
+        ),
+        (
+            "CARTO_ATMO_GLOBE_RADIUS",
+            "Match the atmosphere to the globe's radius",
+            "Undoes the handset's step around an f32 cancellation. If the sky \
+             looks the same either way, that precision cliff was never the cause.",
+        ),
+        (
+            "CARTO_NO_ATMOSPHERE",
+            "No sky at all",
+            "Not the simple sky — nothing. A bisecting switch: it says whether \
+             what you are looking at is the sky pass or something drawn over it.",
+        ),
+        (
+            "CARTO_NO_HAZE",
+            "No horizon haze",
+            "Drops our own haze shell. It is a separate thing from the sky, and \
+             it is what a black sky's grey band near the horizon usually is.",
+        ),
+        (
+            "CARTO_NO_ENVMAP",
+            "No sky reflections",
+            "Drops the environment cubemap the atmosphere bakes. Shadowed faces \
+             go flat and water goes dark; the sky itself should not move.",
+        ),
+        (
+            "CARTO_NO_OCEAN",
+            "No globe ocean",
+            "Strips the globe's ocean split — the roughness and tint mask carried \
+             in the tile imagery's alpha channel.",
+        ),
+        (
+            "CARTO_NO_DUAL_SOURCE",
+            "No dual-source blending",
+            "Runs the renderer the way every Adreno already does. On a desktop it \
+             reproduces the phone's blend path; on the phone it changes nothing.",
+        ),
+        (
+            "CARTO_NO_SPACE_RAYMARCH",
+            "No raymarched sky in space",
+            "Keeps the cheap lookup-texture sky from orbit. Costs the atmospheric \
+             limb; says whether the raymarch is what a slow orbit view is paying \
+             for.",
+        ),
+    ];
+
+    /// The field behind an env name, or `None` if this switch has no preference.
+    ///
+    /// Deliberately exhaustive rather than a `_ =>` arm, so adding a field without
+    /// adding it here is a compile error rather than a control that does nothing.
+    #[must_use]
+    pub fn get(&self, env_name: &str) -> Option<bool> {
+        Some(match env_name {
+            "CARTO_GROUND_RAYMARCH" => self.ground_raymarch,
+            "CARTO_ATMO_GLOBE_RADIUS" => self.atmo_globe_radius,
+            "CARTO_NO_ATMOSPHERE" => self.no_atmosphere,
+            "CARTO_NO_HAZE" => self.no_haze,
+            "CARTO_NO_ENVMAP" => self.no_envmap,
+            "CARTO_NO_OCEAN" => self.no_ocean,
+            "CARTO_NO_DUAL_SOURCE" => self.no_dual_source,
+            "CARTO_NO_SPACE_RAYMARCH" => self.no_space_raymarch,
+            _ => return None,
+        })
+    }
+
+    /// The mutable half of [`Self::get`], for the checkbox that writes it.
+    pub fn get_mut(&mut self, env_name: &str) -> Option<&mut bool> {
+        Some(match env_name {
+            "CARTO_GROUND_RAYMARCH" => &mut self.ground_raymarch,
+            "CARTO_ATMO_GLOBE_RADIUS" => &mut self.atmo_globe_radius,
+            "CARTO_NO_ATMOSPHERE" => &mut self.no_atmosphere,
+            "CARTO_NO_HAZE" => &mut self.no_haze,
+            "CARTO_NO_ENVMAP" => &mut self.no_envmap,
+            "CARTO_NO_OCEAN" => &mut self.no_ocean,
+            "CARTO_NO_DUAL_SOURCE" => &mut self.no_dual_source,
+            "CARTO_NO_SPACE_RAYMARCH" => &mut self.no_space_raymarch,
+            _ => return None,
+        })
+    }
+
+    /// Whether any switch is set, which is what the Settings header reports.
+    ///
+    /// A run with one of these on is not a run whose rendering means anything, so
+    /// it has to be visible without opening the section that set it.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        Self::SWITCHES
+            .iter()
+            .any(|(name, _, _)| self.get(name) == Some(true))
+    }
+}
+
 /// The settings that are neither a map layer nor a sky knob: the General, Map,
 /// Graphics and Audio tabs of Settings.
 ///
@@ -400,6 +548,11 @@ pub struct AppPrefs {
     /// on a handset it is the only frame counter there is.
     #[serde(default)]
     pub show_stats: bool,
+    /// The `CARTO_*` bisecting switches. Startup only, like [`Self::sky`], and
+    /// overridden by an explicit env var or `debug.carto.*` property — see
+    /// [`DebugSwitches`] for why they are persisted at all.
+    #[serde(default)]
+    pub debug_switches: DebugSwitches,
 }
 
 /// Widest a volume or gain preference may be set to.
@@ -438,6 +591,7 @@ impl Default for AppPrefs {
             shadows: None,
             sky_lighting: None,
             show_stats: false,
+            debug_switches: DebugSwitches::default(),
         }
     }
 }
@@ -1376,6 +1530,71 @@ pub struct MapAnchor {
 mod tests {
     use super::*;
 
+    /// **The table and the fields must not drift apart.** `SWITCHES` is what the
+    /// Settings section iterates; `get`/`get_mut` are what the lookup and the
+    /// checkbox use. An entry with no field would render a control that silently
+    /// does nothing, which is precisely the failure this whole feature exists to
+    /// stop happening on a platform with no log.
+    #[test]
+    fn every_listed_switch_resolves_to_a_field() {
+        let mut switches = DebugSwitches::default();
+        for (name, label, help) in DebugSwitches::SWITCHES {
+            assert!(
+                switches.get(name).is_some(),
+                "{name} is listed but `get` does not know it"
+            );
+            assert!(
+                switches.get_mut(name).is_some(),
+                "{name} is listed but `get_mut` does not know it"
+            );
+            assert!(!label.is_empty() && !help.is_empty(), "{name} has no text");
+        }
+    }
+
+    /// The other direction: a field nobody listed is a switch the phone cannot
+    /// reach, which is the state this replaced. Counted rather than named,
+    /// because the count is what a new field changes.
+    #[test]
+    fn every_field_is_listed() {
+        let json = serde_json::to_value(DebugSwitches::default()).expect("serialises");
+        let fields = json.as_object().expect("a struct").len();
+        assert_eq!(
+            fields,
+            DebugSwitches::SWITCHES.len(),
+            "add the new switch to `DebugSwitches::SWITCHES` as well as to the struct"
+        );
+    }
+
+    /// Writing through `get_mut` is what the checkbox does; reading through `get`
+    /// is what `env_flag` does. They must see the same bit.
+    #[test]
+    fn a_switch_written_by_the_checkbox_is_read_by_the_flag() {
+        let mut switches = DebugSwitches::default();
+        assert!(!switches.any(), "nothing is on by default");
+        *switches.get_mut("CARTO_GROUND_RAYMARCH").expect("listed") = true;
+        assert_eq!(switches.get("CARTO_GROUND_RAYMARCH"), Some(true));
+        assert_eq!(switches.get("CARTO_NO_HAZE"), Some(false));
+        assert!(switches.any(), "the Settings header reports it");
+    }
+
+    /// An unknown name is `None`, not `false` — the distinction `env_flag` needs
+    /// to tell "this switch has no preference" from "its preference is off".
+    #[test]
+    fn an_unknown_switch_has_no_preference() {
+        assert_eq!(DebugSwitches::default().get("CARTO_TILE_URL"), None);
+    }
+
+    /// A `user.json` written before this field existed must still parse, and land
+    /// with everything off. The whole `AppPrefs` case is covered below; this pins
+    /// the nested object specifically, because it is the one that gained fields.
+    #[test]
+    fn a_settings_block_without_switches_parses() {
+        let prefs: AppPrefs =
+            serde_json::from_str(r#"{"units":"metric"}"#).expect("older documents still load");
+        assert_eq!(prefs.debug_switches, DebugSwitches::default());
+        assert!(!prefs.debug_switches.any());
+    }
+
     /// A fresh install and an upgraded one must land on the same settings. The
     /// two paths are different code — `Default` for the first, serde's per-field
     /// defaults for the second — and they only agree because someone made them.
@@ -1406,6 +1625,13 @@ mod tests {
             shadows: Some(false),
             sky_lighting: Some(true),
             show_stats: true,
+            // Set, for the same reason the two `Some(..)` above are: a nested
+            // object that round-trips only while it is all-default proves nothing
+            // about the nesting.
+            debug_switches: DebugSwitches {
+                ground_raymarch: true,
+                ..DebugSwitches::default()
+            },
         };
         let text = serde_json::to_string(&prefs).expect("serialises");
         assert_eq!(serde_json::from_str::<AppPrefs>(&text).unwrap(), prefs);

@@ -1321,3 +1321,49 @@ Three rules came out of this and are worth more than the diff:
 - **A `#[cfg]`-gated rule is a rule no test can see** — for the second time. The
   guard is a plain function compiled everywhere; only its *application* is
   `cfg!`-conditional.
+
+## An escape hatch the device cannot reach is not an escape hatch (2026-08-23)
+
+`env_flag`'s doc has said for months that Android has no environment and that the
+switches therefore arrive as `debug.carto.*` system properties, set with `adb
+shell setprop`. That was accurate and it was not enough: `adb` is a cable and a
+second machine, and this project's phone is usually somewhere the workstation is
+not.
+
+The bill came due on the Adreno 840 black sky. `CARTO_GROUND_RAYMARCH` was built
+on 2026-08-19 for exactly one question — is the sky-view LUT the fault, or the
+whole pass? — and on 2026-08-23 that question was still open, because in four days
+nobody holding the device had been in a position to switch it on. The instrument
+existed, was correct, and was unreachable. Meanwhile the hypothesis it was built
+to test (the f32 cancellation in bevy's LUT parameterization) shipped a workaround
+that the device then falsified, so the four days bought nothing.
+
+So the switches are a persisted preference too (`resources::DebugSwitches`,
+Settings ▸ Graphics ▸ Developer), and `env_flag` resolves the two: **an explicit
+env var or property is an instruction for this launch and wins in both
+directions; the preference is what a launch falls back to.** Resolving it inside
+`env_flag` rather than at the call sites is the whole trick — every switch in the
+codebase became reachable from the phone without one of them being edited.
+
+Three things about it are load-bearing:
+
+- **Absence and `=0` must be different answers.** `env_flag_explicit` returns
+  `Option<bool>`, not `bool`. Collapsed to a bool, `setprop debug.carto.x 0` to
+  overrule a preference that is *on* would fall through to that preference and
+  appear to do nothing — the worst available behaviour for a debugging switch.
+- **The seed is earlier than it looks.** `CARTO_NO_DUAL_SOURCE` is consulted while
+  `DefaultPlugins` is being assembled, several hundred lines before
+  `UserStore::load()`. `init_debug_switches` therefore sits beside `quality::init`
+  at the top of `run_client`, fed by the same narrow `serde_json::Value` read that
+  `preferred_quality` uses and for the same reason — deserialising `UserData` that
+  early runs `LayerPrefs`' defaults, which settle the tier's `OnceLock` from a
+  detection that has not been told the user's preference yet.
+- **A report from a switched run has to say so.** They are reachable from a
+  settings screen now, so somebody can set one and forget. The diagnostics report
+  carries `debug switches:` by env name, resolved rather than as stored, so the
+  line can be pasted back as a `setprop`.
+
+The general rule, and it is not only about Android: **a diagnostic switch is only
+as good as the worst-instrumented platform's ability to reach it.** A flag that
+needs a shell is a flag the web build and the phone do not have, and those are the
+two builds nobody can attach a debugger to.
