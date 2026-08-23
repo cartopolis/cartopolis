@@ -11,6 +11,7 @@ pub mod map_stream;
 pub mod osm_buildings;
 pub mod render_scale;
 pub mod rendering;
+pub mod road_depth;
 pub mod sky;
 pub mod sky_dome;
 pub mod stream_ledger;

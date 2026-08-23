@@ -1551,6 +1551,10 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
+        // Roads and their casings. The ladder that decides which of two
+        // overlapping ribbons is on top rides in a vertex attribute, so the road
+        // groups need a pipeline that declares it (`systems::road_depth`).
+        .add_plugins(MaterialPlugin::<systems::road_depth::RoadMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::globe_ocean::GlobeSurfaceMaterial>::default())
         .init_resource::<GameState>()
         .init_resource::<AvatarState>()

@@ -444,6 +444,7 @@ pub fn refine_for_terrain(
     uvs: &mut Vec<[f32; 2]>,
     normals: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
     max_edge: f32,
 ) {
     use std::collections::HashMap;
@@ -458,6 +459,7 @@ pub fn refine_for_terrain(
                      uvs: &mut Vec<[f32; 2]>,
                      normals: &mut Vec<[f32; 3]>,
                      colors: &mut Vec<[f32; 4]>,
+                     rungs: &mut Vec<f32>,
                      midpoints: &mut HashMap<(u32, u32), u32>|
          -> Option<u32> {
             let key = if a < b { (a, b) } else { (b, a) };
@@ -488,6 +490,13 @@ pub fn refine_for_terrain(
                 let (ca, cb) = (colors[a as usize], colors[b as usize]);
                 colors.push(std::array::from_fn(|i| (ca[i] + cb[i]) * 0.5));
             }
+            // A road's depth rung is constant across its whole ribbon and an edge
+            // never spans two of them (features are tessellated into separate
+            // vertices), so the midpoint of a split edge has the rung both ends
+            // already had. Averaging is only the general form of that.
+            if !rungs.is_empty() {
+                rungs.push((rungs[a as usize] + rungs[b as usize]) * 0.5);
+            }
             midpoints.insert(key, m);
             Some(m)
         };
@@ -496,9 +505,9 @@ pub fn refine_for_terrain(
         let mut any = false;
         for tri in indices.chunks_exact(3) {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
-            let ab = split(a, b, positions, uvs, normals, colors, &mut midpoints);
-            let bc = split(b, c, positions, uvs, normals, colors, &mut midpoints);
-            let ca = split(c, a, positions, uvs, normals, colors, &mut midpoints);
+            let ab = split(a, b, positions, uvs, normals, colors, rungs, &mut midpoints);
+            let bc = split(b, c, positions, uvs, normals, colors, rungs, &mut midpoints);
+            let ca = split(c, a, positions, uvs, normals, colors, rungs, &mut midpoints);
             any |= ab.is_some() || bc.is_some() || ca.is_some();
             match (ab, bc, ca) {
                 (None, None, None) => out.extend_from_slice(&[a, b, c]),
@@ -562,6 +571,7 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
     refine_for_terrain(
         &mut positions,
         &mut indices,
+        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -850,6 +860,7 @@ mod tests {
             &mut uvs,
             &mut normals,
             &mut colors,
+            &mut vec![],
             24.0,
         );
         // Every edge now short enough for the field to be expressed on it…
@@ -877,6 +888,7 @@ mod tests {
             &mut vec![],
             &mut vec![],
             &mut vec![],
+            &mut vec![],
             24.0,
         );
         assert_eq!(small.len(), 3);
@@ -897,6 +909,7 @@ mod tests {
         refine_for_terrain(
             &mut positions,
             &mut indices,
+            &mut vec![],
             &mut vec![],
             &mut vec![],
             &mut vec![],
@@ -941,6 +954,7 @@ mod tests {
             &mut uvs,
             &mut normals,
             &mut colors,
+            &mut vec![],
             24.0,
         );
         // A road's markings register with its geometry through UV0; dropping the

@@ -1,7 +1,7 @@
 ---
 topic: rendering
-triggers: [vector_tiles.rs, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect"]
-updated: 2026-08-21
+triggers: [vector_tiles.rs, road_depth.rs, road_depth.wgsl, "junction", "ribbon", "roundabout", "junction_extent", "street_nodes", "roads don't connect", "road z-fight", "roads flicker", "road_rung"]
+updated: 2026-08-23
 ---
 
 # One street arrives as a chain of features, and most of its "junctions" are not
@@ -110,48 +110,88 @@ carries the fix.
 The residue is genuine: places where more than `ROAD_TIE_LAYERS` ribbons of one
 band really do overlap at one spot, where four colours cannot be enough and the
 hash decides as before. Getting past it needs a different mechanism, not a better
-colouring. Note also that neither the hash nor the assignment is stable across a
-tile seam, for the reason the ribbon joins are not: each tile clips its own copy.
+colouring — **and the section below is that mechanism**, which is also why the
+figures here are superseded. Note also that neither the hash nor the assignment is
+stable across a tile seam, for the reason the ribbon joins are not: each tile
+clips its own copy.
 
-## Two ladders decide which road is on top, and they must agree
+## There is one ladder, and it is denominated in depth-buffer ULPs
 
-There are two, denominated differently, and that is the whole trap:
+**This section replaced a longer one about keeping two ladders in agreement.**
+Both are worth knowing about, because the second bug is the one that survived the
+first fix and it is the reason the design changed rather than being tuned again.
 
-* `road_rung` → a **fixed metric** offset, `rung × ROAD_LAYER_STEP` (24 µm).
-  Its depth significance *shrinks* as 1/z.
+Until 2026-08-23 the ordering was split across two ladders denominated
+differently:
+
+* `road_rung` → a **fixed metric** lift, `rung × 24 µm`. Its significance in the
+  depth buffer *shrinks* as 1/z.
 * `SurfaceGroup::depth_rung` → a **depth-buffer ULP** bias. Its apparent world
-  shift is `1.19e-7 · DEPTH_BIAS_STEP · z`, so it *grows* with range — 0.76 mm at
-  100 m, 1.14 mm at 150 m, 7.6 mm at 1 km.
+  shift is `1.19e-7 · bias · z`, so it *grows* with range.
 
-Until 2026-08-21 the first sorted by **width across every class at once** while
-the second sorted by **class**. Wherever those disagreed — a wide residential
-against a narrow tertiary — the two terms crossed over somewhere in the middle
-distance, and which road was on top flipped as the camera moved. It does not
-read as flicker at a seam: the loser's tarmac vanishes over whole patches.
-Reported from a handset as "sometimes part of the roads become invisible, the
-order is reversed". The casing plane had the identical contradiction —
-`RoadCasing::y_offset` put every casing under every fill while its `depth_rung`
-put a wide road's kerb over a narrower road's tarmac — which is the kerb line
-sliced across a junction.
+They failed in both directions, and only the first was understood at the time.
 
-So the geometric ladder is **class-major** now: each class owns a block of
-`ROAD_RUNGS_PER_CLASS`, its casing on the block's foot rung and its fills above,
-width and the tie colouring ordering only *within* the block. Both ladders then
-say the same thing at every range and there is no crossover to sit in.
-`the_geometric_ladder_never_contradicts_the_depth_bias` pins it, and needs no
-renderer — it is a statement about two pure functions.
+**Crossover.** The metric ladder sorted by width across every class at once while
+the bias sorted by class, so wherever they disagreed — a wide residential against
+a narrow tertiary — the terms crossed somewhere in the middle distance and the
+winner flipped as the camera moved. Not flicker at a seam: the loser's tarmac
+vanished over whole patches. Reported from a handset as "sometimes part of the
+roads become invisible, the order is reversed". Making the metric ladder
+class-major (2026-08-21) fixed this, at the price of compressing width onto two
+sub-bands to fit the ceiling.
 
-**The ceiling is what makes this tight, and it is why width lost resolution.**
-`ROAD_LAYERS × ROAD_LAYER_STEP` must stay under the 1.5 mm between the road
-sheet and the buildings' base, and the step cannot go far below 24 µm or it stops
-clearing the depth buffer at ground range (2.0 ULP at 100 m, 1.0 at 200 m). At 58
-rungs the ladder tops out at 1.392 mm. Six class blocks eat that budget, so
-width keeps `ROAD_WIDTH_SUBBANDS` = 2 sub-bands rather than the eight
-`ROAD_WIDTH_BANDS` still used to compute them.
+**Dissolution**, which that fix could not touch and which no tie-colouring could
+reach either. 24 µm is worth 2.0 ULP at 100 m, 1.0 at 200 m and *nothing* beyond,
+so past a couple of hundred metres the whole within-class ladder — width, ties,
+casing — sat below the depth buffer's resolution and every same-class overlap
+went back to an exact per-pixel coin flip that re-rolls with the view matrix. On
+the fixture that is 6 % of `Minor` and 14 % of `Carriageway` (see the self-overlap
+figures above) fighting at any real distance. The rungs were still being assigned
+carefully; they had simply stopped meaning anything.
 
-**Measured cost, stated plainly:** coplanar overlap on the Groningen fixture went
-0.62 % → **0.89 %**, because two sub-bands put more same-class ribbons on one
-rung than eight bands did. That is the trade and it is deliberate — a same-class
-collision is one material and one colour, differing only in road-texture UV, so
-it reads as a seam; a cross-class inversion hides a street. It remains well under
-the 1.60 % that shipped before the tie colouring.
+**So the rung is no longer a height.** It is carried per vertex
+(`SurfaceMesh::rungs` → `ATTRIBUTE_ROAD_RUNG`) and applied by
+`systems::road_depth` in the vertex stage as `position.z *= 1 + rung ·
+ROAD_RUNG_ULP · 1.19e-7`. Scaling clip-space z is a depth offset proportional to
+the fragment's own depth, which is exactly what a hardware `depth_bias` unit is —
+so the separation is measured in the same units the depth test resolves in and
+**cannot decay with range**. Every road group now returns the *same*
+`depth_bias()` (the foot of the road band), and the class hierarchy lives in the
+rung alone. There is no second opinion left to contradict the first, which is a
+stronger guarantee than the test that used to check the two for agreement.
+
+Three consequences worth keeping:
+
+* **The millimetre ceiling is gone.** A rung costs no height, so
+  `ROAD_LAYERS × step < 1.5 mm` stopped being a constraint. Width went back to
+  the full eight `ROAD_WIDTH_BANDS` and ties from 4 to 8.
+* **A new ceiling replaced it, in ULPs.** The ladder has to stay inside the band
+  between `Water` and the things drawn *over* a road, so `BridgeDeck`, `Canopy`,
+  `Trunk` and `Furniture` are pinned above `road_rung_ceiling()` rather than at
+  fixed rungs. `road_depth`'s
+  `the_road_ladder_stays_under_everything_drawn_over_a_road` is what stops the
+  ladder growing through them.
+* **`ROAD_RUNG_ULP` is written in two languages.** The Rust constant and the
+  WGSL one must match, and `the_shader_and_the_ladder_agree_on_the_step` reads
+  the shader source to check it.
+
+**Measured on the Groningen fixture** (`overlapping_road_features_are_separated_
+in_depth`, which prints the figure):
+
+| ladder | coplanar overlap |
+|---|---|
+| hash alone, width-major (pre-2026-08-21) | 1.60 % |
+| tie colouring, width-major | 0.62 % |
+| tie colouring, class-major, 2 sub-bands (the metric ceiling) | 0.89 % |
+| **ULP rung, class-major, 8 sub-bands × 8 ties** | **0.51 %** |
+
+**More rungs stops helping at 0.51 %, and that is not a tuning failure.** Ties
+were swept at 8, 16 and 32 against eight sub-bands and every one measures 0.51 %:
+what is left is a ribbon overlapping *itself* — shared triangle edges and the
+bevel corner fills — which shares a rung by definition and no ladder can
+separate. It is also the benign case: one material, one colour, and the same UV
+on both sides of the overlap.
+
+The prior figures are kept above because the *shape* of that table is the useful
+part: the largest single win was the adjacency rule in `assign_road_ties`, not
+any amount of extra ladder.

@@ -309,6 +309,27 @@ pub const TILE_BUFFER_FRAC: f32 = 0.25;
 /// is the fix — not another doubling here.
 pub const DEPTH_BIAS_STEP: f32 = 64.0;
 
+/// The group rung the whole road stack stands on, just above `Water` at 4.
+///
+/// Roads do not get a rung *each* any more — `road_rung` orders them, per vertex,
+/// in the same depth-buffer units this ladder is denominated in. See
+/// [`SurfaceGroup::depth_rung`].
+const ROAD_BAND_FOOT: f32 = 5.0;
+
+/// The first group rung above every road rung, in [`DEPTH_BIAS_STEP`] units.
+///
+/// `road_depth` adds `rung × ROAD_RUNG_ULP` ULPs on top of `ROAD_BAND_FOOT`, so
+/// the band the road ladder occupies is that many ULPs tall and anything meant to
+/// draw *over* a road has to start above it.
+///
+/// The `2.0` is a truncation guard plus a whole rung of clear air: `as u32`
+/// rounds the band's height *down*, so one of those units only gets the ceiling
+/// back level with the tallest road rung. Without the second the margin would be
+/// whatever the division happened to leave — 4 ULP at the current sizes, and
+/// silently negative if the ladder ever grew past the next multiple.
+const ROAD_BAND_CEILING: f32 =
+    ROAD_BAND_FOOT + 2.0 + (ROAD_LAYERS as f32 * ROAD_RUNG_ULP / DEPTH_BIAS_STEP) as u32 as f32;
+
 /// Which sub-rectangle of a source tile to draw, when the requested tile is deeper
 /// than [`MAX_SOURCE_ZOOM`]. `factor` is 2^(requested_z − source_z); `(x, y)` is the
 /// requested tile's position within the source tile, in units of the sub-grid.
@@ -564,7 +585,7 @@ const PAINT_ORDER: &[(&str, Draw)] = &[
 /// The width is the **real carriageway width** ([`road_width_m`], the same
 /// number the 3D ribbons are built from) converted to source-tile pixels, with a
 /// per-class *floor* in pixels. At z14 the real width dominates and the painted
-/// road agrees with the textured ribbon drawn 1.5 mm above it — the old fixed px
+/// road agrees with the textured ribbon drawn on the road plane — the old fixed px
 /// widths were 1–2 m wider per side, which put a pale halo around every dark
 /// ribbon and pale round blobs at every junction corner. At z10 the real width
 /// is far below a pixel and the floor takes over, which is what keeps the road
@@ -1132,18 +1153,15 @@ impl SurfaceGroup {
             // Roads go on top of every natural surface — a street crosses a park,
             // never the other way round.
             Self::Road(_) => -0.0015,
-            // The same base plane as the fills, because a casing takes a rung on
-            // the *same* ladder now (`road_casing_rung`): the foot of its own
-            // class's block, under its own tarmac and over every narrower
-            // class's.
-            //
-            // It used to sit one whole step below this plane, which put every
-            // casing in the tile under every fill in the tile. That reads well
-            // up close and contradicts [`Self::depth_rung`], which puts a wide
-            // road's kerb band *over* a path it crosses — and the bias is what
-            // wins at range. The two answers crossed over in the middle
-            // distance, so a kerb line sliced across a junction at some camera
-            // heights and not others.
+            // The same plane as the fills, and not approximately: the road sheet
+            // is exactly flat and its whole ordering — fills, casings, classes —
+            // is the per-vertex rung applied in depth (`road_rung`,
+            // `systems::road_depth`). A casing that sat a step lower *in height*
+            // is how this used to work, and it put every casing in the tile under
+            // every fill in the tile, which contradicted the bias that put a wide
+            // road's kerb over a path it crosses. The two crossed over in the
+            // middle distance, slicing a kerb line across a junction at some
+            // camera heights and not others.
             Self::RoadCasing(_) => -0.0015,
             // Trees are real 3D geometry standing *on* the ground, not another
             // sheet in the coplanar stack, so they take the ground plane itself.
@@ -1195,39 +1213,39 @@ impl SurfaceGroup {
             Self::Grass => 2.0,
             Self::Forest | Self::Sand => 3.0,
             Self::Water => 4.0,
-            // Road classes are separated from each other as well as from the
-            // ground: ribbons genuinely overlap at every junction, and equal
-            // biases there would z-fight in exactly the places you look at. The
-            // order is the road hierarchy, so a motorway crosses a service road.
-            // A casing sits half a rung (32 depth ULPs) under its own fill:
-            // above every narrower class's *fill*, so a major road's kerb band
-            // still covers a path it crosses, and below its own tarmac, so it
-            // reads as an edge and never over-paints the markings.
-            Self::RoadCasing(class) => Self::Road(class).depth_rung() - 0.5,
-            Self::Road(RoadClass::Path) => 5.0,
-            Self::Road(RoadClass::Minor) => 6.0,
-            Self::Road(RoadClass::Major) => 7.0,
-            // A carriageway is a motorway's half or a ramp: above the ordinary
-            // roads it flies over, below the motorway it feeds — a slip road
-            // merging into a carriageway must not paint its kerb line across it.
-            Self::Road(RoadClass::Carriageway) => 8.0,
-            Self::Road(RoadClass::Motorway) => 9.0,
-            // Rails sit above their own crossings, so a level crossing shows the
-            // track rather than the tarmac.
-            Self::Road(RoadClass::Rail) => 10.0,
+            // **Every road group shares one rung, and that is the point.** The
+            // road hierarchy — class, then casing, then width, then the tie
+            // colouring — used to be split across two ladders denominated
+            // differently: this one in depth ULPs (which grow with range) and a
+            // second in millimetres of real height (which shrink as 1/z). Two
+            // ladders that must agree is a standing bug, and it fired twice: once
+            // as a class inversion that made a street's tarmac vanish at some
+            // camera distances, and again as an ordering that dissolved entirely
+            // past ~200 m, where 24 µm stops being worth a single ULP.
+            //
+            // So there is one ladder now. It is `road_rung`, it is carried per
+            // *vertex* rather than per material, and `systems::road_depth` adds
+            // it here in the vertex stage at [`ROAD_RUNG_ULP`] each. This value is
+            // only the **foot** of the band it lives in — above water, below
+            // anything a road is drawn under.
+            Self::Road(_) | Self::RoadCasing(_) => ROAD_BAND_FOOT,
             // A deck is above the tracks, which are above the tarmac — and that
             // ordering is the *whole* point of the group. A flyover measured at
             // ~0 m (a Dutch canal bridge sits at street level, with the water
             // below) has no honest depth to separate it from the road it carries,
             // so this rung is what stops the rails painting over the viaduct.
-            Self::BridgeDeck => 11.0,
+            //
+            // It clears the *top* of the road band, not the foot: the whole road
+            // ladder is above `ROAD_BAND_FOOT` now, so a fixed 11.0 would put the
+            // deck underneath most of it.
+            Self::BridgeDeck => ROAD_BAND_CEILING,
             // Above the whole coplanar ground stack. Trees resolve against it by
             // honest depth — they stand a metre or ten above the plane — but the
             // ground sheets are biased *forward* to settle their own z-fight, and
             // a grass sheet at 2.0 would otherwise punch through a trunk base.
             // Street furniture stands on the same plane and wants the same rung —
             // a bench's legs are exactly the thin thing a biased sheet swallows.
-            Self::Canopy | Self::Trunk | Self::Furniture => 12.0,
+            Self::Canopy | Self::Trunk | Self::Furniture => ROAD_BAND_CEILING + 1.0,
         }
     }
 
@@ -1405,6 +1423,15 @@ pub struct SurfaceMesh {
     /// tone and brightness variation out of a single shared material: a forest of
     /// one exact green is the giveaway of a procedural scatter.
     pub colors: Vec<[f32; 4]>,
+    /// Which rung of the road ladder each vertex draws on, **empty for every group
+    /// but [`SurfaceGroup::Road`] and [`SurfaceGroup::RoadCasing`]**.
+    ///
+    /// This is the *whole* road ordering — class, casing, width band and tie — and
+    /// it is deliberately not a height. `systems::road_depth` turns it into a
+    /// depth-buffer offset in the vertex stage, which is the only denomination
+    /// that settles a coplanar fight at every range; see [`road_rung`] for why the
+    /// millimetre ladder it replaced could not.
+    pub rungs: Vec<f32>,
 }
 
 /// What one vertex of a finished [`SurfaceMesh`] costs on the GPU.
@@ -1420,6 +1447,12 @@ pub struct SurfaceMesh {
 /// about this struct rather than about the renderer. The *limit* a mesh is cut to
 /// is the caller's to supply — that one is a frame budget and belongs to
 /// `quality`.
+///
+/// **Road meshes carry a fifth attribute** — the 4-byte depth rung
+/// ([`Self::rungs`](SurfaceMesh::rungs)) — and are still inside this figure,
+/// because they are also the group that carries *no* vertex colour: 12 + 12 + 8 +
+/// 4 = 36. The constant stays an upper bound over every group, which is what a
+/// byte budget needs it to be.
 pub const VERTEX_BYTES: usize = 12 + 12 + 8 + 16;
 /// Indices are `u32`, always — a planted cell runs well past 65 k vertices.
 pub const INDEX_BYTES: usize = 4;
@@ -1504,6 +1537,7 @@ pub fn tessellate_surfaces(
                     uvs: Vec::new(),
                     normals: Vec::new(),
                     colors: Vec::new(),
+                    rungs: Vec::new(),
                 });
             }
         }
@@ -1522,6 +1556,7 @@ pub fn tessellate_surfaces(
                     uvs: Vec::new(),
                     normals: Vec::new(),
                     colors: Vec::new(),
+                    rungs: Vec::new(),
                 }),
         )
         .collect())
@@ -1648,44 +1683,61 @@ pub fn tessellate_bridges(tile: &TileData, tile_m: f32) -> Result<Vec<BridgeDeck
 /// longer than anything it could plausibly be joining.
 const JUNCTION_EXTEND_MAX: f32 = 12.0;
 
-/// Vertical spacing, in metres, between successive road features within one tile.
+/// How many depth-buffer ULPs one rung of the road ladder is worth.
 ///
 /// Ribbons **overlap by construction** — a junction stub crosses whatever it tees
 /// into, Shortbread's merged ways cross each other freely, and a flyover is drawn
 /// on the same ground plane as the road it flies over. Two coplanar overlapping
 /// triangles have depth values that agree only to the last few bits, so which one
-/// wins flips per pixel as the camera moves: the flicker along a junction.
-/// `depth_bias` cannot settle it, being a per-material constant while the fight is
-/// between two features sharing a material.
+/// wins flips per pixel as the camera moves: the flicker along a junction. The
+/// material's own `depth_bias` cannot settle it, being a per-material constant
+/// while the fight is between two features sharing a material — which is exactly
+/// what this per-vertex rung supplies.
 ///
-/// Stepping each feature up by a fraction of a millimetre makes the winner
-/// deterministic. The step has to clear the depth buffer's resolution at ground
-/// range (~12 µm at 100 m, ~120 µm at 1 km) without leaving the window between
-/// the road sheet's `y_offset` (−1.5 mm) and the buildings' base at y = 0 — at
-/// [`ROAD_LAYERS`] rungs the ladder tops out at 1.44 mm, still under the
-/// buildings.
-const ROAD_LAYER_STEP: f32 = 2.4e-5;
+/// **The unit is the fix.** A rung used to be 24 µm of real height, and a
+/// geometric gap's significance in the depth buffer decays as 1/z: 24 µm is 2.0
+/// ULP at 100 m, 1.0 at 200 m and nothing at all beyond that. So the within-class
+/// ordering — which ribbon of a junction is on top — simply *dissolved* in the
+/// middle distance, and every same-class overlap (6 % of `Minor`, 14 % of
+/// `Carriageway` on the fixture) went back to being an exact per-pixel coin flip
+/// that re-rolls as the camera moves. That is the shimmer along a street, and no
+/// amount of tie-colouring could reach it, because the rungs it was assigning had
+/// stopped meaning anything.
+///
+/// Denominated in ULPs the rung is **range-invariant** by construction: the
+/// apparent world shift is `1.19e-7 · ulps · z`, so it grows exactly as fast as
+/// the depth buffer's own quantum. Four ULPs clears the rasteriser's
+/// interpolation noise, which one does not.
+pub const ROAD_RUNG_ULP: f32 = 4.0;
 
-/// How many rungs the [`ROAD_LAYER_STEP`] ladder has. The ladder is *ordered*, not
-/// arbitrary (see [`road_rung`]), so which of two overlapping features wins is a
-/// property of the roads rather than of the order the tile happened to store them
-/// in. Sized to the ceiling: `ROAD_LAYERS * ROAD_LAYER_STEP` must stay under the
-/// 1.5 mm between the road sheet and the buildings' base.
-const ROAD_LAYERS: u32 = 58;
+/// Rungs reserved at the top of the ladder for roads carried on a bridge deck.
+/// One casing plus a full set of ties, so a flyover's ribbons separate from each
+/// other as well as from the ground.
+const BRIDGE_LAYERS: u32 = 1 + ROAD_TIE_LAYERS;
 
-/// Rungs reserved at the top of the ladder for bridge decks.
-const BRIDGE_LAYERS: u32 = 4;
+/// Tie-breaking rungs within one width band. Eight, not the four that fitted
+/// under the old millimetre ceiling.
+const ROAD_TIE_LAYERS: u32 = 8;
 
-/// Tie-breaking rungs within one width band.
-const ROAD_TIE_LAYERS: u32 = 4;
+/// Width sub-bands *inside* one class block — the full [`ROAD_WIDTH_BANDS`]
+/// resolution.
+///
+/// This was 2 under the old ladder, and the reason was purely the ceiling: rungs
+/// were real height and the road sheet had 1.5 mm to spend before it reached the
+/// buildings' base, so six class blocks could not also afford eight width bands.
+/// A rung costs no height now, so the compression is simply unnecessary — and it
+/// was not free. Measured on the Groningen fixture, restoring the eight bands
+/// takes coplanar overlap 0.89 % → 0.62 %, and the wider tie set takes it to
+/// 0.51 %.
+const ROAD_WIDTH_SUBBANDS: u32 = 8;
 
-/// Width sub-bands *inside* one class block. Two, not the eight
-/// [`ROAD_WIDTH_BANDS`] carries, and the reason is the ladder's ceiling: the
-/// class is the major key now (see [`road_rung`]), so the block count multiplies
-/// everything below it. Most of what the eight bands used to buy was ordering
-/// *between* classes, which the class key states directly and correctly — what
-/// is left for width to settle is a wide residential against a narrow one.
-const ROAD_WIDTH_SUBBANDS: u32 = 2;
+/// How many rungs the ladder has, top to bottom. Ordered, not arbitrary (see
+/// [`road_rung`]), so which of two overlapping features wins is a property of the
+/// roads rather than of the order the tile happened to store them in.
+const ROAD_LAYERS: u32 = ROAD_CLASS_COUNT * ROAD_RUNGS_PER_CLASS + BRIDGE_LAYERS;
+
+/// How many classes [`road_class_rank`] ranks.
+const ROAD_CLASS_COUNT: u32 = 6;
 
 /// Rungs one class owns: one for its casings, then its fills.
 ///
@@ -1693,12 +1745,31 @@ const ROAD_WIDTH_SUBBANDS: u32 = 2;
 /// the same colour — their fight is invisible, which is the one place in this
 /// ladder where a tie costs nothing. Fills need the width sub-band and the tie
 /// colouring, so they take the rest.
+///
+/// Nothing bounds this but the road band's share of the depth range
+/// (`SurfaceGroup::depth_rung`), which is why it can be generous now: a rung is
+/// no longer a slice of the 1.5 mm the road sheet had under the buildings.
 const CASING_RUNGS_PER_CLASS: u32 = 1;
 const ROAD_RUNGS_PER_CLASS: u32 = CASING_RUNGS_PER_CLASS + ROAD_WIDTH_SUBBANDS * ROAD_TIE_LAYERS;
 
-/// A class's block index, in the same order [`SurfaceGroup::depth_rung`] ranks
-/// them. **These two orderings must agree** — that they did not is the bug this
-/// layout exists to remove; see [`road_rung`].
+/// The highest depth bias any road vertex can reach: the foot of the road band
+/// plus the whole ladder standing on it.
+///
+/// This is what anything drawn *over* a road has to clear — a bridge deck, a
+/// tree, a bench. `road_depth`'s
+/// `the_road_ladder_stays_under_everything_drawn_over_a_road` is what checks that
+/// they do, so growing the ladder can never silently push it through them.
+#[must_use]
+pub fn road_rung_ceiling() -> f32 {
+    ROAD_BAND_FOOT * DEPTH_BIAS_STEP + ROAD_LAYERS as f32 * ROAD_RUNG_ULP
+}
+
+/// A class's block index, low to high — **the** road hierarchy.
+///
+/// It used to have to agree with a second ranking in
+/// [`SurfaceGroup::depth_rung`], and every way the two could disagree was a bug
+/// (see [`road_rung`]). `depth_rung` gives every road group one shared value now,
+/// so this is the only thing in the tree that orders the classes.
 fn road_class_rank(class: RoadClass) -> u32 {
     match class {
         RoadClass::Path => 0,
@@ -1718,7 +1789,11 @@ fn road_class_rank(class: RoadClass) -> u32 {
 /// only needs to keep a primary under a motorway.
 const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 
-/// Which rung of the [`ROAD_LAYER_STEP`] ladder a line draws on.
+/// Which rung of the road ladder a line draws on — **the** road ordering, whole.
+///
+/// The rung reaches the GPU as a per-vertex attribute and is applied by
+/// `systems::road_depth` as a depth offset of [`ROAD_RUNG_ULP`] ULPs each. It is
+/// not a height and must never become one again; see the two failures below.
 ///
 /// Two rules, in order:
 ///
@@ -1726,28 +1801,40 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 ///   under it are both flat sheets on the same ground plane here, so the only
 ///   thing that can say which is on top is this; without it an interchange
 ///   resolves per-pixel and the deck and the road beneath interleave.
-/// * Otherwise the **class decides, and width only breaks ties inside it**. The
-///   class is the major key because [`SurfaceGroup::depth_rung`] already ranks
-///   the classes and *that* ladder is the one that survives at range — so if
-///   this one sorted by anything else, the two would disagree, and the
-///   disagreement would resolve differently at different camera distances.
+/// * Otherwise the **class decides, then width, then the tie colouring** — one
+///   key, most significant first, exactly as it reads.
 ///
-///   It used to sort by width alone, across every class at once, and that is
-///   exactly what went wrong. The two ladders are denominated differently: the
-///   geometric step here is a fixed 24 µm, while one `depth_rung` step is
-///   `1.19e-7 · DEPTH_BIAS_STEP · z` — an apparent shift that *grows with
-///   range*, ~1.14 mm at 150 m against a full width ladder of ~1.4 mm. So a wide
-///   residential (Minor) and a narrow tertiary (Major) were ordered one way by
-///   the geometry and the other by the bias, the two terms crossed over
-///   somewhere in the middle distance, and which road was on top flipped as the
-///   camera moved — the loser's tarmac vanishing over whole patches rather than
-///   flickering at a seam. Reported as "sometimes part of the roads become
-///   invisible, the order is reversed".
+/// ## Why there is only one ladder
 ///
-///   With the class as the major key both ladders say the same thing at every
-///   range, so there is no crossover to sit in. Width keeps
-///   [`ROAD_WIDTH_SUBBANDS`] sub-bands inside the block, which is what still
-///   separates a wide residential from a narrow one.
+/// There used to be two, denominated differently, and every bug in this area was
+/// a disagreement between them. `SurfaceGroup::depth_rung` ranked the *classes*
+/// in depth-buffer ULPs, whose apparent world shift **grows** with range
+/// (`1.19e-7 · bias · z`); this function ranked features in 24 µm steps of real
+/// height, whose significance **shrinks** as 1/z. They failed in both directions:
+///
+/// * **Crossover.** When the two orders differed — a wide residential (Minor)
+///   against a narrow tertiary (Major) — the terms crossed somewhere in the
+///   middle distance and the winner flipped as the camera moved. Not flicker at a
+///   seam: the loser's tarmac vanished over whole patches. Reported as "sometimes
+///   part of the roads become invisible, the order is reversed". Making the class
+///   the major key fixed *this* half, at the cost of compressing width onto two
+///   sub-bands to fit under the ceiling.
+/// * **Dissolution**, which the first fix could not touch. 24 µm is worth 2.0 ULP
+///   at 100 m and 1.0 at 200 m, so past a couple of hundred metres the *entire*
+///   within-class ladder — width, ties, casing — was below the depth buffer's
+///   resolution and every same-class overlap went back to being an exact coin
+///   flip. On the fixture that is 6 % of `Minor` and 14 % of `Carriageway`
+///   fighting per pixel, re-rolled every frame the view matrix moves: the shimmer
+///   down a street and across its junctions. Colouring the ties more cleverly
+///   could not help, because the rungs being assigned had stopped meaning
+///   anything.
+///
+/// Denominating *everything* in ULPs removes both at once. There is no second
+/// ladder to contradict, and no range at which the ordering fades, because the
+/// unit and the buffer that arbitrates are now the same unit. It also lifts the
+/// ceiling that forced the width compression — a rung costs no height, so
+/// [`ROAD_WIDTH_SUBBANDS`] is back to the full eight and [`ROAD_TIE_LAYERS`] to
+/// eight.
 ///
 /// Lines that tie on both are separated by `tie_seed`. `tessellate_roads` hands
 /// this a rung chosen across the whole tile by [`assign_road_ties`], which is
@@ -1764,16 +1851,23 @@ const ROAD_WIDTH_BANDS: [f32; 7] = [2.0, 4.0, 6.0, 8.0, 10.0, 14.0, 20.0];
 fn road_rung(class: RoadClass, width_m: f32, bridge: bool, tie_seed: u64) -> u32 {
     let tie = (tie_seed % ROAD_TIE_LAYERS as u64) as u32;
     if bridge {
-        return ROAD_LAYERS - BRIDGE_LAYERS + tie;
+        // The bridge block is laid out like a class block: its casing on the foot
+        // rung, its fills above. Under the old ladder the fills started *on* the
+        // foot, so a deck's kerb band and its own tarmac shared a rung whenever
+        // the tie came out zero — one flyover in four, fighting with itself.
+        // [`BRIDGE_LAYERS`] reserves the extra rung this skips.
+        return ROAD_LAYERS - BRIDGE_LAYERS + CASING_RUNGS_PER_CLASS + tie;
     }
     let block = road_class_rank(class) * ROAD_RUNGS_PER_CLASS;
     block + CASING_RUNGS_PER_CLASS + road_subband(width_m) * ROAD_TIE_LAYERS + tie
 }
 
 /// The rung a class's *casing* ribbons draw on: the foot of that class's block,
-/// so it lies under its own tarmac and over every narrower class's tarmac —
-/// which is what `SurfaceGroup::RoadCasing`'s depth bias has always claimed, and
-/// what the geometry used to contradict.
+/// so it lies under its own tarmac and over every narrower class's tarmac.
+///
+/// A whole class's casings share this one rung on purpose: two overlapping
+/// casings of one class are the same flat colour, so their fight is the one
+/// collision in this ladder that cannot be seen.
 fn road_casing_rung(class: RoadClass, bridge: bool) -> u32 {
     if bridge {
         // A deck's kerb rides with the deck, under its own fills.
@@ -1856,10 +1950,13 @@ impl TieLine {
 /// settled order but an exact-coplanar pair, i.e. an opaque z-fight that
 /// flickers per pixel as the camera moves. Measured on the Groningen z14
 /// fixture, that left 1.60 % of road-covered pixels fighting. The obvious
-/// answer — more rungs — is unavailable: [`ROAD_LAYERS`] rungs at
-/// [`ROAD_LAYER_STEP`] already reach 1.44 mm against the 1.5 mm the road sheet
-/// has under the buildings, and the step cannot shrink because it has to clear
-/// the depth buffer's ~120 µm quantum at 1 km.
+/// answer — more rungs — *was* unavailable when a rung was 24 µm of real height:
+/// [`ROAD_LAYERS`] of them already reached 1.44 mm against the 1.5 mm the road
+/// sheet had under the buildings. A rung costs no height now, so the ladder has
+/// grown ([`ROAD_TIE_LAYERS`] is 8 and [`ROAD_WIDTH_SUBBANDS`] is back to the
+/// full 8) and this colouring has correspondingly less to do — but it is still
+/// what keeps two crossing streets of one width band off a single rung, and more
+/// rungs alone plateaus at 0.51 % where the colouring reaches it.
 ///
 /// So the assignment is *coordinated* rather than drawn: within a band the
 /// overlapping lines form a graph, and this is a greedy colouring of it. A line
@@ -2052,18 +2149,26 @@ pub fn tessellate_roads(
     // whole tile before any of them is built — see `assign_road_ties`.
     let ties = assign_road_ties(&features, scale);
 
-    let mut builders: Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)> = Vec::new();
+    // (group, positions, uvs, indices, rungs) — see `SurfaceMesh::rungs`.
+    type RoadBuilder = (
+        SurfaceGroup,
+        Vec<[f32; 3]>,
+        Vec<[f32; 2]>,
+        Vec<u32>,
+        Vec<f32>,
+    );
+    let mut builders: Vec<RoadBuilder> = Vec::new();
     // Groups cut loose mid-tile, over the frame's upload budget. See the sweep at
     // the bottom of the feature loop.
     let mut full: Vec<SurfaceMesh> = Vec::new();
-    let slot_for = |builders: &mut Vec<(SurfaceGroup, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>)>,
-                    group: SurfaceGroup| {
-        match builders.iter().position(|(g, _, _, _)| *g == group) {
-            Some(i) => i,
-            None => {
-                builders.push((group, Vec::new(), Vec::new(), Vec::new()));
-                builders.len() - 1
-            }
+    let slot_for = |builders: &mut Vec<RoadBuilder>, group: SurfaceGroup| match builders
+        .iter()
+        .position(|(g, ..)| *g == group)
+    {
+        Some(i) => i,
+        None => {
+            builders.push((group, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            builders.len() - 1
         }
     };
 
@@ -2103,18 +2208,20 @@ pub fn tessellate_roads(
             // tarmac off along the tangent — and its ribbon closes instead of
             // meeting itself with two square ends.
             let closed = pts.len() >= 4 && (head[0] - tail[0]).hypot(head[1] - tail[1]) <= 1e-4;
-            // The rung on the anti-z-fight ladder (see `ROAD_LAYER_STEP`) — per
+            // The tie on the anti-z-fight ladder (see `road_rung`) — per
             // *linestring*, so the crossing parts of one merged feature separate.
             let tie = ties
                 .get(&(fi, li))
                 .copied()
                 .map_or_else(|| line_tie_seed(head, tail), u64::from);
-            let y = road_rung(class, half * 2.0, bridge, tie) as f32 * ROAD_LAYER_STEP;
+            // The rung is a *depth* offset, not a height: the ribbon itself lies
+            // flat on the road plane and `systems::road_depth` biases it in the
+            // vertex stage. Lifting it geometrically is what used to stop working
+            // past a couple of hundred metres — see `road_rung`.
+            let rung = road_rung(class, half * 2.0, bridge, tie) as f32;
             // The casing's own rung, at the foot of the same class block rather
-            // than on a separate plane under every fill in the tile. Both are
-            // read off one ladder now, so the class order the depth bias states
-            // is the class order the geometry shows.
-            let casing_y = road_casing_rung(class, bridge) as f32 * ROAD_LAYER_STEP;
+            // than on a separate plane under every fill in the tile.
+            let casing_rung = road_casing_rung(class, bridge) as f32;
             // The line's outward direction at each end (tile units — uniform
             // scale, so angles match the metre frame), for the crossing-angle
             // term in `junction_extent`.
@@ -2184,11 +2291,11 @@ pub fn tessellate_roads(
                         [EndJoin::default(); 2]
                     };
                     {
-                        let (_, positions, uvs, indices) = &mut builders[slot];
+                        let (_, positions, uvs, indices, rungs) = &mut builders[slot];
                         ribbon(
                             &part,
                             half,
-                            y,
+                            0.0,
                             class.texture_length_m(),
                             ends,
                             run_is_ring && whole,
@@ -2196,6 +2303,11 @@ pub fn tessellate_roads(
                             uvs,
                             indices,
                         );
+                        // One rung per vertex the ribbon just appended. `ribbon`
+                        // only ever grows the buffers, so resizing to the new
+                        // length tags exactly this feature's vertices and leaves
+                        // every earlier one alone.
+                        rungs.resize(positions.len(), rung);
                     }
                     if let Some(cs) = casing_slot {
                         // The casing wraps the fill's stub ends too, so the
@@ -2212,11 +2324,11 @@ pub fn tessellate_roads(
                             },
                             cont: e.cont,
                         });
-                        let (_, positions, uvs, indices) = &mut builders[cs];
+                        let (_, positions, uvs, indices, rungs) = &mut builders[cs];
                         ribbon(
                             &part,
                             half + ROAD_CASING_M,
-                            casing_y,
+                            0.0,
                             class.texture_length_m(),
                             ext,
                             run_is_ring && whole,
@@ -2224,6 +2336,7 @@ pub fn tessellate_roads(
                             uvs,
                             indices,
                         );
+                        rungs.resize(positions.len(), casing_rung);
                     }
                 }
             }
@@ -2239,7 +2352,7 @@ pub fn tessellate_roads(
         // over Groningen was 4.2 MB in one mesh (2026-08-19); one feature is a
         // street.
         if let Some(max) = max_bytes {
-            for (group, positions, uvs, indices) in &mut builders {
+            for (group, positions, uvs, indices, rungs) in &mut builders {
                 if mesh_upload_bytes(positions.len(), indices.len()) >= max {
                     full.push(SurfaceMesh {
                         group: *group,
@@ -2248,6 +2361,7 @@ pub fn tessellate_roads(
                         indices: std::mem::take(indices),
                         normals: Vec::new(),
                         colors: Vec::new(),
+                        rungs: std::mem::take(rungs),
                     });
                 }
             }
@@ -2259,14 +2373,15 @@ pub fn tessellate_roads(
         .chain(
             builders
                 .into_iter()
-                .filter(|(_, p, _, i)| !p.is_empty() && !i.is_empty())
-                .map(|(group, positions, uvs, indices)| SurfaceMesh {
+                .filter(|(_, p, _, i, _)| !p.is_empty() && !i.is_empty())
+                .map(|(group, positions, uvs, indices, rungs)| SurfaceMesh {
                     group,
                     positions,
                     uvs,
                     indices,
                     normals: Vec::new(),
                     colors: Vec::new(),
+                    rungs,
                 }),
         )
         .collect())
@@ -2736,9 +2851,10 @@ struct EndJoin {
 ///   A capped inner corner is slightly narrow on the inside of a turn tighter than
 ///   the road is wide; a fold is a rendering artefact.
 ///
-/// `y` is the feature's rung on the [`ROAD_LAYER_STEP`] ladder — sub-millimetre,
-/// and the only thing that keeps two overlapping ribbons from flickering against
-/// each other at a junction.
+/// `y` is the height of the ribbon's plane, and for a road it is **always zero**:
+/// the ladder that keeps two overlapping ribbons from flickering against each
+/// other at a junction is a depth offset carried per vertex ([`road_rung`]), not
+/// a lift. The parameter survives because the tests lay ribbons at other heights.
 ///
 /// `ends` is what the ribbon meets at its head and its tail — see [`EndJoin`].
 ///
@@ -4515,19 +4631,22 @@ mod tests {
             .iter()
             .filter(|m| matches!(m.group, SurfaceGroup::Road(_)))
         {
-            // One coverage grid per rung actually present in this class.
-            let rungs: std::collections::BTreeSet<u32> = m
-                .positions
-                .iter()
-                .map(|p| (p[1] / ROAD_LAYER_STEP).round() as u32)
-                .collect();
+            // One coverage grid per rung actually present in this class. The rung
+            // is the attribute now, not the vertex height — the ribbons are all
+            // exactly coplanar and it is the *depth* they are separated in.
+            assert_eq!(
+                m.rungs.len(),
+                m.positions.len(),
+                "a road mesh must carry one rung per vertex",
+            );
+            let rungs: std::collections::BTreeSet<u32> =
+                m.rungs.iter().map(|r| r.round() as u32).collect();
             let mut any = vec![false; PX * PX];
             let mut doubled = vec![false; PX * PX];
             for rung in rungs {
                 let mut own = vec![0u8; PX * PX];
                 for tri in m.indices.chunks_exact(3) {
-                    let v0 = m.positions[tri[0] as usize];
-                    if (v0[1] / ROAD_LAYER_STEP).round() as u32 != rung {
+                    if m.rungs[tri[0] as usize].round() as u32 != rung {
                         continue;
                     }
                     let p: Vec<[f32; 2]> = tri
@@ -4598,16 +4717,30 @@ mod tests {
             "coplanar-overlap: {coplanar}/{covered} px = {:.2}%",
             frac * 100.0
         );
+        // 0.51% measured (2026-08-23). The old bound was 5%, which is how 1.60%
+        // sat here unnoticed until someone read the printed figure — a bound that
+        // loose asserts nothing. This one is a little over the measurement, so it
+        // catches a return to hash-only or single-rung behaviour without tripping
+        // on a fixture that gains a street.
         assert!(
-            frac < 0.05,
-            "{:.1}% of covered road pixels are coplanar-overlapped (z-fight area)",
+            frac < 0.01,
+            "{:.2}% of covered road pixels are coplanar-overlapped (z-fight area)",
             frac * 100.0
         );
-        let top = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
-        assert!(
-            SurfaceGroup::Road(RoadClass::Minor).y_offset() + top < 0.0,
-            "the ladder pushes roads through the buildings' base"
-        );
+        // **Roads carry no height of their own any more**, and that is what makes
+        // the ordering survive at range: it lives in the rung, which is applied in
+        // depth rather than in world space (`systems::road_depth`). A stray lift
+        // here would resurrect the second ladder this design exists to delete —
+        // and, being millimetres, would do it invisibly up close and wrongly far
+        // away.
+        for m in meshes
+            .iter()
+            .filter(|m| matches!(m.group, SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)))
+        {
+            for p in &m.positions {
+                assert_eq!(p[1], 0.0, "a road vertex was lifted off the road plane");
+            }
+        }
     }
 
     /// Eyeball hatch for junction geometry: rasterise the tessellated ribbons
@@ -4872,8 +5005,8 @@ mod tests {
             road_rung(RoadClass::Path, 4.0, true, 0) > motorway,
             "a bridge deck must be on top"
         );
-        // …and the whole ladder has to stay inside the millimetre window under the
-        // buildings' base that `SurfaceGroup::y_offset` documents.
+        // …and every rung the ladder can produce has to be on the ladder, which is
+        // what `road_rung_ceiling` sizes the road band against.
         for class in ROAD_CLASSES {
             for width in [1.5f32, 4.0, 7.0, 12.0, 22.0] {
                 for bridge in [false, true] {
@@ -4886,11 +5019,6 @@ mod tests {
                 }
             }
         }
-        assert!(
-            SurfaceGroup::Road(RoadClass::Minor).y_offset() + ROAD_LAYERS as f32 * ROAD_LAYER_STEP
-                < 0.0,
-            "the ladder pushes roads through the buildings' base"
-        );
     }
 
     /// Every road class in hierarchy order, for the ladder tests.
@@ -4903,46 +5031,64 @@ mod tests {
         RoadClass::Rail,
     ];
 
-    /// **The two ladders must agree at every range.** `depth_rung` is denominated
-    /// in depth-buffer ULPs, so its apparent shift grows with distance;
-    /// `road_rung` is denominated in fixed metres, so its does not. Wherever the
-    /// two order a pair of ribbons differently there is a camera distance at
-    /// which the winner flips, and around it the loser's tarmac disappears in
-    /// patches — which is what "sometimes part of the roads become invisible,
-    /// the order is reversed" was.
+    /// **There is exactly one ladder, and every road group agrees to defer to
+    /// it.** This is the successor to
+    /// `the_geometric_ladder_never_contradicts_the_depth_bias`, which swept every
+    /// class pair looking for a place where the geometry and the depth bias
+    /// disagreed. That test is gone because the contradiction it hunted is no
+    /// longer expressible: the classes are ordered *by the rung*, and the bias
+    /// they all share cannot rank them differently from each other because it
+    /// does not rank them at all.
     ///
-    /// This is the regression test for that, and it needs no renderer: it is a
-    /// statement about two pure functions.
+    /// What still has to hold is that nothing sneaks a second opinion back in.
     #[test]
-    fn the_geometric_ladder_never_contradicts_the_depth_bias() {
-        let widths = [1.5f32, 3.0, 5.0, 7.0, 9.0, 12.0, 16.0, 24.0];
-        let mut checked = 0usize;
+    fn the_road_hierarchy_lives_in_the_rung_alone() {
         for a in ROAD_CLASSES {
             for b in ROAD_CLASSES {
-                let bias_a = SurfaceGroup::Road(a).depth_rung();
-                let bias_b = SurfaceGroup::Road(b).depth_rung();
-                if bias_a >= bias_b {
-                    continue;
-                }
+                assert_eq!(
+                    SurfaceGroup::Road(a).depth_bias(),
+                    SurfaceGroup::Road(b).depth_bias(),
+                    "{a:?} and {b:?} disagree in the material bias — the class \
+                     order belongs to `road_rung`, and a bias that also ranks \
+                     them is the second ladder all over again"
+                );
+                assert_eq!(
+                    SurfaceGroup::RoadCasing(a).depth_bias(),
+                    SurfaceGroup::Road(b).depth_bias(),
+                    "a casing must share the road band's foot too"
+                );
+            }
+        }
+    }
+
+    /// The hierarchy the rung has to express, now that it is the only thing
+    /// expressing it: class order, casings under their own tarmac and over the
+    /// narrower classes they cross, and a bridge above everything.
+    #[test]
+    fn the_rung_orders_the_whole_road_hierarchy() {
+        let widths = [1.5f32, 3.0, 5.0, 7.0, 9.0, 12.0, 16.0, 24.0];
+        let mut checked = 0usize;
+        for (ai, a) in ROAD_CLASSES.into_iter().enumerate() {
+            for b in ROAD_CLASSES.into_iter().skip(ai + 1) {
                 for wa in widths {
                     for wb in widths {
                         for seed in 0u64..ROAD_TIE_LAYERS as u64 {
                             assert!(
                                 road_rung(a, wa, false, seed) < road_rung(b, wb, false, 0),
-                                "{a:?} at {wa} m (bias {bias_a}) must lie under \
-                                 {b:?} at {wb} m (bias {bias_b}) in the geometry too"
+                                "{a:?} at {wa} m must lie under {b:?} at {wb} m"
                             );
                             checked += 1;
                         }
                     }
                 }
                 // The higher class's *casing* rides over the lower class's
-                // tarmac, which is exactly what `RoadCasing`'s bias claims…
+                // tarmac, so a major road's kerb band covers a path it crosses…
                 assert!(
                     road_casing_rung(b, false) > road_rung(a, 24.0, false, 3),
                     "{b:?}'s kerb band must cover the widest {a:?} it crosses"
                 );
-                // …while still lying under its own.
+                // …while still lying under its own, so it reads as an edge and
+                // never over-paints its own markings.
                 assert!(
                     road_casing_rung(b, false) < road_rung(b, 1.5, false, 0),
                     "{b:?}'s kerb band must stay under its own tarmac"
@@ -4950,6 +5096,82 @@ mod tests {
             }
         }
         assert!(checked > 0, "the sweep must actually compare something");
+
+        // A bridge is above every class, and its own casing is under its own
+        // tarmac — the same two rules the classes follow, applied to the block
+        // reserved at the top of the ladder. The second used to fail one time in
+        // `ROAD_TIE_LAYERS`: the fills started on the casing's rung rather than
+        // above it, so a deck's kerb band z-fought its own surface.
+        for class in ROAD_CLASSES {
+            for seed in 0u64..ROAD_TIE_LAYERS as u64 {
+                let deck = road_rung(class, 8.0, true, seed);
+                assert!(
+                    deck > road_rung(RoadClass::Rail, 24.0, false, 3),
+                    "a bridge must be on top of every ground road"
+                );
+                assert!(
+                    deck > road_casing_rung(class, true),
+                    "a deck's kerb band must stay under its own tarmac"
+                );
+                assert!(deck < ROAD_LAYERS, "bridge rung {deck} is off the ladder");
+            }
+        }
+    }
+
+    /// **The separation between two rungs is the same at every camera distance.**
+    ///
+    /// This is the property the whole redesign exists for, so it is worth
+    /// asserting directly rather than inferring from the constants. A rung is
+    /// `ROAD_RUNG_ULP` depth-buffer ULPs, and an ULP is proportional to the
+    /// fragment's own depth — so the apparent world separation grows as `z` and
+    /// the separation *measured in the units the depth test uses* is constant.
+    ///
+    /// The ladder it replaced was a fixed 24 µm, and the table below is why that
+    /// could not work: the same two ribbons that were comfortably ordered in a
+    /// street view had nothing between them from a rooftop.
+    #[test]
+    fn the_ladder_does_not_decay_with_range() {
+        // One rung's separation, in depth-buffer ULPs, at a given camera range.
+        //
+        // The old ladder lifted a ribbon 24 µm and let the depth buffer convert
+        // that to ULPs, which divides by the quantum `1.19e-7 · z`. The new one is
+        // *already* ULPs, so `z` does not appear.
+        let old_ulps = |z: f32| 2.4e-5 / (1.19e-7 * z);
+        let new_ulps = |_z: f32| ROAD_RUNG_ULP;
+
+        // Two ribbons one rung apart have to stay apart by enough to beat the
+        // rasteriser's own interpolation rounding. One ULP does not; the ladder
+        // is effectively gone below that.
+        const RESOLVED: f32 = 2.0;
+
+        assert!(
+            old_ulps(100.0) >= RESOLVED,
+            "sanity: the old ladder did work at street range"
+        );
+        // …and this is the failure it was rewritten to remove. A junction seen
+        // from 300 m — an ordinary rooftop view, well inside the city tier — had
+        // less than one ULP holding its ribbons apart.
+        assert!(
+            old_ulps(300.0) < 1.0,
+            "the old ladder should be under one ULP at 300 m"
+        );
+
+        for z in [10.0f32, 100.0, 300.0, 1_000.0, 10_000.0] {
+            assert!(
+                new_ulps(z) >= RESOLVED,
+                "at {z} m one rung is {} ULP, inside the rasteriser's noise",
+                new_ulps(z),
+            );
+            // The property in one line: the separation does not depend on range.
+            assert_eq!(
+                new_ulps(z),
+                new_ulps(10.0),
+                "the ladder must not vary with distance"
+            );
+        }
+        // And past the range where the old one had dissolved, the new one is
+        // still worth the same as it was in the street.
+        assert!(new_ulps(1_000.0) > old_ulps(1_000.0) * 10.0);
     }
 
     #[test]
@@ -5141,10 +5363,15 @@ mod tests {
             // `u` is the across-road axis and must span the full carriageway.
             assert!(m.uvs.iter().any(|uv| uv[0] == 0.0));
             assert!(m.uvs.iter().any(|uv| uv[0] == 1.0));
-            // Ground geometry: flat to within the anti-z-fight ladder, and inside
-            // the tile plus the junction stubs.
-            let ladder = ROAD_LAYERS as f32 * ROAD_LAYER_STEP;
-            assert!(m.positions.iter().all(|p| p[1] >= 0.0 && p[1] < ladder));
+            // Ground geometry: exactly flat — the anti-z-fight ladder is a depth
+            // offset now and takes no height at all — and inside the tile plus
+            // the junction stubs.
+            assert!(m.positions.iter().all(|p| p[1] == 0.0));
+            assert_eq!(
+                m.rungs.len(),
+                m.positions.len(),
+                "every road vertex needs a ladder rung or it cannot be ordered"
+            );
             assert!(m
                 .positions
                 .iter()

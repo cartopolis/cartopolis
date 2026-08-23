@@ -762,6 +762,7 @@ impl MeshBuf {
             uvs: Vec::new(),
             normals: self.normals,
             colors: self.colors,
+            rungs: Vec::new(),
         }
     }
 }

@@ -42,6 +42,7 @@ use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
 use crate::systems::places;
+use crate::systems::road_depth::{RoadDepthExtension, RoadMaterial};
 use crate::systems::road_texture::{road_texture, RoadClass};
 use crate::systems::scatter;
 use crate::systems::street_furniture::FurnitureLod;
@@ -134,6 +135,23 @@ pub struct CellStores<'w> {
     places: ResMut<'w, WorldPlaces>,
     decks: ResMut<'w, DeckPlates>,
     grass: ResMut<'w, GrassAreas>,
+}
+
+/// Everything a surface cell needs to *make a material out of*, in one parameter
+/// for the same reason [`CellStores`] is one: `update_map_surfaces` sits on Bevy's
+/// 16-parameter ceiling, and the road ladder added a fourth asset collection to
+/// the three it already held.
+///
+/// There are three material types because there are three shaders. The flat
+/// ground groups are plain `StandardMaterial`; water owns its wave shader; roads
+/// carry the depth ladder in a vertex attribute (`systems::road_depth`) and so
+/// need a pipeline that declares it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SurfaceMaterials<'w> {
+    plain: ResMut<'w, Assets<StandardMaterial>>,
+    water: ResMut<'w, Assets<WaterMaterial>>,
+    road: ResMut<'w, Assets<RoadMaterial>>,
+    images: ResMut<'w, Assets<Image>>,
 }
 
 /// Where the raised bridge decks are and how high they stand, in the anchored
@@ -266,6 +284,11 @@ pub struct MapSurfaces {
     stream: CellStream<Cell, Tessellated>,
     /// One material per surface group, created on first use.
     materials: HashMap<SurfaceGroup, Handle<StandardMaterial>>,
+    /// The same, for the road groups — they carry the depth ladder in a vertex
+    /// attribute, so they draw with [`RoadMaterial`] and cannot share the map
+    /// above. Still one handle per group: the ordering is per *vertex* precisely
+    /// so that splitting the materials was never necessary.
+    road_materials: HashMap<SurfaceGroup, Handle<RoadMaterial>>,
     /// Terrain-field revision the live cells were tessellated against, so a field
     /// that lands (or goes away) after them rebuilds them onto the right ground.
     terrain_revision: u32,
@@ -297,6 +320,7 @@ impl Default for MapSurfaces {
                 despawns_per_frame: MAX_DESPAWNS_PER_FRAME,
             }),
             materials: HashMap::new(),
+            road_materials: HashMap::new(),
             terrain_revision: 0,
             pending_decks: HashMap::new(),
             detail_wants: None,
@@ -616,15 +640,13 @@ pub fn update_map_surfaces(
     mut commands: Commands,
     mut surfaces: ResMut<MapSurfaces>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut mats: SurfaceMaterials,
     stream: Res<MapStream>,
     tile_url: Res<OsmTileUrlTemplate>,
-    mut images: ResMut<Assets<Image>>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
     globe: Res<GlobeState>,
     sea_state: Res<WaterSeaState>,
-    mut water_materials: ResMut<Assets<WaterMaterial>>,
     veg_lod: Res<VegetationLod>,
     furniture_lod: Res<FurnitureLod>,
     mut stores: CellStores,
@@ -846,8 +868,9 @@ pub fn update_map_surfaces(
                 .iter()
                 .any(|m| m.group == SurfaceGroup::Water))
         .then(|| {
-            let field = shore.map(|f| images.add(water::shore_field_image(&f)));
-            water_materials.add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
+            let field = shore.map(|f| mats.images.add(water::shore_field_image(&f)));
+            mats.water
+                .add(sea_state.material(field, Vec2::new(wx, wz), tile_m))
         });
 
         let mut entities = Vec::with_capacity(surface_meshes.len());
@@ -872,22 +895,34 @@ pub fn update_map_surfaces(
                 commands
                     .spawn((placement, MeshMaterial3d(water.clone())))
                     .id()
+            } else if matches!(
+                sm.group,
+                SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)
+            ) {
+                // Roads and casings carry their place in the depth ladder per
+                // vertex (`systems::road_depth`), which is what settles the
+                // coplanar fight at a junction at *every* range. Everything else
+                // about the material is the standard road recipe.
+                let material = surfaces
+                    .road_materials
+                    .entry(sm.group)
+                    .or_insert_with(|| {
+                        let base = road_base_material(sm.group, &mut mats.images);
+                        mats.road.add(RoadMaterial {
+                            base,
+                            extension: RoadDepthExtension {},
+                        })
+                    })
+                    .clone();
+                commands.spawn((placement, MeshMaterial3d(material))).id()
             } else {
                 let material = surfaces
                     .materials
                     .entry(sm.group)
                     .or_insert_with(|| {
                         let [r, g, b] = sm.group.base_color();
-                        materials.add(StandardMaterial {
+                        mats.plain.add(StandardMaterial {
                             base_color: Color::srgb(r, g, b),
-                            // Roads sample their tarmac and markings from a
-                            // generated surface; the area groups are flat colour.
-                            base_color_texture: match sm.group {
-                                SurfaceGroup::Road(class) => {
-                                    Some(images.add(road_surface_image(class)))
-                                }
-                                _ => None,
-                            },
                             perceptual_roughness: sm.group.perceptual_roughness(),
                             // What actually resolves the coplanar ground stack —
                             // see `SurfaceGroup::depth_bias`. Physical separation
@@ -1232,6 +1267,29 @@ fn build_deck_mesh(decks: &[BridgeDeck], heights: &[f32]) -> SurfaceMesh {
         uvs: Vec::new(),
         normals,
         colors: Vec::new(),
+        rungs: Vec::new(),
+    }
+}
+
+/// The `StandardMaterial` half of a road or casing material.
+///
+/// Everything a road's surface is made of *except* its place in the depth ladder,
+/// which is per vertex and belongs to `RoadDepthExtension`. `depth_bias` here is
+/// only the **foot** of the road band — every road group returns the same value
+/// from `depth_bias()` now, and `road_depth.wgsl` adds the rung on top.
+fn road_base_material(group: SurfaceGroup, images: &mut Assets<Image>) -> StandardMaterial {
+    let [r, g, b] = group.base_color();
+    StandardMaterial {
+        base_color: Color::srgb(r, g, b),
+        // Roads sample their tarmac and markings from a generated surface; a
+        // casing is the flat kerb band either side of it.
+        base_color_texture: match group {
+            SurfaceGroup::Road(class) => Some(images.add(road_surface_image(class))),
+            _ => None,
+        },
+        perceptual_roughness: group.perceptual_roughness(),
+        depth_bias: group.depth_bias(),
+        ..default()
     }
 }
 
@@ -1277,17 +1335,17 @@ fn road_surface_image(class: RoadClass) -> Image {
 pub fn apply_road_texture(
     dl: Res<crate::systems::data_layers::DataLayers>,
     surfaces: Res<MapSurfaces>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<RoadMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let want_textured = dl.roads_textured;
-    for (group, handle) in &surfaces.materials {
-        let SurfaceGroup::Road(class) = group else {
+    for (group, handle) in &surfaces.road_materials {
+        let SurfaceGroup::Road(class) = *group else {
             continue;
         };
         let has_texture = materials
             .get(handle)
-            .is_some_and(|m| m.base_color_texture.is_some());
+            .is_some_and(|m| m.base.base_color_texture.is_some());
         if has_texture == want_textured {
             continue;
         }
@@ -1295,12 +1353,12 @@ pub fn apply_road_texture(
             continue;
         };
         if want_textured {
-            material.base_color_texture = Some(images.add(road_surface_image(*class)));
-            material.base_color = Color::WHITE;
+            material.base.base_color_texture = Some(images.add(road_surface_image(class)));
+            material.base.base_color = Color::WHITE;
         } else {
-            material.base_color_texture = None;
+            material.base.base_color_texture = None;
             let [r, g, b] = class.flat_color();
-            material.base_color = Color::srgb(r, g, b);
+            material.base.base_color = Color::srgb(r, g, b);
         }
     }
 }
@@ -1343,6 +1401,14 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mes
     } else {
         Vec::new()
     };
+    // Road groups only — and it must survive the terrain refinement below, which
+    // appends midpoint vertices and would otherwise leave the attribute shorter
+    // than the positions it belongs to (a mesh bevy rejects at draw time).
+    let mut rungs: Vec<f32> = if sm.rungs.len() == sm.positions.len() {
+        sm.rungs.clone()
+    } else {
+        Vec::new()
+    };
 
     if terrain.is_ready() {
         stand_on_terrain(
@@ -1352,6 +1418,7 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mes
             &mut uvs,
             &mut normals,
             &mut colors,
+            &mut rungs,
             Vec2::new(wx, wz),
             terrain,
         );
@@ -1386,6 +1453,32 @@ fn build_mesh(sm: &SurfaceMesh, wx: f32, wz: f32, terrain: &TerrainField) -> Mes
     if colors.len() == positions.len() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
+    // The road ladder (`systems::road_depth`). Present on road and casing meshes
+    // and on nothing else, which is exactly the set that draws with
+    // `RoadMaterial`.
+    //
+    // The two **must** agree: `RoadDepthExtension::specialize` asks the layout for
+    // this attribute, and a road mesh without it fails to build a pipeline — which
+    // bevy answers by skipping the pass, i.e. by drawing no roads at all, with
+    // healthy cell counts and nothing in the log but `systems::pipeline_health`.
+    // So the group decides, not the buffer: a road that somehow arrived without
+    // rungs is put flat on rung 0, which loses the ordering within the cell and
+    // keeps the street.
+    if matches!(
+        sm.group,
+        SurfaceGroup::Road(_) | SurfaceGroup::RoadCasing(_)
+    ) {
+        debug_assert_eq!(
+            rungs.len(),
+            positions.len(),
+            "{:?} lost its depth rungs between tessellation and upload",
+            sm.group,
+        );
+        if rungs.len() != positions.len() {
+            rungs = vec![0.0; positions.len()];
+        }
+        mesh.insert_attribute(crate::systems::road_depth::ATTRIBUTE_ROAD_RUNG, rungs);
+    }
     mesh
 }
 
@@ -1414,6 +1507,7 @@ fn stand_on_terrain(
     uvs: &mut Vec<[f32; 2]>,
     normals: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
+    rungs: &mut Vec<f32>,
     origin: Vec2,
     terrain: &TerrainField,
 ) {
@@ -1439,6 +1533,7 @@ fn stand_on_terrain(
             uvs,
             normals,
             colors,
+            rungs,
             crate::systems::terrain::MAX_GROUND_EDGE_M,
         );
     }
