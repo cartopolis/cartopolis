@@ -1,13 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The whole Android app definition. There is no Gradle project and no Java source
-  behind this file — see docs/notes/android-build.md.
+  The whole Android app definition. There is no Gradle project behind this file —
+  see docs/notes/android-build.md.
 
-  `android:hasCode="false"` is the load-bearing line: it tells the framework there
-  is no `classes.dex` in this APK, which is only true because the activity class
-  is `android.app.NativeActivity` out of the framework itself rather than the
-  GameActivity one that would arrive in an AAR. Drop that attribute and the
-  installer rejects the package; add a Java class and it has to come back.
+  `android:hasCode="true"` since the dex lane landed, and the flip is load-bearing
+  in a way that is easy to get wrong in the *quiet* direction. The attribute was
+  `"false"` for as long as the APK carried no `classes.dex` at all: the activity
+  class is `android.app.NativeActivity` out of the framework itself rather than
+  the GameActivity one that would arrive in an AAR, so a manifest plus a `.so` was
+  a complete app. It is now `"true"` because `build-apk.sh` compiles
+  `java/eu/garage44/cartopolis/` with javac + d8.
+
+  Leaving it `"false"` with a dex present does **not** fail the build, the install
+  or the launch. The framework simply believes the claim and never adds the APK to
+  the app classloader, so every one of our classes is missing at runtime and the
+  only symptom is a ClassNotFoundException from whichever Rust call reached for
+  one first. That is why `platform::android::report_dex` logs the answer at
+  startup and why `deploy-android.yml` asserts the dex is present: the two
+  together are what make this attribute's state observable instead of assumed.
 
   `android.app.lib_name` is how NativeActivity finds us: it `System.loadLibrary`s
   that name out of `lib/<abi>/`, so it must track the cdylib's crate name
@@ -150,7 +160,7 @@
     <application
         android:label="Cartopolis"
         android:icon="@mipmap/icon"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="true"
         android:allowBackup="false">
 

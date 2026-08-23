@@ -217,18 +217,26 @@ jobs:
           test -x /opt/android-sdk/build-tools/34.0.0/aapt2
           test -f /opt/android-sdk/platforms/android-34/android.jar
 
-      # `apksigner` is a shell script that runs `java`, and `zip` is how the .so
-      # gets its `lib/<abi>/` entry. Neither is in cartopolis-ci:latest, which has no
-      # other reason to carry a JVM. A JRE is enough — nothing here compiles Java
-      # (that is what `hasCode="false"` buys) and the key comes from the mount, so
-      # `keytool` is never called. Baking these into the image is the better end
-      # state, same as for the NDK; the image lives in another repo.
-      - name: Install the packaging tools (JRE + zip)
+      # `apksigner` and `d8` are shell scripts that run `java`, `javac` compiles
+      # `crates/cartopolis_android/java/`, and `zip` is how the .so gets its
+      # `lib/<abi>/` entry. None is in cartopolis-ci:latest, which has no other
+      # reason to carry a JVM. Baking these into the image is the better end state,
+      # same as for the NDK; the image lives in another repo.
+      #
+      # **A JDK, not a JRE.** This was `openjdk-17-jre-headless` for as long as the
+      # APK carried no Java, under a comment saying "a JRE is enough — nothing here
+      # compiles Java (that is what `hasCode=\"false\"` buys)". The dex lane made
+      # that false: a JRE has no `javac`, so the build would fail at the "java +
+      # dex" step with a command-not-found, ~20 minutes into a job that had already
+      # compiled the whole Bevy stack. `keytool` is still never called — the
+      # signing key comes from the mount — but it arrives with the JDK anyway.
+      - name: Install the packaging tools (JDK + zip)
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends openjdk-17-jre-headless zip >/dev/null
+          apt-get install -y -qq --no-install-recommends openjdk-17-jdk-headless zip >/dev/null
           java_version=$(java -version 2>&1)
           printf '%s\n' "${java_version%%$'\n'*}"
+          javac -version
 
       # Needed here and not in the check lane because this one *links*: cargo-ndk
       # is what points the linker at the NDK sysroot. `--locked` so a fresh
@@ -266,8 +274,13 @@ jobs:
       #   * `android_main` is looked up by name from C and referenced by nothing in
       #     Rust, so a linker or strip change that drops it still builds, still
       #     signs, and produces an app that installs and never starts.
-      #   * a `classes.dex` appearing means `hasCode="false"` stopped being true,
-      #     i.e. something dragged in a Java half and the no-Gradle story broke.
+      #   * a *missing* `classes.dex` is the check this used to be, inverted. It
+      #     asserted the APK had none, back when `hasCode="false"` was true. Now
+      #     the archive must carry one, and the reason to assert it is that its
+      #     absence is silent end to end: javac and d8 are the last steps before
+      #     packaging, an APK built without them installs and launches perfectly,
+      #     and the only symptom is a ClassNotFoundException on a phone the first
+      #     time Rust reaches for one of our classes.
       #   * `libc++_shared.so` would have to be shipped if a dependency ever pulls
       #     in C++; today nothing does, and a missing one is a load-time failure on
       #     the phone rather than a build failure here.
@@ -310,7 +323,19 @@ jobs:
           esac
           zip_list=$(unzip -l "$apk")
           case "$zip_list" in
-            *classes.dex*) echo "::error::the APK contains a classes.dex, so android:hasCode=\"false\" is now a lie."; exit 1 ;;
+            *classes.dex*) ;;
+            *) echo "::error::the APK has no classes.dex — javac/d8 did not run, and every Java-backed feature will fail with ClassNotFoundException on the device."; exit 1 ;;
+          esac
+          # The other half of the same fact: a dex the manifest disclaims is a dex
+          # the framework never loads, and nothing about that combination fails
+          # until a class is looked up at runtime. Read out of the *compiled*
+          # manifest, so it checks what shipped rather than what the source says —
+          # and via `xmltree` rather than `dump badging`, which does not report the
+          # attribute at all (verified against a pre-dex APK, where badging is
+          # silent and this line reads `hasCode(0x0101000c)=false`).
+          xmltree=$(/opt/android-sdk/build-tools/34.0.0/aapt2 dump xmltree --file AndroidManifest.xml "$apk")
+          case "$xmltree" in
+            *"hasCode(0x0101000c)=false"*) echo "::error::classes.dex is packaged but android:hasCode is false, so the framework will never load it."; exit 1 ;;
           esac
           dyn_out=$("$ndk_bin/llvm-readelf" -d /tmp/lib.so)
           case "$dyn_out" in
@@ -334,7 +359,7 @@ jobs:
             echo "look for a -Wl,-z,max-page-size in .cargo/config.toml or a cargo-ndk flag."
             exit 1
           fi
-          echo "android_main exported, no classes.dex, no C++ runtime needed, LOAD aligned to $align"
+          echo "android_main exported, classes.dex present and hasCode=true, no C++ runtime needed, LOAD aligned to $align"
 
       # Fixed filenames, written through a temp file and renamed: the rename is
       # atomic within the filesystem, so a phone that starts a download mid-deploy

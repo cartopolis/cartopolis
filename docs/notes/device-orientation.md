@@ -1,7 +1,7 @@
 ---
 topic: device-orientation
 triggers: [orientation.rs, locate.rs, "compass", "magnetometer", "heading", "bearing", "deviceorientation", "webkitCompassHeading", "ASensorManager", "rotation vector", "screen.orientation", "locate button", "track my position", "gps"]
-updated: 2026-08-21
+updated: 2026-08-23
 ---
 
 # The compass: which way the *screen* is pointing
@@ -41,13 +41,19 @@ and not in the modern path.
 ## 2. Android could not use the obvious API
 
 `SensorEventListener` is a Java **interface**, and implementing one needs a class.
-This APK has `android:hasCode="false"` and no `classes.dex`
-([android-build.md](android-build.md)), so the JNI route is not available at all —
-not inconvenient, unavailable. The NDK's C sensor API (`ASensorManager`,
+When this was written the APK had `android:hasCode="false"` and no `classes.dex`
+([android-build.md](android-build.md)), so the JNI route was not available at all
+— not inconvenient, unavailable. The NDK's C sensor API (`ASensorManager`,
 `ASensorEventQueue`) needs no dex, so the Android arm is `ndk-sys` FFI on a
 dedicated thread with its own `ALooper`, and is the one Android seam that is
 deliberately **not** in `platform::android` (everything in that file is JNI, and
 keeping that true is what makes it readable).
+
+**The constraint lifted on 2026-08-23** (the dex lane) and this code did not
+change, deliberately: a `SensorEventListener` implementation is now possible, but
+the C API already works, needs no JNI attach on the sensor thread, and is not the
+seam that motivated the dex. Recorded so the next reader knows this is a choice
+rather than the leftover of a limit.
 
 Two framework facts have no C equivalent and so are in `platform::android` anyway:
 `display_rotation_deg` (§1) and `package_name` (for

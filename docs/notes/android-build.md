@@ -1,29 +1,41 @@
 ---
 topic: android-build
-triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url]
-updated: 2026-08-17
+triggers: [cartopolis_android, build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle]
+updated: 2026-08-23
 ---
 
-# The Android app is a manifest, a `.so` and the assets directory
+# The Android app is a manifest, a `.so`, the assets directory and one Java class
 
-There is no Gradle project in this repo and no Java or Kotlin source, and that is
-a decision rather than an omission. The whole app is:
+There is **no Gradle project** in this repo, and that is a decision rather than an
+omission. Until 2026-08-23 there was no Java source either; there is now one file,
+and the distinction between those two facts is the subject of the dex-lane section
+below. The whole app is:
 
 - `crates/cartopolis_android` — a `cdylib` that owns the `android_main` symbol and
   calls `cartopolis::run()`. Fifteen lines.
 - `crates/cartopolis_android/AndroidManifest.xml` — the app definition.
-- `crates/cartopolis_android/build-apk.sh` — `cargo ndk` → `aapt2` → `zipalign` →
-  `apksigner`, in that order, about eighty lines.
+- `crates/cartopolis_android/java/` — the Java, currently one probe class.
+- `crates/cartopolis_android/build-apk.sh` — `cargo ndk` → `aapt2` → `javac` →
+  `d8` → `zipalign` → `apksigner`, in that order, about a hundred lines.
 - `assets/`, copied into the APK unchanged.
 
 ## Why NativeActivity, and what it costs
 
 `android.app.NativeActivity` ships in the framework, so an APK that uses it needs
-**no Java at all** — hence `android:hasCode="false"` in the manifest and no
-`classes.dex` in the archive. That is the single fact the whole packaging story
-rests on: without it there is a `classes.dex` to build, which means `d8`, which
-means resolving the activity class's dependencies, which is what a Gradle project
-is for.
+**no Java to start**. For a long time this note recorded the stronger claim — no
+Java *at all*, `android:hasCode="false"`, no `classes.dex` — and treated that as
+"the single fact the whole packaging story rests on: without it there is a
+`classes.dex` to build, which means `d8`, which means resolving the activity
+class's dependencies, which is what a Gradle project is for."
+
+**The middle step of that chain was wrong, and it cost real features.** `d8` does
+not imply Gradle. It ships in the same build-tools directory this build already
+takes `aapt2`, `zipalign` and `apksigner` from, and `javac` comes with the JDK
+that `apksigner` and `keytool` already require. What Gradle is actually for is
+*dependency resolution* — and a class that extends a framework type has no
+dependencies to resolve. The two are only welded together when the class you need
+comes from an AAR, which is the GameActivity case below and not the general one.
+See "The dex lane" below for what that changed.
 
 GameActivity is where Google points, and where `winit`'s default feature points
 (`android-game-activity`; we select `android-native-activity` explicitly in
@@ -196,10 +208,71 @@ the device — the GPU and its driver, the `AssetManager`, the NativeActivity
 lifecycle — so it narrows a bug rather than settling one. That is worth a lot on
 its own, given the alternative is a thirteen-minute build and an install.
 
-## `hasCode="false"` is a design constraint, not a packaging detail
+## The dex lane (2026-08-23)
+
+`build-apk.sh` compiles `crates/cartopolis_android/java/` with `javac` and dexes
+it with `d8`. Two commands, no new tooling, no Gradle, no AAR resolution, and
+nothing from Google Play services anywhere in the graph — which is the point, and
+was the trigger: the goal is a background connection held by a **foreground
+service**, and the alternative (FCM) is Play-services-only.
+
+What it cost, measured on the container that builds the APK:
+
+- `d8` was already in `build-tools/34.0.0/`, beside `aapt2`, `zipalign` and
+  `apksigner`. `javac` was already in the JDK that `apksigner` and `keytool`
+  require. **Nothing was installed.**
+- The dex for one class is 1,020 bytes.
+
+Four things about the lane are load-bearing, and three of them fail *silently*:
+
+- **`android:hasCode` must flip to `true`.** A `classes.dex` in the archive under
+  `hasCode="false"` does not fail the build, the install or the launch — the
+  framework believes the manifest and never adds the APK to the app classloader.
+  The only symptom is a `ClassNotFoundException` from whichever call reached for a
+  class first, on a device.
+- **`FindClass` does not see our classes from `android_main`'s thread.** JNI
+  resolves against the calling frame's classloader, a natively-attached thread has
+  no Java frame, and the fallback is the *system* loader, which knows the
+  framework and nothing about this APK. The route that works from any thread is
+  `Context.getClassLoader()` on the activity, then `loadClass`. Every Java class
+  added from here on needs it; `platform::android::dex_probe` has the
+  implementation and logs which route worked at startup.
+- **`javac` defaults to the platform encoding**, which in a container with no
+  locale is US-ASCII. This tree's comment style is full of em dashes, so the
+  first build failed with eighteen "unmappable character (0xE2)" errors on a
+  valid file. `-encoding UTF-8` is in the script and is not cosmetic.
+- **`d8` with no inputs exits 0 and writes nothing**, so an empty `java/`
+  directory would ship an APK with no dex and no complaint. The script asserts on
+  both the class files and the output; `deploy-android.yml` asserts on the
+  packaged archive and on `hasCode` in the *compiled* manifest.
+
+**Verified on a running Android, not inferred** (2026-08-23, the API 34 emulator
+on the VPS, arm64 APK through `ndk-translation` — so the artifact under test is
+the one that ships). `report_dex` at startup:
+
+```
+classes.dex is loaded and callable  via_find_class = false  probe = DexProbe on API 34
+```
+
+`via_find_class = false` is the measurement worth keeping: the bare `FindClass`
+really does fail from `android_main`'s thread while `getClassLoader()` +
+`loadClass` succeeds on the same thread, in the same frame. That trap is
+confirmed rather than assumed, and it is why the probe reports which route won
+instead of only that one did.
+
+What this does **not** change: the IME. That is a GameActivity/AAR problem, not a
+dex problem — see the NativeActivity section above.
+
+## `hasCode="false"` *was* a design constraint (superseded, kept for the seams it shaped)
+
+**This section describes the world before the dex lane above.** The constraint is
+lifted; the code it shaped is still in the tree and still works, so what follows
+explains why `platform::android` is written the way it is, and which parts are now
+revisitable rather than impossible. Nothing here is a reason to refuse a feature
+any more.
 
 Reaching a framework service from `android_main` is plain JNI and costs nothing.
-Reaching one that wants a **callback** costs the whole Gradle project, because
+Reaching one that wants a **callback** used to be out of reach entirely, because
 every push-shaped API in the platform is typed on a Java interface that only a
 `classes.dex` can implement. `platform::android` (added 2026-08-10) is the first
 place this bit, and the shape generalises:
@@ -211,17 +284,21 @@ place this bit, and the shape generalises:
 - **`java.lang.reflect.Proxy` is not the escape hatch it looks like.** It
   synthesises an implementation of an interface at runtime and needs an
   `InvocationHandler` — itself an interface. The recursion does not bottom out.
-- `InMemoryDexClassLoader` over hand-authored dex bytes would work and is
+- `InMemoryDexClassLoader` over hand-authored dex bytes would work and was
   rejected on this note's own grounds: it is Java bytecode we author and `d8`
-  compiles, wearing a byte array.
+  compiles, wearing a byte array. **Note how close that reasoning came to the
+  answer** — it identified `javac` + `d8` as the real cost and then declined to
+  pay it, having assumed the price included Gradle. It did not.
 
 The **launch intent** is the second place it bit, and it bit differently — nothing
 here needs a callback, and the JNI call (`getIntent().getDataString()`) is one
-line. What the no-dex rule costs there is the *trampoline activity* that would
+line. What the no-dex rule cost there is the *trampoline activity* that would
 re-deliver a link tapped while the app is already running, because
 `NativeActivity` never calls `setIntent` and a replacement for it is a Java class.
 So a place link is honoured on a cold start and ignored on a warm one; the whole
-reasoning is in [place-links.md](place-links.md).
+reasoning is in [place-links.md](place-links.md). **That one is now buildable and
+simply unbuilt** — the trampoline is an ordinary `Activity` subclass, which is
+exactly what the dex lane makes possible.
 
 So location is **pulled, not pushed**: `requestLocationUpdates` is registered
 with the `PendingIntent` overload — a broadcast with deliberately no receiver,
@@ -238,11 +315,12 @@ because they are what a first `adb install` is for. The load-bearing one: *fixes
 caused by our own registration land in the cache we poll*. If AOSP's
 `LocationProviderManager` turns out to keep last-location per client rather than
 per provider, the poll returns the same position forever and the symptom is an
-arrow that never moves. **There is no third dex-free option if it fails** — the
-fallback with the best chance is `getCurrentLocation`, which needs a `Consumer`,
-i.e. GameActivity and Gradle. That is the standing fact here: this seam has
-exactly one dex-free implementation and one fallback, and the fallback is the
-move this note already names as expensive.
+arrow that never moves. The fallback with the best chance is `getCurrentLocation`,
+which needs a `java.util.function.Consumer` — **which the dex lane now makes an
+ordinary afternoon's work rather than a Gradle migration.** (This paragraph used
+to end "there is no third dex-free option if it fails … the fallback is the move
+this note already names as expensive." That was the constraint talking; a
+`Consumer` implementation is one more file in `java/`.)
 
 Two things that were *not* hard, recorded so they are not re-investigated:
 
@@ -445,8 +523,10 @@ an APK that builds, signs and installs and then does not start, which is why the
 deploy job re-asserts the symbol out of the packaged archive rather than trusting
 the build.
 
-The job installs what the CI image lacks and nothing more: a **JRE** (`apksigner`
-is a shell script around `java`; no JDK is needed because nothing compiles Java),
+The job installs what the CI image lacks and nothing more: a **JDK** (`apksigner`
+and `d8` are shell scripts around `java`, and `javac` compiles `java/` — this was
+a JRE until the dex lane landed, and a JRE has no `javac`, so the swap is a build
+failure if it is ever reverted),
 `zip`, `cargo-ndk` — needed here and not in the check lane because this one
 *links* — and the SDK's `aapt2`/`zipalign`/`apksigner`/`android.jar` as two direct
 zips from Google. Those are deliberately **not** cached: 124 MB fetched in seconds
@@ -474,9 +554,10 @@ What is actually proven, and it is worth knowing exactly how far it goes:
   landed with `deploy-android.yml`, so both numbers are now upper bounds.
 - `apksigner verify` passes (v3 scheme).
 - The archive holds `AndroidManifest.xml`, `resources.arsc`, `res/`,
-  `lib/arm64-v8a/libcartopolis_android.so` and all 35 files of `assets/` — and
-  **no `classes.dex`**, which is the check that `hasCode="false"` is telling the
-  truth.
+  `lib/arm64-v8a/libcartopolis_android.so` and all 35 files of `assets/`. It also
+  holds a `classes.dex` since 2026-08-23 — the assertion used to be that it did
+  *not*, and `deploy-android.yml` now checks the inverse plus `hasCode=true` in
+  the compiled manifest.
 - `android_main` is present in the `.so`'s dynamic symbol table as a `GLOBAL
   FUNC`. This is the one worth re-running after any change to the crate graph:
   the symbol is looked up by name from C, nothing in Rust references it, and if
@@ -696,9 +777,12 @@ of the freeze — the avatar now ends up on a map of where the device is.
 a non-UI thread reaches `cancelInputsAndStartExitTransition`, which reads the
 decor view, and sidesteps it via the application context.
 `Activity.requestPermissions` reaches the same code through
-`startActivityForResult` and has no such escape — there is no dex-free way to post
-a `Runnable` to the UI thread, which is the constraint this whole file is shaped
-by. What was avoidable is the *other* writer: driver mode turns on and asks for
+`startActivityForResult` and has no such escape — there was no dex-free way to
+post a `Runnable` to the UI thread, `Runnable` being an interface, and that is the
+constraint this whole file was shaped by. (Since the dex lane a `Runnable` is one
+more class in `java/`, so this particular escape now exists; the fix below is
+still the right one, being cheaper than a UI-thread hop.) What was avoidable is
+the *other* writer: driver mode turns on and asks for
 the permission on one frame, and `apply_screen_wakelock` answers the same frame by
 setting `FLAG_KEEP_SCREEN_ON`, which the framework performs on the UI thread, on
 that same window, while the framework is also tearing its input channel down for
@@ -841,7 +925,7 @@ is **not true of `ActivityManager`**. Since API 30
 code each, and for `REASON_ANR` `ApplicationExitInfo.getTraceInputStream()`
 returns *the very trace the system wrote to tombstoned* — every thread, Java and
 native frames — with no permission, no root and no cable. Framework classes only,
-so the no-dex rule never threatened it.
+so it worked even under the no-dex rule.
 
 `platform::android::recent_exit_reasons` reads both, and `offer_last_crash` puts
 them **above** the log excerpt because they answer a bigger question than the log

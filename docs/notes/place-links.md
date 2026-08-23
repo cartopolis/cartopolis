@@ -1,7 +1,7 @@
 ---
 topic: sharing
 triggers: [place_link.rs, AndroidManifest.xml, assetlinks.json, "deep link", "app link", "intent filter", "cartopolis://", "?place=", "/go", "Copy link", launch_url, autoVerify]
-updated: 2026-08-16
+updated: 2026-08-23
 ---
 
 # A link to a place opens the app, and what that costs
@@ -74,8 +74,8 @@ next push.
 
 **`android-activity` 0.6 surfaces no intent at all**, so the URL is read by JNI —
 `getIntent().getDataString()`, `platform::android::launch_url`. Every class in
-that path is a framework one, so the no-dex rule
-(`docs/notes/android-build.md`) never threatened it.
+that path is a framework one, so this worked even under the no-dex rule
+(`docs/notes/android-build.md`) that applied when it was written.
 
 ## The limit: a link followed while the app is running does nothing
 
@@ -95,14 +95,18 @@ Options considered and why they lost:
 
 | | |
 |---|---|
-| A trampoline activity that reads the intent and hands it over | The correct fix, and it is a Java class, which is a `classes.dex`, which is the Gradle project this APK exists to not have |
+| A trampoline activity that reads the intent and hands it over | The correct fix, and **no longer blocked**: it is a Java class, which was a `classes.dex`, which was assumed to be a Gradle project — and the dex lane (2026-08-23, `docs/notes/android-build.md`) showed it is javac + d8 and no Gradle at all. This is now unbuilt work rather than a rejected option; the rest of this table stands |
 | `launchMode="standard"` so each link starts a fresh activity | A second `NativeActivity` in one process means a second Bevy app against one `ANDROID_APP`, one winit and one surface |
 | `noHistory="true"` so every launch is cold | Loses the whole session — map, camera, tile cache warmth — every time the user switches apps |
 | Poll `getIntent()` each frame | It never changes; there is nothing to poll |
 
-So the fix waits for the day this APK grows a dex for some other reason. Until
-then: cold start honours the link, warm start brings the app forward. Worth
-knowing before someone spends an afternoon deciding the JNI call is broken.
+This used to read "the fix waits for the day this APK grows a dex for some other
+reason" — **and that day was 2026-08-23**, when the background-connection work
+brought in javac + d8. The trampoline is now ordinary unbuilt work: a small
+`Activity` subclass in `crates/cartopolis_android/java/`, a manifest entry, and a
+way to hand the URL across. Until someone writes it the behaviour is unchanged —
+cold start honours the link, warm start brings the app forward. Worth knowing
+before someone spends an afternoon deciding the JNI call is broken.
 
 ## What a link carries, and what it does not
 
