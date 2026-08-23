@@ -804,8 +804,158 @@ fn exit_on_halt() -> ! {
     std::process::exit(0)
 }
 
-#[cfg(not(target_os = "android"))]
+/// On the web, a halted renderer reloads the page — because there a lost device
+/// is *weather*, not a wreck.
+///
+/// The terminal-halt policy above was argued entirely in Vulkan terms: a stranded
+/// swapchain semaphore, `Buffer::get_mapped_range` aborts on pool threads, an
+/// `ANativeWindow` mid-teardown. None of that exists on `wasm32` — the webgpu
+/// backend has no wgpu-core underneath it, so there is nothing to strand and
+/// nothing to abort in. What the browser *does* have is a device that can be
+/// taken away in the ordinary course of business: Chrome restarts its GPU
+/// process under memory pressure, on driver resets and on plain crashes (the
+/// Adreno drivers under Android Chrome being a chronic source), and both the
+/// WebGPU spec and Chrome's own guidance say the same thing about it — expect
+/// `device.lost`, get a new device, carry on. Bevy cannot re-request a device
+/// mid-run, but the page can relaunch itself, which is the same recovery one
+/// level up. Before this arm existed the web build kept Android's "halt forever"
+/// answer minus Android's exit, which a user experiences as a permanently blue
+/// page with the explanation in a console a phone cannot open — that was the
+/// deployed client's whole failure mode on 2026-08-23.
+///
+/// **Capped, because a reload is only a recovery if the next boot survives.** A
+/// device loss that recurs deterministically at startup would reload forever;
+/// the counter in `sessionStorage` stops the third retry and shows an honest
+/// card instead ([`halt_card`]). A loss after [`HALT_STREAK_RESET_S`] of healthy
+/// running is a fresh incident, not a continuation of the streak — without that
+/// rule, two losses an hour apart would eventually strand a long session on the
+/// card. The counter is per-tab (`sessionStorage`, not `localStorage`) so a bad
+/// streak never outlives the tab that suffered it.
+#[cfg(target_arch = "wasm32")]
+fn exit_on_halt() {
+    let window = web_sys::window();
+    let storage = window
+        .as_ref()
+        .and_then(|w| w.session_storage().ok())
+        .flatten();
+    // `Some(0)` when the key is absent; `None` only when storage itself is
+    // unavailable — in which case nothing can bound a reload loop, so none is
+    // started (`halt_action` answers the card for `None`).
+    let prior = storage.as_ref().map(|s| {
+        s.get_item(HALT_RELOAD_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    });
+    // `performance.now()` is time since navigation start — which is the right
+    // zero here, since what the cap distinguishes is "dies at every boot" from
+    // "died after running fine".
+    let uptime_s = window
+        .as_ref()
+        .and_then(|w| w.performance())
+        .map_or(0.0, |p| p.now() / 1000.0);
+    match halt_action(prior, uptime_s) {
+        HaltAction::Reload { attempt } => {
+            if let Some(s) = &storage {
+                let _ = s.set_item(HALT_RELOAD_KEY, &attempt.to_string());
+            }
+            tracing::error!(
+                attempt,
+                max = HALT_RELOAD_MAX,
+                "reloading the page after a lost graphics device"
+            );
+            if let Some(w) = &window {
+                let _ = w.location().reload();
+            }
+        }
+        HaltAction::ExplainAndStay => halt_card(),
+    }
+}
+
+#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
 fn exit_on_halt() {}
+
+/// `sessionStorage` key counting reloads in the current halt streak.
+#[cfg(target_arch = "wasm32")]
+const HALT_RELOAD_KEY: &str = "carto-halt-reloads";
+/// How many automatic reloads a streak of losses may spend before the card.
+// `cfg!`-style visibility rather than `#[cfg]`: the decision these constants
+// feed is tested natively (see `halt_action_tests`), for the reason
+// `android_property_name` states — wasm has no test lane, so logic only a wasm
+// build compiles is logic nothing executes before a user does.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const HALT_RELOAD_MAX: u32 = 2;
+/// Uptime past which a loss counts as a fresh incident rather than a streak.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const HALT_STREAK_RESET_S: f64 = 120.0;
+
+/// What a web render halt does next. Pure so the policy is testable off-wasm.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum HaltAction {
+    /// Reload the page; `attempt` is what the streak counter becomes.
+    Reload { attempt: u32 },
+    /// The streak is spent (or cannot be counted): stay halted and say why.
+    ExplainAndStay,
+}
+
+/// Decide between another reload and the card. `prior_reloads` is `None` when
+/// `sessionStorage` is unavailable — an uncountable loop must not be started, so
+/// that answers the card straight away.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn halt_action(prior_reloads: Option<u32>, uptime_s: f64) -> HaltAction {
+    let Some(prior) = prior_reloads else {
+        return HaltAction::ExplainAndStay;
+    };
+    if uptime_s >= HALT_STREAK_RESET_S {
+        // A fresh incident restarts the streak at 1 rather than adding to a
+        // count left over from an earlier, resolved one.
+        return HaltAction::Reload { attempt: 1 };
+    }
+    if prior < HALT_RELOAD_MAX {
+        HaltAction::Reload { attempt: prior + 1 }
+    } else {
+        HaltAction::ExplainAndStay
+    }
+}
+
+/// Put the failure on the screen, in the page's own words and colours.
+///
+/// This is the web sibling of Android's crash report: the boot overlay is long
+/// gone by now (it removes itself at the first drawn frame), so without this the
+/// spent-streak state is a solid `#1b2830` rectangle. Plain DOM on purpose —
+/// after the halt the ECS is on its way down, so nothing here may depend on
+/// another frame running. The retry is an `<a href="">` (a navigation to the
+/// same URL) rather than a scripted button, so it keeps working after the wasm
+/// runtime is dead.
+#[cfg(target_arch = "wasm32")]
+fn halt_card() {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(card) = document.create_element("div") else {
+        return;
+    };
+    // The loader's palette: SURFACE, INK, TEXT, CREAM, ACCENT_TEXT.
+    card.set_inner_html(
+        "<div style=\"position:fixed;inset:0;z-index:9999;display:flex;align-items:center;\
+         justify-content:center;background:#1b2830;font:15px/1.6 system-ui,sans-serif\">\
+         <div style=\"max-width:34rem;margin:0 1.5rem;padding:1.2rem 1.4rem;background:#10181e;\
+         border:1px solid #647f8f;border-radius:8px;color:#dfe5e7\">\
+         <h1 style=\"font-size:1.3rem;font-weight:600;color:#f2efea;margin:0 0 .5rem\">\
+         Cartopolis lost its graphics device</h1>\
+         <p style=\"margin:.4rem 0\">The browser took the GPU away, and reloading the page \
+         did not bring it back. That is usually the browser&#8217;s GPU process crashing on \
+         this page &#8212; restarting the browser sometimes clears it.</p>\
+         <p style=\"margin:.4rem 0\"><a href=\"\" style=\"color:#ff9457\">Try again</a></p>\
+         </div></div>",
+    );
+    if let Some(body) = document.body() {
+        let _ = body.append_child(&card);
+    }
+    tracing::error!("halt card shown — automatic reloads are spent for this streak");
+}
 
 /// Make sure nobody ever tears down the swapchain this halt has stranded.
 ///
@@ -2921,6 +3071,52 @@ pub fn env_value(name: &str) -> Option<String> {
 fn android_property_name(name: &str) -> String {
     let short = name.strip_prefix("CARTO_").unwrap_or(name);
     format!("debug.carto.{}", short.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod halt_action_tests {
+    use super::{halt_action, HaltAction, HALT_RELOAD_MAX, HALT_STREAK_RESET_S};
+
+    /// The first loss of a streak reloads; the streak counter becomes 1.
+    #[test]
+    fn a_first_loss_reloads() {
+        assert_eq!(
+            halt_action(Some(0), 30.0),
+            HaltAction::Reload { attempt: 1 }
+        );
+    }
+
+    /// A loss that keeps recurring at startup runs out of reloads and gets the
+    /// card — the whole point of the cap, since each retry costs another full
+    /// module download and boot.
+    #[test]
+    fn a_deterministic_startup_loss_stops_at_the_cap() {
+        assert_eq!(
+            halt_action(Some(1), 30.0),
+            HaltAction::Reload { attempt: 2 }
+        );
+        assert_eq!(
+            halt_action(Some(HALT_RELOAD_MAX), 30.0),
+            HaltAction::ExplainAndStay
+        );
+    }
+
+    /// A loss after a healthy stretch is a fresh incident: the streak restarts
+    /// at 1 instead of inheriting a spent counter from hours ago.
+    #[test]
+    fn a_long_healthy_run_resets_the_streak() {
+        assert_eq!(
+            halt_action(Some(HALT_RELOAD_MAX), HALT_STREAK_RESET_S),
+            HaltAction::Reload { attempt: 1 }
+        );
+    }
+
+    /// No storage means no bound on a loop, so no loop is started.
+    #[test]
+    fn an_uncountable_streak_is_never_started() {
+        assert_eq!(halt_action(None, 30.0), HaltAction::ExplainAndStay);
+        assert_eq!(halt_action(None, 10_000.0), HaltAction::ExplainAndStay);
+    }
 }
 
 #[cfg(test)]

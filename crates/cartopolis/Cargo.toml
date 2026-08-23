@@ -310,6 +310,11 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "Location",
+    # The render-halt recovery (`lib.rs::exit_on_halt` on wasm): the reload-streak
+    # counter lives in `sessionStorage`, and `performance.now()` is the uptime
+    # that tells a fresh device loss from a streak of them.
+    "Storage",
+    "Performance",
     "UrlSearchParams",
     "Navigator",
     "Clipboard",

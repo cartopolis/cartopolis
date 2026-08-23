@@ -112,6 +112,19 @@
             orig.apply(null, arguments);
           };
         });
+        // A boot that follows a render halt is a *recovery*, and should say so:
+        // the Rust side reloads the page after a lost graphics device (capped —
+        // see `exit_on_halt` on wasm) and leaves its streak counter in
+        // sessionStorage. Without this line the retry is indistinguishable from
+        // a first visit, and a device that gets lost on every boot looks like a
+        // loader that mysteriously runs twice.
+        try {
+          var reloads = sessionStorage.getItem("carto-halt-reloads");
+          if (reloads) push("warn", "recovering from a lost graphics device (reload " + reloads + ")");
+        } catch (e) {
+          // Storage can be unavailable (privacy modes); the Rust side then
+          // never reloads, so there is nothing to report either.
+        }
         window.addEventListener("error", function (e) {
           window.__boot.failed = true;
           push("error", e.message + (e.filename ? " (" + e.filename + ")" : ""));
