@@ -572,6 +572,34 @@ impl UserStore {
         preset.as_env_word()
     }
 
+    /// The persisted bisecting switches, read the same early, narrow way
+    /// [`Self::preferred_quality`] reads the tier — and for the same two reasons.
+    ///
+    /// It runs before the tracing subscriber and before the `App`, because
+    /// `CARTO_NO_DUAL_SOURCE` is consulted while `DefaultPlugins` is assembled; and
+    /// it goes through [`serde_json::Value`] rather than deserialising [`UserData`]
+    /// so that no other field's `#[serde(default)]` runs this early. That is not
+    /// caution: `LayerPrefs`' defaults call `quality::budget()`, which would settle
+    /// the tier's `OnceLock` from a detection that has not been told the user's
+    /// preference yet. See `preferred_quality` for the full account.
+    ///
+    /// Silent by construction — a missing, unreadable or older file means "no
+    /// switches", which is the right answer, and the real load a moment later is
+    /// what reports the failure.
+    #[must_use]
+    pub fn preferred_debug_switches() -> crate::resources::DebugSwitches {
+        let read = || {
+            let bytes = crate::platform::storage::read_now(
+                crate::platform::storage::Namespace::Data,
+                USER_KEY,
+            )
+            .ready()?;
+            let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            serde_json::from_value(json.get("settings")?.get("debug_switches")?.clone()).ok()
+        };
+        read().unwrap_or_default()
+    }
+
     pub fn load() -> Self {
         use crate::platform::storage::{self, Namespace};
 

@@ -930,6 +930,70 @@ fn graphics_tab(
         .small()
         .color(theme::TEXT_DIM),
     );
+
+    ui.add_space(8.0);
+    ui.separator();
+    developer_section(ui, prefs);
+}
+
+/// The `CARTO_*` bisecting switches, on the device.
+///
+/// **Collapsed, and last, and it says what it is.** These are not quality knobs:
+/// several of them make the picture worse on purpose, and a run with one on is a
+/// run whose rendering proves nothing. But the alternative was worse — on Android
+/// they are `debug.carto.*` properties, so the only way to reach them was a cable,
+/// an `adb`, and a machine that is not the phone. `resources::DebugSwitches` has
+/// the account of what that cost.
+///
+/// The header carries the count when any are on, because the section is closed by
+/// default and "why does it look like that" has to be answerable without
+/// remembering that you opened this a week ago.
+fn developer_section(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
+    use crate::resources::DebugSwitches;
+
+    let on = DebugSwitches::SWITCHES
+        .iter()
+        .filter(|(name, _, _)| prefs.debug_switches.get(name) == Some(true))
+        .count();
+    let header = if on == 0 {
+        "Developer".to_string()
+    } else {
+        format!("Developer — {on} on")
+    };
+
+    egui::CollapsingHeader::new(egui::RichText::new(header).color(if on == 0 {
+        theme::TEXT_DIM
+    } else {
+        theme::ACCENT_TEXT
+    }))
+    .id_salt("settings_developer")
+    .default_open(on > 0)
+    .show(ui, |ui| {
+        ui.label(
+            egui::RichText::new(
+                "Switches for bisecting a render problem. Each one removes a layer; \
+                 several make the picture worse on purpose. An environment variable \
+                 or a debug.carto.* property still overrides what is set here.",
+            )
+            .small()
+            .color(theme::TEXT_DIM),
+        );
+        ui.add_space(4.0);
+        for (name, label, help) in DebugSwitches::SWITCHES {
+            let Some(value) = prefs.debug_switches.get_mut(name) else {
+                // Unreachable while the table and `get_mut` agree, and a test pins
+                // that they do. Skipping beats an `unwrap` in a UI system.
+                continue;
+            };
+            theme::checkbox(ui, value, label);
+            ui.label(egui::RichText::new(help).small().color(theme::TEXT_DIM));
+            ui.add_space(4.0);
+        }
+        pending(
+            ui,
+            "All of these are read once, at startup. Restart the app to apply them.",
+        );
+    });
 }
 
 /// The sky picker, plus what the run actually got.

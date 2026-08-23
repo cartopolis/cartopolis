@@ -218,6 +218,28 @@ fn compose(s: &DiagnosticsSources) -> String {
         None => out.push_str("pipelines: (not measured yet)\n"),
     }
 
+    // Which bisecting switches this run has on, because a run with any of them on
+    // is a run whose rendering proves nothing — and since 2026-08-23 they are
+    // reachable from Settings, i.e. somebody can now leave one set and forget.
+    // Listed by env name rather than by label so the reader can reproduce it,
+    // which on Android means `adb shell setprop debug.carto.<name>`.
+    let switches = s.store.data.settings.debug_switches;
+    let on: Vec<&str> = crate::resources::DebugSwitches::SWITCHES
+        .iter()
+        .filter(|(name, _, _)| crate::env_flag(name))
+        .map(|(name, _, _)| *name)
+        .collect();
+    if on.is_empty() {
+        out.push_str("debug switches: none\n");
+    } else {
+        out.push_str(&format!("debug switches: {}\n", on.join(", ")));
+    }
+    // The preference separately from the resolved answer: an env var or property
+    // overrides it, so the two disagreeing is itself worth seeing.
+    if switches.any() {
+        out.push_str("  (set in Settings ▸ Graphics ▸ Developer)\n");
+    }
+
     // The performance block. Placed directly under `quality:` because the two are
     // read together: the tier says what was asked for, this says what it cost.
     //

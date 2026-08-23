@@ -1087,6 +1087,12 @@ fn run_client() {
     // expects it settled before the first frame. See `quality`.
     quality::init(systems::user_store::UserStore::preferred_quality());
 
+    // …and the bisecting switches, for the same reason and from the same early
+    // read: `CARTO_NO_DUAL_SOURCE` is consulted while `DefaultPlugins` is being
+    // assembled, several hundred lines before `UserStore::load()` runs. Anything
+    // that reads `env_flag` before this line silently sees no preference at all.
+    init_debug_switches(systems::user_store::UserStore::preferred_debug_switches());
+
     // Start the CPU worker pool before anything streams (ADR-033). A no-op
     // natively — `AsyncComputeTaskPool` is already a thread pool — and on the web
     // it spawns the Web Workers that keep tile decoding off the render thread.
@@ -2771,7 +2777,61 @@ fn attach_avatar_to_bigspace(
 /// `adb shell setprop` and read at startup. See
 /// [`platform::android::system_property`] for why `debug.` specifically, and for
 /// the rest of the recipe.
+/// The persisted half of [`env_flag`], seeded once by [`init_debug_switches`].
+///
+/// A process-wide `OnceLock` and not a `Resource` for the same reason
+/// `quality::budget()` is one: the earliest reader runs before the `App` exists
+/// (`CARTO_NO_DUAL_SOURCE` is consulted while `DefaultPlugins` is still being
+/// built), so there is no world to hold it.
+static DEBUG_SWITCHES: std::sync::OnceLock<resources::DebugSwitches> = std::sync::OnceLock::new();
+
+/// Seed the persisted switches. Called once at the top of `run_client`, beside
+/// `quality::init` and for the same reason: everything downstream expects it
+/// settled, and the first reader is earlier than it looks.
+///
+/// Silently keeps the first value if called twice, as `quality::init` does — a
+/// second answer would mean two different runs' switches inside one process.
+pub fn init_debug_switches(switches: resources::DebugSwitches) {
+    let _ = DEBUG_SWITCHES.set(switches);
+}
+
+/// **Two sources, and the explicit one wins.** Since 2026-08-23 these switches are
+/// also a persisted preference (`resources::DebugSwitches`, Settings ▸ Graphics ▸
+/// Developer), because on Android the source below is `adb`, i.e. a cable and a
+/// second machine — and the Adreno sky bug spent four days with its own instrument
+/// built and unreachable by the person holding the device. An env var or property
+/// that is *present* still decides, in both directions: it is an instruction for
+/// this launch and is never written back, exactly as `--connect` is against the
+/// remembered session. The preference is only what a launch falls back to.
+///
+/// Resolving it here rather than at the call sites is the point: every switch in
+/// the codebase became reachable from the phone without touching one of them.
 pub fn env_flag(name: &str) -> bool {
+    resolve_flag(
+        env_flag_explicit(name),
+        DEBUG_SWITCHES.get().and_then(|switches| switches.get(name)),
+    )
+}
+
+/// The resolution [`env_flag`] performs, as a function so it can be tested.
+///
+/// Its own function for the reason `frame_pacing::resolve_frame_rate` records:
+/// the rung test there stayed green about a number the call site had stopped
+/// passing on, because what was asserted was the input and not the resolution. A
+/// `OnceLock` and a process environment are both untestable in a unit test; this
+/// is the part with a rule in it.
+fn resolve_flag(explicit: Option<bool>, preference: Option<bool>) -> bool {
+    explicit.or(preference).unwrap_or(false)
+}
+
+/// The platform's own answer: `Some` when the switch is *present*, `None` when it
+/// is absent and [`env_flag`] should fall back to the preference.
+///
+/// The three-way answer is what makes `CARTO_X=0` mean "off" rather than "not
+/// set" — without it, a property set to `0` to overrule a preference would fall
+/// straight through to that preference and appear to do nothing, which is the
+/// worst possible behaviour for a debugging switch.
+fn env_flag_explicit(name: &str) -> Option<bool> {
     #[cfg(target_os = "android")]
     {
         // Android has no environment either, and for a harder reason than the
@@ -2780,11 +2840,21 @@ pub fn env_flag(name: &str) -> bool {
         // same switches come from system properties instead — see
         // `platform::android::system_property`, which is also where the
         // `adb shell setprop` recipe lives.
-        return platform::android::system_property(name).is_some_and(|v| v != "0" && !v.is_empty());
+        //
+        // An *empty* property is the absence of one: `getprop` cannot tell them
+        // apart, and `setprop … ""` is how a property is cleared.
+        return platform::android::system_property(name)
+            .filter(|v| !v.is_empty())
+            .map(|v| v != "0");
     }
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
-        std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty())
+        // An empty environment variable is idiomatically unset, and was already
+        // read as false here; it is now read as *absent*, which is the same thing
+        // one layer up unless a preference says otherwise.
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(|v| v != "0")
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -2800,10 +2870,11 @@ pub fn env_flag(name: &str) -> bool {
 /// `=1` to satisfy a convention borrowed from a different platform would be a
 /// papercut on every debugging URL. Presence is truth here; `=0` and `=false` are
 /// the ways to say otherwise.
+/// `None` when the key is absent from the query string — see
+/// [`env_flag_explicit`] for why absence and `=0` must be different answers.
 #[cfg(target_arch = "wasm32")]
-fn query_flag(name: &str) -> bool {
-    query_value(name)
-        .is_some_and(|v| v.is_empty() || (v != "0" && !v.eq_ignore_ascii_case("false")))
+fn query_flag(name: &str) -> Option<bool> {
+    query_value(name).map(|v| v.is_empty() || (v != "0" && !v.eq_ignore_ascii_case("false")))
 }
 
 /// A settings *value* (not a switch), read from the environment on desktop and
@@ -2850,6 +2921,53 @@ pub fn env_value(name: &str) -> Option<String> {
 fn android_property_name(name: &str) -> String {
     let short = name.strip_prefix("CARTO_").unwrap_or(name);
     format!("debug.carto.{}", short.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod flag_resolution_tests {
+    use super::resolve_flag;
+    use crate::resources::DebugSwitches;
+
+    /// A switch nobody has expressed an opinion about is off, which is what every
+    /// call site assumed when the environment was the only source.
+    #[test]
+    fn an_unmentioned_switch_is_off() {
+        assert!(!resolve_flag(None, None));
+    }
+
+    /// The preference is what a launch falls back to — the whole point of the
+    /// feature, since on Android there is nothing else to fall back to.
+    #[test]
+    fn the_preference_decides_when_nothing_is_set() {
+        assert!(resolve_flag(None, Some(true)));
+        assert!(!resolve_flag(None, Some(false)));
+    }
+
+    /// **An explicit setting wins in both directions, and the second half is the
+    /// one worth a test.** `CARTO_X=1` beating a preference is obvious;
+    /// `CARTO_X=0` beating a preference that is *on* is what stops `setprop
+    /// debug.carto.ground_raymarch 0` from silently doing nothing, which for a
+    /// debugging switch is the worst behaviour available.
+    #[test]
+    fn an_explicit_setting_overrides_the_preference() {
+        assert!(resolve_flag(Some(true), Some(false)));
+        assert!(!resolve_flag(Some(false), Some(true)));
+    }
+
+    /// Every switch the Settings section offers must survive the property-name
+    /// mapping, because on the platform this exists for that mapping is the only
+    /// way anyone else can reproduce what the user set.
+    #[test]
+    fn every_settings_switch_is_reachable_as_a_property() {
+        for (name, _, _) in DebugSwitches::SWITCHES {
+            let mapped = super::android_property_name(name);
+            assert!(
+                mapped.starts_with("debug.carto."),
+                "{name} maps to {mapped}"
+            );
+            assert!(mapped.len() <= 31, "{mapped} is {} bytes", mapped.len());
+        }
+    }
 }
 
 #[cfg(test)]
