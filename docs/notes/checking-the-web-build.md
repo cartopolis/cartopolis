@@ -67,6 +67,22 @@ run `wasm-bindgen`, and cannot execute anything. It catches missing web-sys
 features, wrong API shapes and cfg mistakes — which is most of what goes wrong in
 code that has never been compiled — and nothing about browser behaviour.
 
+The sharpest case so far, and the reason that sentence is not a formality:
+`platform::watchdog` took its clock from `std::time::Instant`. On
+`wasm32-unknown-unknown` `Instant::now()` is std's `unsupported` stub and
+*panics* — it compiles everywhere and runs nowhere. The watcher thread is
+native-only, but `beat()` is a system in `Last` on every target, so the deployed
+browser client died at the end of its first frame, before anything was drawn,
+with `time not implemented on this platform` and a location naming std rather
+than any file of ours. It shipped in the 2026-08-21 deploy and was found on
+2026-08-23 by disassembling the published module. `b2f97bc` had already gated
+that module's native-only constants and statics "so wasm builds again" — which
+is exactly the trap: gating until it compiles answers the compiler, not the
+browser. **Every clock in this tree is `web_time::Instant` or
+`bevy_platform::time::Instant`** (natively both are re-exports of std's, so
+there is no native cost and no reason to reach for `std::time` at all); a fresh
+`use std::time::Instant` in code a wasm target can reach is a crash, not a lint.
+
 ## `audio` is a default feature, so the web build has none
 
 `index.html` builds with no feature list at all, and `audio` is in `default`. The
