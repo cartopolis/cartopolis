@@ -77,6 +77,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "avatar teleport — Teleport { position }; the sim moves the avatar there and the next snapshot confirms it",
     },
+    ProtocolRevision {
+        version: 18,
+        adr: "",
+        summary: "presence — SetPresence { active }; an idle client stops being sent WorldSnapshots, and chat still reaches it",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -123,6 +128,7 @@ pub enum MessageKind {
     DeleteAccount = 32,
     AccountDeleted = 33,
     Teleport = 34,
+    SetPresence = 35,
 }
 
 impl MessageKind {
@@ -163,6 +169,7 @@ impl MessageKind {
             32 => Some(Self::DeleteAccount),
             33 => Some(Self::AccountDeleted),
             34 => Some(Self::Teleport),
+            35 => Some(Self::SetPresence),
             _ => None,
         }
     }
@@ -723,6 +730,34 @@ pub enum NetMessage {
         request_id: u32,
         position: Vec3,
     },
+    /// Client says whether it is being *looked at*.
+    ///
+    /// `active: false` means the app is off screen (Android's background
+    /// connection, `systems::background`) and the server should stop sending it
+    /// `WorldSnapshot`s. That is the whole of it: the connection stays open, chat,
+    /// voice and every other message still arrive, and the client keeps its
+    /// session, its place in the world and its `ChatHub` registration.
+    ///
+    /// **Why the snapshot and nothing else.** A backgrounded phone draws nothing,
+    /// so a world state it cannot render is the one thing on this wire with no
+    /// consumer — and it is also by far the largest and the most frequent, at the
+    /// tick rate. Dropping it is what makes a held connection cheap enough to
+    /// hold; keeping everything else is what makes holding it worth doing, since
+    /// the reason to stay connected is to be reachable.
+    ///
+    /// **The client is trusted here, and the cost of a lie is its own.** A client
+    /// that claims to be idle simply stops being told where anybody is; it cannot
+    /// use that to see more than it should, and its own avatar keeps being
+    /// simulated and broadcast to everyone else exactly as before. So this needs
+    /// no validation beyond the flag itself.
+    ///
+    /// Resuming is the same message with `active: true`, and the next tick's
+    /// snapshot is the resynchronisation — there is no catch-up and no ack, for
+    /// the same reason `Teleport` has none: the next snapshot is the whole state.
+    SetPresence {
+        request_id: u32,
+        active: bool,
+    },
 }
 
 /// Why a person is being reported. A closed list rather than free text: it is
@@ -856,6 +891,7 @@ pub fn message_kind(msg: &NetMessage) -> MessageKind {
         NetMessage::DeleteAccount { .. } => MessageKind::DeleteAccount,
         NetMessage::AccountDeleted => MessageKind::AccountDeleted,
         NetMessage::Teleport { .. } => MessageKind::Teleport,
+        NetMessage::SetPresence { .. } => MessageKind::SetPresence,
     }
 }
 
@@ -879,6 +915,7 @@ pub fn message_request_id(msg: &NetMessage) -> u32 {
         NetMessage::ReportAck { request_id, .. } => *request_id,
         NetMessage::DeleteAccount { request_id, .. } => *request_id,
         NetMessage::Teleport { request_id, .. } => *request_id,
+        NetMessage::SetPresence { request_id, .. } => *request_id,
         _ => 0,
     }
 }
@@ -906,6 +943,27 @@ pub fn encode_app_frame(msg: &NetMessage) -> Result<Vec<u8>, postcard::Error> {
     out.extend_from_slice(&rid.to_le_bytes());
     out.extend_from_slice(&body);
     Ok(out)
+}
+
+/// The kind in an encoded frame's header, without decoding its payload.
+///
+/// For the one caller that has to *route* a frame it is not going to read:
+/// `net::handle_connection` fans out already-encoded bytes from a broadcast
+/// channel carrying snapshots, prim upserts and capacity updates together, and an
+/// idle client (`SetPresence`) must drop only the snapshots. Decoding a full
+/// `WorldSnapshot` — every region, prim and avatar — per connection per tick, to
+/// then throw it away, is the obvious way to write that and is far more expensive
+/// than the send it saves.
+///
+/// Reads the header only, so an unknown kind or a truncated frame is `None`
+/// rather than an error: a caller that cannot classify a frame should pass it
+/// along and let the real decoder produce the diagnosis.
+#[must_use]
+pub fn frame_kind(bytes: &[u8]) -> Option<MessageKind> {
+    if bytes.len() < APP_HEADER_LEN {
+        return None;
+    }
+    MessageKind::from_wire(u16::from_le_bytes(bytes[2..4].try_into().unwrap()))
 }
 
 #[must_use]
@@ -1224,7 +1282,7 @@ mod tests {
     #[test]
     fn message_kind_wire_is_a_bijection() {
         use MessageKind::*;
-        const ALL: [MessageKind; 34] = [
+        const ALL: [MessageKind; 35] = [
             ClientHello,
             ServerHelloAck,
             ServerError,
@@ -1259,6 +1317,7 @@ mod tests {
             DeleteAccount,
             AccountDeleted,
             Teleport,
+            SetPresence,
         ];
         for k in ALL {
             assert_eq!(

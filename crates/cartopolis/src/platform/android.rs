@@ -951,23 +951,112 @@ fn dex_probe_inner(env: &mut JNIEnv, activity: &JObject) -> Result<(bool, String
             clear_pending(env);
         }
 
-        let loader = env
-            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
-            .l()?;
-        let name = env.new_string(DEX_PROBE_BINARY)?;
-        let class = env
-            .call_method(
-                &loader,
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[JValue::Object(&name)],
-            )?
-            .l()?;
+        let class = load_app_class(env, activity, DEX_PROBE_BINARY)?;
         let text = env
-            .call_static_method(JClass::from(class), "probe", "()Ljava/lang/String;", &[])?
+            .call_static_method(class, "probe", "()Ljava/lang/String;", &[])?
             .l()?;
         let text: String = env.get_string(&JString::from(text))?.into();
         Ok::<(bool, String), Fail>((via_find_class, text))
+    })
+}
+
+/// Load one of *our* classes by binary name, from any thread.
+///
+/// The route that works, for the reason [`report_dex`] documents at length:
+/// `Context.getClassLoader()` on the activity, then `loadClass`. Use this for
+/// every class in `crates/cartopolis_android/java/` and `env.find_class` for
+/// framework ones — `android.content.Intent` and friends are in the *system*
+/// loader, which is exactly the one a natively-attached thread gets, so those
+/// resolve directly and do not need the hop.
+///
+/// Must be called inside a local frame: the returned `JClass` is a local
+/// reference belonging to whatever frame is current.
+fn load_app_class<'local>(
+    env: &mut JNIEnv<'local>,
+    activity: &JObject,
+    binary_name: &str,
+) -> Result<JClass<'local>, Fail> {
+    let loader = env
+        .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
+        .l()?;
+    let name = env.new_string(binary_name)?;
+    let class = env
+        .call_method(
+            &loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::Object(&name)],
+        )?
+        .l()?;
+    Ok(JClass::from(class))
+}
+
+/// `eu.garage44.cartopolis.ConnectionService`, the foreground service.
+const CONNECTION_SERVICE_BINARY: &str = "eu.garage44.cartopolis.ConnectionService";
+
+/// Start or stop the foreground service that keeps this process alive while the
+/// app is off screen (`ConnectionService.java`, `systems::background`).
+///
+/// **Start this while the app is on screen.** Since Android 12 a
+/// `startForegroundService` from the background throws
+/// `ForegroundServiceStartNotAllowedException`, and the app-visible symptom would
+/// be a crash at the worst possible moment — as the user leaves. That is the
+/// reason the caller keys this on the *setting* (flipped in Settings, with the
+/// app plainly in front) rather than on `AppLifecycle::WillSuspend`, which is
+/// already halfway out.
+///
+/// Stopping does **not** close the connection. The socket lives in `network.rs`'s
+/// own thread and neither knows nor cares about this; what stops is the
+/// permission to keep running once the activity is gone.
+pub fn set_background_service(on: bool) -> Result<(), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach_current_thread: {e}"))?;
+    let activity = activity();
+    match set_background_service_inner(&mut env, &activity, on) {
+        Ok(()) => Ok(()),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
+fn set_background_service_inner(
+    env: &mut JNIEnv,
+    activity: &JObject,
+    on: bool,
+) -> Result<(), Fail> {
+    env.with_local_frame(8, |env| {
+        let service = load_app_class(env, activity, CONNECTION_SERVICE_BINARY)?;
+        // `Intent(Context, Class<?>)` — the explicit-component constructor, which
+        // is what `exported="false"` in the manifest requires: an implicit intent
+        // could not reach a non-exported component at all.
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Landroid/content/Context;Ljava/lang/Class;)V",
+            &[JValue::Object(activity), JValue::Object(&service)],
+        )?;
+        if on {
+            // Not `startService`: from API 26 that throws for a background start,
+            // and this one contracts to call `startForeground` within five
+            // seconds — which `onStartCommand` does as its first act.
+            env.call_method(
+                activity,
+                "startForegroundService",
+                "(Landroid/content/Intent;)Landroid/content/ComponentName;",
+                &[JValue::Object(&intent)],
+            )?;
+        } else {
+            env.call_method(
+                activity,
+                "stopService",
+                "(Landroid/content/Intent;)Z",
+                &[JValue::Object(&intent)],
+            )?;
+        }
+        Ok::<(), Fail>(())
     })
 }
 

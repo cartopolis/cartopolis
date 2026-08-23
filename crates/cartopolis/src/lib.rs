@@ -2610,6 +2610,12 @@ fn run_client() {
             (
                 systems::login_screen::render_login_screen.after(systems::ui::render_main_menu),
                 systems::session::drive_session.after(systems::login_screen::render_login_screen),
+                // After the driver, which is what adds and removes `OnlineSession`
+                // — half of the want this reconciles. Ordered so that leaving a
+                // session takes the service down on the same frame rather than
+                // leaving a "connected" notification over a client that isn't.
+                systems::background::apply_background_connection
+                    .after(systems::session::drive_session),
             ),
         )
         // The two systems that make the app a well-behaved Android citizen: stop
@@ -3268,6 +3274,7 @@ fn quiesce_while_backgrounded(
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut exits: MessageReader<AppExit>,
     mut touches: ResMut<bevy::input::touch::Touches>,
+    session: Option<Res<resources::OnlineSession>>,
 ) {
     // Leaving on purpose — suspended or exiting — is not a crash, so the
     // breadcrumb goes. What it must survive is the app dying on screen.
@@ -3289,6 +3296,18 @@ fn quiesce_while_backgrounded(
         match event {
             bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
                 platform::workers::set_paused(true);
+                // Tell the sim to stop sending world snapshots (protocol 18).
+                // This is the *low-power* half of the background connection: the
+                // service in `systems::background` keeps the process alive, and
+                // without this it would stay alive receiving thirty full world
+                // states a second that nothing draws — a held connection that
+                // costs as much as a visible one is not a feature.
+                //
+                // Sent on suspend rather than gated on the setting, and on every
+                // platform: a desktop window that is not on screen has the same
+                // nothing to draw. Chat, voice and prim updates keep arriving,
+                // which is what makes staying connected worth anything.
+                set_presence(session.as_deref(), false);
                 #[cfg(target_os = "android")]
                 let _ = std::fs::remove_file(run_breadcrumb_path());
             }
@@ -3304,9 +3323,31 @@ fn quiesce_while_backgrounded(
                 // `egui_manager::heal_lost_touch` needs this to be the signal that
                 // its own held id is dead. Both bridges recover from this one call.
                 touches.release_all();
+                // The next tick's snapshot is the resynchronisation; there is no
+                // catch-up to ask for, because a snapshot is the whole state.
+                set_presence(session.as_deref(), true);
             }
             bevy::window::AppLifecycle::Idle => {}
         }
+    }
+}
+
+/// Tell the sim whether this client is being looked at, if there is a sim.
+///
+/// Offline is the absence of [`resources::OnlineSession`], so this is a no-op
+/// there rather than a condition every caller has to remember. Routed through
+/// `send` — not the per-frame path — because presence is an *edge*: a dropped
+/// "I'm back" is not corrected by the next frame, it is a client left with no
+/// world state and no reason to ask again.
+fn set_presence(session: Option<&resources::OnlineSession>, active: bool) {
+    if let Some(session) = session {
+        session.send(
+            "presence",
+            cartopolis_core::NetMessage::SetPresence {
+                request_id: 0,
+                active,
+            },
+        );
     }
 }
 

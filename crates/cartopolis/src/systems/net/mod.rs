@@ -1,5 +1,8 @@
 //! `systems::net` — one file per concern; see systems/mod.rs for the map.
 
+/// Keeping the connection alive while the app is off screen (Android's
+/// foreground service).
+pub mod background;
 pub mod network;
 pub mod session;
 pub mod user_store;
