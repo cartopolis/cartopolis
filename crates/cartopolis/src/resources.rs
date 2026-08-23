@@ -607,6 +607,20 @@ pub struct DevPanelState {
     /// Rain intensity, 0.0–1.0: density of the screen-space rain streaks (see
     /// `main::update_rain`). 0.0 = dry.
     pub precipitation: f32,
+    /// Whether either cloud shell is drawn at all — Settings ▸ World ▸ Weather.
+    ///
+    /// **Not the same question as `cloud_cover == 0.0`, which is why it is its own
+    /// field.** Coverage is weather: it is what the met.no poll writes in
+    /// Automatic mode, so a user who zeroed the slider gets clouds back the moment
+    /// the forecast says cloudy. This is a standing "don't draw them", and it
+    /// survives the poll.
+    ///
+    /// It is also the *only* reachable off-switch for the space-tier shell, whose
+    /// coverage is the `sky::GLOBE_CLOUD_COVER` constant blended with live GFS and
+    /// never the slider — and `globe_clouds.wgsl` evaluates nine 6-octave `fbm3`
+    /// fields before it consults coverage, so there is no cheap value to set
+    /// either source to. Hiding the shell is the only thing that removes the cost.
+    pub clouds_enabled: bool,
     /// Lunar age in days, 0–29.53 (see `utils::sun::LUNAR_CYCLE_DAYS`): 0 = new
     /// moon, ~14.8 = full. Drives the moon's sky position, phase, and light.
     pub moon_age_days: f32,
@@ -644,6 +658,7 @@ impl Default for DevPanelState {
             fog_density: 0.15,
             cloud_cover: 0.0,
             precipitation: 0.0,
+            clouds_enabled: true,
             moon_age_days: 14.8, // full moon
             // Overwritten from the real date on frame 1 by `apply_sun_mode`; this
             // default is the equinox (0°), only ever seen before the first update.

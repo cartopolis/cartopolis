@@ -1599,6 +1599,7 @@ pub(crate) fn update_clouds(
         With<Clouds>,
     >,
     mut materials: ResMut<Assets<CloudMaterial>>,
+    mut clouds_disabled: Local<Option<bool>>,
 ) {
     let Ok((cell, cam, cam_local, fog)) = camera.single() else {
         return;
@@ -1615,7 +1616,11 @@ pub(crate) fn update_clouds(
 
     // Drop the shell out of the frame entirely once it carries no cloud, rather
     // than blending a fully transparent 360 km box over the whole view.
-    let want = if dev.cloud_cover <= 0.0 || alt_fade <= 0.0 || space >= 1.0 {
+    // `CARTO_NO_CLOUDS` covers both tiers, or the switch would only half mean what
+    // it says — this shell owns the ground and `GlobeClouds` owns the space tier.
+    let disabled = *clouds_disabled.get_or_insert_with(|| crate::env_flag("CARTO_NO_CLOUDS"))
+        || !dev.clouds_enabled;
+    let want = if disabled || dev.cloud_cover <= 0.0 || alt_fade <= 0.0 || space >= 1.0 {
         Visibility::Hidden
     } else {
         Visibility::Inherited
@@ -2004,6 +2009,9 @@ pub(crate) fn update_globe_clouds(
     // and allocates, and this is a debug seed that cannot change while running.
     // Same shape `frame_stats` uses for its own flag.
     mut cloud_time_override: Local<Option<Option<f32>>>,
+    // Same shape, and for the same reason: a bisecting switch cannot change while
+    // the process runs, and `env_flag` takes a process-global lock.
+    mut clouds_disabled: Local<Option<bool>>,
 ) {
     let Ok((mut tf, mut vis, mat_handle)) = clouds.single_mut() else {
         return;
@@ -2018,7 +2026,20 @@ pub(crate) fn update_globe_clouds(
     };
 
     // Absent on the ground; the camera-relative ceiling shell covers that tier.
-    let want = if space <= 0.0 {
+    //
+    // …and absent for the whole run under `CARTO_NO_CLOUDS`, which joins
+    // `CARTO_NO_ATMOSPHERE` / `NO_HAZE` / `NO_ENVMAP` / `NO_OCEAN` as a bisecting
+    // switch. It is the *only* way to take this shell out of a frame, and that is
+    // why it exists: coverage here is the `GLOBE_CLOUD_COVER` constant blended
+    // with live GFS, deliberately not the weather slider (see the `params` write
+    // below), so neither `--clouds` nor Settings ▸ World moves it — and
+    // `globe_clouds.wgsl` evaluates nine 6-octave `fbm3` fields before it ever
+    // consults coverage, so there is no cheap value to set it to either. A shell
+    // at planet radius fills the screen from low orbit, so this is the largest
+    // single per-fragment cost in the space tier and nothing could measure it.
+    let disabled = *clouds_disabled.get_or_insert_with(|| crate::env_flag("CARTO_NO_CLOUDS"))
+        || !dev.clouds_enabled;
+    let want = if space <= 0.0 || disabled {
         Visibility::Hidden
     } else {
         Visibility::Inherited
@@ -2026,7 +2047,7 @@ pub(crate) fn update_globe_clouds(
     if *vis != want {
         *vis = want;
     }
-    if space <= 0.0 {
+    if space <= 0.0 || disabled {
         return;
     }
 

@@ -646,6 +646,12 @@ impl DataLayers {
             fog_density,
             cloud_cover,
             precipitation,
+            // Straight off `dev`, never off the `minimal` snapshot: driver mode
+            // suppresses the *weather*, and this toggle is not weather. Reading it
+            // from the snapshot would be the bug this method exists to avoid, one
+            // field further in — quitting mid-drive would hand back "the user
+            // turned clouds off" as a preference they never set.
+            clouds: dev.clouds_enabled,
         }
     }
 
