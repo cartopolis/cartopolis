@@ -1,7 +1,7 @@
 ---
 topic: checking-the-web-build
-triggers: [wasm32, "web build", trunk, deploy-web.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain"]
-updated: 2026-08-10
+triggers: [wasm32, "web build", trunk, deploy-web.yml, build-std, wasm_thread, web_sys_unstable_apis, libsqlite3-sys, "cargo check --target", rustup target, "no wasm toolchain", cdp_probe, "headless chromium", SwiftShader]
+updated: 2026-08-23
 ---
 
 # The web build can be checked locally, but not with `cargo check --target`
@@ -82,6 +82,26 @@ browser. **Every clock in this tree is `web_time::Instant` or
 `bevy_platform::time::Instant`** (natively both are re-exports of std's, so
 there is no native cost and no reason to reach for `std::time` at all); a fresh
 `use std::time::Instant` in code a wasm target can reach is a crash, not a lint.
+
+## The browser harness cannot diagnose a device loss
+
+`tools/cdp_probe.ts` under headless Chromium on SwiftShader **loses the WebGPU
+device on any page that presents to a canvas** — measured 2026-08-23 with a
+twenty-line page whose whole body is `configure()` + clear + `submit()`, no
+allocations: `device.lost` fires within a second (`reason: "destroyed"`, or
+`unknown` with `A valid external Instance reference no longer exists`). A
+control page rendering to an offscreen texture with a readback is never lost and
+returns correct pixels, so it is canvas presentation, not the adapter or the
+workload. This cost a session: five probe runs against the deployed client
+"reproduced" a `DeviceLost` that was entirely the harness's own.
+
+So: before attributing any device loss seen in the probe to the app, run the
+trivial canvas page; and treat everything downstream of a probe-side loss — the
+halted renderer, the blank canvas, the follow-on ECS panic — as void. What the
+probe remains good for: console output, Rust panics, request accounting, adapter
+identity, how far startup got — and the reload-recovery path itself
+([web-device-loss.md](web-device-loss.md)), which its guaranteed loss exercises
+end to end.
 
 ## `audio` is a default feature, so the web build has none
 

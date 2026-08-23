@@ -81,10 +81,14 @@
     <script>
       (function () {
         var lines = [];
+        var seq = 0;
         window.__boot = { lines: lines, failed: false, onLine: null };
         function push(level, text) {
           if (lines.length > 400) lines.shift();
-          lines.push({ level: level, text: text });
+          // A monotonic id, so the renderer can append what is new instead of
+          // rebuilding the buffer per line. `lines` is a sliding window and its
+          // indices shift, so position cannot answer "have I drawn this one".
+          lines.push({ level: level, text: text, n: ++seq });
           if (window.__boot.onLine) window.__boot.onLine();
         }
         function fmt(args) {
@@ -108,6 +112,19 @@
             orig.apply(null, arguments);
           };
         });
+        // A boot that follows a render halt is a *recovery*, and should say so:
+        // the Rust side reloads the page after a lost graphics device (capped —
+        // see `exit_on_halt` on wasm) and leaves its streak counter in
+        // sessionStorage. Without this line the retry is indistinguishable from
+        // a first visit, and a device that gets lost on every boot looks like a
+        // loader that mysteriously runs twice.
+        try {
+          var reloads = sessionStorage.getItem("carto-halt-reloads");
+          if (reloads) push("warn", "recovering from a lost graphics device (reload " + reloads + ")");
+        } catch (e) {
+          // Storage can be unavailable (privacy modes); the Rust side then
+          // never reloads, so there is nothing to report either.
+        }
         window.addEventListener("error", function (e) {
           window.__boot.failed = true;
           push("error", e.message + (e.filename ? " (" + e.filename + ")" : ""));
@@ -539,8 +556,23 @@
       #checks li[data-ok="no"] .label { color: #e88b7d; }
       #bootlog {
         width: min(64rem, 100%);
-        height: 9rem;
-        overflow: hidden;
+        /* Scrollable, and tall enough to hold a paragraph. It was a fixed 9rem
+           with `overflow: hidden`, which is fine on a desktop and useless on the
+           phone this panel exists for: one `tracing` line wraps to five or six
+           visual rows there, so the box showed a single log line and offered no
+           way to reach the ones above it. That is exactly the wrong shape for
+           the thing it is — the app keeps logging after a failure (storage,
+           coverage manifests), so the ERROR worth reading is pushed out of a
+           one-line window within a second of arriving, and the only reason the
+           2026-08-23 device loss was ever read off a phone is that it was
+           text-selected and dragged out by hand. */
+        height: min(22rem, 40vh);
+        overflow-y: auto;
+        /* Don't hand the scroll to the page once this reaches its end — the
+           loader fills the viewport, so the chain would just rubber-band. */
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: #647f8f transparent;
         margin: 0;
         padding: 0.6rem 0.8rem;
         box-sizing: border-box;
@@ -977,15 +1009,27 @@
         var loader = document.getElementById("loader");
         var log = document.getElementById("bootlog");
 
+        var drawn = 0;
         function render() {
           var b = window.__boot;
-          log.textContent = "";
-          b.lines.slice(-10).forEach(function (l) {
+          // Whether the reader is parked at the bottom, asked *before* anything
+          // is appended. Scrolling back to read a failure has to survive the
+          // lines that keep arriving after it, so only a reader already at the
+          // end gets followed down.
+          var stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+          for (var i = 0; i < b.lines.length; i++) {
+            var l = b.lines[i];
+            if (l.n <= drawn) continue;
             var span = document.createElement("span");
             span.className = l.level;
             span.textContent = l.text + "\n";
             log.appendChild(span);
-          });
+            drawn = l.n;
+          }
+          // Match the recorder's own window, or a long session grows a DOM node
+          // per line forever.
+          while (log.childNodes.length > 400) log.removeChild(log.firstChild);
+          if (stick) log.scrollTop = log.scrollHeight;
           if (b.failed) loader.dataset.state = "failed";
         }
         window.__boot.onLine = render;
