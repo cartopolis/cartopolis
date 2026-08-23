@@ -37,7 +37,16 @@
 //! one relaxed atomic store per frame and a sleeping thread.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+// `web_time`, not `std::time`. The *watcher* is native-only, but [`beat`] is a
+// system in `Last` on every target, so `elapsed_ms` runs in the browser too —
+// and `std::time::Instant::now()` on `wasm32-unknown-unknown` is the
+// `unsupported` stub that panics "time not implemented on this platform".
+// `b2f97bc` gated the watcher's constants and statics so the wasm build
+// compiled again; it left this clock behind, and a build that compiles is not a
+// build that runs. The panic landed at the end of the first frame — before
+// anything was drawn — so the web client died on load with a message that names
+// std and nothing of ours. Natively this is a re-export of `std::time::Instant`.
+use web_time::Instant;
 
 // Native-only, alongside the three items below them that are the only users. See
 // the comment on `STALL`.
