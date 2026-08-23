@@ -148,10 +148,39 @@
          dead meter. Playback needs nothing: RECORD_AUDIO gates capture only,
          which is why the soundscape has always worked without it.
 
-         Deliberately **not** here: FOREGROUND_SERVICE / its MICROPHONE type.
-         Voice runs only while the app is on screen — there is no service, and
-         the capture stops with the panel that opened it. -->
+         Note the type below is DATA_SYNC and **not** MICROPHONE: voice still runs
+         only while the app is on screen, and the capture stops with the panel
+         that opened it. Backgrounded, the connection stays up and the microphone
+         does not. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- The background connection (`ConnectionService`, `systems::background`).
+         FOREGROUND_SERVICE is normal, granted at install. The typed permission
+         is required from API 34 and must match the service's
+         `foregroundServiceType` exactly, or `startForeground` throws
+         SecurityException at the moment the user first switches the feature on.
+
+         **DATA_SYNC and not LOCATION**, deliberately, even though LOCATION is the
+         type without a runtime cap. A foreground-service type is a declaration of
+         what the service *does*, and this one holds a socket open; claiming
+         LOCATION for it would be false today and is the kind of claim that gets
+         an app pulled. When the avatar-tracking work lands and the service really
+         does read the device's position in the background, LOCATION becomes the
+         honest type and this line changes with it.
+
+         The cap that buys: apps *targeting* Android 15 get ~6 h of DATA_SYNC per
+         24 h. targetSdkVersion here is 34, so it does not apply yet — but it will
+         the day that number moves, and the answer then is the tracking work, not
+         a quieter type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- The ongoing notification the service is obliged to show. *Dangerous* from
+         API 33, so it is a runtime ask like RECORD_AUDIO — and unlike RECORD_AUDIO
+         a refusal is not fatal: the service still runs, Android just does not
+         display its notification. `background::apply` asks before starting, and
+         carries on either way. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Advisory, as with the GNSS and camera entries: a device with no
          microphone still installs and simply cannot transmit. -->
@@ -253,5 +282,18 @@
                 <data android:scheme="cartopolis" />
             </intent-filter>
         </activity>
+
+        <!-- The background connection. `exported="false"`: nothing outside this
+             app may start it, and nothing needs to — Rust starts it by explicit
+             Intent from `platform::android::set_background_service`.
+
+             `foregroundServiceType` must match the typed permission declared
+             above; from API 34 the value passed to `startForeground` has to be in
+             this set too, so the three are one fact written in three places and
+             they move together. -->
+        <service
+            android:name=".ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

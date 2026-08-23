@@ -548,6 +548,23 @@ pub struct AppPrefs {
     /// on a handset it is the only frame counter there is.
     #[serde(default)]
     pub show_stats: bool,
+    /// Hold the connection open while the app is off screen
+    /// (`systems::background`, `ConnectionService.java`).
+    ///
+    /// **Defaults to off, and that is not timidity.** On Android the feature *is*
+    /// a permanent notification in the shade — Android obliges a foreground
+    /// service to show one — plus a process that no longer gets frozen. Neither
+    /// is something to hand somebody who has not asked for it, and the one thing
+    /// worse than a phone that misses a message is a phone whose battery went
+    /// somewhere the user cannot see. Off until asked for.
+    ///
+    /// Read on every platform and acted on by exactly one: a desktop keeps its
+    /// socket for as long as the process lives, and a wasm client dies with its
+    /// tab. `systems::background` documents why the field is not `cfg`-gated to
+    /// match — a preference that exists only on some builds is a `user.json` that
+    /// loses a setting when it is carried between them.
+    #[serde(default)]
+    pub background_connection: bool,
     /// The `CARTO_*` bisecting switches. Startup only, like [`Self::sky`], and
     /// overridden by an explicit env var or `debug.carto.*` property — see
     /// [`DebugSwitches`] for why they are persisted at all.
@@ -591,6 +608,7 @@ impl Default for AppPrefs {
             shadows: None,
             sky_lighting: None,
             show_stats: false,
+            background_connection: false,
             debug_switches: DebugSwitches::default(),
         }
     }
@@ -1625,6 +1643,10 @@ mod tests {
             shadows: Some(false),
             sky_lighting: Some(true),
             show_stats: true,
+            // Non-default, like everything else here: the field defaults to
+            // `false`, so a round trip that left it `false` would pass with the
+            // field missing from the document entirely.
+            background_connection: true,
             // Set, for the same reason the two `Some(..)` above are: a nested
             // object that round-trips only while it is all-default proves nothing
             // about the nesting.

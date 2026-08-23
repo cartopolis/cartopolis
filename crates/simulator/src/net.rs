@@ -404,6 +404,15 @@ pub async fn handle_connection<T: FrameTransport>(
         .checked_sub(MIN_SCRIPT_STORE_INTERVAL * SCRIPT_STORE_BURST)
         .unwrap_or_else(Instant::now);
 
+    // Whether this client is being looked at (`NetMessage::SetPresence`).
+    //
+    // Starts `true`: a client that never sends the message — every build older
+    // than protocol 18, and every desktop — behaves exactly as it always did.
+    // Only the snapshot arm below reads this; chat, voice, prim updates and
+    // everything else are delivered to an idle client unchanged, which is the
+    // entire point of holding the connection open.
+    let mut presence_active = true;
+
     let mut outcome: anyhow::Result<()> = Ok(());
     loop {
         // No `biased;`. It polled `framed.next()` first, and the rate limiters in
@@ -487,6 +496,21 @@ pub async fn handle_connection<T: FrameTransport>(
                             NetMessage::Teleport { position, .. } => {
                                 let mut w = world.write().await;
                                 w.teleport_avatar(avatar_id, position);
+                            }
+                            NetMessage::SetPresence { active, .. } => {
+                                // Deliberately not rate-limited, unlike the intent
+                                // and chat arms above. It is an *edge* — one
+                                // message when the app leaves the screen and one
+                                // when it comes back — and a dropped one is not
+                                // corrected by the next: refusing the "I'm back"
+                                // would leave a foregrounded client with no world
+                                // state and nothing to make it ask again. A client
+                                // that flapped the flag would only be choosing
+                                // whether to receive its own snapshots.
+                                if presence_active != active {
+                                    presence_active = active;
+                                    tracing::debug!(avatar_id, active, "presence");
+                                }
                             }
                             NetMessage::ClientHello { .. } => {
                                 tracing::warn!("duplicate hello ignored");
@@ -1066,6 +1090,20 @@ pub async fn handle_connection<T: FrameTransport>(
             snap = snap_rx.recv() => {
                 match snap {
                     Ok(bytes) => {
+                        // This channel carries prim upserts, removals and capacity
+                        // updates as well as snapshots, so the filter is per-kind
+                        // and not per-channel: an idle client still needs to be
+                        // told a prim changed, it just does not need thirty full
+                        // world states a second it cannot draw. `frame_kind` reads
+                        // the header rather than decoding the payload — decoding a
+                        // whole snapshot to discard it would cost more than
+                        // sending it.
+                        if !presence_active
+                            && cartopolis_core::protocol::frame_kind(&bytes)
+                                == Some(cartopolis_core::protocol::MessageKind::WorldSnapshot)
+                        {
+                            continue;
+                        }
                         if let Err(e) = framed.send(Bytes::from(bytes)).await {
                             outcome = Err(e.into());
                             break;

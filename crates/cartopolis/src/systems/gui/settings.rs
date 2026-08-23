@@ -583,6 +583,32 @@ fn general_tab(ui: &mut egui::Ui, prefs: &mut AppPrefs) {
         ui,
         "The screen lock is the system's until this build can ask it to wait.",
     );
+
+    // Android only, and **hidden rather than disabled** — the opposite call to
+    // the one `world_tab` makes for its manual controls, for a reason. A disabled
+    // control says "not now"; there is no "now" on the other two platforms. A
+    // desktop holds its socket for as long as the process lives, so the setting
+    // is already true there and switching it would change nothing; a wasm client
+    // dies with its tab, so it would be a promise the build cannot keep.
+    #[cfg(target_os = "android")]
+    {
+        ui.add_space(8.0);
+        ui.separator();
+        section(ui, "Connection");
+        theme::checkbox(
+            ui,
+            &mut prefs.background_connection,
+            "Stay connected in the background",
+        );
+        // Said plainly and before the fact, because both consequences are things
+        // a person would otherwise discover in the notification shade and the
+        // battery breakdown, and neither is undoable from there.
+        pending(
+            ui,
+            "Adds a permanent notification while it is on, and keeps the app \
+             running when you leave it. Only applies while signed in.",
+        );
+    }
 }
 
 /// World: the clock and the weather over the map.
