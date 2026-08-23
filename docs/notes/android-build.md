@@ -246,6 +246,20 @@ Four things about the lane are load-bearing, and three of them fail *silently*:
   both the class files and the output; `deploy-android.yml` asserts on the
   packaged archive and on `hasCode` in the *compiled* manifest.
 
+**Verified on a running Android, not inferred** (2026-08-23, the API 34 emulator
+on the VPS, arm64 APK through `ndk-translation` — so the artifact under test is
+the one that ships). `report_dex` at startup:
+
+```
+classes.dex is loaded and callable  via_find_class = false  probe = DexProbe on API 34
+```
+
+`via_find_class = false` is the measurement worth keeping: the bare `FindClass`
+really does fail from `android_main`'s thread while `getClassLoader()` +
+`loadClass` succeeds on the same thread, in the same frame. That trap is
+confirmed rather than assumed, and it is why the probe reports which route won
+instead of only that one did.
+
 What this does **not** change: the IME. That is a GameActivity/AAR problem, not a
 dex problem — see the NativeActivity section above.
 
