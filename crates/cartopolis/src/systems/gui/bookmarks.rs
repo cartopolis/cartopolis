@@ -456,7 +456,7 @@ pub fn render_bookmarks_panel(
     // sets `act` never runs — but `flatten` is not free: it clones a `String` per
     // node and, for every folder, walks all bookmarks calling `is_descendant`. That
     // is O(folders × places × depth) plus an allocation per row, every frame, for a
-    // panel nobody is looking at. `render_route_panel` guards itself the same way.
+    // panel nobody is looking at. `render_route_sheet` guards itself the same way.
     if !open_before {
         return;
     }

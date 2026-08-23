@@ -1,6 +1,6 @@
 //! The place card: what a picked search result opens instead of a panel.
 //!
-//! Organic Maps' place page, sized to what this client can do with a place. The
+//! A phone map's place page, sized to what this client can do with a place. The
 //! search panel used to stay open after a pick, covering the destination it had
 //! just flown you to; now the pick closes the panel, the map shows the place,
 //! and this card rises above the dock carrying the verbs a place affords:
@@ -102,6 +102,14 @@ pub fn render_place_card(
         return;
     }
     if egui.compact() && !right_panel.is(RightPanel::None) {
+        return;
+    }
+    // And the route planner at any width: it is a bottom sheet now
+    // (`navigation::SheetDetent`), anchored to the same centre-bottom this card
+    // is, so on a desktop window the two would be drawn on top of each other.
+    // Hidden rather than closed, as above — "Route to" is a verb on *this* place,
+    // and it is still the subject when the planner goes away.
+    if right_panel.is(RightPanel::Route) {
         return;
     }
 

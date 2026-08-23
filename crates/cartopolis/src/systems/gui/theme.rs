@@ -1655,17 +1655,33 @@ fn menu_entry_full(
 /// that floor for the touch tier (see `hud::hud_area`) without making it a
 /// 32 pt slab on a desktop.
 pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    ui.add(chip_button(label, selected))
+}
+
+/// [`chip`] at a stated size — for a segmented row whose segments have to be
+/// equal width whatever their words are (the route sheet's travel modes).
+///
+/// Three chips sized to "Car", "Bike" and "Walk" read as three unrelated
+/// buttons; one control with three positions has one width per position.
+pub fn chip_sized(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: bool,
+    size: egui::Vec2,
+) -> egui::Response {
+    ui.add_sized(size, chip_button(label, selected))
+}
+
+fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
     let (fill, stroke, ink) = if selected {
         (ACCENT_MUTED, ACCENT_RING, CREAM)
     } else {
         (SURFACE_RAISED, LINE, TEXT)
     };
-    ui.add(
-        egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
-            .fill(fill)
-            .stroke(Stroke::new(1.0, stroke))
-            .corner_radius(CornerRadius::same(RADIUS_SM)),
-    )
+    egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
+        .fill(fill)
+        .stroke(Stroke::new(1.0, stroke))
+        .corner_radius(CornerRadius::same(RADIUS_SM))
 }
 
 /// The ✕ every panel closes with — **painted, not typed.**

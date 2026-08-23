@@ -77,6 +77,7 @@ pub fn render_place_pins(
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     driver: Res<crate::systems::driver::DriverState>,
+    route: Res<crate::systems::navigation::RouteState>,
 ) {
     // Driver mode owns the screen and strips the map to the route — but this
     // system never learned that, so the teardrops kept drawing over the
@@ -124,6 +125,13 @@ pub fn render_place_pins(
     // added.
     map_rect.max.y -= crate::systems::dock::reserved_bottom();
     map_rect.min.y += crate::systems::dock::reserved_top();
+    // The route planner's sheet, for exactly the same reason and with the same
+    // arithmetic: it is a floating `Area` over the bottom of the map
+    // (`navigation::SheetDetent`), it reserves nothing in the root `Ui`, and the
+    // taps it would lose are "Start driving" and the destination field.
+    if let Some(sheet) = route.sheet_rect {
+        map_rect.max.y = map_rect.max.y.min(sheet.top());
+    }
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.

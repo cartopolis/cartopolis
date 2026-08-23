@@ -628,8 +628,9 @@ pub fn render_map_controls(
     }
 
     if driver.active {
-        // Driving: the rose steps through Organic Maps' navigation orientations,
-        // and stacks under the manoeuvre card that has taken the corner.
+        // Driving: the rose steps through the navigation orientations
+        // (`driver::MapOrientation`), and stacks under the manoeuvre card that has
+        // taken the corner.
         use crate::systems::driver::{CARD_HEIGHT, CARD_MARGIN};
         let cfg = Compass {
             interactive: true,

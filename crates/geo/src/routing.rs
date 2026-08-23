@@ -182,8 +182,8 @@ type Node = (i32, i32);
 
 // ─── Travel modes ────────────────────────────────────────────────────────────
 
-/// How the route is travelled. Organic Maps' three land modes; each one is a
-/// different access filter and speed table over the same graph.
+/// How the route is travelled. The three land modes a map app offers; each one is
+/// a different access filter and speed table over the same graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum TravelMode {
     #[default]
@@ -2131,7 +2131,8 @@ fn ground_m(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 // ─── Formatting helpers (shared by the panel and the tests) ──────────────────
 
-/// "450 m" / "4.3 km" — Organic Maps' distance style.
+/// "450 m" / "4.3 km" — the phone-map distance style: metres under a kilometre,
+/// then one decimal.
 #[must_use]
 pub fn format_distance(m: f64) -> String {
     // Round first, *then* pick the unit. Branching on the raw metres and rounding
