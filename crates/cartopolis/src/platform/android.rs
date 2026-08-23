@@ -60,7 +60,7 @@ use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
 use bevy::android::ANDROID_APP;
-use jni::objects::{GlobalRef, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
 use super::location::{GpsFix, Slot};
@@ -795,7 +795,8 @@ fn display_rotation_inner(env: &mut JNIEnv, activity: &JObject) -> Result<i32, F
 ///
 /// This is how a `cartopolis://` link and a verified `https://cartopolis.org/go`
 /// App Link reach the client (`systems::place_link`). Every class here is a
-/// framework one, so — like `open_url` — the no-dex rule never threatened it.
+/// framework one, so — like `open_url` — this worked back when the APK carried no
+/// `classes.dex` at all.
 ///
 /// **It answers for the launch, and only the launch.** `android-activity` 0.6
 /// surfaces no intent at all, and `android.app.NativeActivity` does not override
@@ -803,10 +804,11 @@ fn display_rotation_inner(env: &mut JNIEnv, activity: &JObject) -> Result<i32, F
 /// the intent that *started* the activity for as long as the process lives. With
 /// `launchMode="singleTask"` in the manifest, tapping a second link while the app
 /// is already running therefore brings the existing task forward showing the place
-/// it was already at, and this function reports the *first* link again. That is a
-/// platform limit rather than an oversight: the fix is a trampoline activity, and a
-/// trampoline is a Java class, and a Java class is a `classes.dex` this APK
-/// deliberately does not have (`docs/notes/android-build.md`). Callers must read it
+/// it was already at, and this function reports the *first* link again. The fix is
+/// a trampoline activity, which is a Java class — and as of the dex lane
+/// (`build-apk.sh`, `report_dex`) the APK *can* carry one, so this is now unbuilt
+/// work rather than the platform limit it used to be
+/// (`docs/notes/android-build.md`). Until it is built, callers must read this
 /// **once**, at startup, or a link followed hours ago will teleport the camera
 /// again.
 ///
@@ -869,6 +871,104 @@ pub fn package_name() -> Option<String> {
             None
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The APK's own Java
+// ---------------------------------------------------------------------------
+
+/// The probe class, in the two spellings JNI insists on: `FindClass` takes an
+/// internal name with slashes, `ClassLoader.loadClass` takes a binary name with
+/// dots. They are the same class, and mixing them up yields a
+/// `ClassNotFoundException` that says nothing about which of the two was wrong.
+const DEX_PROBE_INTERNAL: &str = "eu/garage44/cartopolis/DexProbe";
+const DEX_PROBE_BINARY: &str = "eu.garage44.cartopolis.DexProbe";
+
+/// Call the one method in the APK's `classes.dex` and log whether it worked.
+///
+/// This is the runtime half of the dex lane that `build-apk.sh` now compiles
+/// (see `java/eu/garage44/cartopolis/DexProbe.java` for the build half and the
+/// reasoning). It runs once at `Startup`, and it exists because the interesting
+/// question is not whether a dex is *in* the APK — `unzip -l` answers that at
+/// build time — but whether our own classes are reachable from the thread this
+/// process actually runs Rust on. Those are different questions with different
+/// answers, which is the whole reason this is instrumented rather than assumed:
+///
+/// **`JNIEnv::FindClass` resolves against the classloader of the calling frame,
+/// and a natively-attached thread has no Java frame at all.** JNI then falls
+/// back to the *system* classloader, which knows the framework and nothing about
+/// this APK. `android_main` runs on a thread `android-activity` spawned — never
+/// the Java main thread — so a bare `find_class` for one of our classes fails
+/// here with `ClassNotFoundException` while the identical call would succeed
+/// from a JNI method invoked by Java. Nothing about the failure hints that the
+/// *thread* was the problem, and it is the standard way an Android JNI port
+/// loses an afternoon.
+///
+/// The fix is to ask an object that *does* know: `Context.getClassLoader()` on
+/// the activity returns the app's own loader, and `loadClass` on that finds our
+/// class from any thread. Every future Java class — the foreground service
+/// first — needs this same route, so the probe reports which of the two worked
+/// rather than only that one of them did. If `via_find_class` is ever `true` on
+/// a real device, this comment is wrong and the dance can go.
+pub fn report_dex() {
+    match dex_probe() {
+        Ok((via_find_class, probe)) => tracing::info!(
+            via_find_class,
+            probe = %probe,
+            "classes.dex is loaded and callable"
+        ),
+        // `error!`, not `warn!`: nothing else in the app has failed, but every
+        // Java-shaped feature planned on top of this lane is dead if it does,
+        // and on a phone this line is the only place that would ever say so.
+        Err(msg) => tracing::error!(error = %msg, "classes.dex is NOT reachable"),
+    }
+}
+
+/// `(the bare FindClass worked, what the class returned)`.
+fn dex_probe() -> Result<(bool, String), String> {
+    let java_vm = vm()?;
+    let mut env = java_vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach_current_thread: {e}"))?;
+    let activity = activity();
+    match dex_probe_inner(&mut env, &activity) {
+        Ok(answer) => Ok(answer),
+        Err(Fail(msg)) => {
+            clear_pending(&env);
+            Err(msg)
+        }
+    }
+}
+
+fn dex_probe_inner(env: &mut JNIEnv, activity: &JObject) -> Result<(bool, String), Fail> {
+    env.with_local_frame(8, |env| {
+        // Tried first, and only so the log records the answer — see the note
+        // above. The failure leaves a `ClassNotFoundException` pending, and a
+        // pending throw makes every later JNI call on this thread undefined, so
+        // it is cleared here rather than at the outer boundary.
+        let via_find_class = env.find_class(DEX_PROBE_INTERNAL).is_ok();
+        if !via_find_class {
+            clear_pending(env);
+        }
+
+        let loader = env
+            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
+            .l()?;
+        let name = env.new_string(DEX_PROBE_BINARY)?;
+        let class = env
+            .call_method(
+                &loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        let text = env
+            .call_static_method(JClass::from(class), "probe", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let text: String = env.get_string(&JString::from(text))?.into();
+        Ok::<(bool, String), Fail>((via_find_class, text))
+    })
 }
 
 // ---------------------------------------------------------------------------

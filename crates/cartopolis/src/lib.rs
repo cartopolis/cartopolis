@@ -1884,6 +1884,14 @@ fn run_client() {
             // `quality::init` answers the question before `LogPlugin` exists, so
             // its own line has never reached logcat. See `quality::report_budget`.
             quality::report_budget,
+            // Whether the APK's own `classes.dex` is loaded and callable from the
+            // thread `android_main` runs on. Reported for the same reason the
+            // budget above is: it is a startup fact with no other instrument on a
+            // phone, and every Java-shaped feature planned on top of the dex lane
+            // — the background-connection service first — is dead if it is `NOT
+            // reachable`.
+            #[cfg(target_os = "android")]
+            platform::android::report_dex,
             systems::free_camera::setup_camera,
             // After the camera, which is where this run's `SkyMode` is decided —
             // it can't be known before the render device exists.

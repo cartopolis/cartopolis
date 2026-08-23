@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build an installable Cartopolis APK, with no Gradle and no Java source.
+# Build an installable Cartopolis APK, with no Gradle.
 #
 #   crates/cartopolis_android/build-apk.sh              # arm64, android-release
 #   ABI=x86_64 PROFILE=dev ./build-apk.sh             # emulator, faster build
@@ -14,9 +14,9 @@
 # Required in the environment (or discovered under $ANDROID_HOME):
 #   ANDROID_NDK_HOME   NDK r27+                        (compiler, linker, sysroot)
 #   ANDROID_SDK_HOME   an SDK root with platforms/ and build-tools/
-#   JAVA_HOME          a JDK 17+                       (apksigner and keytool are
-#                                                       Java programs; nothing here
-#                                                       compiles Java)
+#   JAVA_HOME          a JDK 17+                       (javac builds java/; apksigner,
+#                                                       keytool and d8 are themselves
+#                                                       Java programs)
 #
 # Optional:
 #   ANDROID_KEY        PKCS#8 DER private key          )  sign with *this* identity
@@ -111,8 +111,13 @@ android_jar=$(ls -d "$ANDROID_SDK_HOME"/platforms/android-*/android.jar 2>/dev/n
 AAPT2="${build_tools}aapt2"
 ZIPALIGN="${build_tools}zipalign"
 APKSIGNER="${build_tools}apksigner"
+D8="${build_tools}d8"
 KEYTOOL="$JAVA_HOME/bin/keytool"
-export PATH="$JAVA_HOME/bin:$PATH"   # apksigner is a shell script that runs `java`
+JAVAC="$JAVA_HOME/bin/javac"
+# apksigner and d8 are both shell scripts that `exec java`, and neither looks at
+# $JAVA_HOME — d8 fails with a bare `exec: java: not found` if this line is ever
+# dropped, which reads as a missing SDK rather than a missing PATH entry.
+export PATH="$JAVA_HOME/bin:$PATH"
 
 # Not a bare `target/`: this repo's containers set CARGO_TARGET_DIR to one shared
 # directory (docs/notes/sccache-parallel-builds.md), so `target/` is where the
@@ -379,6 +384,44 @@ echo "    version $VERSION_NAME (code $VERSION_CODE)"
 mkdir -p "$work/assets"
 cp LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-THIRD-PARTY.md "$work/assets/"
 (cd "$work" && zip -q -r unaligned.apk assets)
+
+echo "==> java + dex"
+# The APK's Java, compiled by hand. This is the whole of what Gradle would have
+# been brought in to do, and it is two commands: `javac` against the platform
+# jar, then `d8` to turn the class files into the single `classes.dex` the
+# runtime loads. No Gradle, no AGP, no AAR resolution — and, deliberately, no
+# Google Play services in the graph (`java/eu/garage44/cartopolis/DexProbe.java`
+# has the reasoning).
+#
+# `-classpath` and not `-bootclasspath`: on a JDK 17 the latter is gone, and the
+# platform jar is an ordinary compile-time dependency. Nothing here needs
+# `-source`/`-target` either — d8 desugars whatever javac emits down to
+# `--min-api`, which is why that flag takes $MIN_SDK rather than a constant.
+#
+# `-encoding UTF-8` is not optional and not cosmetic. javac defaults to the
+# *platform* encoding, which in a container with no locale set is US-ASCII — and
+# this tree's comment style is full of em dashes, so without it the build fails
+# with eighteen "unmappable character (0xE2)" errors on a file that is perfectly
+# valid. Naming the encoding also makes the build independent of the CI image's
+# locale, which is the more important half.
+mkdir -p "$work/classes"
+mapfile -t java_src < <(find crates/cartopolis_android/java -name '*.java' | sort)
+[ ${#java_src[@]} -gt 0 ] || { echo "error: no .java under crates/cartopolis_android/java" >&2; exit 2; }
+"$JAVAC" -encoding UTF-8 -classpath "$android_jar" -d "$work/classes" "${java_src[@]}"
+mapfile -t class_files < <(find "$work/classes" -name '*.class' | sort)
+# Guarded because **d8 given no inputs exits 0 and writes nothing**: the APK
+# would then ship without a `classes.dex`, and the only symptom would be a
+# ClassNotFoundError at runtime, on a phone, long after the build said OK.
+[ ${#class_files[@]} -gt 0 ] || { echo "error: javac produced no .class files" >&2; exit 2; }
+# `--lib` is what lets d8 desugar against the framework; without it anything
+# using a default method or a lambda fails to dex with a message about a missing
+# type rather than about desugaring.
+"$D8" --min-api "$MIN_SDK" --lib "$android_jar" --output "$work" "${class_files[@]}"
+[ -f "$work/classes.dex" ] || { echo "error: d8 wrote no classes.dex" >&2; exit 2; }
+# At the archive root, uncompressed-agnostic: the runtime finds `classes.dex` by
+# that exact name and nothing else looks at it.
+(cd "$work" && zip -q unaligned.apk classes.dex)
+echo "    ${#java_src[@]} source file(s) -> classes.dex ($(du -h "$work/classes.dex" | cut -f1))"
 
 echo "==> native lib"
 mkdir -p "$work/lib/$ABI"
