@@ -1200,9 +1200,9 @@ pub fn camera_controls(
                     if let Some(last_pos) = camera_state.pan_offset {
                         let delta = event.position - last_pos;
                         if delta != Vec2::ZERO {
-                            // Manually orbiting drops follow-and-rotate — the same as
-                            // Organic Maps stopping heading-follow the moment you drag
-                            // the map yourself.
+                            // Manually orbiting drops follow-and-rotate — the phone-map
+                            // convention: dragging the map yourself stops it following
+                            // your heading.
                             camera_state.follow_rotate = false;
                         }
                         camera_state.azimuth -= delta.x * 0.005;

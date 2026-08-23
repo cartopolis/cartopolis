@@ -127,7 +127,7 @@ opens the menu also does whatever the widget does. First hit in the Places panel
 
 ## Gesture vocabulary, and where it came from
 
-Phone-map convention (Google Maps, Organic Maps), not the mouse's:
+Phone-map convention, not the mouse's:
 
 | Gesture | Earth surface | Earth space | Follow | Fly |
 |---|---|---|---|---|

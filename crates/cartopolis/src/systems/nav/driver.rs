@@ -329,8 +329,8 @@ const OFF_ROUTE_GRACE: f32 = 2.0;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-/// How the map is held while driving — Organic Maps' navigation cycle, and what
-/// the compass button steps through.
+/// How the map is held while driving — the three orientations every turn-by-turn
+/// app offers, and what the compass button steps through.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MapOrientation {
     /// The map turns with you: the course points up the screen, flat and from
