@@ -48,21 +48,27 @@ re-take them with the command rather than trusting a table to stay true.
 
 ## Reading from the committed hatch, 2026-08-24 (agent container, `--release`)
 
+Taken **with the paint batching of the section below already in** — the 78.5 ms
+per-feature render it replaced is in that section's table.
+
 | Stage | min | note |
 |---|---|---|
-| parse (Groningen z14) | 4.8 ms | |
-| parse + decode all layers | 14.8 ms | decode alone ≈ 10 ms |
-| `render_mvt_sized` 512² whole | 76.8 ms | |
-| `render_mvt_sized` 256² whole | **56.5 ms** | see below |
-| render 256², 1/64 overzoom sub | 8.3 ms | the cull at work |
-| mip chain over the 512² render | 11.0 ms | |
-| `water_shore_field` | 19.5 ms | |
+| parse (Groningen z14) | 4.7 ms | |
+| parse + decode all layers | 14.7 ms | decode alone ≈ 10 ms |
+| `render_mvt_sized` 512² whole | 67.6 ms | |
+| `render_mvt_sized` 256² whole | **48.6 ms** | see below |
+| render 256², 1/64 overzoom sub | 8.2 ms | the cull at work |
+| mip chain over the 512² render | 9.9 ms | |
+| `water_shore_field` | 19.4 ms | |
 | `ocean_mask` 256² | 0.3 ms | |
 | `tessellate_surfaces` / `_roads` / `_bridges` | 0.8 / 3.1 / 0.01 ms | |
 
 And the end-to-end pair the harness columns were built for, same day, release
 build, lavapipe, Groningen at 420 m (`--settle 2 --wait 90`,
-`CARTO_CACHE_DIR` fresh vs reused):
+`CARTO_CACHE_DIR` fresh vs reused). Taken on the client build **just before the
+paint batching landed** — the `map_tiles` busy column is the stage batching
+made ~13% cheaper per tile, so re-take the pair rather than quoting these
+absolutes; the attribution and the cold/warm shape are what this table holds:
 
 | | cold | warm |
 |---|---|---|
@@ -85,16 +91,20 @@ TTFB dominates body 18:1 even cold — measured from the VPS where RTT ≈ 0, so
 that is TLS plus server time per request, already hidden by concurrency; it is
 not a bandwidth story on this link.
 
-**A 256² render costs 74% of a 512² one, not 25%.** Scan conversion scales with
-area; the other three quarters of a quarter never arrived, so most of
-`render_mvt` on this dense tile is **per-feature path construction**, not
-pixels. The allocation budgets saw this from the other side (the two sizes
-allocate identically — `RENDER_DENSE_ALLOCS`'s comment); the clock now agrees.
-Two consequences: the phone tier's `tile_px = 256` buys less rasterise time than
-its area ratio suggests on dense tiles, and the next real win in this pipeline
-is per-feature — e.g. the paths still built twice for the twice-listed
-`buildings`/`streets` entries in `PAINT_ORDER`, which the memoised decode does
-not deduplicate.
+**A 256² render costs ~72% of a 512² one, not 25% — and batching did not
+change that.** Scan conversion scales with area (≈25 ms of the 67.6 at 512²);
+the rest is size-independent, per-path work. Before the batching it was
+per-*feature* (the pre-batching pair read 56.5/76.8 = 74%, and the two sizes
+allocated identically); after it the per-call floor is paid per *run* and the
+residual fixed share is dominated by the path geometry itself plus the capped
+fill chunks. Two things follow: the phone tier's `tile_px = 256` buys less
+rasterise time than its area ratio suggests on dense tiles, and further wins in
+this stage are in the batching's own knobs (`FILL_BATCH_POINTS`, run lengths) —
+the section below has what batching bought and what it must keep. A related
+attempt from the same day is worth recording so it is not repeated: sharing the
+built path between a layer's two paint passes (fill+outline, casing+fill) cut
+allocations 25% and moved the clock **not at all** — path construction was
+never the time, and batching then removed those builds anyway.
 
 ## The validated per-pass split, and what batching bought (2026-08-24)
 
