@@ -729,6 +729,18 @@ fn render_mvt_culled(
     };
 
     for (layer_name, draw) in PAINT_ORDER {
+        // Timed per pass (not per layer — `streets` and `buildings` are each two
+        // passes with very different costs) so `dump_paint_split` attributes the
+        // real loop, not a reconstruction of it. See `perf::passes`.
+        #[cfg(test)]
+        let pass_t0 = std::time::Instant::now();
+        #[cfg(test)]
+        let pass_label: &'static str = match draw {
+            Draw::Streets { casing: true } => "streets (casing)",
+            Draw::Streets { casing: false } => "streets (fill)",
+            Draw::Outline { .. } => "buildings (outline)",
+            _ => layer_name,
+        };
         let Some(meta) = tile.layer(layer_name) else {
             continue;
         };
@@ -785,14 +797,36 @@ fn render_mvt_culled(
             v
         });
 
-        let mut draw_feature = |feature: &Feature| {
+        // One batched submission per (colour, width) run instead of one
+        // `fill_path`/`stroke_path` per feature. Measured on the Groningen z14
+        // fixture (`dump_paint_split`), the per-call cost dominated the paint —
+        // the two `buildings` passes alone were 77% of the loop at ~4 µs per
+        // call across 8,552 features, most of it tiny-skia's per-call setup
+        // (clone + transform the path, build and sort the edge list, raise a
+        // blitter) rather than scan conversion. A run only ends where the colour
+        // or width changes, so paint order between different styles is
+        // untouched; within a run the features share one opaque style, where
+        // draw order cannot matter. Batching also renders shared edges
+        // watertight — one path accumulates signed coverage analytically, so
+        // adjacent buildings no longer show an anti-aliased seam along a party
+        // wall, and same-style strokes no longer double-blend where they overlap
+        // at a junction.
+        let mut batch = PathBuilder::new();
+        let mut batch_key: Option<BatchKey> = None;
+        let mut batch_points: usize = 0;
+
+        let ordered: Vec<&Feature> = match street_order {
+            Some(list) => list,
+            None => features.iter().collect(),
+        };
+        for feature in ordered {
             let kind = kind_of(feature);
             // Bounds once per feature, reused by whichever arm draws it. tiny-skia
             // has no early-out of its own: `fill_path` clones and transforms the
             // whole path before any bounds test (its `// TODO: ignore paths
             // outside the pixmap` is still there), and `stroke_path` builds the
-            // full stroke outline first. So an off-screen feature costs a
-            // `PathBuilder`, a `Path`, a transform pass and — for a non-hairline
+            // full stroke outline first. So an off-screen feature costs its
+            // share of a path, a transform pass and — for a non-hairline
             // width — a complete round-joined outline, to rasterise nothing.
             let bounds = if cull {
                 geometry_bounds(&feature.geometry)
@@ -809,18 +843,11 @@ fn render_mvt_culled(
                 let m = (half_width_px + 1.5) / scale;
                 x1 >= win.0 - m && x0 <= win.2 + m && y1 >= win.1 - m && y0 <= win.3 + m
             };
-            match draw {
-                Draw::Fill(rgb) => {
-                    if !visible(0.0) {
-                        return;
-                    }
-                    paint.shader = shader(*rgb);
-                    fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
-                }
+            // What this pass paints the feature with: a colour, and a stroke
+            // width for line work (`None` = fill). `None` overall = not drawn.
+            let style: Option<(u32, Option<f32>)> = match draw {
+                Draw::Fill(rgb) => Some((*rgb, None)),
                 Draw::FillByKind { default, kinds } => {
-                    if !visible(0.0) {
-                        return;
-                    }
                     let mut rgb = kind
                         .and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
                         .unwrap_or(*default);
@@ -831,35 +858,10 @@ fn render_mvt_culled(
                             _ => rgb,
                         };
                     }
-                    paint.shader = shader(rgb);
-                    fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
+                    Some((rgb, None))
                 }
-                Draw::Line { color, width } => {
-                    if !visible(width * wf * 0.5) {
-                        return;
-                    }
-                    paint.shader = shader(*color);
-                    stroke_geometry(
-                        &mut pixmap,
-                        &paint,
-                        &feature.geometry,
-                        &transform,
-                        width * wf,
-                    );
-                }
-                Draw::Outline { color, width } => {
-                    if !visible(width * wf * 0.5) {
-                        return;
-                    }
-                    paint.shader = shader(*color);
-                    stroke_geometry(
-                        &mut pixmap,
-                        &paint,
-                        &feature.geometry,
-                        &transform,
-                        width * wf,
-                    );
-                }
+                Draw::Line { color, width } => Some((*color, Some(width * wf))),
+                Draw::Outline { color, width } => Some((*color, Some(width * wf))),
                 Draw::Streets { casing } => {
                     // Past the far threshold the minor network is sub-pixel
                     // noise that greys the whole town; drop it and let the
@@ -878,27 +880,66 @@ fn render_mvt_culled(
                             )
                         )
                     {
-                        return;
-                    }
-                    let (w, fill, case) = street_style(feature, source_m);
-                    let (color, width) = if *casing {
-                        (case, (w + 0.5) * wf)
+                        None
                     } else {
-                        (fill, w * wf)
-                    };
-                    if !visible(width * 0.5) {
-                        return;
+                        let (w, fill, case) = street_style(feature, source_m);
+                        Some(if *casing {
+                            (case, Some((w + 0.5) * wf))
+                        } else {
+                            (fill, Some(w * wf))
+                        })
                     }
-                    paint.shader = shader(color);
-                    stroke_geometry(&mut pixmap, &paint, &feature.geometry, &transform, width);
                 }
+            };
+            let Some((rgb, width)) = style else {
+                continue;
+            };
+            if width.is_some_and(|w| w <= 0.0) {
+                continue;
             }
-        };
-
-        match &street_order {
-            Some(list) => list.iter().for_each(|feat| draw_feature(feat)),
-            None => features.iter().for_each(&mut draw_feature),
+            let key = (rgb, width.map(f32::to_bits));
+            let cap = if width.is_some() {
+                STROKE_BATCH_POINTS
+            } else {
+                FILL_BATCH_POINTS
+            };
+            if batch_key != Some(key) || batch_points >= cap {
+                flush_batch(&mut pixmap, &mut paint, &mut batch, batch_key, &transform);
+                batch_key = Some(key);
+                batch_points = 0;
+            }
+            let points = if visible(width.unwrap_or(0.0) * 0.5) {
+                let points = match width {
+                    None => append_area(&mut batch, &feature.geometry),
+                    Some(_) => append_lines(&mut batch, &feature.geometry),
+                };
+                // Still counted per *feature*, not per flush: `perf::paths`
+                // exists to measure the geometry submitted (what the
+                // overzoom-cull budget asserts on), and batching changes how it
+                // is submitted, not how much.
+                #[cfg(test)]
+                if points > 0 {
+                    crate::perf::paths::record(points);
+                }
+                points
+            } else {
+                // Culled — but the run must still advance exactly as if it had
+                // drawn, or the chunk boundaries (and with them the
+                // anti-aliased overlap blends inside each chunk) would depend
+                // on what was culled, and
+                // `culling_off_screen_features_changes_no_pixels` holds this
+                // path to byte-exact output. Counting coordinates costs a
+                // fraction of the path build, transform pass and stroke
+                // outline the cull exists to skip. A ring whose bounds miss
+                // the window cannot contribute winding inside it, so the
+                // missing subpaths cannot change a drawn pixel.
+                count_points(&feature.geometry, width.is_none())
+            };
+            batch_points += points;
         }
+        flush_batch(&mut pixmap, &mut paint, &mut batch, batch_key, &transform);
+        #[cfg(test)]
+        crate::perf::passes::record(pass_label, pass_t0.elapsed());
     }
 
     // Fully opaque throughout (opaque background, opaque paints), so tiny-skia's
@@ -937,69 +978,151 @@ fn geometry_bounds(geom: &Geometry<f32>) -> Option<(f32, f32, f32, f32)> {
 }
 
 /// Append a ring/line to a path builder. Returns false if it was too short to draw.
-fn push_line(pb: &mut PathBuilder, coords: impl Iterator<Item = (f32, f32)>, close: bool) -> bool {
-    let mut started = false;
+/// A paint-loop run's identity: colour, plus the stroke width's bit pattern for
+/// line work (`None` = fill). Bits rather than the float so the key is `Eq`.
+type BatchKey = (u32, Option<u32>);
+
+/// Cap on points per batched fill submission. Unbounded fill batches lose what
+/// they won: one path holding every building makes tiny-skia's active-edge
+/// table span the whole city on every scanline, and the batched fill measured
+/// *slower* than per-feature calls. Chunks this size keep the per-call setup
+/// amortised while the edge working set stays local (encoder order is roughly
+/// spatial).
+const FILL_BATCH_POINTS: usize = 4096;
+
+/// Strokes are not capped: a stroked batch rasterises its outline pieces as it
+/// goes rather than accumulating one giant edge list, and the measured cost
+/// only fell as stroke batches grew.
+const STROKE_BATCH_POINTS: usize = usize::MAX;
+
+/// Submit an accumulated run to the rasteriser and reset the builder. A `None`
+/// key (nothing accumulated yet) and an empty builder are both no-ops.
+fn flush_batch(
+    pixmap: &mut Pixmap,
+    paint: &mut Paint<'static>,
+    pb: &mut PathBuilder,
+    key: Option<BatchKey>,
+    t: &Transform,
+) {
+    let Some((rgb, width_bits)) = key else {
+        return;
+    };
+    let Some(path) = std::mem::replace(pb, PathBuilder::new()).finish() else {
+        return;
+    };
+    paint.shader = shader(rgb);
+    #[cfg(test)]
+    let t0 = std::time::Instant::now();
+    match width_bits {
+        None => {
+            // Winding, not EvenOdd: a batch holds many features, and where two
+            // same-colour polygons overlap (Shortbread's `land` does this)
+            // EvenOdd XORs the overlap back to background — a pale wedge in a
+            // park. Winding unions them, and still cuts holes because MVT
+            // mandates interior rings wound opposite to their exterior
+            // (verified against the fixture: courtyards render, and the batched
+            // raster's max channel delta vs the per-feature one is 8/255,
+            // all of it anti-aliased edges).
+            pixmap.fill_path(&path, paint, FillRule::Winding, *t, None);
+            #[cfg(test)]
+            crate::perf::passes::record("Σ fill_path", t0.elapsed());
+        }
+        Some(bits) => {
+            let stroke = Stroke {
+                width: f32::from_bits(bits),
+                line_cap: LineCap::Round,
+                line_join: LineJoin::Round,
+                ..Stroke::default()
+            };
+            pixmap.stroke_path(&path, paint, &stroke, *t, None);
+            #[cfg(test)]
+            crate::perf::passes::record("Σ stroke_path", t0.elapsed());
+        }
+    }
+}
+
+/// Push one ring/line, skipping non-finite coordinates. Returns how many points
+/// were pushed — 0 means the geometry contributed nothing.
+fn push_line(pb: &mut PathBuilder, coords: impl Iterator<Item = (f32, f32)>, close: bool) -> usize {
+    let mut points = 0;
     for (x, y) in coords {
         if !x.is_finite() || !y.is_finite() {
             continue;
         }
-        if started {
+        if points > 0 {
             pb.line_to(x, y);
         } else {
             pb.move_to(x, y);
-            started = true;
         }
+        points += 1;
     }
-    if started && close {
+    if points > 0 && close {
         pb.close();
     }
-    started
+    points
+}
+
+/// Append a geometry's *areas* (polygon rings) to `pb`; returns points appended.
+fn append_area(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
+    let mut points = 0;
+    let mut add_poly = |p: &geo_types::Polygon<f32>, pb: &mut PathBuilder| {
+        points += push_line(pb, p.exterior().coords().map(|c| (c.x, c.y)), true);
+        for hole in p.interiors() {
+            points += push_line(pb, hole.coords().map(|c| (c.x, c.y)), true);
+        }
+    };
+    match geom {
+        Geometry::Polygon(p) => add_poly(p, pb),
+        Geometry::MultiPolygon(mp) => {
+            for p in mp {
+                add_poly(p, pb);
+            }
+        }
+        _ => {}
+    }
+    points
+}
+
+/// Append a geometry's *lines* to `pb` — polygon rings count, so the same helper
+/// serves `Draw::Outline`. Returns points appended.
+fn append_lines(pb: &mut PathBuilder, geom: &Geometry<f32>) -> usize {
+    match geom {
+        Geometry::LineString(ls) => push_line(pb, ls.coords().map(|c| (c.x, c.y)), false),
+        Geometry::MultiLineString(mls) => mls
+            .iter()
+            .map(|ls| push_line(pb, ls.coords().map(|c| (c.x, c.y)), false))
+            .sum(),
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => append_area(pb, geom),
+        _ => 0,
+    }
+}
+
+/// Exactly the point count [`append_area`] (`area`) or [`append_lines`]
+/// (`!area`) would push for this geometry, without building anything. Must stay
+/// in lockstep with them: a culled feature advances the batch by this number so
+/// chunking does not depend on the cull.
+fn count_points(geom: &Geometry<f32>, area: bool) -> usize {
+    let finite = |ls: &geo_types::LineString<f32>| -> usize {
+        ls.coords()
+            .filter(|c| c.x.is_finite() && c.y.is_finite())
+            .count()
+    };
+    let poly = |p: &geo_types::Polygon<f32>| -> usize {
+        finite(p.exterior()) + p.interiors().iter().map(finite).sum::<usize>()
+    };
+    match geom {
+        Geometry::Polygon(p) => poly(p),
+        Geometry::MultiPolygon(mp) => mp.iter().map(poly).sum(),
+        Geometry::LineString(ls) if !area => finite(ls),
+        Geometry::MultiLineString(mls) if !area => mls.iter().map(finite).sum(),
+        _ => 0,
+    }
 }
 
 /// Build a path covering a geometry's *areas* (polygon rings), or `None`.
 fn area_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
-    let mut any = false;
-    let add_poly = |p: &geo_types::Polygon<f32>, pb: &mut PathBuilder| {
-        let mut drew = push_line(pb, p.exterior().coords().map(|c| (c.x, c.y)), true);
-        for hole in p.interiors() {
-            drew |= push_line(pb, hole.coords().map(|c| (c.x, c.y)), true);
-        }
-        drew
-    };
-    match geom {
-        Geometry::Polygon(p) => any |= add_poly(p, &mut pb),
-        Geometry::MultiPolygon(mp) => {
-            for p in mp {
-                any |= add_poly(p, &mut pb);
-            }
-        }
-        _ => return None,
-    }
-    if !any {
-        return None;
-    }
-    pb.finish()
-}
-
-/// Build a path covering a geometry's *lines* — polygon rings count, so the same
-/// helper serves `Draw::Outline`.
-fn line_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
-    let mut pb = PathBuilder::new();
-    let mut any = false;
-    match geom {
-        Geometry::LineString(ls) => {
-            any |= push_line(&mut pb, ls.coords().map(|c| (c.x, c.y)), false);
-        }
-        Geometry::MultiLineString(mls) => {
-            for ls in mls {
-                any |= push_line(&mut pb, ls.coords().map(|c| (c.x, c.y)), false);
-            }
-        }
-        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => return area_path(geom),
-        _ => return None,
-    }
-    if !any {
+    if append_area(&mut pb, geom) == 0 {
         return None;
     }
     pb.finish()
@@ -1011,42 +1134,19 @@ fn line_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
 /// `area_path` themselves and throw the path away, building every ring twice.
 fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &Transform) -> bool {
     if let Some(path) = area_path(geom) {
-        // The one place a *filled* path reaches the rasteriser, so the one place
-        // worth counting. Scan conversion barely allocates, so an allocation
-        // budget is blind to it; the geometry submitted is what its cost scales
-        // with. See `perf::paths`.
+        // Counted like the paint loop's appends: scan conversion barely
+        // allocates, so an allocation budget is blind to it; the geometry
+        // submitted is what its cost scales with. See `perf::paths`.
         #[cfg(test)]
         crate::perf::paths::record(path.points().len());
+        #[cfg(test)]
+        let t0 = std::time::Instant::now();
         pixmap.fill_path(&path, paint, FillRule::EvenOdd, *t, None);
+        #[cfg(test)]
+        crate::perf::passes::record("Σ fill_path", t0.elapsed());
         return true;
     }
     false
-}
-
-fn stroke_geometry(
-    pixmap: &mut Pixmap,
-    paint: &Paint,
-    geom: &Geometry<f32>,
-    t: &Transform,
-    width: f32,
-) {
-    if width <= 0.0 {
-        return;
-    }
-    if let Some(path) = line_path(geom) {
-        let stroke = Stroke {
-            width,
-            line_cap: LineCap::Round,
-            line_join: LineJoin::Round,
-            ..Stroke::default()
-        };
-        // Counted for the same reason as the fill, and it matters more here:
-        // tiny-skia builds the complete stroke outline before rasterising
-        // anything, and stroke widths scale with the overzoom factor.
-        #[cfg(test)]
-        crate::perf::paths::record(path.points().len());
-        pixmap.stroke_path(&path, paint, &stroke, *t, None);
-    }
 }
 
 /// Which surface a tessellated polygon belongs to. One group = one mesh = one
@@ -4232,6 +4332,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Not a test — a measurement hatch answering "which paint pass is the
+    /// 121 ms?", timed inside the real loop (`perf::passes`) because the one
+    /// prior per-layer attribution was a reconstruction and summed to more than
+    /// double the measured total. `cargo test -p cartopolis_geo --release
+    /// dump_paint_split -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_paint_split() {
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
+        let whole = || render_mvt_culled(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false);
+        for _ in 0..2 {
+            whole().expect("warmup");
+        }
+        const N: u32 = 50;
+        let (_, passes) = crate::perf::passes::measure(|| {
+            for _ in 0..N {
+                whole().expect("render");
+            }
+        });
+        let loop_total: f64 = passes
+            .iter()
+            .filter(|(l, _)| !l.starts_with('Σ'))
+            .map(|(_, d)| d.as_secs_f64())
+            .sum();
+        println!("whole 512 px tile, mean of {N}:");
+        for (label, d) in &passes {
+            let ms = d.as_secs_f64() * 1000.0 / N as f64;
+            if label.starts_with('Σ') {
+                println!("  {label:<22} {ms:>7.2} ms/tile  (subset of the passes above)");
+            } else {
+                let pct = 100.0 * d.as_secs_f64() / loop_total;
+                println!("  {label:<22} {ms:>7.2} ms/tile  {pct:>5.1}%");
+            }
+        }
+        println!(
+            "  {:<22} {:>7.2} ms/tile",
+            "paint loop total",
+            loop_total * 1000.0 / N as f64
+        );
     }
 
     /// Not a test — an eyeball hatch. `cargo test -p cartopolis_geo
