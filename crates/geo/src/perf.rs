@@ -141,6 +141,15 @@ pub struct Cost {
     /// Only counts allocations made *while armed*, so it is the peak of this
     /// region's own footprint, not of the process.
     pub peak_bytes: i64,
+    /// Live bytes still allocated when the region ended — what the region's
+    /// return value *retains*, as opposed to the traffic it churned.
+    ///
+    /// This is the column that answers "how big is a parsed tile", which
+    /// `docs/notes/tile-raster-cost.md` names as the one number the cross-task
+    /// `Arc<TileData>` cache decision is blocked on. Same caveat as `peak_bytes`:
+    /// it counts only allocations made while armed, so freeing pre-existing
+    /// memory inside the region can drive it below zero.
+    pub retained_bytes: i64,
 }
 
 impl Cost {
@@ -161,6 +170,7 @@ impl Cost {
             allocs: ALLOCS.with(Cell::get),
             bytes: BYTES.with(Cell::get),
             peak_bytes: PEAK.with(Cell::get),
+            retained_bytes: LIVE.with(Cell::get),
         };
         (value, cost)
     }
@@ -169,10 +179,11 @@ impl Cost {
     #[must_use]
     pub fn line(&self, label: &str) -> String {
         format!(
-            "{label:<34} {:>9} allocs  {:>9} KiB traffic  {:>8} KiB peak",
+            "{label:<34} {:>9} allocs  {:>9} KiB traffic  {:>8} KiB peak  {:>8} KiB retained",
             self.allocs,
             self.bytes / 1024,
-            self.peak_bytes / 1024
+            self.peak_bytes / 1024,
+            self.retained_bytes / 1024
         )
     }
 }
@@ -262,6 +273,74 @@ pub mod passes {
         PASSES.with_borrow_mut(Vec::clear);
         let value = f();
         (value, PASSES.with_borrow(Clone::clone))
+    }
+}
+
+/// Wall-clock measurement for the printing hatches — an instrument, never a gate.
+///
+/// The module doc above explains why no *threshold* on a timer can live in CI
+/// here. What that doctrine kept costing was the **instrument**: every timing in
+/// `docs/notes/tile-raster-cost.md` was taken with a throwaway harness built for
+/// the session and reverted with the branch, so each new question started by
+/// rebuilding the ruler. This keeps the ruler and only the ruler — the hatches
+/// that use it are `#[ignore]`d and print, they do not assert.
+///
+/// The statistic is the **minimum** over repeated runs. On a machine shared with
+/// other jobs (this container, CI, a workstation mid-build) every source of noise
+/// is additive — scheduling, cache eviction, a neighbour's compile — so the
+/// minimum is the least-disturbed observation and the one that reproduces. The
+/// median is printed beside it as the honesty check: a wide min/median gap means
+/// the box was busy and the numbers deserve a rerun.
+pub mod stopwatch {
+    use std::time::{Duration, Instant};
+
+    /// How long one measured stage took, over [`time`]'s adaptive repeats.
+    pub struct Timing {
+        pub min: Duration,
+        pub median: Duration,
+        pub iters: usize,
+    }
+
+    /// Repeats stop after this many samples…
+    const MAX_ITERS: usize = 25;
+    /// …or once this much time is spent, whichever comes first — so a 2 ms parse
+    /// gets the full 25 and a 500 ms rasterise doesn't hold the hatch hostage.
+    const MAX_TOTAL: Duration = Duration::from_secs(2);
+    /// Never conclude from fewer than this many samples.
+    const MIN_ITERS: usize = 3;
+
+    /// Time `f`: one warmup run (pays lazy init and cold caches off the record),
+    /// then adaptive repeats. The result is `black_box`ed so the optimiser cannot
+    /// delete the work being measured.
+    pub fn time<T>(mut f: impl FnMut() -> T) -> Timing {
+        std::hint::black_box(f());
+        let mut samples = Vec::with_capacity(MAX_ITERS);
+        let began = Instant::now();
+        while samples.len() < MAX_ITERS
+            && (samples.len() < MIN_ITERS || began.elapsed() < MAX_TOTAL)
+        {
+            let start = Instant::now();
+            std::hint::black_box(f());
+            samples.push(start.elapsed());
+        }
+        let mut sorted = samples.clone();
+        sorted.sort();
+        Timing {
+            min: sorted[0],
+            median: sorted[sorted.len() / 2],
+            iters: samples.len(),
+        }
+    }
+
+    /// One table row for the printing hatches.
+    #[must_use]
+    pub fn line(label: &str, t: &Timing) -> String {
+        format!(
+            "{label:<40} {:>9.2} ms min  {:>9.2} ms median  ({} runs)",
+            t.min.as_secs_f64() * 1e3,
+            t.median.as_secs_f64() * 1e3,
+            t.iters
+        )
     }
 }
 
@@ -359,6 +438,41 @@ mod tests {
              count ({}), so the counters are not thread-local",
             cost.allocs
         );
+    }
+
+    #[test]
+    fn retained_counts_what_survives_the_region_not_what_passed_through() {
+        // A buffer returned out of the region is retained; one dropped inside
+        // it is traffic only.
+        let (kept, cost) = Cost::measure(|| vec![0_u8; 100_000]);
+        assert!(
+            cost.retained_bytes >= 100_000,
+            "the returned Vec must show as retained, got {}",
+            cost.retained_bytes
+        );
+        drop(kept);
+
+        let (_, churn) = Cost::measure(|| drop(vec![0_u8; 100_000]));
+        assert!(
+            churn.retained_bytes < 4096,
+            "a buffer dropped inside the region must not read as retained, got {}",
+            churn.retained_bytes
+        );
+        assert!(churn.bytes >= 100_000, "…but it is still traffic");
+    }
+
+    #[test]
+    fn the_stopwatch_orders_a_sleep_above_a_noop() {
+        let slow = stopwatch::time(|| std::thread::sleep(std::time::Duration::from_millis(2)));
+        let fast = stopwatch::time(|| ());
+        assert!(
+            slow.min > fast.min,
+            "a 2 ms sleep must time above an empty closure ({:?} vs {:?})",
+            slow.min,
+            fast.min
+        );
+        assert!(slow.min >= std::time::Duration::from_millis(2));
+        assert!(fast.iters >= 3 && slow.iters >= 3);
     }
 
     #[test]

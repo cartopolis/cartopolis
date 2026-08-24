@@ -139,6 +139,39 @@ fn rasterising_a_dense_tile_costs_the_same_at_both_raster_sizes() {
     );
 }
 
+/// One decoded tile's residency is what the client's cross-task parse cache
+/// (`tile_loader::parse_shared`, a `Weak<TileData>` per source tile) pins in
+/// memory per entry, multiplied by however many source tiles are live at once.
+///
+/// This is the number `docs/notes/tile-raster-cost.md` spent months calling
+/// "the one number the cache decision is blocked on" — nothing measured it, so
+/// nothing could gate it. `Cost::retained_bytes` measures it now, and it is a
+/// property of the input and the code (verified bit-identical across runs), so
+/// it can be a budget: a change that makes each cached tile meaningfully
+/// heavier should have to say so.
+#[test]
+fn a_parsed_and_decoded_tile_retains_a_bounded_footprint() {
+    let (tile, parsed) = Cost::measure(|| parse(GRONINGEN));
+    assert!(
+        parsed.retained_bytes as u64 <= PARSE_DENSE_RETAINED_BYTES,
+        "a parsed (undecoded) Groningen z14 retains {} KiB, ceiling is {} KiB — \
+         each entry of the client's parse cache just got heavier. If deliberate, \
+         restate the ceiling in this commit and say what bought it.",
+        parsed.retained_bytes / 1024,
+        PARSE_DENSE_RETAINED_BYTES / 1024,
+    );
+
+    let (_, decoded) = Cost::measure(|| warm(&tile));
+    assert!(
+        decoded.retained_bytes as u64 <= DECODE_DENSE_RETAINED_BYTES,
+        "decoding every layer of Groningen z14 retains a further {} KiB, ceiling \
+         is {} KiB — the memoised layers grew. Same contract: restate the number \
+         deliberately or find the regression.",
+        decoded.retained_bytes / 1024,
+        DECODE_DENSE_RETAINED_BYTES / 1024,
+    );
+}
+
 /// A ceiling on the documented quadratic-capacity defect in `mvt-reader`.
 ///
 /// See [`DECODE_SPARSE_TRAFFIC_BYTES`]. This test is expected to become wildly
@@ -234,6 +267,18 @@ const MEMO_REREAD_ALLOCS: u64 = 0;
 /// halving `tile_px` for the phone tier buys scan conversion and none of this.
 const RENDER_DENSE_ALLOCS: u64 = 1_160;
 
+/// Heap a parsed-but-undecoded Groningen z14 retains. Measured 3,299 KiB
+/// (bit-identical across runs, 2026-08-24) from a 495 KiB body — the protobuf
+/// unpacked into `geo_types` f32 geometry is ~6.8× its wire size.
+const PARSE_DENSE_RETAINED_BYTES: u64 = 3_370 * 1024;
+
+/// Further heap retained once every layer is decoded into the per-layer memo.
+/// Measured 12,500 KiB — so one fully warmed tile is ~15.8 MiB. The client's
+/// `parse_shared` table holds `Weak`s and pins nothing itself; what this sizes
+/// is the concurrent case, where every in-flight worker job holds one of these
+/// live for the length of a decode.
+const DECODE_DENSE_RETAINED_BYTES: u64 = 12_760 * 1024;
+
 /// Decoding every layer of the *sparse* z10 tile, in bytes of allocation traffic.
 ///
 /// 226 MiB — from a **68 KiB** tile, i.e. ~3,300× its own size, and 9× the traffic
@@ -305,5 +350,106 @@ fn print_tile_pipeline_cost() {
         });
         println!("{label:<34} {paths:>9} paths  {points:>9} points");
     }
+    println!();
+}
+
+/// Print the wall-clock cost of every worker-side stage of the tile pipeline,
+/// as a table. The companion to [`print_tile_pipeline_cost`]: that hatch prints
+/// the machine-independent counts the budgets gate on, this one prints the
+/// milliseconds they are a proxy for — which is what "is this stage worth
+/// optimising" and "did that change actually help" need, and what every prior
+/// session re-derived with a throwaway harness (`docs/notes/tile-raster-cost.md`
+/// twice records numbers whose harness "did not merge").
+///
+/// `#[ignore]` like every printing hatch, and **never a gate** — wall-clock
+/// numbers are a property of the machine (see `perf`'s module doc for why a
+/// timer threshold cannot live in CI here). Compare runs on the same box only,
+/// and prefer paired before/after runs.
+///
+/// ```text
+/// cargo test -p cartopolis_geo --release print_tile_pipeline_time -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "printing hatch: it reports numbers, it does not assert them"]
+fn print_tile_pipeline_time() {
+    use crate::perf::stopwatch::{self, line};
+    use crate::vector_tiles::{
+        ocean_mask_sized, render_mvt_sized, tessellate_bridges, tessellate_roads,
+        tessellate_surfaces, water_shore_field,
+    };
+
+    // The dev profile compiles this crate at opt-level 1 (dependencies at 3), so
+    // an unoptimised run times *our* code as slower relative to tiny-skia than a
+    // shipped build would. The numbers are still usable for paired A/Bs; say so
+    // rather than silently printing them.
+    if cfg!(debug_assertions) {
+        println!(
+            "\nWARNING: dev profile — this crate is at opt-level 1 here. Run with \
+             --release for numbers representative of a shipped build.\n"
+        );
+    }
+
+    println!("\n== wall-clock, one tile (min over adaptive repeats) ==");
+
+    for (label, bytes) in [("groningen z14", GRONINGEN), ("lowzoom z10", LOWZOOM)] {
+        let t = stopwatch::time(|| parse(bytes));
+        println!("{}", line(&format!("parse ({label})"), &t));
+
+        // The lazy decode memoises into the tile, so a fresh parse is part of
+        // each run; subtract the `parse` row above to isolate the decode.
+        let t = stopwatch::time(|| {
+            let tile = parse(bytes);
+            warm(&tile);
+            tile
+        });
+        println!(
+            "{}",
+            line(&format!("parse + decode all layers ({label})"), &t)
+        );
+    }
+
+    let tile = parse(GRONINGEN);
+    warm(&tile);
+
+    for px in [512_u32, 256] {
+        let t = stopwatch::time(|| {
+            render_mvt_sized(&tile, SubTile::WHOLE, px, NOMINAL_Z14_TILE_M).expect("renders")
+        });
+        println!(
+            "{}",
+            line(&format!("render {px}² whole (groningen z14)"), &t)
+        );
+    }
+    let t = stopwatch::time(|| {
+        render_mvt_sized(&tile, SUB_1_64, 256, NOMINAL_Z14_TILE_M).expect("renders")
+    });
+    println!("{}", line("render 256² 1/64 overzoom sub (groningen)", &t));
+
+    // The mip chain runs on the worker straight after the render; time it over
+    // the render's own output. The per-run `clone` of the 1 MiB level-0 buffer
+    // is included (the chain consumes its input) and is small beside the chain.
+    let mip0 = render_mvt_sized(&tile, SubTile::WHOLE, 512, NOMINAL_Z14_TILE_M).expect("renders");
+    let t = stopwatch::time(|| crate::mip::build_mip_chain(512, 512, mip0.clone()));
+    println!("{}", line("mip chain over the 512² render", &t));
+
+    let t = stopwatch::time(|| ocean_mask_sized(&tile, SubTile::WHOLE, 256).expect("masks"));
+    println!("{}", line("ocean_mask 256² (groningen z14)", &t));
+
+    let t = stopwatch::time(|| water_shore_field(&tile, NOMINAL_Z14_TILE_M).expect("fields"));
+    println!("{}", line("water_shore_field (groningen z14)", &t));
+
+    let t = stopwatch::time(|| tessellate_bridges(&tile, NOMINAL_Z14_TILE_M).expect("decks"));
+    println!("{}", line("tessellate_bridges (groningen z14)", &t));
+
+    let t =
+        stopwatch::time(|| tessellate_surfaces(&tile, NOMINAL_Z14_TILE_M, None).expect("surfaces"));
+    println!("{}", line("tessellate_surfaces (groningen z14)", &t));
+
+    let decks = tessellate_bridges(&tile, NOMINAL_Z14_TILE_M).expect("decks");
+    let t = stopwatch::time(|| {
+        tessellate_roads(&tile, NOMINAL_Z14_TILE_M, &decks, None).expect("roads")
+    });
+    println!("{}", line("tessellate_roads (groningen z14)", &t));
+
     println!();
 }
