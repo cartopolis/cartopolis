@@ -652,6 +652,15 @@ impl CameraPose {
         cs.azimuth = self.azimuth;
         cs.pitch = self.pitch;
         cs.distance = self.distance;
+        if matches!(cs.mode, CameraMode::Free) {
+            // The same flag Orbit sets below, and it was missing: `camera_controls`'
+            // Free arm re-derives `free_camera_rotation` from the camera transform
+            // whenever `free_initialized` is false, so a pose applied on a run that
+            // has never been in Fly mode had its pitch overwritten on the very next
+            // frame by whatever the startup Earth camera was pointing at (nadir).
+            // That is why `--shot --look` could never frame a horizon.
+            cs.free_initialized = true;
+        }
         if matches!(cs.mode, CameraMode::Orbit) {
             // Restore the saved view angles; the focus is set from the jump
             // target in `apply_teleport`. Guard against a zero distance from an
