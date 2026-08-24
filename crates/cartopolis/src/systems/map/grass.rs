@@ -648,8 +648,13 @@ pub fn update_grass(
     ensure_pools(&mut patches, &mut meshes, &mut materials, &mut images);
 
     // ── The mask ──
-    if let Some(field) = landed {
-        let image = images.add(mask_image(&field));
+    if let Some(mut field) = landed {
+        // Counted *before* the buffer moves into the image below — the debug line
+        // further down needs it, and the mask is 384²×2 bytes, so handing it over
+        // rather than copying it is the difference between a move and an 800 kB
+        // memcpy every time a new field lands.
+        let covered = field.data.chunks_exact(2).filter(|t| t[0] > 0).count();
+        let image = images.add(mask_image(field.px, std::mem::take(&mut field.data)));
         for pool in &patches.pools {
             if let Some(mut m) = materials.get_mut(&pool.material) {
                 m.extension.field.x = field.origin[0];
@@ -662,8 +667,8 @@ pub fn update_grass(
         }
         // The one line that separates the layer's three failures from each other:
         // an empty `cover` is a mask built over the wrong ground (or over none),
-        // while a healthy `cover` with a bare lawn is the shader.
-        let covered = field.data.chunks_exact(2).filter(|t| t[0] > 0).count();
+        // while a healthy `cover` with a bare lawn is the shader. (`covered` is
+        // computed above, before `data` is moved into the image.)
         tracing::debug!(
             origin_x = field.origin[0],
             origin_z = field.origin[1],
@@ -879,15 +884,8 @@ fn ensure_pools(
     if !patches.pools.is_empty() {
         return;
     }
-    let empty = images.add(mask_image(&MaskField {
-        px: 1,
-        data: vec![0, 0],
-        origin: [0.0, 0.0],
-        size_m: 1.0,
-        min_y: 0.0,
-        span_y: 1.0,
-        cells: 0,
-    }));
+    // One texel of "no grass here", standing in until a real field lands.
+    let empty = images.add(mask_image(1, vec![0, 0]));
     for tier in tiers() {
         let material = materials.add(GrassMaterial {
             base: StandardMaterial {
@@ -1000,15 +998,15 @@ fn lattice_mesh(tier: &Tier) -> Mesh {
 /// border row does not wrap a far field in from the opposite side (the shader
 /// zeroes everything outside the field anyway, but a sampler that wraps would
 /// make that check load-bearing rather than belt-and-braces).
-fn mask_image(field: &MaskField) -> Image {
+fn mask_image(px: u32, data: Vec<u8>) -> Image {
     let mut image = Image::new(
         Extent3d {
-            width: field.px,
-            height: field.px,
+            width: px,
+            height: px,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        field.data.clone(),
+        data,
         TextureFormat::Rg8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );

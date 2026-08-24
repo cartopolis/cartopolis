@@ -132,11 +132,53 @@ earcutr = "0.4"
 figment = { version = "0.10", features = ["toml", "env"] }
 fontdue = "0.9"
 glam = { version = "0.32", features = ["serde"] }
-image = "0.25"
-# Float32 GeoTIFF decoding for the height layer (PDOK's AHN rasters). Pure Rust,
-# already in the tree as `image`'s own TIFF backend, so this is a direct name for a
-# dependency we were carrying anyway.
-tiff = "0.10"
+# Only the formats something in this tree can actually hand it. `image`'s default
+# feature set is `default-formats` + `rayon`, and the expensive half of that is
+# **avif**, which is an AV1 *encoder*: `ravif` → `rav1e` and ~27 further crates,
+# every one of them built at `opt-level = 3` by `[profile.dev.package."*"]` below.
+# Nothing here encodes AVIF, and nothing decodes it either (decoding is
+# `avif-native`, which was never enabled).
+#
+# `bevy_image` already declares `image` with `default-features = false` and asks
+# only for `image/png`, so this line was the sole thing turning the rest on —
+# which is what makes trimming it effective rather than moot under feature
+# unification.
+#
+# The five kept are each reachable: `png` (window icon, raster tiles, every
+# `save_buffer` in the tree), `jpeg` (place photos — `utils::photo` encodes it,
+# and it is what a phone camera writes), `webp` (VersaTiles' satellite basemap),
+# and `bmp` + `gif` because `platform::photo`'s desktop file dialog offers both
+# by name — dropping those would turn "pick a photo" into a decode error for a
+# file the picker itself advertised.
+#
+# `rayon` goes with them: the only APIs it gates are `par_pixels` and friends,
+# which nothing calls, and its other two effects are weak deps on `ravif` and
+# `exr` — both now gone. It was the last thing keeping rayon in the graph at all.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "bmp",
+    "gif",
+] }
+# Float32 GeoTIFF decoding for the height layer (PDOK's AHN rasters). Pure Rust.
+#
+# This is a genuinely additional dependency, and used to not be: the line above
+# carried `image`'s own TIFF backend, so naming `tiff` cost nothing. Trimming
+# `image` to five formats ended that, and `systems::height` still needs a decoder
+# for AHN's single-band f32 rasters — which `image` cannot express anyway, since
+# it has no f32-per-sample `DynamicImage`.
+#
+# `default-features = false` for the same reason as above: the defaults are
+# `deflate`, `lzw`, `fax` and `jpeg`, and the last two cannot appear in an f32
+# band — `fax` is CCITT bilevel and TIFF-JPEG is 8-bit-only. `jpeg` in particular
+# pulled a *second, older* copy of `zune-jpeg` (0.4) alongside the one `image`
+# resolves (0.5). `deflate` and `lzw` stay because the WCS server picks the
+# compression and we do not get to choose it.
+tiff = { version = "0.10", default-features = false, features = [
+    "deflate",
+    "lzw",
+] }
 # Client-side vector-tile rendering (VersaTiles / Shortbread MVT → RGBA).
 # Both are pure Rust with no C deps, so they survive the wasm32 target (ADR-033).
 mvt-reader = "2.4"

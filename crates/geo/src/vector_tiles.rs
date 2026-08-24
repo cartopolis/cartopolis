@@ -1005,7 +1005,11 @@ fn line_path(geom: &Geometry<f32>) -> Option<tiny_skia::Path> {
     pb.finish()
 }
 
-fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &Transform) {
+/// Returns whether anything was actually filled — i.e. whether the geometry had
+/// a fillable area at all. Callers that only want to *know* that (the shore
+/// field, deciding whether a tile contains water) would otherwise have to call
+/// `area_path` themselves and throw the path away, building every ring twice.
+fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &Transform) -> bool {
     if let Some(path) = area_path(geom) {
         // The one place a *filled* path reaches the rasteriser, so the one place
         // worth counting. Scan conversion barely allocates, so an allocation
@@ -1014,7 +1018,9 @@ fn fill_geometry(pixmap: &mut Pixmap, paint: &Paint, geom: &Geometry<f32>, t: &T
         #[cfg(test)]
         crate::perf::paths::record(path.points().len());
         pixmap.fill_path(&path, paint, FillRule::EvenOdd, *t, None);
+        return true;
     }
+    false
 }
 
 fn stroke_geometry(
@@ -3423,10 +3429,11 @@ pub fn water_shore_field(tile: &TileData, tile_m: f32) -> Result<Option<ShoreFie
         let s = size as f32 / extent;
         let transform = Transform::from_row(s, 0.0, 0.0, s, pad as f32, pad as f32);
         for feature in tile.features(meta) {
-            if area_path(&feature.geometry).is_some() {
-                any_water = true;
-            }
-            fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
+            // The fill itself answers "was there any water here", so the ring is
+            // walked into a `PathBuilder` once instead of twice. This runs at
+            // `SHORE_FIELD_PX + 2·PAD` (1056²) over every ocean/water polygon, and
+            // on a low-zoom ocean tile the water polygon *is* the feature set.
+            any_water |= fill_geometry(&mut pixmap, &paint, &feature.geometry, &transform);
         }
     }
     if !any_water {

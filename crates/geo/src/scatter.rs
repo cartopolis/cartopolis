@@ -207,13 +207,23 @@ pub fn scatter_vegetation(
         let s = profile.spacing;
 
         for tri in indices.chunks_exact(3) {
-            let v: Vec<(f32, f32)> = tri
-                .iter()
-                .map(|&i| {
-                    let p = positions[i as usize];
+            // An array, not a `Vec`: three elements of known count, in a loop that
+            // runs once per triangle of every landuse polygon in the tile. See
+            // `turf::grass_areas` for the same loop written the same way.
+            let v = [
+                {
+                    let p = positions[tri[0] as usize];
                     to_lattice(p[0], p[2])
-                })
-                .collect();
+                },
+                {
+                    let p = positions[tri[1] as usize];
+                    to_lattice(p[0], p[2])
+                },
+                {
+                    let p = positions[tri[2] as usize];
+                    to_lattice(p[0], p[2])
+                },
+            ];
             let (minx, maxx) = min_max(v[0].0, v[1].0, v[2].0);
             let (minz, maxz) = min_max(v[0].1, v[1].1, v[2].1);
             let i0 = (minx / s).floor() as i32;
@@ -339,10 +349,14 @@ impl WaterMask {
             edges: EdgeGrid::new(&rings, &border),
         };
         for tri in indices.chunks_exact(3) {
-            let v: Vec<(f32, f32)> = tri
-                .iter()
-                .map(|&i| (positions[i as usize][0], positions[i as usize][2]))
-                .collect();
+            // Array rather than `Vec`, as in `scatter_vegetation` above: one
+            // allocation per triangle of every water polygon is the exact
+            // regression shape `perf_budgets` exists to catch.
+            let v = [
+                (positions[tri[0] as usize][0], positions[tri[0] as usize][2]),
+                (positions[tri[1] as usize][0], positions[tri[1] as usize][2]),
+                (positions[tri[2] as usize][0], positions[tri[2] as usize][2]),
+            ];
             let idx = mask.tris.len() as u32;
             mask.tris.push([v[0], v[1], v[2]]);
             let (minx, maxx) = min_max(v[0].0, v[1].0, v[2].0);

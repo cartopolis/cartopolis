@@ -25,7 +25,6 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-bytes.workspace = true
 earcutr.workspace = true
 geo-types.workspace = true
 image.workspace = true

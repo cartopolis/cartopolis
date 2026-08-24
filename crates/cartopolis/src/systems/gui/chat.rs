@@ -276,6 +276,24 @@ pub fn render_chat_panel(
         return;
     };
 
+    // Everything between here and the end of `right_panel` below composes only
+    // when this panel is the open one, but building its inputs is not free:
+    // `recent` allocates a `Vec` over every line of every channel, sorts it, runs
+    // `is_blocked` per line, and then two `String`s are cloned per line on top —
+    // several hundred allocations every frame of an online session, for a panel
+    // nobody is looking at. `bookmarks::render_bookmarks_panel` guards itself the
+    // same way and says so.
+    //
+    // The report dialog is deliberately *outside* that guard. It is not part of
+    // the panel: `person_menu` hangs off a name in the overlay's transcript and
+    // off a speech bubble over an avatar's head as well as off the panel's log
+    // (see its doc comment), so a report is routinely opened — and must stay on
+    // screen — with this panel shut.
+    if !right_panel.is(RightPanel::Chat) {
+        render_report_dialog(&mut egui, &mut chat, &online);
+        return;
+    }
+
     let mut join_now = false;
     // Collected while the panel draws and acted on after it, because every one of
     // these mutates `chat` and the closure already holds it borrowed.

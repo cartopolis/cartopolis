@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
-triggers: [slow build, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental]
-updated: 2026-08-19
+triggers: [slow build, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld]
+updated: 2026-08-24
 ---
 
 # Where the client's build time actually goes
@@ -172,8 +172,95 @@ parallelism instead of trading it away. Not re-measured with `--timings` yet;
 the mechanism is the same one the `codegen-units = 256` paragraph above
 documents.
 
+## The codegen-versus-link split, measured at last (2026-08-24)
+
+"Do the third one first" is done. Measured in the **agent container** (8 cores,
+`CARGO_BUILD_JOBS=6`, deps warm, `cargo build -p cartopolis --timings` after
+deleting `incremental/cartopolis-*`), so the absolute numbers are ~5× the
+workstation's and only the *proportions* transfer:
+
+| phase | time | share |
+|---|---|---|
+| `cartopolis` lib — frontend | 67.8 s | 26% |
+| `cartopolis` lib — codegen | 104.2 s | 41% |
+| `cartopolis` **bin** — the nine-line shim | 84.5 s | 33% |
+| total | 257 s | |
+
+Cargo emits those first two as explicit `sections` in the `--timings` HTML
+(`UNIT_DATA[…].sections`), so this needs no profiler:
+
+```bash
+python3 -c "import re,json;h=open('cargo-timing.html').read();\
+print([u for u in json.loads(re.search(r'const UNIT_DATA = (\[.*?\]);',h,re.S).group(1)) if u['duration']>1])"
+```
+
+**The 6:1 ratio above is an artefact of how it was derived.** It came from
+`cargo check` (7.1 s) against a full build (52.4 s), and everything that is not
+the frontend was then called codegen — but a third of the difference is the *bin*
+unit, which the frontend figure does not contain at all. Codegen-to-frontend
+measured directly is about **1.5:1**. Monomorphisation is still the largest single
+term and the crate-split analysis above still stands; it is not a 6:1 term.
+
+**The build is serial at the cargo level.** `CONCURRENCY_DATA` reports at most
+**one** active unit for the whole 257 s: the lib, then the bin, which cannot start
+until the lib's rlib exists. `codegen-units = 256` parallelises *inside* the lib,
+and nothing parallelises the bin. So the last third of a cold-incremental client
+build runs five of six job slots idle, and raising `CARGO_BUILD_JOBS` cannot
+touch it.
+
+## mold is ~2.6× faster at linking, and that is worth ~1.5 s
+
+| linker | round 1 | 2 | 3 |
+|---|---|---|---|
+| `lld` | 2.43 s | 2.40 s | 2.38 s |
+| `mold` 2.42 | 1.10 s | 0.82 s | 0.82 s |
+
+Real, reproducible, and **smaller than it sounds**: the link is 2.4 s of a ~15 s
+warm rebuild, so adopting mold buys ~10% of an edit loop, not a new one. `ci.yml`
+already sets `-C link-arg=-fuse-ld=mold` and can stay; `.cargo/config.toml` still
+says `lld` because a workstation without mold installed would fail to link, and
+that trade has not changed.
+
+Note what this does **not** say: the 84.5 s bin unit is not 84.5 s of linking.
+The link is 2.4 s. The rest is rustc's own work plus reading the dependency rlibs
+back from a 90%-full overlay filesystem with a cold page cache.
+
+### Two traps, both of which produced a confident wrong answer here first
+
+**Shadowing `ld.lld` on `PATH` does nothing.** `clang -fuse-ld=lld` resolves to
+the absolute `/usr/bin/ld.lld` — `clang -fuse-ld=lld -### /dev/null` prints it —
+so putting a `mold` symlink named `ld.lld` earlier in `PATH` is a placebo. An
+A/B run that way "measured" mold at 15/14/15 s against lld's 15/17/17 and was
+reporting nothing but run-to-run noise, with mold never once invoked. Verify an
+interception before trusting it: shim the tool with a script that logs its argv.
+
+**A first link after a quiet period is cold-cache.** The very first measurement
+here was `lld` at 30 s against `mold` at 15 s — an apparent 2×, entirely page
+cache. Any linker comparison needs a discarded warm-up link and alternating
+rounds; the tell was that editing a *source file* (15.6 s, which includes a link)
+came out faster than a link on its own.
+
+### How to measure the link without a full rebuild
+
+Changing `RUSTFLAGS` to swap linkers rebuilds the world, because cargo hashes it
+into every unit's fingerprint. Capture the real command and replay it instead:
+
+```bash
+touch crates/cartopolis/src/main.rs
+cargo rustc -p cartopolis --bin cartopolis -- --print link-args -C save-temps > /tmp/linkargs.txt
+```
+
+`--print link-args` is stable. `-C save-temps` is the load-bearing half: rustc
+deletes the `.rcgu.o` files after a successful link, and without it the replay
+fails on missing objects. Then run that command line with `-fuse-ld=lld` swapped
+for `--ld-path=/path/to/mold`, redirecting `-o` somewhere harmless.
+
 ## Not measured
 
 Whether a cold full build is dominated by Bevy itself — it certainly is, and no
 rearrangement of our crates changes that. The numbers above deliberately hold
 dependencies warm, because that is the state every real edit starts from.
+
+`fast-dev` (Bevy dynamic linking) is still the one lever of the original three
+with no number against it. It is the one that plausibly moves the bin unit, since
+what it changes is exactly what that unit does.
