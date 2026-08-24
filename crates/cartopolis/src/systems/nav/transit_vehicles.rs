@@ -337,13 +337,16 @@ pub fn poll_transit_vehicles(
                 Some(load_line_body().await)
             };
             let feed = fetch_feed_bytes().await;
-            crate::platform::workers::submit(Box::new(move || {
-                let map = resolve_line_map(&lines, line_body);
-                let fetched = feed.map(|buf| parse_vehicle_positions(&buf, &map));
-                if let Ok(mut g) = results.lock() {
-                    g.push(fetched);
-                }
-            }));
+            crate::platform::workers::submit(
+                "transit",
+                Box::new(move || {
+                    let map = resolve_line_map(&lines, line_body);
+                    let fetched = feed.map(|buf| parse_vehicle_positions(&buf, &map));
+                    if let Ok(mut g) = results.lock() {
+                        g.push(fetched);
+                    }
+                }),
+            );
         })
         .detach();
 }

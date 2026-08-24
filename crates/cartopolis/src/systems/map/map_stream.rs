@@ -463,7 +463,7 @@ fn spawn_map_tile(
             let tile_px = crate::quality::budget().tile_px;
             match crate::systems::tile_loader::fetch_tile_payload(&key, &template).await {
                 Ok(payload) => {
-                    crate::platform::workers::submit(Box::new(move || {
+                    crate::platform::workers::submit("map_tiles", Box::new(move || {
                         let decoded = match payload.decode(tile_px) {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());

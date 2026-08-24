@@ -51,6 +51,20 @@ parsing.
 layers, time a cell, or solve a real route against the network. Run one by name:
 `cargo test -p cartopolis dump_png -- --ignored --nocapture`.
 
+Streaming performance has a measuring kit of its own, in three layers
+(`docs/notes/tile-raster-cost.md` and `docs/notes/allocation-budgets.md` carry
+the current numbers and the doctrine):
+
+```bash
+# exact, machine-independent: allocation counts, retained heap, rasteriser input
+cargo test -p cartopolis_geo print_tile_pipeline_cost -- --ignored --nocapture
+# wall clock per pipeline stage — --release, or the numbers are opt-level 1's
+cargo test -p cartopolis_geo --release print_tile_pipeline_time -- --ignored --nocapture
+# end to end: any --shot reports per-capture fetch_* (count/MB/TTFB/body) and
+# worker_* (jobs/busy/wait, split per stream) columns in the log, --csv and
+# --dump-state — cold-vs-warm-cache pairs over one viewpoint are the experiment
+```
+
 Verify a visual change **headless** rather than by flying the camera there:
 `cargo shots --only globe` for a README preset, or `--shot` for an arbitrary
 viewpoint, sweep or CSV of the ramp scalars. Full flag list in

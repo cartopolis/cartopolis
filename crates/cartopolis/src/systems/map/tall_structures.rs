@@ -647,12 +647,15 @@ pub fn update_tall_structures(
             .spawn(async move {
                 match fetch_cell_text(cx, cy).await {
                     Ok(text) => {
-                        crate::platform::workers::submit(Box::new(move || {
-                            let built = build_cell(&text, cx, cy, ax, ay, z, lat, &ground);
-                            if let Ok(mut g) = results.lock() {
-                                g.push(((cx, cy), built));
-                            }
-                        }));
+                        crate::platform::workers::submit(
+                            "tall_structures",
+                            Box::new(move || {
+                                let built = build_cell(&text, cx, cy, ax, ay, z, lat, &ground);
+                                if let Ok(mut g) = results.lock() {
+                                    g.push(((cx, cy), built));
+                                }
+                            }),
+                        );
                     }
                     Err(e) => {
                         if let Ok(mut g) = results.lock() {

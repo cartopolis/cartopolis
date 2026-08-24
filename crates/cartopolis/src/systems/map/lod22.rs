@@ -412,12 +412,15 @@ pub fn update_lod22(
                         return;
                     }
                 };
-                crate::platform::workers::submit(Box::new(move || {
-                    let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
-                    if let Ok(mut g) = results.lock() {
-                        g.push(((cx, cy), built));
-                    }
-                }));
+                crate::platform::workers::submit(
+                    "lod22",
+                    Box::new(move || {
+                        let built = build_lod22_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                        if let Ok(mut g) = results.lock() {
+                            g.push(((cx, cy), built));
+                        }
+                    }),
+                );
             })
             .detach();
     }

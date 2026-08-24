@@ -126,6 +126,77 @@ impl Request {
     }
 }
 
+/// Cumulative accounting of every [`fetch`] the process has made, split into the
+/// two halves that answer different questions: **time to first byte** (connect +
+/// TLS + request + the server thinking — the half a protocol or pooling change
+/// moves) and **body time** (bytes on the wire + inflate — the half only a
+/// smaller payload moves). `docs/notes/tile-raster-cost.md` closes its HTTP/3
+/// section with exactly this split being the unrecorded number that decides the
+/// question; consumers diff two [`snapshot`](stats::snapshot)s, which is how the
+/// shot harness turns it into per-capture columns.
+///
+/// On wasm the browser owns the connection and the split is invisible; only
+/// `requests`, `bytes` and `errors` are counted there.
+pub mod stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static REQUESTS: AtomicU64 = AtomicU64::new(0);
+    static ERRORS: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static TTFB_US: AtomicU64 = AtomicU64::new(0);
+    static BODY_US: AtomicU64 = AtomicU64::new(0);
+
+    /// One point-in-time reading of the counters.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct FetchTotals {
+        /// Completed requests (errors count separately).
+        pub requests: u64,
+        pub errors: u64,
+        /// Body bytes received, after transfer decompression.
+        pub bytes: u64,
+        /// Summed time to first byte, µs. Native only — 0 on wasm.
+        pub ttfb_us: u64,
+        /// Summed body read time, µs. Native only — 0 on wasm.
+        pub body_us: u64,
+    }
+
+    impl FetchTotals {
+        /// The delta `self − earlier`, for turning two snapshots into a window.
+        #[must_use]
+        pub fn since(&self, earlier: FetchTotals) -> FetchTotals {
+            FetchTotals {
+                requests: self.requests - earlier.requests,
+                errors: self.errors - earlier.errors,
+                bytes: self.bytes - earlier.bytes,
+                ttfb_us: self.ttfb_us - earlier.ttfb_us,
+                body_us: self.body_us - earlier.body_us,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot() -> FetchTotals {
+        FetchTotals {
+            requests: REQUESTS.load(Ordering::Relaxed),
+            errors: ERRORS.load(Ordering::Relaxed),
+            bytes: BYTES.load(Ordering::Relaxed),
+            ttfb_us: TTFB_US.load(Ordering::Relaxed),
+            body_us: BODY_US.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(super) fn record(bytes: u64, ttfb_us: u64, body_us: u64) {
+        REQUESTS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(bytes, Ordering::Relaxed);
+        TTFB_US.fetch_add(ttfb_us, Ordering::Relaxed);
+        BODY_US.fetch_add(body_us, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_error() {
+        ERRORS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Fetch the response body as bytes. `Err` carries a human-readable message, to
 /// match the `Result<_, String>` shape the fetchers already use.
 ///
@@ -219,18 +290,36 @@ mod imp {
             builder = builder.set("User-Agent", USER_AGENT);
         }
 
+        // Two stopwatches, split where the headers arrive: `call` returns once
+        // the status line and headers are in (connect + TLS + request + server),
+        // `read_to_end` is the body coming down and inflating. The split is what
+        // `super::stats` exists to record — see its doc for who consumes it.
+        let started = std::time::Instant::now();
         let response = match req.body {
             Some(ref bytes) => builder.send_bytes(bytes),
             None => builder.call(),
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            super::stats::record_error();
+            e.to_string()
+        })?;
+        let ttfb = started.elapsed();
 
+        let body_started = std::time::Instant::now();
         let mut buf = Vec::new();
         response
             .into_reader()
             .take(MAX_BODY)
             .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                super::stats::record_error();
+                e.to_string()
+            })?;
+        super::stats::record(
+            buf.len() as u64,
+            ttfb.as_micros() as u64,
+            body_started.elapsed().as_micros() as u64,
+        );
         Ok(buf)
     }
 }
@@ -250,10 +339,20 @@ mod imp {
         for (name, value) in &req.headers {
             request.headers.insert(name, value);
         }
-        let response = ehttp::fetch_async(request).await?;
+        let response = match ehttp::fetch_async(request).await {
+            Ok(response) => response,
+            Err(e) => {
+                super::stats::record_error();
+                return Err(e);
+            }
+        };
         if !response.ok {
+            super::stats::record_error();
             return Err(format!("HTTP {} {}", response.status, response.status_text));
         }
+        // The browser owns the connection: no TTFB/body split is observable, and
+        // `Instant` panics on wasm anyway. Count what is countable.
+        super::stats::record(response.bytes.len() as u64, 0, 0);
         Ok(response.bytes)
     }
 }

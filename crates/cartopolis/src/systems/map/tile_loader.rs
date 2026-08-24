@@ -258,7 +258,7 @@ fn spawn_tile_task(
             let tile_px = crate::quality::budget().tile_px;
             match fetch_tile_payload(&key, &template).await {
                 Ok(payload) => {
-                    crate::platform::workers::submit(Box::new(move || {
+                    crate::platform::workers::submit("map_tiles", Box::new(move || {
                         let outcome = match payload.decode(tile_px) {
                             Ok(rgba) => {
                                 let (width, height) = (rgba.width(), rgba.height());

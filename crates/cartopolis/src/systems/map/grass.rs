@@ -1032,22 +1032,26 @@ fn spawn_mask_job(patches: &GrassPatches, areas: &GrassAreas, terrain: &TerrainF
     let sink = patches.pending.clone();
     let (field_m, field_px) = field_dims();
     let origin = cam - Vec2::splat(field_m * 0.5);
-    crate::platform::workers::submit(Box::new(move || {
-        let placed: Vec<PlacedArea<'_>> = cells
-            .iter()
-            .map(|(_, o, t, a)| PlacedArea {
-                origin: [o.x, o.y],
-                tile_m: *t,
-                area: a.as_ref(),
-            })
-            .collect();
-        let field = turf::mask_field(&placed, [origin.x, origin.y], field_m, field_px, &|x, z| {
-            ground.at(x, z)
-        });
-        if let Ok(mut g) = sink.lock() {
-            *g = Some(field);
-        }
-    }));
+    crate::platform::workers::submit(
+        "grass",
+        Box::new(move || {
+            let placed: Vec<PlacedArea<'_>> = cells
+                .iter()
+                .map(|(_, o, t, a)| PlacedArea {
+                    origin: [o.x, o.y],
+                    tile_m: *t,
+                    area: a.as_ref(),
+                })
+                .collect();
+            let field =
+                turf::mask_field(&placed, [origin.x, origin.y], field_m, field_px, &|x, z| {
+                    ground.at(x, z)
+                });
+            if let Ok(mut g) = sink.lock() {
+                *g = Some(field);
+            }
+        }),
+    );
 }
 
 #[cfg(test)]
