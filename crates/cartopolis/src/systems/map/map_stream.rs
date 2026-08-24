@@ -59,6 +59,24 @@ const COARSE_RADIUS: i64 = 3;
 /// Lowest (coarsest) zoom of the clipmap pyramid; its ring is what fills the view
 /// out to the horizon (7×7 tiles at zoom 10 ≈ 165 km).
 const MIN_ZOOM: u32 = 10;
+/// How far the streamed clipmap reaches from the anchor, in metres — the radius
+/// of the coarsest ring's square, measured to the middle of its outermost tile.
+///
+/// Public because the globe's quadtree needs it: between `GLOBE_DRAW_ALT` and
+/// `GLOBE_SHOW_ALT` both tiers are drawn, and everything inside this radius is
+/// painted by the clipmap at a zoom the globe cannot reach. Refining the planet
+/// under it is work whose entire output is hidden — a hundred-odd tiles fetched,
+/// rasterised, uploaded and drawn behind an opaque map.
+///
+/// Conservative on purpose (the middle of the outer tile, not its far edge): the
+/// cost of stopping the split slightly too early is one coarse globe tile
+/// showing through at the very rim of the clipmap, which the clipmap's own
+/// backstop level covers anyway.
+#[must_use]
+pub fn clipmap_reach_m(anchor_lat: f64) -> f64 {
+    COARSE_RADIUS as f64 * tile_to_meters(MIN_ZOOM, anchor_lat)
+}
+
 /// Give up on a tile fetch after this many failed attempts (leaves the placeholder).
 const MAX_FETCH_ATTEMPTS: u32 = 4;
 /// Wait between attempts, so a transient error or a rate limit doesn't burn the
@@ -559,20 +577,38 @@ const RELIEF_MAX_TILE_M: f32 = 2_500.0;
 /// regardless of how big each one is.
 const MAX_RELIEF_BUILDS_PER_FRAME: usize = 2;
 
-/// Stand the basemap tiles on the terrain field, and get out of the way of the
-/// tiles that can't be.
+/// Curvature-only tile meshes built per frame — the cheap half of the same
+/// guard. A curve grid is at most 8×8 vertices (see
+/// `globe::curvature_divisions`), so a frame's worth is a few kilobytes rather
+/// than the megabytes a relief grid moves, and the whole clipmap can take its
+/// shape inside a second instead of over a minute.
+const MAX_CURVE_BUILDS_PER_FRAME: usize = 16;
+
+/// Give the basemap tiles their shape: the Earth's curve under all of them, and
+/// the terrain field under the ones it reaches.
 ///
-/// Two halves, and the second is not optional. The finest tiles inside the field
-/// get a subdivided, displaced mesh. **Every coarser level then sinks** below the
-/// field's lowest point, because the clipmap stacks levels only 0.4 m apart: a
-/// dip of eight metres — routine in a Dutch polder — would otherwise drop the
-/// detailed tile *underneath* the coarse imagery it is supposed to be refining,
-/// and the hollow would fill with blurry z10 pixels.
+/// **The curve is the reason the flat tier and the globe are one surface.** Every
+/// tile drops by `GlobeState::drop_at` at its own centre and carries the
+/// remainder across itself in vertices, so the clipmap is a patch of the same
+/// sphere the quadtree draws — 528 m down at the coarsest ring's edge, which is
+/// what turns a plane that ended in a hard rim into ground that falls away to a
+/// horizon. It costs one small grid per coarse tile and nothing at all on the
+/// fine levels, whose own sag is millimetres.
+///
+/// The terrain half has two parts and the second is not optional. The finest
+/// tiles inside the field get a subdivided, displaced mesh. **Every coarser
+/// level then sinks** below the field's lowest point, because the clipmap stacks
+/// levels only 0.4 m apart: a dip of eight metres — routine in a Dutch polder —
+/// would otherwise drop the detailed tile *underneath* the coarse imagery it is
+/// supposed to be refining, and the hollow would fill with blurry z10 pixels.
+/// The curve does not have that problem and is not treated the same way: it is
+/// applied to every level equally, so their spacing is preserved exactly.
 pub fn apply_terrain_to_tiles(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     stream: Res<MapStream>,
     field: Res<crate::systems::terrain::TerrainField>,
+    globe: Res<crate::systems::globe::GlobeState>,
     mut tiles: Query<(Entity, &StreamTile, &mut Transform, Option<&TileRelief>)>,
     mut last_revision: Local<u32>,
 ) {
@@ -586,22 +622,61 @@ pub fn apply_terrain_to_tiles(
     } else {
         0.0
     };
+    // The curve is keyed to the globe build, not to the terrain field: a
+    // re-anchor rebuilds the sphere in a new tangent frame, which moves every
+    // tile's drop. Folded into the same revision the relief meshes already carry
+    // so one comparison retires stale geometry from either cause.
+    let revision = revision.wrapping_mul(0x9E37_79B9) ^ globe.build_revision();
 
     let mut built = 0;
+    let mut curved = 0;
     for (entity, tile, mut tf, relief) in tiles.iter_mut() {
         let gs = tile_to_meters(tile.key.z, clat) as f32;
-        let relieved = field.is_ready() && gs <= RELIEF_MAX_TILE_M;
+        // Where this tile's centre sits in the anchored world frame — the same
+        // arithmetic that placed it, so the mesh samples the field under itself.
+        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
+        let centre = Vec2::new(
+            ((tile.key.x as f64 + 0.5 - fcx) * gs as f64) as f32,
+            ((tile.key.y as f64 + 0.5 - fcy) * gs as f64) as f32,
+        );
+        let relieved = field.is_ready() && gs <= RELIEF_MAX_TILE_M && {
+            // Tiles wholly outside the field are flat ground as far as relief
+            // is concerned; they may still need the curve.
+            let reach = crate::systems::terrain::TERRAIN_HALF_M + gs * 0.5;
+            centre.x.abs() <= reach && centre.y.abs() <= reach
+        };
+        // **The whole pyramid drops together.** Every level takes the curve at its
+        // own centre, so the 0.4 m that separates them is preserved exactly and a
+        // fine tile can no more sink into a coarse one than it could on the flat
+        // plane. That is why there is no "curve only past N km" threshold here:
+        // a boundary between curved and uncurved levels is precisely the step
+        // this is removing.
+        let curve = globe.drop_at(centre.length());
         // Coarse levels: sit below the deepest part of the relief. Fine ones keep
         // their own resting height and carry the displacement in the mesh.
-        let want_y = level_y(base_zoom, tile.key.z) + if relieved { 0.0 } else { sink };
+        let want_y = level_y(base_zoom, tile.key.z) + if relieved { 0.0 } else { sink } - curve;
         if (tf.translation.y - want_y).abs() > 1e-3 {
             tf.translation.y = want_y;
         }
 
-        if !relieved {
+        // Subdivision is the union of what the two displacements ask for: the
+        // field wants a vertex per measurement, the curve wants one per
+        // `MAX_CURVE_SAG_M`. A tile that needs neither keeps the shared flat quad,
+        // which is still most of them — the finest levels are under 3.5 km across
+        // and their own sag is millimetres.
+        let curve_divs = crate::systems::globe::curvature_divisions(gs, globe.radius);
+        let divisions = if relieved {
+            relief_divisions(gs).max(curve_divs)
+        } else {
+            curve_divs
+        };
+        let shaped = relieved || divisions > 1;
+
+        if !shaped {
             if relief.is_some() {
                 // The field went away (layer off, out of coverage, re-anchored to
-                // Berlin): back to the shared flat quad.
+                // Berlin) and the tile is small enough to be flat: back to the
+                // shared quad.
                 if let Some(quad) = stream.quads.get(&tile.key.z) {
                     commands
                         .entity(entity)
@@ -612,26 +687,27 @@ pub fn apply_terrain_to_tiles(
             }
             continue;
         }
-        if relief.is_some_and(|r| r.revision == revision)
-            || built >= crate::quality::budget().per_frame(MAX_RELIEF_BUILDS_PER_FRAME)
-        {
+        if relief.is_some_and(|r| r.revision == revision) {
             continue;
         }
-        // Where this tile's centre sits in the anchored world frame — the same
-        // arithmetic that placed it, so the mesh samples the field under itself.
-        let (fcx, fcy) = lat_lng_to_tile_frac(clat, clng, tile.key.z);
-        let centre = Vec2::new(
-            ((tile.key.x as f64 + 0.5 - fcx) * gs as f64) as f32,
-            ((tile.key.y as f64 + 0.5 - fcy) * gs as f64) as f32,
-        );
-        // Tiles wholly outside the field are flat ground the shared quad already
-        // draws; only the ones the field reaches need geometry of their own.
-        let reach = crate::systems::terrain::TERRAIN_HALF_M + gs * 0.5;
-        if centre.x.abs() > reach || centre.y.abs() > reach {
+        // Two budgets, because the two meshes are three orders of magnitude
+        // apart: a relief grid follows a 25 m field and can run to 128 divisions,
+        // while a curve-only grid is at most 7 and exists to hide a quarter-metre
+        // of sag. Charging them to one counter meant either throttling the cheap
+        // one to two a frame — 75 frames to curve a cold clipmap, visible as the
+        // horizon unbending after the map has arrived — or letting the expensive
+        // one through in bursts, which is the documented device-loss pattern.
+        let cost = if relieved { &mut built } else { &mut curved };
+        let cap = if relieved {
+            MAX_RELIEF_BUILDS_PER_FRAME
+        } else {
+            MAX_CURVE_BUILDS_PER_FRAME
+        };
+        if *cost >= crate::quality::budget().per_frame(cap) {
             continue;
         }
-        let mesh =
-            crate::systems::terrain::displaced_grid(&field, centre, gs, relief_divisions(gs));
+        *cost += 1;
+        let mesh = crate::systems::terrain::displaced_grid(&field, &globe, centre, gs, divisions);
         commands
             .entity(entity)
             .insert(Mesh3d(meshes.add(mesh)))
@@ -646,11 +722,15 @@ pub fn apply_terrain_to_tiles(
             // invisible; if the Veluwe ever needs it, it belongs to the finest
             // level alone, not to all four.
             .insert(bevy::light::NotShadowCaster);
-        built += 1;
     }
-    if built > 0 && *last_revision != revision {
+    if built + curved > 0 && *last_revision != revision {
         *last_revision = revision;
-        tracing::info!(revision, sink_m = sink, "terrain relief on the basemap");
+        tracing::info!(
+            revision,
+            sink_m = sink,
+            curve_m = globe.drop_at(clipmap_reach_m(clat) as f32),
+            "shaped the basemap"
+        );
     }
 }
 

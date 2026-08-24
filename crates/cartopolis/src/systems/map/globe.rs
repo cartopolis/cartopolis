@@ -132,6 +132,23 @@ const QT_MAX_TILES: usize = 320;
 /// would take from orbit are a visible step against the flat tiles at the tier
 /// boundary. See [`QT_DEPTH_BIAS_PER_Z`] for the half that does scale.
 const QT_LIFT_PER_Z: f32 = 4.0;
+
+/// How far the whole quadtree sits **below** the true surface (m).
+///
+/// The lift ladder above is measured outward from the sphere, so the globe's
+/// finest tiles stand `QT_MAX_Z · QT_LIFT_PER_Z` = 48 m proud of it. That was
+/// free while the globe only ever appeared above 50 km with every flat tile
+/// hidden. Now that both tiers are drawn together (see [`GLOBE_DRAW_ALT`]) it is
+/// the difference between the planet filling in past the clipmap and the planet
+/// covering the city, so the ladder is offset until its top rung clears the
+/// clipmap's own resting heights with room to spare.
+///
+/// A constant, and applied to every zoom, so it changes nothing *within* the
+/// globe: the ladder keeps its rungs and the sphere is uniformly 68 m smaller.
+/// What it costs is a step at the seam where the clipmap ends — 68 m at 82 km,
+/// which is 1.5 px of a 1080-tall frame at the altitude the seam is visible
+/// from, against the alternative of a blank planet over the map.
+const QT_SURFACE_SINK: f64 = 68.0;
 /// Per-zoom depth bias, in the same units as every other bias in the scene
 /// (`vector_tiles::DEPTH_BIAS_STEP` — see `SurfaceGroup::depth_bias`).
 ///
@@ -242,8 +259,16 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 /// is that the backstop shows through slightly less often than it could.
 const BACKSTOP_DEPTH: f64 = 50_000.0;
 /// Quadtree selection/streaming only runs above this altitude (below it the
-/// globe is hidden and the flat tiles own the view); loaded tiles are kept.
-const QT_MIN_ALT: f64 = 35_000.0;
+/// globe is not drawn and the flat tiles own the whole view); loaded tiles are
+/// kept.
+///
+/// Tied to [`GLOBE_DRAW_ALT`] rather than set independently: it used to sit at
+/// 35 km, comfortably under the 50 km the globe appeared at, so the quadtree had
+/// a head start on the handoff. Now that the globe is drawn from 2 km the two
+/// are the same question — refining a planet nobody is shown is the waste the
+/// floor exists to prevent, and *not* refining one that is on screen is a hole
+/// in the horizon.
+const QT_MIN_ALT: f64 = GLOBE_DRAW_ALT as f64;
 
 /// Max globe tiles to build (mesh + texture upload) per frame. A zoom-out can
 /// land 100+ fetched tiles at once; building them all in one frame packs one
@@ -375,6 +400,55 @@ impl GlobeState {
         (cam - self.center_local.as_dvec3()).length() - self.radius as f64
     }
 
+    /// The build this sphere belongs to — bumped whenever [`setup_globe`] rebuilds
+    /// in a new tangent frame. Consumers that bake `drop_at` into a mesh compare
+    /// it to know when their geometry is stale, exactly as they do with
+    /// `TerrainField::revision`.
+    pub fn build_revision(&self) -> u32 {
+        if self.ready {
+            self.built_gen
+        } else {
+            u32::MAX
+        }
+    }
+
+    /// How far the Earth's surface has fallen away from the anchor's tangent
+    /// plane, `horizontal_m` metres out from the anchor (metres, ≥ 0).
+    ///
+    /// This is what makes the flat tier a *patch of the globe* rather than a
+    /// plane that happens to be near it. [`setup_globe`] builds the sphere in the
+    /// anchor's tangent frame with the anchor exactly on its surface at the local
+    /// origin, so `y = -drop_at(d)` is not an approximation of the globe — it is
+    /// the globe, evaluated in the flat frame the basemap is already placed in.
+    /// Both surfaces therefore meet with no step wherever the clipmap ends, which
+    /// is the whole reason the streamed tiles can be handed off to the quadtree
+    /// at all.
+    ///
+    /// Zero until the globe is placed: the ground is flat for the second or two
+    /// before an anchor exists, exactly as it always was, and every consumer adds
+    /// this unconditionally (same contract as `TerrainField::at`).
+    pub fn drop_at(&self, horizontal_m: f32) -> f32 {
+        if !self.ready {
+            return 0.0;
+        }
+        curvature_drop_m(horizontal_m, self.radius)
+    }
+
+    /// The outward (up) normal of that surface at the same point — the sphere
+    /// normal, not `+Y`.
+    ///
+    /// Ground meshes need it or a tile 80 km out is lit as though it were lying
+    /// under the anchor: by then the true surface has tilted 0.74°, which is
+    /// small, but it is the same 0.74° for every tile in that ring and so reads
+    /// as a band of flat shading rather than as ground curving into the light.
+    pub fn surface_normal(&self, x: f32, z: f32) -> Vec3 {
+        if !self.ready {
+            return Vec3::Y;
+        }
+        let p = Vec3::new(x, -self.drop_at(Vec2::new(x, z).length()), z);
+        (p - self.center_local).normalize_or(Vec3::Y)
+    }
+
     /// Bevy-local unit direction from Earth's centre toward a geodetic point,
     /// in the current anchor frame — the inverse of [`sub_point`]. Places the
     /// space camera over a given lat/lng (the `--shot` harness uses it).
@@ -452,6 +526,20 @@ impl GlobeState {
         self.ready && self.altitude_m(cell, tf) > GLOBE_SHOW_ALT as f64
     }
 
+    /// Whether the globe's own geometry should be drawn at all — true from
+    /// [`GLOBE_DRAW_ALT`] up, i.e. for the whole space tier *and* the band below
+    /// it where the flat clipmap runs out before the horizon does.
+    ///
+    /// Kept separate from [`Self::in_space`] on purpose. `in_space` answers "is
+    /// the local scene over?" and a dozen systems ask it — hiding buildings,
+    /// freezing streamers, switching the lighting model, choosing a heading
+    /// readout. Only two things want this one: whether to draw the planet and
+    /// whether to refine its quadtree. Folding them back together is what put a
+    /// flat 150 km disc where the Earth should have been.
+    pub fn drawn(&self, cell: &GridCell, tf: &Transform) -> bool {
+        self.ready && self.altitude_m(cell, tf) > GLOBE_DRAW_ALT as f64
+    }
+
     /// How far into space the view is, 0 → 1: 0 at the globe threshold, 1 by
     /// [`SPACE_FULL_ALT`], smooth in between.
     ///
@@ -483,12 +571,29 @@ impl GlobeState {
     /// margin, and inside the far plane `camera_controls` sets there
     /// (`dist + 2.5 R`). Angular sizes are unchanged — the meshes are scaled
     /// uniformly along with the distance.
+    ///
+    /// The band below the space tier needs them moved too, for the same reason
+    /// one step smaller. "Beyond all world geometry" meant the 150 km ground
+    /// skirt; the world now runs to the planet's horizon, which is 391 km from
+    /// 12 km up — so at night the star shell would hang between the camera and
+    /// the far ground. Below `GLOBE_DRAW_ALT` nothing has changed and the
+    /// built-in radius is still right.
     pub fn sky_shell_radius(&self, cell: &GridCell, tf: &Transform) -> Option<f32> {
-        if !self.in_space(cell, tf) {
+        if self.in_space(cell, tf) {
+            let dist_center = self.altitude_m(cell, tf) + self.radius as f64;
+            return Some(dist_center as f32 + self.radius * 1.5);
+        }
+        if !self.drawn(cell, tf) {
             return None;
         }
-        let dist_center = self.altitude_m(cell, tf) + self.radius as f64;
-        Some(dist_center as f32 + self.radius * 1.5)
+        // Past the horizon and the far plane's own margin, so the shells sit
+        // outside every piece of ground that can be drawn — and still well
+        // inside the far plane itself.
+        let horizon = crate::systems::free_camera::horizon_distance_m(
+            self.altitude_m(cell, tf) as f32,
+            self.radius,
+        );
+        Some((horizon * 1.35).max(SKY_SHELL_GROUND_RADIUS))
     }
 }
 
@@ -730,10 +835,90 @@ pub fn setup_globe(
     tracing::info!(radius = globe.radius, "globe placed");
 }
 
-/// Altitude (m) above which the globe is drawn. Below it the detailed flat-tile
-/// city view fully covers the sky-facing hemisphere, so the globe stays hidden
-/// (and can't z-fight the tiles that sit on its surface).
+/// How far a sphere of `radius_m` falls away from its own tangent plane,
+/// `horizontal_m` out from the point of tangency.
+///
+/// The exact sagitta, `R − √(R² − d²)`, rather than the schoolbook `d²/2R`: the
+/// approximation is fine at city scale but is 8 m short at the 400 km horizon a
+/// 12 km camera sees, and the horizon is precisely where this is read. Clamped
+/// past the limb (`d > R`) so a nonsense distance yields the pole rather than a
+/// NaN that would poison a whole vertex buffer.
+#[must_use]
+pub fn curvature_drop_m(horizontal_m: f32, radius_m: f32) -> f32 {
+    if !(horizontal_m.is_finite() && radius_m > 0.0) {
+        return 0.0;
+    }
+    let d = horizontal_m.abs().min(radius_m);
+    let r = radius_m as f64;
+    (r - ((r * r - d as f64 * d as f64).max(0.0)).sqrt()) as f32
+}
+
+/// Largest sag a single ground quad may hide, in metres — the knob that turns
+/// [`curvature_drop_m`] into a subdivision count.
+///
+/// A flat quad spanning `s` metres of a sphere misses it by `(s/2)²/2R` in the
+/// middle, and the vertices carry the exact drop, so the error is bounded by
+/// this and nothing else. 0.25 m is a quarter of the clipmap's 0.4 m level
+/// spacing, which is the only other vertical scale in the basemap: any coarser
+/// and a level's curvature error could exceed its separation from the level
+/// beneath it and the pyramid would start poking through itself on the ring.
+const MAX_CURVE_SAG_M: f32 = 0.25;
+
+/// Subdivisions per side a ground tile of `tile_m` needs to follow the curve
+/// within [`MAX_CURVE_SAG_M`].
+///
+/// Deliberately independent of how far out the tile is. The drop grows
+/// quadratically with distance from the anchor, but within one tile that growth
+/// is a *tilt*, which a flat quad's own corners represent exactly; only the
+/// second-order part — the tile's own sag, a function of its size alone — needs
+/// vertices. So a z10 ring 80 km out costs the same 7×7 grid as one overhead,
+/// and the finest levels (under ~3.5 km) need no subdivision at all.
+#[must_use]
+pub fn curvature_divisions(tile_m: f32, radius_m: f32) -> usize {
+    if !(tile_m > 0.0) || radius_m <= 0.0 {
+        return 1;
+    }
+    // s ≤ 2·√(2·R·sag) is the span whose mid-quad sag stays under the limit.
+    let max_span = 2.0 * (2.0 * radius_m * MAX_CURVE_SAG_M).sqrt();
+    ((tile_m / max_span).ceil() as usize).clamp(1, 64)
+}
+
+/// Altitude (m) at which the space tier begins: the local ground props are
+/// hidden, the lighting and atmosphere switch to their orbital models, and
+/// `space_factor` starts its ramp.
+///
+/// It is **no longer** the altitude the globe becomes visible at — see
+/// [`GLOBE_DRAW_ALT`]. It used to be both, on the reasoning that "below it the
+/// detailed flat-tile city view fully covers the sky-facing hemisphere". That
+/// was true at 2 km and false by 10: the flat clipmap reaches ~82 km, a 12 km
+/// camera's horizon is ~390 km, and the wedge between them was filled by a
+/// 150 km paper disc with a hard rim. Splitting the two constants is what lets
+/// the globe carry the far field while the flat tier still owns the near one.
 pub const GLOBE_SHOW_ALT: f32 = 50_000.0;
+
+/// Altitude (m) above which the globe is drawn *behind* the flat tier.
+///
+/// Low enough that the horizon is the planet's at every altitude anyone flies
+/// at, high enough that a camera in the street is not paying for a planet it
+/// cannot see past the buildings. Between here and [`GLOBE_SHOW_ALT`] both
+/// surfaces are on screen at once: the streamed clipmap near the anchor and the
+/// quadtree past it, meeting without a step because `GlobeState::drop_at` puts
+/// the clipmap on the same sphere.
+pub const GLOBE_DRAW_ALT: f32 = 2_000.0;
+
+/// WGS84's semi-major axis, for the handful of places that need *an* Earth
+/// radius without a live [`GlobeState`] to read the anchor's real one from —
+/// tests, and the ground skirt, which is built before an anchor exists. The
+/// geocentric radius runs 6,357–6,378 km, so anything using this is accepting
+/// 0.3 %.
+pub const GLOBE_EQUATORIAL_RADIUS_M: f32 = 6_378_137.0;
+
+/// The radius the viewer-centred sky shells are authored at (`sky::STAR_SHELL_M`
+/// and the moon's own distance), and therefore the floor
+/// [`GlobeState::sky_shell_radius`] may never push them below — moving a shell
+/// *inward* would change nothing about what it occludes and would shrink the
+/// stars.
+const SKY_SHELL_GROUND_RADIUS: f32 = 150_000.0;
 
 /// Render the atmosphere from orbit? `true`: the space tier switches the camera
 /// to `AtmosphereMode::Raymarched` (at [`GLOBE_SKY_SAMPLES`]) so the planet shows
@@ -1017,7 +1202,13 @@ pub fn update_globe_visibility(
             // they are already gone by the time this system would care. Two
             // visibility writers on one entity is the documented race.
             Without<crate::components::VegetationSurface>,
+            Without<crate::components::GroundSkirt>,
         ),
+    >,
+    // The ground skirt, on its own rule (see below).
+    mut skirt_vis: Query<
+        &mut Visibility,
+        (With<crate::components::GroundSkirt>, Without<GlobeMesh>),
     >,
 ) {
     if !globe.ready {
@@ -1026,7 +1217,13 @@ pub fn update_globe_visibility(
     let Ok((cell, tf, atmosphere)) = camera.single_mut() else {
         return;
     };
-    let show_globe = globe.in_space(cell, tf);
+    // Two different questions, and they used to share one answer. `show_globe`
+    // is "draw the planet" and starts at `GLOBE_DRAW_ALT`; `in_space` is "the
+    // local scene is over" and still starts at `GLOBE_SHOW_ALT`. Everything
+    // below that touches lighting, the atmosphere or the ground props keeps
+    // reading `in_space` — only the geometry's own visibility moved.
+    let show_globe = globe.drawn(cell, tf);
+    let in_space = globe.in_space(cell, tf);
 
     // Tiered atmosphere *render mode* — the ONLY atmosphere change that's safe at
     // runtime. Near the ground the cheap `LookupTexture` mode suits the city view;
@@ -1047,7 +1244,7 @@ pub fn update_globe_visibility(
     // — that arm skips this block and goes on to the visibility writes below,
     // which are the part every tier needs.
     if let Some(mut atmosphere) = atmosphere {
-        let (want_mode, want_samples) = if show_globe && space_raymarch() {
+        let (want_mode, want_samples) = if in_space && space_raymarch() {
             (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
         } else if ground_raymarch() {
             // The bisecting switch: per-pixel sky, no sky-view/aerial LUT reads.
@@ -1121,10 +1318,12 @@ pub fn update_globe_visibility(
             *v = want_globe;
         }
     }
-    // Hide the skybox and the local ground props while the globe is up (so the
-    // sky reads as black space and no bright disc floats over the anchor); show
-    // them again on the way back down.
-    let want_local = if show_globe {
+    // Hide the skybox and the local ground props once the local scene is over
+    // (so the sky reads as black space and no bright patch floats over the
+    // anchor); show them again on the way back down. `in_space`, not
+    // `show_globe`: these are still the right thing to draw for the whole band
+    // where the globe is only filling in past the clipmap.
+    let want_local = if in_space {
         Visibility::Hidden
     } else {
         Visibility::Inherited
@@ -1132,6 +1331,22 @@ pub fn update_globe_visibility(
     for mut v in hide_vis.iter_mut() {
         if *v != want_local {
             *v = want_local;
+        }
+    }
+
+    // The ground skirt is the one prop that goes at the *globe's* threshold
+    // instead, because the globe does not merely outshine it — it replaces it.
+    // Both are the surface past the last streamed tile, so leaving the skirt up
+    // would put a 150 km cap over the planet it was standing in for, and its rim
+    // would cut a straight line across a curved horizon.
+    let want_skirt = if show_globe {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut v in skirt_vis.iter_mut() {
+        if *v != want_skirt {
+            *v = want_skirt;
         }
     }
 }
@@ -1388,7 +1603,7 @@ pub fn update_globe_tiles(
         // Sphere-patch mesh over the tile's Mercator footprint: rows linear in
         // tile-y (so the texture maps 1:1), vertices relative to the tile
         // centre for f32 precision, lifted by zoom so finer tiles sit above.
-        let lift = (key.z as f32 * QT_LIFT_PER_Z) as f64;
+        let lift = (key.z as f32 * QT_LIFT_PER_Z) as f64 - QT_SURFACE_SINK;
         let c_lat = tile_frac_to_lat(key.y as f64 + 0.5, key.z);
         let c_lng = tile_frac_to_lng(key.x as f64 + 0.5, key.z);
         let origin = geodetic_to_local(&frame, c_lat, c_lng, lift);
@@ -1539,6 +1754,14 @@ pub fn update_globe_tiles(
     // current level), so a spin doesn't stream max-zoom for the whole limb.
     let view_cone = (fov as f64) * 1.1;
 
+    // Below the space tier the flat clipmap is still drawn and still opaque, so
+    // everything within its reach is already painted at a zoom this quadtree
+    // cannot match. Tiles that fall wholly inside it are kept but never split:
+    // the globe's job down here is the ground *past* the clipmap, and refining
+    // what is behind it was the whole cost of drawing the planet from 2 km.
+    let covered_to = (altitude <= GLOBE_SHOW_ALT as f64)
+        .then(|| crate::systems::map_stream::clipmap_reach_m(globe.anchor_lat));
+
     let mut desired: Vec<TileKey> = Vec::new();
     let n0 = 1i64 << QT_MIN_Z;
     let mut stack: Vec<TileKey> = (0..n0 * n0)
@@ -1567,9 +1790,18 @@ pub fn update_globe_tiles(
             .acos();
         let ang_radius = ((gs * 0.75) / d).atan();
         let in_view = view_angle < view_cone + ang_radius;
+        // Anchored-frame horizontal distance from the map origin to the tile's
+        // near side. `centre` is already in that frame, and the anchor is its
+        // origin, so this is just the planar length — exact enough at clipmap
+        // range, where the drop is under a kilometre.
+        let hidden_by_clipmap = covered_to.is_some_and(|reach| {
+            let horizontal = DVec3::new(centre.x, 0.0, centre.z).length();
+            horizontal + gs * 0.75 < reach
+        });
         if px > QT_SPLIT_PX
             && key.z < QT_MAX_Z
             && in_view
+            && !hidden_by_clipmap
             && desired.len() + stack.len() < crate::quality::budget().per_frame(QT_MAX_TILES)
         {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -1725,6 +1957,144 @@ mod tests {
     use super::*;
 
     const R: f64 = 6_378_137.0;
+
+    /// The drop is the sagitta, and the schoolbook `d²/2R` is only its first
+    /// term. Pinned at the two ends that matter: a city block, where the two
+    /// agree to a hair, and the horizon a mid-altitude camera actually sees,
+    /// where they do not.
+    #[test]
+    fn the_drop_is_the_sagitta_not_the_parabola() {
+        let r = R as f32;
+        for d in [100.0_f32, 1_000.0, 10_000.0] {
+            let parabola = d * d / (2.0 * r);
+            assert!(
+                (curvature_drop_m(d, r) - parabola).abs() < 0.01,
+                "{d} m: {} vs {parabola}",
+                curvature_drop_m(d, r)
+            );
+        }
+        // 400 km out the parabola is ~8 m short, and 400 km is where the
+        // horizon is from 12 km up — i.e. exactly where this gets read.
+        let far = curvature_drop_m(400_000.0, r);
+        assert!(
+            far - 400_000.0f32.powi(2) / (2.0 * r) > 5.0,
+            "the two should have visibly parted by 400 km, got {far}"
+        );
+        // Known values, so a sign flip or a unit slip cannot pass.
+        assert!((curvature_drop_m(82_000.0, r) - 527.0).abs() < 2.0);
+        assert!((curvature_drop_m(150_000.0, r) - 1_764.0).abs() < 5.0);
+    }
+
+    /// Nothing may hand a NaN to a vertex buffer: one poisons every triangle
+    /// that touches it, and the tile just vanishes with nothing in the log.
+    #[test]
+    fn the_drop_is_finite_for_any_input() {
+        let r = R as f32;
+        for d in [0.0, -5_000.0, f32::MAX, r * 2.0, f32::INFINITY, f32::NAN] {
+            assert!(curvature_drop_m(d, r).is_finite(), "{d}");
+        }
+        assert_eq!(curvature_drop_m(1_000.0, 0.0), 0.0);
+    }
+
+    /// The subdivision rule is about the tile's own size and nothing else — a
+    /// ring 80 km out costs exactly what the same tile costs overhead. If this
+    /// ever became distance-dependent the coarse ring would quietly get 50×
+    /// the geometry.
+    #[test]
+    fn curvature_subdivision_follows_tile_size_alone() {
+        let r = R as f32;
+        // The finest clipmap levels are flat to well under the limit.
+        assert_eq!(curvature_divisions(184.0, r), 1);
+        assert_eq!(curvature_divisions(2_900.0, r), 1);
+        // …and the coarse rings get a handful of rows, not hundreds.
+        let z10 = curvature_divisions(23_500.0, r);
+        assert!((4..=12).contains(&z10), "z10 asked for {z10} divisions");
+        assert!(curvature_divisions(11_700.0, r) <= z10);
+        // Every answer keeps its own sag under the budget it is derived from.
+        for tile_m in [184.0_f32, 2_900.0, 11_700.0, 23_500.0, 78_000.0] {
+            let span = tile_m / curvature_divisions(tile_m, r) as f32;
+            let sag = curvature_drop_m(span * 0.5, r);
+            assert!(sag <= MAX_CURVE_SAG_M * 1.001, "{tile_m} m → sag {sag}");
+        }
+        assert_eq!(curvature_divisions(0.0, r), 1);
+    }
+
+    /// The two thresholds are a band, not a pair of names for one number. The
+    /// whole point of the split is that there is altitude between them where
+    /// both tiers are drawn; collapsing it puts the flat skirt back.
+    #[test]
+    fn the_globe_is_drawn_well_below_the_space_tier() {
+        assert!(GLOBE_DRAW_ALT < GLOBE_SHOW_ALT);
+        // Low enough to catch the altitudes the clipmap cannot fill: its reach
+        // is ~82 km, and a camera is past that as soon as its horizon is.
+        assert!(
+            GLOBE_DRAW_ALT <= 5_000.0,
+            "the clipmap runs out of ground before {GLOBE_DRAW_ALT} m"
+        );
+        // The quadtree has to be streaming by the time it is shown, or the
+        // globe appears as the bare backstop sphere.
+        assert!(QT_MIN_ALT <= GLOBE_DRAW_ALT as f64);
+    }
+
+    /// **The load-bearing one: the flat tier's curve is the globe, not a curve
+    /// that resembles it.**
+    ///
+    /// `setup_globe` places every quadtree vertex through `geodetic_to_local`,
+    /// and `GlobeState::drop_at` gets the same answer by arithmetic in the flat
+    /// frame. If those two ever part company, the seam where the clipmap ends
+    /// gains a step — which is the entire defect this exists to remove, so it is
+    /// worth a test that does not depend on either side's implementation.
+    #[test]
+    fn the_flat_tier_curve_lands_on_the_globes_own_surface() {
+        let (clat, clng) = (53.2194, 6.5665);
+        let frame = TangentFrame::new(clat, clng, 0.0);
+        let radius = geodetic_to_local(&frame, clat, clng, 0.0).distance(frame_center(&frame));
+        // North and east of the anchor, out to well past the clipmap's reach.
+        for metres in [1_000.0_f64, 10_000.0, 82_000.0, 200_000.0] {
+            let dlat = metres / 111_320.0;
+            let dlng = metres / (111_320.0 * clat.to_radians().cos());
+            for p in [
+                geodetic_to_local(&frame, clat + dlat, clng, 0.0),
+                geodetic_to_local(&frame, clat, clng + dlng, 0.0),
+            ] {
+                let horizontal = Vec2::new(p.x, p.z).length();
+                let ours = curvature_drop_m(horizontal, radius);
+                // The globe is an ellipsoid and this is the sphere through the
+                // anchor, so they part by the difference between the geocentric
+                // radius and the local radii of curvature — 0.4 % of the drop at
+                // this latitude, 0.7 % at the equator. What matters is that it
+                // stays a fraction of a percent and never becomes a step: at the
+                // clipmap's own reach that is two metres against 527 of drop.
+                let theirs = -p.y;
+                let slack = (theirs.abs() * 0.01).max(0.05);
+                assert!(
+                    (ours - theirs).abs() < slack,
+                    "{metres} m out: flat tier {ours} m vs globe {theirs} m"
+                );
+            }
+        }
+    }
+
+    /// Earth's centre in the anchor's local frame — what `setup_globe` computes
+    /// as `center_local`.
+    fn frame_center(frame: &TangentFrame) -> Vec3 {
+        let enu = frame.world_to_local(DVec3::ZERO);
+        Vec3::new(enu.x as f32, enu.z as f32, -enu.y as f32)
+    }
+
+    /// The quadtree's lift ladder measures outward from the sphere, so the sink
+    /// has to swallow the whole of it — otherwise the globe's finest tiles
+    /// stand proud of the flat clipmap they are supposed to be filling in
+    /// behind, and the planet is drawn over the city.
+    #[test]
+    fn the_globe_sits_under_the_flat_clipmap() {
+        let highest_rung = QT_MAX_Z as f64 * QT_LIFT_PER_Z as f64 - QT_SURFACE_SINK;
+        assert!(
+            highest_rung < -10.0,
+            "the globe's top rung is at {highest_rung} m against a clipmap resting \
+             within a few metres of zero"
+        );
+    }
 
     /// Outward normal and camera direction for a tile whose centre lies
     /// `theta_deg` of arc from the sub-camera point, with the camera at

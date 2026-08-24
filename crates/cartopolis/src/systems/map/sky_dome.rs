@@ -101,6 +101,11 @@ pub struct SkyDome;
 /// having done nothing at all.
 pub const SKY_DOME_RADIUS: f32 = 160_000.0;
 
+/// How far past the horizon the shell is pushed when it has to grow — inside
+/// `free_camera`'s `HORIZON_FAR_MARGIN`, so a shell that clears the ground is
+/// still never clipped by the far plane.
+const SKY_DOME_HORIZON_MARGIN: f32 = 1.4;
+
 /// Above this altitude (metres) the shell is hidden outright, and over the run up
 /// to it from [`SKY_DOME_FADE_ALT`] the sky is faded to nothing.
 ///
@@ -348,6 +353,21 @@ pub fn update_sky_dome(
     tf.translation = cam.translation();
 
     let altitude = globe.altitude_m(cell, cam_local) as f32;
+    // …and grown to stay outside the ground, which since the globe started being
+    // drawn from `GLOBE_DRAW_ALT` runs to the planet's horizon rather than to the
+    // 160 km this shell was authored at. An opaque sky shell inside the ground it
+    // is meant to stand behind paints over the far half of the view — and it is
+    // the phone tier that gets this shell, so nothing on a desktop would ever
+    // show it. Scaled uniformly, so every angular size in the shader is
+    // unchanged.
+    // The mesh is a unit sphere and the transform's scale *is* its radius (see
+    // the spawn), so this is metres, not a multiplier.
+    let want_scale = (crate::systems::free_camera::horizon_distance_m(altitude, globe.radius)
+        * SKY_DOME_HORIZON_MARGIN)
+        .max(SKY_DOME_RADIUS);
+    if (tf.scale.x - want_scale).abs() > 1e-3 {
+        tf.scale = Vec3::splat(want_scale);
+    }
     let want = if altitude > SKY_DOME_MAX_ALT {
         Visibility::Hidden
     } else {
@@ -475,11 +495,36 @@ mod tests {
     }
 
     /// The two bounds the shell's geometry rests on, as a test rather than as a
-    /// comment: it stands outside the ground disc it must not cover, and it is
-    /// gone before the world stops being flat.
+    /// comment: it stands outside the ground it must not cover, and it is gone
+    /// before the world stops being flat.
+    ///
+    /// The first bound used to be the 150 km ground skirt and a constant was
+    /// enough for it. The ground now runs to the planet's horizon, so the shell
+    /// has to grow with altitude — and the resting radius still has to clear the
+    /// skirt for the altitudes below `GLOBE_DRAW_ALT`, where it does not grow.
     #[test]
-    fn the_shell_is_bounded_by_the_ground_disc_and_the_globe() {
+    fn the_shell_is_bounded_by_the_ground_and_the_globe() {
         assert!(SKY_DOME_RADIUS > crate::systems::free_camera::GROUND_DISC_RADIUS);
         assert!(SKY_DOME_MAX_ALT < crate::systems::globe::GLOBE_SHOW_ALT);
+
+        // Everywhere the shell is drawn it stands outside the horizon and
+        // inside the far plane. Both are what it is between, and getting either
+        // wrong is invisible on a desktop — this shell is the phone's sky.
+        let radius = crate::systems::globe::GLOBE_EQUATORIAL_RADIUS_M;
+        for altitude in [
+            0.0,
+            crate::systems::globe::GLOBE_DRAW_ALT,
+            12_000.0,
+            SKY_DOME_MAX_ALT,
+        ] {
+            let horizon = crate::systems::free_camera::horizon_distance_m(altitude, radius);
+            let shell = (horizon * SKY_DOME_HORIZON_MARGIN).max(SKY_DOME_RADIUS);
+            assert!(
+                shell > horizon,
+                "{altitude} m: shell {shell} ≤ horizon {horizon}"
+            );
+            let far = crate::systems::free_camera::band_far_plane_m(altitude, radius);
+            assert!(shell < far, "{altitude} m: shell {shell} ≥ far plane {far}");
+        }
     }
 }
