@@ -1,6 +1,6 @@
 ---
 topic: tile-raster-cost
-triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu]
+triggers: [vector_tiles.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu, "benchmark", "streaming performance", print_tile_pipeline_time]
 updated: 2026-08-24
 ---
 
@@ -28,7 +28,48 @@ is tiny-skia's scan conversion, not protobuf decoding.
 summed to ~282 ms against a measured 121 ms total, so that attribution was never
 validated. Re-measure by instrumenting the real `render_mvt` before acting on it.
 
-The benchmarks were reverted, not committed — nothing in the tree measures this.
+The benchmarks from that session were reverted, not committed — and the same
+thing happened to every later measurement in this note, each taken with a
+throwaway harness rebuilt for the occasion. **Since 2026-08-24 the instrument is
+in-tree**:
+
+```bash
+cargo test -p cartopolis_geo --release print_tile_pipeline_time -- --ignored --nocapture
+```
+
+prints the per-stage wall clock (min over adaptive repeats, beside its median as
+a noise check) for parse, decode, both render sizes, the overzoom sub-tile, the
+mip chain, the ocean mask, the shore field and the three tessellators, over both
+fixtures. It is a printing hatch on the same terms as `print_tile_pipeline_cost`
+— an instrument, never a CI gate (the allocation-budget doctrine in
+`crates/geo/src/perf.rs` explains why a timer threshold cannot live in CI here).
+Numbers below marked with a date are readings from it or its predecessors;
+re-take them with the command rather than trusting a table to stay true.
+
+## Reading from the committed hatch, 2026-08-24 (agent container, `--release`)
+
+| Stage | min | note |
+|---|---|---|
+| parse (Groningen z14) | 4.8 ms | |
+| parse + decode all layers | 14.8 ms | decode alone ≈ 10 ms |
+| `render_mvt_sized` 512² whole | 76.8 ms | |
+| `render_mvt_sized` 256² whole | **56.5 ms** | see below |
+| render 256², 1/64 overzoom sub | 8.3 ms | the cull at work |
+| mip chain over the 512² render | 11.0 ms | |
+| `water_shore_field` | 19.5 ms | |
+| `ocean_mask` 256² | 0.3 ms | |
+| `tessellate_surfaces` / `_roads` / `_bridges` | 0.8 / 3.1 / 0.01 ms | |
+
+**A 256² render costs 74% of a 512² one, not 25%.** Scan conversion scales with
+area; the other three quarters of a quarter never arrived, so most of
+`render_mvt` on this dense tile is **per-feature path construction**, not
+pixels. The allocation budgets saw this from the other side (the two sizes
+allocate identically — `RENDER_DENSE_ALLOCS`'s comment); the clock now agrees.
+Two consequences: the phone tier's `tile_px = 256` buys less rasterise time than
+its area ratio suggests on dense tiles, and the next real win in this pipeline
+is per-feature — e.g. the paths still built twice for the twice-listed
+`buildings`/`streets` entries in `PAINT_ORDER`, which the memoised decode does
+not deduplicate.
 
 ## The validated per-pass split, and what batching bought (2026-08-24)
 
@@ -210,9 +251,12 @@ keeping so it is not re-proposed.
 
 If protocol work is ever wanted anyway, **HTTP/2 is the better trade than
 HTTP/3**: the same multiplexing win, stable in `reqwest`, and the origin already
-speaks it. What has *not* been measured is the split of the cold-minus-warm 5.7 s
-above into TTFB versus body time; that number decides the whole question and
-nothing in the tree records it.
+speaks it. The number that decides the whole question is the split of a cold
+fill's fetch time into TTFB versus body — and since 2026-08-24 the tree records
+it: `platform::http::stats` splits every native fetch at the header boundary,
+and a `--shot` reports the per-capture sums as the `fetch_ttfb_ms` /
+`fetch_body_ms` columns (with `fetch_count` / `fetch_mb` beside them). A
+cold-vs-warm pair of captures over one viewpoint is now the whole experiment.
 
 ## vello_cpu was measured against tiny-skia and is not a win here (2026-08-24)
 
@@ -300,11 +344,14 @@ working set.** Byte-bounded rather than entry-bounded so a dense tile cannot blo
 the budget; LRU with a linear-scan recency order, which is fine at tens of entries
 and was never profiled at the globe quadtree's ~900 tiny z2–z8 bodies.
 
-**Parsed tiles are deliberately not cached across tasks.** A `Reader` holds
-`geo_types` f32 geometry for every feature in the tile and nothing in the tree
-measures how much that is, whereas a body's size is exactly known — so caching
-bytes is the half that can be reasoned about. `vector_tiles::TileData` removes the
-duplicate parses *within* one task instead. An `Arc<TileData>` cache would
-additionally collapse the repeat parses *across* tasks (the 179 overzoomed
-requests, and the same z14 bodies `map_geometry` and the router want); it is the
-obvious next step and it is blocked on one number: how big a parsed tile is.
+**Parsed tiles are now shared across tasks** — `tile_loader::parse_shared`
+holds a `Weak<TileData>` per source tile, so the 179 overzoomed requests and the
+z14 bodies `map_geometry` and the router want resolve to one parse while any
+task holds it. The number this paragraph used to say the decision was blocked on
+— how big a parsed tile is — is measured now and pinned as a budget
+(`perf_budgets::a_parsed_and_decoded_tile_retains_a_bounded_footprint`, off
+`Cost::retained_bytes`): the dense Groningen z14 retains **3.3 MiB parsed** and
+a further **12.5 MiB with every layer decoded**, so each concurrently-held tile
+is ~15.8 MiB of heap. That is the figure to multiply by worker width when
+reasoning about a teleport burst's memory, and the budget is what stops it
+growing unremarked.

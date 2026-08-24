@@ -1,7 +1,7 @@
 ---
 topic: allocation-budgets
-triggers: [perf.rs, perf_budgets.rs, "budget test", "allocation", "benchmark", "perf test", "regression test", global_allocator, "how do we measure", tile-raster-cost]
-updated: 2026-08-12
+triggers: [perf.rs, perf_budgets.rs, "budget test", "allocation", "benchmark", "perf test", "regression test", global_allocator, "how do we measure", tile-raster-cost, retained_bytes, stopwatch]
+updated: 2026-08-24
 ---
 
 # Performance is a test here, and it is a count rather than a clock
@@ -49,6 +49,22 @@ the message.
 The probe also has to survive optimisation to be a fair test: the first version
 was an unused `Vec::with_capacity` and LLVM deleted it, so the budget was right to
 stay green. `std::hint::black_box` plus a `push` is what makes it real.
+
+## Retained bytes joined the instrument (2026-08-24)
+
+`Cost` gained `retained_bytes` — live heap when the measured region ends, i.e.
+what its return value *keeps*, as against the traffic it churned. Same
+machine-independence as the counts (verified bit-identical across runs), so it
+budgets: a parsed Groningen z14 retains **3,299 KiB**, decoding every layer a
+further **12,500 KiB** — the per-entry weight of the client's `parse_shared`
+memo, and the number `tile-raster-cost.md` spent months calling unmeasured.
+`a_parsed_and_decoded_tile_retains_a_bounded_footprint` pins both.
+
+The clock half lives beside this file too now, as a hatch rather than a gate:
+`perf::stopwatch` plus `print_tile_pipeline_time` (run it `--release`). Nothing
+about the doctrine above changed — wall-clock still cannot be a CI threshold;
+what changed is that the *instrument* is committed instead of being rebuilt and
+reverted per measuring session.
 
 ## Numbers as of 2026-08-12
 
