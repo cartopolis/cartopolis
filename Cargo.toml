@@ -182,7 +182,13 @@ tiff = { version = "0.10", default-features = false, features = [
 # Client-side vector-tile rendering (VersaTiles / Shortbread MVT → RGBA).
 # Both are pure Rust with no C deps, so they survive the wasm32 target (ADR-033).
 mvt-reader = "2.4"
-tiny-skia = "0.12"
+# `png-format` (a default feature) is off: nothing calls tiny-skia's PNG
+# encode/decode — test PNGs go through `image` — so the feature only compiled
+# an extra encoder into every build.
+tiny-skia = { version = "0.12", default-features = false, features = [
+    "std",
+    "simd",
+] }
 # In-world scripting (`cartopolis_simulator::scripting`). **Luau**, not standard Lua:
 # only Luau gives `Lua::sandbox()`, and only Luau's `set_interrupt` can return
 # `VmState::Yield` — standard Lua's `set_hook` can raise an error but cannot
