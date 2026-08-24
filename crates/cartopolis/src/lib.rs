@@ -2027,6 +2027,12 @@ fn run_client() {
     // `systems::window_icon`.
     app.add_systems(Update, systems::window_icon::set_window_icon);
 
+    // Swap bevy_pbr's atmosphere functions module for the patched copy as soon
+    // as its async load lands (Adreno 840 black-sky hardening — see
+    // `systems::atmosphere_patch`). Its own registration: it acts on an asset,
+    // not on this frame's entities, so it orders against nothing.
+    app.add_systems(Update, systems::atmosphere_patch::patch_atmosphere_shader);
+
     // Touch → gestures + the emulated mouse (`systems::touch`). MUST run after
     // `InputSystems`, which is what fills `Touches` from this frame's events;
     // unordered it would read last frame's fingers and report every delta one

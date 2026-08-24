@@ -775,6 +775,14 @@ fn space_raymarch() -> bool {
 /// Whether to leave `Atmosphere::inner_radius` at bevy's own Earth radius instead
 /// of matching it to `GlobeState::radius`, read once.
 ///
+/// **Falsified as the black-sky fix, kept as margin.** The device rendered a
+/// black sky with this default in force and with the A/B switch in both
+/// positions (2026-08-24), so the cliff below was never the cause — the
+/// diagnosis that survived elimination is in
+/// `docs/notes/adreno-atmosphere-miscompile.md` and the fix in
+/// `systems::atmosphere_patch`. The margin stays because it is real headroom
+/// against a real cancellation, just not one this driver was tripping on.
+///
 /// **On by default on Android, and that is a fix rather than caution.** The match
 /// exists to close a thin ring below the horizon; what it opens is an f32
 /// cancellation in the sky-view and aerial-view LUT parameterization, worth 2.6
