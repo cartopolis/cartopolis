@@ -636,10 +636,13 @@ pub fn drive_route_solver(
             match fetch_corridor(from, to, &template, &progress, &cache).await {
                 Err(e) => publish_solve(&sink, seq, Err(e)),
                 Ok(input) => {
-                    crate::platform::workers::submit(Box::new(move || {
-                        let result = build_and_search(input, from, to, mode, &cache);
-                        publish_solve(&sink, seq, result);
-                    }));
+                    crate::platform::workers::submit(
+                        "routing",
+                        Box::new(move || {
+                            let result = build_and_search(input, from, to, mode, &cache);
+                            publish_solve(&sink, seq, result);
+                        }),
+                    );
                 }
             }
         })

@@ -991,77 +991,83 @@ pub fn update_buildings(
         IoTaskPool::get()
             .spawn(async move {
                 let texts = fetch_patch_texts(d_south, d_west, d_north, d_east).await;
-                crate::platform::workers::submit(Box::new(move || {
-                    let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
-                    let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
-                    let result = Ok::<_, String>(parse_patch(
-                        &texts, d_south, d_west, d_north, d_east,
-                    ))
-                    .map(|mut buildings| {
-                        // 3DBAG territory: the real meshes own covered cells, and the
-                        // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
-                        // inside the LoD2.2 keep ring, so covered cells here have real
-                        // geometry — an extrusion would stack under or poke through
-                        // it. This bites when the camera stands just OUTSIDE coverage
-                        // and the patch reaches across the edge (the camera-cell skip
-                        // below can't help there). Filtering the Vec, not the mesh
-                        // loop, keeps hit-testing consistent with what is drawn.
-                        buildings.retain(|b| {
-                            b.ring.first().is_none_or(|&(la, lo)| {
-                                let (bx, by) = lat_lng_to_tile(la, lo, CACHE_ZOOM);
-                                !lod22_covers(bx, by)
-                            })
-                        });
-                        // Simple 3D Buildings: parts replace covered outlines.
-                        resolve_parts(&mut buildings);
-                        // Deduped: with consistent windings the fan-triangulated flat caps
-                        // and shared footprint corners collapse to one vertex each.
-                        let mut bld = MeshData::with_dedup();
-                        let mut wins: [MeshData; 4] = std::array::from_fn(|_| MeshData::default());
-                        for b in &buildings {
-                            let ring: Vec<Vec2> = b
-                                .ring
-                                .iter()
-                                .map(|&(la, lo)| {
-                                    let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
-                                    Vec2::new(w.x - cell_ox, w.y - cell_oz)
-                                })
-                                .collect();
-                            // Stand it on the measured ground, one height for the whole
-                            // footprint (see `MeshData::set_base`).
-                            let base = ground
-                                .level_over(ring.iter().map(|p| [p.x + cell_ox, p.y + cell_oz]));
-                            bld.set_base(base);
-                            wins.iter_mut().for_each(|w| w.set_base(base));
-                            push_building(
-                                &mut bld,
-                                &mut wins,
-                                b.id as u64,
-                                &ring,
-                                b.height_m,
-                                b.height_is_eaves,
-                                b.wall_color,
-                                b.roof_color,
-                                b.roof_shape,
-                                b.roof_height,
-                                b.roof_across,
-                                b.min_height,
-                            );
+                crate::platform::workers::submit(
+                    "osm_buildings",
+                    Box::new(move || {
+                        let cell_ox = patch_cell.x as f32 * WORLD_CELL_EDGE;
+                        let cell_oz = patch_cell.z as f32 * WORLD_CELL_EDGE;
+                        let result =
+                            Ok::<_, String>(parse_patch(&texts, d_south, d_west, d_north, d_east))
+                                .map(|mut buildings| {
+                                    // 3DBAG territory: the real meshes own covered cells, and the
+                                    // patch (±BUILDING_PATCH_RADIUS base-zoom tiles) always sits
+                                    // inside the LoD2.2 keep ring, so covered cells here have real
+                                    // geometry — an extrusion would stack under or poke through
+                                    // it. This bites when the camera stands just OUTSIDE coverage
+                                    // and the patch reaches across the edge (the camera-cell skip
+                                    // below can't help there). Filtering the Vec, not the mesh
+                                    // loop, keeps hit-testing consistent with what is drawn.
+                                    buildings.retain(|b| {
+                                        b.ring.first().is_none_or(|&(la, lo)| {
+                                            let (bx, by) = lat_lng_to_tile(la, lo, CACHE_ZOOM);
+                                            !lod22_covers(bx, by)
+                                        })
+                                    });
+                                    // Simple 3D Buildings: parts replace covered outlines.
+                                    resolve_parts(&mut buildings);
+                                    // Deduped: with consistent windings the fan-triangulated flat caps
+                                    // and shared footprint corners collapse to one vertex each.
+                                    let mut bld = MeshData::with_dedup();
+                                    let mut wins: [MeshData; 4] =
+                                        std::array::from_fn(|_| MeshData::default());
+                                    for b in &buildings {
+                                        let ring: Vec<Vec2> = b
+                                            .ring
+                                            .iter()
+                                            .map(|&(la, lo)| {
+                                                let w = lat_lng_to_local(la, lo, ax, ay, z, tile_m);
+                                                Vec2::new(w.x - cell_ox, w.y - cell_oz)
+                                            })
+                                            .collect();
+                                        // Stand it on the measured ground, one height for the whole
+                                        // footprint (see `MeshData::set_base`).
+                                        let base = ground.level_over(
+                                            ring.iter().map(|p| [p.x + cell_ox, p.y + cell_oz]),
+                                        );
+                                        bld.set_base(base);
+                                        wins.iter_mut().for_each(|w| w.set_base(base));
+                                        push_building(
+                                            &mut bld,
+                                            &mut wins,
+                                            b.id as u64,
+                                            &ring,
+                                            b.height_m,
+                                            b.height_is_eaves,
+                                            b.wall_color,
+                                            b.roof_color,
+                                            b.roof_shape,
+                                            b.roof_height,
+                                            b.roof_across,
+                                            b.min_height,
+                                        );
+                                    }
+                                    BuiltPatch {
+                                        buildings,
+                                        patch_cell,
+                                        // Same byte cap as a LoD2.2 cell — the two lanes'
+                                        // pieces should stress the uploader equally.
+                                        detail: bld.into_meshes(
+                                            crate::systems::lod22::max_cell_mesh_bytes(),
+                                        ),
+                                        windows: wins.map(MeshData::into_mesh),
+                                        swap_done: false,
+                                    }
+                                });
+                        if let Ok(mut g) = slot.lock() {
+                            *g = Some(result);
                         }
-                        BuiltPatch {
-                            buildings,
-                            patch_cell,
-                            // Same byte cap as a LoD2.2 cell — the two lanes'
-                            // pieces should stress the uploader equally.
-                            detail: bld.into_meshes(crate::systems::lod22::max_cell_mesh_bytes()),
-                            windows: wins.map(MeshData::into_mesh),
-                            swap_done: false,
-                        }
-                    });
-                    if let Ok(mut g) = slot.lock() {
-                        *g = Some(result);
-                    }
-                }));
+                    }),
+                );
             })
             .detach();
     }
@@ -1145,13 +1151,16 @@ pub fn update_buildings(
                 .spawn(async move {
                     match fetch_cell_text(cx, cy, CACHE_ZOOM).await {
                         Ok(text) => {
-                            crate::platform::workers::submit(Box::new(move || {
-                                let built =
-                                    build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
-                                if let Ok(mut g) = results.lock() {
-                                    g.push(((cx, cy), built));
-                                }
-                            }));
+                            crate::platform::workers::submit(
+                                "osm_buildings",
+                                Box::new(move || {
+                                    let built =
+                                        build_far_from_text(&text, cx, cy, ax, ay, z, lat, &ground);
+                                    if let Ok(mut g) = results.lock() {
+                                        g.push(((cx, cy), built));
+                                    }
+                                }),
+                            );
                         }
                         Err(e) => {
                             if let Ok(mut g) = results.lock() {

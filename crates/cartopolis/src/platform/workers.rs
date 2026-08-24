@@ -221,26 +221,107 @@ use std::sync::Mutex;
 
 /// While set, [`submit`] parks jobs in [`PARKED`] instead of dispatching them.
 static PAUSED: AtomicBool = AtomicBool::new(false);
-/// Jobs submitted while paused, released in order by `set_paused(false)`.
-static PARKED: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+/// Jobs submitted while paused (with their stream label), released in order by
+/// `set_paused(false)`.
+static PARKED: Mutex<Vec<(&'static str, Job)>> = Mutex::new(Vec::new());
 /// Jobs handed to the pool and not yet finished — queued *or* running. Read by
 /// [`outstanding`].
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
 
+/// Per-stream accounting of what the pool has done — the answer to "where did
+/// the streaming time go" that `outstanding()` (a single instantaneous depth)
+/// cannot give.
+///
+/// Three numbers per label, cumulative since launch: jobs finished, time spent
+/// running them, and time they waited between [`submit`] and their first
+/// instruction. Busy says which decode dominates; **wait** is the queue-shaped
+/// number — it grows with pool starvation, and a teleport burst shows up here
+/// as seconds of wait against milliseconds of busy. Consumers diff two
+/// [`snapshot`](stats::snapshot)s, which is how the shot harness turns these
+/// into per-capture columns.
+///
+/// Wall-clock, so machine-dependent — a paired A/B on one box, never a CI gate
+/// (`crates/geo`'s `perf.rs` doc has the doctrine). On wasm only `jobs` is
+/// counted: `std::time::Instant` panics there, and the harness that reads the
+/// durations is native.
+pub mod stats {
+    use std::sync::Mutex;
+
+    /// Cumulative cost of one labelled stream's jobs.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Totals {
+        /// Jobs finished. A job that panics is not counted here (the pool's
+        /// `outstanding` guard still releases it) — a stats row is not worth
+        /// running user-visible work inside a drop guard.
+        pub jobs: u64,
+        /// Microseconds spent inside the jobs.
+        pub busy_us: u64,
+        /// Microseconds the jobs sat queued between `submit` and starting.
+        pub wait_us: u64,
+    }
+
+    impl Totals {
+        /// The delta `self − earlier`, for turning two snapshots into a window.
+        #[must_use]
+        pub fn since(&self, earlier: Totals) -> Totals {
+            Totals {
+                jobs: self.jobs - earlier.jobs,
+                busy_us: self.busy_us - earlier.busy_us,
+                wait_us: self.wait_us - earlier.wait_us,
+            }
+        }
+    }
+
+    /// A `Vec` with a linear scan, not a map: there are ~a dozen labels ever,
+    /// they are `&'static`, and `Vec::new` is const so the whole thing needs no
+    /// lazy init inside a hot path.
+    static TOTALS: Mutex<Vec<(&'static str, Totals)>> = Mutex::new(Vec::new());
+
+    pub(super) fn record(label: &'static str, wait_us: u64, busy_us: u64) {
+        let mut totals = TOTALS.lock().unwrap_or_else(|e| e.into_inner());
+        let idx = match totals.iter().position(|(l, _)| *l == label) {
+            Some(idx) => idx,
+            None => {
+                totals.push((label, Totals::default()));
+                totals.len() - 1
+            }
+        };
+        let entry = &mut totals[idx].1;
+        entry.jobs += 1;
+        entry.busy_us += busy_us;
+        entry.wait_us += wait_us;
+    }
+
+    /// Every label's cumulative totals, in first-seen order.
+    #[must_use]
+    pub fn snapshot() -> Vec<(&'static str, Totals)> {
+        TOTALS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 /// Hand one CPU-bound job to the pool (or hold it, while paused — see
 /// [`set_paused`]).
-pub fn submit(job: Job) {
+///
+/// `label` names the stream the job belongs to for [`stats`] — use the same
+/// name the shot harness's settle list uses for that streamer, so a `busy`
+/// entry and a stats row about one stream read as one stream.
+pub fn submit(label: &'static str, job: Job) {
     // Acquire/Release against `set_paused`: a job admitted here must be visible
     // to the drain, and a job parked here must be visible to whoever unparks.
     if PAUSED.load(Ordering::Acquire) {
-        PARKED.lock().unwrap_or_else(|e| e.into_inner()).push(job);
+        PARKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((label, job));
         return;
     }
-    dispatch(job);
+    dispatch(label, job);
 }
 
-fn dispatch(job: Job) {
+fn dispatch(label: &'static str, job: Job) {
     OUTSTANDING.fetch_add(1, Ordering::AcqRel);
+    #[cfg(not(target_arch = "wasm32"))]
+    let queued = std::time::Instant::now();
     imp::submit(Box::new(move || {
         // A guard rather than a decrement after `job()`: a panicking job would
         // otherwise leak a count forever and `outstanding()` would never reach
@@ -252,7 +333,22 @@ fn dispatch(job: Job) {
             }
         }
         let _done = Done;
-        job();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let started = std::time::Instant::now();
+            let wait = started.duration_since(queued);
+            job();
+            stats::record(
+                label,
+                wait.as_micros() as u64,
+                started.elapsed().as_micros() as u64,
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            job();
+            stats::record(label, 0, 0);
+        }
     }));
 }
 
@@ -299,8 +395,8 @@ pub fn set_paused(paused: bool) {
         if batch.is_empty() {
             break;
         }
-        for job in batch {
-            dispatch(job);
+        for (label, job) in batch {
+            dispatch(label, job);
         }
     }
 }
@@ -309,4 +405,55 @@ pub fn set_paused(paused: bool) {
 /// `navigator.hardwareConcurrency - 1`, leaving the main thread a core to render on).
 pub fn start(hint: usize) {
     init(hint);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// The accounting is what the shot harness's `worker_*` columns are built
+    /// on; a counter that silently stays zero would make every one of them read
+    /// as "no streaming happened".
+    #[test]
+    fn a_finished_job_lands_in_its_label_s_totals() {
+        let before = stats::snapshot()
+            .into_iter()
+            .find(|(l, _)| *l == "stats_test")
+            .map_or_else(Default::default, |(_, t)| t);
+
+        let (tx, rx) = mpsc::channel();
+        submit(
+            "stats_test",
+            Box::new(move || {
+                std::thread::sleep(Duration::from_millis(5));
+                let _ = tx.send(());
+            }),
+        );
+        rx.recv_timeout(Duration::from_secs(10)).expect("job runs");
+        // The job signals before its closure returns; give `record` (which runs
+        // after) a moment rather than asserting on a race.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = stats::snapshot()
+                .into_iter()
+                .find(|(l, _)| *l == "stats_test")
+                .map_or_else(Default::default, |(_, t)| t);
+            let delta = now.since(before);
+            if delta.jobs >= 1 {
+                assert!(
+                    delta.busy_us >= 5_000,
+                    "a 5 ms job recorded only {} µs busy",
+                    delta.busy_us
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job finished but never appeared in stats::snapshot()"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }

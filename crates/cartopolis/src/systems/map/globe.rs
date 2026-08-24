@@ -1246,27 +1246,32 @@ fn spawn_globe_tile(
             // runs on the main thread, so doing that here was the frame loop.
             match fetch_globe_tile_payload(&key, &template).await {
                 Ok(payload) => {
-                    crate::platform::workers::submit(Box::new(move || {
-                        // Log the reason, the way the flat streamer's twin does
-                        // (`tile_loader::spawn_tile_task`). Discarding it left the
-                        // aggregate `globe tile fetches failed` warning below as the
-                        // only evidence — a count that reads as a rate limit whether
-                        // the tile 404'd, arrived truncated or failed to rasterise.
-                        let outcome = match payload.decode(GLOBE_TILE_PX) {
-                            Ok((rgba, masked)) => TileFetch::Ok(decode_globe_tile(rgba, masked)),
-                            Err(e) => {
-                                tracing::error!(
-                                    tile = %key.to_path(),
-                                    error = %e,
-                                    "globe tile decode failed"
-                                );
-                                TileFetch::Failed
+                    crate::platform::workers::submit(
+                        "globe",
+                        Box::new(move || {
+                            // Log the reason, the way the flat streamer's twin does
+                            // (`tile_loader::spawn_tile_task`). Discarding it left the
+                            // aggregate `globe tile fetches failed` warning below as the
+                            // only evidence — a count that reads as a rate limit whether
+                            // the tile 404'd, arrived truncated or failed to rasterise.
+                            let outcome = match payload.decode(GLOBE_TILE_PX) {
+                                Ok((rgba, masked)) => {
+                                    TileFetch::Ok(decode_globe_tile(rgba, masked))
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        tile = %key.to_path(),
+                                        error = %e,
+                                        "globe tile decode failed"
+                                    );
+                                    TileFetch::Failed
+                                }
+                            };
+                            if let Ok(mut g) = results.lock() {
+                                g.push((key, outcome));
                             }
-                        };
-                        if let Ok(mut g) = results.lock() {
-                            g.push((key, outcome));
-                        }
-                    }));
+                        }),
+                    );
                 }
                 Err(e) => {
                     tracing::error!(tile = %key.to_path(), error = %e, "globe tile fetch failed");

@@ -1422,12 +1422,15 @@ pub fn update_street_detail(
             .spawn(async move {
                 match fetch_cell_text(cx, cy).await {
                     Ok(text) => {
-                        crate::platform::workers::submit(Box::new(move || {
-                            let built = build_cell(&text, cx, cy, &ctx);
-                            if let Ok(mut g) = results.lock() {
-                                g.push(((cx, cy), built));
-                            }
-                        }));
+                        crate::platform::workers::submit(
+                            "street_detail",
+                            Box::new(move || {
+                                let built = build_cell(&text, cx, cy, &ctx);
+                                if let Ok(mut g) = results.lock() {
+                                    g.push(((cx, cy), built));
+                                }
+                            }),
+                        );
                     }
                     Err(e) => {
                         if let Ok(mut g) = results.lock() {

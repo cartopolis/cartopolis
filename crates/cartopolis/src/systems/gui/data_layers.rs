@@ -1006,13 +1006,16 @@ pub fn update_data_layers(
                 };
                 match source {
                     Ok(source) => {
-                        crate::platform::workers::submit(Box::new(move || {
-                            let built =
-                                build_layer_cell(li, &source, cx, cy, ax, ay, z, lat, ground);
-                            if let Ok(mut g) = results.lock() {
-                                g.push(((li, cx, cy), built));
-                            }
-                        }));
+                        crate::platform::workers::submit(
+                            "data_layers",
+                            Box::new(move || {
+                                let built =
+                                    build_layer_cell(li, &source, cx, cy, ax, ay, z, lat, ground);
+                                if let Ok(mut g) = results.lock() {
+                                    g.push(((li, cx, cy), built));
+                                }
+                            }),
+                        );
                     }
                     Err(e) => {
                         if let Ok(mut g) = results.lock() {
@@ -1034,12 +1037,15 @@ pub fn update_data_layers(
                     Ok(text) => {
                         // Same reason as the marker path: the parse is CPU work
                         // and the awaiting thread is the frame loop on wasm.
-                        crate::platform::workers::submit(Box::new(move || {
-                            let parsed = parse_pois(&LAYER_DEFS[li], &text);
-                            if let Ok(mut g) = detail_sink.lock() {
-                                g.push(((li, cx, cy), parsed));
-                            }
-                        }));
+                        crate::platform::workers::submit(
+                            "data_layers",
+                            Box::new(move || {
+                                let parsed = parse_pois(&LAYER_DEFS[li], &text);
+                                if let Ok(mut g) = detail_sink.lock() {
+                                    g.push(((li, cx, cy), parsed));
+                                }
+                            }),
+                        );
                         return;
                     }
                     Err(e) => Err(e),

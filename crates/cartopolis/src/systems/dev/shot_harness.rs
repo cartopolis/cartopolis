@@ -386,7 +386,7 @@ impl Expectation {
 fn metric_keys() -> impl Iterator<Item = &'static str> {
     CSV_HEADER
         .split(',')
-        .filter(|k| !matches!(*k, "name" | "busy"))
+        .filter(|k| !matches!(*k, "name" | "busy" | "worker_split"))
 }
 
 /// Parse every `--expect` spec, failing on the first bad one. Done while the CLI
@@ -622,6 +622,36 @@ pub struct ShotMetrics {
     /// The most it ever occupied during the run, in kB. A capture that peaks well
     /// above where it settles has still asked the driver for the peak.
     pub gpu_resident_peak_kb: usize,
+    /// The streaming account for this capture's window (placement → settle
+    /// verdict): HTTP requests completed, errors, body megabytes received, and
+    /// the summed time to first byte / body-read time (`platform::http::stats`).
+    ///
+    /// The two duration columns are the split `docs/notes/tile-raster-cost.md`
+    /// records as *the* unmeasured number in the HTTP/2-vs-bandwidth question:
+    /// TTFB is what a protocol or connection-pool change moves, body time is
+    /// what only fewer bytes move. They are sums over concurrent requests, so
+    /// compare them to each other and between paired runs — never to the
+    /// wall-clock `settled_s`. Counts and bytes are machine-independent and may
+    /// be gated; the durations are wall-clock and may not.
+    pub fetch_count: u64,
+    pub fetch_errors: u64,
+    pub fetch_mb: f32,
+    pub fetch_ttfb_ms: u64,
+    pub fetch_body_ms: u64,
+    /// The worker pool's account for the same window (`platform::workers::stats`),
+    /// summed over every stream: jobs finished, time spent inside them, and time
+    /// they sat queued. Busy says what the decodes cost; **wait** is the
+    /// starvation number — a burst shows up as seconds of wait against
+    /// milliseconds of busy, which no instantaneous queue depth can show.
+    /// Wall-clock, so paired-run material, not a gate. `jobs` may be gated.
+    pub worker_jobs: u64,
+    pub worker_busy_ms: u64,
+    pub worker_wait_ms: u64,
+    /// The same account per stream, `label:jobs:busy_ms:wait_ms` — the
+    /// attribution that turns "the pool was busy for 40 s" into "lod22 was".
+    /// A list like `busy`, so it rides the CSV as one `|`-joined cell and is
+    /// excluded from the `--expect` vocabulary.
+    pub worker_split: Vec<String>,
     /// The capture ran on a CPU rasteriser (Mesa lavapipe in a container or CI)
     /// rather than a GPU. Geometry, placement, culling and UI layout are the same
     /// picture either way; the tone-mapped sky is not, so a colour or lighting
@@ -670,7 +700,9 @@ route_meshes,route_rendered,grass_patches,grass_slots,grass_rendered,prop_meshes
 avatar_meshes,avatar_rendered,\
 ground_m,height_patches,\
 terrain_ready,terrain_relief_m,upload_peak_kb,upload_peak_asset_kb,gpu_resident_kb,\
-gpu_resident_peak_kb,software_renderer,vram_allocated_kb,vram_reserved_kb";
+gpu_resident_peak_kb,software_renderer,vram_allocated_kb,vram_reserved_kb,\
+fetch_count,fetch_errors,fetch_mb,fetch_ttfb_ms,fetch_body_ms,\
+worker_jobs,worker_busy_ms,worker_wait_ms,worker_split";
 
 /// The avatar's contribution to [`ShotMetrics`].
 ///
@@ -737,6 +769,7 @@ const CSV_PRECISION: &[(&str, usize)] = &[
     ("globe_texture_mb", 2),
     ("ground_m", 2),
     ("terrain_relief_m", 2),
+    ("fetch_mb", 2),
 ];
 
 /// Render one serialised metric as a CSV cell.
@@ -1119,6 +1152,17 @@ pub struct ShotProgress {
     /// Outstanding tile-decode jobs at the settle verdict, held across the quiesce
     /// that follows it — after which the count is 0 by construction.
     worker_outstanding: usize,
+    /// Fetch counters at placement — the baseline this capture's `fetch_*`
+    /// columns are measured from, so each shot reports its own window rather
+    /// than the run so far.
+    fetch_base: crate::platform::http::stats::FetchTotals,
+    /// The worker pool's per-stream totals at placement, for the same reason.
+    worker_base: Vec<(&'static str, crate::platform::workers::stats::Totals)>,
+    /// The two windows, computed at the settle verdict beside
+    /// `worker_outstanding` and held across the quiesce — the drain that follows
+    /// the verdict is harness bookkeeping, not part of the picture's cost.
+    fetch_window: crate::platform::http::stats::FetchTotals,
+    worker_window: Vec<(&'static str, crate::platform::workers::stats::Totals)>,
     /// The settle test's answer, taken on the frame it passed and held across the
     /// quiesce that follows. Held rather than recomputed because `quiet` keeps
     /// accruing while the CPU pool drains: a shot that gave up at `--wait` would
@@ -1589,6 +1633,10 @@ pub fn place_camera(
     progress.frames = 0;
     progress.frame_time = 0.0;
     progress.frame_time_max = 0.0;
+    // Baselines for the streaming-account columns: everything fetched or decoded
+    // from here to the settle verdict belongs to this shot.
+    progress.fetch_base = crate::platform::http::stats::snapshot();
+    progress.worker_base = crate::platform::workers::stats::snapshot();
     // `--shot-mode avatar`: third-person follow — the camera frames the avatar
     // (teleported to `--at`) instead of sitting at a fixed point. `--at` altitude
     // becomes the follow distance and `--look` (pitch°, yaw°) the orbit
@@ -1959,6 +2007,22 @@ pub fn drive_capture(
         // with the rest of the metrics would always be 0 and would describe the
         // harness rather than the world.
         progress.worker_outstanding = crate::platform::workers::outstanding();
+        // The streaming account for this shot's window, closed at the same
+        // moment and for the same reason: the quiesce that follows finishes
+        // decodes on the harness's clock, not the world's.
+        progress.fetch_window = crate::platform::http::stats::snapshot().since(progress.fetch_base);
+        progress.worker_window = crate::platform::workers::stats::snapshot()
+            .into_iter()
+            .map(|(label, totals)| {
+                let base = progress
+                    .worker_base
+                    .iter()
+                    .find(|(l, _)| *l == label)
+                    .map_or_else(Default::default, |(_, t)| *t);
+                (label, totals.since(base))
+            })
+            .filter(|(_, t)| t.jobs > 0)
+            .collect();
         // Stop feeding the CPU pool *before* the shutter. On native the pool that
         // rasterises tiles is `AsyncComputeTaskPool`, and so is the pool Bevy
         // detaches the screenshot readback onto — with blocking 120 ms jobs and
@@ -2076,6 +2140,36 @@ pub fn drive_capture(
             upload_peak_asset_kb: readouts.uploads.peak_asset_kb(),
             gpu_resident_kb: readouts.uploads.resident_kb(),
             gpu_resident_peak_kb: readouts.uploads.peak_resident_kb(),
+            fetch_count: progress.fetch_window.requests,
+            fetch_errors: progress.fetch_window.errors,
+            fetch_mb: progress.fetch_window.bytes as f32 / (1024.0 * 1024.0),
+            fetch_ttfb_ms: progress.fetch_window.ttfb_us / 1000,
+            fetch_body_ms: progress.fetch_window.body_us / 1000,
+            worker_jobs: progress.worker_window.iter().map(|(_, t)| t.jobs).sum(),
+            worker_busy_ms: progress
+                .worker_window
+                .iter()
+                .map(|(_, t)| t.busy_us)
+                .sum::<u64>()
+                / 1000,
+            worker_wait_ms: progress
+                .worker_window
+                .iter()
+                .map(|(_, t)| t.wait_us)
+                .sum::<u64>()
+                / 1000,
+            worker_split: progress
+                .worker_window
+                .iter()
+                .map(|(label, t)| {
+                    format!(
+                        "{label}:{}:{}:{}",
+                        t.jobs,
+                        t.busy_us / 1000,
+                        t.wait_us / 1000
+                    )
+                })
+                .collect(),
             software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
             vram_allocated_kb: vram.0,
             vram_reserved_kb: vram.1,
@@ -2129,6 +2223,15 @@ pub fn drive_capture(
                     upload_peak_asset_kb = m.upload_peak_asset_kb,
                     gpu_resident_kb = m.gpu_resident_kb,
                     gpu_resident_peak_kb = m.gpu_resident_peak_kb,
+                    fetch_count = m.fetch_count,
+                    fetch_errors = m.fetch_errors,
+                    fetch_mb = format!("{:.2}", m.fetch_mb),
+                    fetch_ttfb_ms = m.fetch_ttfb_ms,
+                    fetch_body_ms = m.fetch_body_ms,
+                    worker_jobs = m.worker_jobs,
+                    worker_busy_ms = m.worker_busy_ms,
+                    worker_wait_ms = m.worker_wait_ms,
+                    worker_split = m.worker_split.join("|"),
                     software_renderer = m.software_renderer,
                     "shot state"
                 )
@@ -2405,6 +2508,17 @@ mod tests {
             software_renderer: true,
             vram_allocated_kb: 0,
             vram_reserved_kb: 0,
+            fetch_count: 0,
+            fetch_errors: 0,
+            fetch_mb: 0.0,
+            fetch_ttfb_ms: 0,
+            fetch_body_ms: 0,
+            worker_jobs: 0,
+            worker_busy_ms: 0,
+            worker_wait_ms: 0,
+            // Two entries for the same reason as `busy` above: this is the other
+            // list-valued column, and the `|` join is what keeps it one cell.
+            worker_split: vec!["map_tiles:2:10:5".into(), "lod22:1:8:3".into()],
         }
     }
 

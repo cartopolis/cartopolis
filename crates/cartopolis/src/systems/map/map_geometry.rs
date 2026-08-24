@@ -422,7 +422,7 @@ fn spawn_geometry_task(
         .spawn(async move {
             let key = TileKey::new(cell.0, cell.1, GEOMETRY_ZOOM);
             let fetched = load_tile_image(&key, &template).await;
-            crate::platform::workers::submit(Box::new(move || {
+            crate::platform::workers::submit("surfaces", Box::new(move || {
                 let mut shore = None;
                 let mut grass = None;
                 let mut decks = Vec::new();
