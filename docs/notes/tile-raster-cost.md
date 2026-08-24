@@ -214,10 +214,35 @@ speaks it. What has *not* been measured is the split of the cold-minus-warm 5.7 
 above into TTFB versus body time; that number decides the whole question and
 nothing in the tree records it.
 
+## vello_cpu was measured against tiny-skia and is not a win here (2026-08-24)
+
+linebender's sparse-strips CPU renderer (`vello_cpu` 0.2, from the org that now
+hosts tiny-skia) was the obvious candidate replacement: SIMD with *runtime*
+dispatch, NEON and wasm-simd128 lanes, optional per-render multithreading, and
+benchmarks aiming at "fastest CPU 2D renderer in Rust". `bench_vello_cpu`
+(dev-dependency only, nothing shipped links it) renders the same whole z14 tile
+through both — same paint order, colours, widths, caps, joins and batching —
+and the answer on the container is **parity**: 77.0 vs 76.4, 78.7 vs 84.9,
+79.2 vs 83.6 ms/tile across three runs, i.e. inside this box's noise. The
+output is visually correct (`/tmp/vt_vello.png`).
+
+Why the marketing gap: this workload is thousands of tiny solid-colour
+polygons — per-call setup and short edge lists — which is tiny-skia's sweet
+spot once the paint is batched, and our x86 builds already hand tiny-skia AVX2
+via `target-cpu=x86-64-v3`. Sparse strips earn their keep on large/complex
+paths, gradients and blend stacks, none of which the tile paint uses. What
+would reopen this: a phone/wasm measurement showing a different ratio there
+(vello's NEON and simd128 lanes are newer than tiny-skia's), wanting per-tile
+*multithreading* (vello has it, tiny-skia never will), or text-on-raster
+(vello_cpu has a glyph pipeline; tiny-skia has none). Worth knowing: egui 0.35's
+`epaint` already depends on `vello_cpu` 0.0.9 via `glifo`, so the workspace
+compiles one regardless.
+
 ## The open question, and what any answer must beat
 
 Whether to move rasterisation off the CPU. **Deferred** 2026-07-25 to finish the
-wasm build; still open.
+wasm build; still open — and the CPU-side alternative (`vello_cpu`, above)
+measured at parity, so a GPU path remains the only candidate for a step change.
 
 This is not per-frame work. It runs on `platform::workers` (native = Bevy
 `AsyncComputeTaskPool`, wasm = own Web Worker pool), gated by `Dispatcher` at

@@ -4375,6 +4375,244 @@ mod tests {
         );
     }
 
+    /// Not a test — the tiny-skia ↔ `vello_cpu` A/B recorded in
+    /// `docs/notes/tile-raster-cost.md`. Renders the same whole z14 tile — same
+    /// paint order, colours, widths, round caps and joins, same transform —
+    /// through both rasterisers and prints ms/tile, plus writes
+    /// `/tmp/vt_vello.png` so the output can be eyeballed against
+    /// `dump_png`'s. `cargo test -p cartopolis_geo --release bench_vello_cpu
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_vello_cpu() {
+        use vello_cpu::color::{AlphaColor, Srgb};
+        use vello_cpu::kurbo::{Affine, BezPath, Cap, Join, Stroke as VStroke};
+        use vello_cpu::peniko::Fill;
+        use vello_cpu::{Pixmap as VPixmap, RenderContext, Resources};
+
+        let tile = TileData::parse(GRONINGEN_Z14).expect("parse fixture");
+
+        let solid = |rgb: u32| {
+            AlphaColor::<Srgb>::from_rgba8(
+                ((rgb >> 16) & 0xFF) as u8,
+                ((rgb >> 8) & 0xFF) as u8,
+                (rgb & 0xFF) as u8,
+                255,
+            )
+        };
+        fn bez_area(pb: &mut BezPath, geom: &Geometry<f32>) {
+            let ring = |pb: &mut BezPath, ls: &geo_types::LineString<f32>| {
+                let mut first = true;
+                for c in ls.coords() {
+                    if !c.x.is_finite() || !c.y.is_finite() {
+                        continue;
+                    }
+                    if first {
+                        pb.move_to((c.x as f64, c.y as f64));
+                        first = false;
+                    } else {
+                        pb.line_to((c.x as f64, c.y as f64));
+                    }
+                }
+                if !first {
+                    pb.close_path();
+                }
+            };
+            match geom {
+                Geometry::Polygon(p) => {
+                    ring(pb, p.exterior());
+                    p.interiors().iter().for_each(|h| ring(pb, h));
+                }
+                Geometry::MultiPolygon(mp) => {
+                    for p in mp {
+                        ring(pb, p.exterior());
+                        p.interiors().iter().for_each(|h| ring(pb, h));
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn bez_lines(pb: &mut BezPath, geom: &Geometry<f32>) {
+            let line = |pb: &mut BezPath, ls: &geo_types::LineString<f32>| {
+                let mut first = true;
+                for c in ls.coords() {
+                    if !c.x.is_finite() || !c.y.is_finite() {
+                        continue;
+                    }
+                    if first {
+                        pb.move_to((c.x as f64, c.y as f64));
+                        first = false;
+                    } else {
+                        pb.line_to((c.x as f64, c.y as f64));
+                    }
+                }
+            };
+            match geom {
+                Geometry::LineString(ls) => line(pb, ls),
+                Geometry::MultiLineString(mls) => mls.iter().for_each(|ls| line(pb, ls)),
+                Geometry::Polygon(_) | Geometry::MultiPolygon(_) => bez_area(pb, geom),
+                _ => {}
+            }
+        }
+
+        // The paint loop mirrored for vello_cpu: same style resolution as
+        // `render_mvt_culled` on a whole z14 tile (no cull, no far style),
+        // batching by (colour, width) run exactly as the real loop does.
+        let vello_render = || -> VPixmap {
+            let size = TILE_PX as u16;
+            let mut ctx = RenderContext::new(size, size);
+            let mut resources = Resources::new();
+            let mut target = VPixmap::new(size, size);
+            ctx.set_paint(solid(palette::PAPER));
+            ctx.fill_path(&BezPath::from_vec(vec![
+                vello_cpu::kurbo::PathEl::MoveTo((0.0, 0.0).into()),
+                vello_cpu::kurbo::PathEl::LineTo((TILE_PX as f64, 0.0).into()),
+                vello_cpu::kurbo::PathEl::LineTo((TILE_PX as f64, TILE_PX as f64).into()),
+                vello_cpu::kurbo::PathEl::LineTo((0.0, TILE_PX as f64).into()),
+                vello_cpu::kurbo::PathEl::ClosePath,
+            ]));
+            ctx.set_fill_rule(Fill::NonZero);
+            for (layer_name, draw) in PAINT_ORDER {
+                let Some(meta) = tile.layer(layer_name) else {
+                    continue;
+                };
+                let features = tile.features(meta);
+                if features.is_empty() {
+                    continue;
+                }
+                let extent = TileData::extent(meta);
+                let scale = (TILE_PX as f32 / extent) as f64;
+                ctx.set_transform(Affine::new([scale, 0.0, 0.0, scale, 0.0, 0.0]));
+
+                let street_order: Option<Vec<&Feature>> = matches!(draw, Draw::Streets { .. })
+                    .then(|| {
+                        let mut v: Vec<&Feature> = features
+                            .iter()
+                            .filter(|feat| !flag_of(feat, "tunnel"))
+                            .collect();
+                        v.sort_by(|a, b| {
+                            layer_of(a)
+                                .cmp(&layer_of(b))
+                                .then(flag_of(a, "bridge").cmp(&flag_of(b, "bridge")))
+                                .then(
+                                    street_style(a, NOMINAL_Z14_TILE_M)
+                                        .0
+                                        .total_cmp(&street_style(b, NOMINAL_Z14_TILE_M).0),
+                                )
+                        });
+                        v
+                    });
+                let ordered: Vec<&Feature> = match street_order {
+                    Some(list) => list,
+                    None => features.iter().collect(),
+                };
+
+                let mut batch = BezPath::new();
+                let mut batch_key: Option<BatchKey> = None;
+                let mut batch_points = 0usize;
+                let flush =
+                    |ctx: &mut RenderContext, batch: &mut BezPath, key: Option<BatchKey>| {
+                        let Some((rgb, width_bits)) = key else { return };
+                        if batch.elements().is_empty() {
+                            return;
+                        }
+                        ctx.set_paint(solid(rgb));
+                        match width_bits {
+                            None => ctx.fill_path(batch),
+                            Some(bits) => {
+                                ctx.set_stroke(
+                                    VStroke::new(f32::from_bits(bits) as f64)
+                                        .with_caps(Cap::Round)
+                                        .with_join(Join::Round),
+                                );
+                                ctx.stroke_path(batch);
+                            }
+                        }
+                        batch.truncate(0);
+                    };
+                for feature in ordered {
+                    let kind = kind_of(feature);
+                    let style: Option<(u32, Option<f32>)> = match draw {
+                        Draw::Fill(rgb) => Some((*rgb, None)),
+                        Draw::FillByKind { default, kinds } => Some((
+                            kind.and_then(|k| kinds.iter().find(|(n, _)| *n == k).map(|(_, c)| *c))
+                                .unwrap_or(*default),
+                            None,
+                        )),
+                        Draw::Line { color, width } => Some((*color, Some(*width))),
+                        Draw::Outline { color, width } => Some((*color, Some(*width))),
+                        Draw::Streets { casing } => {
+                            let (w, fill, case) = street_style(feature, NOMINAL_Z14_TILE_M);
+                            Some(if *casing {
+                                (case, Some(w + 0.5))
+                            } else {
+                                (fill, Some(w))
+                            })
+                        }
+                    };
+                    let Some((rgb, width)) = style else { continue };
+                    let key = (rgb, width.map(f32::to_bits));
+                    let cap = if width.is_some() {
+                        STROKE_BATCH_POINTS
+                    } else {
+                        FILL_BATCH_POINTS
+                    };
+                    if batch_key != Some(key) || batch_points >= cap {
+                        flush(&mut ctx, &mut batch, batch_key);
+                        batch_key = Some(key);
+                        batch_points = 0;
+                    }
+                    match width {
+                        None => bez_area(&mut batch, &feature.geometry),
+                        Some(_) => bez_lines(&mut batch, &feature.geometry),
+                    }
+                    batch_points += count_points(&feature.geometry, width.is_none());
+                }
+                flush(&mut ctx, &mut batch, batch_key);
+            }
+            ctx.flush();
+            ctx.render(&mut target, &mut resources);
+            target
+        };
+
+        let tiny_render =
+            || render_mvt_culled(&tile, SubTile::WHOLE, TILE_PX, NOMINAL_Z14_TILE_M, false);
+
+        for _ in 0..2 {
+            tiny_render().expect("warmup");
+            vello_render();
+        }
+        const N: u32 = 20;
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            tiny_render().expect("render");
+        }
+        let tiny_ms = t0.elapsed().as_secs_f64() * 1000.0 / N as f64;
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            vello_render();
+        }
+        let vello_ms = t0.elapsed().as_secs_f64() * 1000.0 / N as f64;
+        println!("tiny-skia (batched): {tiny_ms:.2} ms/tile");
+        println!("vello_cpu (batched): {vello_ms:.2} ms/tile");
+
+        let out = vello_render();
+        let rgba: Vec<u8> = out
+            .data()
+            .iter()
+            .flat_map(|p| [p.r, p.g, p.b, p.a])
+            .collect();
+        image::save_buffer(
+            "/tmp/vt_vello.png",
+            &rgba,
+            TILE_PX,
+            TILE_PX,
+            image::ExtendedColorType::Rgba8,
+        )
+        .expect("write png");
+        println!("wrote /tmp/vt_vello.png");
+    }
+
     /// Not a test — an eyeball hatch. `cargo test -p cartopolis_geo
     /// dump_png -- --ignored --nocapture` writes the fixture at z14 and at an
     /// overzoomed z17 so the styling can actually be looked at.
