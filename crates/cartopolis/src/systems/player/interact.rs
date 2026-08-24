@@ -150,23 +150,29 @@ pub fn track_interaction_target(
     // use. No transform needed here, which is the point of converting once.
     let pos = Vec2::new(avatar_state.position.x, avatar_state.position.z);
 
-    let target = places.nearest(pos, INTERACT_RADIUS).map(TargetInfo::of);
-    // Compare by line rather than assigning unconditionally: this resource is read
-    // by the HUD, and rewriting it every frame would mark it changed every frame.
-    let changed = match (&state.target, &target) {
-        (Some(a), Some(b)) => a.line() != b.line(),
+    // Compare before building: this resource is read by the HUD, and rewriting it
+    // every frame would mark it changed every frame. The comparison is against the
+    // same three fields `line()` formats, so the update rule is unchanged — but
+    // doing it this way allocates nothing in the steady state. Constructing the
+    // `TargetInfo` first cost a `String` clone *plus* the two `format!`s `line()`
+    // does on each side, every frame, and in a city the radius nearly always hits.
+    let nearest = places.nearest(pos, INTERACT_RADIUS);
+    let changed = match (&state.target, nearest) {
+        (Some(a), Some(b)) => {
+            a.verb != b.kind.verb() || a.detail != b.kind.detail() || a.name != b.name
+        }
         (None, None) => false,
         _ => true,
     };
     if changed {
-        state.target = target;
+        state.target = nearest.map(TargetInfo::of);
     }
 
-    let address = places
-        .nearest_address(pos, ADDRESS_RADIUS)
-        .map(str::to_owned);
-    if state.address != address {
-        state.address = address;
+    // Likewise: `nearest_address` hands back a `&str`, so compare through it and
+    // only own the string on the frames the answer actually changes.
+    let address = places.nearest_address(pos, ADDRESS_RADIUS);
+    if state.address.as_deref() != address {
+        state.address = address.map(str::to_owned);
     }
 }
 
