@@ -33,5 +33,11 @@ tiny-skia.workspace = true
 tracing.workspace = true
 cartopolis_core = { path = "../core" }
 
+[dev-dependencies]
+# Candidate replacement rasteriser (linebender's sparse-strips CPU renderer),
+# here only for the ignored `bench_vello_cpu` A/B against tiny-skia — see
+# docs/notes/tile-raster-cost.md. Test-only: nothing shipped links it.
+vello_cpu = "0.2"
+
 [lints]
 workspace = true

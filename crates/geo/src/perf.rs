@@ -234,6 +234,37 @@ pub mod paths {
     }
 }
 
+/// Per-pass wall-clock accumulators for `render_mvt`'s paint loop, recorded only
+/// under `cfg(test)` and read only by `#[ignore]`d measurement hatches — never a
+/// threshold, per the module docs above. They exist because the one prior
+/// per-layer breakdown was reconstructed outside the real loop and summed to
+/// ~282 ms against a measured 121 ms total (`docs/notes/tile-raster-cost.md`
+/// says: instrument the real `render_mvt` before acting on any attribution).
+pub mod passes {
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    thread_local! {
+        static PASSES: RefCell<Vec<(&'static str, Duration)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Accumulate `d` against `label` (summed across repeat runs of the loop).
+    pub fn record(label: &'static str, d: Duration) {
+        PASSES.with_borrow_mut(|v| match v.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, total)) => *total += d,
+            None => v.push((label, d)),
+        });
+    }
+
+    /// Run `f` and report the accumulated per-label durations, in first-recorded
+    /// order (which for the paint loop is paint order).
+    pub fn measure<T>(f: impl FnOnce() -> T) -> (T, Vec<(&'static str, Duration)>) {
+        PASSES.with_borrow_mut(Vec::clear);
+        let value = f();
+        (value, PASSES.with_borrow(Clone::clone))
+    }
+}
+
 /// Tests of the instrument itself.
 ///
 /// A measuring tool nobody measured is a liability: every budget in

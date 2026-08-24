@@ -223,15 +223,16 @@ const PARSE_SPARSE_ALLOCS: u64 = 2_410;
 /// memo or it does not, and "a few allocations" would mean it had stopped.
 const MEMO_REREAD_ALLOCS: u64 = 0;
 
-/// Rasterising the whole dense tile. Measured 118,905 at 256² and 118,906 at 512².
+/// Rasterising the whole dense tile. Measured 1,137 at 256² and 1,134 at 512² —
+/// down from 118,905/118,906 before the paint loop batched features into runs
+/// (one `fill_path`/`stroke_path` per (colour, width) run instead of one per
+/// feature), which deleted the per-feature `PathBuilder`, `Path`, transformed
+/// clone and rasteriser setup this count was made of.
 ///
-/// **The two sizes agreeing to within one allocation is the fact worth keeping**:
-/// it says this cost is per *feature*, not per pixel — path construction, not scan
-/// conversion. So halving `tile_px` for the phone tier (`quality::Budget::tile_px`)
-/// buys a quarter of the scan conversion and **none** of this. That is the
-/// measurement behind "per-feature overhead is roughly double the share of
-/// `render_mvt` on a phone that it is on a desktop".
-const RENDER_DENSE_ALLOCS: u64 = 121_300;
+/// The two sizes still agree to within a handful of allocations, and that fact
+/// still matters: what allocation remains is per *flush*, not per pixel, so
+/// halving `tile_px` for the phone tier buys scan conversion and none of this.
+const RENDER_DENSE_ALLOCS: u64 = 1_160;
 
 /// Decoding every layer of the *sparse* z10 tile, in bytes of allocation traffic.
 ///
