@@ -293,9 +293,20 @@ ehttp = "0.5"
 # with a stack that pointed at the raster code rather than at the clock. Our own
 # code was already on the `web-time` shim; this puts Bevy's on it too.
 bevy = { workspace = true, features = ["webgpu", "web"] }
-# `getrandom` (via uuid v4 + others) needs its JS backend on wasm, where there is
-# no OS RNG (ADR-033). Feature-unifies with the graph's 0.2 instance.
-getrandom = { version = "0.2", features = ["js"] }
+# There is deliberately no `getrandom` entry here any more.
+#
+# It read `getrandom = { version = "0.2", features = ["js"] }`, to give uuid's v4
+# generator a JS backend on wasm where there is no OS RNG. That stopped being true
+# without anyone noticing: uuid 1.24 moved to getrandom 0.4 and then excludes it
+# on `wasm32-unknown-unknown` outright, so nothing in the wasm graph depended on
+# 0.2 except this line. `cargo tree --target wasm32-unknown-unknown -i
+# getrandom@0.2.16` named `cartopolis` as the sole reverse dep, and 0.3/0.4 were
+# absent from that graph entirely — i.e. it was compiling a crate nothing linked.
+#
+# The trap it leaves behind: `Uuid::new_v4()` on wasm now needs uuid's own `js`
+# feature, which the workspace does not enable. Harmless today because the client
+# only names the type and never generates one — but adding the first `new_v4()`
+# call to client code is what will surface it, not this file.
 # Read the page's query string, which is where `env_flag` gets its switches on a
 # platform with no environment (ADR-033). Already in the graph via bevy/wgpu, so
 # naming it here costs no build time — only these three features.
