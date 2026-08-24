@@ -60,6 +60,31 @@ re-take them with the command rather than trusting a table to stay true.
 | `ocean_mask` 256² | 0.3 ms | |
 | `tessellate_surfaces` / `_roads` / `_bridges` | 0.8 / 3.1 / 0.01 ms | |
 
+And the end-to-end pair the harness columns were built for, same day, release
+build, lavapipe, Groningen at 420 m (`--settle 2 --wait 90`,
+`CARTO_CACHE_DIR` fresh vs reused):
+
+| | cold | warm |
+|---|---|---|
+| settled | **27.8 s** | **25.7 s** |
+| fetches / MB | 310 / 103.6 | 6 / 0.8 |
+| fetch TTFB / body (summed) | 32.7 s / 1.8 s | 1.8 s / 0.04 s |
+| worker busy / wait (summed) | 36.7 s / 0.3 s | 48.0 s / 12.8 s |
+| `map_tiles` busy | 28.3 s | 28.9 s |
+| draws / `gpu_resident_kb` | 662 / 969,279 | 662 / 969,279 |
+
+Three readings. **A fully warm cache buys 2 s of a 27.8 s fill** — the 2026-07-31
+conclusion (you wait for scan conversion, not the network) reproduced, now with
+per-stream attribution: `map_tiles` rasterisation alone is ~29 s of worker time,
+three quarters of the pipeline, `lod22` most of the rest. **Warm wait *rises***
+(0.3 → 12.8 s): with nothing pacing the decodes, the pool saturates — so more
+raster throughput, not more fetch throughput, is what would move `settled_s`.
+And **the machine-independent columns are bit-identical across the pair**
+(draws, resident bytes), which is the property the `--expect` gates rely on.
+TTFB dominates body 18:1 even cold — measured from the VPS where RTT ≈ 0, so
+that is TLS plus server time per request, already hidden by concurrency; it is
+not a bandwidth story on this link.
+
 **A 256² render costs 74% of a 512² one, not 25%.** Scan conversion scales with
 area; the other three quarters of a quarter never arrived, so most of
 `render_mvt` on this dense tile is **per-feature path construction**, not
