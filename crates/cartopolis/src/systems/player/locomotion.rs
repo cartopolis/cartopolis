@@ -52,10 +52,16 @@ pub const FLY_SPEED: f32 = MAX_SPEED;
 /// on grease.
 pub const GROUND_ACCEL: f32 = 18.0;
 pub const GROUND_DECEL: f32 = 26.0;
-/// Flight trades the legs for thrust, so it ramps faster than it could ever
-/// accelerate on foot but still takes about ⅔ of a second to reach full speed.
-pub const FLY_ACCEL: f32 = 45.0;
-pub const FLY_DECEL: f32 = 55.0;
+/// Flight trades the legs for thrust, so it ramps far harder than anything on
+/// foot: full speed in under half a second.
+///
+/// Raised from 45/55 on 2026-08-25. Flight is the travel mode — the thing you
+/// reach for to cross a city rather than a street — and two thirds of a second
+/// of winding up is paid on every course change, not once per trip. Nothing here
+/// touches the wire: the ramp produces a wish *magnitude*, and the sim
+/// reproduces whatever magnitude arrives.
+pub const FLY_ACCEL: f32 = 70.0;
+pub const FLY_DECEL: f32 = 80.0;
 
 /// Which gait the avatar is travelling in. Chosen by held modifiers, not by
 /// speed — the speed is the *consequence* (see [`Gait::speed`]).
