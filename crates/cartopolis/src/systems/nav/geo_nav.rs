@@ -2619,6 +2619,40 @@ mod tests {
         assert!((got.0 - flat.0).abs() < 1e-9 && (got.1 - flat.1).abs() < 1e-9);
     }
 
+    /// A Fly pose has to arrive *placed*, not merely written: `camera_controls`
+    /// reseeds the look from the live camera transform on the first frame it sees
+    /// an uninitialized Fly camera, which threw away the angle the pose had just
+    /// set. Every bookmark, `?place=` link and `--shot --look` that named a pitch
+    /// was quietly overruled the first time it was applied.
+    #[test]
+    fn a_fly_pose_arrives_placed_rather_than_reseeded() {
+        let mut cs = CameraState::default();
+        // Entering Fly clears the flag on purpose — that is what makes a plain
+        // mode switch restore the last fly spot.
+        crate::systems::free_camera::enter_mode(&mut cs, CameraMode::Free);
+        assert!(!cs.free_initialized);
+
+        CameraPose::free_look(-12.0, 180.0).apply(&mut cs);
+        assert!(
+            cs.free_initialized,
+            "a pose that names a look angle must not be reseeded from the transform"
+        );
+        assert!((cs.free_camera_rotation.x - (-12.0_f32).to_radians()).abs() < 1e-6);
+        assert!((cs.free_camera_rotation.y - 180.0_f32.to_radians()).abs() < 1e-6);
+
+        // The other modes are untouched: Orbit still sets its own flag, and a
+        // pose with no mode still leaves the current view alone.
+        let mut orbit = CameraState::default();
+        CameraPose {
+            mode: "earth".to_string(),
+            orbit_distance: 1_500.0,
+            ..Default::default()
+        }
+        .apply(&mut orbit);
+        assert!(orbit.orbit_initialized);
+        assert!(!orbit.free_initialized);
+    }
+
     /// In space the flat frame projects a multi-thousand-kilometre offset onto an
     /// arbitrary point of the map — the bug that saved a mid-ocean last location
     /// on exit from orbit. The sub-point is used instead.
