@@ -86,6 +86,51 @@ const ROUTE_Y: f32 = 0.5;
 const ROUTE_HALF_WIDTH: f32 = 3.2;
 const CASING_HALF_WIDTH: f32 = 4.8;
 
+/// How wide the line has to be to stay visible, as a fraction of the camera's
+/// altitude.
+///
+/// **A fixed metre width is invisible from any distance a whole route is looked
+/// at.** Six metres of road is a comfortable fifteen pixels at a thousand metres
+/// up and a *third* of a pixel at thirty kilometres — so planning a 30 km drive
+/// and pressing Fit showed a bare map with two pins on it and no line between
+/// them, with nothing wrong and nothing to say so. Every map app draws its route
+/// in screen space for this reason; this line cannot, being world geometry that
+/// lies in the road surface and takes the sun and the terrain with it, so the
+/// width is scaled instead.
+///
+/// The number is one line's worth of screen: at altitude `a` a ~60° vertical
+/// field of view covers about `1.15 a` metres over the viewport's height, so
+/// `0.0017 a` is roughly 8 px of a 2772 px phone screen — about what the
+/// reference apps draw, and it lands on the base width at ~1.9 km, below which
+/// the real road width takes over again.
+const ROUTE_WIDTH_PER_ALT: f32 = 0.0017;
+
+/// Widest the line may get, as a multiple of the ground widths. Reached at ~120
+/// km, well above the altitude the ground detail (and with it this line) is
+/// hidden at — it is a backstop against a degenerate camera, not a working limit.
+const ROUTE_WIDTH_MAX_SCALE: f32 = 64.0;
+
+/// The width multiplier for a camera this high, **quantised to powers of two**.
+///
+/// Stepped rather than continuous for the same reason `street_labels`' size bands
+/// are: the line is a baked mesh, and a width that tracked altitude exactly would
+/// re-triangulate the whole route on every frame of a zoom — which is precisely
+/// the per-frame churn that loses a mobile GPU. A doubling is a rebuild every few
+/// seconds of a fast fly-out, and rounding (rather than flooring) keeps the drawn
+/// width within √2 of the ideal in both directions.
+#[must_use]
+fn route_width_scale(altitude_m: f32) -> f32 {
+    let wanted = altitude_m.max(0.0) * ROUTE_WIDTH_PER_ALT / ROUTE_HALF_WIDTH;
+    if !wanted.is_finite() || wanted <= 1.0 {
+        return 1.0;
+    }
+    wanted
+        .log2()
+        .round()
+        .exp2()
+        .clamp(1.0, ROUTE_WIDTH_MAX_SCALE)
+}
+
 /// Radius of the start/finish discs.
 const MARKER_RADIUS: f32 = 7.0;
 
@@ -536,9 +581,13 @@ const GRAPH_CACHE_IDLE_S: f32 = 180.0;
 /// Start a solve when the endpoints or the mode change, and fold in finished ones.
 pub fn drive_route_solver(
     mut route: ResMut<RouteState>,
+    mut nav: ResMut<GeoNavState>,
     tile_url: Res<OsmTileUrlTemplate>,
+    camera_state: Res<crate::resources::CameraState>,
+    harness: Option<Res<crate::systems::shot_harness::ShotHarness>>,
     time: Res<Time>,
     mut idle_s: Local<f32>,
+    mut framed_for: Local<Option<((f64, f64), (f64, f64))>>,
 ) {
     // 0. Age the graph cache. Deliberately unconditional — including while a solve
     //    is in flight, because the worker holds its own `Arc` clones and writes the
@@ -573,6 +622,11 @@ pub fn drive_route_solver(
                         mode = ?r.mode,
                         "route solved"
                     );
+                    // A reroute replaces a route already on screen and under a
+                    // driver's nose; only a route the user just *asked* for gets
+                    // framed. `held` is what tells the two apart, and it is
+                    // cleared a line below.
+                    let asked_for = route.held.is_none();
                     route.route = Some(r);
                     // The replacement is here, so the one the display was holding
                     // on to has done its job.
@@ -582,6 +636,42 @@ pub fn drive_route_solver(
                     // question gets out from in front of it. This is the whole
                     // reason the planner has detents at all — see [`SheetDetent`].
                     route.sheet = SheetDetent::Peek;
+                    // …and the map is moved so the answer is actually *on* it.
+                    // This replaces the "Fit" button, which asked the user to
+                    // press a second thing to see the thing they had just asked
+                    // for — every map app frames the route it has just solved.
+                    //
+                    // Not in Follow, and that is the one real cost of doing it
+                    // automatically: a teleport brings the avatar with it (the
+                    // camera is glued to the avatar there, so it cannot be framed
+                    // any other way), and planning a route is not a request to be
+                    // moved fifteen kilometres. The two map-looking modes get the
+                    // framing; Follow keeps the view it had and drives from where
+                    // it stands.
+                    //
+                    // A scripted capture is exempt: `--at` states where the shot
+                    // is taken from, and a solve that moved the camera off it
+                    // would quietly re-aim every `--ui route` preset and make the
+                    // harness's "the metrics report the *actual* camera state"
+                    // contract report a place nobody asked for.
+                    //
+                    // Once per pair of endpoints, and not once per solve:
+                    // switching travel mode re-solves, and a camera the user has
+                    // since panned being yanked back every time they tap Bike is
+                    // the same over-eagerness the removed button avoided by being
+                    // a button. "Autofit initially" is the ask.
+                    let endpoints = route.from.coord.zip(route.to.coord);
+                    let first_answer = endpoints.is_some() && *framed_for != endpoints;
+                    if asked_for
+                        && first_answer
+                        && harness.is_none()
+                        && !matches!(camera_state.mode, crate::resources::CameraMode::Avatar)
+                    {
+                        if let Some(tp) = frame_route(&route) {
+                            nav.pending_teleport = Some(tp);
+                            *framed_for = endpoints;
+                        }
+                    }
                 }
                 Err(e) => {
                     // `held` is deliberately *not* cleared: a failed reroute leaves
@@ -985,9 +1075,11 @@ pub fn update_route_visuals(
     bigspace: Query<Entity, With<BigSpace>>,
     existing: Query<Entity, With<RouteVisual>>,
     palette: Option<Res<RouteMaterials>>,
-    mut drawn: Local<Option<(u32, u32, u32, u32)>>,
+    mut drawn: Local<Option<(u32, u32, u32, u32, u32)>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     decks: Res<crate::systems::map_geometry::DeckPlates>,
+    globe: Res<GlobeState>,
+    cameras: Query<(&GridCell, &Transform), With<FreeCamera>>,
 ) {
     let Some(anchor) = stream.geo_anchor() else {
         return;
@@ -1003,11 +1095,18 @@ pub fn update_route_visuals(
     // measurement — so a route planned over a viaduct is routinely drawn before the
     // viaduct exists. Its revision belongs in the redraw key for the same reason the
     // terrain's does.
+    // How wide the line is drawn is part of what is baked into the mesh, so the
+    // altitude band belongs in the redraw key beside the ground revisions — see
+    // `route_width_scale` for why it is a band and not the altitude itself.
+    let width_scale = cameras.single().map_or(1.0, |(cell, tf)| {
+        route_width_scale(globe.altitude_m(cell, tf) as f32)
+    });
     let key = (
         route.generation,
         stream.anchor_generation,
         terrain.revision,
         decks.revision,
+        width_scale.to_bits(),
     );
     if *drawn == Some(key) {
         return;
@@ -1156,12 +1255,12 @@ pub fn update_route_visuals(
 
     let base = DVec3::new(origin.x, f64::from(ROUTE_Y), origin.z);
     spawn(
-        ribbon(&road, &road_lift, CASING_HALF_WIDTH),
+        ribbon(&road, &road_lift, CASING_HALF_WIDTH * width_scale),
         palette.casing.clone(),
         base,
     );
     spawn(
-        ribbon(&road, &road_lift, ROUTE_HALF_WIDTH),
+        ribbon(&road, &road_lift, ROUTE_HALF_WIDTH * width_scale),
         palette.fill.clone(),
         base,
     );
@@ -1183,7 +1282,11 @@ pub fn update_route_visuals(
     ] {
         if pin.distance(road_end) > CONNECTOR_MIN_M {
             spawn(
-                ribbon(&[pin, road_end], &[0.0, end_lift], CONNECTOR_HALF_WIDTH),
+                ribbon(
+                    &[pin, road_end],
+                    &[0.0, end_lift],
+                    CONNECTOR_HALF_WIDTH * width_scale,
+                ),
                 material,
                 base,
             );
@@ -1193,7 +1296,7 @@ pub fn update_route_visuals(
     // Start / finish discs, at the coordinates the user actually asked for.
     for (point, material) in [(from_pin, palette.start), (to_pin, palette.finish)] {
         spawn(
-            disc(MARKER_RADIUS),
+            disc(MARKER_RADIUS * width_scale),
             material,
             base + DVec3::new(f64::from(point.x), 0.01, f64::from(point.y)),
         );
@@ -1388,8 +1491,8 @@ pub enum SheetDetent {
 /// reaching both sides of a 2000 pt window stops reading as something sitting on
 /// the map.
 const SHEET_MAX_WIDTH: f32 = 420.0;
-/// The Start button never gets narrower than this, whatever Clear and Fit have
-/// taken from the row: it is the one control on the sheet you came to press.
+/// The Start button never gets narrower than this, whatever Clear has taken from
+/// the row: it is the one control on the sheet you came to press.
 const START_MIN_WIDTH_PTS: f32 = 96.0;
 /// Most of the viewport height the sheet may claim. The rest is the point of the
 /// exercise.
@@ -1728,20 +1831,17 @@ fn summary_line(ui: &mut egui::Ui, route: &RouteState) {
 /// What a solved route affords, along the bottom of the sheet.
 ///
 /// Driving is what a solved route is *for*, so it takes the primary slot and the
-/// right-hand end, where a thumb is. "Fit" is the other half of a planner that no
-/// longer covers the map: the route is out there to be looked at, and this is how
-/// you get the whole of it on screen without flying the camera by hand.
+/// right-hand end, where a thumb is.
+///
+/// There was a "Fit" button here. It framed the route on the map — which is what
+/// the user wanted the instant the route appeared, not one tap later, so
+/// `drive_route_solver` now does it on the solve and the button is gone. A
+/// control whose only job is to finish an action the app could have finished
+/// itself is a control that should not be on a phone's bottom sheet.
 fn action_row(ui: &mut egui::Ui, actions: &mut PanelActions) {
     ui.horizontal(|ui| {
         if ui.button("Clear").clicked() {
             actions.clear = true;
-        }
-        if ui
-            .button("Fit")
-            .on_hover_text("Frame the whole route on the map")
-            .clicked()
-        {
-            actions.frame = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let width = ui.available_width().max(START_MIN_WIDTH_PTS);
@@ -1796,7 +1896,6 @@ fn turn_list(ui: &mut egui::Ui, route: &RouteState, actions: &mut PanelActions) 
 struct PanelActions {
     swap: bool,
     clear: bool,
-    frame: bool,
     /// Start driving the solved route (`systems::driver`).
     drive: bool,
     mode: Option<TravelMode>,
@@ -2119,17 +2218,23 @@ fn apply_actions(
         route.invalidate();
         route.status = SolveStatus::Idle;
     }
-    if actions.frame {
-        if let Some(tp) = frame_route(route) {
-            nav.pending_teleport = Some(tp);
-        }
-    }
     if let Some(i) = actions.goto_step {
         if let Some(step) = route.route.as_ref().and_then(|r| r.steps.get(i)) {
             nav.pending_teleport = Some(Teleport::geo(step.at[0], step.at[1], Some(220.0)));
         }
     }
 }
+
+/// Highest the framing will pull back to, in metres.
+///
+/// **Deliberately under [`globe::GLOBE_SHOW_ALT`].** The drawn route carries
+/// `HideInSpace` along with the rest of the ground detail, so a framing that
+/// crossed the space tier would fly to a viewpoint from which the thing being
+/// framed is not drawn at all — the previous 60 km ceiling did exactly that for
+/// any route over about 65 km. Past this the framing shows the middle of a long
+/// route instead of the whole of it, which is the right way round: some of the
+/// line beats none of it.
+const FRAME_MAX_ALT: f64 = crate::systems::globe::GLOBE_SHOW_ALT as f64 * 0.9;
 
 /// A teleport that frames the whole route: its centre, at an altitude that fits the
 /// longer span on screen.
@@ -2152,7 +2257,7 @@ fn frame_route(route: &RouteState) -> Option<Teleport> {
         (min_lng + max_lng) / 2.0,
         // A ~60° vertical field of view frames a span from roughly its own length
         // away; the margin keeps the endpoints off the screen edge.
-        Some((span_m * 0.9).clamp(200.0, 60_000.0)),
+        Some((span_m * 0.9).clamp(200.0, FRAME_MAX_ALT)),
     ))
 }
 
@@ -2622,6 +2727,45 @@ mod tests {
         assert_eq!(route.solved_for, None, "a new solve must be due");
     }
 
+    /// A route has to stay visible from the altitude that frames it, and at
+    /// street level it still has to look like a road marking rather than a
+    /// motorway.
+    ///
+    /// The regression this pins: the drawn line is world geometry a fixed 6.4 m
+    /// wide, which is a third of a pixel from the 30 km a cross-province route is
+    /// framed at — the route was *there*, correct, and invisible.
+    #[test]
+    fn the_route_line_stays_wide_enough_to_see() {
+        // Ground level and a city view keep the real road width.
+        assert!((route_width_scale(0.0) - 1.0).abs() < f32::EPSILON);
+        assert!((route_width_scale(500.0) - 1.0).abs() < f32::EPSILON);
+
+        // Every altitude a route is looked at from lands within a factor of √2 of
+        // one line's worth of screen — which is what the power-of-two bands buy in
+        // exchange for not re-triangulating the mesh on every frame of a zoom.
+        for altitude in [2_000.0_f32, 5_000.0, 16_000.0, 30_000.0, 45_000.0] {
+            let drawn = ROUTE_HALF_WIDTH * route_width_scale(altitude);
+            let ideal = altitude * ROUTE_WIDTH_PER_ALT;
+            let ratio = drawn / ideal;
+            assert!(
+                (0.70..=1.42).contains(&ratio),
+                "at {altitude} m the line is {drawn} m against an ideal {ideal} m",
+            );
+        }
+
+        // Monotone, so a climb never *narrows* the line, and bounded.
+        let mut previous = 0.0;
+        for step in 0..200 {
+            let scale = route_width_scale(step as f32 * 1_000.0);
+            assert!(scale >= previous, "the line narrowed at {step} km");
+            assert!(scale <= ROUTE_WIDTH_MAX_SCALE);
+            previous = scale;
+        }
+        // Nothing pathological from a camera that has gone wrong.
+        assert!((route_width_scale(f32::NAN) - 1.0).abs() < f32::EPSILON);
+        assert!(route_width_scale(f32::INFINITY) <= ROUTE_WIDTH_MAX_SCALE);
+    }
+
     /// The framing altitude has to scale with the route, and stay inside the band
     /// where the map tier still streams detail.
     #[test]
@@ -2642,8 +2786,18 @@ mod tests {
         let long = frame_route(&route).unwrap().altitude.unwrap();
 
         assert!(long > short, "a longer route must be framed from higher up");
-        assert!((200.0..=60_000.0).contains(&short));
-        assert!((200.0..=60_000.0).contains(&long));
+        assert!((200.0..=FRAME_MAX_ALT).contains(&short));
+        assert!((200.0..=FRAME_MAX_ALT).contains(&long));
+
+        // A route far longer than the tier can frame is still framed *inside* the
+        // tier — above `GLOBE_SHOW_ALT` the line is not drawn, so pulling further
+        // back would frame an empty map. `MAX_STAGED_KM` is 360.
+        route.route = Some(mk(3.5));
+        let cross_country = frame_route(&route).unwrap().altitude.unwrap();
+        assert!(
+            cross_country < f64::from(crate::systems::globe::GLOBE_SHOW_ALT),
+            "framed at {cross_country} m, where the route is hidden",
+        );
     }
 
     /// "Route to" is the primary act: the start defaults to where you are, so the
