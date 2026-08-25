@@ -603,13 +603,26 @@ pub fn drape_mesh(mesh: &mut Mesh, origin: Vec2, field: &TerrainSnapshot) {
 /// field is what every other consumer stands on, and shading the ground with the
 /// gradient of the *same* function is what keeps a lit hillside agreeing with the
 /// road running over it.
-pub fn displaced_grid(field: &TerrainField, centre: Vec2, size: f32, divisions: usize) -> Mesh {
+pub fn displaced_grid(
+    field: &TerrainField,
+    globe: &crate::systems::globe::GlobeState,
+    centre: Vec2,
+    size: f32,
+    divisions: usize,
+) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
 
     let n = divisions.max(1) + 1;
     let step = size / divisions.max(1) as f32;
     let half = size * 0.5;
+    // The tile's transform already carries the drop at its own centre, so the
+    // mesh only holds the *difference* across itself. Two things follow and both
+    // are the point: the numbers stay small enough for f32 80 km out, where the
+    // absolute drop is 528 m and a vertex offset is centimetres; and every tile
+    // evaluates the same global `drop_at`, so neighbours agree exactly on their
+    // shared edge and the ring has no cracks in it.
+    let centre_drop = globe.drop_at(centre.length());
     let mut positions = Vec::with_capacity(n * n);
     let mut normals = Vec::with_capacity(n * n);
     let mut uvs = Vec::with_capacity(n * n);
@@ -618,8 +631,15 @@ pub fn displaced_grid(field: &TerrainField, centre: Vec2, size: f32, divisions: 
         for i in 0..n {
             let lx = -half + i as f32 * step;
             let (wx, wz) = (centre.x + lx, centre.y + lz);
-            positions.push([lx, field.at(wx, wz), lz]);
-            normals.push(field.normal_at(wx, wz).to_array());
+            let curve = globe.drop_at(Vec2::new(wx, wz).length()) - centre_drop;
+            positions.push([lx, field.at(wx, wz) - curve, lz]);
+            // Relief tilts the ground against the surface; curvature tilts the
+            // surface itself. Composed by rotating the field's normal into the
+            // sphere's frame — outside the field `normal_at` is +Y, so this
+            // degrades to the plain sphere normal with no special case.
+            let up = globe.surface_normal(wx, wz);
+            let n = Quat::from_rotation_arc(Vec3::Y, up) * field.normal_at(wx, wz);
+            normals.push(n.to_array());
             uvs.push([(lx + half) / size, (lz + half) / size]);
         }
     }

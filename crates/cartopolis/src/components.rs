@@ -176,6 +176,17 @@ pub struct HideInSpace;
 #[derive(Component)]
 pub struct MapBackstop;
 
+/// Marker for the paper-toned skirt that carries the ground past the last
+/// streamed tile (`free_camera::GROUND_DISC_RADIUS`).
+///
+/// It carries [`HideInSpace`] as well, but it is the one prop that must go at
+/// the *globe's* draw threshold rather than at the space tier: the globe is the
+/// same surface done properly, so the two may never be on screen together. Its
+/// own marker because `globe::update_globe_visibility` needs a query it can hold
+/// disjoint from the `HideInSpace` sweep next to it.
+#[derive(Component)]
+pub struct GroundSkirt;
+
 /// Marker for a spawned surface mesh, so the whole layer can be found and cleared.
 #[derive(Component)]
 pub struct MapSurface;

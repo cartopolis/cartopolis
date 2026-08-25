@@ -352,6 +352,45 @@ const NORTH_RESET_RATE: f32 = 9.0;
 const DEFAULT_NEAR: f32 = 0.1;
 const DEFAULT_FAR: f32 = 200_000.0;
 
+/// How far past the geometric horizon the far plane is pushed in the band where
+/// the globe is drawn under the flat tier.
+///
+/// Not a small slack: the Earth's *silhouette* is drawn by the far edges of the
+/// tiles that straddle the horizon, and at 12 km up those are z9 tiles ~70 km
+/// across. At 1.2 the far plane landed a few kilometres short of them and the
+/// skyline came out as a sawtooth — the tile grid, clipped one tile at a time.
+/// 1.5 clears the largest tile the split rule can leave at the limb at any
+/// altitude in the band.
+const HORIZON_FAR_MARGIN: f32 = 1.5;
+
+/// Near plane as a fraction of altitude in that same band — see the call site.
+const NEAR_PLANE_ALTITUDE_FRACTION: f32 = 0.004;
+
+/// Distance to the true horizon from `altitude_m` above a sphere of `radius_m`:
+/// the tangent length, `√(2Rh + h²)`.
+///
+/// The number the far plane has to clear for the planet to reach the skyline —
+/// 160 km at 2 km up, 391 km at 12 km, 800 km at 50 km. Written out rather than
+/// approximated as `√(2Rh)` because the `h²` term is 15 % of it by the top of
+/// the band, and a far plane that falls short cuts the horizon off mid-air.
+#[must_use]
+pub fn horizon_distance_m(altitude_m: f32, radius_m: f32) -> f32 {
+    let h = altitude_m.max(0.0) as f64;
+    let r = radius_m.max(1.0) as f64;
+    ((2.0 * r * h + h * h).max(0.0)).sqrt() as f32
+}
+
+/// The far plane for the band between `GLOBE_DRAW_ALT` and `GLOBE_SHOW_ALT`.
+///
+/// A function rather than three lines at the call site because anything that
+/// stands *between* the ground and the far plane — the sky-dome shell, the star
+/// and moon shells — has to be placed against this exact number, and the way
+/// those get it wrong is by re-deriving it slightly differently.
+#[must_use]
+pub fn band_far_plane_m(altitude_m: f32, radius_m: f32) -> f32 {
+    (horizon_distance_m(altitude_m, radius_m) * HORIZON_FAR_MARGIN).clamp(DEFAULT_FAR, 4_000_000.0)
+}
+
 /// How close to a pole the space orbit's sub-camera point may get (radians of
 /// latitude). Dragging past the pole would swing the view through the point
 /// where "north up" has no meaning and pop the horizon 180°; Google Earth stops
@@ -514,6 +553,89 @@ fn set_fov(projection: &mut Mut<Projection>, fov: f32) {
 /// bound anything standing *behind* the world has to clear —
 /// `sky_dome::SKY_DOME_RADIUS` is chosen against it, and there is a test.
 pub const GROUND_DISC_RADIUS: f32 = 150_000.0;
+
+/// How far the ground skirt sits below the anchor's ground (m) — see the spawn
+/// site in [`setup_camera`] for why it is not the 5 m it used to be.
+const GROUND_SKIRT_SINK: f32 = 25.0;
+
+/// Radius the skirt's curve is built against.
+///
+/// A constant rather than `GlobeState::radius`, because the skirt is spawned
+/// with the camera and the globe does not exist until an anchor does. The
+/// geocentric radius runs 6,357–6,378 km, so the worst latitude disagreement is
+/// 0.3 % of the 1.8 km drop at the rim — seven metres, which
+/// [`GROUND_SKIRT_SINK`] covers. Nobody can see seven metres in a featureless
+/// paper backstop 150 km away; what they can see is a straight rim where the
+/// horizon should curve, which is what this fixes.
+const SKIRT_EARTH_RADIUS: f32 = crate::systems::globe::GLOBE_EQUATORIAL_RADIUS_M;
+
+/// The skirt as a spherical cap: a fan of rings that follow the Earth away from
+/// the anchor instead of a flat disc lying on its tangent plane.
+///
+/// Rings are spaced by the **square root** of the radius fraction, so they crowd
+/// toward the rim where the drop is changing fastest — an even spacing puts
+/// nearly all the sag in the outermost ring, which is also the only part of the
+/// skirt a low camera ever sees against the sky.
+fn ground_skirt_mesh() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+
+    /// Rings out from the centre. 32 holds the worst inter-ring sag under a
+    /// metre, which is well inside [`GROUND_SKIRT_SINK`].
+    const RINGS: usize = 32;
+    /// Segments around. The rim is the silhouette against the sky at low
+    /// altitude, so this is chosen to keep it from reading as a polygon.
+    const SEGMENTS: usize = 96;
+
+    let mut positions = Vec::with_capacity(RINGS * SEGMENTS + 1);
+    let mut normals = Vec::with_capacity(RINGS * SEGMENTS + 1);
+    let mut uvs = Vec::with_capacity(RINGS * SEGMENTS + 1);
+    positions.push([0.0, 0.0, 0.0]);
+    normals.push([0.0, 1.0, 0.0]);
+    uvs.push([0.5, 0.5]);
+    for ring in 1..=RINGS {
+        let t = (ring as f32 / RINGS as f32).sqrt();
+        let r = GROUND_DISC_RADIUS * t;
+        let drop = crate::systems::globe::curvature_drop_m(r, SKIRT_EARTH_RADIUS);
+        for seg in 0..SEGMENTS {
+            let a = seg as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let (x, z) = (r * a.cos(), r * a.sin());
+            positions.push([x, -drop, z]);
+            // The sphere's own outward normal, so the skirt takes the light the
+            // curved tiles over it take rather than staying lit as a flat plane.
+            let n = Vec3::new(x, SKIRT_EARTH_RADIUS - drop, z).normalize_or(Vec3::Y);
+            normals.push(n.to_array());
+            uvs.push([0.5 + 0.5 * t * a.cos(), 0.5 + 0.5 * t * a.sin()]);
+        }
+    }
+    let mut indices: Vec<u32> = Vec::new();
+    // Centre fan.
+    for seg in 0..SEGMENTS {
+        let a = 1 + seg as u32;
+        let b = 1 + ((seg + 1) % SEGMENTS) as u32;
+        indices.extend_from_slice(&[0, b, a]);
+    }
+    for ring in 1..RINGS {
+        let inner = 1 + ((ring - 1) * SEGMENTS) as u32;
+        let outer = 1 + (ring * SEGMENTS) as u32;
+        for seg in 0..SEGMENTS as u32 {
+            let next = (seg + 1) % SEGMENTS as u32;
+            let (a, b) = (inner + seg, inner + next);
+            let (c, d) = (outer + seg, outer + next);
+            // Wound to face up; a downward-wound ground is backface-culled and
+            // reads as a hole, silently (the same trap `displaced_grid` names).
+            indices.extend_from_slice(&[a, d, c, a, b, d]);
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
+}
 
 /// Camera exposure (EV100) paired with the physical `RAW_SUNLIGHT` sun. Bevy's
 /// atmosphere demo uses 13.0; higher = darker overall. This is the main knob for
@@ -869,12 +991,18 @@ pub fn setup_camera(
             });
         }
 
-        // A ground disc out to the horizon, in the OSM basemap's paper tone.
+        // A ground skirt out to the horizon, in the OSM basemap's paper tone.
         // Without it, the world ends at the loaded tiles and the void below
         // the horizon reads as a black gulf; with it, DistanceFog fades the
         // ground into the haze so fog and sky meet seamlessly at any altitude.
+        //
+        // It is a spherical **cap**, not the flat circle it was until the ground
+        // tiles started following the Earth's curve. A plane and a sphere that
+        // touch at the anchor have separated by 1.8 km at this radius, so a flat
+        // skirt under curved tiles is not a backstop at all — it rises through
+        // them a few kilometres out and paints blank paper over the map.
         root.spawn_spatial((
-            Mesh3d(meshes.add(Circle::new(GROUND_DISC_RADIUS))),
+            Mesh3d(meshes.add(ground_skirt_mesh())),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.83, 0.83, 0.80),
                 perceptual_roughness: 1.0,
@@ -883,12 +1011,16 @@ pub fn setup_camera(
             })),
             // Well below the whole tile pyramid (whose coarsest rings sit a few
             // metres down — see update_map_stream) so it never covers a tile.
-            Transform::from_xyz(0.0, -5.0, 0.0)
-                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            // Deeper than the 5 m it used to sit at, because the cap is built
+            // against a nominal Earth radius while the tiles use the anchor's
+            // real one: 0.3 % of latitude spread over 1.8 km of drop is ~5 m of
+            // disagreement at the rim, and the clearance has to swallow it.
+            Transform::from_xyz(0.0, -GROUND_SKIRT_SINK, 0.0),
             NotShadowCaster,
-            // From orbit this 150 km disc reads as a bright circle over the
+            // From orbit this 150 km cap reads as a bright patch over the
             // anchor; hide it (and the tiles/regions) while the globe is up.
             crate::components::HideInSpace,
+            crate::components::GroundSkirt,
         ));
     });
 
@@ -2110,6 +2242,22 @@ pub fn camera_controls(
             let near = (altitude as f32 * 0.01).clamp(100.0, 50_000.0);
             let far = (dist_center as f32 + globe.radius * 2.5).clamp(DEFAULT_FAR, 60_000_000.0);
             set_projection(&mut projection, near, far);
+        } else if altitude as f32 > crate::systems::globe::GLOBE_DRAW_ALT {
+            // The band where both tiers are drawn. The 200 km default far plane
+            // was set for a world that ended at the 150 km ground skirt; the
+            // planet does not end, and its horizon is already 391 km away from
+            // 12 km up. Left at 200 km the globe is simply sliced off in a
+            // straight line partway to the horizon — which looks exactly like
+            // the flat edge this whole change is removing.
+            let far = band_far_plane_m(altitude as f32, globe.radius);
+            // Reversed-z spends its precision near the near plane, so a far
+            // plane twenty times further out has to be paid for at the front.
+            // Tied to altitude because that *is* the distance to the nearest
+            // thing the camera can see down here: at 2 km the ground is 2 km
+            // away and 8 m of near plane clips nothing, and by 50 km it has
+            // grown to 200 m without ever passing the ground.
+            let near = (altitude as f32 * NEAR_PLANE_ALTITUDE_FRACTION).clamp(DEFAULT_NEAR, 200.0);
+            set_projection(&mut projection, near, far);
         }
     }
 
@@ -2437,6 +2585,66 @@ mod tests {
         // a shell that veils the horizon anyway is what the old formula did.
         let clear = distance_fog(0.0, 12.0, 0.0);
         assert_eq!(fog_factor_at(&clear.falloff, HORIZON_FOG_DISTANCE), 0.0);
+    }
+
+    /// The band between `GLOBE_DRAW_ALT` and `GLOBE_SHOW_ALT` is the one place
+    /// the far plane is not simply "the flat tier's 200 km", because down there
+    /// the world now ends at the planet's horizon rather than at a skirt.
+    #[test]
+    fn the_far_plane_reaches_the_horizon_across_the_whole_band() {
+        const R: f32 = 6_371_000.0;
+        // Known horizons, so a factor-of-two slip in the formula cannot pass.
+        assert!((horizon_distance_m(2_000.0, R) - 159_600.0).abs() < 1_000.0);
+        assert!((horizon_distance_m(12_000.0, R) - 391_000.0).abs() < 2_000.0);
+        assert!((horizon_distance_m(50_000.0, R) - 800_000.0).abs() < 5_000.0);
+        assert_eq!(horizon_distance_m(0.0, R), 0.0);
+        assert_eq!(horizon_distance_m(-10.0, R), 0.0);
+
+        // And the far plane the band actually sets clears every one of them.
+        // The old flat-tier default does not, which is the bug: at 12 km it cut
+        // the planet off 190 km short of the skyline.
+        for alt in [
+            crate::systems::globe::GLOBE_DRAW_ALT,
+            12_000.0,
+            crate::systems::globe::GLOBE_SHOW_ALT,
+        ] {
+            let horizon = horizon_distance_m(alt, R);
+            let far = band_far_plane_m(alt, R);
+            assert!(far > horizon, "{alt} m: far {far} < horizon {horizon}");
+        }
+        assert!(horizon_distance_m(12_000.0, R) > DEFAULT_FAR);
+    }
+
+    /// The skirt is the ground past the last tile, so it may not rise through
+    /// the tiles on its way out. Now that they follow the Earth down, a flat
+    /// disc would be above them everywhere past a couple of kilometres.
+    #[test]
+    fn the_ground_skirt_follows_the_curve_it_stands_in_for() {
+        let mesh = ground_skirt_mesh();
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::render::mesh::VertexAttributeValues::Float32x3(p)) => p.clone(),
+            _ => panic!("the skirt lost its positions"),
+        };
+        let mut rim_drop = 0.0_f32;
+        for [x, y, z] in positions {
+            assert!(y.is_finite() && x.is_finite() && z.is_finite());
+            let r = Vec2::new(x, z).length();
+            let want = crate::systems::globe::curvature_drop_m(r, SKIRT_EARTH_RADIUS);
+            assert!((-y - want).abs() < 0.5, "{r} m out: {} vs {want}", -y);
+            rim_drop = rim_drop.max(-y);
+        }
+        // It is a cap, not a disc: the rim really is well over a kilometre down.
+        assert!(
+            rim_drop > 1_500.0,
+            "the skirt only fell {rim_drop} m over {GROUND_DISC_RADIUS} m"
+        );
+        // …and the sink clears the latitude spread between this nominal radius
+        // and the anchor's real one (see `GROUND_SKIRT_SINK`).
+        let spread = rim_drop * 0.004;
+        assert!(
+            GROUND_SKIRT_SINK > spread,
+            "{GROUND_SKIRT_SINK} vs {spread}"
+        );
     }
 
     /// The opening view: Earth mode, looking down at the map anchor from about a
