@@ -1504,6 +1504,8 @@ fn seed_scripted_chat(want: bool, chat: &mut ScriptedChat) {
             net_yaw: std::f32::consts::PI,
             pending_emote: None,
             last_emote_sequence: None,
+            seated: None,
+            seat_blend: 0.0,
         },
         crate::components::RemoteAvatarMotionHint::default(),
         crate::systems::chat_overlay::ScriptedSpeaker,

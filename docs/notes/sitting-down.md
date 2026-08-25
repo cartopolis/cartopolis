@@ -1,6 +1,6 @@
 ---
 topic: sitting-down
-triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, authored clip, AnimationClip at runtime, street furniture, interact prompt]
+triggers: [sit, bench, seat, picnic table, sit at bench, seated pose, authored clip, AnimationClip at runtime, street furniture, interact prompt, protocol 19, seated on the wire]
 updated: 2026-08-25
 ---
 
@@ -84,12 +84,38 @@ Any movement input, a jump, a take-off, leaving Follow mode, and a teleport. The
 teleport is the one that is not merely tidy: the offset points at a bench in the
 city being left, so it is cleared outright rather than eased.
 
+## On the wire (protocol 19)
+
+`ClientIntent::seated` and `AvatarStateDto::seated` carry the seat as
+`Option<[f32; 2]>` — **the offset, not the place**, which is what makes it
+portable at all. Each client measured the bench in the frame its own map is
+anchored in, and those frames differ by a translation; a delta survives that, a
+position does not. The facing needs no field: a sitter turns to face out of the
+seat and that is already the replicated `yaw`.
+
+Sitting is a **level**, not an edge like the jump and the emote beside it. It is
+resent in every snapshot for as long as the sit lasts, so an avatar that comes
+into range mid-sit is drawn sitting — the same property `EMOTE_REPLICATE_SECS`
+buys for a wave, without a timer, because a sit has no natural length.
+
+**The blend is not replicated.** The wire carries the whole offset and each viewer
+eases onto it off its own clock, so a sit costs one field per snapshot rather than
+an animation sampled twenty times a second.
+
+**The sim polices it, because this is the one field that separates where an avatar
+*is* from where it is *drawn*.** It has no map and cannot check that there is a
+bench there, so it does the two things that do not need one: it bounds the offset
+(`MAX_SEAT_OFFSET_M`, and refuses a non-finite one) and it drops the seat the
+moment the same intent asks to move, fly or jump. Without the second rule, sitting
+is a way to walk around displaced from your own position — invisible to anything
+reasoning about proximity, since the position it reasons about stays honest.
+`a_seat_is_bounded_and_does_not_survive_moving` pins both.
+
 ## What it does not do
 
-- **It is not replicated.** `AvatarStateDto` carries a position, a yaw and an
-  emote; sitting is none of those, so other players see you standing beside the
-  bench. Putting it on the wire is a protocol revision and a `SimWorld` that knows
-  what a seat is.
+- **The seat is replicated; flight still is not.** A remote avatar takes the seat
+  offset and the seated pose, but never the forward lean of flight — that has no
+  wire field, and `update_avatar_model_pose` gives it only to the local avatar.
 - **Only benches and picnic tables.** `furniture::seat` answers for exactly the two
   forms whose prompt already reads "Sit at …". A shelter has a slat in it and does
   not offer one, because its prompt says "Use".

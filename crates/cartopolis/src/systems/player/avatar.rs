@@ -1138,10 +1138,23 @@ pub fn update_avatar_animation(
 /// over [`SEAT_SLIDE_SECS`] so sitting down is a movement rather than a jump cut.
 /// The offset is in world XZ and the holder is under a yawed parent, so it is
 /// turned back out of the avatar's frame before it is written.
+///
+/// **Other players sit here too.** The seat is replicated (protocol 19), so a
+/// remote avatar's holders take the same treatment from
+/// [`RemoteAvatar::seated`] — but not the lean, which is not on the wire. Each
+/// viewer runs the slide itself off its own clock rather than reading a blended
+/// offset off the wire twenty times a second.
+///
+/// Every holder is compared before it is written, so the ordinary standing case
+/// costs one comparison per model and marks nothing changed. That replaced an
+/// early return, which had to be paired with a "did I write last frame" flag to
+/// get the identity back on the frame a pose ended — one more piece of state than
+/// the comparison it was avoiding.
 pub fn update_avatar_model_pose(
     time: Res<Time>,
     mut avatar_state: ResMut<AvatarState>,
     avatars: Query<Entity, With<Avatar>>,
+    mut remotes: Query<&mut RemoteAvatar>,
     mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
     mut lean: Local<f32>,
     // The arrival: how much of it is *left*, and which teleport it belongs to.
@@ -1207,14 +1220,40 @@ pub fn update_avatar_model_pose(
     if (target - *lean).abs() < 1e-3 {
         *lean = target;
     }
-    let mut pose = flight_pose(*lean, arrived);
-    pose.translation += seat_shift;
-    for (parent, mut tf) in holders.iter_mut() {
-        if !avatars.contains(parent.parent()) {
-            continue; // a remote avatar's holder — none of this is replicated
+    // The same slide, on everyone else's clock. A remote carries the seat it was
+    // sent and eases onto it here; a seat that has gone eases back to nothing and
+    // the blend simply reaches zero, so there is nothing to retire.
+    let step = time.delta_secs() / SEAT_SLIDE_SECS;
+    for mut r in remotes.iter_mut() {
+        let want = if r.seated.is_some() { 1.0 } else { 0.0 };
+        if r.seat_blend != want {
+            r.seat_blend = if want > r.seat_blend {
+                (r.seat_blend + step).min(1.0)
+            } else {
+                (r.seat_blend - step).max(0.0)
+            };
         }
-        if *tf != pose {
-            *tf = pose;
+    }
+
+    let mut local = flight_pose(*lean, arrived);
+    local.translation += seat_shift;
+    for (parent, mut tf) in holders.iter_mut() {
+        let owner = parent.parent();
+        let want = if avatars.contains(owner) {
+            local
+        } else if let Ok(r) = remotes.get(owner) {
+            // No lean and no arrival: neither is replicated. Only the seat, turned
+            // out of the remote's own facing exactly as the local one is.
+            let shift = r.seated.map_or(Vec3::ZERO, |o| {
+                let o = o * r.seat_blend;
+                Quat::from_rotation_y(-r.net_yaw) * Vec3::new(o.x, 0.0, o.y)
+            });
+            Transform::from_translation(shift)
+        } else {
+            continue;
+        };
+        if *tf != want {
+            *tf = want;
         }
     }
 }
@@ -1449,12 +1488,19 @@ pub fn update_remote_avatar_animation(
         }
 
         let was_running = running.get(&avatar_entity).copied().unwrap_or(false);
-        let pose = match active_emote {
-            Some(e) => Pose {
+        // Sitting outranks the emote here for the same reason it does locally: it
+        // is a state this avatar is in, and the sim drops it the moment its owner
+        // asks to move.
+        let pose = match (remote.seated.is_some(), active_emote) {
+            (true, _) => Pose {
+                clip: PoseClip::Sit,
+                rate: 1.0,
+            },
+            (false, Some(e)) => Pose {
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
-            None => locomotion_pose(if moving { speed } else { 0.0 }, false, was_running),
+            (false, None) => locomotion_pose(if moving { speed } else { 0.0 }, false, was_running),
         };
         running.insert(avatar_entity, pose.clip == PoseClip::Run);
 

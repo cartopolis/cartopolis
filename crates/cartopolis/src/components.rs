@@ -90,6 +90,14 @@ pub struct RemoteAvatar {
     /// what turns that level back into an edge, and what distinguishes "waved
     /// twice" from "still waving".
     pub last_emote_sequence: Option<u32>,
+    /// Replicated seat (`AvatarStateDto::seated`): metres in world XZ from this
+    /// avatar's position to where its body is drawn. `None` when it is standing.
+    pub seated: Option<Vec2>,
+    /// How much of that offset is applied, 0..1. **Not replicated** — the wire
+    /// carries the seat, and each viewer eases onto it for itself, so a remote
+    /// sits down over the same fraction of a second the sitter does without
+    /// twenty offsets a second on the wire to say so.
+    pub seat_blend: f32,
 }
 
 /// Horizontal speed (m/s) from visual motion, used for remote run vs idle animation.

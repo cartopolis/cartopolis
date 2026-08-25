@@ -82,6 +82,11 @@ pub const PROTOCOL_HISTORY: &[ProtocolRevision] = &[
         adr: "",
         summary: "presence — SetPresence { active }; an idle client stops being sent WorldSnapshots, and chat still reaches it",
     },
+    ProtocolRevision {
+        version: 19,
+        adr: "",
+        summary: "sitting — ClientIntent.seated / AvatarStateDto.seated carry the seat as an offset from the avatar's own position",
+    },
 ];
 
 /// Current wire version, sent in every app frame; `decode_app_frame` rejects
@@ -349,7 +354,31 @@ pub struct AvatarStateDto {
     /// it after [`EMOTE_REPLICATE_SECS`]; a receiver plays it once per
     /// `(avatar, sequence)` it has not seen.
     pub emote: Option<EmoteState>,
+    /// Set while this avatar is sitting on something: metres in world XZ from
+    /// [`Self::position`] to where its body is drawn.
+    ///
+    /// **An offset, not a place**, for two reasons. The sim has no map and no idea
+    /// what a bench is, so it cannot hold a seat as a location it could check;
+    /// and the sitter's own client measured the seat in the frame its map is
+    /// anchored in, which is a *translation* away from every other client's. A
+    /// delta survives that translation, a position does not. It is bounded by the
+    /// sim ([`MAX_SEAT_OFFSET_M`]) — an avatar may lean out of its authoritative
+    /// position by about the width of a bench, not by a street.
+    ///
+    /// The facing needs no field of its own: a sitter turns to face out of the
+    /// seat, and that is already [`Self::yaw`].
+    pub seated: Option<[f32; 2]>,
 }
+
+/// How far a seat may draw an avatar from the position the sim holds for it.
+///
+/// A seat is the one thing that separates where an avatar *is* from where it is
+/// *drawn*, so it needs a ceiling: without one a client could sit and put its
+/// body an arbitrary distance away, which is a way to appear somewhere it is not
+/// and to be missed by anything that reasons about proximity. The furthest real
+/// seat is the far bench of a picnic table, a little over a metre off, reached
+/// from a standing position the colliders keep about 0.6 m short of it.
+pub const MAX_SEAT_OFFSET_M: f32 = 2.0;
 
 /// A one-shot full-body animation an avatar can play. These are clips the
 /// Quaternius "Ultimate Modular" characters already embed — every character glTF
@@ -471,6 +500,12 @@ pub enum NetMessage {
         /// everyone in range through [`AvatarStateDto::emote`]. `None` on almost
         /// every intent.
         emote: Option<Emote>,
+        /// Where the avatar is sitting, as metres from its own position — see
+        /// [`AvatarStateDto::seated`] for why it is an offset. A *level*, not an
+        /// edge: it is set for as long as the sit lasts, so an avatar that comes
+        /// into range mid-sit is drawn sitting. The sim clears it the moment the
+        /// same intent asks to move.
+        seated: Option<[f32; 2]>,
     },
     ObserverUpdate {
         position: Vec3,
@@ -1059,6 +1094,45 @@ mod tests {
         let b = encode_app_frame(&m).unwrap();
         let m2 = decode_app_frame(&b).unwrap();
         assert_eq!(m, m2);
+    }
+
+    /// The seat travels both ways (protocol 19), and it survives the encoding as
+    /// an *absent* value too — `None` is the state almost every intent and almost
+    /// every replicated avatar is in, so it is the one that must not cost
+    /// anything or go missing.
+    #[test]
+    fn roundtrip_seated_app_frames() {
+        for seated in [None, Some([0.42, -1.03])] {
+            let m = NetMessage::ClientIntent {
+                request_id: 0,
+                move_x: 0.0,
+                move_z: 0.0,
+                display_yaw: 1.25,
+                flying: false,
+                fly_up: false,
+                fly_down: false,
+                jump: false,
+                emote: None,
+                seated,
+            };
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+
+            let m = NetMessage::WorldSnapshot {
+                tick: 7,
+                regions: vec![],
+                prims: vec![],
+                avatars: vec![AvatarStateDto {
+                    id: 3,
+                    position: Vec3::new(1.0, 0.05, 2.0),
+                    yaw: 1.25,
+                    emote: None,
+                    seated,
+                }],
+            };
+            let b = encode_app_frame(&m).unwrap();
+            assert_eq!(decode_app_frame(&b).unwrap(), m);
+        }
     }
 
     #[test]

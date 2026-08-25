@@ -452,6 +452,8 @@ mod tests {
             net_yaw: 0.0,
             pending_emote: None,
             last_emote_sequence: None,
+            seated: None,
+            seat_blend: 0.0,
         });
     }
 

@@ -456,6 +456,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                 fly_down,
                                 jump,
                                 emote,
+                                seated,
                                 ..
                             } => {
                                 // The rate limit drops surplus intents, but a jump
@@ -480,6 +481,7 @@ pub async fn handle_connection<T: FrameTransport>(
                                     fly_down,
                                     jump,
                                     emote,
+                                    seated,
                                 );
                             }
                             NetMessage::ObserverUpdate { position } => {
