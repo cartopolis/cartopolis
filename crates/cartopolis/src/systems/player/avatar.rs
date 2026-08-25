@@ -364,6 +364,33 @@ const FLIGHT_LEAN: f32 = 1.05; // ~60°
 const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
 const FLIGHT_LEAN_SMOOTHING: f32 = 6.0;
 
+/// How long the arrival takes to play out (seconds).
+///
+/// A teleport is the one movement in this world with no travel in it: the avatar
+/// is at one place on one frame and a hundred kilometres away on the next, and
+/// nothing on screen distinguishes that from the map having been redrawn around a
+/// figure that never moved. The arrival is what says a body went somewhere.
+///
+/// Short on purpose. It is played on every jump to a saved place, and anything
+/// long enough to be admired is long enough to be waited through the tenth time.
+const TELEPORT_ARRIVE_SECS: f32 = 0.45;
+/// How thin the avatar is at the start of an arrival, across and along.
+///
+/// It re-forms out of a vertical column rather than fading in, because the model
+/// has no dissolve to fade *with*: the Quaternius characters carry plain opaque
+/// materials, and making them transparent for 0.45 s means a second material per
+/// slot and a place in the transparent sort — for an effect that is over before
+/// it can be looked at. A scale is one transform on a holder that is already
+/// being written every frame.
+const TELEPORT_ARRIVE_PINCH: f32 = 0.06;
+/// How tall the column is at the start, in standing heights. Stated rather than
+/// derived from [`TELEPORT_ARRIVE_PINCH`]: preserving volume would want ~280×,
+/// which is a light-beam to the stratosphere and not a person.
+const TELEPORT_ARRIVE_COLUMN: f32 = 2.4;
+/// …and how far it overshoots standing height on the way in, so the body settles
+/// rather than stopping dead at 1.0.
+const TELEPORT_ARRIVE_STRETCH: f32 = 1.2;
+
 /// Peak pitch of the jump tuck (~11°), reached at full ascent speed and mirrored
 /// to a backward opening at full descent. Small on purpose: the clip underneath
 /// is still `Idle`, and a large angle turns a jump into a dive.
@@ -1069,6 +1096,15 @@ pub fn update_avatar_flight_pose(
     avatars: Query<Entity, With<Avatar>>,
     mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
     mut lean: Local<f32>,
+    // The arrival: how much of it is *left*, and which teleport it belongs to.
+    // Both live here because this is the one system that owns the holder
+    // transform — two systems writing it would race for the frame.
+    //
+    // Counted down rather than up, because a `Local<f32>` starts at zero and zero
+    // has to mean *finished*: counting up would have every launch open on the
+    // first frame of an arrival nobody asked for.
+    mut arrive_left: Local<f32>,
+    mut arrive_seq: Local<u32>,
 ) {
     let target = if avatar_state.is_flying && avatar_state.is_walking {
         FLIGHT_LEAN
@@ -1082,6 +1118,18 @@ pub fn update_avatar_flight_pose(
     } else {
         0.0
     };
+    // A jump to a saved place restarts the arrival even if one is still playing:
+    // the second jump is where the body is now.
+    let was_arriving = *arrive_left > 0.0;
+    if *arrive_seq != avatar_state.teleport_sequence {
+        *arrive_seq = avatar_state.teleport_sequence;
+        *arrive_left = TELEPORT_ARRIVE_SECS;
+    } else if was_arriving {
+        *arrive_left = (*arrive_left - time.delta_secs()).max(0.0);
+    }
+    let arriving = *arrive_left > 0.0;
+    let arrived = 1.0 - *arrive_left / TELEPORT_ARRIVE_SECS;
+
     let previous = *lean;
     let rate = if avatar_state.is_flying {
         FLIGHT_LEAN_SMOOTHING
@@ -1093,13 +1141,20 @@ pub fn update_avatar_flight_pose(
     if (target - *lean).abs() < 1e-3 {
         *lean = target;
     }
-    // Upright and already written: the holders sit at their spawn identity, so
-    // there is nothing to do (the common, grounded case costs one compare).
-    if *lean == 0.0 && previous == 0.0 {
+    // Upright, not arriving, and already written: the holders sit at their spawn
+    // identity, so there is nothing to do (the common, grounded case costs three
+    // compares).
+    //
+    // `was_arriving` is what puts the holders *back*. Both halves of this pose are
+    // written only while something is happening, so the frame a state stops is the
+    // frame that has to write the resting value — `previous` does that for the
+    // lean, and skipping the same trick for the arrival would leave every
+    // teleported avatar a few per cent thin for the rest of the run.
+    if *lean == 0.0 && previous == 0.0 && !arriving && !was_arriving {
         return;
     }
 
-    let pose = flight_pose(*lean);
+    let pose = flight_pose(*lean, arrived);
     for (parent, mut tf) in holders.iter_mut() {
         if !avatars.contains(parent.parent()) {
             continue; // a remote avatar's holder — flight isn't replicated
@@ -1108,17 +1163,54 @@ pub fn update_avatar_flight_pose(
     }
 }
 
-/// The holder transform for a given lean: a pitch about the model's X axis taken
-/// around a pivot at [`FLIGHT_LEAN_PIVOT_Y`], so the chest stays put and the feet
-/// swing back. Identity at zero, which is what a holder spawns with.
-fn flight_pose(lean: f32) -> Transform {
+/// The holder transform for a given lean and arrival progress.
+///
+/// The lean is a pitch about the model's X axis taken around a pivot at
+/// [`FLIGHT_LEAN_PIVOT_Y`], so the chest stays put and the feet swing back.
+///
+/// `arrival` runs 0 → 1 over [`TELEPORT_ARRIVE_SECS`] and is a **scale about the
+/// feet**: the avatar re-forms out of a thin vertical column, overshoots standing
+/// height and settles. Scaling about the feet rather than the origin is the whole
+/// difference between materialising *on* the ground and materialising through it —
+/// the models are authored origin-at-feet, so the holder's own origin already is
+/// the sole of the foot and no pivot correction is needed. At `arrival >= 1` the
+/// scale is exactly [`Vec3::ONE`], so an arrival that has finished composes with
+/// the lean without leaving a residue.
+fn flight_pose(lean: f32, arrival: f32) -> Transform {
     let rotation = Quat::from_rotation_x(lean);
     let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
     Transform {
         translation: pivot - rotation * pivot,
         rotation,
-        scale: Vec3::ONE,
+        scale: teleport_scale(arrival),
     }
+}
+
+/// The arrival's scale at `progress` (0 → 1), [`Vec3::ONE`] once it is done.
+///
+/// Two eases, because the two axes are telling different halves of the story.
+/// **Across** (x and z) the body swells out of a [`TELEPORT_ARRIVE_PINCH`]-thin
+/// column on a decelerating curve, so almost all of the widening happens in the
+/// first third and the rest is the figure standing there. **Along** (y) it starts
+/// stretched by the same amount the column is thin — volume, roughly — passes
+/// through [`TELEPORT_ARRIVE_STRETCH`] and settles on 1 with a single soft
+/// overshoot. One overshoot reads as a body arriving; a spring with several
+/// reads as a bug.
+#[must_use]
+fn teleport_scale(progress: f32) -> Vec3 {
+    if progress >= 1.0 {
+        return Vec3::ONE;
+    }
+    let t = progress.max(0.0);
+    // Cubic ease-out: fast at the start, flat at the end.
+    let out = 1.0 - (1.0 - t).powi(3);
+    let across = TELEPORT_ARRIVE_PINCH + (1.0 - TELEPORT_ARRIVE_PINCH) * out;
+    let base = TELEPORT_ARRIVE_COLUMN + (1.0 - TELEPORT_ARRIVE_COLUMN) * out;
+    // A half-sine bump on top of that ease, faded in by the ease itself so it
+    // cannot lift the opening frame: `along` therefore crosses 1.0 late and comes
+    // back down to it, instead of arriving at standing height from one side.
+    let bump = (TELEPORT_ARRIVE_STRETCH - 1.0) * (std::f32::consts::PI * t).sin() * out;
+    Vec3::new(across, base + bump, across)
 }
 
 /// Phase-lock a mixed avatar's per-slot holders: force every holder's active clips
@@ -2091,15 +2183,55 @@ mod tests {
         );
     }
 
+    /// The arrival grows out of a thin column, overshoots once, and finishes at
+    /// exactly the identity — a residue would leave every teleported avatar
+    /// slightly the wrong size for the rest of the run.
+    #[test]
+    fn the_teleport_arrival_settles_on_standing_height() {
+        assert_eq!(teleport_scale(1.0), Vec3::ONE);
+        assert_eq!(teleport_scale(2.0), Vec3::ONE, "and stays there");
+
+        let start = teleport_scale(0.0);
+        assert!(start.x < 0.2 && start.z < 0.2, "starts thin: {start:?}");
+        assert!(start.y > 1.5, "and tall: {start:?}");
+        assert_eq!(start.x, start.z, "round, not flattened: {start:?}");
+
+        // Monotone widening, and a single overshoot in height — several would
+        // read as a wobble rather than as a body settling.
+        let steps: Vec<Vec3> = (0..=40).map(|i| teleport_scale(i as f32 / 40.0)).collect();
+        for w in steps.windows(2) {
+            assert!(w[1].x >= w[0].x - 1e-5, "width went backwards: {w:?}");
+        }
+        // Height comes *down* to standing from the column, overshooting it once
+        // on the way — so it approaches 1.0 from above and never dips under, which
+        // is a body settling rather than a knee buckling.
+        assert!(
+            steps.iter().any(|s| s.y > 1.0 + 0.05),
+            "the overshoot is too small to see"
+        );
+        assert!(
+            steps.iter().all(|s| s.y >= 1.0 - 1e-4),
+            "the arrival must not squash below standing height"
+        );
+        assert!(
+            steps.iter().all(|s| s.y < 3.0 && s.x > 0.0),
+            "nothing absurd along the way"
+        );
+        // The last stretch is monotone down onto 1.0: no second bounce.
+        for w in steps[steps.len() * 3 / 4..].windows(2) {
+            assert!(w[1].y <= w[0].y + 1e-5, "bounced on the way in: {w:?}");
+        }
+    }
+
     /// The flight lean tips the avatar *forward* — head toward its own +Z, feet
     /// back — about the chest, and is the identity when grounded. Checked here
     /// because a pose has no other way to fail loudly: a sign slip would fly the
     /// avatar on its back and only a screenshot would say so.
     #[test]
     fn flight_lean_pitches_forward_about_the_chest() {
-        assert_eq!(flight_pose(0.0), Transform::IDENTITY);
+        assert_eq!(flight_pose(0.0, 1.0), Transform::IDENTITY);
 
-        let pose = flight_pose(FLIGHT_LEAN);
+        let pose = flight_pose(FLIGHT_LEAN, 1.0);
         let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
         assert!(
             pose.transform_point(pivot).distance(pivot) < 1e-5,

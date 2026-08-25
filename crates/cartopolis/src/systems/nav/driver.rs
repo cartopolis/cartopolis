@@ -977,7 +977,7 @@ pub fn drive_driver_mode(
                 lng = fix.lng,
                 "device fix is far from the anchored world — teleporting rather than warping the avatar"
             );
-            nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None));
+            nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None).silently());
         } else {
             place_avatar(anchor, fix.lat, fix.lng, &mut avatar_state, &mut avatars);
         }
@@ -989,7 +989,7 @@ pub fn drive_driver_mode(
         // brings the camera with it.
         driver.snap_pending = false;
         if let Some(start) = driver.geom.as_ref().and_then(|g| g.points.first()).copied() {
-            nav.pending_teleport = Some(Teleport::geo(start[0], start[1], None));
+            nav.pending_teleport = Some(Teleport::geo(start[0], start[1], None).silently());
         }
     }
 

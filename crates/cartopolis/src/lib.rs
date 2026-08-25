@@ -2435,6 +2435,9 @@ fn run_client() {
                 // movement just did, so all three run after it.
                 systems::soundscape::play_avatar_sounds.after(avatar::handle_avatar_movement),
                 systems::soundscape::update_wind_volume.after(avatar::handle_avatar_movement),
+                // The arrival whoosh. After the teleport that causes it, so a
+                // jump is heard on the frame it lands rather than the next one.
+                systems::soundscape::announce_teleports.after(systems::geo_nav::apply_teleport),
                 // Turn cues. Here rather than with the rest of driver mode because
                 // the whole soundscape is behind this feature, and because a cue is
                 // a function of the distance the driver tick just computed — it has

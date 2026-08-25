@@ -673,8 +673,21 @@ pub fn render_bookmarks_panel(
             bookmarks.request_address(id, lat, lng);
         }
     }
+    // Jumping to a place is the last thing anyone wants the Places list for, and
+    // on a phone the panel *is* the screen — so it stays open covering exactly the
+    // view it was asked to fly to. Closing it is the panel getting out of the way
+    // of its own result. Only a jump does this: renaming, recolouring, dropping a
+    // row into a folder and taking a photo are all list work, and a list that shut
+    // itself after every edit would be unusable.
+    //
+    // Read before `apply` takes `act`, and applied after the `right_panel` borrow
+    // the draw closure held has ended.
+    let jumped = act.teleport.is_some();
     apply_photo_actions(&mut bookmarks, &mut store, &act);
     apply(&mut store, &mut nav, act.update.zip(current), act);
+    if jumped {
+        *right_panel = crate::resources::RightPanel::None;
+    }
 }
 
 /// One folder row: fold arrow, colour swatch (the pin colour of everything in
@@ -915,6 +928,7 @@ fn place_row(
                         lng,
                         altitude: Some(altitude),
                         pose: None,
+                        silent: false,
                     });
                     act.teleport_label = Some(title.clone());
                 }

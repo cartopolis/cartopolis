@@ -1188,6 +1188,15 @@ pub struct AvatarState {
     /// agrees (the sim's echo), or by timeout — the message can be lost, and an
     /// avatar that ignores authority forever is worse than one that flickers.
     pub teleport_hold: Option<web_time::Instant>,
+    /// Bumped by `geo_nav::apply_teleport` every time the avatar is *placed*
+    /// somewhere rather than having travelled there.
+    ///
+    /// A counter rather than a one-frame boolean, for the reason
+    /// [`cartopolis_core::EmoteState`] carries one: two jumps to the same place
+    /// are two events, and the consumers (the arrival sound, the arrival pose)
+    /// run in different phases of the schedule, so a flag cleared by the first
+    /// would be invisible to the second. Each keeps the last value it acted on.
+    pub teleport_sequence: u32,
 }
 
 impl Default for AvatarState {
@@ -1214,6 +1223,7 @@ impl Default for AvatarState {
             pending_emote: None,
             landing_impact: 0.0,
             teleport_hold: None,
+            teleport_sequence: 0,
         }
     }
 }

@@ -1695,6 +1695,10 @@ pub fn place_camera(
         lng: shot.lng,
         altitude: Some(shot.alt),
         pose: Some(pose),
+        // A scripted capture places the camera; it does not visit anywhere. The
+        // arrival animation would put a half-formed avatar in the shot of every
+        // preset that frames one.
+        silent: true,
     });
     tracing::info!(
         shot = progress.index + 1,

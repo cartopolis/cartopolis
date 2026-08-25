@@ -496,6 +496,7 @@ impl GeoNavState {
             lng: e.lng,
             altitude: Some(e.altitude),
             pose: Some(e.pose.clone()),
+            silent: false,
         });
         self.from_history = true;
     }
@@ -510,6 +511,16 @@ pub struct Teleport {
     pub altitude: Option<f64>,
     /// Camera orientation to restore; `None` keeps the current camera.
     pub pose: Option<CameraPose>,
+    /// Arrive without announcing it — no sound, no arrival animation.
+    ///
+    /// **Default is to announce**, because the common case is somebody choosing a
+    /// destination and the uncommon one is the app moving the world under them.
+    /// The silent sites are the ones where a whoosh would be a lie about who
+    /// acted: the startup location restore, a scripted `--shot` capture, the
+    /// globe-descent re-anchor (a camera move that happens to carry the avatar),
+    /// and the device-fix jumps in `locate` / `driver`, which fire whenever the
+    /// GPS reports a big enough step and are nobody's decision at all.
+    pub silent: bool,
 }
 
 impl Teleport {
@@ -520,7 +531,15 @@ impl Teleport {
             lng,
             altitude,
             pose: None,
+            silent: false,
         }
+    }
+
+    /// The same jump, arriving unannounced. See [`Self::silent`].
+    #[must_use]
+    pub fn silently(mut self) -> Self {
+        self.silent = true;
+        self
     }
 
     /// A jump to a parsed location (pasted coordinates, or the `?place=` launch
@@ -534,6 +553,7 @@ impl Teleport {
             pose: fix
                 .look
                 .map(|(pitch, yaw)| CameraPose::free_look(pitch, yaw)),
+            silent: false,
         }
     }
 }
@@ -1418,6 +1438,7 @@ fn history_row(
                     lng: h.lng,
                     altitude: Some(h.altitude),
                     pose: Some(h.pose.clone()),
+                    silent: false,
                 });
                 acted = true;
             }
@@ -1715,6 +1736,7 @@ pub fn search_ui(ui: &mut egui::Ui, nav: &mut GeoNavState, viewer: Option<(f64, 
                     lng: e.lng,
                     altitude: Some(e.altitude),
                     pose: Some(e.pose.clone()),
+                    silent: false,
                 },
                 e.label.clone(),
                 crate::systems::place_card::CardPlace {
@@ -1911,6 +1933,9 @@ pub fn apply_camera_reanchor(mut camera_state: ResMut<CameraState>, mut nav: Res
         lng,
         altitude: Some(alt),
         pose: Some(pose),
+        // A globe descent is a camera move that happens to bring the avatar; the
+        // person flew here rather than jumping here.
+        silent: true,
     });
 }
 
@@ -1955,6 +1980,14 @@ pub fn apply_teleport(
     // Taken with the teleport it belongs to, never on its own: a label left
     // behind by a jump that never applied would end up naming the next one.
     let label = nav.pending_label.take();
+    // Announce the arrival, unless the jump asked not to be (`Teleport::silent`).
+    // Published here rather than at each call site because this is the frame the
+    // avatar is actually *placed* on — a teleport queued before the world anchor
+    // exists sits pending for as long as it takes, and a sound fired when it was
+    // queued would play over an empty map minutes early.
+    if !tp.silent {
+        avatar_state.teleport_sequence = avatar_state.teleport_sequence.wrapping_add(1);
+    }
     let (lat, lng, target_alt) = (tp.lat, tp.lng, tp.altitude);
     // Restore the saved camera orientation first, so the placement below and
     // camera_controls (which runs after) use the intended mode and angle.

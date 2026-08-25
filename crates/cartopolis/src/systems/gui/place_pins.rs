@@ -201,6 +201,7 @@ pub fn render_place_pins(
                     lng: b.lng,
                     altitude: Some(b.altitude),
                     pose: None,
+                    silent: false,
                 },
                 b.name.clone(),
             ));
