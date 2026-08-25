@@ -647,7 +647,15 @@ pub fn load_region_tiles(
         {
             let handles = tile_cache.handles.lock().unwrap();
             if let Some(handle) = handles.get(&tile_key) {
-                commands.entity(entity).insert(RegionTileTexture {
+                // `try_insert`: this query is a live view, and `session::teardown`
+                // — which has no ordering against this system — despawns every
+                // `Region` the moment a session drops. On the frame it runs first
+                // the despawn is already queued while the entity is still visible
+                // here, so a plain `insert` lands on a dead entity at the flush and
+                // takes the process down (see `run`'s error handler). The texture
+                // belongs to a region that no longer exists; dropping it is the
+                // right outcome, not a failure.
+                commands.entity(entity).try_insert(RegionTileTexture {
                     handle: handle.clone(),
                 });
                 continue;

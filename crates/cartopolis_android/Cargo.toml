@@ -35,7 +35,15 @@ test = false
 # `cargo check --workspace` catching a syntax error in the entrypoint, but do not
 # expect it to disappear. On Android it is the whole app.
 [target.'cfg(target_os = "android")'.dependencies]
-bevy.workspace = true
+# `debug` is bevy's "keep the type names" feature, and it is on **here and only
+# here** because Android is the platform where the log is the whole instrument.
+# Without it every ECS command error reads `Encountered an error in command
+# `<Enable the debug feature to see the name>``, which is what the 2026-08-25
+# crash report said and why locating that despawn race took a code read rather
+# than a glance (`docs/notes/entity-commands-outlive-entities.md`). It costs
+# retained type names in the APK, not runtime — worth it on the one build that
+# comes back as a text file from a phone with no cable attached.
+bevy = { workspace = true, features = ["debug"] }
 # `default-features = false, features = ["audio"]` is a deliberate pin even
 # though it currently equals the defaults (the `solo` feature this line existed
 # to drop was removed 2026-08-21): a future default this platform cannot build
