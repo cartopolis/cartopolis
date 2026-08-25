@@ -1233,6 +1233,29 @@ pub fn update_globe_visibility(
     // bevy_pbr the true geocentric camera position (without that, Raymarched from
     // orbit integrated a surface sky dome over the whole screen).
     //
+    // **The switch is at `GLOBE_DRAW_ALT`, not `GLOBE_SHOW_ALT`, and that is a
+    // correctness fix rather than a matched pair of thresholds.** In
+    // `LookupTexture` mode `render_sky.wgsl` composites a geometry pixel as
+    // `scene × transmittance(t) + inscattering(t)`, where the transmittance uses
+    // the true distance while the in-scattering is clamped at
+    // `aerial_view_lut_max_distance` (32 km). Ground past that is therefore
+    // extincted without the airlight that should replace it — and since blue
+    // scatters out first, what is left is red. That is what turned the old
+    // 150 km ground skirt brown, and once the globe carries the view to a 391 km
+    // horizon it is 300 km of real map wearing a magenta cast instead.
+    //
+    // Raymarched takes both terms from the same integral over the true distance
+    // with no clamp, which is the whole fix; the far ground washes toward the sky
+    // the way aerial perspective actually does. Raising the LUT distance instead
+    // was tried and rejected: it stretches the same 32 slices, so buying the
+    // horizon costs the near field its accuracy.
+    //
+    // The weak-GPU escape is unchanged and now covers more ground: a handset that
+    // fails `space_raymarch` keeps `LookupTexture` and the magenta with it, which
+    // is exactly what it renders today. The other handset path — no
+    // `FLOAT32_FILTERABLE`, so `SkyMode::Dome` — has no bevy atmosphere at all and
+    // never had the artefact.
+    //
     // We deliberately do NOT add/remove the `Atmosphere` or the camera's
     // `AtmosphereEnvironmentMapLight` here (an earlier version dropped the env-map
     // light in space): tearing those components down at runtime frees GPU
@@ -1244,7 +1267,7 @@ pub fn update_globe_visibility(
     // — that arm skips this block and goes on to the visibility writes below,
     // which are the part every tier needs.
     if let Some(mut atmosphere) = atmosphere {
-        let (want_mode, want_samples) = if in_space && space_raymarch() {
+        let (want_mode, want_samples) = if show_globe && space_raymarch() {
             (AtmosphereMode::Raymarched, GLOBE_SKY_SAMPLES)
         } else if ground_raymarch() {
             // The bisecting switch: per-pixel sky, no sky-view/aerial LUT reads.
