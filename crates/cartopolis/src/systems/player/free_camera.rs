@@ -1310,7 +1310,11 @@ pub fn camera_controls(
     match camera_state.mode {
         CameraMode::Avatar => {
             // Third-person camera following avatar (smoothed when online — see `AvatarState::display_position`)
-            let avatar_pos = avatar_state.display_position;
+            // Plus the seat: sitting slides the *model* off the avatar's own
+            // position by up to a metre (`AvatarState::seat_shift`), and a camera
+            // that kept framing the position would spend the sit looking at the
+            // pavement beside the bench.
+            let avatar_pos = avatar_state.display_position + avatar_state.seat_shift();
 
             // Driver mode owns the rig (`systems::driver`): distance, tilt and
             // azimuth are written from the map orientation every frame, so the

@@ -2032,6 +2032,19 @@ fn run_client() {
                 systems::shot_harness::place_space_orbit
                     .after(systems::geo_nav::apply_teleport)
                     .before(systems::free_camera::camera_controls),
+                // Hold the scripted camera mode against the toggle that would
+                // drop an offline Follow to Fly, and before the movement system
+                // that reads the mode.
+                systems::shot_harness::hold_scripted_camera_mode
+                    .after(systems::free_camera::camera_mode_toggle)
+                    .before(avatar::handle_avatar_movement),
+                // After the teleport for the reason its doc gives — the teleport
+                // clears the seat — and before the camera, so the shift it applies
+                // is framed on the same frame it is written.
+                systems::shot_harness::seat_scripted_avatar
+                    .after(systems::geo_nav::apply_teleport)
+                    .after(systems::shot_harness::hold_scripted_camera_mode)
+                    .before(systems::free_camera::camera_controls),
                 // After drive_screenshots so the `hide_ui` it clears
                 // each frame isn't cleared again before PostUpdate's
                 // egui suppression reads it.
@@ -2376,7 +2389,7 @@ fn run_client() {
             // The airborne pose the clip set doesn't have: lean the model into
             // flight. After `spawn_avatar` so a holder that appeared this frame
             // (first spawn, appearance change) is leant on the frame it exists.
-            avatar::update_avatar_flight_pose
+            avatar::update_avatar_model_pose
                 .after(avatar::handle_avatar_movement)
                 .after(avatar::spawn_avatar),
             avatar::update_remote_avatar_animation.after(avatar::tick_remote_avatar_motion_hint),

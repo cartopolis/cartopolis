@@ -1298,6 +1298,7 @@ const UI_ELEMENTS: &[&str] = &[
     "world",
     "signin",
     "chat",
+    "sit",
     "all",
 ];
 
@@ -1711,6 +1712,68 @@ pub fn place_camera(
         mode = %mode,
         "shot harness: camera placed"
     );
+}
+
+/// Keep a `--shot-mode avatar` run in Follow, which nothing else will.
+///
+/// **Follow is not on offer offline** (`free_camera::follow_available` wants a
+/// session), and every scripted run *is* offline — `--shot` implies it. So
+/// `camera_mode_toggle` dropped the camera to Fly on the frame after the
+/// teleport put it in Follow, and `--shot-mode avatar` — the mode this harness
+/// documents as "the right mode for checking avatars" — silently produced a
+/// free-camera view of wherever the avatar was not. It also stood a seated
+/// avatar up, because `handle_avatar_movement` leaves the seat when the camera
+/// leaves Follow.
+///
+/// The harness owns the camera for the length of a scripted run, so it re-asserts
+/// the mode every frame rather than once at the teleport. Ordered after the
+/// toggle that would otherwise undo it.
+pub fn hold_scripted_camera_mode(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut cam_state: ResMut<CameraState>,
+) {
+    if !progress.placed || harness.mode_for(progress.index) != "avatar" {
+        return;
+    }
+    if cam_state.mode != crate::resources::CameraMode::Avatar {
+        cam_state.mode = crate::resources::CameraMode::Avatar;
+    }
+}
+
+/// `--ui sit` seats the avatar, and it has to invent the bench to do it.
+///
+/// The real prompt only appears with a real bench inside
+/// [`interact::INTERACT_RADIUS`](crate::systems::interact::INTERACT_RADIUS), and
+/// where a streamed city puts its benches is not something a scripted camera
+/// position can promise. So the seat here is synthetic: half a metre ahead of the
+/// avatar, facing the way it already faces, and fully slid onto (`blend: 1.0` — a
+/// still of the half-way point documents nothing). What the capture then shows is
+/// the authored pose (`systems::sit_pose`), which is the half of this feature with
+/// no test that can see it. Pair it with `--shot-mode avatar`, or the camera is
+/// not looking at the avatar.
+///
+/// Unlike the rest of the `--ui` seeding this runs **every frame and after the
+/// teleport**, because a teleport clears the seat — rightly, since the offset a
+/// seat holds points at a bench in the city being left. Seeding it once per shot
+/// would therefore seed it and lose it in the same frame. It also needs
+/// [`hold_scripted_camera_mode`], for the same reason and one more: leaving
+/// Follow stands a seated avatar up.
+pub fn seat_scripted_avatar(
+    harness: Res<ShotHarness>,
+    progress: Res<ShotProgress>,
+    mut avatar_state: ResMut<crate::resources::AvatarState>,
+) {
+    let panels = harness.ui_for(progress.index);
+    let all = panels.iter().any(|u| u == "all");
+    let want = |k: &str| all || panels.iter().any(|u| u == k);
+    let facing = avatar_state.facing_yaw;
+    avatar_state.seated = want("sit").then(|| crate::resources::Seated {
+        offset: Vec2::new(facing.sin(), facing.cos()) * 0.5,
+        yaw: facing,
+        blend: 1.0,
+        rising: false,
+    });
 }
 
 /// `--shot-mode earth` above the space threshold: put the orbit camera straight

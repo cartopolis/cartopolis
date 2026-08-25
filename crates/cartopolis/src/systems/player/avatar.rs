@@ -2,6 +2,7 @@ use crate::components::AvatarModelLoaded;
 use crate::components::{Avatar, RemoteAvatar, RemoteAvatarMotionHint};
 use crate::resources::AvatarState;
 use crate::systems::locomotion;
+use crate::systems::sit_pose;
 use crate::systems::user_store::{AvatarAppearance, AvatarSex, UserStore};
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
 use bevy::animation::transition::AnimationTransitions;
@@ -101,7 +102,7 @@ const CHAR_IDLE: usize = 4;
 const CHAR_WALK: usize = 22;
 const CHAR_RUN: usize = 16;
 // The set has no jump/fly clip, so Idle doubles as the airborne pose — what makes
-// it read as flight is the forward lean in `update_avatar_flight_pose`.
+// it read as flight is the forward lean in `update_avatar_model_pose`.
 const CHAR_WAVE: usize = 23;
 const CHAR_INTERACT: usize = 10;
 const CHAR_ROLL: usize = 15;
@@ -558,6 +559,9 @@ pub(crate) struct AvatarAnimations {
     fly_index: AnimationNodeIndex,
     /// One node per [`EMOTE_CLIPS`] row, in that order.
     emote_indices: Vec<AnimationNodeIndex>,
+    /// The seated pose. Not a clip out of the character file — the set has none —
+    /// but one this client authors for the rig (`systems::sit_pose`).
+    sit_index: AnimationNodeIndex,
     /// Base playback speed for this model's clips (`Holder::anim_speed`). The
     /// locomotion clips are scaled on top of this to match ground speed.
     speed: f32,
@@ -583,6 +587,10 @@ const EMOTE_DURATION: f32 = 1.6;
 /// avatar does not appear to change its mind — a gait change is a decision, not a
 /// drift.
 const GAIT_FADE: Duration = Duration::from_millis(180);
+/// Sitting down is slower than either: it is a whole body lowering itself onto
+/// something, and at a gait's fade the avatar snaps into the seat. Paired with
+/// [`SEAT_SLIDE_SECS`], which moves it the last half-metre over the same time.
+const SIT_FADE: Duration = Duration::from_millis(450);
 /// Emotes cut in faster: a wave that eases in over a fifth of a second reads as
 /// reluctance.
 const EMOTE_FADE: Duration = Duration::from_millis(90);
@@ -591,6 +599,7 @@ pub fn spawn_avatar(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut clip_assets: ResMut<Assets<AnimationClip>>,
     store: Res<UserStore>,
     mut avatar_query: Query<
         (Entity, Has<Avatar>, &mut Transform),
@@ -637,6 +646,14 @@ pub fn spawn_avatar(
             clips.extend(EMOTE_CLIPS.iter().map(|(_, ix)| {
                 asset_server.load(GltfAssetLabel::Animation(*ix).from_asset(h.anims))
             }));
+            // …and last the one clip that is not in the file. The character set
+            // has no sit, so it is built here for the rig this holder wears
+            // (`systems::sit_pose`). Every holder of a mixed avatar gets its own
+            // copy, which costs eleven curves and keeps the node indices of all
+            // the graphs identical — `update_avatar_animation` reads one
+            // `AvatarAnimations` off the avatar entity and drives every holder's
+            // player with it.
+            clips.push(clip_assets.add(sit_pose::sit_clip(appearance.sex)));
             let (graph, indices) = AnimationGraph::from_clips(clips);
             let anims = AvatarAnimations {
                 graph_handle: graphs.add(graph),
@@ -644,10 +661,11 @@ pub fn spawn_avatar(
                 walk_index: indices[1],
                 run_index: indices[2],
                 // Flight has no clip of its own; the forward lean in
-                // `update_avatar_flight_pose` is what distinguishes it from
+                // `update_avatar_model_pose` is what distinguishes it from
                 // standing (`docs/notes/avatar-locomotion.md`).
                 fly_index: indices[0],
-                emote_indices: indices[3..].to_vec(),
+                emote_indices: indices[3..indices.len() - 1].to_vec(),
+                sit_index: indices[indices.len() - 1],
                 speed: h.anim_speed,
             };
             if entity_anims.is_none() {
@@ -891,6 +909,9 @@ enum PoseClip {
     Walk,
     Run,
     Fly,
+    /// The authored seated pose (`systems::sit_pose`) — the one clip in the set
+    /// this client builds rather than loads.
+    Sit,
     Emote(usize),
 }
 
@@ -942,6 +963,7 @@ impl AvatarAnimations {
             PoseClip::Walk => self.walk_index,
             PoseClip::Run => self.run_index,
             PoseClip::Fly => self.fly_index,
+            PoseClip::Sit => self.sit_index,
             PoseClip::Emote(slot) => self
                 .emote_indices
                 .get(slot)
@@ -992,7 +1014,16 @@ fn apply_pose(
                 let active = player.animation(previous)?;
                 Some((active.seek_time() / secs).fract())
             });
-        let fade = if repeat { GAIT_FADE } else { EMOTE_FADE };
+        let fade = if pose.clip == PoseClip::Sit
+            || transitions.get_main_animation() == Some(anim.sit_index)
+        {
+            // Both ways, so getting up takes as long as sitting down did.
+            SIT_FADE
+        } else if repeat {
+            GAIT_FADE
+        } else {
+            EMOTE_FADE
+        };
         let active = transitions.play(player, want, fade);
         if repeat {
             active.repeat();
@@ -1055,12 +1086,21 @@ pub fn update_avatar_animation(
             (None, None) => {}
         }
 
-        let pose = match active_emote {
-            Some(e) => Pose {
+        // Sitting outranks both: it is a state the player is in rather than a
+        // motion they asked for, and it is left by walking away, which is what
+        // clears it before this is ever reached.
+        let pose = match (avatar_state.is_seated(), active_emote) {
+            (true, _) => Pose {
+                clip: PoseClip::Sit,
+                rate: 1.0,
+            },
+            (false, Some(e)) => Pose {
                 clip: PoseClip::Emote(emote_slot(e)),
                 rate: 1.0,
             },
-            None => locomotion_pose(avatar_state.ground_speed, avatar_state.is_flying, *running),
+            (false, None) => {
+                locomotion_pose(avatar_state.ground_speed, avatar_state.is_flying, *running)
+            }
         };
         *running = pose.clip == PoseClip::Run;
 
@@ -1075,24 +1115,32 @@ pub fn update_avatar_animation(
     }
 }
 
-/// Lean the local avatar's model into flight while it is moving under its own
-/// power, and stand it back up on landing.
+/// Everything the local avatar's *model* does that its position does not: the
+/// forward lean of flight and of a jump, and the slide onto a bench.
 ///
-/// The Quaternius "Ultimate Modular" clip set has no flight (or jump) animation
-/// and the UAL library can't supply one — different rig, so its clips don't bind
-/// (`docs/notes/avatar-locomotion.md`). Flying therefore played *Idle*, i.e. an
-/// avatar standing to attention while it crossed the city at 32 m/s. Pitching the
-/// model forward is what turns that same pose into a glide; hovering in place
-/// stays upright, which is the readable difference between the two.
+/// Both live on the model holders rather than on the avatar entity, and for the
+/// same reason: the avatar's own transform is its authoritative position and yaw
+/// (collision, the follow camera and the replicated facing all read it, and online
+/// the sim owns it outright), so pitching or shifting *that* would move all of
+/// them. A holder is a child of it, so writing one is a purely visual change.
 ///
-/// The lean lives on the model holders, not on the avatar entity: the avatar's own
-/// transform is its authoritative position and yaw (collision, the follow camera
-/// and the replicated facing all read it), and pitching *that* would tip all three.
-/// Holders pivot about chest height so the feet swing back instead of the head
+/// **The lean.** The Quaternius "Ultimate Modular" clip set has no flight (or
+/// jump) animation and the UAL library can't supply one — different rig, so its
+/// clips don't bind (`docs/notes/avatar-locomotion.md`). Flying therefore played
+/// *Idle*, i.e. an avatar standing to attention while it crossed the city at
+/// 32 m/s. Pitching the model forward is what turns that same pose into a glide;
+/// hovering in place stays upright, which is the readable difference between the
+/// two. Holders pivot about chest height so the feet swing back instead of the head
 /// diving through the ground.
-pub fn update_avatar_flight_pose(
+///
+/// **The seat.** A bench is a solid prop, so the avatar stops short of the place
+/// it has to sit; the gap is carried here as [`AvatarState::seat_shift`], eased
+/// over [`SEAT_SLIDE_SECS`] so sitting down is a movement rather than a jump cut.
+/// The offset is in world XZ and the holder is under a yawed parent, so it is
+/// turned back out of the avatar's frame before it is written.
+pub fn update_avatar_model_pose(
     time: Res<Time>,
-    avatar_state: Res<AvatarState>,
+    mut avatar_state: ResMut<AvatarState>,
     avatars: Query<Entity, With<Avatar>>,
     mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
     mut lean: Local<f32>,
@@ -1106,6 +1154,26 @@ pub fn update_avatar_flight_pose(
     mut arrive_left: Local<f32>,
     mut arrive_seq: Local<u32>,
 ) {
+    // Advance the seat slide first, so the offset written below is this frame's.
+    // A seat that has finished unwinding is dropped here rather than where the
+    // player asked to get up — that is what lets `stand_up` be a one-liner
+    // everywhere it is called from.
+    let seat_shift = {
+        let step = time.delta_secs() / SEAT_SLIDE_SECS;
+        let mut done = false;
+        if let Some(s) = &mut avatar_state.seated {
+            if s.rising {
+                s.blend = (s.blend - step).max(0.0);
+                done = s.blend <= 0.0;
+            } else {
+                s.blend = (s.blend + step).min(1.0);
+            }
+        }
+        if done {
+            avatar_state.seated = None;
+        }
+        Quat::from_rotation_y(-avatar_state.facing_yaw) * avatar_state.seat_shift()
+    };
     let target = if avatar_state.is_flying && avatar_state.is_walking {
         FLIGHT_LEAN
     } else if !avatar_state.is_flying && !avatar_state.grounded {
@@ -1127,10 +1195,8 @@ pub fn update_avatar_flight_pose(
     } else if was_arriving {
         *arrive_left = (*arrive_left - time.delta_secs()).max(0.0);
     }
-    let arriving = *arrive_left > 0.0;
     let arrived = 1.0 - *arrive_left / TELEPORT_ARRIVE_SECS;
 
-    let previous = *lean;
     let rate = if avatar_state.is_flying {
         FLIGHT_LEAN_SMOOTHING
     } else {
@@ -1141,27 +1207,21 @@ pub fn update_avatar_flight_pose(
     if (target - *lean).abs() < 1e-3 {
         *lean = target;
     }
-    // Upright, not arriving, and already written: the holders sit at their spawn
-    // identity, so there is nothing to do (the common, grounded case costs three
-    // compares).
-    //
-    // `was_arriving` is what puts the holders *back*. Both halves of this pose are
-    // written only while something is happening, so the frame a state stops is the
-    // frame that has to write the resting value — `previous` does that for the
-    // lean, and skipping the same trick for the arrival would leave every
-    // teleported avatar a few per cent thin for the rest of the run.
-    if *lean == 0.0 && previous == 0.0 && !arriving && !was_arriving {
-        return;
-    }
-
-    let pose = flight_pose(*lean, arrived);
+    let mut pose = flight_pose(*lean, arrived);
+    pose.translation += seat_shift;
     for (parent, mut tf) in holders.iter_mut() {
         if !avatars.contains(parent.parent()) {
-            continue; // a remote avatar's holder — flight isn't replicated
+            continue; // a remote avatar's holder — none of this is replicated
         }
-        *tf = pose;
+        if *tf != pose {
+            *tf = pose;
+        }
     }
 }
+
+/// How long the model takes to slide onto a seat, and back off it. Matched to
+/// [`SIT_FADE`] so the body finishes arriving as it finishes sitting.
+const SEAT_SLIDE_SECS: f32 = 0.45;
 
 /// The holder transform for a given lean and arrival progress.
 ///
@@ -1534,6 +1594,10 @@ pub fn handle_avatar_movement(
         // whatever the avatar was doing when the mode changed would place that
         // snap tens of metres off (`free_camera::FOLLOW_LEAD_MAX`).
         avatar_state.velocity = Vec3::ZERO;
+        // …and stand it up. The seat is a Follow-mode arrangement: the prompt that
+        // offers it only appears there, and a free camera flying away from a
+        // seated avatar leaves nothing to get it off the bench.
+        avatar_state.stand_up();
         return;
     }
     // Don't move while the UI owns the keyboard (text field focused, edit dialog open,
@@ -1639,6 +1703,30 @@ pub fn handle_avatar_movement(
     // brings it about; only the turn *rate* is smoothed, movement is immediate.
     if let Some(target) = yaw_from_dir(wish) {
         avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, target, delta_time);
+    }
+
+    // Sitting is left by doing anything else. Any of the three — a step, a jump,
+    // a take-off — stands the avatar up, and `stand_up` takes effect this frame,
+    // so the input that ended the sit is also acted on rather than swallowed.
+    if avatar_state.is_seated() && (has_input || avatar_state.wants_jump || avatar_state.is_flying)
+    {
+        avatar_state.stand_up();
+    }
+    if avatar_state.is_seated() {
+        // Held still and turned to face out of the bench. Everything below is
+        // about going somewhere, and this avatar is not.
+        avatar_state.is_walking = false;
+        avatar_state.ground_speed = 0.0;
+        avatar_state.move_dir = Vec3::ZERO;
+        avatar_state.wants_jump = false;
+        if let Some(seat) = avatar_state.seated {
+            avatar_state.facing_yaw = advance_facing(avatar_state.facing_yaw, seat.yaw, delta_time);
+        }
+        let rotation = Quat::from_rotation_y(avatar_state.facing_yaw);
+        if transform.rotation != rotation {
+            transform.rotation = rotation;
+        }
+        return;
     }
 
     // ── The speed model ──────────────────────────────────────────────────────
@@ -2247,7 +2335,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(Time::<()>::default())
             .init_resource::<AvatarState>()
-            .add_systems(Update, update_avatar_flight_pose);
+            .add_systems(Update, update_avatar_model_pose);
         let holder = app
             .world_mut()
             .spawn((SlotMask::ALL, Transform::IDENTITY))

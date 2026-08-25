@@ -127,7 +127,7 @@ been redrawn around a figure that never moved.
 - The arrival **scales**, it does not dissolve. The Quaternius characters carry
   plain opaque materials; fading them means a second material per slot and a place
   in the transparent sort, for an effect that is over in 0.45 s. A scale is one
-  transform on a holder `update_avatar_flight_pose` already writes every frame.
+  transform on a holder `update_avatar_model_pose` already writes every frame.
 - It is published as a **sequence counter** (`AvatarState::teleport_sequence`),
   not a one-frame flag, for the reason `EmoteState` carries one: two jumps to the
   same place are two events, and the sound and the pose read the edge in different

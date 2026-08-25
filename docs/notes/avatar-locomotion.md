@@ -29,7 +29,7 @@ own (`Neck`, `UpperArm.L`, `Wrist.L`). Animation targets are hashed from the bon
 **name path**, so not one channel binds. Retargeting between the two rigs, or
 authoring a flight clip, is the only way to get a real one.
 
-So flight is posed, not animated: `avatar::update_avatar_flight_pose` pitches the
+So flight is posed, not animated: `avatar::update_avatar_model_pose` pitches the
 model holders forward about chest height while the avatar is flying *and* moving,
 and stands them up again to hover or land. It plays `Idle` throughout. This is
 also why hovering and gliding look different at all — the clip is the same one.
