@@ -307,8 +307,35 @@ const ONLINE_RECONCILE_RATE: f32 = 9.0;
 /// connection parks the avatar instead of flying it off on a stale velocity.
 const ONLINE_MAX_EXTRAPOLATION: f32 = 0.15;
 /// Prediction error (metres) beyond which the display snaps instead of easing —
-/// a teleport, a server correction or a resumed connection, not drift.
+/// a teleport, a server correction or a resumed connection, not drift. The floor
+/// of [`online_snap_error`]; see there for why it cannot be the whole rule.
 const ONLINE_SNAP_ERROR: f32 = 8.0;
+/// …and the part of that threshold that has to grow with speed: how many seconds
+/// of travel count as ordinary prediction lag rather than as a correction.
+const ONLINE_SNAP_SECONDS: f32 = 0.6;
+
+/// The error beyond which the display snaps to authority instead of easing.
+///
+/// **A fixed distance is a speed-dependent time, and that is what made fast
+/// flight stutter.** Reconciliation settles at a standing error of
+/// `speed / ONLINE_RECONCILE_RATE` — the display integrates the predicted
+/// velocity while the target trails it by the latency the extrapolation cap
+/// cannot cover. At a walk that is centimetres and at the 32 m/s flight cap it is
+/// ~3.6 m, both comfortably under the 8 m threshold. But flight rides altitude
+/// (`motion::fly_altitude_factor`), so a kilometre up the same avatar is doing
+/// 250 m/s and the *steady* error is 28 m: the threshold is crossed by nothing
+/// having gone wrong, and every frame hard-sets the display to a stale
+/// extrapolation instead of easing. Around the crossing point it alternates
+/// between the two, which is the judder itself.
+///
+/// So the threshold is a distance with a *duration* in it. Six tenths of a
+/// second of travel is far more than reconciliation's own lag at any speed and
+/// far less than any teleport, which moves the avatar to another part of the
+/// world; the floor keeps a standing avatar's threshold where it was.
+#[must_use]
+fn online_snap_error(speed: f32) -> f32 {
+    (speed * ONLINE_SNAP_SECONDS).max(ONLINE_SNAP_ERROR)
+}
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
@@ -438,6 +465,44 @@ pub(crate) fn advance_facing(current: f32, target: f32, dt: f32) -> f32 {
     let ease = delta * (1.0 - (-TURN_SMOOTHING * dt).exp());
     let cap = MAX_TURN_RATE * dt;
     wrap_angle_pi(current + ease.clamp(-cap, cap))
+}
+
+/// How fast the *travel* direction turns in flight (rad/s).
+///
+/// On the ground the wish direction is taken whole, every frame: a walk is
+/// footfalls, and a pedestrian who turns has simply changed which way the next
+/// step goes. Flight has no footfalls and, at the speeds the altitude ramp
+/// reaches, taking the wish whole means the velocity vector rotates ninety
+/// degrees between two frames — an instantaneous corner at a few hundred metres
+/// per second, which is the other half of what reads as stutter. Easing it makes
+/// a turn an arc.
+///
+/// A quarter turn in about half a second: quick enough to feel like control
+/// rather than like a vehicle being steered, slow enough that the corner is gone.
+///
+/// Deliberately *slower* than the facing turns ([`TURN_SMOOTHING`], capped by
+/// [`MAX_TURN_RATE`]), which still tracks the raw wish. So the body comes round
+/// first and the velocity follows it through the turn, which is what banking
+/// looks like — the other order would have the avatar translating into a
+/// direction it is not yet pointing.
+const FLIGHT_TURN_RATE: f32 = 3.2;
+
+/// Step the flight travel direction one frame toward `target`, turning at most
+/// `max_turn` radians. Both are horizontal unit vectors; a zero `current` (the
+/// avatar was at rest) snaps, since there is no heading to arc away from.
+#[must_use]
+fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
+    let (Some(from), Some(to)) = (yaw_from_dir(current), yaw_from_dir(target)) else {
+        return target;
+    };
+    let delta = wrap_angle_pi(to - from);
+    if delta.abs() <= max_turn {
+        return target;
+    }
+    let yaw = from + delta.signum() * max_turn;
+    // Same convention as `wish_dir_camera_relative` / `yaw_from_dir`, so the
+    // round trip through an angle is the identity.
+    Vec3::new(yaw.sin(), 0.0, yaw.cos())
 }
 
 /// Standing height on flat ground: the region tile's top surface (the cuboid's
@@ -1315,7 +1380,11 @@ pub fn smooth_online_avatar_display(
         if target.y < 0.0 {
             target.y = 0.0;
         }
-        let flat = if display.distance(target) > ONLINE_SNAP_ERROR {
+        // Measured against the speed actually being predicted, not the ramped
+        // `ground_speed`: the altitude factor is applied at integration, so at
+        // 2 km up those two differ by a factor of sixteen.
+        let snap = online_snap_error(avatar_state.predicted_velocity.length());
+        let flat = if display.distance(target) > snap {
             // Teleport / correction / resumed stream: ease-in would visibly slide
             // the avatar across the map instead of arriving.
             target
@@ -1325,6 +1394,10 @@ pub fn smooth_online_avatar_display(
         };
         avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
         avatar_state.display_position = flat + Vec3::Y * avatar_state.terrain_lift;
+        // What the follow camera leads by. The predicted velocity is the honest
+        // answer online: it is precisely the rate `display_position` advances at
+        // between snapshots, which is what the rig is trying to keep up with.
+        avatar_state.velocity = avatar_state.predicted_velocity;
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }
@@ -1364,6 +1437,11 @@ pub fn handle_avatar_movement(
         // the speed latched would have it resume at full pace on returning to
         // Follow, and (online) keep sending that speed as intent.
         avatar_state.ground_speed = 0.0;
+        // Same reasoning for the velocity the follow rig leads by: returning to
+        // Follow snaps the camera onto its target, and a lead left over from
+        // whatever the avatar was doing when the mode changed would place that
+        // snap tens of metres off (`free_camera::FOLLOW_LEAD_MAX`).
+        avatar_state.velocity = Vec3::ZERO;
         return;
     }
     // Don't move while the UI owns the keyboard (text field focused, edit dialog open,
@@ -1483,7 +1561,16 @@ pub fn handle_avatar_movement(
     // movement system that always runs in Follow. `send_network_intent` consumes
     // the result rather than recomputing it, so there is exactly one ramp.
     if has_input {
-        avatar_state.move_dir = wish;
+        // On the ground the wish is taken whole (movement is immediate — see
+        // above). In flight the heading arcs toward it instead, unless there is
+        // no heading yet: a take-off from rest, or a stop, has nothing to turn
+        // away from and would otherwise curve out of a standstill.
+        avatar_state.move_dir =
+            if avatar_state.is_flying && avatar_state.ground_speed > locomotion::MOVING_EPS {
+                advance_move_dir(avatar_state.move_dir, wish, FLIGHT_TURN_RATE * delta_time)
+            } else {
+                wish
+            };
     }
     let (target_speed, accel, decel) = if avatar_state.is_flying {
         (
@@ -1526,6 +1613,12 @@ pub fn handle_avatar_movement(
     // This ensures camera can follow the avatar correctly
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
+    // Where this frame's integration started, so the velocity the follow camera
+    // leads by can be *measured* rather than restated. Collision steering, the
+    // ground clamp and the altitude factor all move the avatar by less (or by
+    // something other) than the nominal speed, and a camera led by a velocity the
+    // avatar did not achieve overshoots into every wall it slides along.
+    let before = transform.translation;
 
     // Flight rides altitude, at integration — the same
     // `motion::fly_altitude_factor` the sim applies in `step` and prediction
@@ -1579,15 +1672,25 @@ pub fn handle_avatar_movement(
     // read as airborne on the next frame and gravity would take it straight back.
     let ground_y = GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z);
     if avatar_state.is_flying {
-        if fly_up {
-            transform.translation.y += motion::FLY_VERTICAL_SPEED * lift * delta_time;
+        // Ramped, not switched — `motion::step_fly_vertical`, the same curve the
+        // sim runs and `send_network_intent` predicts. Descent stops asking once
+        // the ground is reached, so the thrust unwinds instead of being held
+        // against the floor.
+        let target = if fly_up {
+            motion::FLY_VERTICAL_SPEED
         } else if fly_down && transform.translation.y > ground_y {
-            transform.translation.y -= motion::FLY_VERTICAL_SPEED * lift * delta_time;
-        }
+            -motion::FLY_VERTICAL_SPEED
+        } else {
+            0.0
+        };
+        avatar_state.fly_vertical =
+            motion::step_fly_vertical(avatar_state.fly_vertical, target, delta_time);
+        transform.translation.y += avatar_state.fly_vertical * lift * delta_time;
         transform.translation.y = transform.translation.y.max(ground_y);
         avatar_state.vertical_velocity = 0.0;
         avatar_state.grounded = false;
     } else {
+        avatar_state.fly_vertical = 0.0;
         if avatar_state.wants_jump && avatar_state.grounded {
             avatar_state.vertical_velocity = motion::JUMP_SPEED;
         }
@@ -1608,6 +1711,7 @@ pub fn handle_avatar_movement(
     // Update avatar state position to match transform (important for camera following)
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
+    avatar_state.velocity = (transform.translation - before) / delta_time.max(1e-4);
 }
 
 /// How many of the avatar's meshes exist, and how many the view drew.
@@ -1896,6 +2000,94 @@ mod tests {
             advance_facing(yaw, target, dt),
             wrap_angle_pi(target),
             "settled, so no further movement"
+        );
+    }
+
+    /// The flight heading arcs toward the wish instead of snapping to it, and
+    /// always arrives — a turn that asymptotes never finishes, and a `move_dir`
+    /// that keeps changing by a hair re-sends an intent every frame.
+    #[test]
+    fn the_flight_heading_arcs_and_arrives() {
+        let dt = 1.0 / 60.0;
+        let step = FLIGHT_TURN_RATE * dt;
+        let north = Vec3::new(0.0, 0.0, 1.0);
+        let east = Vec3::new(1.0, 0.0, 0.0);
+
+        // One frame does not get you there…
+        let first = advance_move_dir(north, east, step);
+        assert!(
+            first.angle_between(north) > 0.0 && first.angle_between(east) > 1e-3,
+            "a quarter turn cannot happen in one frame: {first:?}"
+        );
+
+        // …but it converges, exactly, in about the time the constant promises.
+        let mut dir = north;
+        let mut frames = 0;
+        while dir.angle_between(east) > 1e-4 && frames < 600 {
+            dir = advance_move_dir(dir, east, step);
+            frames += 1;
+        }
+        assert_eq!(dir, east, "settles exactly on the wish");
+        let secs = frames as f32 * dt;
+        assert!(
+            (0.3..=0.8).contains(&secs),
+            "a quarter turn should take about half a second: {secs}"
+        );
+
+        // The direction stays a unit horizontal vector throughout — it becomes a
+        // velocity by being scaled, so any length drift is a speed error.
+        let mid = advance_move_dir(north, east, step);
+        assert!((mid.length() - 1.0).abs() < 1e-5, "not unit: {mid:?}");
+        assert_eq!(mid.y, 0.0, "flight steers horizontally: {mid:?}");
+
+        // Turning the short way round: a wish just past behind must not sweep
+        // the long way about.
+        let behind_left = Vec3::new(-0.2, 0.0, -1.0).normalize();
+        let turned = advance_move_dir(north, behind_left, step);
+        assert!(turned.x < 0.0, "took the long way round: {turned:?}");
+
+        // No heading yet (at rest, or an unusable target) snaps rather than arcs.
+        assert_eq!(advance_move_dir(Vec3::ZERO, east, step), east);
+        assert_eq!(advance_move_dir(north, Vec3::ZERO, step), Vec3::ZERO);
+    }
+
+    /// The snap threshold is a *duration* of travel, not a fixed distance.
+    ///
+    /// This is the property fast flight stutters without: reconciliation's own
+    /// standing error is `speed / ONLINE_RECONCILE_RATE`, so a threshold that does
+    /// not grow with speed is eventually crossed by nothing having gone wrong, and
+    /// the display hard-sets to a stale extrapolation every frame instead of
+    /// easing.
+    #[test]
+    fn the_snap_threshold_outruns_reconciliations_own_error() {
+        // Standing and walking keep the old threshold.
+        assert_eq!(online_snap_error(0.0), ONLINE_SNAP_ERROR);
+        assert_eq!(
+            online_snap_error(crate::systems::locomotion::WALK_SPEED),
+            ONLINE_SNAP_ERROR
+        );
+
+        // At every speed flight can reach — the cap, and the cap scaled by the
+        // altitude ramp — the threshold stays clear of the error reconciliation
+        // settles at, with room for the latency the extrapolation cap misses.
+        for speed in [
+            crate::systems::locomotion::FLY_SPEED,
+            crate::systems::locomotion::FLY_SPEED * 4.0,
+            crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR,
+        ] {
+            let settled = speed / ONLINE_RECONCILE_RATE;
+            assert!(
+                online_snap_error(speed) > settled * 2.0,
+                "at {speed} m/s the threshold is {} against a standing error of {settled}",
+                online_snap_error(speed)
+            );
+        }
+
+        // …and never so generous that a teleport eases instead of snapping. The
+        // shortest jump anyone makes is to another part of the same city.
+        assert!(
+            online_snap_error(crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR)
+                < 1_000.0
         );
     }
 
