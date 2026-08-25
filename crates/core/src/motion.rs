@@ -78,7 +78,50 @@ pub const TERMINAL_FALL_SPEED: f32 = 40.0;
 
 /// Climb/descent rate while flying (m/s). Flight holds altitude rather than
 /// falling, so this is a velocity, not an acceleration.
-pub const FLY_VERTICAL_SPEED: f32 = 12.0;
+///
+/// Raised from 12 on 2026-08-25. The altitude ramp below is what makes flight
+/// cover ground, and 12 m/s spent forty seconds getting into the part of it
+/// worth being in — long enough that "fly somewhere" read as a chore rather
+/// than as travel.
+pub const FLY_VERTICAL_SPEED: f32 = 20.0;
+
+/// How hard the vertical thrust builds and sheds (m/s²).
+///
+/// The climb used to be a *step*: the key went down and the avatar was doing
+/// [`FLY_VERTICAL_SPEED`] on that frame, the key came up and it was doing zero
+/// on the next. At 12 m/s that was merely abrupt; at 20 m/s scaled by
+/// [`fly_altitude_factor`] it is a hundreds-of-metres-per-second discontinuity
+/// in the middle of the view, which is most of what "the flight is stuttery"
+/// meant. Ramping it is the vertical half of what [`crate::motion`]'s horizontal
+/// speed model already does.
+///
+/// Brisk enough that the ramp is felt as thrust rather than as lag — full climb
+/// in half a second — and applied identically by all three motion sites.
+pub const FLY_VERTICAL_ACCEL: f32 = 40.0;
+
+/// Step the vertical thrust one frame toward `target`, at [`FLY_VERTICAL_ACCEL`].
+///
+/// Settles *exactly* on the target rather than approaching it asymptotically:
+/// a hover that keeps creeping by a hair rewrites the avatar transform every
+/// frame, and under `big_space` that re-propagates the whole model subtree.
+///
+/// The sim ramps this per 20 Hz tick while the client ramps it per frame, so the
+/// two differ during the ~0.5 s a thrust change takes — by at most one tick of
+/// one ramp, i.e. well under a metre, which reconciliation absorbs without ever
+/// reaching the snap threshold. Putting the ramped value on the wire instead
+/// would be a protocol revision to remove an error smaller than the jitter it
+/// travels through.
+#[must_use]
+pub fn step_fly_vertical(current: f32, target: f32, dt: f32) -> f32 {
+    let step = FLY_VERTICAL_ACCEL * dt;
+    if (target - current).abs() <= step {
+        target
+    } else if target > current {
+        current + step
+    } else {
+        current - step
+    }
+}
 
 /// Altitude (m) at which the flight speeds are taken literally; above it they
 /// grow in proportion to altitude — the same Google-Earth rule the Fly camera
@@ -88,7 +131,7 @@ pub const FLY_VERTICAL_SPEED: f32 = 12.0;
 /// and a half, and at that height the 32 m/s horizontal cap reads as standing
 /// still.
 pub const FLY_ALT_REF: f32 = 120.0;
-/// Ceiling on that scaling — 640 m/s across, 240 m/s of climb, reached by
+/// Ceiling on that scaling — 640 m/s across, 400 m/s of climb, reached by
 /// ~2.4 km up. Far below the camera's own ceiling on purpose: an avatar is
 /// followed from at most 25 m, so past this the map streams for a viewpoint
 /// that outruns it, and a fall from higher than this already exceeds anything
@@ -239,6 +282,41 @@ mod tests {
         }
         assert!((fly_altitude_factor(FLY_ALT_REF * 2.0) - 2.0).abs() < 1e-5);
         assert_eq!(fly_altitude_factor(1e9), FLY_ALT_MAX_FACTOR);
+    }
+
+    /// The vertical thrust ramps, settles exactly, and takes about half a second
+    /// to reach full climb — the property that turns a key press from a step in
+    /// the world velocity into a push.
+    #[test]
+    fn vertical_thrust_ramps_and_settles_exactly() {
+        let dt = 1.0 / 60.0;
+        let first = step_fly_vertical(0.0, FLY_VERTICAL_SPEED, dt);
+        assert!(
+            first > 0.0 && first < FLY_VERTICAL_SPEED,
+            "eased, not a step: {first}"
+        );
+
+        let (mut v, mut frames) = (0.0_f32, 0);
+        while v < FLY_VERTICAL_SPEED && frames < 600 {
+            v = step_fly_vertical(v, FLY_VERTICAL_SPEED, dt);
+            frames += 1;
+        }
+        assert_eq!(v, FLY_VERTICAL_SPEED, "settles exactly on the target");
+        assert!(
+            (0.25..=0.75).contains(&(frames as f32 * dt)),
+            "full climb takes about half a second: {frames} frames"
+        );
+
+        // …and back to a hover, symmetrically, from either direction.
+        let mut down = 0.0_f32;
+        for _ in 0..600 {
+            down = step_fly_vertical(down, -FLY_VERTICAL_SPEED, dt);
+        }
+        assert_eq!(down, -FLY_VERTICAL_SPEED);
+        for _ in 0..600 {
+            down = step_fly_vertical(down, 0.0, dt);
+        }
+        assert_eq!(down, 0.0, "a released key returns to an exact hover");
     }
 
     /// Standing on the ground is stable: no landing event is invented every

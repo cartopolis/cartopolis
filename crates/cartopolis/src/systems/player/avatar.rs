@@ -307,8 +307,35 @@ const ONLINE_RECONCILE_RATE: f32 = 9.0;
 /// connection parks the avatar instead of flying it off on a stale velocity.
 const ONLINE_MAX_EXTRAPOLATION: f32 = 0.15;
 /// Prediction error (metres) beyond which the display snaps instead of easing —
-/// a teleport, a server correction or a resumed connection, not drift.
+/// a teleport, a server correction or a resumed connection, not drift. The floor
+/// of [`online_snap_error`]; see there for why it cannot be the whole rule.
 const ONLINE_SNAP_ERROR: f32 = 8.0;
+/// …and the part of that threshold that has to grow with speed: how many seconds
+/// of travel count as ordinary prediction lag rather than as a correction.
+const ONLINE_SNAP_SECONDS: f32 = 0.6;
+
+/// The error beyond which the display snaps to authority instead of easing.
+///
+/// **A fixed distance is a speed-dependent time, and that is what made fast
+/// flight stutter.** Reconciliation settles at a standing error of
+/// `speed / ONLINE_RECONCILE_RATE` — the display integrates the predicted
+/// velocity while the target trails it by the latency the extrapolation cap
+/// cannot cover. At a walk that is centimetres and at the 32 m/s flight cap it is
+/// ~3.6 m, both comfortably under the 8 m threshold. But flight rides altitude
+/// (`motion::fly_altitude_factor`), so a kilometre up the same avatar is doing
+/// 250 m/s and the *steady* error is 28 m: the threshold is crossed by nothing
+/// having gone wrong, and every frame hard-sets the display to a stale
+/// extrapolation instead of easing. Around the crossing point it alternates
+/// between the two, which is the judder itself.
+///
+/// So the threshold is a distance with a *duration* in it. Six tenths of a
+/// second of travel is far more than reconciliation's own lag at any speed and
+/// far less than any teleport, which moves the avatar to another part of the
+/// world; the floor keeps a standing avatar's threshold where it was.
+#[must_use]
+fn online_snap_error(speed: f32) -> f32 {
+    (speed * ONLINE_SNAP_SECONDS).max(ONLINE_SNAP_ERROR)
+}
 /// Remote rotation should feel a bit snappier than position.
 const REMOTE_ROT_SMOOTHING: f32 = 18.0;
 /// Horizontal visual speed (m/s) above this plays run animation on remote foxes.
@@ -336,6 +363,33 @@ const MAX_TURN_RATE: f32 = 12.0;
 const FLIGHT_LEAN: f32 = 1.05; // ~60°
 const FLIGHT_LEAN_PIVOT_Y: f32 = 0.95;
 const FLIGHT_LEAN_SMOOTHING: f32 = 6.0;
+
+/// How long the arrival takes to play out (seconds).
+///
+/// A teleport is the one movement in this world with no travel in it: the avatar
+/// is at one place on one frame and a hundred kilometres away on the next, and
+/// nothing on screen distinguishes that from the map having been redrawn around a
+/// figure that never moved. The arrival is what says a body went somewhere.
+///
+/// Short on purpose. It is played on every jump to a saved place, and anything
+/// long enough to be admired is long enough to be waited through the tenth time.
+const TELEPORT_ARRIVE_SECS: f32 = 0.45;
+/// How thin the avatar is at the start of an arrival, across and along.
+///
+/// It re-forms out of a vertical column rather than fading in, because the model
+/// has no dissolve to fade *with*: the Quaternius characters carry plain opaque
+/// materials, and making them transparent for 0.45 s means a second material per
+/// slot and a place in the transparent sort — for an effect that is over before
+/// it can be looked at. A scale is one transform on a holder that is already
+/// being written every frame.
+const TELEPORT_ARRIVE_PINCH: f32 = 0.06;
+/// How tall the column is at the start, in standing heights. Stated rather than
+/// derived from [`TELEPORT_ARRIVE_PINCH`]: preserving volume would want ~280×,
+/// which is a light-beam to the stratosphere and not a person.
+const TELEPORT_ARRIVE_COLUMN: f32 = 2.4;
+/// …and how far it overshoots standing height on the way in, so the body settles
+/// rather than stopping dead at 1.0.
+const TELEPORT_ARRIVE_STRETCH: f32 = 1.2;
 
 /// Peak pitch of the jump tuck (~11°), reached at full ascent speed and mirrored
 /// to a backward opening at full descent. Small on purpose: the clip underneath
@@ -438,6 +492,44 @@ pub(crate) fn advance_facing(current: f32, target: f32, dt: f32) -> f32 {
     let ease = delta * (1.0 - (-TURN_SMOOTHING * dt).exp());
     let cap = MAX_TURN_RATE * dt;
     wrap_angle_pi(current + ease.clamp(-cap, cap))
+}
+
+/// How fast the *travel* direction turns in flight (rad/s).
+///
+/// On the ground the wish direction is taken whole, every frame: a walk is
+/// footfalls, and a pedestrian who turns has simply changed which way the next
+/// step goes. Flight has no footfalls and, at the speeds the altitude ramp
+/// reaches, taking the wish whole means the velocity vector rotates ninety
+/// degrees between two frames — an instantaneous corner at a few hundred metres
+/// per second, which is the other half of what reads as stutter. Easing it makes
+/// a turn an arc.
+///
+/// A quarter turn in about half a second: quick enough to feel like control
+/// rather than like a vehicle being steered, slow enough that the corner is gone.
+///
+/// Deliberately *slower* than the facing turns ([`TURN_SMOOTHING`], capped by
+/// [`MAX_TURN_RATE`]), which still tracks the raw wish. So the body comes round
+/// first and the velocity follows it through the turn, which is what banking
+/// looks like — the other order would have the avatar translating into a
+/// direction it is not yet pointing.
+const FLIGHT_TURN_RATE: f32 = 3.2;
+
+/// Step the flight travel direction one frame toward `target`, turning at most
+/// `max_turn` radians. Both are horizontal unit vectors; a zero `current` (the
+/// avatar was at rest) snaps, since there is no heading to arc away from.
+#[must_use]
+fn advance_move_dir(current: Vec3, target: Vec3, max_turn: f32) -> Vec3 {
+    let (Some(from), Some(to)) = (yaw_from_dir(current), yaw_from_dir(target)) else {
+        return target;
+    };
+    let delta = wrap_angle_pi(to - from);
+    if delta.abs() <= max_turn {
+        return target;
+    }
+    let yaw = from + delta.signum() * max_turn;
+    // Same convention as `wish_dir_camera_relative` / `yaw_from_dir`, so the
+    // round trip through an angle is the identity.
+    Vec3::new(yaw.sin(), 0.0, yaw.cos())
 }
 
 /// Standing height on flat ground: the region tile's top surface (the cuboid's
@@ -1004,6 +1096,15 @@ pub fn update_avatar_flight_pose(
     avatars: Query<Entity, With<Avatar>>,
     mut holders: Query<(&ChildOf, &mut Transform), With<SlotMask>>,
     mut lean: Local<f32>,
+    // The arrival: how much of it is *left*, and which teleport it belongs to.
+    // Both live here because this is the one system that owns the holder
+    // transform — two systems writing it would race for the frame.
+    //
+    // Counted down rather than up, because a `Local<f32>` starts at zero and zero
+    // has to mean *finished*: counting up would have every launch open on the
+    // first frame of an arrival nobody asked for.
+    mut arrive_left: Local<f32>,
+    mut arrive_seq: Local<u32>,
 ) {
     let target = if avatar_state.is_flying && avatar_state.is_walking {
         FLIGHT_LEAN
@@ -1017,6 +1118,18 @@ pub fn update_avatar_flight_pose(
     } else {
         0.0
     };
+    // A jump to a saved place restarts the arrival even if one is still playing:
+    // the second jump is where the body is now.
+    let was_arriving = *arrive_left > 0.0;
+    if *arrive_seq != avatar_state.teleport_sequence {
+        *arrive_seq = avatar_state.teleport_sequence;
+        *arrive_left = TELEPORT_ARRIVE_SECS;
+    } else if was_arriving {
+        *arrive_left = (*arrive_left - time.delta_secs()).max(0.0);
+    }
+    let arriving = *arrive_left > 0.0;
+    let arrived = 1.0 - *arrive_left / TELEPORT_ARRIVE_SECS;
+
     let previous = *lean;
     let rate = if avatar_state.is_flying {
         FLIGHT_LEAN_SMOOTHING
@@ -1028,13 +1141,20 @@ pub fn update_avatar_flight_pose(
     if (target - *lean).abs() < 1e-3 {
         *lean = target;
     }
-    // Upright and already written: the holders sit at their spawn identity, so
-    // there is nothing to do (the common, grounded case costs one compare).
-    if *lean == 0.0 && previous == 0.0 {
+    // Upright, not arriving, and already written: the holders sit at their spawn
+    // identity, so there is nothing to do (the common, grounded case costs three
+    // compares).
+    //
+    // `was_arriving` is what puts the holders *back*. Both halves of this pose are
+    // written only while something is happening, so the frame a state stops is the
+    // frame that has to write the resting value — `previous` does that for the
+    // lean, and skipping the same trick for the arrival would leave every
+    // teleported avatar a few per cent thin for the rest of the run.
+    if *lean == 0.0 && previous == 0.0 && !arriving && !was_arriving {
         return;
     }
 
-    let pose = flight_pose(*lean);
+    let pose = flight_pose(*lean, arrived);
     for (parent, mut tf) in holders.iter_mut() {
         if !avatars.contains(parent.parent()) {
             continue; // a remote avatar's holder — flight isn't replicated
@@ -1043,17 +1163,54 @@ pub fn update_avatar_flight_pose(
     }
 }
 
-/// The holder transform for a given lean: a pitch about the model's X axis taken
-/// around a pivot at [`FLIGHT_LEAN_PIVOT_Y`], so the chest stays put and the feet
-/// swing back. Identity at zero, which is what a holder spawns with.
-fn flight_pose(lean: f32) -> Transform {
+/// The holder transform for a given lean and arrival progress.
+///
+/// The lean is a pitch about the model's X axis taken around a pivot at
+/// [`FLIGHT_LEAN_PIVOT_Y`], so the chest stays put and the feet swing back.
+///
+/// `arrival` runs 0 → 1 over [`TELEPORT_ARRIVE_SECS`] and is a **scale about the
+/// feet**: the avatar re-forms out of a thin vertical column, overshoots standing
+/// height and settles. Scaling about the feet rather than the origin is the whole
+/// difference between materialising *on* the ground and materialising through it —
+/// the models are authored origin-at-feet, so the holder's own origin already is
+/// the sole of the foot and no pivot correction is needed. At `arrival >= 1` the
+/// scale is exactly [`Vec3::ONE`], so an arrival that has finished composes with
+/// the lean without leaving a residue.
+fn flight_pose(lean: f32, arrival: f32) -> Transform {
     let rotation = Quat::from_rotation_x(lean);
     let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
     Transform {
         translation: pivot - rotation * pivot,
         rotation,
-        scale: Vec3::ONE,
+        scale: teleport_scale(arrival),
     }
+}
+
+/// The arrival's scale at `progress` (0 → 1), [`Vec3::ONE`] once it is done.
+///
+/// Two eases, because the two axes are telling different halves of the story.
+/// **Across** (x and z) the body swells out of a [`TELEPORT_ARRIVE_PINCH`]-thin
+/// column on a decelerating curve, so almost all of the widening happens in the
+/// first third and the rest is the figure standing there. **Along** (y) it starts
+/// stretched by the same amount the column is thin — volume, roughly — passes
+/// through [`TELEPORT_ARRIVE_STRETCH`] and settles on 1 with a single soft
+/// overshoot. One overshoot reads as a body arriving; a spring with several
+/// reads as a bug.
+#[must_use]
+fn teleport_scale(progress: f32) -> Vec3 {
+    if progress >= 1.0 {
+        return Vec3::ONE;
+    }
+    let t = progress.max(0.0);
+    // Cubic ease-out: fast at the start, flat at the end.
+    let out = 1.0 - (1.0 - t).powi(3);
+    let across = TELEPORT_ARRIVE_PINCH + (1.0 - TELEPORT_ARRIVE_PINCH) * out;
+    let base = TELEPORT_ARRIVE_COLUMN + (1.0 - TELEPORT_ARRIVE_COLUMN) * out;
+    // A half-sine bump on top of that ease, faded in by the ease itself so it
+    // cannot lift the opening frame: `along` therefore crosses 1.0 late and comes
+    // back down to it, instead of arriving at standing height from one side.
+    let bump = (TELEPORT_ARRIVE_STRETCH - 1.0) * (std::f32::consts::PI * t).sin() * out;
+    Vec3::new(across, base + bump, across)
 }
 
 /// Phase-lock a mixed avatar's per-slot holders: force every holder's active clips
@@ -1315,7 +1472,11 @@ pub fn smooth_online_avatar_display(
         if target.y < 0.0 {
             target.y = 0.0;
         }
-        let flat = if display.distance(target) > ONLINE_SNAP_ERROR {
+        // Measured against the speed actually being predicted, not the ramped
+        // `ground_speed`: the altitude factor is applied at integration, so at
+        // 2 km up those two differ by a factor of sixteen.
+        let snap = online_snap_error(avatar_state.predicted_velocity.length());
+        let flat = if display.distance(target) > snap {
             // Teleport / correction / resumed stream: ease-in would visibly slide
             // the avatar across the map instead of arriving.
             target
@@ -1325,6 +1486,10 @@ pub fn smooth_online_avatar_display(
         };
         avatar_state.terrain_lift = terrain.at(flat.x, flat.z);
         avatar_state.display_position = flat + Vec3::Y * avatar_state.terrain_lift;
+        // What the follow camera leads by. The predicted velocity is the honest
+        // answer online: it is precisely the rate `display_position` advances at
+        // between snapshots, which is what the rig is trying to keep up with.
+        avatar_state.velocity = avatar_state.predicted_velocity;
         if let Ok(mut tf) = avatar_query.single_mut() {
             tf.translation = avatar_state.display_position;
         }
@@ -1364,6 +1529,11 @@ pub fn handle_avatar_movement(
         // the speed latched would have it resume at full pace on returning to
         // Follow, and (online) keep sending that speed as intent.
         avatar_state.ground_speed = 0.0;
+        // Same reasoning for the velocity the follow rig leads by: returning to
+        // Follow snaps the camera onto its target, and a lead left over from
+        // whatever the avatar was doing when the mode changed would place that
+        // snap tens of metres off (`free_camera::FOLLOW_LEAD_MAX`).
+        avatar_state.velocity = Vec3::ZERO;
         return;
     }
     // Don't move while the UI owns the keyboard (text field focused, edit dialog open,
@@ -1483,7 +1653,16 @@ pub fn handle_avatar_movement(
     // movement system that always runs in Follow. `send_network_intent` consumes
     // the result rather than recomputing it, so there is exactly one ramp.
     if has_input {
-        avatar_state.move_dir = wish;
+        // On the ground the wish is taken whole (movement is immediate — see
+        // above). In flight the heading arcs toward it instead, unless there is
+        // no heading yet: a take-off from rest, or a stop, has nothing to turn
+        // away from and would otherwise curve out of a standstill.
+        avatar_state.move_dir =
+            if avatar_state.is_flying && avatar_state.ground_speed > locomotion::MOVING_EPS {
+                advance_move_dir(avatar_state.move_dir, wish, FLIGHT_TURN_RATE * delta_time)
+            } else {
+                wish
+            };
     }
     let (target_speed, accel, decel) = if avatar_state.is_flying {
         (
@@ -1526,6 +1705,12 @@ pub fn handle_avatar_movement(
     // This ensures camera can follow the avatar correctly
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
+    // Where this frame's integration started, so the velocity the follow camera
+    // leads by can be *measured* rather than restated. Collision steering, the
+    // ground clamp and the altitude factor all move the avatar by less (or by
+    // something other) than the nominal speed, and a camera led by a velocity the
+    // avatar did not achieve overshoots into every wall it slides along.
+    let before = transform.translation;
 
     // Flight rides altitude, at integration — the same
     // `motion::fly_altitude_factor` the sim applies in `step` and prediction
@@ -1579,15 +1764,25 @@ pub fn handle_avatar_movement(
     // read as airborne on the next frame and gravity would take it straight back.
     let ground_y = GROUND_HEIGHT + terrain.at(transform.translation.x, transform.translation.z);
     if avatar_state.is_flying {
-        if fly_up {
-            transform.translation.y += motion::FLY_VERTICAL_SPEED * lift * delta_time;
+        // Ramped, not switched — `motion::step_fly_vertical`, the same curve the
+        // sim runs and `send_network_intent` predicts. Descent stops asking once
+        // the ground is reached, so the thrust unwinds instead of being held
+        // against the floor.
+        let target = if fly_up {
+            motion::FLY_VERTICAL_SPEED
         } else if fly_down && transform.translation.y > ground_y {
-            transform.translation.y -= motion::FLY_VERTICAL_SPEED * lift * delta_time;
-        }
+            -motion::FLY_VERTICAL_SPEED
+        } else {
+            0.0
+        };
+        avatar_state.fly_vertical =
+            motion::step_fly_vertical(avatar_state.fly_vertical, target, delta_time);
+        transform.translation.y += avatar_state.fly_vertical * lift * delta_time;
         transform.translation.y = transform.translation.y.max(ground_y);
         avatar_state.vertical_velocity = 0.0;
         avatar_state.grounded = false;
     } else {
+        avatar_state.fly_vertical = 0.0;
         if avatar_state.wants_jump && avatar_state.grounded {
             avatar_state.vertical_velocity = motion::JUMP_SPEED;
         }
@@ -1608,6 +1803,7 @@ pub fn handle_avatar_movement(
     // Update avatar state position to match transform (important for camera following)
     avatar_state.position = transform.translation;
     avatar_state.display_position = transform.translation;
+    avatar_state.velocity = (transform.translation - before) / delta_time.max(1e-4);
 }
 
 /// How many of the avatar's meshes exist, and how many the view drew.
@@ -1899,15 +2095,219 @@ mod tests {
         );
     }
 
+    /// The flight heading arcs toward the wish instead of snapping to it, and
+    /// always arrives — a turn that asymptotes never finishes, and a `move_dir`
+    /// that keeps changing by a hair re-sends an intent every frame.
+    #[test]
+    fn the_flight_heading_arcs_and_arrives() {
+        let dt = 1.0 / 60.0;
+        let step = FLIGHT_TURN_RATE * dt;
+        let north = Vec3::new(0.0, 0.0, 1.0);
+        let east = Vec3::new(1.0, 0.0, 0.0);
+
+        // One frame does not get you there…
+        let first = advance_move_dir(north, east, step);
+        assert!(
+            first.angle_between(north) > 0.0 && first.angle_between(east) > 1e-3,
+            "a quarter turn cannot happen in one frame: {first:?}"
+        );
+
+        // …but it converges, exactly, in about the time the constant promises.
+        let mut dir = north;
+        let mut frames = 0;
+        while dir.angle_between(east) > 1e-4 && frames < 600 {
+            dir = advance_move_dir(dir, east, step);
+            frames += 1;
+        }
+        assert_eq!(dir, east, "settles exactly on the wish");
+        let secs = frames as f32 * dt;
+        assert!(
+            (0.3..=0.8).contains(&secs),
+            "a quarter turn should take about half a second: {secs}"
+        );
+
+        // The direction stays a unit horizontal vector throughout — it becomes a
+        // velocity by being scaled, so any length drift is a speed error.
+        let mid = advance_move_dir(north, east, step);
+        assert!((mid.length() - 1.0).abs() < 1e-5, "not unit: {mid:?}");
+        assert_eq!(mid.y, 0.0, "flight steers horizontally: {mid:?}");
+
+        // Turning the short way round: a wish just past behind must not sweep
+        // the long way about.
+        let behind_left = Vec3::new(-0.2, 0.0, -1.0).normalize();
+        let turned = advance_move_dir(north, behind_left, step);
+        assert!(turned.x < 0.0, "took the long way round: {turned:?}");
+
+        // No heading yet (at rest, or an unusable target) snaps rather than arcs.
+        assert_eq!(advance_move_dir(Vec3::ZERO, east, step), east);
+        assert_eq!(advance_move_dir(north, Vec3::ZERO, step), Vec3::ZERO);
+    }
+
+    /// The snap threshold is a *duration* of travel, not a fixed distance.
+    ///
+    /// This is the property fast flight stutters without: reconciliation's own
+    /// standing error is `speed / ONLINE_RECONCILE_RATE`, so a threshold that does
+    /// not grow with speed is eventually crossed by nothing having gone wrong, and
+    /// the display hard-sets to a stale extrapolation every frame instead of
+    /// easing.
+    #[test]
+    fn the_snap_threshold_outruns_reconciliations_own_error() {
+        // Standing and walking keep the old threshold.
+        assert_eq!(online_snap_error(0.0), ONLINE_SNAP_ERROR);
+        assert_eq!(
+            online_snap_error(crate::systems::locomotion::WALK_SPEED),
+            ONLINE_SNAP_ERROR
+        );
+
+        // At every speed flight can reach — the cap, and the cap scaled by the
+        // altitude ramp — the threshold stays clear of the error reconciliation
+        // settles at, with room for the latency the extrapolation cap misses.
+        for speed in [
+            crate::systems::locomotion::FLY_SPEED,
+            crate::systems::locomotion::FLY_SPEED * 4.0,
+            crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR,
+        ] {
+            let settled = speed / ONLINE_RECONCILE_RATE;
+            assert!(
+                online_snap_error(speed) > settled * 2.0,
+                "at {speed} m/s the threshold is {} against a standing error of {settled}",
+                online_snap_error(speed)
+            );
+        }
+
+        // …and never so generous that a teleport eases instead of snapping. The
+        // shortest jump anyone makes is to another part of the same city.
+        assert!(
+            online_snap_error(crate::systems::locomotion::FLY_SPEED * motion::FLY_ALT_MAX_FACTOR)
+                < 1_000.0
+        );
+    }
+
+    /// The arrival grows out of a thin column, overshoots once, and finishes at
+    /// exactly the identity — a residue would leave every teleported avatar
+    /// slightly the wrong size for the rest of the run.
+    #[test]
+    fn the_teleport_arrival_settles_on_standing_height() {
+        assert_eq!(teleport_scale(1.0), Vec3::ONE);
+        assert_eq!(teleport_scale(2.0), Vec3::ONE, "and stays there");
+
+        let start = teleport_scale(0.0);
+        assert!(start.x < 0.2 && start.z < 0.2, "starts thin: {start:?}");
+        assert!(start.y > 1.5, "and tall: {start:?}");
+        assert_eq!(start.x, start.z, "round, not flattened: {start:?}");
+
+        // Monotone widening, and a single overshoot in height — several would
+        // read as a wobble rather than as a body settling.
+        let steps: Vec<Vec3> = (0..=40).map(|i| teleport_scale(i as f32 / 40.0)).collect();
+        for w in steps.windows(2) {
+            assert!(w[1].x >= w[0].x - 1e-5, "width went backwards: {w:?}");
+        }
+        // Height comes *down* to standing from the column, overshooting it once
+        // on the way — so it approaches 1.0 from above and never dips under, which
+        // is a body settling rather than a knee buckling.
+        assert!(
+            steps.iter().any(|s| s.y > 1.0 + 0.05),
+            "the overshoot is too small to see"
+        );
+        assert!(
+            steps.iter().all(|s| s.y >= 1.0 - 1e-4),
+            "the arrival must not squash below standing height"
+        );
+        assert!(
+            steps.iter().all(|s| s.y < 3.0 && s.x > 0.0),
+            "nothing absurd along the way"
+        );
+        // The last stretch is monotone down onto 1.0: no second bounce.
+        for w in steps[steps.len() * 3 / 4..].windows(2) {
+            assert!(w[1].y <= w[0].y + 1e-5, "bounced on the way in: {w:?}");
+        }
+    }
+
+    /// **The arrival is applied to the real holder, and taken back off it.**
+    ///
+    /// The pure curve is checked above; this checks the system that carries it,
+    /// because both of the defects this feature actually had were in the
+    /// *plumbing* rather than in the arithmetic, and neither could fail a test on
+    /// `teleport_scale`:
+    ///
+    /// 1. `Local<f32>` starts at zero. With the timer counting *up*, zero meant
+    ///    "just started" and every launch opened on the first frame of an arrival
+    ///    nobody asked for.
+    /// 2. The pose is written only while something is happening, so the frame the
+    ///    arrival *ends* has to write the resting value. Without that the holder
+    ///    keeps the last non-identity scale for the rest of the run — a teleported
+    ///    avatar left permanently a few per cent thin, which nothing would report.
+    #[test]
+    fn a_teleport_scales_the_holder_and_then_restores_it() {
+        // No `TimePlugin`: it drives `Time` off the wall clock, which between two
+        // `app.update()` calls in a test is microseconds — the arrival would still
+        // be on its first frame at the end of the test and every assertion below
+        // would pass or fail for the wrong reason. An inserted `Time` is nobody
+        // else's to overwrite, so the test owns the clock outright.
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .init_resource::<AvatarState>()
+            .add_systems(Update, update_avatar_flight_pose);
+        let holder = app
+            .world_mut()
+            .spawn((SlotMask::ALL, Transform::IDENTITY))
+            .id();
+        app.world_mut().spawn(Avatar).add_child(holder);
+
+        let scale_of = |app: &App| {
+            app.world()
+                .get::<Transform>(holder)
+                .expect("the holder spawned above")
+                .scale
+        };
+        let step = |app: &mut App, secs: f32| {
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(secs));
+            app.update();
+        };
+
+        // Startup: nobody has teleported, so the holder must be left alone.
+        app.update();
+        assert_eq!(
+            scale_of(&app),
+            Vec3::ONE,
+            "an avatar that has not teleported must not play an arrival"
+        );
+
+        // A teleport lands: the body is pinched and tall on the next frame.
+        app.world_mut()
+            .resource_mut::<AvatarState>()
+            .teleport_sequence = 1;
+        step(&mut app, 1.0 / 60.0);
+        let arriving = scale_of(&app);
+        assert!(
+            arriving.x < 0.5 && arriving.y > 1.2,
+            "the arrival should start as a thin column: {arriving:?}"
+        );
+
+        // …and once it is over the holder is back at exactly its spawn identity,
+        // not merely near it.
+        step(&mut app, TELEPORT_ARRIVE_SECS);
+        assert_eq!(
+            scale_of(&app),
+            Vec3::ONE,
+            "the holder must be restored on the frame the arrival ends"
+        );
+        // Still identity a frame later, i.e. it settled rather than passing through.
+        step(&mut app, 1.0 / 60.0);
+        assert_eq!(scale_of(&app), Vec3::ONE);
+    }
+
     /// The flight lean tips the avatar *forward* — head toward its own +Z, feet
     /// back — about the chest, and is the identity when grounded. Checked here
     /// because a pose has no other way to fail loudly: a sign slip would fly the
     /// avatar on its back and only a screenshot would say so.
     #[test]
     fn flight_lean_pitches_forward_about_the_chest() {
-        assert_eq!(flight_pose(0.0), Transform::IDENTITY);
+        assert_eq!(flight_pose(0.0, 1.0), Transform::IDENTITY);
 
-        let pose = flight_pose(FLIGHT_LEAN);
+        let pose = flight_pose(FLIGHT_LEAN, 1.0);
         let pivot = Vec3::Y * FLIGHT_LEAN_PIVOT_Y;
         assert!(
             pose.transform_point(pivot).distance(pivot) < 1e-5,

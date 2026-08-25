@@ -969,7 +969,7 @@ pub fn restore_start_location(
             view = fix.look.is_some(),
             "starting at the launch place"
         );
-        nav.pending_teleport = Some(Teleport::fix(fix));
+        nav.pending_teleport = Some(Teleport::fix(fix).silently());
         return;
     }
 
@@ -993,11 +993,15 @@ pub fn restore_start_location(
         return;
     }
 
+    // Silent: restoring where you were last time is the app putting the world
+    // back, not the avatar going anywhere. Announcing it would whoosh at every
+    // launch.
     nav.pending_teleport = Some(Teleport {
         lat: loc.lat,
         lng: loc.lng,
         altitude: Some(loc.altitude),
         pose: Some(loc.pose.clone()),
+        silent: true,
     });
     tracing::info!(lat = loc.lat, lng = loc.lng, mode = %loc.pose.mode, "restoring last location");
 }

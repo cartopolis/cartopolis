@@ -85,6 +85,10 @@ const LAND_VOLUME_MAX: f32 = 0.4;
 /// kerb is a footstep, not an event.
 const LAND_MIN_IMPACT: f32 = 3.0;
 
+/// How loud an arrival is. Above a footstep — it is an event, and a rare one —
+/// and below the landing thud, which is the loudest thing the avatar does.
+const TELEPORT_VOLUME: f32 = 0.3;
+
 /// Wind is silent at rest and reaches this at full flight speed.
 const WIND_VOLUME_MAX: f32 = 0.18;
 /// How fast the wind volume follows the speed. Slow: wind has mass, and a gust
@@ -102,6 +106,9 @@ pub struct Soundscape {
     steps: [Handle<AudioSource>; 4],
     land: Handle<AudioSource>,
     wind: Handle<AudioSource>,
+    /// The arrival whoosh, played by `announce_teleports` on every jump that did
+    /// not ask to be silent (`geo_nav::Teleport::silent`).
+    teleport: Handle<AudioSource>,
     /// The Settings ▸ Audio sound test. Public because it is played from the
     /// panel rather than from this module's own systems.
     pub test_tone: Handle<AudioSource>,
@@ -129,6 +136,7 @@ pub fn setup_soundscape(mut commands: Commands, mut sources: ResMut<Assets<Audio
         ],
         land: source(synth::landing()),
         wind: source(synth::wind()),
+        teleport: source(synth::teleport()),
         test_tone: source(synth::test_tone()),
     };
     // The wind runs from startup at zero volume rather than being spawned when
@@ -232,6 +240,38 @@ pub fn play_avatar_sounds(
             mode: PlaybackMode::Despawn,
             volume: Volume::Linear(loudness * level_wobble * gain),
             speed: speed_wobble,
+            ..default()
+        },
+    ));
+}
+
+#[cfg(feature = "audio")]
+/// Play the arrival whoosh each time the avatar is placed somewhere rather than
+/// having travelled there.
+///
+/// Its own system rather than a branch in [`play_avatar_sounds`], for two
+/// reasons. That one returns early outside the follow camera, and a teleport is
+/// worth hearing in every mode — in Fly and Earth it is the only confirmation
+/// that the jump landed at all, since there is no avatar on screen to watch
+/// arrive. And it reads the sequence counter rather than a one-frame flag
+/// (`AvatarState::teleport_sequence`), so it cannot race the pose system for the
+/// same edge.
+pub fn announce_teleports(
+    mut commands: Commands,
+    avatar_state: Res<AvatarState>,
+    soundscape: Res<Soundscape>,
+    prefs: Res<AppPrefs>,
+    mut last: Local<u32>,
+) {
+    if *last == avatar_state.teleport_sequence {
+        return;
+    }
+    *last = avatar_state.teleport_sequence;
+    commands.spawn((
+        AudioPlayer(soundscape.teleport.clone()),
+        PlaybackSettings {
+            mode: PlaybackMode::Despawn,
+            volume: Volume::Linear(TELEPORT_VOLUME * prefs.effects_gain()),
             ..default()
         },
     ));
@@ -486,6 +526,60 @@ pub mod synth {
         wav(&samples)
     }
 
+    /// A teleport arrival, matched to the arrival pose
+    /// (`avatar::TELEPORT_ARRIVE_SECS`): a rising whoosh that resolves onto a
+    /// pitched note as the body settles.
+    ///
+    /// Two layers with opposite envelopes, which is what makes it read as an
+    /// *arrival* rather than as a departure. The **noise** is band-passed by a
+    /// resonant filter whose centre frequency sweeps upward and which fades out —
+    /// air rushing in to fill the space. The **tone** is a pair of sines a fifth
+    /// apart that fade *in* under it and decay away, so the ear hears the noise
+    /// hand over to a pitch: something arrived and is now standing there.
+    ///
+    /// Peak is checked by the suite (`a_teleport_keeps_its_headroom`) for the
+    /// reason every clip here is: clipping in the asset is distortion no volume
+    /// slider can undo, and a resonant filter is the easiest way in this file to
+    /// manufacture a peak far above the sum of its parts.
+    pub fn teleport() -> Vec<u8> {
+        const SECS: f32 = 0.45;
+        let len = (SAMPLE_RATE as f32 * SECS) as usize;
+        let mut seed = 0x2545_F491;
+        // A two-pole state-variable band-pass, swept. One pole would not be
+        // selective enough to be heard as a sweep at all — it would just be noise
+        // getting quieter.
+        let (mut low, mut band) = (0.0_f32, 0.0_f32);
+        let samples: Vec<i16> = (0..len)
+            .map(|i| {
+                let t = i as f32 / len as f32;
+                let secs = i as f32 / SAMPLE_RATE as f32;
+
+                // 300 Hz → ~3.4 kHz over the clip, quadratically so most of the
+                // travel is early, where the noise is loudest.
+                let centre = 300.0 + 3_100.0 * t * t;
+                let f = (2.0 * std::f32::consts::PI * centre / SAMPLE_RATE as f32).min(1.2);
+                let q = 0.35; // damping; lower rings harder
+                let input = noise(&mut seed);
+                low += f * band;
+                band += f * (input - low - q * band);
+                // Fade in over the first 8 ms so the clip does not start on a
+                // discontinuity, then away as the tone takes over.
+                let rush_env = (t / 0.02).min(1.0) * (-4.5 * t).exp();
+                let rush = band * 0.30 * rush_env;
+
+                // …and the note that lands under it. A fifth, the same interval
+                // the sound test uses, an octave down so it sits below the rush.
+                let tone_env = (t * 3.0).min(1.0) * (-5.0 * (t - 0.25).max(0.0)).exp();
+                let tone = ((secs * 440.0 * std::f32::consts::TAU).sin() * 0.16
+                    + (secs * 659.25 * std::f32::consts::TAU).sin() * 0.10)
+                    * tone_env;
+
+                to_i16(rush + tone)
+            })
+            .collect();
+        wav(&samples)
+    }
+
     /// The Audio settings tab's sound test: a short two-tone chime.
     ///
     /// Deliberately **not** a sine sweep or a single sine. The question the test
@@ -696,6 +790,7 @@ mod tests {
             ("footstep-high", synth::footstep(1.18)),
             ("landing", synth::landing()),
             ("wind", synth::wind()),
+            ("teleport", synth::teleport()),
             ("test tone", synth::test_tone()),
         ] {
             let s = samples_of(&bytes);
@@ -707,6 +802,37 @@ mod tests {
             let clamped = s.iter().filter(|v| v.abs() > 0.999).count();
             assert_eq!(clamped, 0, "{name} has {clamped} clipped samples");
         }
+    }
+
+    /// The arrival is a *rise*: the noise layer's brightness climbs across the
+    /// clip and the pitched layer arrives underneath it. Asserted on the halves
+    /// rather than on the sound, because "whoosh, then landed" is a relation
+    /// between two moments and either constant can be tuned alone.
+    #[test]
+    fn a_teleport_rises_and_then_lands_on_a_note() {
+        let s = samples_of(&synth::teleport());
+        assert!(!s.is_empty(), "a teleport that synthesised to nothing");
+        let half = s.len() / 2;
+        let brightness = |w: &[f32]| {
+            let crossings = (1..w.len())
+                .filter(|&i| (w[i] >= 0.0) != (w[i - 1] >= 0.0))
+                .count();
+            crossings as f32 / (w.len() as f32 / SAMPLE_RATE as f32) / 2.0
+        };
+        assert!(
+            brightness(&s[..half]) < brightness(&s[half..]),
+            "the sweep has to go up: {:.0} Hz then {:.0} Hz",
+            brightness(&s[..half]),
+            brightness(&s[half..])
+        );
+        // It must still be audible at the end — the tone is what says "arrived",
+        // and an envelope that decays too early leaves only the rush.
+        let tail = s[s.len() * 3 / 4..]
+            .iter()
+            .fold(0.0_f32, |a, b| a.max(b.abs()));
+        assert!(tail > 0.02, "the arrival fades out too early: {tail:.3}");
+        // …and it must not start on a discontinuity, which is an audible click.
+        assert!(s[0].abs() < 0.02, "opens on a step of {:.3}", s[0]);
     }
 
     /// A footstep must be *dark*. The zero-crossing rate stands in for a

@@ -18,6 +18,14 @@ struct AvatarSim {
     /// `fly_vertical` and the client's vertical keys mean anything. An avatar that isn't flying
     /// falls — see [`SimWorld::step`].
     flying: bool,
+    /// Climb/descent the client is *asking* for (m/s): ±[`motion::FLY_VERTICAL_SPEED`]
+    /// or zero, written straight from the intent's `fly_up`/`fly_down` bits.
+    fly_vertical_target: f32,
+    /// What the thrust has actually built to, ramped toward the target by
+    /// [`motion::step_fly_vertical`] in [`SimWorld::step`]. The wire carries two
+    /// booleans, so this ramp is the one part of the vertical model the authority
+    /// has to reproduce rather than receive — the client predicts it with the same
+    /// function.
     fly_vertical: f32,
     /// Vertical velocity (m/s, up positive) for the jump/fall arc. Flight ignores
     /// it and holds altitude; everything else integrates it under
@@ -144,6 +152,7 @@ impl SimWorld {
                 yaw: std::f32::consts::PI,
                 velocity: Vec3::ZERO,
                 flying: false,
+                fly_vertical_target: 0.0,
                 fly_vertical: 0.0,
                 vertical_velocity: 0.0,
                 jump_requested: false,
@@ -274,7 +283,7 @@ impl SimWorld {
         // Vertical thrust only means something in flight: a walker holding the
         // climb key used to levitate and — nothing pulling it back down — stay up.
         av.flying = flying;
-        av.fly_vertical = if !flying {
+        av.fly_vertical_target = if !flying {
             0.0
         } else if fly_up {
             motion::FLY_VERTICAL_SPEED
@@ -283,6 +292,13 @@ impl SimWorld {
         } else {
             0.0
         };
+        // Leaving flight drops the thrust outright rather than ramping it down:
+        // an avatar that isn't flying is on the gravity arc, and coasting upward
+        // out of it for half a second is the levitation this branch exists to
+        // prevent.
+        if !flying {
+            av.fly_vertical = 0.0;
+        }
         // Latch rather than assign: intents arrive faster than ticks and are rate
         // limited on top (`net::MIN_INTENT_INTERVAL`), so a jump that shared a tick
         // with a later "not jumping" intent would be silently dropped. `step`
@@ -323,6 +339,13 @@ impl SimWorld {
             // is `motion::step_fall` — the same function the client predicts with
             // and the `--offline` path integrates, so the three cannot disagree.
             if av.flying {
+                // Ramp the thrust rather than assigning it: a key press used to be
+                // a step in the world velocity, which at altitude (where `lift`
+                // multiplies it) is a discontinuity of hundreds of metres per
+                // second. `motion::step_fly_vertical` is the shared definition, so
+                // the client predicts the same curve.
+                av.fly_vertical =
+                    motion::step_fly_vertical(av.fly_vertical, av.fly_vertical_target, dt);
                 av.position.y += av.fly_vertical * lift * dt;
                 av.vertical_velocity = 0.0;
                 av.jump_requested = false;

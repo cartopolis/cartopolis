@@ -1,7 +1,7 @@
 ---
 topic: avatar-locomotion
 triggers: [avatar animation, fly animation, flying, jump, clip index, Quaternius, UAL, rig, facing, strafe, turn, WASD, gait, walk clip]
-updated: 2026-08-09
+updated: 2026-08-25
 ---
 
 # The avatar clip set has no flight, and no library can lend it one
@@ -33,6 +33,10 @@ So flight is posed, not animated: `avatar::update_avatar_flight_pose` pitches th
 model holders forward about chest height while the avatar is flying *and* moving,
 and stands them up again to hover or land. It plays `Idle` throughout. This is
 also why hovering and gliding look different at all — the clip is the same one.
+
+The teleport arrival added 2026-08-25 is posed by the same system for a related
+reason — see [flight-at-speed.md](flight-at-speed.md), which also has why fast
+flight juddered and why none of the causes were in the flight controls.
 
 **The jump added in 2026-08 is posed for the same reason**, at a much smaller
 angle (`JUMP_TUCK`, ~11°) and driven by the *signed* vertical velocity, so the

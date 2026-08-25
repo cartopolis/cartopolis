@@ -1114,6 +1114,21 @@ pub struct AvatarState {
     /// own `apply_intent` scaling. `smooth_online_avatar_display` integrates this
     /// at frame rate so movement is smooth between 20 Hz snapshots.
     pub predicted_velocity: Vec3,
+    /// The velocity the avatar is *actually* travelling at (m/s, world axes),
+    /// written by whichever path owns movement — online it is
+    /// [`Self::predicted_velocity`], offline it is what the transform moved by.
+    ///
+    /// It exists because the follow camera needs it. A first-order lerp trails a
+    /// moving target by `speed / rate` metres, which at a walk is a hand's width
+    /// and in flight at altitude is tens of metres — past the 25 m the boom can
+    /// even reach, so the avatar left the frame and every change of pace slung it
+    /// about. `free_camera` leads the rig by exactly that much instead.
+    pub velocity: Vec3,
+    /// Flight's vertical thrust (m/s, up positive), ramped toward what the climb
+    /// keys ask for by [`cartopolis_core::motion::step_fly_vertical`]. Predicted
+    /// online, authoritative offline — the same relationship
+    /// [`Self::vertical_velocity`] has to the gravity arc.
+    pub fly_vertical: f32,
     /// Online prediction: seconds since the last authoritative pose was applied.
     /// The reconcile target is extrapolated forward by this much, so the 20 Hz
     /// snapshot staircase doesn't drag the predicted display backwards on every
@@ -1173,6 +1188,15 @@ pub struct AvatarState {
     /// agrees (the sim's echo), or by timeout — the message can be lost, and an
     /// avatar that ignores authority forever is worse than one that flickers.
     pub teleport_hold: Option<web_time::Instant>,
+    /// Bumped by `geo_nav::apply_teleport` every time the avatar is *placed*
+    /// somewhere rather than having travelled there.
+    ///
+    /// A counter rather than a one-frame boolean, for the reason
+    /// [`cartopolis_core::EmoteState`] carries one: two jumps to the same place
+    /// are two events, and the consumers (the arrival sound, the arrival pose)
+    /// run in different phases of the schedule, so a flag cleared by the first
+    /// would be invisible to the second. Each keeps the last value it acted on.
+    pub teleport_sequence: u32,
 }
 
 impl Default for AvatarState {
@@ -1183,6 +1207,8 @@ impl Default for AvatarState {
             display_position: p,
             terrain_lift: 0.0,
             predicted_velocity: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            fly_vertical: 0.0,
             snapshot_age: 0.0,
             facing_yaw: 0.0,
             sim_facing_yaw: 0.0,
@@ -1197,6 +1223,7 @@ impl Default for AvatarState {
             pending_emote: None,
             landing_impact: 0.0,
             teleport_hold: None,
+            teleport_sequence: 0,
         }
     }
 }

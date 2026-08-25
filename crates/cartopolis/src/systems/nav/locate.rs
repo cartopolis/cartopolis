@@ -309,7 +309,9 @@ pub fn track_device_pose(
                 lng = fix.lng,
                 "device fix is far from the anchored world — teleporting"
             );
-            nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None));
+            // Silent: a device fix past `GPS_TELEPORT_M` is the world catching up
+            // with where the phone already is, and it can fire repeatedly.
+            nav.pending_teleport = Some(Teleport::geo(fix.lat, fix.lng, None).silently());
             // `apply_teleport` brings the camera in every mode and re-anchors the
             // world under it, so the jump is paid for and the frame `last_place`
             // was measured in no longer exists.

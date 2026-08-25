@@ -269,6 +269,29 @@ const FOLLOW_FOV_SPRINT_GAIN: f32 = 0.12;
 /// The FOV lags the speed deliberately — arriving with the acceleration would make
 /// it read as a lens fault rather than as effort.
 const FOLLOW_FOV_RATE: f32 = 4.0;
+
+/// How fast the follow rig eases onto its target (1/s).
+///
+/// Extracted from the literal it used to be because [`FOLLOW_LEAD_MAX`] has to
+/// divide by exactly this number: a first-order lerp at rate `k` trails a target
+/// moving at `v` by `v / k` metres for as long as the motion lasts, and leading
+/// the target by that much is what cancels it.
+const FOLLOW_RATE: f32 = 12.0;
+/// Cap on that lead (metres).
+///
+/// Without a lead the rig trails the avatar by `speed / FOLLOW_RATE`: a hand's
+/// width at a walk, ~3 m at the flight cap, and — because flight rides altitude
+/// (`motion::fly_altitude_factor`) — over 50 m at the top of the ramp. The boom
+/// itself only reaches [`AVATAR_CAM_MAX`], so past a few hundred metres per
+/// second the avatar was not merely trailing, it was off the back of the frame,
+/// and every change of pace swept it across the screen. Feeding the velocity
+/// forward holds it exactly where the boom puts it at any speed.
+///
+/// The cap is for the *discontinuities*: a teleport, a reconciliation snap or the
+/// frame a session ends can leave a velocity that never happened, and an
+/// uncapped lead would fling the rig a kilometre. Well past the lead any real
+/// flight asks for.
+const FOLLOW_LEAD_MAX: f32 = 80.0;
 /// Default follow distance — a comfortable third-person framing of the avatar.
 pub const AVATAR_CAM_DEFAULT: f32 = 6.0;
 /// Wheel-notch zoom rate (fraction of the target distance per notch);
@@ -1473,7 +1496,22 @@ pub fn camera_controls(
 
             let camera_offset = eye + boom * rig.smoothing.boom - Vec3::Y * rig.smoothing.dip;
 
-            let mut target_position = avatar_pos + camera_offset;
+            // Lead the rig by exactly the lag its own ease will introduce
+            // (`FOLLOW_LEAD_MAX`), so the avatar sits where the boom puts it at a
+            // walk and at 600 m/s alike. Only the *eye* leads — `look_world`
+            // below still aims at the avatar's real position, so the framing
+            // moves and the subject does not.
+            // Driver mode is exempt, as it is from the speed-coupled FOV: its rig
+            // is written from the map orientation every frame and it already aims
+            // ahead of the vehicle by a deliberate amount
+            // (`CameraState::drive_lookahead`). Leading it as well would compose
+            // two framings nobody chose together.
+            let lead = if locked {
+                Vec3::ZERO
+            } else {
+                (avatar_state.velocity / FOLLOW_RATE).clamp_length_max(FOLLOW_LEAD_MAX)
+            };
+            let mut target_position = avatar_pos + camera_offset + lead;
 
             // Prevent camera from going below ground
             let ground_height = get_ground_height(target_position, &region_mesh_query);
@@ -1497,7 +1535,7 @@ pub fn camera_controls(
             let cam_world = cell_origin(&camera_cell) + camera_transform.translation.as_dvec3();
             let new_world = if camera_state.avatar_initialized {
                 // Framerate-independent follow smoothing, in world space.
-                let cam_alpha = 1.0 - (-12.0_f32 * delta_time).exp();
+                let cam_alpha = 1.0 - (-FOLLOW_RATE * delta_time).exp();
                 let w = cam_world.lerp(target_world, cam_alpha as f64);
                 // Snap once essentially settled, else an asymptotic lerp keeps the
                 // camera transform changing by a hair while standing still — which

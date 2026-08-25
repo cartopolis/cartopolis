@@ -1336,14 +1336,27 @@ pub fn send_network_intent(
     let vy = if avatar_state.is_flying {
         avatar_state.vertical_velocity = 0.0;
         avatar_state.grounded = false;
-        if fly_up {
-            motion::FLY_VERTICAL_SPEED * lift
+        // The wire carries two booleans, so the *ramp* is the one part of the
+        // vertical model the client has to reproduce rather than receive. Same
+        // function the sim runs in `step` and the offline path integrates, which
+        // is what keeps a climb from rubber-banding.
+        let target = if fly_up {
+            motion::FLY_VERTICAL_SPEED
         } else if fly_down {
-            -motion::FLY_VERTICAL_SPEED * lift
+            -motion::FLY_VERTICAL_SPEED
         } else {
             0.0
-        }
+        };
+        avatar_state.fly_vertical = motion::step_fly_vertical(
+            avatar_state.fly_vertical,
+            target,
+            time.delta_secs().max(1e-4),
+        );
+        avatar_state.fly_vertical * lift
     } else {
+        // Leaving flight drops the thrust outright, as `SimWorld::apply_intent`
+        // does: an avatar that isn't flying is on the gravity arc.
+        avatar_state.fly_vertical = 0.0;
         // Mirror the sim's grant rule: only a grounded avatar jumps.
         if jump {
             avatar_state.vertical_velocity = motion::JUMP_SPEED;
