@@ -1634,7 +1634,36 @@ const PERMISSION_WAIT: Duration = Duration::from_secs(120);
 /// this morning is not "where the device is"; it is where it was parked, and an
 /// arrow placed there is worse than an arrow that has not appeared yet. Later fixes
 /// need only be newer than the last published one.
-const FIRST_FIX_MAX_AGE: Duration = Duration::from_secs(60);
+///
+/// Ten minutes, not the one it was. A cold GNSS acquisition is tens of seconds, and
+/// refusing everything older than a minute meant a phone that had a perfectly
+/// serviceable two-minute-old fused fix in hand still showed "Waiting for GPS…" for
+/// most of a minute after Start — the single loudest difference between this and
+/// the reference apps. What makes the wider window safe is that staleness is no
+/// longer hidden: [`stale_accuracy_m`] folds the fix's age into its reported
+/// accuracy, so a two-minute-old position arrives as a *poor* one and every
+/// consumer that already reads `accuracy_m` — the GPS chip, the reroute's
+/// `is_uncertain` guard — treats it as the guess it is.
+const FIRST_FIX_MAX_AGE: Duration = Duration::from_secs(600);
+
+/// How fast we assume a device might have moved since a fix was taken, in metres
+/// per second, when inflating a stale fix's accuracy.
+///
+/// 13 m/s is a shade under 50 km/h: an urban drive. It deliberately over-states a
+/// pedestrian and under-states a motorway, because the number's job is to make a
+/// stale fix *read* as uncertain rather than to bound the error — the ceiling on
+/// how wrong it can be is [`FIRST_FIX_MAX_AGE`], not this.
+const STALE_DRIFT_MS: f64 = 13.0;
+
+/// A fix's reported accuracy, widened by how long ago it was taken.
+///
+/// The alternative — publishing an old position at its original accuracy — is the
+/// one thing a navigation display must not do: it is not wrong about where you
+/// are, it is *confident* about it.
+#[must_use]
+fn stale_accuracy_m(accuracy_m: f64, age_s: f64) -> f64 {
+    accuracy_m + age_s.max(0.0) * STALE_DRIFT_MS
+}
 /// Requested update period, milliseconds. This is a *hint* to the provider and the
 /// framework is free to be slower.
 const UPDATE_INTERVAL_MS: i64 = 1000;
@@ -1967,21 +1996,35 @@ fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
     }
     tracing::info!(providers = ?usable, "android location providers");
 
-    // Request updates on the best one only. Every extra registration is another
-    // radio kept warm for a fix we are already getting; `fused` in particular
-    // already blends GNSS, wifi and cell.
-    let request_code = NEXT_REQUEST_CODE.fetch_add(1, Ordering::Relaxed);
-    let pending = match request_updates(&mut env, &activity, &manager, usable[0], request_code) {
-        Ok(pi) => Some(pi),
-        Err(Fail(msg)) => {
-            // Not fatal. Without it we are reduced to whatever fix some other app
-            // on the phone happens to produce — which is a genuinely worse but
-            // still working provider, and much better than no driver mode at all.
-            clear_pending(&env);
-            tracing::warn!(error = %msg, "requestLocationUpdates failed — falling back to polling the cached fix only");
-            None
+    // **Register on every usable provider, not just the best one.** This used to
+    // take `usable[0]` alone — `fused`, on the argument that it already blends
+    // GNSS, wifi and cell and that a second registration is a second radio kept
+    // warm. True, and it costs the thing driver mode is judged on: the fused
+    // provider decides for itself when to spin GNSS up, and asked for a 1 Hz
+    // stream it will happily answer from the network for the first half minute.
+    // Naming `gps` explicitly starts the acquisition at the moment the user
+    // pressed Start rather than whenever the blend gets round to it. The radios go
+    // straight back down when the last `LocationWatch` drops.
+    let mut pending: Vec<GlobalRef> = Vec::new();
+    for provider in &usable {
+        let request_code = NEXT_REQUEST_CODE.fetch_add(1, Ordering::Relaxed);
+        match request_updates(&mut env, &activity, &manager, provider, request_code) {
+            Ok(pi) => pending.push(pi),
+            Err(Fail(msg)) => {
+                // Not fatal. Without any registration we are reduced to whatever
+                // fix some other app on the phone happens to produce — a genuinely
+                // worse but still working provider, and much better than no driver
+                // mode at all.
+                clear_pending(&env);
+                tracing::warn!(provider, error = %msg, "requestLocationUpdates failed for this provider");
+            }
         }
-    };
+    }
+    if pending.is_empty() {
+        tracing::warn!(
+            "no location registration succeeded — falling back to polling the cached fix only"
+        );
+    }
 
     // We *poll* every usable provider, not just the one we requested. A cold GNSS
     // start is tens of seconds while `network` usually has something within two, so
@@ -2028,6 +2071,9 @@ fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
             let age_ns = now.saturating_sub(reading.nanos).max(0) as u128;
             let fresh_enough = published || age_ns < FIRST_FIX_MAX_AGE.as_nanos();
             if reading.nanos > last_nanos && fresh_enough {
+                let mut reading = reading;
+                reading.fix.accuracy_m =
+                    stale_accuracy_m(reading.fix.accuracy_m, (age_ns as f64) / 1_000_000_000.0);
                 if !published {
                     // The one line that separates "the receiver is still cold"
                     // from "the cache our poll reads is per-client after all",
@@ -2050,11 +2096,11 @@ fn run_location(slot: &Slot, cancel: &AtomicBool) -> Result<(), String> {
         }
     }
 
-    if let Some(pending) = pending {
+    for pending in &pending {
         // Releasing the radio is the whole reason a watch is a subscription rather
         // than a global. Best-effort: the thread is on its way out and there is
         // nobody left to report to.
-        if let Err(Fail(msg)) = remove_updates(&mut env, &manager, &pending) {
+        if let Err(Fail(msg)) = remove_updates(&mut env, &manager, pending) {
             clear_pending(&env);
             tracing::warn!(error = %msg, "removeUpdates failed");
         }
