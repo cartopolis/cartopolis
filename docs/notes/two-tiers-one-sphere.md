@@ -33,11 +33,8 @@ it the detailed flat-tile city view fully covers the sky-facing hemisphere",
 which is true at 2 km and false by 10.
 
 Two things made it worse than the geometry alone. The skirt renders *brown*, not
-paper: Bevy's atmosphere applies transmittance past its 32 km
-`aerial_view_lut_max_distance` while clamping the in-scattering, so distant
-ground is dimmed without the airlight that should replace it (the same effect
-`free_camera::fog_saturation_distance` documents). And the horizon-haze shell
-that exists to cover exactly that band **turns itself off above 5 km** —
+paper — see the aerial-perspective section below. And the horizon-haze shell that
+exists to cover exactly that band **turns itself off above 5 km**:
 `fog_altitude_factor` smoothsteps to zero by `FOG_FADE_HIGH` = 5 km, so `peak`
 is 0 and `sky.rs` hides the shell. The cover disappears precisely where the
 defect appears.
@@ -94,6 +91,38 @@ edge, 1,764 m at the skirt's 150 km rim.
   `map_stream::clipmap_reach_m` is kept but never split, because the clipmap is
   opaque and paints it at a zoom the globe cannot reach.
 
+## Aerial perspective past 32 km needs the raymarched atmosphere
+
+`render_sky.wgsl` composites a geometry pixel as
+`scene x transmittance(t) + inscattering(t)`. In `LookupTexture` mode the
+transmittance uses the true distance while the in-scattering is clamped at
+`aerial_view_lut_max_distance` (32 km), so ground past that is extincted without
+the airlight that should replace it — and since blue scatters out first, what
+remains is red. That is what made the old ground skirt brown, and once the globe
+carries the view to a 391 km horizon it is 300 km of real map with a magenta
+cast.
+
+`Raymarched` takes both terms from one integral over the true distance with no
+clamp, so the switch moved from `GLOBE_SHOW_ALT` to `GLOBE_DRAW_ALT`. This is a
+correctness fix, not a quality setting: the far ground now washes toward the sky
+the way aerial perspective does.
+
+Raising `aerial_view_lut_max_distance` instead was rejected. It stretches the
+same 32 slices over a longer range, so buying the horizon costs the near field
+its accuracy — an earlier session recorded it as "does not work", which is the
+same finding seen from the near end.
+
+Two things this does *not* reach. A handset that fails `space_raymarch` keeps
+`LookupTexture` and the magenta with it, which is what it renders today anyway;
+and the other handset path (no `FLOAT32_FILTERABLE`, so `SkyMode::Dome`) has no
+Bevy atmosphere at all and never had the artefact — which is how the cause was
+isolated, since the same viewpoint captured on the dome path was already clean.
+
+Below `GLOBE_DRAW_ALT` nothing changed, and the step at the threshold is masked
+because `DistanceFog` is still at ~46 % strength at 3 km. That fog is the
+dominant haze at low altitude and it was tuned against a *clamped* atmosphere;
+if it is ever revisited, it is now compounding with a correct one.
+
 ## Everything that stands between the ground and the far plane had to move
 
 The far plane, the sky-dome shell and the star/moon shells were all sized against
@@ -115,9 +144,6 @@ sawtooth: the tile grid, clipped one tile at a time.
 
 ## Still open
 
-- The haze shell and `DistanceFog` remain switched off above 5 km
-  (`FOG_FADE_HIGH`). With the globe drawn there is ground to fade now, and no
-  aerial perspective on it below the space tier's atmosphere ramp.
 - The near field — buildings, roads, trees, grass, water, street labels, the
   avatar — is still flat. Everything it covers is within ~3 km of the anchor,
   where the drop is under a metre, so this reads as correct; it is an
