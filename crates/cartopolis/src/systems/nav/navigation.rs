@@ -2252,13 +2252,20 @@ fn frame_route(route: &RouteState) -> Option<Teleport> {
     // Degrees → metres, with longitude foreshortened by the latitude.
     let span_m = ((max_lat - min_lat) * 111_320.0)
         .max((max_lng - min_lng) * 111_320.0 * mid_lat.to_radians().cos());
-    Some(Teleport::geo(
-        mid_lat,
-        (min_lng + max_lng) / 2.0,
-        // A ~60° vertical field of view frames a span from roughly its own length
-        // away; the margin keeps the endpoints off the screen edge.
-        Some((span_m * 0.9).clamp(200.0, FRAME_MAX_ALT)),
-    ))
+    Some(
+        Teleport::geo(
+            mid_lat,
+            (min_lng + max_lng) / 2.0,
+            // A ~60° vertical field of view frames a span from roughly its own
+            // length away; the margin keeps the endpoints off the screen edge.
+            Some((span_m * 0.9).clamp(200.0, FRAME_MAX_ALT)),
+        )
+        // Silent (`Teleport::silent`): this is the camera framing what was just
+        // solved, not somebody choosing to go somewhere — which is the same
+        // reason the caller skips it in Follow. It also only ever runs in the two
+        // modes where there is no avatar on screen to watch arrive.
+        .silently(),
+    )
 }
 
 #[cfg(test)]

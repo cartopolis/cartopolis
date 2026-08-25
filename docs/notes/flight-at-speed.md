@@ -137,5 +137,13 @@ been redrawn around a figure that never moved.
   sound fired when it was *queued* would play over an empty map minutes early.
 - **The default is to announce.** `Teleport::silent` is set at the sites where a
   whoosh would be a lie about who acted: the startup location restore, a scripted
-  `--shot` capture, the globe-descent re-anchor, and the device-fix jumps in
-  `locate`/`driver`, which fire whenever the GPS reports a big enough step.
+  `--shot` capture, the globe-descent re-anchor, the device-fix jumps in
+  `locate`/`driver` (which fire whenever the GPS reports a big enough step), and
+  `navigation::frame_route`, the autofit that frames a route the moment it
+  solves. That last one is the test of the rule: it is a *camera* move, which is
+  why its own caller already refuses to run it in Follow.
+
+  Getting the default the other way round would be worse than it looks. An
+  announce-only-where-asked rule fails silently — a new jump site simply never
+  makes a sound, and nobody files that. Announce-by-default fails loudly, at the
+  one place a reviewer is looking.
