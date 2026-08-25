@@ -584,16 +584,22 @@ pub struct CameraPose {
     pub orbit_pitch: f32,
 }
 
+/// The persisted name of a camera mode — the write half of the `match` in
+/// [`CameraPose::apply`], kept beside it so the two cannot drift.
+#[must_use]
+pub fn mode_name(mode: CameraMode) -> &'static str {
+    match mode {
+        CameraMode::Free => "free",
+        CameraMode::Avatar => "avatar",
+        CameraMode::Orbit => "earth",
+    }
+}
+
 impl CameraPose {
     /// Capture the current camera orientation.
     pub fn capture(cs: &CameraState) -> Self {
         Self {
-            mode: match cs.mode {
-                CameraMode::Free => "free",
-                CameraMode::Avatar => "avatar",
-                CameraMode::Orbit => "earth",
-            }
-            .to_string(),
+            mode: mode_name(cs.mode).to_string(),
             free_rotation: [cs.free_camera_rotation.x, cs.free_camera_rotation.y],
             azimuth: cs.azimuth,
             pitch: cs.pitch,
