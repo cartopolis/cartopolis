@@ -2223,6 +2223,82 @@ mod tests {
         }
     }
 
+    /// **The arrival is applied to the real holder, and taken back off it.**
+    ///
+    /// The pure curve is checked above; this checks the system that carries it,
+    /// because both of the defects this feature actually had were in the
+    /// *plumbing* rather than in the arithmetic, and neither could fail a test on
+    /// `teleport_scale`:
+    ///
+    /// 1. `Local<f32>` starts at zero. With the timer counting *up*, zero meant
+    ///    "just started" and every launch opened on the first frame of an arrival
+    ///    nobody asked for.
+    /// 2. The pose is written only while something is happening, so the frame the
+    ///    arrival *ends* has to write the resting value. Without that the holder
+    ///    keeps the last non-identity scale for the rest of the run — a teleported
+    ///    avatar left permanently a few per cent thin, which nothing would report.
+    #[test]
+    fn a_teleport_scales_the_holder_and_then_restores_it() {
+        // No `TimePlugin`: it drives `Time` off the wall clock, which between two
+        // `app.update()` calls in a test is microseconds — the arrival would still
+        // be on its first frame at the end of the test and every assertion below
+        // would pass or fail for the wrong reason. An inserted `Time` is nobody
+        // else's to overwrite, so the test owns the clock outright.
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .init_resource::<AvatarState>()
+            .add_systems(Update, update_avatar_flight_pose);
+        let holder = app
+            .world_mut()
+            .spawn((SlotMask::ALL, Transform::IDENTITY))
+            .id();
+        app.world_mut().spawn(Avatar).add_child(holder);
+
+        let scale_of = |app: &App| {
+            app.world()
+                .get::<Transform>(holder)
+                .expect("the holder spawned above")
+                .scale
+        };
+        let step = |app: &mut App, secs: f32| {
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(secs));
+            app.update();
+        };
+
+        // Startup: nobody has teleported, so the holder must be left alone.
+        app.update();
+        assert_eq!(
+            scale_of(&app),
+            Vec3::ONE,
+            "an avatar that has not teleported must not play an arrival"
+        );
+
+        // A teleport lands: the body is pinched and tall on the next frame.
+        app.world_mut()
+            .resource_mut::<AvatarState>()
+            .teleport_sequence = 1;
+        step(&mut app, 1.0 / 60.0);
+        let arriving = scale_of(&app);
+        assert!(
+            arriving.x < 0.5 && arriving.y > 1.2,
+            "the arrival should start as a thin column: {arriving:?}"
+        );
+
+        // …and once it is over the holder is back at exactly its spawn identity,
+        // not merely near it.
+        step(&mut app, TELEPORT_ARRIVE_SECS);
+        assert_eq!(
+            scale_of(&app),
+            Vec3::ONE,
+            "the holder must be restored on the frame the arrival ends"
+        );
+        // Still identity a frame later, i.e. it settled rather than passing through.
+        step(&mut app, 1.0 / 60.0);
+        assert_eq!(scale_of(&app), Vec3::ONE);
+    }
+
     /// The flight lean tips the avatar *forward* — head toward its own +Z, feet
     /// back — about the chest, and is the identity when grounded. Checked here
     /// because a pose has no other way to fail loudly: a sign slip would fly the
