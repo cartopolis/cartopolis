@@ -143,7 +143,9 @@ use crate::components::{Avatar, FreeCamera};
 use crate::platform::location::{GpsFix, LocationWatch};
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor};
 use crate::systems::egui_manager::EguiManager;
-use crate::systems::geo_nav::{lat_lng_to_world, world_to_lat_lng, GeoNavState, Teleport};
+use crate::systems::geo_nav::{
+    lat_lng_to_world, world_to_lat_lng, CameraPose, GeoNavState, Teleport,
+};
 use crate::systems::icons;
 use crate::systems::navigation::RouteState;
 use crate::systems::route_ahead::{AheadKind, AheadStatus, RouteAhead};
@@ -700,6 +702,29 @@ impl DriverState {
     /// Ask for driver mode without a route yet: it starts the moment one solves.
     pub fn arm(&mut self) {
         self.armed = true;
+    }
+
+    /// The camera pose as it was *before* driver mode took the rig, or `None`
+    /// when driver mode is not holding it.
+    ///
+    /// What this is for: `user_store::remember_location` autosaves the camera
+    /// every five seconds, and while driving the live `CameraState` is the chase
+    /// rig — Follow, a fixed distance, a computed azimuth. Save that and the next
+    /// launch comes back in Follow behind an avatar, having quietly forgotten
+    /// that the user was looking at the world in Earth mode when they pressed
+    /// Start. Driver mode already restores this pose on the way out; this makes a
+    /// process that never gets a way out — the phone killing a backgrounded app —
+    /// restore it too. Same principle as `data_layers::sky_prefs`, which likewise
+    /// lets the store see past driver mode's temporary clear sky.
+    #[must_use]
+    pub fn pose_before_drive(&self, live: &CameraState) -> Option<CameraPose> {
+        let save = self.camera_save?;
+        let mut pose = CameraPose::capture(live);
+        pose.mode = crate::systems::geo_nav::mode_name(save.mode).to_string();
+        pose.distance = save.distance;
+        pose.pitch = save.pitch;
+        pose.azimuth = save.azimuth;
+        Some(pose)
     }
 
     /// Leave driver mode. The camera restore lives in `steady_driver_camera`,

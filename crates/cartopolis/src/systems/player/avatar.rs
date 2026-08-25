@@ -528,7 +528,11 @@ pub fn spawn_avatar(
         // phase-locked by `sync_avatar_animations`, so a mixed head/body/legs moves
         // as one. A representative `AvatarAnimations` is kept on the avatar entity so
         // `update_avatar_animation` can read the (shared) clip indices.
-        commands.entity(entity).insert(AvatarModelLoaded);
+        // `try_insert` for the whole of this spawn: the query includes remote
+        // avatars, which `session::teardown` despawns wholesale when a link drops —
+        // and nothing orders the two systems, so the entity can already be queued
+        // for despawn while it is still visible here.
+        commands.entity(entity).try_insert(AvatarModelLoaded);
         let mut entity_anims: Option<AvatarAnimations> = None;
         for h in &holders {
             // Locomotion first, then the emotes in `EMOTE_CLIPS` order, so an
@@ -560,7 +564,7 @@ pub fn spawn_avatar(
             spawn_slot_holder(&mut commands, &asset_server, entity, h.scene, h.mask, anims);
         }
         if let Some(a) = entity_anims {
-            commands.entity(entity).insert(a);
+            commands.entity(entity).try_insert(a);
         }
         // One line per avatar spawn, and it is an instrument rather than chatter:
         // `holders = 0` is precisely the state this commit fixes, and it is

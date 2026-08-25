@@ -463,7 +463,7 @@ pub fn refresh_prim_textures(
             // repeats/etc. (not just the texture) is reflected.
             apply_surface(&mut mat, prim.color, &prim.surface);
         }
-        commands.entity(entity).remove::<NeedsTextureRefresh>();
+        commands.entity(entity).try_remove::<NeedsTextureRefresh>();
     }
 }
 

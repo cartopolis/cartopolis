@@ -395,8 +395,11 @@ fn teardown(
     // The local avatar entity stays — it is spawned at startup and its offline
     // movement path takes over the moment `OnlineSession` is gone. Only the
     // server's own objects go.
+    // `try_despawn`: `network::apply_network_snapshot` retires the same entities
+    // from a snapshot backlog, and nothing orders the two systems, so on the frame
+    // a session drops they can both queue a despawn for one entity.
     for e in regions.iter().chain(prims.iter()).chain(remotes.iter()) {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
 }
 

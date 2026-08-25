@@ -1311,6 +1311,26 @@ fn run_client() {
         .init();
 
     let mut app = App::new();
+    // **A stale entity must not be able to kill the app on a phone.**
+    //
+    // Bevy's fallback handler panics on an `EntityDespawnedError`, and every
+    // `commands.entity(e).insert(..)` in the tree reaches it. That is a *race*,
+    // not a logic error: two systems with no ordering between them both hold a
+    // live view of the same entity, one queues a despawn and the other queues an
+    // insert, and the flush applies them in that order. It killed the Android
+    // build on every app switch — a dropped session tore the server's regions
+    // down while `tile_loader` was queueing this frame's texture onto one of them
+    // (`load_region_tiles`, fixed there too) — and it aborts the process, which on
+    // a handheld reads as "the app closed itself" with the explanation only in
+    // `logcat`. The same policy `handle_render_error` follows: a recoverable
+    // failure logs and the app keeps running.
+    //
+    // Debug builds keep the panic, because that is where the race is meant to be
+    // found. `warn` is deliberately not `error`: these are expected on the frame a
+    // session ends, and a red line per frame trains people to ignore the log.
+    if !cfg!(debug_assertions) {
+        app.set_error_handler(bevy::ecs::error::warn);
+    }
     // The scripted capture is configured *before* the app is built: a preset
     // manifest can set the render size, and a windowless run needs that size to
     // stand a `HeadlessSurface` in for the missing `Window`. A bad manifest or

@@ -58,17 +58,41 @@ pub struct GpsFix {
 /// rather than inside it, being 400 lines of JNI — can write into it.
 pub(crate) type Slot = Arc<Mutex<Option<Result<GpsFix, String>>>>;
 
-/// A live subscription to the device's position. Drop it to unsubscribe.
-pub struct LocationWatch {
+/// The one live subscription, and everything that reads it shares it.
+///
+/// **Two owners hand the receiver back and forth, and each handover used to be a
+/// cold start.** `locate::LocateTracking` holds a watch while the ⌖ button is lit
+/// and `driver::DriverState` holds one while driving — and driver mode makes
+/// locate stand down, so pressing Start dropped a receiver that had been warm for
+/// minutes and opened a new one that had to re-check the permission, re-register
+/// with `LocationManager` and wait out another cold GNSS acquisition. That wait is
+/// the first thing a driver sees ("Waiting for GPS…"), and it was self-inflicted.
+///
+/// So the platform subscription lives here, refcounted: whoever asks second gets a
+/// handle onto the running one. It still ends when the last handle drops — the
+/// property the module note is about — because [`SHARED`] holds only a `Weak`.
+/// The handover works because every consumer starts its watch *before* the one it
+/// displaces stands down, which is one frame's worth of overlap and all it takes.
+struct Provider {
     slot: Slot,
     // One field, two mutually exclusive cfgs: Android is never `wasm32`, so the
     // two attributes cannot both apply and produce a duplicate field. Sharing the
     // name keeps `start`/`drop` reading as one shape with a per-platform body
     // rather than as two parallel structs.
     #[cfg(target_arch = "wasm32")]
-    inner: Option<wasm::Watch>,
+    inner: Mutex<Option<wasm::Watch>>,
     #[cfg(target_os = "android")]
-    inner: Option<crate::platform::android::LocationSubscription>,
+    inner: Mutex<Option<crate::platform::android::LocationSubscription>>,
+}
+
+/// The running provider, if anything is holding one. `Weak`, so this static is a
+/// rendezvous point and never an owner: the subscription's lifetime is exactly the
+/// lifetime of the [`LocationWatch`]es outstanding.
+static SHARED: Mutex<Option<std::sync::Weak<Provider>>> = Mutex::new(None);
+
+/// A live subscription to the device's position. Drop it to unsubscribe.
+pub struct LocationWatch {
+    provider: Arc<Provider>,
 }
 
 impl LocationWatch {
@@ -83,10 +107,55 @@ impl LocationWatch {
     /// GNSS start is seconds, and the browser may prompt for permission first).
     #[must_use]
     pub fn start() -> Self {
+        let mut shared = SHARED.lock().expect("location provider lock");
+        if let Some(provider) = shared.as_ref().and_then(std::sync::Weak::upgrade) {
+            // Already running for somebody else: share it, keep its fixes, and do
+            // not touch the radio. This is the locate → driver handover.
+            tracing::info!("joining the running location watch");
+            return Self { provider };
+        }
+        let provider = Arc::new(Provider::open());
+        *shared = Some(Arc::downgrade(&provider));
+        Self { provider }
+    }
+
+    /// The most recent fix, or `None` while nothing has arrived (or the provider
+    /// reported an error — see [`Self::error`]).
+    #[must_use]
+    pub fn latest(&self) -> Option<GpsFix> {
+        self.provider
+            .slot
+            .lock()
+            .ok()?
+            .as_ref()?
+            .as_ref()
+            .ok()
+            .copied()
+    }
+
+    /// The most recent provider error, if the last report was one. Permission
+    /// denials land here.
+    #[must_use]
+    pub fn error(&self) -> Option<String> {
+        self.provider
+            .slot
+            .lock()
+            .ok()?
+            .as_ref()?
+            .as_ref()
+            .err()
+            .cloned()
+    }
+}
+
+impl Provider {
+    /// Open the platform subscription. Only ever called with [`SHARED`] held, so
+    /// two threads cannot race two providers into existence.
+    fn open() -> Self {
         let slot: Slot = Arc::new(Mutex::new(None));
         #[cfg(target_arch = "wasm32")]
         {
-            let inner = wasm::start(slot.clone());
+            let inner = Mutex::new(wasm::start(slot.clone()));
             Self { slot, inner }
         }
         #[cfg(target_os = "android")]
@@ -95,7 +164,7 @@ impl LocationWatch {
             // waiting out the runtime-permission dialog — which is why this is
             // still "cheap and non-blocking" on a platform where the first fix can
             // be two minutes away.
-            let inner = crate::platform::android::start_location(slot.clone());
+            let inner = Mutex::new(crate::platform::android::start_location(slot.clone()));
             Self { slot, inner }
         }
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -106,26 +175,12 @@ impl LocationWatch {
             Self { slot }
         }
     }
-
-    /// The most recent fix, or `None` while nothing has arrived (or the provider
-    /// reported an error — see [`Self::error`]).
-    #[must_use]
-    pub fn latest(&self) -> Option<GpsFix> {
-        self.slot.lock().ok()?.as_ref()?.as_ref().ok().copied()
-    }
-
-    /// The most recent provider error, if the last report was one. Permission
-    /// denials land here.
-    #[must_use]
-    pub fn error(&self) -> Option<String> {
-        self.slot.lock().ok()?.as_ref()?.as_ref().err().cloned()
-    }
 }
 
-impl Drop for LocationWatch {
+impl Drop for Provider {
     fn drop(&mut self) {
         #[cfg(target_arch = "wasm32")]
-        if let Some(inner) = self.inner.take() {
+        if let Some(inner) = self.inner.get_mut().ok().and_then(Option::take) {
             wasm::stop(inner);
         }
         // Explicit, rather than letting the field's own `Drop` do it: a subscription
@@ -134,7 +189,7 @@ impl Drop for LocationWatch {
         // `allow` would hide the day it really did become unused. The call also
         // makes the two arms symmetrical.
         #[cfg(target_os = "android")]
-        if let Some(inner) = self.inner.take() {
+        if let Some(inner) = self.inner.get_mut().ok().and_then(Option::take) {
             inner.stop();
         }
     }

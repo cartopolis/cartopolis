@@ -1093,6 +1093,7 @@ pub fn autosave_user_store(
     dev: Res<crate::resources::DevPanelState>,
     weather: Res<crate::systems::weather::WeatherState>,
     map_anchor: Res<MapAnchor>,
+    driver: Res<crate::systems::driver::DriverState>,
 ) {
     // Two flush triggers, not one. `AppExit` is the desktop's way of leaving, and
     // Android never sends it: the system suspends the process and later kills it
@@ -1130,7 +1131,13 @@ pub fn autosave_user_store(
             lat,
             lng,
             altitude,
-            pose: CameraPose::capture(&camera_state),
+            // Past driver mode's temporary rig to the view the user actually
+            // chose — see `DriverState::pose_before_drive`. The *place* is still
+            // the live one: coming back to where the drive got to is right, it is
+            // only the camera that was borrowed.
+            pose: driver
+                .pose_before_drive(&camera_state)
+                .unwrap_or_else(|| CameraPose::capture(&camera_state)),
         });
     }
     store.save();

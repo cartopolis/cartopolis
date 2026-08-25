@@ -675,17 +675,24 @@ pub fn apply_network_snapshot(
                     continue;
                 }
 
+                // `try_*` throughout this loop, and not as hygiene: the mailbox
+                // can still hold a backlog when the link has already failed — a
+                // suspended app drains nothing for as long as it is off screen —
+                // and `session::teardown` despawns exactly these entities in the
+                // same frame, with no ordering between the two systems. Whichever
+                // runs first, the other is holding a live view of entities that are
+                // already queued for despawn. Gone is the outcome both wanted.
                 let region_es: Vec<Entity> = region_entities.iter().collect();
                 for e in region_es {
-                    commands.entity(e).despawn();
+                    commands.entity(e).try_despawn();
                 }
                 let prim_es: Vec<Entity> = prim_entities.iter().map(|(e, _, _)| e).collect();
                 for e in prim_es {
-                    commands.entity(e).despawn();
+                    commands.entity(e).try_despawn();
                 }
                 let remote_es: Vec<Entity> = remote_avatars.iter().map(|(e, _)| e).collect();
                 for e in remote_es {
-                    commands.entity(e).despawn();
+                    commands.entity(e).try_despawn();
                 }
                 game_state.regions_loaded = false;
                 game_state.prims_loaded = false;
@@ -720,7 +727,7 @@ pub fn apply_network_snapshot(
             NetMessage::PrimRemoved { id } => {
                 for (e, p, _) in prim_entities.iter() {
                     if p.id == id {
-                        commands.entity(e).despawn();
+                        commands.entity(e).try_despawn();
                         break;
                     }
                 }
@@ -741,11 +748,11 @@ pub fn apply_network_snapshot(
                         // refresh material (refresh_prim_textures re-applies both).
                         commands
                             .entity(entity)
-                            .insert(NeedsMeshRebuild)
-                            .insert(NeedsTextureRefresh);
+                            .try_insert(NeedsMeshRebuild)
+                            .try_insert(NeedsTextureRefresh);
                         // ADR-029: keep the geo anchor in sync so place_geo_prims
                         // re-derives the cell/local transform for the new position.
-                        commands.entity(entity).insert(PrimGeo {
+                        commands.entity(entity).try_insert(PrimGeo {
                             latitude: prim.geo.latitude,
                             longitude: prim.geo.longitude,
                         });
@@ -789,7 +796,7 @@ pub fn apply_network_snapshot(
                         texture_cache.handles.insert(texture_id.clone(), handle);
                         for (entity, prim, _) in prim_entities.iter() {
                             if prim.texture_id.as_deref() == Some(&texture_id) {
-                                commands.entity(entity).insert(NeedsTextureRefresh);
+                                commands.entity(entity).try_insert(NeedsTextureRefresh);
                             }
                         }
                         tracing::debug!(id = %texture_id, "texture loaded");
@@ -1003,7 +1010,7 @@ fn sync_remote_avatar_entities(
         .map(|(e, _)| e)
         .collect();
     for e in stale {
-        commands.entity(e).despawn();
+        commands.entity(e).try_despawn();
     }
 
     // One pass to index, one lookup per snapshot row — the inner rescan per row
