@@ -87,6 +87,16 @@ pub(crate) struct DiagnosticsSources<'w, 's> {
     /// rather than on the five-second `log_render_cost` timer that is switched
     /// off on handsets for that cost.
     census: crate::systems::render_census::RenderCensus<'w, 's>,
+    /// How evenly the sim's snapshots are reaching the prediction. Reported for
+    /// the same reason `frame` is: "the avatar stutters" is a device-only symptom,
+    /// and until this line existed it was impossible to tell a slow link from our
+    /// own frame hitches delaying the mailbox drain from a real disagreement with
+    /// the server.
+    net: Res<'w, crate::resources::NetPredictionHealth>,
+    /// Only to say whether the numbers above describe anything at all — offline
+    /// there is no sim to be waiting for, and a row of zeroes must not read as a
+    /// healthy connection.
+    online: Option<Res<'w, crate::resources::OnlineSession>>,
     store: Res<'w, crate::systems::user_store::UserStore>,
     sky: Option<Res<'w, crate::systems::sky_dome::SkyMode>>,
     adapter: Option<Res<'w, bevy::render::renderer::RenderAdapterInfo>>,
@@ -293,6 +303,32 @@ fn compose(s: &DiagnosticsSources) -> String {
         bevy::tasks::AsyncComputeTaskPool::get().thread_num(),
         std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get),
     ));
+
+    // The network block, and like `perf` above it is a worst-beside-mean reading:
+    // a snapshot stream that averages 20 a second can still park the avatar twice
+    // a minute, and only `worst` and `parked` say so.
+    //
+    // **`parked` is the stutter, stated as a number.** It is the share of frames
+    // the display was being braked to a halt because there was nothing left to
+    // extrapolate from — so a stuttering flight with `parked 0%` is not a network
+    // problem at all and the `perf` block above is where to look, while anything
+    // above a percent or two is. Nothing else in this report distinguishes the
+    // two, and they need opposite fixes.
+    out.push_str("\nnet: ");
+    if s.online.is_none() {
+        out.push_str("offline (no sim — the figures below would be meaningless)\n");
+    } else if s.net.snapshots == 0 {
+        out.push_str("online, no snapshots applied yet\n");
+    } else {
+        out.push_str(&format!(
+            "{} snapshots | last gap {:.0} ms, worst {:.0} ms | parked {:.1}% of {} frames\n",
+            s.net.snapshots,
+            s.net.last_gap_s * 1000.0,
+            s.net.worst_gap_s * 1000.0,
+            s.net.stalled_fraction() * 100.0,
+            s.net.frames,
+        ));
+    }
 
     // The avatar block, and the order is the diagnosis. `holders = 0` is "no model
     // was ever asked for"; `meshes = 0` with holders is "the glTF did not load";

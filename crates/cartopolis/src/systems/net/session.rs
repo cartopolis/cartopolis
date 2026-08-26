@@ -382,6 +382,11 @@ fn teardown(
     commands.remove_resource::<NetworkSyncState>();
     commands.remove_resource::<ConnectAddr>();
     commands.remove_resource::<ConnectAuth>();
+    // Reset rather than removed: `avatar::smooth_online_avatar_display` takes it
+    // as a plain `ResMut` on every run mode, and the figures describe one
+    // connection — carrying a stall count into the next session would blame the
+    // new server for the old one's link.
+    commands.insert_resource(crate::resources::NetPredictionHealth::default());
 
     *identity = AuthIdentity::default();
     *local_sim_id = LocalAvatarSimId(None);
