@@ -1726,6 +1726,9 @@ fn run_client() {
         .add_plugins(MaterialPlugin::<sky::GlobeCloudMaterial>::default())
         .add_plugins(MaterialPlugin::<sky::RainMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::water::WaterMaterial>::default())
+        // The LoD2.2 buildings' walls, with the window pattern on them
+        // (`systems::building_windows`).
+        .add_plugins(MaterialPlugin::<systems::building_windows::BuildingMaterial>::default())
         .add_plugins(MaterialPlugin::<systems::grass::GrassMaterial>::default())
         // Roads and their casings. The ladder that decides which of two
         // overlapping ribbons is on top rides in a vertex attribute, so the road
@@ -2568,6 +2571,10 @@ fn run_client() {
                 sky::manage_lights.after(systems::ui::render_dev_panel),
                 sky::apply_distance_fog.after(systems::ui::render_dev_panel),
                 sky::update_window_glow,
+                // The other lane's windows. `update_window_glow` above only
+                // reaches the OSM buildings, which are never drawn over 3DBAG
+                // coverage — see `systems::building_windows`.
+                systems::building_windows::update_building_windows,
                 // Track the camera after it has been positioned this frame.
                 sky::update_star_sky.after(systems::free_camera::camera_controls),
                 sky::update_moon.after(systems::free_camera::camera_controls),

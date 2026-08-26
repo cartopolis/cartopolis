@@ -28,6 +28,7 @@ use big_space::prelude::{BigSpace, Grid, GridCell};
 
 use crate::platform::stream::{CellStream, Policy};
 use crate::platform::{http, storage};
+use crate::systems::building_windows::{BuildingMaterial, BuildingWindows};
 use crate::systems::globe::{GlobeState, GLOBE_SHOW_ALT};
 use crate::systems::map_stream::MapStream;
 use crate::systems::osm_buildings::{
@@ -215,8 +216,12 @@ pub struct Lod22Buildings {
     /// shadow-LOD pass only issues a command when a cell actually crosses the
     /// boundary rather than every frame.
     no_shadow: HashSet<(i64, i64)>,
-    /// Shared material (white base, per-vertex wall/roof colours).
-    material: Option<Handle<StandardMaterial>>,
+    /// Shared material (white base, per-vertex wall/roof colours) — plus the
+    /// window pattern, which is why it is `BuildingMaterial` and not a bare
+    /// `StandardMaterial`. One material for the whole lane is what lets
+    /// `building_windows::update_building_windows` light every window in the city
+    /// by writing a single uniform.
+    material: Option<Handle<BuildingMaterial>>,
     /// Last-seen state of the Layers panel's 3DBAG toggle, so the off-edge
     /// teardown in [`update_lod22`] runs exactly once per uncheck.
     enabled_was: bool,
@@ -270,7 +275,7 @@ pub fn update_lod22(
     mut commands: Commands,
     mut lod: ResMut<Lod22Buildings>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BuildingMaterial>>,
     stream: Res<MapStream>,
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     bigspace: Query<Entity, With<BigSpace>>,
@@ -491,16 +496,19 @@ pub fn update_lod22(
         let material = lod
             .material
             .get_or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    perceptual_roughness: 0.95,
-                    double_sided: !BACKFACE_CULL,
-                    cull_mode: if BACKFACE_CULL {
-                        Some(bevy::render::render_resource::Face::Back)
-                    } else {
-                        None
+                materials.add(BuildingMaterial {
+                    base: StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.95,
+                        double_sided: !BACKFACE_CULL,
+                        cull_mode: if BACKFACE_CULL {
+                            Some(bevy::render::render_resource::Face::Back)
+                        } else {
+                            None
+                        },
+                        ..default()
                     },
-                    ..default()
+                    extension: BuildingWindows::default(),
                 })
             })
             .clone();
