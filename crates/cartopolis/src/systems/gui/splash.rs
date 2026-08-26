@@ -76,6 +76,27 @@ const MAX_VISIBLE_S: f32 = 18.0;
 /// Fade duration once dismissal is decided. Part of the visible hold, so it is
 /// counted in the budget above rather than added to it.
 const FADE_S: f32 = 0.6;
+/// Fewest paints the dismissal fade may take, whatever the frame rate.
+///
+/// The fade dismisses into the busiest seconds of the run — the startup stream —
+/// and there a frame can take several hundred milliseconds, which spent the
+/// whole [`FADE_S`] budget across one or two paints: the math ran and nobody saw
+/// it, the splash simply cut to the map.
+const MIN_FADE_FRAMES: f32 = 12.0;
+/// …and the most wall clock it may spend buying them, as a multiple of
+/// [`FADE_S`].
+///
+/// **A floor on the frame count alone has no ceiling on the wall clock, and that
+/// is the other half of the same bug.** Measured 2026-08-26 in a headless launch
+/// from 300 km: frames ran 250–800 ms while the globe streamed, so twelve paints
+/// took **4.4 seconds** — four seconds of a half-transparent splash sitting over
+/// an app that was already running and already taking input. That is the state
+/// the screenshot behind this fix was taken in, and it reads as a hang, not as a
+/// transition. The fade now advances by at least `1/MAX_FADE_STRETCH` of real
+/// time, so it can trade paints for promptness when the frames are expensive:
+/// twelve when they are cheap, five at 4 fps, never more than about
+/// `FADE_S * MAX_FADE_STRETCH` of anybody's time.
+const MAX_FADE_STRETCH: f32 = 2.0;
 
 /// How long the logo, wordmark and motto take to fade *up* at launch.
 ///
@@ -111,6 +132,20 @@ const STATUS_TEXT: f32 = 13.0;
 const SWEEP_S: f32 = 1.1;
 /// Fraction of the track the indeterminate segment occupies (`#bar.indeterminate`).
 const SWEEP_FRAC: f32 = 0.35;
+/// Below this fill the track is drawn as the sweeping segment instead.
+///
+/// A determinate bar at zero paints an *empty* track, which is exactly what a
+/// stalled loader looks like — the one reading this screen must not give. It was
+/// giving it: `have/want` is `0/280` for the first second of every launch from
+/// orbit, and `Some(0.0)` is a number, so the sweep never ran.
+const BAR_SWEEP_BELOW: f32 = 0.005;
+/// Where the bar stands once there is an anchor and a streamer counting against
+/// it — a floor, so "the map has been placed" is visible as a fill rather than
+/// as the same empty track as "nothing has happened yet".
+const BAR_ANCHORED: f32 = 0.06;
+/// The most of the track the streamed-tile fraction may claim. The rest belongs
+/// to the closing fade; see [`bar_target`].
+const BAR_STREAMING: f32 = 0.85;
 
 /// What the splash is waiting for, in the words under the track.
 ///
@@ -125,13 +160,15 @@ const SWEEP_FRAC: f32 = 0.35;
 /// actually feeding the screen, and the label says which one and how far it has
 /// got.
 struct Loading {
-    /// The status line. Owned rather than `&'static str` because the counts are
+    /// The streaming clause of the status line, or `None` once there is nothing
+    /// left to report. Owned rather than `&'static str` because the counts are
     /// the diagnostic half — "Streaming the map… 6/224" is what says whether a
     /// long hold is a slow network or a streamer that never started.
-    label: String,
-    /// Track fill, or `None` for a stage with no honest denominator — drawn as
-    /// the sweeping segment rather than as a number nobody measured.
-    fraction: Option<f32>,
+    stage: Option<String>,
+    /// How much of the streamer's *current* working set has arrived, or `None`
+    /// before there is a set to count. **Not the bar** — see
+    /// [`bar_target`] for why the two are different numbers.
+    streamed: Option<f32>,
     /// Enough of the world is on screen that lifting the splash uncovers a map
     /// rather than a void.
     ready: bool,
@@ -143,17 +180,11 @@ struct Loading {
 /// `MapStream` — see [`MapStream::wanted_tiles`] for why the streamer's own
 /// `loaded` count cannot be the numerator (it reaches the full ring within a
 /// frame or two of an anchor, while every tile is still blank paper).
-fn loading(
-    stream: &MapStream,
-    globe: &GlobeState,
-    in_space: bool,
-    tiles_ready: usize,
-    signin: Option<String>,
-) -> Loading {
-    let mut progress = if stream.geo_anchor().is_none() {
+fn loading(stream: &MapStream, globe: &GlobeState, in_space: bool, tiles_ready: usize) -> Loading {
+    if stream.geo_anchor().is_none() {
         Loading {
-            label: "Placing the map…".to_owned(),
-            fraction: None,
+            stage: Some("Placing the map…".to_owned()),
+            streamed: None,
             ready: false,
         }
     } else {
@@ -178,22 +209,60 @@ fn loading(
             )
         };
         Loading {
-            label: if want > 0 {
+            stage: Some(if want > 0 {
                 format!("Streaming the {what}… {have}/{want}")
             } else {
                 format!("Streaming the {what}…")
-            },
-            fraction: (want > 0).then(|| (have as f32 / want as f32).clamp(0.0, 1.0)),
+            }),
+            streamed: (want > 0).then(|| (have as f32 / want as f32).clamp(0.0, 1.0)),
             ready,
         }
-    };
-    // The sign-in rides beside the streaming report, not instead of it: the two
-    // run concurrently, and replacing the tile counts would hide the diagnostic
-    // half of the line for exactly the seconds a slow host makes it interesting.
-    if let Some(signin) = signin {
-        progress.label = format!("{signin} · {}", progress.label);
     }
-    progress
+}
+
+/// The status line: the sign-in clause and the streaming clause, whichever of
+/// the two there is.
+///
+/// **The sign-in rides beside the streaming report, not instead of it**: the two
+/// run concurrently, and replacing the tile counts would hide the diagnostic
+/// half of the line for exactly the seconds a slow host makes it interesting.
+/// The streaming clause is what goes away once dismissal is decided — see
+/// [`boot_splash`] — because from then on it is a count nobody is waiting for.
+fn caption(signin: Option<&str>, stage: Option<&str>) -> String {
+    match (signin, stage) {
+        (Some(signin), Some(stage)) => format!("{signin} · {stage}"),
+        (Some(only), None) | (None, Some(only)) => only.to_owned(),
+        (None, None) => "Ready".to_owned(),
+    }
+}
+
+/// Where the bar should stand this frame, before the monotone latch.
+///
+/// **The bar and the tile count are deliberately different numbers, and
+/// conflating them is what made this meter unbelievable.** The splash lifts on
+/// the *first* tile — see [`Loading::ready`] — while the streamer's working set
+/// is several hundred tiles that go on arriving long after the splash is gone,
+/// and (measured 2026-08-26, `tiles.cartopolis.org` 404ing every z3 tile in row
+/// 7) some of which never arrive at all. So a track driven straight off
+/// `have/want` was guaranteed to be somewhere around a tenth full at the one
+/// moment anyone reads it, and to sit there while the app underneath was
+/// already running: a loading bar that has never once finished loading.
+///
+/// What it measures now is the splash's own dismissal, which is a thing that
+/// always completes. The tile fraction still drives the middle of the range —
+/// it is real progress and it moves — but it is squeezed into
+/// [`BAR_ANCHORED`]..[`BAR_STREAMING`], and the closing fade carries the bar the
+/// rest of the way to full. The counts keep their place in the caption, where
+/// they were always the diagnostic and never the promise.
+fn bar_target(closing: Option<f32>, streamed: Option<f32>) -> f32 {
+    match (closing, streamed) {
+        // Dismissal decided: run to full over the fade, so the bar finishes in
+        // front of the person who watched it.
+        (Some(t), _) => ease(t),
+        (None, Some(f)) => BAR_ANCHORED + f * (BAR_STREAMING - BAR_ANCHORED),
+        // Nothing to count yet — the sweep says so (`BAR_SWEEP_BELOW`).
+        (None, None) => 0.0,
+    }
 }
 
 /// The sign-in half of the status line, when there is one to report.
@@ -230,6 +299,15 @@ pub struct BootSplash {
     elapsed: f32,
     /// Counts down through [`FADE_S`] once dismissal begins; `None` until then.
     fading: Option<f32>,
+    /// The track fill actually drawn, latched so it can only ever grow.
+    ///
+    /// **The latch is not cosmetic.** The thing being counted changes under the
+    /// meter twice in an ordinary launch: the flat streamer answers first
+    /// ("0/326"), then the camera restore puts the view in orbit and the globe's
+    /// quadtree answers instead ("0/280"), and each streamer re-decides its own
+    /// working set every quarter second as the view refines. Drawn straight,
+    /// that is a bar that jumps backwards while the world is loading forwards.
+    bar: f32,
     finished: bool,
 }
 
@@ -268,13 +346,7 @@ pub fn boot_splash(
         .single()
         .is_ok_and(|(cell, tf)| globe.in_space(cell, tf));
     let signin = signin_caption(&session, identity.username.as_deref());
-    let progress = loading(
-        &stream,
-        &globe,
-        in_space,
-        tiles_ready.iter().count(),
-        signin,
-    );
+    let progress = loading(&stream, &globe, in_space, tiles_ready.iter().count());
 
     // Dismiss on the world being visible, not on a timer alone: fading out into
     // an empty blue void is worse than holding the splash half a second longer.
@@ -287,17 +359,16 @@ pub fn boot_splash(
     // The dismissal fade, which takes the backdrop with it — this is the layer
     // lifting off the world.
     //
-    // Advanced by a *clamped* dt, so the fade is a number of drawn frames rather
-    // than a stretch of wall clock. It dismisses into the busiest seconds of the
-    // run — the startup stream — and there a frame can take several hundred
-    // milliseconds, which spent the whole 0.6 s budget across one or two paints:
-    // the math ran and nobody saw it, the splash simply cut to the map. Clamped
-    // to 50 ms per frame the fade always gets ≥ 12 paints; on a healthy frame
-    // rate the clamp never engages and the duration is exactly `FADE_S`.
+    // Advanced by a dt clamped at *both* ends, because the fade has to survive
+    // two opposite frame rates: `MIN_FADE_FRAMES` stops a fast frame from
+    // spending the budget in one paint, and `MAX_FADE_STRETCH` stops a slow one
+    // from holding a half-transparent splash over a running app for seconds. On
+    // a healthy frame rate neither clamp engages and the duration is exactly
+    // `FADE_S`.
     let backdrop = match splash.fading {
         None => 1.0,
         Some(left) => {
-            let left = left - dt.min(0.05);
+            let left = left - dt.min(FADE_S / MIN_FADE_FRAMES).max(dt / MAX_FADE_STRETCH);
             splash.fading = Some(left);
             if left <= 0.0 {
                 splash.finished = true;
@@ -306,6 +377,20 @@ pub fn boot_splash(
             ease(left / FADE_S)
         }
     };
+    // How far into the dismissal we are, once it has been decided — the closing
+    // half of the bar, and the point at which the streaming counts stop being
+    // what anyone is waiting for.
+    let closing = splash
+        .fading
+        .map(|left| 1.0 - (left / FADE_S).clamp(0.0, 1.0));
+    splash.bar = splash.bar.max(bar_target(closing, progress.streamed));
+    let label = caption(
+        signin.as_deref(),
+        closing
+            .is_none()
+            .then_some(progress.stage.as_deref())
+            .flatten(),
+    );
     // …and the entrance fade, which the backdrop is deliberately not part of (see
     // `FADE_IN_S`). Multiplied rather than chosen between, so a splash dismissed
     // before it has finished arriving — a warm start with `min_visible_s` at the
@@ -378,21 +463,21 @@ pub fn boot_splash(
         TRACK_H * 0.5,
         fade(theme::SURFACE_RAISED, content, 1.0),
     );
-    let bar = match progress.fraction {
+    let bar = if splash.bar > BAR_SWEEP_BELOW {
         // A measured fill, from the left.
-        Some(f) => egui::Rect::from_min_size(track.min, egui::vec2(track_w * f, TRACK_H)),
-        // No denominator, so no number: a segment sweeping the track instead. The
-        // alternative is a bar sitting at zero, which is what a *stalled* loader
-        // looks like — the one reading this screen must not give.
-        None => {
-            let t = (splash.elapsed / SWEEP_S).fract();
-            let x = track.min.x + (t * (1.0 + SWEEP_FRAC) - SWEEP_FRAC) * track_w;
-            egui::Rect::from_min_size(
-                egui::pos2(x, track.min.y),
-                egui::vec2(track_w * SWEEP_FRAC, TRACK_H),
-            )
-            .intersect(track)
-        }
+        egui::Rect::from_min_size(track.min, egui::vec2(track_w * splash.bar, TRACK_H))
+    } else {
+        // Nothing measured yet, so no number: a segment sweeping the track
+        // instead. The alternative is a bar sitting at zero, which is what a
+        // *stalled* loader looks like — the one reading this screen must not
+        // give.
+        let t = (splash.elapsed / SWEEP_S).fract();
+        let x = track.min.x + (t * (1.0 + SWEEP_FRAC) - SWEEP_FRAC) * track_w;
+        egui::Rect::from_min_size(
+            egui::pos2(x, track.min.y),
+            egui::vec2(track_w * SWEEP_FRAC, TRACK_H),
+        )
+        .intersect(track)
     };
     if bar.width() > 0.0 {
         painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::ACCENT, content, 1.0));
@@ -400,7 +485,7 @@ pub fn boot_splash(
     painter.text(
         egui::pos2(c.x, c.y + 128.0),
         egui::Align2::CENTER_CENTER,
-        &progress.label,
+        &label,
         egui::FontId::proportional(STATUS_TEXT),
         fade(theme::TEXT_DIM, content, 0.75),
     );
@@ -458,14 +543,88 @@ mod tests {
     /// the tile counts are the diagnostic half of the line.
     #[test]
     fn the_caption_joins_the_streaming_label() {
-        let progress = loading(
-            &MapStream::default(),
-            &GlobeState::default(),
-            false,
-            0,
-            Some("Signing in…".to_owned()),
+        let progress = loading(&MapStream::default(), &GlobeState::default(), false, 0);
+        assert_eq!(progress.stage.as_deref(), Some("Placing the map…"));
+        assert_eq!(
+            caption(Some("Signing in…"), progress.stage.as_deref()),
+            "Signing in… · Placing the map…"
         );
-        assert_eq!(progress.label, "Signing in… · Placing the map…");
         assert!(!progress.ready);
+    }
+
+    /// Either clause stands on its own, and with neither there is still a line —
+    /// an empty caption under a full track reads as the screen having given up.
+    #[test]
+    fn each_half_of_the_caption_stands_alone() {
+        assert_eq!(
+            caption(None, Some("Streaming the map… 3/9")),
+            "Streaming the map… 3/9"
+        );
+        assert_eq!(
+            caption(Some("Signed in as alice"), None),
+            "Signed in as alice"
+        );
+        assert_eq!(caption(None, None), "Ready");
+    }
+
+    /// **The bar reaches full.** It is the whole point of the rewrite: driven
+    /// straight off `have/want` the track was at a tenth when the splash lifted
+    /// and stayed there, which is a loading bar that never finishes loading.
+    #[test]
+    fn the_bar_finishes_over_the_closing_fade() {
+        assert!(bar_target(None, Some(0.02)) < BAR_STREAMING);
+        assert!(bar_target(None, Some(1.0)) <= BAR_STREAMING);
+        // The fade carries whatever is left.
+        assert!(bar_target(Some(0.5), Some(0.02)) > bar_target(None, Some(0.02)));
+        assert!((bar_target(Some(1.0), Some(0.02)) - 1.0).abs() < 1e-6);
+    }
+
+    /// A streamer that has a set but nothing in it must not paint an empty
+    /// track: `0/280` is the first second of every launch from orbit, and an
+    /// empty track is what a stalled loader looks like.
+    #[test]
+    fn a_streamer_with_nothing_yet_still_shows_a_fill() {
+        assert!(bar_target(None, Some(0.0)) > BAR_SWEEP_BELOW);
+        // …while "no anchor, nothing to count" stays on the sweep.
+        assert!(bar_target(None, None) <= BAR_SWEEP_BELOW);
+    }
+
+    /// The counted set changes under the meter — flat streamer to globe
+    /// quadtree at the camera restore, then re-decided every quarter second —
+    /// so the drawn fill is latched and can only grow.
+    #[test]
+    fn the_latch_absorbs_a_denominator_that_moves() {
+        // 12/326 on the flat streamer, then the view goes to orbit and the
+        // globe answers 0/280 instead.
+        let mut bar: f32 = 0.0;
+        bar = bar.max(bar_target(None, Some(12.0 / 326.0)));
+        let peak = bar;
+        bar = bar.max(bar_target(None, Some(0.0)));
+        assert_eq!(bar, peak);
+    }
+
+    /// The fade is bounded at both ends: never fewer than `MIN_FADE_FRAMES`
+    /// paints, and never more than `MAX_FADE_STRETCH` times its wall-clock
+    /// budget. Twelve paints alone took 4.4 s of real time at the 250–800 ms
+    /// frames the startup stream produces.
+    #[test]
+    fn the_fade_is_bounded_in_frames_and_in_seconds() {
+        let run = |dt: f32| {
+            let (mut left, mut frames) = (FADE_S, 0u32);
+            while left > 0.0 {
+                left -= dt.min(FADE_S / MIN_FADE_FRAMES).max(dt / MAX_FADE_STRETCH);
+                frames += 1;
+            }
+            (frames, frames as f32 * dt)
+        };
+        // 60 fps: neither clamp engages, so it is simply `FADE_S`.
+        let (frames, wall) = run(1.0 / 60.0);
+        assert!(frames >= MIN_FADE_FRAMES as u32);
+        assert!((wall - FADE_S).abs() < 0.05, "{wall}");
+        // 4 fps, which is what the startup stream measures: still several
+        // paints, and no longer four and a half seconds.
+        let (frames, wall) = run(0.25);
+        assert!(frames >= 4, "{frames}");
+        assert!(wall <= FADE_S * MAX_FADE_STRETCH + 0.25, "{wall}");
     }
 }
