@@ -176,6 +176,7 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         // making one interactable later is a one-line decision and not a panic.
         FurnitureKind::Car => "Parked car",
         FurnitureKind::Bicycle => "Bicycle",
+        FurnitureKind::Person => "Person",
         FurnitureKind::Boat => "Boat",
     }
 }
@@ -202,6 +203,11 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         FurnitureKind::Bicycle => 0.35,
         // A boat is on water the avatar cannot walk on, so a collider there is
         // an invisible wall in the middle of a canal.
+        // A walker is a moving agent, never a placed prop — nothing inserts one
+        // into a cell, so nothing here ever asks. Zero rather than a radius,
+        // because a collider that followed a pedestrian would be a wall that
+        // walks.
+        FurnitureKind::Person => 0.0,
         FurnitureKind::Boat => 0.0,
     }
 }

@@ -134,6 +134,11 @@ pub enum FurnitureKind {
     Car,
     /// A parked bicycle, from the same place and on the same terms.
     Bicycle,
+    /// A person on foot. Like the vehicles it is inferred rather than surveyed —
+    /// OSM records where people may walk, never who is walking there — and it is
+    /// the one form here that is only ever *moving* (`systems::traffic` drives a
+    /// pool of them; nothing places a standing one).
+    Person,
     /// A boat moored against a canal bank. Like the two above it is inferred
     /// rather than surveyed — see [`crate::moorings`], which reads the shape of
     /// the water polygon rather than any tag to decide there is a canal there at
@@ -675,6 +680,23 @@ mod form {
         part([0.0, 0.62, 0.0], [0.03, 0.16, 0.50], Paint),
         part([0.0, 1.00, 0.40], [0.24, 0.03, 0.03], Metal),
     ];
+    /// A person: 1.72 m tall, shoulders at 1.4 m.
+    ///
+    /// Three boxes, and the head is [`Tone::Metal`] rather than a skin colour on
+    /// purpose — a crowd rendered in any one complexion is a claim about a city's
+    /// people that a road centreline cannot support, and six would be a worse one.
+    /// It reads as a figure, not as a person you could name, which is the honest
+    /// resolution for something inferred from "a pavement exists here".
+    ///
+    /// The legs are a single box with the gap left in front-to-back rather than
+    /// two: at this size two would alias into one anyway, and the silhouette that
+    /// matters is *upright and narrow*, which is what stops it reading as a
+    /// bollard.
+    pub const PERSON: [Part; 3] = [
+        part([0.0, 0.42, 0.0], [0.17, 0.42, 0.11], Paint),
+        part([0.0, 1.10, 0.0], [0.22, 0.28, 0.14], Paint),
+        part([0.0, 1.52, 0.0], [0.10, 0.12, 0.10], Metal),
+    ];
     /// A canal boat: 9 m long, 2.4 m in the beam, a low cabin aft of centre.
     /// Measured off the small *woonboten* and sloops a Groningen canal is lined
     /// with, not off a barge — a barge on a 12 m canal reads as a ship in a
@@ -704,6 +726,7 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Swing => &form::SWING,
         FurnitureKind::Car => &form::CAR,
         FurnitureKind::Bicycle => &form::BICYCLE,
+        FurnitureKind::Person => &form::PERSON,
         FurnitureKind::Boat => &form::BOAT,
     }
 }

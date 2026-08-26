@@ -5,7 +5,7 @@ triggers: [traffic.rs, "ambient traffic", "cars driving", "moving cars", "traffi
 updated: 2026-08-26
 ---
 
-# Cars that drive, off the streets layer we already parse
+# Cars and people that move, off the streets layer we already parse
 
 `cartopolis_geo::traffic` + `systems::traffic` (2026-08-26). The first thing in
 this tree that **moves on its own**: everything else streamed from the map is
@@ -60,10 +60,68 @@ which is also what lets bevy batch 180 cars into a few draws.
   `drive_speed` is already this codebase's encoding of road importance, so it is
   the natural weight.
 
+## People walk the same machinery
+
+Pedestrians (2026-08-26) are the *same* pool, the same steering and the same
+recycling as the cars — `AgentKind` is the only thing that differs, and it answers
+four questions: which lines this kind may use, how fast it goes, how far from the
+centre line it sits, and how far out it is placed. Generalising was cheaper than a
+second module and keeps one hand-off, one recycle rule and one set of tests.
+
+Three things are specific to people:
+
+- **Who may use a line is not an either/or.** A residential street carries cars on
+  the carriageway *and* people on the pavement, and the tile does not model
+  pavements at all — so `Uses` has two independent flags and the common case is
+  both. A footway carries people and no cars; a motorway the reverse; a railway
+  neither. `the_two_networks_differ_in_both_directions` pins it, because getting
+  one list right does not imply the other.
+- **The pavement is an offset, nothing more.** A walker sits at `half_width +
+  clearance` — *outside* the kerb — and that offset is the entire mechanism
+  putting a person beside a street rather than down the middle of it. A pavement
+  is also two-way whatever the carriageway beside it does, which is what somebody
+  walking up a one-way street is doing every day.
+- **A person is placed closer than a car.** `place_radius` is 45% of the car's.
+  A walker is a third of a car's size and legible at roughly a third of the
+  range; at one radius for both, 220 walkers over a city-centre ring put *none*
+  on the street in view while the metrics reported all 220 placed. That is also
+  the clearest lesson about the metric itself — see below.
+
+The head is deliberately grey rather than a skin tone. A crowd rendered in one
+complexion is a claim about a city's people that a road centreline cannot support,
+and six would be a worse claim rather than a better one. It reads as a figure, not
+as somebody identifiable, which is the honest resolution for something inferred
+from "a pavement exists here".
+
+**No walk animation.** Three boxes sliding along a line. `avatar-game-feel.md`
+documents how badly a sliding figure reads — but that is about a model you stand
+directly behind, and these are seen from tens of metres where an upright
+silhouette in motion is the whole signal. That is an argument, not a measurement,
+and no still can settle it.
+
+## `traffic_cars` / `traffic_walkers` mean *placed*, not *on screen*
+
+`ShotMetrics` carries both. The test is `Visibility != Hidden`, which an agent
+behind a building still passes — deliberately, because the pools are a fixed size
+and spawn hidden, so a raw entity count reads identically whether the layer works
+or never found a road. Zero over a city with the toggle on means the network never
+arrived or the pool was never created, which is exactly the failure that hid the
+missing car pool.
+
+What it cannot tell you is whether any of them are in frame. A **full count with
+an empty-looking street means the pool is spread too thin, not that it is
+broken** — which is precisely how the walker radius was diagnosed.
+
+Adding it cost a lesson too: `drive_capture` sits on Bevy's 16-parameter ceiling,
+so a bare new query took it to seventeen and it silently stopped being a system.
+The compiler's complaint was that `.after()` did not exist on it, several steps
+from the cause. The visibility queries are one `SystemParam` bundle now.
+
 ## What this deliberately is not
 
 No car-to-car collision, no obeying the traffic signals that already cycle
-(`systems::street_detail`), no give-way, no queueing, no avatar interaction.
+(`systems::street_detail`), no give-way, no queueing, no avatar interaction, and
+people walk through each other and through the cars.
 Every one is a simulation cost landing on every frame, and none is what the layer
 is for: the question it answers is "is this street alive", settled at a glance
 from a range where two cars overlapping for a moment is invisible. Recorded here
@@ -72,7 +130,7 @@ surprise.
 
 ## Its own toggle
 
-**Map ▸ Traffic**, not the street-furniture one, because it is the only layer
+**Map ▸ Traffic & people**, not the street-furniture one, because it is the only layer
 here that moves: the first thing somebody who finds the motion distracting will
 look for, and the first thing to switch off when judging anything else in a
 still. It rides `Budget::detail_layers`, so a phone starts without it.
@@ -84,7 +142,8 @@ as off — an absent key is "not stated", not "the user turned it off".
 ## Verified, and what is not
 
 Verified from stills over Groningen: cars appear, sit on the carriageway, face
-along it, keep to the right-hand lane, and carry the parked cars' paint palette.
+along it, keep to the right-hand lane, and carry the parked cars' paint palette;
+people appear on the pavements either side of a street rather than in it.
 
 **Not verified**: that they drive *smoothly*, that the junction hand-off is
 seamless, or that nothing pops when a car is recycled. A still cannot show any of

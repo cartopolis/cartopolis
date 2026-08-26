@@ -2316,7 +2316,7 @@ pub fn render_data_layers_panel(
                     crate::systems::theme::checkbox(
                         ui,
                         &mut dl.traffic_enabled,
-                        egui::RichText::new("Traffic").size(theme::SIZE_SUB),
+                        egui::RichText::new("Traffic & people").size(theme::SIZE_SUB),
                     );
                     crate::systems::theme::checkbox(
                         ui,

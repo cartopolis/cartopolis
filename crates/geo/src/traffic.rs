@@ -56,17 +56,31 @@ pub enum Flow {
     Backward,
 }
 
-/// One drivable centreline, in the tessellator's tile-local metre frame (origin
+/// Who may travel along a line.
+///
+/// Not an enum, because the common case is **both**: a residential street carries
+/// cars on the carriageway and people on the pavement beside it, and modelling
+/// that as one-or-the-other would either empty the pavements or put pedestrians
+/// in the road.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Uses {
+    pub drive: bool,
+    pub walk: bool,
+}
+
+/// One travelable centreline, in the tessellator's tile-local metre frame (origin
 /// at the cell's north-west corner, +x east, +z south).
 #[derive(Debug, Clone)]
 pub struct DriveLine {
     pub points: Vec<[f32; 2]>,
     pub flow: Flow,
-    /// Free-flow speed in m/s.
+    /// Free-flow speed in m/s **for a car**. Zero on a line no car may use;
+    /// walkers carry their own pace and do not read this.
     pub speed: f32,
     /// Half the carriageway, so a car can sit in its own lane rather than on the
-    /// centre line.
+    /// centre line — and so a walker can be put on the pavement *outside* it.
     pub half_width: f32,
+    pub uses: Uses,
 }
 
 impl DriveLine {
@@ -107,7 +121,39 @@ pub fn drive_speed(kind: &str) -> Option<f32> {
     })
 }
 
-/// Read a tile's `streets` layer as a drivable network.
+/// Whether people may walk along a Shortbread `streets` kind.
+///
+/// Broader than [`drive_speed`] in one direction and narrower in the other. A
+/// footway, a path, a pedestrian street or a cycleway carries people and no cars;
+/// an ordinary street carries both, because it has pavements the tile does not
+/// model separately and putting nobody on them empties the city. A motorway, a
+/// trunk road and every railway carry nobody — a pedestrian strolling up the A28
+/// is worse than an empty verge.
+///
+/// `steps` is deliberately included even though nothing here climbs: a flight of
+/// steps between two streets is a route people are on, and a walker traversing it
+/// at pavement level reads as a person on a staircase from any distance this is
+/// seen at. It is listed rather than falling out of a default so that the choice
+/// is visible.
+#[must_use]
+pub fn walk_ok(kind: &str) -> bool {
+    matches!(
+        kind,
+        "footway"
+            | "path"
+            | "pedestrian"
+            | "steps"
+            | "cycleway"
+            | "living_street"
+            | "residential"
+            | "unclassified"
+            | "service"
+            | "tertiary"
+            | "secondary"
+    )
+}
+
+/// Read a tile's `streets` layer as a travelable network.
 ///
 /// Takes the cell's already-parsed [`TileData`] rather than the tile body, for
 /// the reason every other consumer on this worker does: they each read a
@@ -127,9 +173,12 @@ pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine
         let Some(kind) = kind_of(feature) else {
             continue;
         };
-        let Some(speed) = drive_speed(kind) else {
+        let drive = drive_speed(kind);
+        let walk = walk_ok(kind);
+        if drive.is_none() && !walk {
             continue;
-        };
+        }
+        let speed = drive.unwrap_or(0.0);
         // The same refusal the geometry and the raster make — and the reason it
         // is shared rather than restated is that a tunnel that is drawn in one
         // place and not another is worse than either answer.
@@ -173,6 +222,10 @@ pub fn extract_drive_lines(tile: &TileData, tile_m: f32) -> Result<Vec<DriveLine
                 flow,
                 speed,
                 half_width,
+                uses: Uses {
+                    drive: drive.is_some(),
+                    walk,
+                },
             };
             if candidate.length() < MIN_DRIVE_LEN_M {
                 continue;
@@ -264,8 +317,43 @@ mod tests {
         for l in &lines {
             assert!(l.points.len() >= 2);
             assert!(l.length() >= MIN_DRIVE_LEN_M);
-            assert!(l.speed > 0.0 && l.speed <= 30.0);
+            assert!(l.uses.drive || l.uses.walk, "a line nobody may use");
+            if l.uses.drive {
+                assert!(l.speed > 0.0 && l.speed <= 30.0);
+            }
             assert!(l.half_width > 0.0);
+        }
+        assert!(
+            lines.iter().any(|l| l.uses.walk && !l.uses.drive),
+            "a city tile has footways cars may not use"
+        );
+        assert!(
+            lines.iter().any(|l| l.uses.drive && l.uses.walk),
+            "an ordinary street carries both"
+        );
+    }
+
+    /// Nobody walks up a motorway or along a railway, and the two lists are not
+    /// the same list — a footway carries people and no cars, a motorway the
+    /// reverse.
+    #[test]
+    fn the_two_networks_differ_in_both_directions() {
+        for kind in ["footway", "path", "pedestrian", "cycleway", "steps"] {
+            assert!(walk_ok(kind), "{kind} carries people");
+            assert!(drive_speed(kind).is_none(), "{kind} carries no cars");
+        }
+        for kind in ["motorway", "trunk"] {
+            assert!(!walk_ok(kind), "{kind} carries nobody on foot");
+            assert!(drive_speed(kind).is_some(), "{kind} carries cars");
+        }
+        for kind in ["rail", "tram", "subway"] {
+            assert!(!walk_ok(kind) && drive_speed(kind).is_none(), "{kind}");
+        }
+        for kind in ["residential", "living_street", "service"] {
+            assert!(
+                walk_ok(kind) && drive_speed(kind).is_some(),
+                "{kind} carries both"
+            );
         }
     }
 

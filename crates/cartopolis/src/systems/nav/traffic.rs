@@ -49,7 +49,7 @@ use bevy::prelude::*;
 use big_space::prelude::{BigSpace, Grid, GridCell};
 use std::collections::HashMap;
 
-use cartopolis_geo::traffic::{DriveLine, Flow};
+use cartopolis_geo::traffic::{DriveLine, Flow, Uses};
 
 use crate::components::{FreeCamera, HideInSpace};
 use crate::grid::WORLD_CELL_EDGE;
@@ -100,6 +100,7 @@ fn hand_off(
     candidates: &[LineKey],
     from: LineKey,
     at: Vec2,
+    kind: AgentKind,
 ) -> Option<(LineKey, f32, f32)> {
     let mut best: Option<(f32, LineKey, f32, f32)> = None;
     for &key in candidates {
@@ -118,11 +119,14 @@ fn hand_off(
             if d > HANDOFF_M {
                 continue;
             }
-            // A one-way road may only be joined at the end traffic enters by.
-            let allowed = match l.flow {
-                Flow::Both => true,
-                Flow::Forward => dir > 0.0,
-                Flow::Backward => dir < 0.0,
+            // A one-way road may only be joined at the end traffic enters by —
+            // and only by traffic it applies to. A pavement is two-way whatever
+            // the carriageway beside it does, which is what somebody walking the
+            // wrong way up a one-way street is doing every day.
+            let allowed = match (kind, l.flow) {
+                (AgentKind::Walker, _) | (_, Flow::Both) => true,
+                (_, Flow::Forward) => dir > 0.0,
+                (_, Flow::Backward) => dir < 0.0,
             };
             if !allowed {
                 continue;
@@ -160,6 +164,7 @@ pub struct WorldDriveLine {
     pub flow: Flow,
     pub speed: f32,
     pub half_width: f32,
+    pub uses: Uses,
     /// Cumulative length at each point, so a car can be advanced without walking
     /// the line from the start every frame.
     pub cumulative: Vec<f32>,
@@ -228,6 +233,7 @@ impl DriveNetwork {
                     flow: l.flow,
                     speed: l.speed,
                     half_width: l.half_width,
+                    uses: l.uses,
                     cumulative,
                 })
             })
@@ -258,11 +264,14 @@ impl DriveNetwork {
     }
 
     /// Every line with a point within `radius` of `near`, as keys.
-    fn near(&self, near: Vec2, radius: f32) -> Vec<LineKey> {
+    fn near(&self, near: Vec2, radius: f32, kind: AgentKind) -> Vec<LineKey> {
         let r2 = radius * radius;
         let mut out = Vec::new();
         for (cell, lines) in &self.cells {
             for (index, l) in lines.iter().enumerate() {
+                if !kind.may_use(l.uses) {
+                    continue;
+                }
                 if l.points.iter().any(|p| p.distance_squared(near) <= r2) {
                     out.push(LineKey { cell: *cell, index });
                 }
@@ -282,8 +291,79 @@ struct LineKey {
 
 // ─── The cars ────────────────────────────────────────────────────────────────
 
-/// One car in the pool. The entity exists for the life of the process; every
-/// field here is rewritten when it is recycled onto a new road.
+/// What an agent is. The steering is identical for both — what differs is which
+/// lines they may use, how fast they go, and where across the road they sit.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum AgentKind {
+    Car,
+    /// A person on foot. Also stands in for a cyclist on a cycleway: at the range
+    /// this is seen from the difference is a bicycle-sized silhouette, and
+    /// inventing one would claim the tile knows which it is.
+    Walker,
+}
+
+impl AgentKind {
+    fn may_use(self, uses: Uses) -> bool {
+        match self {
+            Self::Car => uses.drive,
+            Self::Walker => uses.walk,
+        }
+    }
+
+    /// Pace in m/s. A car takes its road's speed; a walker keeps its own, because
+    /// a pavement has no speed limit and nobody walks faster down a main road.
+    fn speed(self, line: &WorldDriveLine) -> f32 {
+        match self {
+            Self::Car => line.speed,
+            Self::Walker => WALK_SPEED,
+        }
+    }
+
+    /// How far out from the camera this kind is placed, in metres.
+    ///
+    /// A person is a third of a car's size and so legible at roughly a third of
+    /// the range; spreading the walker pool over the car's radius spends most of
+    /// it where nobody can resolve a walker anyway, and leaves the pavement in
+    /// front of you empty. Measured 2026-08-26: at one radius for both, 220
+    /// walkers over a city-centre ring put none on the street in view, while the
+    /// metrics happily reported all 220 placed.
+    fn place_radius(self) -> f32 {
+        match self {
+            Self::Car => PLACE_RADIUS_M,
+            Self::Walker => PLACE_RADIUS_M * 0.45,
+        }
+    }
+
+    /// Where this kind is taken off its line and given a new one. Outside
+    /// [`Self::place_radius`] by the same margin for both, so neither flickers at
+    /// the boundary — see [`PLACE_RADIUS_M`].
+    fn recycle_radius(self) -> f32 {
+        self.place_radius() * (RECYCLE_RADIUS_M / PLACE_RADIUS_M)
+    }
+
+    /// How far right of the centre line, in metres.
+    ///
+    /// A car sits in its lane. A walker sits **outside** the carriageway, which is
+    /// where the pavement is: the tile does not model pavements separately, so
+    /// this offset is the whole of what puts a person beside a street rather than
+    /// down the middle of it.
+    fn offset(self, line: &WorldDriveLine) -> f32 {
+        match self {
+            Self::Car => line.half_width * LANE_FRACTION,
+            Self::Walker => line.half_width + PAVEMENT_CLEARANCE_M,
+        }
+    }
+}
+
+/// A person's pace, m/s. A stroll rather than the avatar's purposeful walk —
+/// ambient people are not going anywhere in particular.
+const WALK_SPEED: f32 = 1.25;
+
+/// How far beyond the kerb a walker's line sits.
+const PAVEMENT_CLEARANCE_M: f32 = 1.6;
+
+/// One agent in a pool. The entity exists for the life of the process; every
+/// field here is rewritten when it is recycled onto a new line.
 #[derive(Component)]
 pub struct Car {
     line: Option<LineKey>,
@@ -338,25 +418,84 @@ pub fn setup_traffic(
         })
         .collect();
 
-    for i in 0..MAX_CARS {
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(paints[i % paints.len()].clone()),
-            // Off-screen until placed. A car with no road must not be visible at
-            // the origin, which is where the avatar is standing.
-            Visibility::Hidden,
-            Transform::default(),
-            GridCell::default(),
-            ChildOf(root),
-            HideInSpace,
-            Car {
-                line: None,
-                s: 0.0,
-                dir: 1.0,
-                speed_scale: 0.85 + rand01(0x0CA2, i as u64, 7) * 0.3,
-            },
-        ));
-    }
+    let walker_mesh = meshes.add(walker_mesh());
+    let coats: Vec<Handle<StandardMaterial>> = COAT_COLOURS
+        .iter()
+        .map(|&rgb| {
+            let [r, g, b] = crate::systems::scatter::srgb_to_linear_rgb(rgb);
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(r, g, b),
+                perceptual_roughness: 0.85,
+                ..default()
+            })
+        })
+        .collect();
+
+    let mut spawn_pool = |count: usize, kind: AgentKind, seed: u64| {
+        for i in 0..count {
+            let (m, mat) = match kind {
+                AgentKind::Car => (mesh.clone(), paints[i % paints.len()].clone()),
+                AgentKind::Walker => (walker_mesh.clone(), coats[i % coats.len()].clone()),
+            };
+            commands.spawn((
+                Mesh3d(m),
+                MeshMaterial3d(mat),
+                // Off-screen until placed. An agent with no line must not be
+                // visible at the origin, which is where the avatar stands.
+                Visibility::Hidden,
+                Transform::default(),
+                GridCell::default(),
+                ChildOf(root),
+                HideInSpace,
+                kind,
+                Car {
+                    line: None,
+                    s: 0.0,
+                    dir: 1.0,
+                    speed_scale: 0.85 + rand01(seed, i as u64, 7) * 0.3,
+                },
+            ));
+        }
+    };
+    spawn_pool(MAX_CARS, AgentKind::Car, 0x0CA2);
+    spawn_pool(MAX_WALKERS, AgentKind::Walker, 0x0FEE);
+}
+
+/// Muted outerwear. The same judgement the parked cars' palette makes: a crowd in
+/// primary colours is the loudest thing on a pale cartographic street.
+const COAT_COLOURS: &[u32] = &[
+    0x4A_4F_57, 0x6B_5E_52, 0x3E_4A_52, 0x7A_6E_63, 0x5A_4E_58, 0x86_7C_6E,
+];
+
+/// How many people exist, on the same fixed-pool terms as the cars.
+///
+/// More than the cars because a city has more people than vehicles in view and
+/// they are a fifth of the geometry each — three boxes against seven.
+pub const MAX_WALKERS: usize = 220;
+
+/// The one mesh every walker draws: a body, a head and a pair of legs.
+///
+/// Three boxes and no animation. A figure this size at the range the layer is
+/// seen from is a silhouette in motion, and motion is the whole signal — the
+/// avatar's own locomotion work (`docs/notes/avatar-game-feel.md`) is about a
+/// model you stand behind, which this is not. What it must not do is read as a
+/// bollard, which is why the head and the leg gap are there at all.
+fn walker_mesh() -> Mesh {
+    use cartopolis_geo::furniture::{FurnitureInstance, FurnitureKind};
+    let items = [FurnitureInstance {
+        x: 0.0,
+        z: 0.0,
+        yaw: 0.0,
+        kind: FurnitureKind::Person,
+        luma: 1.0,
+        paint: cartopolis_geo::vector_tiles::palette::FURNITURE,
+    }];
+    let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);
+    let sm = meshes
+        .into_iter()
+        .next()
+        .expect("the person form has parts");
+    surface_mesh_to_bevy(&sm)
 }
 
 /// Advance every car, and recycle the ones that have run out of road.
@@ -369,14 +508,20 @@ pub fn drive_traffic(
     camera: Query<(&GridCell, &Transform), With<FreeCamera>>,
     grids: Query<&Grid, With<BigSpace>>,
     mut cars: Query<
-        (&mut Car, &mut Transform, &mut GridCell, &mut Visibility),
+        (
+            &mut Car,
+            &AgentKind,
+            &mut Transform,
+            &mut GridCell,
+            &mut Visibility,
+        ),
         Without<FreeCamera>,
     >,
     mut frame: Local<u64>,
 ) {
     let show = layers.traffic_enabled;
     if !show || net.is_empty() {
-        for (_, _, _, mut vis) in &mut cars {
+        for (.., mut vis) in &mut cars {
             *vis = Visibility::Hidden;
         }
         return;
@@ -391,7 +536,7 @@ pub fn drive_traffic(
     );
     let too_high = cam_tf.translation.y > TRAFFIC_HIDE_ALT;
     if too_high {
-        for (_, _, _, mut vis) in &mut cars {
+        for (.., mut vis) in &mut cars {
             *vis = Visibility::Hidden;
         }
         return;
@@ -401,30 +546,41 @@ pub fn drive_traffic(
     // Candidate roads are gathered once per frame, not once per car: the scan is
     // over the loaded ring and doing it ninety-six times would be the whole
     // budget for this layer.
-    let candidates = net.near(cam, PLACE_RADIUS_M);
-    if candidates.is_empty() {
+    // One list per pool: a walker offered a motorway would reject it on every
+    // recycle, and the two want different answers out of the same ring.
+    let roads = net.near(cam, AgentKind::Car.place_radius(), AgentKind::Car);
+    let paths = net.near(cam, AgentKind::Walker.place_radius(), AgentKind::Walker);
+    if roads.is_empty() && paths.is_empty() {
         return;
     }
     let dt = time.delta_secs();
 
-    for (i, (mut car, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
+    for (i, (mut car, &kind, mut tf, mut cell, mut vis)) in cars.iter_mut().enumerate() {
+        let candidates: &[LineKey] = match kind {
+            AgentKind::Car => &roads,
+            AgentKind::Walker => &paths,
+        };
+        if candidates.is_empty() {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         // Advance, then decide whether the car still has a road.
         let mut placed = car.line.and_then(|k| net.get(k).map(|l| (k, l)));
         if let Some((key, line)) = placed {
-            car.s += line.speed * car.speed_scale * dt;
+            car.s += kind.speed(line) * car.speed_scale * dt;
             let (pos, _) = line.at(if car.dir > 0.0 {
                 car.s
             } else {
                 line.length() - car.s
             });
-            if pos.distance(cam) > RECYCLE_RADIUS_M {
+            if pos.distance(cam) > kind.recycle_radius() {
                 placed = None;
             } else if car.s > line.length() {
                 // At the end of its road, drive **onto a connected one** rather
                 // than vanishing. Without this a car pops out of existence at
                 // every junction and reappears elsewhere, which is more visible
                 // than the traffic itself.
-                placed = hand_off(&net, &candidates, key, pos).and_then(
+                placed = hand_off(&net, candidates, key, pos, kind).and_then(
                     |(next_key, next_dir, next_s)| {
                         let l = net.get(next_key)?;
                         car.line = Some(next_key);
@@ -460,17 +616,17 @@ pub fn drive_traffic(
                 continue;
             };
             car.line = Some(key);
-            car.dir = match line.flow {
-                Flow::Forward => 1.0,
-                Flow::Backward => -1.0,
-                // A two-way street gets traffic both ways, decided per car.
-                Flow::Both => {
-                    if rand01(0xB1D1, i as u64, *frame) < 0.5 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
+            let coin = if rand01(0xB1D1, i as u64, *frame) < 0.5 {
+                1.0
+            } else {
+                -1.0
+            };
+            car.dir = match (kind, line.flow) {
+                // A pavement is two-way whatever the carriageway beside it does —
+                // which is what somebody walking up a one-way street is doing.
+                (AgentKind::Walker, _) | (_, Flow::Both) => coin,
+                (_, Flow::Forward) => 1.0,
+                (_, Flow::Backward) => -1.0,
             };
             // Start somewhere along the road rather than at its end, or every
             // recycled car appears at a junction.
@@ -495,7 +651,7 @@ pub fn drive_traffic(
         // is south: rotating the heading a quarter turn one way gives the kerb
         // side. Right-hand traffic — see `LANE_FRACTION`.
         let right = Vec2::new(-travel.y, travel.x);
-        let pos = centre + right * (line.half_width * LANE_FRACTION);
+        let pos = centre + right * kind.offset(line);
 
         let y = terrain.at(pos.x, pos.y) + CAR_RIDE_HEIGHT;
         let (grid_cell, local) = grid.translation_to_grid(Vec3::new(pos.x, y, pos.y).as_dvec3());
@@ -536,7 +692,18 @@ fn car_mesh() -> Mesh {
     debug_assert!(!parts(FurnitureKind::Car).is_empty());
     let meshes = cartopolis_geo::furniture::build_furniture_meshes(&items, None);
     let sm = meshes.into_iter().next().expect("the car form has parts");
+    surface_mesh_to_bevy(&sm)
+}
 
+/// One `SurfaceMesh` as a bevy `Mesh`.
+///
+/// Local rather than reaching into `map_geometry::build_mesh`, which also folds in
+/// the terrain refinement a cell's ground needs and an agent's model does not.
+///
+/// The form's own vertex colours carry the parts that are *not* the body — glass,
+/// tyres, a walker's head — apart from it. The body colour is the material, which
+/// is the one thing a shared mesh cannot vary per instance.
+fn surface_mesh_to_bevy(sm: &cartopolis_geo::vector_tiles::SurfaceMesh) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     let mut mesh = Mesh::new(
@@ -545,9 +712,6 @@ fn car_mesh() -> Mesh {
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, sm.positions.clone());
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, sm.normals.clone());
-    // The form's own vertex colours carry the glass and the tyres apart from the
-    // body; the *body* colour is the material, which is the one thing a shared
-    // mesh cannot vary per car.
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, sm.colors.clone());
     mesh.insert_indices(Indices::U32(sm.indices.clone()));
     mesh
@@ -563,6 +727,10 @@ mod tests {
             flow,
             speed: 10.0,
             half_width: 3.0,
+            uses: Uses {
+                drive: true,
+                walk: true,
+            },
         }
     }
 
@@ -655,8 +823,77 @@ mod tests {
     #[test]
     fn near_finds_a_road_by_its_far_end() {
         let net = net_with(&[[0.0, 0.0], [500.0, 0.0]]);
-        assert_eq!(net.near(Vec2::new(495.0, 0.0), 30.0).len(), 1);
-        assert_eq!(net.near(Vec2::new(250.0, 400.0), 30.0).len(), 0);
+        assert_eq!(
+            net.near(Vec2::new(495.0, 0.0), 30.0, AgentKind::Car).len(),
+            1
+        );
+        assert_eq!(
+            net.near(Vec2::new(250.0, 400.0), 30.0, AgentKind::Car)
+                .len(),
+            0
+        );
+    }
+
+    /// The two pools must not see each other's network. A footway is not a road
+    /// and a motorway is not a pavement; `near` filters by use so a recycled agent
+    /// is never offered a line it may not travel.
+    #[test]
+    fn each_pool_only_sees_its_own_network() {
+        let mut net = DriveNetwork::default();
+        let mut road = line(&[[0.0, 0.0], [100.0, 0.0]], Flow::Both);
+        road.uses = Uses {
+            drive: true,
+            walk: false,
+        };
+        let mut path = line(&[[0.0, 50.0], [100.0, 50.0]], Flow::Both);
+        path.uses = Uses {
+            drive: false,
+            walk: true,
+        };
+        net.insert_cell((0, 0), 0.0, 0.0, vec![road, path]);
+
+        let here = Vec2::new(50.0, 25.0);
+        assert_eq!(net.near(here, 60.0, AgentKind::Car).len(), 1, "one road");
+        assert_eq!(net.near(here, 60.0, AgentKind::Walker).len(), 1, "one path");
+        // …and they are not the same line.
+        assert_ne!(
+            net.near(here, 60.0, AgentKind::Car)[0].index,
+            net.near(here, 60.0, AgentKind::Walker)[0].index
+        );
+    }
+
+    /// A walker keeps to the pavement, which is *outside* the carriageway — the
+    /// offset is the whole of what stops a crowd walking down the middle of the
+    /// road, since the tile does not model pavements at all.
+    #[test]
+    fn a_walker_stands_outside_the_carriageway_and_a_car_inside_it() {
+        let net = net_with(&[[0.0, 0.0], [100.0, 0.0]]);
+        let l = net
+            .get(LineKey {
+                cell: (0, 0),
+                index: 0,
+            })
+            .expect("one line");
+        let car = AgentKind::Car.offset(l);
+        let walker = AgentKind::Walker.offset(l);
+        assert!(car < l.half_width, "a car drives inside its own kerb");
+        assert!(walker > l.half_width, "a walker stands beyond it");
+    }
+
+    /// A person walks; a car drives at the road's speed. The pace is not the same
+    /// number and a walker must not inherit the carriageway's.
+    #[test]
+    fn a_walker_keeps_its_own_pace() {
+        let net = net_with(&[[0.0, 0.0], [100.0, 0.0]]);
+        let l = net
+            .get(LineKey {
+                cell: (0, 0),
+                index: 0,
+            })
+            .expect("one line");
+        assert_eq!(AgentKind::Car.speed(l), l.speed);
+        assert_eq!(AgentKind::Walker.speed(l), WALK_SPEED);
+        assert!(WALK_SPEED < l.speed, "walking is slower than driving");
     }
 
     /// The place and recycle radii must not be the same number, or a car sitting
