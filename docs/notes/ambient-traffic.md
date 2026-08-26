@@ -150,3 +150,49 @@ seamless, or that nothing pops when a car is recycled. A still cannot show any o
 it, and this container has no way to watch a moving frame. The hand-off logic
 excludes the road just left — without that a car at a dead end turns round and
 drives back down it forever — but that path has been reasoned about, not watched.
+
+## The city hums, off the same network
+
+`soundscape::update_road_hum` (2026-08-26) drives a looping road hum from
+`DriveNetwork::loudest_road` — the same resident roads the cars drive, already
+carrying each road's class as a speed. No new data, no new request, one scan of
+the loaded ring per frame.
+
+Four decisions:
+
+- **A maximum over nearby roads, not a sum.** Summing makes a dense grid of back
+  streets louder than a motorway, which is backwards: what you hear is the
+  biggest road near you, not the number of roads near you.
+- **It falls off with the square of the remaining distance** over
+  `ROAD_AUDIBLE_M` (140 m). That is far shorter than real traffic carries, on
+  purpose — the hum has to change over a distance you can walk, or it is a
+  constant, and constants are inaudible.
+- **Noise alone reads as weather.** Distant traffic has a pitch — the tyre roar
+  around 68 Hz that carries furthest — so a faint tone sits under the rush, weak
+  enough that no note can be named for it. Its period is forced to divide the
+  loop, because a sine that does not close is a click every two seconds.
+- **Silent from the air**, and gated on the same **Traffic & people** toggle:
+  somebody switching the traffic off expects the sound of it to stop too.
+
+`soundscape::road_loudness` is pure and tested on every lane, which is why
+`systems::soundscape` is now re-exported unconditionally — the `cfg(feature =
+"audio")` on that re-export existed only because nothing outside reached it by
+name, and its own comment anticipated this.
+
+**Unheard.** This container has no audio hardware at all
+(`docs/notes/container-audio.md`), so the hum is verified as *arithmetic and a
+well-formed clip with headroom* — never as a sound. The headroom assertion is not
+ceremony: a synthesised clip that clips arrives as a roar at any playback volume,
+which is how the wind was reported from a phone, and no volume slider can undo
+distortion baked into an asset.
+
+## Water and playground ambience are not done
+
+Both were proposed alongside the hum and neither is here. The reason is the same
+for both: there is no resident, queryable source to hang them on. The roads are a
+resource because `systems::traffic` needed one; water lives only as per-cell
+tessellated geometry and shore rasters, and a POI's category reaches
+`WorldPlaces` but nothing measures a *distance to the nearest park*. Either would
+need a proximity index built first, which is the actual work — the synthesis and
+the ramp are the easy half, and copying this one would take an afternoon once the
+index exists.

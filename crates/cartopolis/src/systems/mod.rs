@@ -66,5 +66,10 @@ pub use cartopolis_geo::{
     furniture, mip, moorings, parking, places, pois, road_texture, routing, scatter, turf,
     vector_tiles,
 };
-#[cfg(feature = "audio")]
+// **Unconditional since 2026-08-26.** It used to be `cfg(feature = "audio")`,
+// with the note above explaining that nothing outside reached it by name so an
+// unconditional re-export would be an unused import. Something does now:
+// `traffic::DriveNetwork::loudest_road` answers in `soundscape::road_loudness`'s
+// units, and that function is pure and compiled on every lane — which is the
+// whole reason the maths lives outside the `cfg` in the first place.
 pub use player::soundscape;
