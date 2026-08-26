@@ -405,12 +405,34 @@ fn install_crypto_provider() {
     });
 }
 
+/// Turn Nagle's algorithm off, on whichever socket a carrier ended up with.
+///
+/// **Nagle is the wrong trade for this connection in both directions.** It holds a
+/// small write back until the previous one is acknowledged, to save a header on
+/// bulk transfers made of many tiny writes. Nothing here is that: an intent is one
+/// complete message the sim wants now, and a snapshot is one complete message the
+/// prediction wants now. On a link with real round-trip time — a phone on mobile
+/// data, which is what this client is deployed for — what the delay buys instead
+/// is intents leaving in clumps and snapshots arriving in clumps, and
+/// `avatar::smooth_online_avatar_display` can only read a clump as a stall
+/// followed by a jump.
+///
+/// Best-effort by design: a socket that will not take the option is still a
+/// working socket, and there is nothing useful to do about it but say so.
+#[cfg(not(target_arch = "wasm32"))]
+fn set_nodelay(stream: &TcpStream) {
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::warn!("set_nodelay failed; this connection will be Nagle-delayed: {e:#}");
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl Wire {
     async fn connect(target: &Target) -> anyhow::Result<Self> {
         match target {
             Target::Tcp(addr) => {
                 let stream = TcpStream::connect(addr).await?;
+                set_nodelay(&stream);
                 Ok(Self::Tcp(Framed::new(
                     stream,
                     LengthDelimitedCodec::builder()
@@ -432,6 +454,16 @@ impl Wire {
                 let (socket, _) =
                     tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false)
                         .await?;
+                match socket.get_ref() {
+                    tokio_tungstenite::MaybeTlsStream::Plain(tcp) => set_nodelay(tcp),
+                    tokio_tungstenite::MaybeTlsStream::Rustls(tls) => {
+                        set_nodelay(tls.get_ref().0);
+                    }
+                    // `MaybeTlsStream` is `#[non_exhaustive]`: a variant added by a
+                    // future tungstenite is a socket we cannot reach, not a reason
+                    // to fail the connection.
+                    _ => {}
+                }
                 Ok(Self::WebSocket(socket))
             }
         }

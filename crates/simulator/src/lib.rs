@@ -140,6 +140,19 @@ pub async fn serve(config: Arc<SimConfig>) -> anyhow::Result<SimHandle> {
         // WS handler logs the peer, and without the connect info that extractor
         // is a 500 on every upgrade rather than a compile error.
         let app = http::router(state).into_make_service_with_connect_info::<SocketAddr>();
+        // The same Nagle disable the raw TCP accept loop does, and it matters more
+        // here, not less: this is the listener every phone and browser arrives on
+        // (a bare hostname resolves to `wss://host/ws`), so the deployed client's
+        // snapshots all come through it. `tap_io` is axum's hook for reaching the
+        // socket before the connection is served.
+        let http_listener = {
+            use axum::serve::ListenerExt;
+            http_listener.tap_io(|tcp| {
+                if let Err(e) = tcp.set_nodelay(true) {
+                    tracing::warn!("set_nodelay failed on a /ws connection: {e:#}");
+                }
+            })
+        };
         tasks.spawn(async move {
             if let Err(e) = axum::serve(http_listener, app).await {
                 tracing::error!("http server ended: {e:#}");
@@ -207,6 +220,20 @@ async fn accept_loop(
             }
         };
         failures = 0;
+        // Nagle's algorithm holds a small write back until the previous one is
+        // acknowledged, so on a link with any real round-trip time — a phone on
+        // mobile data, which is the case this server is deployed for — the 20 Hz
+        // snapshots do not leave at 20 Hz. Two or three of them coalesce into one
+        // segment and arrive together, which the client's prediction can only read
+        // as a stalled stream followed by a jump. There is nothing to gain from
+        // the coalescing either: every frame here is already a complete message
+        // that the peer wants as soon as it exists.
+        //
+        // Best-effort: a socket that refuses the option is still a usable socket,
+        // and refusing the connection over it would be the worse trade.
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::warn!(%addr, "set_nodelay failed, connection will be Nagle-delayed: {e:#}");
+        }
         tracing::info!(%addr, "accepted");
         let world_c = world.clone();
         let cfg_c = config.clone();
