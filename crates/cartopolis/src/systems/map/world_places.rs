@@ -176,6 +176,7 @@ fn prop_name(kind: FurnitureKind) -> &'static str {
         // making one interactable later is a one-line decision and not a panic.
         FurnitureKind::Car => "Parked car",
         FurnitureKind::Bicycle => "Bicycle",
+        FurnitureKind::Boat => "Boat",
     }
 }
 
@@ -199,6 +200,9 @@ fn prop_radius(kind: FurnitureKind) -> f32 {
         // [`vehicle_circles`] gives it two. This is the radius of each.
         FurnitureKind::Car => 1.05,
         FurnitureKind::Bicycle => 0.35,
+        // A boat is on water the avatar cannot walk on, so a collider there is
+        // an invisible wall in the middle of a canal.
+        FurnitureKind::Boat => 0.0,
     }
 }
 

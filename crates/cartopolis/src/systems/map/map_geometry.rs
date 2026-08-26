@@ -41,6 +41,7 @@ use crate::systems::globe::GlobeState;
 use crate::systems::grass::GrassAreas;
 use crate::systems::height::{wgs84_to_rd, HeightLayer, HeightModel, HeightRequest};
 use crate::systems::map_stream::{lat_lng_to_tile_frac, MapStream};
+use crate::systems::moorings;
 use crate::systems::parking;
 use crate::systems::places;
 use crate::systems::road_depth::{RoadDepthExtension, RoadMaterial};
@@ -525,6 +526,26 @@ fn spawn_geometry_task(
                                     }
                                     Err(e) => {
                                         tracing::warn!(cell = ?cell, error = %e, "parked vehicle fill failed");
+                                    }
+                                }
+                                // …and the boats along the canal banks, off the
+                                // water polygons this same parse already
+                                // tessellated (`systems::moorings`). Same group,
+                                // same material, same toggle.
+                                match moorings::extract_moorings(&tile, tile_m, veg_seed(cell)) {
+                                    Ok(items) => {
+                                        meshes.extend(furniture::build_furniture_meshes(
+                                            &items, mesh_bytes,
+                                        ));
+                                        // Boats are not solid — a collider on
+                                        // water the avatar cannot walk on is an
+                                        // invisible wall in a canal — so they go
+                                        // in beside the parked vehicles, whose
+                                        // radius table already answers zero here.
+                                        cell_places.vehicles.extend(items);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(cell = ?cell, error = %e, "mooring fill failed");
                                     }
                                 }
                             }

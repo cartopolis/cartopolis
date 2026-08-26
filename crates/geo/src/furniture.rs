@@ -134,6 +134,11 @@ pub enum FurnitureKind {
     Car,
     /// A parked bicycle, from the same place and on the same terms.
     Bicycle,
+    /// A boat moored against a canal bank. Like the two above it is inferred
+    /// rather than surveyed — see [`crate::moorings`], which reads the shape of
+    /// the water polygon rather than any tag to decide there is a canal there at
+    /// all.
+    Boat,
 }
 
 impl FurnitureKind {
@@ -670,6 +675,19 @@ mod form {
         part([0.0, 0.62, 0.0], [0.03, 0.16, 0.50], Paint),
         part([0.0, 1.00, 0.40], [0.24, 0.03, 0.03], Metal),
     ];
+    /// A canal boat: 9 m long, 2.4 m in the beam, a low cabin aft of centre.
+    /// Measured off the small *woonboten* and sloops a Groningen canal is lined
+    /// with, not off a barge — a barge on a 12 m canal reads as a ship in a
+    /// bathtub.
+    ///
+    /// The hull straddles y = 0 because that is where the water surface is: the
+    /// bottom 20 cm is under it and the rest is freeboard. It is the one form
+    /// here with anything below the ground plane, and it is deliberate.
+    pub const BOAT: [Part; 3] = [
+        part([0.0, 0.10, 0.0], [1.20, 0.30, 4.50], Paint),
+        part([0.0, 0.46, -0.90], [0.95, 0.06, 2.60], Roof),
+        part([0.0, 0.78, -1.30], [0.80, 0.32, 1.60], Metal),
+    ];
 }
 
 pub fn parts(kind: FurnitureKind) -> &'static [Part] {
@@ -686,6 +704,7 @@ pub fn parts(kind: FurnitureKind) -> &'static [Part] {
         FurnitureKind::Swing => &form::SWING,
         FurnitureKind::Car => &form::CAR,
         FurnitureKind::Bicycle => &form::BICYCLE,
+        FurnitureKind::Boat => &form::BOAT,
     }
 }
 

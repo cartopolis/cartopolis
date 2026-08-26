@@ -332,6 +332,7 @@ pub fn furniture(kind: FurnitureKind) -> &'static str {
         // what they would use, so the arms cost nothing and no font work.
         FurnitureKind::Car => CAR,
         FurnitureKind::Bicycle => BIKE,
+        FurnitureKind::Boat => TRANSPORT,
     }
 }
 
